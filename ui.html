@@ -208,6 +208,21 @@
   .state p { margin: 0; font-size: 11.5px; line-height: 1.6; }
   .hidden { display: none !important; }
 
+  /* scrollbars — themed to match the dark UI (Figma runs on Chromium) */
+  * { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.16) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.13);
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+    transition: background-color .16s;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(251,91,10,0.55); background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:active { background: rgba(251,91,10,0.75); background-clip: padding-box; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
