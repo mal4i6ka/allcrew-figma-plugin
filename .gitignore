@@ -1,0 +1,6 @@
+# macOS
+.DS_Store
+
+# tooling (none required today — plugin is zero-build)
+node_modules/
+*.log

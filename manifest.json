@@ -1,0 +1,13 @@
+{
+  "name": "Altery Design System Export",
+  "id": "altery-ds-export",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["none"],
+    "reasoning": "Runs fully offline — reads local variables and builds the token package client-side. No network access required."
+  }
+}
