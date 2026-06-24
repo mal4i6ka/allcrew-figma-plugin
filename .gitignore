@@ -4,3 +4,5 @@
 # tooling (none required today — plugin is zero-build)
 node_modules/
 *.log
+# CocoIndex Code (ccc)
+/.cocoindex_code/

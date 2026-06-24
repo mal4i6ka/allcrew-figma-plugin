@@ -2,15 +2,22 @@
  *
  * Reads the file's LOCAL variables + collections via the Figma Plugin API
  * (any plan, in-editor — no Enterprise REST, no server) and builds a design-token
- * package: tokens.css (self-contained per-theme [data-theme-name] blocks), tokens.json
- * (canonical W3C tree), tokens.ts (typed var refs + theme list) and a README.
+ * package: tokens.css (self-contained per-theme blocks), one <theme>.module.css per
+ * theme (CSS Modules), tokens.json (canonical W3C tree), tokens.ts (typed var refs +
+ * theme list) and a README.
  *
- * The transform below is a faithful, DEPENDENCY-FREE port of the board's
- * src/lib/figma.ts (variablesToW3CMultiMode) + src/lib/design-system/
- * tokens-transform.ts. Output matches the board EXACTLY except the theme
- * selector: this plugin emits `[data-theme-name="…"]` (Sergey's spec) where the
- * board emits `[data-theme="…"]`. Keep the rest in sync. Pure functions are
- * top-level (Node-verifiable); the Figma glue is guarded by `typeof figma`.
+ * The output is shaped by an isolated, user-persisted options object (see
+ * DEFAULT_OPTIONS / buildPackage): inlinePrimitives (resolve alias→primitive to a
+ * literal and drop the primitive layer), themeAttr (theme-switch attribute name),
+ * emitModuleFiles, and cssModulesGlobal (`:global(…)` wrapping). tokens.json is always
+ * the full, un-inlined tree.
+ *
+ * The core transform is a DEPENDENCY-FREE port of the board's src/lib/figma.ts
+ * (variablesToW3CMultiMode) + src/lib/design-system/tokens-transform.ts. With
+ * `inlinePrimitives: false` + `themeAttr: "data-theme"` the output matches the board
+ * EXACTLY; the options layer on top. Keep the core in sync if the token format
+ * changes. Pure functions are top-level (Node-verifiable); the Figma glue is guarded
+ * by `typeof figma`.
  */
 
 /* ------------------------------------------------------------------ helpers */
@@ -240,14 +247,20 @@ function pickDefaultTheme(allLeaves, themes, hint) {
   return themes[0];
 }
 
+/** A token "participates in theming" if it has ≥2 modes or carries an alias in any
+ *  mode. The inverse — single-mode, all-literal — is a raw *primitive* (the layer the
+ *  "Inline primitives" setting collapses). */
+function participatesInTheming(token) {
+  const modes = modesOf(token);
+  const names = Object.keys(modes);
+  return names.length >= 2 || isAliasValue(token.$value) || names.some((n) => isAliasValue(modes[n]));
+}
+
 function themeModesOf(allLeaves, hint) {
   const themes = [];
   for (const entry of allLeaves) {
-    const modes = modesOf(entry.token);
-    const names = Object.keys(modes);
-    const participates =
-      names.length >= 2 || isAliasValue(entry.token.$value) || names.some((n) => isAliasValue(modes[n]));
-    if (!participates) continue;
+    if (!participatesInTheming(entry.token)) continue;
+    const names = Object.keys(modesOf(entry.token));
     for (const name of names) if (themes.indexOf(name) === -1) themes.push(name);
   }
   if (themes.length === 0) {
@@ -260,6 +273,77 @@ function themeModesOf(allLeaves, hint) {
 function valueForTheme(token, theme) {
   const modes = modesOf(token);
   return theme in modes ? modes[theme] : token.$value;
+}
+
+/**
+ * "Inline primitives" transform. Returns a NEW token tree where every alias that
+ * points at a *primitive* (single-mode, all-literal building block) is replaced by
+ * that primitive's literal value, per theme — and the primitive itself is dropped
+ * once it has been inlined. Alias references between *semantic* tokens are kept as
+ * `{…}` so the semantic layer stays DRY and themeable.
+ *
+ * A primitive is only dropped if something actually referenced it (so it got
+ * inlined somewhere). An *unreferenced* primitive is kept verbatim — it can only be
+ * consumed directly, so removing it would lose data. (Caveat: a primitive used
+ * directly in code *and* via an alias still gets dropped — the plugin can't see code
+ * usage. Turn the setting off if you rely on the raw scale.)
+ */
+function inlinePrimitivesTree(tree) {
+  const all = leaves(tree);
+  const byName = new Map(); // canonical dotted path → { path, token }
+  for (const e of all) byName.set(e.path.join("."), e);
+
+  const primitive = new Set();
+  for (const e of all) if (!participatesInTheming(e.token)) primitive.add(e.path.join("."));
+
+  const referenced = new Set();
+  const noteRef = (value) => {
+    if (!isAliasValue(value)) return;
+    const target = aliasTarget(value).join(".");
+    if (primitive.has(target)) referenced.add(target);
+  };
+  for (const e of all) {
+    noteRef(e.token.$value);
+    const modes = modesOf(e.token);
+    for (const k of Object.keys(modes)) noteRef(modes[k]);
+  }
+
+  // `originPath` is the path of the primitive a literal was resolved FROM. Numbers are
+  // rendered with that path so unit-less tokens (line-height, font-weight, opacity…)
+  // keep their unit decision instead of inheriting the destination's semantic path
+  // (e.g. line-height `1.2` must stay `1.2`, not become `1.2px`). The resulting tree is
+  // CSS-facing only (tokens.json uses the source tree; tokens.ts emits var() refs).
+  const inline = (value, theme, seen, originPath) => {
+    if (!isAliasValue(value)) {
+      return originPath && typeof value === "number" ? cssValue(value, originPath) : value;
+    }
+    const target = aliasTarget(value).join(".");
+    if (!byName.has(target) || !primitive.has(target) || seen.has(target)) return value;
+    const entry = byName.get(target);
+    const next = new Set(seen);
+    next.add(target);
+    return inline(valueForTheme(entry.token, theme), theme, next, entry.path);
+  };
+
+  const out = {};
+  for (const e of all) {
+    const name = e.path.join(".");
+    if (primitive.has(name)) {
+      if (referenced.has(name)) continue; // inlined away
+      setToken(out, e.path, e.token); // unreferenced primitive — keep verbatim
+      continue;
+    }
+    const token = e.token;
+    const modes = modesOf(token);
+    const newModes = {};
+    for (const k of Object.keys(modes)) newModes[k] = inline(modes[k], k, new Set());
+    const defMode = collectionDefaultModeOf(token);
+    const themeForDefault = defMode && defMode in modes ? defMode : Object.keys(modes)[0];
+    const newDefault = inline(token.$value, themeForDefault, new Set());
+    const $extensions = Object.assign({}, token.$extensions, { modes: newModes });
+    setToken(out, e.path, { $type: token.$type, $value: newDefault, $extensions: $extensions });
+  }
+  return out;
 }
 
 function themeDeclarations(allLeaves, theme) {
@@ -284,17 +368,60 @@ function themeDeclarations(allLeaves, theme) {
   return lines;
 }
 
-function toTokensCss(tree, defaultModeName) {
-  const allLeaves = leaves(tree);
-  if (allLeaves.length === 0) return "";
+function orderedThemes(allLeaves, defaultModeName) {
   const themes = themeModesOf(allLeaves, defaultModeName);
   const defaultTheme = pickDefaultTheme(allLeaves, themes, defaultModeName);
   const ordered = [defaultTheme].concat(themes.filter((t) => t !== defaultTheme));
+  return { defaultTheme, ordered };
+}
+
+function themeBlock(allLeaves, theme, selector) {
+  return `${selector} {\n${themeDeclarations(allLeaves, theme).join("\n")}\n}`;
+}
+
+/** Escape a theme/mode name for use inside a double-quoted CSS attribute selector
+ *  (`[attr="…"]`). Figma mode names may contain `"` or `\`, which would otherwise
+ *  terminate or corrupt the selector. */
+function cssAttrValue(value) {
+  return String(value).replace(/[\\"]/g, "\\$&");
+}
+
+/** Combined stylesheet: one plain-CSS block per theme (default also on `:root`).
+ *  `attr` is the theme-switch attribute name (e.g. `data-theme-name`). */
+function toTokensCss(tree, defaultModeName, attr) {
+  const a = attr || "data-theme-name";
+  const allLeaves = leaves(tree);
+  if (allLeaves.length === 0) return "";
+  const { defaultTheme, ordered } = orderedThemes(allLeaves, defaultModeName);
   const blocks = ordered.map((theme) => {
-    const selector = theme === defaultTheme ? `:root,\n[data-theme-name="${theme}"]` : `[data-theme-name="${theme}"]`;
-    return `${selector} {\n${themeDeclarations(allLeaves, theme).join("\n")}\n}`;
+    const themeSel = `[${a}="${cssAttrValue(theme)}"]`;
+    const selector = theme === defaultTheme ? `:root,\n${themeSel}` : themeSel;
+    return themeBlock(allLeaves, theme, selector);
   });
   return blocks.join("\n\n") + "\n";
+}
+
+/** One CSS file per theme. With `useGlobal` the selectors are wrapped in `:global(…)`
+ *  (valid CSS Modules); otherwise they're plain. Concatenated, they are `tokens.css`. */
+function toThemeModuleCssFiles(tree, defaultModeName, attr, useGlobal) {
+  const a = attr || "data-theme-name";
+  const wrap = useGlobal ? (sel) => `:global(${sel})` : (sel) => sel;
+  const allLeaves = leaves(tree);
+  const files = {};
+  if (allLeaves.length === 0) return files;
+  const { defaultTheme, ordered } = orderedThemes(allLeaves, defaultModeName);
+  const used = new Set();
+  for (const theme of ordered) {
+    const themeSel = wrap(`[${a}="${cssAttrValue(theme)}"]`);
+    const selector = theme === defaultTheme ? `${wrap(":root")},\n${themeSel}` : themeSel;
+    const base = varName([theme]) || "theme";
+    let name = base;
+    let n = 2;
+    while (used.has(name)) name = `${base}-${n++}`;
+    used.add(name);
+    files[`${name}.module.css`] = themeBlock(allLeaves, theme, selector) + "\n";
+  }
+  return files;
 }
 
 function buildTsTree(allLeaves) {
@@ -340,6 +467,52 @@ function toTokensJson(tree) {
   return JSON.stringify(tree, null, 2) + "\n";
 }
 
+/* ------------------------------------------------------------- export options */
+
+var DEFAULT_OPTIONS = {
+  inlinePrimitives: true, // resolve alias→primitive to a literal, drop the primitive layer
+  themeAttr: "data-theme-name", // theme-switch attribute (Sergey's spec; board uses `data-theme`)
+  emitModuleFiles: true, // emit per-theme `<theme>.module.css`
+  cssModulesGlobal: true, // wrap module selectors in `:global(…)` (CSS Modules)
+};
+
+function sanitizeAttr(value) {
+  const cleaned = typeof value === "string" ? value.trim().replace(/[^A-Za-z0-9_-]/g, "") : "";
+  return cleaned || DEFAULT_OPTIONS.themeAttr;
+}
+
+function normalizeOptions(o) {
+  o = isRecord(o) ? o : {};
+  const pick = (key) => (o[key] === undefined ? DEFAULT_OPTIONS[key] : !!o[key]);
+  return {
+    inlinePrimitives: pick("inlinePrimitives"),
+    emitModuleFiles: pick("emitModuleFiles"),
+    cssModulesGlobal: pick("cssModulesGlobal"),
+    themeAttr: sanitizeAttr(o.themeAttr),
+  };
+}
+
+/** Graph + options → the full token-export package. Pure (Node-verifiable). */
+function buildPackage(graph, options) {
+  const opts = normalizeOptions(options);
+  const sourceTree = variablesToW3CMultiMode(graph);
+  const summary = buildSummary(graph, sourceTree);
+  const files = {};
+  if (summary.tokenCount > 0) {
+    const defaultMode = primaryDefaultMode(graph);
+    const cssTree = opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree) : sourceTree;
+    files["tokens.css"] = toTokensCss(cssTree, defaultMode, opts.themeAttr);
+    if (opts.emitModuleFiles) {
+      const themeFiles = toThemeModuleCssFiles(cssTree, defaultMode, opts.themeAttr, opts.cssModulesGlobal);
+      for (const name of Object.keys(themeFiles)) files[name] = themeFiles[name];
+    }
+    files["tokens.json"] = toTokensJson(sourceTree); // always the full, un-inlined tree (lossless)
+    files["tokens.ts"] = toTokensTs(cssTree);
+    files["README.md"] = buildReadme(summary, opts);
+  }
+  return { summary: summary, files: files, options: opts };
+}
+
 /* ------------------------------------------------------ summary + README (export) */
 
 /** Default-mode name of the first collection that declares one (drives `:root`). */
@@ -369,30 +542,72 @@ function buildSummary(graph, tree) {
   };
 }
 
-function buildReadme(summary) {
+function buildReadme(summary, options) {
+  const opts = normalizeOptions(options);
+  const attr = opts.themeAttr;
   const themeList = summary.themes.map((t) => `\`${t}\``).join(", ");
+  const moduleList = summary.themes.map((t) => `\`${varName([t])}.module.css\``).join(", ");
   const collLines = summary.collections
     .map((c) => `- **${c.name}** — ${c.variableCount} variables, modes: ${c.modes.map((m) => `\`${m}\``).join(", ")}`)
     .join("\n");
   const defaultTheme = summary.themes[0] || "Light";
   const others = summary.themes.filter((t) => t !== defaultTheme);
   const switchExample = others.length
-    ? `\n\nSwitch theme by setting the attribute on any ancestor (e.g. \`<html>\`):\n\n\`\`\`html\n<html data-theme-name="${others[0]}">\n\`\`\``
+    ? `\n\nSwitch theme by setting the attribute on any ancestor (e.g. \`<html>\`):\n\n\`\`\`html\n<html ${attr}="${others[0]}">\n\`\`\``
     : "";
+
+  const rootSel = opts.cssModulesGlobal ? ":global(:root)" : ":root";
+  const moduleSel = opts.cssModulesGlobal ? `:global([${attr}="…"])` : `[${attr}="…"]`;
+  const moduleRow = opts.emitModuleFiles
+    ? `\n| \`<theme>.module.css\` | The same blocks, one file per theme (${moduleList}). Every variable under \`${moduleSel}\` — the default theme also on \`${rootSel}\`. Concatenated, they reproduce \`tokens.css\`. |`
+    : "";
+
+  const inlineNote = opts.inlinePrimitives
+    ? "Primitive (raw, single-mode) values are **inlined** into the semantic tokens that use them, so the primitive layer doesn't appear as its own variables. `tokens.json` keeps the full, un-inlined tree for re-import."
+    : "Primitives are emitted as their own variables; semantic tokens reference them with `var(--…)`.";
+
+  const settingsLine = [
+    `inline primitives \`${opts.inlinePrimitives ? "on" : "off"}\``,
+    `theme attribute \`${attr}\``,
+    `per-theme modules \`${opts.emitModuleFiles ? "on" : "off"}\``,
+    opts.emitModuleFiles ? `\`:global()\` \`${opts.cssModulesGlobal ? "on" : "off"}\`` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const moduleSection = opts.emitModuleFiles
+    ? `\n\n## Per-theme CSS Modules
+
+The same blocks are also emitted one file per theme — ${moduleList}${
+        opts.cssModulesGlobal ? " — wrapped in `:global(…)` for CSS-Modules projects (Next.js, etc.)" : ""
+      }. Concatenated (or merged by your bundler), they reproduce \`tokens.css\`.
+
+\`\`\`ts
+// build-time: pick one theme, the bundler inlines it
+import "./${varName([defaultTheme])}.module.css";
+\`\`\`
+
+For **runtime** switching keep every theme present (use \`tokens.css\`, or import
+all \`*.module.css\`) and toggle \`${attr}\` on an ancestor.`
+    : "";
+
   return `# Altery Design Tokens
 
 Generated by the **Altery Design System Export** Figma plugin from **${summary.fileName}**.
 
 - ${summary.totalVariables} variables across ${summary.collections.length} collection(s)
 - Themes (modes): ${themeList || "`default`"}
+-Settings: ${settingsLine}
 
 ## Files
 
 | File | What it is |
 |------|------------|
-| \`tokens.css\` | CSS custom properties. One self-contained block per theme. |
+| \`tokens.css\` | CSS custom properties. One self-contained block per theme. The merged single file. |${moduleRow}
 | \`tokens.json\` | Canonical W3C token tree (every mode under \`$extensions.modes\`, source collection under \`$extensions.figma\`). For diffing / re-import. |
 | \`tokens.ts\` | Typed \`tokens\` object (values are \`var(--…)\` refs) + \`themes\` / \`Theme\`. |
+
+${inlineNote}
 
 ## Collections
 
@@ -408,8 +623,8 @@ Import the stylesheet once:
 
 The default theme (\`${defaultTheme}\`) is applied on \`:root\`, so it works with no attribute set.${switchExample}
 
-Each \`[data-theme-name="…"]\` block re-declares **every** variable for that theme, so toggling
-the attribute swaps the whole set and \`var(--…)\` aliases always resolve.
+Each \`[${attr}="…"]\` block re-declares **every** variable for that theme, so toggling
+the attribute swaps the whole set.
 
 \`\`\`css
 .button {
@@ -417,7 +632,7 @@ the attribute swaps the whole set and \`var(--…)\` aliases always resolve.
   padding: var(--spacing-md);
   border-radius: var(--radius-md);
 }
-\`\`\`
+\`\`\`${moduleSection}
 `;
 }
 
@@ -425,6 +640,22 @@ the attribute swaps the whole set and \`var(--…)\` aliases always resolve.
 
 if (typeof figma !== "undefined") {
   figma.showUI(__html__, { width: 408, height: 660, themeColors: false });
+
+  var SETTINGS_KEY = "altery-export-settings";
+
+  async function loadSettings() {
+    try {
+      return normalizeOptions(await figma.clientStorage.getAsync(SETTINGS_KEY));
+    } catch (e) {
+      return normalizeOptions(null);
+    }
+  }
+
+  async function saveSettings(options) {
+    try {
+      await figma.clientStorage.setAsync(SETTINGS_KEY, normalizeOptions(options));
+    } catch (e) {}
+  }
 
   async function readGraph() {
     const [collections, variables] = await Promise.all([
@@ -449,19 +680,11 @@ if (typeof figma !== "undefined") {
     };
   }
 
-  async function scan() {
+  async function scan(options) {
     try {
       const graph = await readGraph();
-      const tree = variablesToW3CMultiMode(graph);
-      const summary = buildSummary(graph, tree);
-      const files = {};
-      if (summary.tokenCount > 0) {
-        files["tokens.css"] = toTokensCss(tree, primaryDefaultMode(graph));
-        files["tokens.json"] = toTokensJson(tree);
-        files["tokens.ts"] = toTokensTs(tree);
-        files["README.md"] = buildReadme(summary);
-      }
-      figma.ui.postMessage({ type: "result", summary: summary, files: files });
+      const pkg = buildPackage(graph, options);
+      figma.ui.postMessage({ type: "result", summary: pkg.summary, files: pkg.files, options: pkg.options });
     } catch (err) {
       figma.ui.postMessage({ type: "error", message: String((err && err.message) || err) });
     }
@@ -469,12 +692,19 @@ if (typeof figma !== "undefined") {
 
   figma.ui.onmessage = (msg) => {
     if (!msg || !msg.type) return;
-    if (msg.type === "scan") scan();
-    else if (msg.type === "notify") figma.notify(String(msg.message || ""));
+    if (msg.type === "scan") {
+      const options = normalizeOptions(msg.options);
+      saveSettings(options);
+      scan(options);
+    } else if (msg.type === "notify") figma.notify(String(msg.message || ""));
     else if (msg.type === "resize" && msg.height) {
       figma.ui.resize(408, Math.max(420, Math.min(900, Math.round(msg.height))));
     } else if (msg.type === "close") figma.closePlugin();
   };
 
-  scan();
+  (async function start() {
+    const options = await loadSettings();
+    figma.ui.postMessage({ type: "settings", options: options });
+    scan(options);
+  })();
 }

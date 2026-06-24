@@ -141,20 +141,70 @@
   .coll .meta { color: var(--faint); font-size: 10.5px; white-space: nowrap; flex: none; }
   .coll .meta b { color: var(--muted); font-weight: 500; }
 
+  /* settings entry (header) */
+  .header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .settings-entry {
+    appearance: none; cursor: pointer; flex: none; margin-top: 2px;
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 999px; padding: 7px 12px; font-family: var(--mono); font-size: 11px;
+    transition: background .16s, color .16s, border-color .16s;
+  }
+  .settings-entry:hover { color: var(--text); border-color: var(--border-2); background: var(--surface-2); }
+  .settings-entry svg { color: var(--accent); flex: none; }
+
+  /* settings page */
+  .page { display: flex; flex-direction: column; }
+  .set-hint { color: var(--faint); font-size: 10.5px; line-height: 1.55; margin: 14px 2px 2px; padding-top: 13px; border-top: 1px solid rgba(255,255,255,0.05); }
+  .set-hint code { font-family: var(--mono); background: var(--bg-2); padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
+  .set-row { display: flex; align-items: center; gap: 11px; padding: 13px 2px; }
+  .set-row + .set-row { border-top: 1px solid rgba(255,255,255,0.045); }
+  .set-row > .ic { color: var(--muted); flex: none; }
+  .set-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .set-text b { font-weight: 500; color: var(--text); font-size: 12px; }
+  .set-text b code, .set-text i code {
+    font-family: var(--mono); font-size: 10.5px; background: var(--bg-2);
+    padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted);
+  }
+  .set-text i { font-style: normal; color: var(--faint); font-size: 10.5px; line-height: 1.45; }
+  .set-row.disabled { opacity: .42; pointer-events: none; }
+
+  .switch { position: relative; flex: none; width: 34px; height: 20px; }
+  .switch input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .switch .track {
+    position: absolute; inset: 0; border-radius: 999px; background: #2a2c31;
+    border: 1px solid var(--border); transition: background .18s, border-color .18s;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+    border-radius: 50%; background: var(--muted); transition: transform .18s, background .18s;
+  }
+  .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + .track::after { transform: translateX(14px); background: #fff; }
+  .switch input:focus-visible + .track { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+
+  .set-input {
+    flex: none; width: 132px; background: var(--bg-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--r-sm); padding: 6px 9px; font-family: var(--mono); font-size: 11px;
+    transition: border-color .16s, background .16s;
+  }
+  .set-input:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+
   /* preview */
   .preview { display: flex; flex-direction: column; min-height: 0; }
-  .tabs { display: flex; align-items: center; gap: 2px; padding: 7px 8px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+  .tabs { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+  .tablist { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+  .tablist::-webkit-scrollbar { height: 6px; }
   .tab {
-    appearance: none; border: 0; background: transparent; cursor: pointer;
+    appearance: none; border: 0; background: transparent; cursor: pointer; flex: none; white-space: nowrap;
     color: var(--muted); font-family: var(--mono); font-size: 11px;
     padding: 5px 9px; border-radius: 7px; transition: background .16s, color .16s;
   }
   .tab:hover { color: var(--text); background: rgba(255,255,255,0.05); }
   .tab.active { color: var(--accent-hi); background: var(--accent-tint); }
-  .tabs .spacer { flex: 1; }
   .icon-btn {
     appearance: none; border: 1px solid var(--border); background: var(--bg-2);
-    color: var(--muted); cursor: pointer; width: 28px; height: 26px;
+    color: var(--muted); cursor: pointer; width: 28px; height: 26px; flex: none;
     border-radius: 7px; display: inline-flex; align-items: center; justify-content: center;
     transition: background .16s, color .16s, border-color .16s;
   }
@@ -240,10 +290,22 @@
   </div>
 
   <header>
+   <div class="header-row">
+    <div class="brand">
     <svg class="brand-logo" viewBox="0 0 252 112" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Altery">
       <path d="M251.528 74.6777C251.528 91.6439 239.852 101.404 224.618 101.404C217.777 101.404 210.389 99.4881 204.916 95.0186L211.757 85.3496C214.95 88.2685 220.332 90.2754 225.44 90.2754C235.656 90.2753 239.669 82.3396 239.669 71.1201C236.112 77.7788 229.362 81.7929 222.977 81.793C209.751 81.793 203.183 72.2149 203.183 61.1777V32.1709H215.041V61.1777C215.041 66.1946 218.051 70.2998 222.703 70.2998C228.724 70.2995 239.669 63.0928 239.669 32.0801H251.528V74.6777ZM96.891 32.1729H110.755V42.2061H96.891V66.835C96.8911 68.7501 97.8936 70.0272 98.8968 70.4834C101.725 71.8516 104.918 70.1184 107.016 68.4766L113.127 77.2334C111.029 78.7841 108.748 80.2431 106.285 81.1553C102.819 82.4323 98.4408 82.8889 93.6976 80.791C88.7721 78.6018 85.0327 73.4023 85.0326 66.835V42.2061H77.8265V32.1729H85.0326V17.6689H96.891V32.1729ZM23.096 30.6592C29.1052 30.2774 34.1127 32.5286 38.5755 36.4043C38.5012 40.011 38.5287 43.633 37.9662 47.2129C37.7359 48.6786 37.5701 50.0459 37.2113 51.4961C36.0724 49.6089 35.0062 48.0631 33.4203 46.5029C30.8964 44.0488 27.8581 42.2853 24.2777 42.3027C16.0769 42.343 12.0503 49.7583 12.1976 57.1914C12.2725 60.9683 13.4971 64.4058 16.224 67.1201C18.2538 69.1407 20.9669 70.3215 23.8363 70.2969C28.9949 70.1891 33.0433 66.9661 35.9837 63.0225C39.0759 58.8755 41.0505 54.7083 41.7464 49.5498C41.9045 48.3764 42.1233 47.2087 42.2425 46.0195C42.7026 41.4262 42.687 36.7891 42.6126 32.1787H53.973C53.967 35.3128 53.818 38.445 53.5257 41.5654C53.0802 46.5615 52.191 51.5088 50.8705 56.3477C52.9546 64.2638 53.9973 72.4185 53.973 80.6045H42.1136C42.1218 78.1395 42.1419 75.3987 42.0208 72.9482C41.7518 73.27 41.4774 73.5872 41.1986 73.9004C37.0022 78.6103 31.3769 81.6584 25.0316 82.0225C19.0243 82.3974 13.119 80.3386 8.64584 76.3115C3.59501 71.7123 0.560743 65.3079 0.201507 58.4863C-0.185724 51.3229 2.08699 43.3498 6.95444 37.9834C11.2935 33.1997 16.7372 30.9976 23.096 30.6592ZM138.982 30.9893C153.394 30.9893 161.968 43.5771 161.968 55.9824V60.6338H127.489C128.948 66.5628 133.327 70.3027 139.347 70.3027C144.546 70.3027 148.195 67.8403 150.475 65.0127L159.78 72.127C154.945 78.056 147.647 81.4316 139.255 81.4316C124.387 81.4315 114.901 70.4855 114.901 55.9824C114.901 42.3001 123.749 30.9893 138.982 30.9893ZM199.834 44.3926C189.892 44.3926 181.318 53.0577 181.318 76.6826V80.5137H169.459V32.3516H181.318V42.75C184.966 35.8178 191.625 31.4395 199.834 31.4395V44.3926ZM73.5882 80.5107H61.7308V10.2744H73.5882V80.5107ZM138.618 42.1172C133.236 42.1172 128.948 44.945 127.671 50.874H149.107C147.556 45.1277 143.361 42.1174 138.618 42.1172Z" fill="currentColor"/>
     </svg>
-    <div class="tagline">Design System Export</div>
+    <div class="tagline">Design System Export<span id="crumb"></span></div>
+    </div>
+    <button class="settings-entry" id="openSettings" aria-label="Export settings">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 15C13.6569 15 15 13.6569 15 12C15 10.3431 13.6569 9 12 9C10.3431 9 9 10.3431 9 12C9 13.6569 10.3431 15 12 15Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M18.7273 14.7273C18.6063 15.0015 18.5702 15.3056 18.6236 15.6005C18.6771 15.8954 18.8177 16.1676 19.0273 16.3818L19.0818 16.4364C19.2509 16.6052 19.385 16.8057 19.4765 17.0265C19.568 17.2472 19.6151 17.4838 19.6151 17.7227C19.6151 17.9617 19.568 18.1983 19.4765 18.419C19.385 18.6397 19.2509 18.8402 19.0818 19.0091C18.913 19.1781 18.7124 19.3122 18.4917 19.4037C18.271 19.4952 18.0344 19.5423 17.7955 19.5423C17.5565 19.5423 17.3199 19.4952 17.0992 19.4037C16.8785 19.3122 16.678 19.1781 16.5091 19.0091L16.4545 18.9545C16.2403 18.745 15.9682 18.6044 15.6733 18.5509C15.3784 18.4974 15.0742 18.5335 14.8 18.6545C14.5311 18.7698 14.3018 18.9611 14.1403 19.205C13.9788 19.4489 13.8921 19.7347 13.8909 20.0273V20.1818C13.8909 20.664 13.6994 21.1265 13.3584 21.4675C13.0174 21.8084 12.5549 22 12.0727 22C11.5905 22 11.1281 21.8084 10.7871 21.4675C10.4461 21.1265 10.2545 20.664 10.2545 20.1818V20.1C10.2475 19.7991 10.1501 19.5073 9.97501 19.2625C9.79991 19.0176 9.55521 18.8312 9.27273 18.7273C8.99853 18.6063 8.69437 18.5702 8.39947 18.6236C8.10456 18.6771 7.83244 18.8177 7.61818 19.0273L7.56364 19.0818C7.39478 19.2509 7.19425 19.385 6.97353 19.4765C6.7528 19.568 6.51621 19.6151 6.27727 19.6151C6.03834 19.6151 5.80174 19.568 5.58102 19.4765C5.36029 19.385 5.15977 19.2509 4.99091 19.0818C4.82186 18.913 4.68775 18.7124 4.59626 18.4917C4.50476 18.271 4.45766 18.0344 4.45766 17.7955C4.45766 17.5565 4.50476 17.3199 4.59626 17.0992C4.68775 16.8785 4.82186 16.678 4.99091 16.5091L5.04545 16.4545C5.25503 16.2403 5.39562 15.9682 5.4491 15.6733C5.50257 15.3784 5.46647 15.0742 5.34545 14.8C5.23022 14.5311 5.03887 14.3018 4.79497 14.1403C4.55107 13.9788 4.26526 13.8921 3.97273 13.8909H3.81818C3.33597 13.8909 2.87351 13.6994 2.53253 13.3584C2.19156 13.0174 2 12.5549 2 12.0727C2 11.5905 2.19156 11.1281 2.53253 10.7871C2.87351 10.4461 3.33597 10.2545 3.81818 10.2545H3.9C4.2009 10.2475 4.49273 10.1501 4.73754 9.97501C4.98236 9.79991 5.16883 9.55521 5.27273 9.27273C5.39374 8.99853 5.42984 8.69437 5.37637 8.39947C5.3229 8.10456 5.18231 7.83244 4.97273 7.61818L4.91818 7.56364C4.74913 7.39478 4.61503 7.19425 4.52353 6.97353C4.43203 6.7528 4.38493 6.51621 4.38493 6.27727C4.38493 6.03834 4.43203 5.80174 4.52353 5.58102C4.61503 5.36029 4.74913 5.15977 4.91818 4.99091C5.08704 4.82186 5.28757 4.68775 5.50829 4.59626C5.72901 4.50476 5.96561 4.45766 6.20455 4.45766C6.44348 4.45766 6.68008 4.50476 6.9008 4.59626C7.12152 4.68775 7.32205 4.82186 7.49091 4.99091L7.54545 5.04545C7.75971 5.25503 8.03183 5.39562 8.32674 5.4491C8.62164 5.50257 8.9258 5.46647 9.2 5.34545H9.27273C9.54161 5.23022 9.77093 5.03887 9.93245 4.79497C10.094 4.55107 10.1807 4.26526 10.1818 3.97273V3.81818C10.1818 3.33597 10.3734 2.87351 10.7144 2.53253C11.0553 2.19156 11.5178 2 12 2C12.4822 2 12.9447 2.19156 13.2856 2.53253C13.6266 2.87351 13.8182 3.33597 13.8182 3.81818V3.9C13.8193 4.19253 13.906 4.47834 14.0676 4.72224C14.2291 4.96614 14.4584 5.15749 14.7273 5.27273C15.0015 5.39374 15.3056 5.42984 15.6005 5.37637C15.8954 5.3229 16.1676 5.18231 16.3818 4.97273L16.4364 4.91818C16.6052 4.74913 16.8057 4.61503 17.0265 4.52353C17.2472 4.43203 17.4838 4.38493 17.7227 4.38493C17.9617 4.38493 18.1983 4.43203 18.419 4.52353C18.6397 4.61503 18.8402 4.74913 19.0091 4.91818C19.1781 5.08704 19.3122 5.28757 19.4037 5.50829C19.4952 5.72901 19.5423 5.96561 19.5423 6.20455C19.5423 6.44348 19.4952 6.68008 19.4037 6.9008C19.3122 7.12152 19.1781 7.32205 19.0091 7.49091L18.9545 7.54545C18.745 7.75971 18.6044 8.03183 18.5509 8.32674C18.4974 8.62164 18.5335 8.9258 18.6545 9.2V9.27273C18.7698 9.54161 18.9611 9.77093 19.205 9.93245C19.4489 10.094 19.7347 10.1807 20.0273 10.1818H20.1818C20.664 10.1818 21.1265 10.3734 21.4675 10.7144C21.8084 11.0553 22 11.5178 22 12C22 12.4822 21.8084 12.9447 21.4675 13.2856C21.1265 13.6266 20.664 13.8182 20.1818 13.8182H20.1C19.8075 13.8193 19.5217 13.906 19.2778 14.0676C19.0339 14.2291 18.8425 14.4584 18.7273 14.7273Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Export Settings</span>
+    </button>
+    <button class="settings-entry hidden" id="closeSettings" aria-label="Back">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M19 12H5M5 12L12 19M5 12L12 5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Back</span>
+    </button>
+   </div>
   </header>
 
   <main>
@@ -265,11 +327,8 @@
       </section>
 
       <section class="card preview">
-        <div class="tabs" role="tablist">
-          <button class="tab active" data-tab="css" role="tab">tokens.css</button>
-          <button class="tab" data-tab="json" role="tab">tokens.json</button>
-          <button class="tab" data-tab="ts" role="tab">tokens.ts</button>
-          <span class="spacer"></span>
+        <div class="tabs">
+          <div class="tablist" id="tabs" role="tablist"></div>
           <button class="icon-btn" id="copy" title="Copy to clipboard" aria-label="Copy preview">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           </button>
@@ -293,6 +352,31 @@
     <div id="loading" class="state">
       <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3"/><path d="M12 18v3"/><path d="M5.6 5.6l2.1 2.1"/><path d="M16.3 16.3l2.1 2.1"/><path d="M3 12h3"/><path d="M18 12h3"/></svg>
       <p>Reading variables…</p>
+    </div>
+    <div id="settings" class="page hidden">
+      <div class="set-body-page">
+          <label class="set-row" for="optInline">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 4V2M15 20V22M4 9H2M20 15H22M4.91421 4.91421L3.5 3.5M19.0858 19.0858L20.5 20.5M12 17.6569L9.87868 19.7782C8.31658 21.3403 5.78392 21.3403 4.22183 19.7782C2.65973 18.2161 2.65973 15.6834 4.22183 14.1213L6.34315 12M17.6569 12L19.7782 9.87868C21.3403 8.31658 21.3403 5.78392 19.7782 4.22183C18.2161 2.65973 15.6834 2.65973 14.1213 4.22183L12 6.34315" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="set-text"><b>Inline primitives</b><i>Resolve aliases to literals &middot; drop unused primitives</i></span>
+            <span class="switch"><input type="checkbox" id="optInline"><span class="track"></span></span>
+          </label>
+          <div class="set-row">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 8H20M4 16H20M8 3V21M16 3V21" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="set-text"><b>Theme attribute</b><i>Selector that switches themes</i></span>
+            <input class="set-input" id="optAttr" type="text" spellcheck="false" autocomplete="off" placeholder="data-theme-name" />
+          </div>
+          <label class="set-row" for="optModules">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 11.9999L11.6422 16.8211C11.7734 16.8866 11.839 16.9194 11.9078 16.9324C11.9687 16.9438 12.0313 16.9438 12.0922 16.9324C12.161 16.9194 12.2266 16.8866 12.3578 16.8211L22 11.9999M2 16.9999L11.6422 21.8211C11.7734 21.8866 11.839 21.9194 11.9078 21.9324C11.9687 21.9438 12.0313 21.9438 12.0922 21.9324C12.161 21.9194 12.2266 21.8866 12.3578 21.8211L22 16.9999M2 6.99994L11.6422 2.17883C11.7734 2.11324 11.839 2.08044 11.9078 2.06753C11.9687 2.0561 12.0313 2.0561 12.0922 2.06753C12.161 2.08044 12.2266 2.11324 12.3578 2.17883L22 6.99994L12.3578 11.8211C12.2266 11.8866 12.161 11.9194 12.0922 11.9324C12.0313 11.9438 11.9687 11.9438 11.9078 11.9324C11.839 11.9194 11.7734 11.8866 11.6422 11.8211L2 6.99994Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="set-text"><b>Per-theme <code>.module.css</code></b><i>One file per theme, alongside <code>tokens.css</code></i></span>
+            <span class="switch"><input type="checkbox" id="optModules"><span class="track"></span></span>
+          </label>
+          <label class="set-row" for="optGlobal" id="optGlobalRow">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18.5708 20C19.8328 20 20.8568 18.977 20.8568 17.714V13.143L21.9998 12L20.8568 10.857V6.286C20.8568 5.023 19.8338 4 18.5708 4M5.429 4C4.166 4 3.143 5.023 3.143 6.286V10.857L2 12L3.143 13.143V17.714C3.143 18.977 4.166 20 5.429 20" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="set-text"><b>CSS Modules <code>:global()</code></b><i>Wrap module selectors for bundlers</i></span>
+            <span class="switch"><input type="checkbox" id="optGlobal"><span class="track"></span></span>
+          </label>
+        <p class="set-hint">Settings are saved per-user (via Figma client storage) and re-applied on the next run. <code>tokens.json</code> always keeps the full, un-inlined tree.</p>
+      </div>
     </div>
   </main>
 
@@ -364,13 +448,24 @@ function notify(msg){ parent.postMessage({pluginMessage:{type:"notify",message:m
 /* ---- state + render ---- */
 var FILES = {};       // { "tokens.css": "...", ... }
 var SUMMARY = null;
-var TAB = "css";
-var TAB_FILE = { css:"tokens.css", json:"tokens.json", ts:"tokens.ts" };
+var TAB = null;       // active preview filename
+var OPTIONS = { inlinePrimitives: true, themeAttr: "data-theme-name", emitModuleFiles: true, cssModulesGlobal: true };
 
+var VIEW = "loading";       // current view
+var MAIN_VIEW = "content";  // last non-page view (where Back returns)
+var PAGE_TITLES = { settings: "Export Settings" }; // sub-pages → breadcrumb label
 function show(view){
-  ["content","empty","error","loading"].forEach(function(id){
+  ["content","empty","error","loading","settings"].forEach(function(id){
     $(id).classList.toggle("hidden", id!==view);
   });
+  VIEW = view;
+  var page = PAGE_TITLES[view];          // truthy on a sub-page
+  if(!page) MAIN_VIEW = view;
+  // breadcrumb in the tagline (same color), back ↔ entry swap in the header, hide footer
+  $("crumb").textContent = page ? " · " + page : "";
+  document.querySelector("footer").classList.toggle("hidden", !!page);
+  $("openSettings").classList.toggle("hidden", !!page);
+  $("closeSettings").classList.toggle("hidden", !page);
 }
 
 function renderSummary(){
@@ -405,10 +500,25 @@ function renderFiles(){
   });
 }
 
+function tabLabel(n){ return n.replace(/\.module\.css$/, ""); }
+
+function renderTabs(){
+  var names=Object.keys(FILES).filter(function(n){ return /\.(css|json|ts)$/.test(n); });
+  if(TAB===null || names.indexOf(TAB)===-1) TAB = names[0] || null;
+  $("tabs").innerHTML = names.map(function(n){
+    return '<button class="tab'+(n===TAB?" active":"")+'" data-file="'+esc(n)+'" role="tab" title="'+esc(n)+'">'+esc(tabLabel(n))+'</button>';
+  }).join("");
+  Array.prototype.forEach.call($("tabs").querySelectorAll(".tab"), function(tab){
+    tab.addEventListener("click", function(){
+      TAB = tab.getAttribute("data-file");
+      renderTabs(); renderPreview(); $("code").scrollTop = 0;
+    });
+  });
+}
+
 function renderPreview(){
-  var name=TAB_FILE[TAB];
-  var src=FILES[name]||"";
-  $("code").innerHTML = TAB==="css" ? hlCss(src) : esc(src);
+  var src=(TAB && FILES[TAB])||"";
+  $("code").innerHTML = /\.css$/.test(TAB||"") ? hlCss(src) : esc(src);
 }
 
 function applyResult(msg){
@@ -416,24 +526,16 @@ function applyResult(msg){
   FILES = msg.files || {};
   var has = Object.keys(FILES).length>0;
   $("zip").disabled = !has;
-  if(!has){ show("empty"); return; }
-  renderSummary(); renderFiles(); renderPreview();
-  show("content");
+  if(has){ renderSummary(); renderFiles(); renderTabs(); renderPreview(); }
+  MAIN_VIEW = has ? "content" : "empty";
+  // a settings-triggered rescan must not yank the user off a sub-page
+  if(!PAGE_TITLES[VIEW]) show(MAIN_VIEW);
 }
 
 /* ---- wire UI ---- */
-Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(tab){
-  tab.addEventListener("click", function(){
-    TAB = tab.getAttribute("data-tab");
-    document.querySelectorAll(".tab").forEach(function(t){ t.classList.toggle("active", t===tab); });
-    renderPreview();
-    $("code").scrollTop = 0;
-  });
-});
-
 $("copy").addEventListener("click", function(){
-  var name=TAB_FILE[TAB];
-  var text=FILES[name]||"";
+  var name=TAB;
+  var text=(name && FILES[name])||"";
   var done=function(){ $("copy").classList.add("copied"); setTimeout(function(){ $("copy").classList.remove("copied"); }, 1200); notify("Copied "+name); };
   if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done).catch(done); }
   else { done(); }
@@ -446,16 +548,45 @@ $("zip").addEventListener("click", function(){
   notify("Downloaded altery-design-tokens.zip");
 });
 
+/* ----Settings ---- */
+function syncControls(){
+  $("optInline").checked = !!OPTIONS.inlinePrimitives;
+  $("optModules").checked = !!OPTIONS.emitModuleFiles;
+  $("optGlobal").checked = !!OPTIONS.cssModulesGlobal;
+  if(document.activeElement !== $("optAttr")) $("optAttr").value = OPTIONS.themeAttr;
+  $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
+}
+function pushOptions(){
+  OPTIONS = {
+    inlinePrimitives: $("optInline").checked,
+    emitModuleFiles: $("optModules").checked,
+    cssModulesGlobal: $("optGlobal").checked,
+    themeAttr: $("optAttr").value
+  };
+  $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
+  parent.postMessage({pluginMessage:{type:"scan", options: OPTIONS}}, "*");
+}
+
+$("openSettings").addEventListener("click", function(){ show("settings"); });
+$("closeSettings").addEventListener("click", function(){ show(MAIN_VIEW); });
+["optInline","optModules","optGlobal"].forEach(function(id){
+  $(id).addEventListener("change", pushOptions);
+});
+var attrTimer;
+$("optAttr").addEventListener("input", function(){ clearTimeout(attrTimer); attrTimer = setTimeout(pushOptions, 350); });
+$("optAttr").addEventListener("change", function(){ clearTimeout(attrTimer); pushOptions(); });
+
 $("rescan").addEventListener("click", function(){
   show("loading");
-  parent.postMessage({pluginMessage:{type:"scan"}}, "*");
+  parent.postMessage({pluginMessage:{type:"scan", options: OPTIONS}}, "*");
 });
 
 /* ---- receive from sandbox ---- */
 window.onmessage = function(event){
   var msg = event.data && event.data.pluginMessage;
   if(!msg) return;
-  if(msg.type==="result") applyResult(msg);
+  if(msg.type==="settings"){ if(msg.options){ OPTIONS = msg.options; syncControls(); } }
+  else if(msg.type==="result"){ if(msg.options){ OPTIONS = msg.options; syncControls(); } applyResult(msg); }
   else if(msg.type==="error"){ $("errorMsg").textContent = msg.message || "Unknown error"; show("error"); }
 };
 </script>
