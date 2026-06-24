@@ -357,8 +357,13 @@
       <div class="set-body-page">
           <label class="set-row" for="optInline">
             <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 4V2M15 20V22M4 9H2M20 15H22M4.91421 4.91421L3.5 3.5M19.0858 19.0858L20.5 20.5M12 17.6569L9.87868 19.7782C8.31658 21.3403 5.78392 21.3403 4.22183 19.7782C2.65973 18.2161 2.65973 15.6834 4.22183 14.1213L6.34315 12M17.6569 12L19.7782 9.87868C21.3403 8.31658 21.3403 5.78392 19.7782 4.22183C18.2161 2.65973 15.6834 2.65973 14.1213 4.22183L12 6.34315" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span class="set-text"><b>Inline primitives</b><i>Resolve aliases to literals &middot; drop unused primitives</i></span>
+            <span class="set-text"><b>Inline primitives</b><i>Resolve primitive aliases &middot; drop the raw scale</i></span>
             <span class="switch"><input type="checkbox" id="optInline"><span class="track"></span></span>
+          </label>
+          <label class="set-row" for="optFlatten" id="optFlattenRow">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12.9998 14L9.99985 11M15.0102 3.5V2M18.9495 5.06066L20.0102 4M18.9495 13L20.0102 14.0607M11.0102 5.06066L9.94954 4M20.5102 9H22.0102M6.13122 20.8686L15.3685 11.6314C15.7645 11.2354 15.9625 11.0373 16.0367 10.809C16.1019 10.6082 16.1019 10.3918 16.0367 10.191C15.9625 9.96265 15.7645 9.76465 15.3685 9.36863L14.6312 8.63137C14.2352 8.23535 14.0372 8.03735 13.8089 7.96316C13.608 7.8979 13.3917 7.8979 13.1908 7.96316C12.9625 8.03735 12.7645 8.23535 12.3685 8.63137L3.13122 17.8686C2.7352 18.2646 2.53719 18.4627 2.46301 18.691C2.39775 18.8918 2.39775 19.1082 2.46301 19.309C2.53719 19.5373 2.7352 19.7354 3.13122 20.1314L3.86848 20.8686C4.2645 21.2646 4.4625 21.4627 4.69083 21.5368C4.89168 21.6021 5.10802 21.6021 5.30887 21.5368C5.53719 21.4627 5.7352 21.2646 6.13122 20.8686Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="set-text"><b>Flatten all aliases</b><i>Also resolve semantic <code>var(--&hellip;)</code> refs &middot; no references left</i></span>
+            <span class="switch"><input type="checkbox" id="optFlatten"><span class="track"></span></span>
           </label>
           <div class="set-row">
             <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 8H20M4 16H20M8 3V21M16 3V21" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -449,7 +454,7 @@ function notify(msg){ parent.postMessage({pluginMessage:{type:"notify",message:m
 var FILES = {};       // { "tokens.css": "...", ... }
 var SUMMARY = null;
 var TAB = null;       // active preview filename
-var OPTIONS = { inlinePrimitives: true, themeAttr: "data-theme-name", emitModuleFiles: true, cssModulesGlobal: true };
+var OPTIONS = { inlinePrimitives: true, flattenAliases: false, themeAttr: "data-theme-name", emitModuleFiles: true, cssModulesGlobal: true };
 
 var VIEW = "loading";       // current view
 var MAIN_VIEW = "content";  // last non-page view (where Back returns)
@@ -551,25 +556,29 @@ $("zip").addEventListener("click", function(){
 /* ----Settings ---- */
 function syncControls(){
   $("optInline").checked = !!OPTIONS.inlinePrimitives;
+  $("optFlatten").checked = !!OPTIONS.flattenAliases;
   $("optModules").checked = !!OPTIONS.emitModuleFiles;
   $("optGlobal").checked = !!OPTIONS.cssModulesGlobal;
   if(document.activeElement !== $("optAttr")) $("optAttr").value = OPTIONS.themeAttr;
+  $("optFlattenRow").classList.toggle("disabled", !OPTIONS.inlinePrimitives);
   $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
 }
 function pushOptions(){
   OPTIONS = {
     inlinePrimitives: $("optInline").checked,
+    flattenAliases: $("optFlatten").checked,
     emitModuleFiles: $("optModules").checked,
     cssModulesGlobal: $("optGlobal").checked,
     themeAttr: $("optAttr").value
   };
+  $("optFlattenRow").classList.toggle("disabled", !OPTIONS.inlinePrimitives);
   $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
   parent.postMessage({pluginMessage:{type:"scan", options: OPTIONS}}, "*");
 }
 
 $("openSettings").addEventListener("click", function(){ show("settings"); });
 $("closeSettings").addEventListener("click", function(){ show(MAIN_VIEW); });
-["optInline","optModules","optGlobal"].forEach(function(id){
+["optInline","optFlatten","optModules","optGlobal"].forEach(function(id){
   $(id).addEventListener("change", pushOptions);
 });
 var attrTimer;

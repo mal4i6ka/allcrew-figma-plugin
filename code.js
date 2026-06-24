@@ -288,7 +288,7 @@ function valueForTheme(token, theme) {
  * directly in code *and* via an alias still gets dropped — the plugin can't see code
  * usage. Turn the setting off if you rely on the raw scale.)
  */
-function inlinePrimitivesTree(tree) {
+function inlinePrimitivesTree(tree, flattenAll) {
   const all = leaves(tree);
   const byName = new Map(); // canonical dotted path → { path, token }
   for (const e of all) byName.set(e.path.join("."), e);
@@ -308,17 +308,19 @@ function inlinePrimitivesTree(tree) {
     for (const k of Object.keys(modes)) noteRef(modes[k]);
   }
 
-  // `originPath` is the path of the primitive a literal was resolved FROM. Numbers are
-  // rendered with that path so unit-less tokens (line-height, font-weight, opacity…)
-  // keep their unit decision instead of inheriting the destination's semantic path
-  // (e.g. line-height `1.2` must stay `1.2`, not become `1.2px`). The resulting tree is
-  // CSS-facing only (tokens.json uses the source tree; tokens.ts emits var() refs).
+  // Resolve an alias to a literal, per theme. By default only *primitive* targets are
+  // inlined (semantic→semantic refs stay as `var(--…)`); with `flattenAll` EVERY alias
+  // is resolved so no reference survives. `originPath` is the path the literal was
+  // resolved FROM, so numbers are rendered with that path's unit rule — unit-less tokens
+  // (line-height, font-weight, opacity…) keep e.g. `1.2`, not `1.2px`. The resulting tree
+  // is CSS-facing only (tokens.json uses the source tree; tokens.ts emits var() refs).
   const inline = (value, theme, seen, originPath) => {
     if (!isAliasValue(value)) {
       return originPath && typeof value === "number" ? cssValue(value, originPath) : value;
     }
     const target = aliasTarget(value).join(".");
-    if (!byName.has(target) || !primitive.has(target) || seen.has(target)) return value;
+    if (!byName.has(target) || seen.has(target)) return value; // dangling / cycle
+    if (!flattenAll && !primitive.has(target)) return value; // keep semantic→semantic unless flattening
     const entry = byName.get(target);
     const next = new Set(seen);
     next.add(target);
@@ -471,6 +473,7 @@ function toTokensJson(tree) {
 
 var DEFAULT_OPTIONS = {
   inlinePrimitives: true, // resolve alias→primitive to a literal, drop the primitive layer
+  flattenAliases: false, // (with inlinePrimitives) also resolve semantic→semantic refs — no var() left
   themeAttr: "data-theme-name", // theme-switch attribute (Sergey's spec; board uses `data-theme`)
   emitModuleFiles: true, // emit per-theme `<theme>.module.css`
   cssModulesGlobal: true, // wrap module selectors in `:global(…)` (CSS Modules)
@@ -486,6 +489,7 @@ function normalizeOptions(o) {
   const pick = (key) => (o[key] === undefined ? DEFAULT_OPTIONS[key] : !!o[key]);
   return {
     inlinePrimitives: pick("inlinePrimitives"),
+    flattenAliases: pick("flattenAliases"),
     emitModuleFiles: pick("emitModuleFiles"),
     cssModulesGlobal: pick("cssModulesGlobal"),
     themeAttr: sanitizeAttr(o.themeAttr),
@@ -500,7 +504,7 @@ function buildPackage(graph, options) {
   const files = {};
   if (summary.tokenCount > 0) {
     const defaultMode = primaryDefaultMode(graph);
-    const cssTree = opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree) : sourceTree;
+    const cssTree = opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree, opts.flattenAliases) : sourceTree;
     files["tokens.css"] = toTokensCss(cssTree, defaultMode, opts.themeAttr);
     if (opts.emitModuleFiles) {
       const themeFiles = toThemeModuleCssFiles(cssTree, defaultMode, opts.themeAttr, opts.cssModulesGlobal);
@@ -562,12 +566,15 @@ function buildReadme(summary, options) {
     ? `\n| \`<theme>.module.css\` | The same blocks, one file per theme (${moduleList}). Every variable under \`${moduleSel}\` — the default theme also on \`${rootSel}\`. Concatenated, they reproduce \`tokens.css\`. |`
     : "";
 
-  const inlineNote = opts.inlinePrimitives
-    ? "Primitive (raw, single-mode) values are **inlined** into the semantic tokens that use them, so the primitive layer doesn't appear as its own variables. `tokens.json` keeps the full, un-inlined tree for re-import."
-    : "Primitives are emitted as their own variables; semantic tokens reference them with `var(--…)`.";
+  const inlineNote = !opts.inlinePrimitives
+    ? "Primitives are emitted as their own variables; semantic tokens reference them with `var(--…)`."
+    : opts.flattenAliases
+    ? "**Every** alias is resolved to a literal — no `var(--…)` references remain anywhere. `tokens.json` keeps the full, un-inlined tree for re-import."
+    : "Primitive (raw, single-mode) values are **inlined** into the semantic tokens that use them, so the primitive layer doesn't appear as its own variables. References between semantic tokens stay as `var(--…)`. `tokens.json` keeps the full, un-inlined tree for re-import.";
 
   const settingsLine = [
     `inline primitives \`${opts.inlinePrimitives ? "on" : "off"}\``,
+    opts.inlinePrimitives ? `flatten all \`${opts.flattenAliases ? "on" : "off"}\`` : null,
     `theme attribute \`${attr}\``,
     `per-theme modules \`${opts.emitModuleFiles ? "on" : "off"}\``,
     opts.emitModuleFiles ? `\`:global()\` \`${opts.cssModulesGlobal ? "on" : "off"}\`` : null,

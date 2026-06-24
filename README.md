@@ -47,6 +47,7 @@ preferences (the choices persist per-user):
 | Setting | Default | What it does |
 |---------|---------|--------------|
 | **Inline primitives** | on | Resolves aliases that point at a *primitive* (raw, single-mode value) into the literal, and drops the primitive layer. Aliases **between semantic tokens** stay as `var(--…)`. |
+| **Flatten all aliases** | off | With Inline primitives on, also resolves the *semantic→semantic* `var(--…)` refs into literals, so **no** references remain in the output. Off keeps the readable, themeable semantic layer. |
 | **Theme attribute** | `data-theme-name` | The attribute the theme blocks key off (`[<attr>="Dark"]`). Set it to `data-theme` to match the Altery board, or anything else. |
 | **Per-theme `.module.css`** | on | Whether to emit the per-theme module files alongside `tokens.css`. |
 | **CSS Modules `:global()`** | on | Wrap module-file selectors in `:global(…)` (valid CSS Modules) or leave them plain. |
