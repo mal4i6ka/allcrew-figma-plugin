@@ -8,7 +8,7 @@
   "capabilities": ["inspect"],
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["none"],
-    "reasoning": "Runs fully offline — reads local variables and builds the token package client-side. No network access required."
+    "allowedDomains": ["*"],
+    "reasoning": "Token extraction is fully client-side. The optional delivery step POSTs the generated package to a user-configured receiver endpoint (which may be any host — local, Tailscale, CI), so the domain can't be fixed ahead of time."
   }
 }

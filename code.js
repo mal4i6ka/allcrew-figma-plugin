@@ -484,6 +484,28 @@ function sanitizeAttr(value) {
   return cleaned || DEFAULT_OPTIONS.themeAttr;
 }
 
+/** Delivery config: where/how the UI ships the package. Secrets here are the shared
+ *  receiver secret only — git/npm credentials live on the receiver, never in the plugin. */
+function normalizeDelivery(d) {
+  d = isRecord(d) ? d : {};
+  const s = (v) => (typeof v === "string" ? v : "");
+  const route = isRecord(d.route) ? d.route : {};
+  const targets = ["folder", "git", "pr", "npm"];
+  return {
+    endpoint: s(d.endpoint).trim(),
+    secret: s(d.secret),
+    target: targets.indexOf(d.target) !== -1 ? d.target : "folder",
+    route: {
+      repo: s(route.repo).trim(),
+      branch: s(route.branch).trim(),
+      path: s(route.path).trim(),
+      package: s(route.package).trim(),
+    },
+    onChange: !!d.onChange, // auto-deliver on change (poll while open)
+    onOpen: !!d.onOpen, // deliver once on plugin open
+  };
+}
+
 function normalizeOptions(o) {
   o = isRecord(o) ? o : {};
   const pick = (key) => (o[key] === undefined ? DEFAULT_OPTIONS[key] : !!o[key]);
@@ -493,6 +515,7 @@ function normalizeOptions(o) {
     emitModuleFiles: pick("emitModuleFiles"),
     cssModulesGlobal: pick("cssModulesGlobal"),
     themeAttr: sanitizeAttr(o.themeAttr),
+    delivery: normalizeDelivery(o.delivery),
   };
 }
 

@@ -190,6 +190,31 @@
   }
   .set-input:focus { outline: none; border-color: var(--accent); background: var(--surface); }
 
+  /* delivery */
+  .set-section {
+    margin: 18px 2px 0; padding-top: 14px; border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+    color: var(--text); font-family: var(--brand); font-weight: 500; font-size: 12px;
+  }
+  .set-section .ic { color: var(--accent); flex: none; }
+  .set-section .sec-hint { margin-left: auto; color: var(--faint); font-family: var(--mono); font-size: 10px; font-weight: 400; }
+  .set-field { display: flex; flex-direction: column; gap: 5px; padding: 9px 2px; }
+  .set-field > label { color: var(--muted); font-size: 11px; }
+  .set-field > label code { font-family: var(--mono); font-size: 10.5px; color: var(--faint); background: var(--bg-2); padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); }
+  .set-field input, .set-field select {
+    width: 100%; background: var(--bg-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--r-sm); padding: 7px 9px; font-family: var(--mono); font-size: 11px;
+    transition: border-color .16s, background .16s;
+  }
+  .set-field input:focus, .set-field select:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+  .set-field input::placeholder { color: var(--faint); }
+  .deliver-bar { display: flex; align-items: center; gap: 11px; padding: 13px 2px 2px; }
+  .btn.deliver { width: auto; flex: none; padding: 9px 16px; font-size: 12px; }
+  .btn.deliver:disabled { background: #2a2c31; color: var(--faint); cursor: not-allowed; }
+  .deliver-status { font-family: var(--mono); font-size: 10.5px; color: var(--faint); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .deliver-status.ok { color: var(--ok); }
+  .deliver-status.err { color: #ff7a6e; }
+
   /* preview */
   .preview { display: flex; flex-direction: column; min-height: 0; }
   .tabs { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
@@ -381,6 +406,59 @@
             <span class="switch"><input type="checkbox" id="optGlobal"><span class="track"></span></span>
           </label>
         <p class="set-hint">Settings are saved per-user (via Figma client storage) and re-applied on the next run. <code>tokens.json</code> always keeps the full, un-inlined tree.</p>
+
+        <div class="set-section">
+          <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M20.5 7.27771L12 11.9999M12 11.9999L3.49997 7.27771M12 11.9999L12 21.5M21 16.0585V7.94141C21 7.59876 21 7.42744 20.9495 7.27464C20.9049 7.13947 20.8318 7.01539 20.7354 6.9107C20.6263 6.79236 20.4766 6.70916 20.177 6.54276L12.777 2.43164C12.4934 2.27409 12.3516 2.19531 12.2015 2.16442C12.0685 2.13709 11.9315 2.13709 11.7986 2.16442C11.6484 2.19531 11.5066 2.27409 11.223 2.43165L3.82297 6.54276C3.52345 6.70916 3.37369 6.79236 3.26463 6.9107C3.16816 7.01539 3.09515 7.13947 3.05048 7.27465C3 7.42745 3 7.59877 3 7.94141V16.0585C3 16.4012 3 16.5725 3.05048 16.7253C3.09515 16.8605 3.16816 16.9845 3.26463 17.0892C3.37369 17.2076 3.52345 17.2908 3.82297 17.4572L11.223 21.5683C11.5066 21.7258 11.6484 21.8046 11.7986 21.8355C11.9315 21.8628 12.0685 21.8628 12.2015 21.8355C12.3516 21.8046 12.4934 21.7258 12.777 21.5683L20.177 17.4572C20.4766 17.2908 20.6263 17.2076 20.7354 17.0892C20.8318 16.9845 20.9049 16.8605 20.9495 16.7253C21 16.5725 21 16.4012 21 16.0585Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M16.5 9.5L7.5 4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Delivery</span>
+          <span class="sec-hint">git/npm creds live on the receiver</span>
+        </div>
+        <div class="set-field">
+          <label>Receiver endpoint <code>POST</code></label>
+          <input id="dEndpoint" type="text" spellcheck="false" autocomplete="off" placeholder="https://host.ts.net/altery-tokens" />
+        </div>
+        <div class="set-field">
+          <label>Shared secret <code>x-altery-secret</code></label>
+          <input id="dSecret" type="password" spellcheck="false" autocomplete="off" placeholder="(must match the receiver)" />
+        </div>
+        <div class="set-field">
+          <label>Target</label>
+          <select id="dTarget">
+            <option value="folder">Folder — write files to a path</option>
+            <option value="git">Git — commit + push</option>
+            <option value="pr">Pull request — branch + gh pr</option>
+            <option value="npm">npm — publish package</option>
+          </select>
+        </div>
+        <div class="set-field" id="dRepoField" data-targets="git pr">
+          <label>Repo <code>git remote or local path</code></label>
+          <input id="dRepo" type="text" spellcheck="false" autocomplete="off" placeholder="git@github.com:org/frontend.git" />
+        </div>
+        <div class="set-field" id="dBranchField" data-targets="git pr">
+          <label>Branch <code>git: target &middot; PR: base</code></label>
+          <input id="dBranch" type="text" spellcheck="false" autocomplete="off" placeholder="main" />
+        </div>
+        <div class="set-field" id="dPathField" data-targets="folder git pr npm">
+          <label>Path <code>dest dir / subdir in repo</code></label>
+          <input id="dPath" type="text" spellcheck="false" autocomplete="off" placeholder="src/styles/tokens" />
+        </div>
+        <div class="set-field" id="dPackageField" data-targets="npm">
+          <label>Package name</label>
+          <input id="dPackage" type="text" spellcheck="false" autocomplete="off" placeholder="@altery/design-tokens" />
+        </div>
+        <label class="set-row" for="dOnChange">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="set-text"><b>Auto-deliver on change</b><i>While open: re-scan every ~7s, push on real change</i></span>
+          <span class="switch"><input type="checkbox" id="dOnChange"><span class="track"></span></span>
+        </label>
+        <label class="set-row" for="dOnOpen">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 2V12M18.36 6.64A9 9 0 1 1 5.64 6.64" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="set-text"><b>Deliver on open</b><i>Push once on plugin start, if output changed</i></span>
+          <span class="switch"><input type="checkbox" id="dOnOpen"><span class="track"></span></span>
+        </label>
+        <div class="deliver-bar">
+          <button class="btn deliver" id="deliverNow">Deliver now</button>
+          <span class="deliver-status" id="deliverStatus">not configured</span>
+        </div>
       </div>
     </div>
   </main>
@@ -454,7 +532,12 @@ function notify(msg){ parent.postMessage({pluginMessage:{type:"notify",message:m
 var FILES = {};       // { "tokens.css": "...", ... }
 var SUMMARY = null;
 var TAB = null;       // active preview filename
-var OPTIONS = { inlinePrimitives: true, flattenAliases: false, themeAttr: "data-theme-name", emitModuleFiles: true, cssModulesGlobal: true };
+var OPTIONS = { inlinePrimitives: true, flattenAliases: false, themeAttr: "data-theme-name", emitModuleFiles: true, cssModulesGlobal: true,
+  delivery: { endpoint: "", secret: "", target: "folder", route: { repo: "", branch: "", path: "", package: "" }, onChange: false, onOpen: false } };
+var lastDeliveredHash = null;   // FILES snapshot last successfully delivered
+var firstResultDone = false;    // for "deliver on open"
+var watchTimer = null;          // poll interval while "auto-deliver on change" is on
+var delivTimer = null;          // debounce for delivery text inputs
 
 var VIEW = "loading";       // current view
 var MAIN_VIEW = "content";  // last non-page view (where Back returns)
@@ -535,6 +618,11 @@ function applyResult(msg){
   MAIN_VIEW = has ? "content" : "empty";
   // a settings-triggered rescan must not yank the user off a sub-page
   if(!PAGE_TITLES[VIEW]) show(MAIN_VIEW);
+  // delivery triggers
+  refreshDeliverUI();
+  var d = OPTIONS.delivery || {};
+  if(!firstResultDone){ firstResultDone = true; if(d.onOpen) maybeAutoDeliver(); }
+  if(d.onChange) maybeAutoDeliver();
 }
 
 /* ---- wire UI ---- */
@@ -562,6 +650,24 @@ function syncControls(){
   if(document.activeElement !== $("optAttr")) $("optAttr").value = OPTIONS.themeAttr;
   $("optFlattenRow").classList.toggle("disabled", !OPTIONS.inlinePrimitives);
   $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
+  // delivery
+  var d = OPTIONS.delivery || {}, r = d.route || {};
+  var setIf = function(id, v){ if(document.activeElement !== $(id)) $(id).value = v || ""; };
+  setIf("dEndpoint", d.endpoint); setIf("dSecret", d.secret);
+  setIf("dRepo", r.repo); setIf("dBranch", r.branch); setIf("dPath", r.path); setIf("dPackage", r.package);
+  $("dTarget").value = d.target || "folder";
+  $("dOnChange").checked = !!d.onChange;
+  $("dOnOpen").checked = !!d.onOpen;
+  applyTargetVisibility();
+  refreshDeliverUI();
+  manageWatch();
+}
+function readDelivery(){
+  return {
+    endpoint: $("dEndpoint").value, secret: $("dSecret").value, target: $("dTarget").value,
+    route: { repo: $("dRepo").value, branch: $("dBranch").value, path: $("dPath").value, package: $("dPackage").value },
+    onChange: $("dOnChange").checked, onOpen: $("dOnOpen").checked
+  };
 }
 function pushOptions(){
   OPTIONS = {
@@ -569,11 +675,64 @@ function pushOptions(){
     flattenAliases: $("optFlatten").checked,
     emitModuleFiles: $("optModules").checked,
     cssModulesGlobal: $("optGlobal").checked,
-    themeAttr: $("optAttr").value
+    themeAttr: $("optAttr").value,
+    delivery: readDelivery()
   };
   $("optFlattenRow").classList.toggle("disabled", !OPTIONS.inlinePrimitives);
   $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
+  applyTargetVisibility();
+  refreshDeliverUI();
+  manageWatch();
   parent.postMessage({pluginMessage:{type:"scan", options: OPTIONS}}, "*");
+}
+
+/* ---- delivery ---- */
+function hasFiles(){ return Object.keys(FILES).length > 0; }
+function deliveryHash(){ return JSON.stringify(FILES); }
+function setStatus(cls, text){ var el = $("deliverStatus"); el.className = "deliver-status" + (cls ? (" " + cls) : ""); el.textContent = text; }
+function applyTargetVisibility(){
+  var t = $("dTarget").value;
+  ["dRepoField","dBranchField","dPathField","dPackageField"].forEach(function(id){
+    var el = $(id), targets = (el.getAttribute("data-targets") || "").split(" ");
+    el.classList.toggle("hidden", targets.indexOf(t) === -1);
+  });
+}
+function refreshDeliverUI(){
+  var d = OPTIONS.delivery || {};
+  $("deliverNow").disabled = !d.endpoint || !hasFiles();
+  var el = $("deliverStatus");
+  if(el.classList.contains("ok") || el.classList.contains("err")) return; // keep last real outcome
+  setStatus("", !d.endpoint ? "endpoint not set" : !hasFiles() ? "scan a file first" : ("ready · " + d.target));
+}
+function manageWatch(){
+  var on = OPTIONS.delivery && OPTIONS.delivery.onChange && OPTIONS.delivery.endpoint;
+  if(on && !watchTimer){ watchTimer = setInterval(function(){ parent.postMessage({pluginMessage:{type:"scan", options: OPTIONS}}, "*"); }, 7000); }
+  else if(!on && watchTimer){ clearInterval(watchTimer); watchTimer = null; }
+}
+function deliver(manual){
+  var d = OPTIONS.delivery || {};
+  if(!d.endpoint){ if(manual) setStatus("err", "set a receiver endpoint first"); return Promise.resolve(false); }
+  if(!hasFiles()){ if(manual) setStatus("err", "nothing to deliver yet"); return Promise.resolve(false); }
+  var payload = {
+    files: FILES, target: d.target, route: d.route,
+    options: { inlinePrimitives: OPTIONS.inlinePrimitives, flattenAliases: OPTIONS.flattenAliases, emitModuleFiles: OPTIONS.emitModuleFiles, cssModulesGlobal: OPTIONS.cssModulesGlobal, themeAttr: OPTIONS.themeAttr },
+    meta: { fileName: SUMMARY && SUMMARY.fileName, themes: (SUMMARY && SUMMARY.themes) || [] }
+  };
+  setStatus("", "delivering…"); $("deliverNow").disabled = true;
+  return fetch(d.endpoint, { method: "POST", headers: { "Content-Type": "application/json", "x-altery-secret": d.secret || "" }, body: JSON.stringify(payload) })
+    .then(function(r){ return r.text().then(function(t){
+      var detail = ""; try { var j = JSON.parse(t); detail = j.detail || j.error || ""; } catch(e){ detail = (t || "").slice(0, 140); }
+      if(r.ok){ lastDeliveredHash = deliveryHash(); setStatus("ok", "delivered → " + d.target + (detail ? (" · " + detail) : "")); notify("Tokens delivered (" + d.target + ")"); }
+      else { setStatus("err", "failed " + r.status + (detail ? (": " + detail) : "")); }
+      $("deliverNow").disabled = !d.endpoint || !hasFiles();
+      return r.ok;
+    }); })
+    .catch(function(e){ setStatus("err", "error: " + (e && e.message || e)); $("deliverNow").disabled = !d.endpoint || !hasFiles(); return false; });
+}
+function maybeAutoDeliver(){
+  var d = OPTIONS.delivery || {};
+  if(!d.endpoint || !hasFiles() || deliveryHash() === lastDeliveredHash) return;
+  deliver(false);
 }
 
 $("openSettings").addEventListener("click", function(){ show("settings"); });
@@ -584,6 +743,13 @@ $("closeSettings").addEventListener("click", function(){ show(MAIN_VIEW); });
 var attrTimer;
 $("optAttr").addEventListener("input", function(){ clearTimeout(attrTimer); attrTimer = setTimeout(pushOptions, 350); });
 $("optAttr").addEventListener("change", function(){ clearTimeout(attrTimer); pushOptions(); });
+
+["dTarget","dOnChange","dOnOpen"].forEach(function(id){ $(id).addEventListener("change", pushOptions); });
+["dEndpoint","dSecret","dRepo","dBranch","dPath","dPackage"].forEach(function(id){
+  $(id).addEventListener("input", function(){ clearTimeout(delivTimer); delivTimer = setTimeout(pushOptions, 400); });
+  $(id).addEventListener("change", function(){ clearTimeout(delivTimer); pushOptions(); });
+});
+$("deliverNow").addEventListener("click", function(){ deliver(true); });
 
 $("rescan").addEventListener("click", function(){
   show("loading");

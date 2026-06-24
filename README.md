@@ -121,6 +121,40 @@ The default theme also lands on `:global(:root)`. Concatenating every
 keep every theme present (use `tokens.css`, or import all `*.module.css`) and
 toggle `data-theme-name`.
 
+## Automated delivery
+
+Reading variable **values** over REST is Enterprise-only, so on Organization the
+plugin itself is the extractor — but everything around it is automated. The designer
+publishing the library is the trigger; the plugin ships the package; a small receiver
+does the git/npm/folder work.
+
+**Plugin side** (Export Settings → *Delivery*):
+
+- **Receiver endpoint** — where to POST (configurable; nothing is pinned to one host).
+- **Shared secret** — sent as `x-altery-secret`; must match the receiver. *(This is the
+  only secret in the plugin — git/npm credentials never leave the receiver.)*
+- **Target** — `folder` / `git` (commit + push) / `pr` (branch + `gh pr`) / `npm` (publish),
+  plus the non-secret route (repo / branch / path / package).
+- **Triggers** — *Deliver now* (manual), *Auto-deliver on change* (re-scan every ~7s while
+  the plugin is open and push on real change), *Deliver on open*.
+
+**Receiver side** (`server/receiver.js`) — a dependency-free Node script you run on any
+host; it executes the target using the host's own git / `gh` / `npm` auth:
+
+```bash
+ALTERY_SECRET=your-shared-secret \
+ALTERY_FOLDER_BASE=/abs/path/for/folder/target \
+node server/receiver.js          # listens on :8787 (override with PORT)
+```
+
+The plugin only ever HTTP-POSTs, so the receiver is portable: point the plugin's endpoint
+at wherever it runs (localhost, a Tailscale host, CI). The contract is one POST of
+`{ files, target, route, options, meta }`; the receiver verifies the secret, runs the
+target, and returns `{ ok, detail }`.
+
+> Fully hands-off (no designer either) would need the **Variables REST API** = Enterprise.
+> The transform is already shareable, so that upgrade is a small step if you ever take it.
+
 ## Notes
 
 - **Themes = the modes of your semantic (alias-bearing) collection.** A raw
