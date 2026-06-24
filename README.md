@@ -128,6 +128,12 @@ toggle `data-theme-name`.
   treated as a theme; its values fold into every theme block.
 - **Offline / private:** `manifest.json` declares no network access. Fonts
   (Museo Sans, Geist Mono) are embedded in `ui.html`.
+- **Editors & plan:** runs in both **Figma Design** and **Dev Mode**
+  (`editorType: ["figma", "dev"]`, `capabilities: ["inspect"]`). It reads variables
+  through the in-editor Plugin API, so **no Enterprise / Variables REST API is
+  required — it works on any plan**, including Organization. Dev Mode itself is gated
+  by Figma to a **Dev or Full seat** (no manifest setting bypasses that); anyone with
+  a normal editor seat can still run it in **Design mode** with no extra cost.
 - **Selector:** defaults to `[data-theme-name="…"]` (per spec) but is configurable
   in **Export settings** — set it to `data-theme` to match the Altery board.
 - **`tokens.json` is always the full, un-inlined tree** regardless of the Inline
