@@ -155,6 +155,192 @@ target, and returns `{ ok, detail }`.
 > Fully hands-off (no designer either) would need the **Variables REST API** = Enterprise.
 > The transform is already shareable, so that upgrade is a small step if you ever take it.
 
+## Deployment & Integration
+
+### Prerequisites
+
+The receiver uses only Node.js built-ins — no `npm install`. The host needs:
+
+| Target | Required on the host |
+|--------|----------------------|
+| `folder` | Node.js only |
+| `git` | `git` + SSH key / credential helper for the repo |
+| `pr` | `git` + `gh` CLI authenticated (`gh auth login`) |
+| `npm` | `node` + `npm login` (or `~/.npmrc` with token) |
+
+---
+
+### Environment variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `ALTERY_SECRET` | **yes** | — | Shared secret; must match the plugin's "Shared secret" field |
+| `PORT` | no | `8787` | HTTP port |
+| `ALTERY_FOLDER_BASE` | for `folder` | — | Absolute base dir; `route.path` resolves under it |
+| `ALTERY_WORK_DIR` | no | `<tmp>/altery-tokens` | Scratch dir for git clones |
+
+---
+
+### Option 1: developer machine (Tailscale)
+
+The simplest setup — run the receiver locally, expose it to other Figma sessions via Tailscale:
+
+```bash
+# .env (keep out of git)
+ALTERY_SECRET=some-random-string
+ALTERY_FOLDER_BASE=/Users/you/projects/design-tokens/src
+
+# run
+ALTERY_SECRET=some-random-string \
+ALTERY_FOLDER_BASE=/Users/you/projects/design-tokens/src \
+node server/receiver.js
+```
+
+Plugin endpoint: `http://<tailscale-hostname>:8787`
+
+---
+
+### Option 2: long-running server with pm2
+
+```bash
+npm install -g pm2
+
+# create ecosystem file (do NOT commit — contains the secret)
+cat > ecosystem.config.js <<'EOF'
+module.exports = {
+  apps: [{
+    name: "altery-receiver",
+    script: "server/receiver.js",
+    env: {
+      ALTERY_SECRET: "your-secret-here",
+      ALTERY_FOLDER_BASE: "/srv/tokens",
+      PORT: "8787"
+    }
+  }]
+}
+EOF
+
+pm2 start ecosystem.config.js
+pm2 save && pm2 startup   # survive reboots
+```
+
+---
+
+### Option 3: systemd service
+
+```ini
+# /etc/systemd/system/altery-receiver.service
+[Unit]
+Description=Altery token receiver
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/altery/server/receiver.js
+Restart=on-failure
+Environment=PORT=8787
+Environment=ALTERY_SECRET=your-secret-here
+Environment=ALTERY_FOLDER_BASE=/srv/tokens
+WorkingDirectory=/opt/altery
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl enable --now altery-receiver
+```
+
+---
+
+### Option 4: Docker
+
+```dockerfile
+FROM node:20-alpine
+RUN apk add --no-cache git github-cli npm
+WORKDIR /app
+COPY server/receiver.js ./
+EXPOSE 8787
+CMD ["node", "receiver.js"]
+```
+
+```bash
+docker build -t altery-receiver .
+docker run -d \
+  -p 8787:8787 \
+  -e ALTERY_SECRET=your-secret \
+  -e ALTERY_FOLDER_BASE=/tokens \
+  -v /host/tokens:/tokens \
+  altery-receiver
+```
+
+---
+
+### Option 5: GitHub Actions (webhook-style)
+
+The receiver itself is a push-side HTTP server, not a pull-side CI job. But you can use the `git` or `pr` target and let the receiver commit into the repo — Actions will then pick it up on push.
+
+```
+Designer triggers delivery in Figma
+  → receiver commits tokens to `tokens` branch
+    → Actions workflow runs on push to that branch
+      → (optional) opens PR into main, runs style-dictionary, etc.)
+```
+
+Example Actions workflow for the downstream step:
+
+```yaml
+name: Sync design tokens
+on:
+  push:
+    branches: [tokens]
+    paths: ["tokens/**"]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npx style-dictionary build   # or whatever your pipeline is
+      - run: |
+          git config user.name "tokens-bot"
+          git config user.email "tokens@altery.local"
+          git add -A && git diff --cached --quiet || git commit -m "chore: rebuild tokens"
+          git push
+```
+
+---
+
+### Credentials
+
+The receiver inherits credentials from the host environment — never from the plugin or the POST body.
+
+| Target | How to auth |
+|--------|------------|
+| `git` / `pr` | SSH key in `~/.ssh` configured for the repo host (GitHub, GitLab, etc.) — or HTTPS with a credential helper (`gh auth setup-git`) |
+| `pr` | `gh auth login` — `gh` CLI must be authenticated |
+| `npm` | `npm login` or `NPM_TOKEN` in `~/.npmrc`: `//registry.npmjs.org/:_authToken=${NPM_TOKEN}` |
+
+---
+
+### Health check
+
+```bash
+curl http://localhost:8787
+# {"ok":true,"service":"altery-tokens-receiver"}
+```
+
+---
+
+### Troubleshooting
+
+| Symptom | Likely cause |
+|---------|-------------|
+| `401 bad or missing secret` | Secret in plugin doesn't match `ALTERY_SECRET` |
+| `git push` fails | Host's git auth not set up for that remote |
+| `gh pr create` fails | `gh auth login` not done on the receiver host |
+| `folder target needs ALTERY_FOLDER_BASE` | Env var not set |
+| No changes committed | Tokens were already up-to-date (not an error) |
+
 ## Notes
 
 - **Themes = the modes of your semantic (alias-bearing) collection.** A raw
