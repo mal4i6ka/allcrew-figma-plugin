@@ -389,12 +389,13 @@ function cssAttrValue(value) {
 }
 
 /** Combined stylesheet: one plain-CSS block per theme (default also on `:root`).
- *  `attr` is the theme-switch attribute name (e.g. `data-theme-name`). */
-function toTokensCss(tree, defaultModeName, attr) {
+ *  `attr` is the theme-switch attribute name (e.g. `data-theme-name`). `ordered` /
+ *  `defaultTheme` are the canonical themes derived from the SOURCE tree, so the set
+ *  and naming never shift with the inline/flatten settings. */
+function toTokensCss(tree, ordered, defaultTheme, attr) {
   const a = attr || "data-theme-name";
   const allLeaves = leaves(tree);
   if (allLeaves.length === 0) return "";
-  const { defaultTheme, ordered } = orderedThemes(allLeaves, defaultModeName);
   const blocks = ordered.map((theme) => {
     const themeSel = `[${a}="${cssAttrValue(theme)}"]`;
     const selector = theme === defaultTheme ? `:root,\n${themeSel}` : themeSel;
@@ -404,14 +405,15 @@ function toTokensCss(tree, defaultModeName, attr) {
 }
 
 /** One CSS file per theme. With `useGlobal` the selectors are wrapped in `:global(…)`
- *  (valid CSS Modules); otherwise they're plain. Concatenated, they are `tokens.css`. */
-function toThemeModuleCssFiles(tree, defaultModeName, attr, useGlobal) {
+ *  (valid CSS Modules); otherwise they're plain. Concatenated, they are `tokens.css`.
+ *  `ordered` / `defaultTheme` come from the SOURCE tree so file names (e.g.
+ *  `light.module.css`) are stable across the inline/flatten settings. */
+function toThemeModuleCssFiles(tree, ordered, defaultTheme, attr, useGlobal) {
   const a = attr || "data-theme-name";
   const wrap = useGlobal ? (sel) => `:global(${sel})` : (sel) => sel;
   const allLeaves = leaves(tree);
   const files = {};
   if (allLeaves.length === 0) return files;
-  const { defaultTheme, ordered } = orderedThemes(allLeaves, defaultModeName);
   const used = new Set();
   for (const theme of ordered) {
     const themeSel = wrap(`[${a}="${cssAttrValue(theme)}"]`);
@@ -453,10 +455,9 @@ function renderTsTree(tree, indent) {
   return `{\n${entries.join("\n")}\n${indent}}`;
 }
 
-function toTokensTs(tree) {
+function toTokensTs(tree, themes) {
   const allLeaves = leaves(tree);
   const tsTree = buildTsTree(allLeaves);
-  const themes = themeModesOf(allLeaves);
   return (
     `export const tokens = ${renderTsTree(tsTree, "")} as const;\n` +
     `export type Tokens = typeof tokens;\n\n` +
@@ -527,14 +528,20 @@ function buildPackage(graph, options) {
   const files = {};
   if (summary.tokenCount > 0) {
     const defaultMode = primaryDefaultMode(graph);
+    // Theme identity is a property of the design's Figma modes, NOT of the
+    // CSS-rendering settings. Derive the canonical theme set + order ONCE from the
+    // SOURCE tree so inlining/flattening can never rename a mode (e.g. "light" →
+    // "mode-1"). The inlined tree is read only for per-theme *values* (its mode keys
+    // are preserved through inlining, so valueForTheme stays correct).
+    const { defaultTheme, ordered } = orderedThemes(leaves(sourceTree), defaultMode);
     const cssTree = opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree, opts.flattenAliases) : sourceTree;
-    files["tokens.css"] = toTokensCss(cssTree, defaultMode, opts.themeAttr);
+    files["tokens.css"] = toTokensCss(cssTree, ordered, defaultTheme, opts.themeAttr);
     if (opts.emitModuleFiles) {
-      const themeFiles = toThemeModuleCssFiles(cssTree, defaultMode, opts.themeAttr, opts.cssModulesGlobal);
+      const themeFiles = toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal);
       for (const name of Object.keys(themeFiles)) files[name] = themeFiles[name];
     }
     files["tokens.json"] = toTokensJson(sourceTree); // always the full, un-inlined tree (lossless)
-    files["tokens.ts"] = toTokensTs(cssTree);
+    files["tokens.ts"] = toTokensTs(cssTree, ordered);
     files["README.md"] = buildReadme(summary, opts);
   }
   return { summary: summary, files: files, options: opts };
