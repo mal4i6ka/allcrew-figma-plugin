@@ -405,6 +405,21 @@
             <span class="set-text"><b>CSS Modules <code>:global()</code></b><i>Wrap module selectors for bundlers</i></span>
             <span class="switch"><input type="checkbox" id="optGlobal"><span class="track"></span></span>
           </label>
+          <label class="set-row" for="optTypo">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7V4h16v3M9 20h6M12 4v16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="set-text"><b>Extract typography scale</b><i>Dedupe text-style values into <code>--font-size-&hellip;</code> primitives &middot; styles use <code>var()</code></i></span>
+            <span class="switch"><input type="checkbox" id="optTypo"><span class="track"></span></span>
+          </label>
+          <label class="set-row" for="optTypoTshirt" id="optTypoTshirtRow">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 7h.01" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+            <span class="set-text"><b>T-shirt scale names</b><i>On <code>--font-size-lg</code> &middot; off <code>--font-size-32</code> (by value)</i></span>
+            <span class="switch"><input type="checkbox" id="optTypoTshirt"><span class="track"></span></span>
+          </label>
+          <label class="set-row" for="optTypoShorthand" id="optTypoShorthandRow">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 1 2 2 2 2 0 0 1-2 2v5a2 2 0 0 1-2 2h-1" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="set-text"><b>CSS <code>font</code> shorthand</b><i>Also emit <code>--&lt;style&gt;-font</code> per style</i></span>
+            <span class="switch"><input type="checkbox" id="optTypoShorthand"><span class="track"></span></span>
+          </label>
         <p class="set-hint">Settings are saved per-user (via Figma client storage) and re-applied on the next run. <code>tokens.json</code> always keeps the full, un-inlined tree.</p>
 
         <div class="set-section">
@@ -533,6 +548,7 @@ var FILES = {};       // { "tokens.css": "...", ... }
 var SUMMARY = null;
 var TAB = null;       // active preview filename
 var OPTIONS = { inlinePrimitives: true, flattenAliases: false, themeAttr: "data-theme-name", emitModuleFiles: true, cssModulesGlobal: true,
+  typoExtract: true, typoNaming: "tshirt", typoShorthand: false,
   delivery: { endpoint: "", secret: "", target: "folder", route: { repo: "", branch: "", path: "", package: "" }, onChange: false, onOpen: false } };
 var lastDeliveredHash = null;   // FILES snapshot last successfully delivered
 var firstResultDone = false;    // for "deliver on open"
@@ -651,8 +667,13 @@ function syncControls(){
   $("optModules").checked = !!OPTIONS.emitModuleFiles;
   $("optGlobal").checked = !!OPTIONS.cssModulesGlobal;
   if(document.activeElement !== $("optAttr")) $("optAttr").value = OPTIONS.themeAttr;
+  $("optTypo").checked = !!OPTIONS.typoExtract;
+  $("optTypoTshirt").checked = OPTIONS.typoNaming !== "value";
+  $("optTypoShorthand").checked = !!OPTIONS.typoShorthand;
   $("optFlattenRow").classList.toggle("disabled", !OPTIONS.inlinePrimitives);
   $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
+  $("optTypoTshirtRow").classList.toggle("disabled", !OPTIONS.typoExtract);
+  $("optTypoShorthandRow").classList.toggle("disabled", !OPTIONS.typoExtract);
   // delivery
   var d = OPTIONS.delivery || {}, r = d.route || {};
   var setIf = function(id, v){ if(document.activeElement !== $(id)) $(id).value = v || ""; };
@@ -678,11 +699,16 @@ function pushOptions(){
     flattenAliases: $("optFlatten").checked,
     emitModuleFiles: $("optModules").checked,
     cssModulesGlobal: $("optGlobal").checked,
+    typoExtract: $("optTypo").checked,
+    typoNaming: $("optTypoTshirt").checked ? "tshirt" : "value",
+    typoShorthand: $("optTypoShorthand").checked,
     themeAttr: $("optAttr").value,
     delivery: readDelivery()
   };
   $("optFlattenRow").classList.toggle("disabled", !OPTIONS.inlinePrimitives);
   $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
+  $("optTypoTshirtRow").classList.toggle("disabled", !OPTIONS.typoExtract);
+  $("optTypoShorthandRow").classList.toggle("disabled", !OPTIONS.typoExtract);
   applyTargetVisibility();
   refreshDeliverUI();
   manageWatch();
@@ -718,7 +744,7 @@ function deliver(manual){
   if(!hasFiles()){ if(manual) setStatus("err", "nothing to deliver yet"); return Promise.resolve(false); }
   var payload = {
     files: FILES, target: d.target, route: d.route,
-    options: { inlinePrimitives: OPTIONS.inlinePrimitives, flattenAliases: OPTIONS.flattenAliases, emitModuleFiles: OPTIONS.emitModuleFiles, cssModulesGlobal: OPTIONS.cssModulesGlobal, themeAttr: OPTIONS.themeAttr },
+    options: { inlinePrimitives: OPTIONS.inlinePrimitives, flattenAliases: OPTIONS.flattenAliases, emitModuleFiles: OPTIONS.emitModuleFiles, cssModulesGlobal: OPTIONS.cssModulesGlobal, typoExtract: OPTIONS.typoExtract, typoNaming: OPTIONS.typoNaming, typoShorthand: OPTIONS.typoShorthand, themeAttr: OPTIONS.themeAttr },
     meta: { fileName: SUMMARY && SUMMARY.fileName, themes: (SUMMARY && SUMMARY.themes) || [] }
   };
   setStatus("", "delivering…"); $("deliverNow").disabled = true;
@@ -740,7 +766,7 @@ function maybeAutoDeliver(){
 
 $("openSettings").addEventListener("click", function(){ show("settings"); });
 $("closeSettings").addEventListener("click", function(){ show(MAIN_VIEW); });
-["optInline","optFlatten","optModules","optGlobal"].forEach(function(id){
+["optInline","optFlatten","optModules","optGlobal","optTypo","optTypoTshirt","optTypoShorthand"].forEach(function(id){
   $(id).addEventListener("change", pushOptions);
 });
 var attrTimer;

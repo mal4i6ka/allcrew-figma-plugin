@@ -417,7 +417,9 @@ function inlinePrimitivesTree(tree, flattenAll) {
   for (const e of all) byName.set(e.path.join("."), e);
 
   const primitive = new Set();
-  for (const e of all) if (!participatesInTheming(e.token)) primitive.add(e.path.join("."));
+  // Typography-scale primitives are kept as their own vars (semantic tokens reference them
+  // with var(--…)); they are NOT collapsed even though they look like raw primitives.
+  for (const e of all) if (!participatesInTheming(e.token) && !isScaleToken(e.token)) primitive.add(e.path.join("."));
 
   const referenced = new Set();
   const noteRef = (value) => {
@@ -467,6 +469,145 @@ function inlinePrimitivesTree(tree, flattenAll) {
     const newDefault = inline(token.$value, themeForDefault, new Set());
     const $extensions = Object.assign({}, token.$extensions, { modes: newModes });
     setToken(out, e.path, { $type: token.$type, $value: newDefault, $extensions: $extensions });
+  }
+  return out;
+}
+
+/* -------------------------------------------------- typography scale extraction */
+
+/* Text styles bake their values in (Figma can't bind most fields to variables), so the
+ * plugin gets a full literal set per style. This transform is the INVERSE of inlining:
+ * it dedupes those literals into a shared primitive scale (`font-size/lg`, `font-weight/
+ * semibold`, …) and rewrites each style's field to a `{…}` alias, dropping the noisy
+ * `typography/` prefix from the semantic layer (`headings/h1/font-size` → var refs). The
+ * scale primitives carry `$extensions.figma.scale` so inlinePrimitivesTree keeps them
+ * instead of collapsing them straight back. tokens.json stays lossless (aliases resolve).*/
+
+var WEIGHT_NAMES = { 100: "thin", 200: "extralight", 300: "light", 400: "regular", 500: "medium", 600: "semibold", 700: "bold", 800: "extrabold", 900: "black" };
+var TSHIRT_LADDER = ["xs", "sm", "md", "lg", "xl", "2xl", "3xl", "4xl", "5xl", "6xl", "7xl", "8xl"];
+var TSHIRT_AXES = { "font-size": true, "line-height": true };
+
+function isScaleToken(token) {
+  var f = token && token.$extensions && token.$extensions.figma;
+  return isRecord(f) && f.scale === true;
+}
+
+function typoAxisOf(prop) {
+  if (prop === "font-family" || prop === "font-size" || prop === "font-weight" || prop === "line-height" || prop === "letter-spacing") return prop;
+  return null; // font-style etc. stay literal
+}
+
+/** Sort key for a stored typography value (number | "24px" | "-0.02em" | "normal"). */
+function numericKey(v) {
+  if (typeof v === "number") return v;
+  if (typeof v === "string") { var m = v.match(/-?\d*\.?\d+/); if (m) return parseFloat(m[0]); }
+  return Infinity;
+}
+
+/** Deterministic, name-safe token for a value: 32→"32", -2→"n2", 0.5→"0-5", "1.4"→"1-4". */
+function valueNameToken(v) {
+  var s = typeof v === "number" ? String(v) : String(v).replace(/px|r?em/gi, "").trim();
+  return s.replace(/^-/, "n").replace(/\./g, "-") || "0";
+}
+
+function scaleToken(value, type) {
+  return { $type: type, $value: value, $extensions: { modes: {}, figma: { collection: "Typography Scale", scale: true } } };
+}
+
+/** Quote a multi-word font-family so it is valid both as `font-family` and inside the
+ *  CSS `font` shorthand (`font: 600 16px "Museo Sans"`). Single-word families are left
+ *  bare; already-quoted values are untouched. */
+function quoteFamily(v) {
+  v = String(v);
+  return /\s/.test(v) && !/^["']/.test(v) ? '"' + v.replace(/"/g, '\\"') + '"' : v;
+}
+
+function extractTypographyScale(tree, options) {
+  var naming = options && options.typoNaming === "value" ? "value" : "tshirt";
+  var shorthand = !!(options && options.typoShorthand);
+  var all = leaves(tree);
+  var isTypo = function (path) { return path.length > 1 && path[0] === "typography"; };
+  if (!all.some(function (e) { return isTypo(e.path); })) return tree; // no text styles → unchanged
+
+  var keyOf = function (v) { return typeof v + ":" + String(v); };
+
+  // 1) collect distinct literal values per axis (skip already-aliased fields + `normal`)
+  var axisValues = {};
+  all.forEach(function (e) {
+    if (!isTypo(e.path)) return;
+    var axis = typoAxisOf(e.path[e.path.length - 1]);
+    if (!axis) return;
+    var val = e.token.$value;
+    if (isAliasValue(val)) return;
+    if (axis === "line-height" && val === "normal") return;
+    if (!axisValues[axis]) axisValues[axis] = new Map();
+    if (!axisValues[axis].has(keyOf(val))) axisValues[axis].set(keyOf(val), { value: val, type: e.token.$type });
+  });
+
+  // 2) name each distinct value, build the primitive scale
+  var out = {};
+  var pathByValue = {}; // axis → Map(valueKey → primitive path)
+  Object.keys(axisValues).forEach(function (axis) {
+    var entries = Array.from(axisValues[axis].values());
+    if (axis === "font-weight") {
+      entries.forEach(function (en) { en.name = WEIGHT_NAMES[en.value] || valueNameToken(en.value); });
+    } else if (axis === "font-family") {
+      entries.forEach(function (en) { en.name = varName([String(en.value)]) || "base"; });
+    } else if (naming === "tshirt" && TSHIRT_AXES[axis]) {
+      entries.sort(function (a, b) { return numericKey(a.value) - numericKey(b.value); });
+      entries.forEach(function (en, i) { en.name = TSHIRT_LADDER[i] || valueNameToken(en.value); });
+    } else {
+      entries.forEach(function (en) { en.name = valueNameToken(en.value); });
+    }
+    pathByValue[axis] = new Map();
+    var used = {};
+    entries.forEach(function (en) {
+      var name = en.name;
+      while (used[name]) name = name + "-2"; // guard rare name collisions
+      used[name] = true;
+      var path = [axis, name];
+      pathByValue[axis].set(keyOf(en.value), path);
+      setToken(out, path, scaleToken(axis === "font-family" ? quoteFamily(en.value) : en.value, en.type));
+    });
+  });
+
+  // 3) semantic layer: drop the `typography/` prefix, point each field at its primitive
+  var styles = new Map(); // styleKey → { prefix, props: { prop: {value,type} } }
+  all.forEach(function (e) {
+    if (!isTypo(e.path)) { setToken(out, e.path, e.token); return; }
+    var prop = e.path[e.path.length - 1];
+    var semanticPath = e.path.slice(1); // drop "typography"
+    var axis = typoAxisOf(prop);
+    var val = e.token.$value;
+    if (axis && !isAliasValue(val) && pathByValue[axis] && pathByValue[axis].has(keyOf(val))) {
+      val = "{" + pathByValue[axis].get(keyOf(val)).join(".") + "}";
+    }
+    setToken(out, semanticPath, { $type: e.token.$type, $value: val, $extensions: e.token.$extensions });
+    if (shorthand) {
+      var prefix = semanticPath.slice(0, -1);
+      var sk = prefix.join(".");
+      if (!styles.has(sk)) styles.set(sk, { prefix: prefix, props: {} });
+      styles.get(sk).props[prop] = true;
+    }
+  });
+
+  // 4) optional CSS `font` shorthand token per style (`--<style>-font`). It composes the
+  //    style's OWN longhand vars (not the primitives) so it never dangles regardless of
+  //    inlining, and picks up whatever those longhands resolve to.
+  if (shorthand) {
+    styles.forEach(function (s) {
+      var p = s.props, prefix = s.prefix;
+      if (!p["font-size"] || !p["font-family"]) return; // `font` shorthand needs both
+      var ref = function (prop) { return "var(--" + varName(prefix.concat([prop])) + ")"; };
+      var parts = [];
+      if (p["font-style"]) parts.push("italic"); // only emitted when the style is italic
+      if (p["font-weight"]) parts.push(ref("font-weight"));
+      var sizePiece = ref("font-size");
+      if (p["line-height"]) sizePiece += "/" + ref("line-height");
+      parts.push(sizePiece);
+      parts.push(ref("font-family"));
+      setToken(out, prefix.concat(["font"]), { $type: "string", $value: parts.join(" "), $extensions: { modes: {}, figma: { collection: "Typography Scale" } } });
+    });
   }
   return out;
 }
@@ -601,6 +742,13 @@ var DEFAULT_OPTIONS = {
   themeAttr: "data-theme-name", // theme-switch attribute (Sergey's spec; board uses `data-theme`)
   emitModuleFiles: true, // emit per-theme `<theme>.module.css`
   cssModulesGlobal: true, // wrap module selectors in `:global(…)` (CSS Modules)
+  // Typography scale extraction — factor the literal values baked into text styles into a
+  // shared primitive scale (`--font-size-lg`) + per-style var() refs, instead of a full
+  // literal set per style. Figma can't bind most text-style fields to variables (and never
+  // % line-height/letter-spacing), so the scale is synthesised from the literals here.
+  typoExtract: true, // on = tiered scale + refs (dev's default); off = literal per-style tokens
+  typoNaming: "tshirt", // "tshirt" (--font-size-lg) | "value" (--font-size-32) — primitive names
+  typoShorthand: false, // also emit a CSS `font` shorthand token per style (`--<style>-font`)
 };
 
 function sanitizeAttr(value) {
@@ -638,6 +786,9 @@ function normalizeOptions(o) {
     flattenAliases: pick("flattenAliases"),
     emitModuleFiles: pick("emitModuleFiles"),
     cssModulesGlobal: pick("cssModulesGlobal"),
+    typoExtract: pick("typoExtract"),
+    typoNaming: o.typoNaming === "value" ? "value" : "tshirt",
+    typoShorthand: pick("typoShorthand"),
     themeAttr: sanitizeAttr(o.themeAttr),
     delivery: normalizeDelivery(o.delivery),
   };
@@ -646,7 +797,9 @@ function normalizeOptions(o) {
 /** Graph + options → the full token-export package. Pure (Node-verifiable). */
 function buildPackage(graph, options) {
   const opts = normalizeOptions(options);
-  const sourceTree = variablesToW3CMultiMode(graph);
+  const rawTree = variablesToW3CMultiMode(graph);
+  // Typography scale extraction is layered on top of the board-exact core, like inlining.
+  const sourceTree = opts.typoExtract ? extractTypographyScale(rawTree, opts) : rawTree;
   const summary = buildSummary(graph, sourceTree);
   const files = {};
   if (summary.tokenCount > 0) {
@@ -737,12 +890,21 @@ function buildReadme(summary, options) {
   const settingsLine = [
     `inline primitives \`${opts.inlinePrimitives ? "on" : "off"}\``,
     opts.inlinePrimitives ? `flatten all \`${opts.flattenAliases ? "on" : "off"}\`` : null,
+    `typography scale \`${opts.typoExtract ? "on" : "off"}\``,
+    opts.typoExtract ? `scale names \`${opts.typoNaming === "value" ? "by value" : "t-shirt"}\`` : null,
+    opts.typoExtract ? `font shorthand \`${opts.typoShorthand ? "on" : "off"}\`` : null,
     `theme attribute \`${attr}\``,
     `per-theme modules \`${opts.emitModuleFiles ? "on" : "off"}\``,
     opts.emitModuleFiles ? `\`:global()\` \`${opts.cssModulesGlobal ? "on" : "off"}\`` : null,
   ]
     .filter(Boolean)
     .join(" · ");
+
+  const typoNote = opts.typoExtract && summary.textStyleCount
+    ? "\n\nText-style values are factored into a shared typography scale (`--font-size-…`, `--font-weight-…`, …); each style references the scale with `var(--…)`" +
+      (opts.typoShorthand ? ", plus a CSS `font` shorthand token per style (`--<style>-font`)" : "") +
+      "."
+    : "";
 
   const moduleSection = opts.emitModuleFiles
     ? `\n\n## Per-theme CSS Modules
@@ -768,7 +930,7 @@ Generated by the **Altery Design System Export** Figma plugin from **${summary.f
     summary.textStyleCount ? `\n- ${summary.textStyleCount} text styles → \`typography/…\` tokens` : ""
   }
 - Themes (modes): ${themeList || "`default`"}
--Settings: ${settingsLine}
+- Settings: ${settingsLine}
 
 ## Files
 
@@ -778,7 +940,7 @@ Generated by the **Altery Design System Export** Figma plugin from **${summary.f
 | \`tokens.json\` | Canonical W3C token tree (every mode under \`$extensions.modes\`, source collection under \`$extensions.figma\`). For diffing / re-import. |
 | \`tokens.ts\` | Typed \`tokens\` object (values are \`var(--…)\` refs) + \`themes\` / \`Theme\`. |
 
-${inlineNote}
+${inlineNote}${typoNote}
 
 ## Collections
 
