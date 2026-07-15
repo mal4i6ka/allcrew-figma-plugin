@@ -1,6 +1,6 @@
 /* Altery Design System Export — plugin sandbox (main thread).
  *
- * Reads the file's LOCAL variables + collections via the Figma Plugin API
+ * Reads the file's LOCAL variables + collections + text styles via the Figma Plugin API
  * (any plan, in-editor — no Enterprise REST, no server) and builds a design-token
  * package: tokens.css (self-contained per-theme blocks), one <theme>.module.css per
  * theme (CSS Modules), tokens.json (canonical W3C tree), tokens.ts (typed var refs +
@@ -126,6 +126,128 @@ function resolveCanonicalPaths(variables, collectionById) {
   return paths;
 }
 
+/* ---------------------------------------------------------------- text styles */
+
+/* Figma text styles are a SEPARATE primitive from variables (COLOR/FLOAT/STRING/
+ * BOOLEAN) — they bundle font family/size/weight/line-height/letter-spacing under one
+ * name. There is no `typography` variable type, so we explode each style into scalar
+ * sub-tokens (`typography/<style>/font-size`, …) that flow through the existing scalar
+ * emitters unchanged: cssValue already keeps `font-weight`/`line-height` unit-less and
+ * appends `px` to sizes. A field bound to a variable becomes a `{…}` alias (→ var(--…)),
+ * so typography stays DRY and themeable. */
+
+var TEXT_STYLE_COLLECTION = "Text Styles";
+var TEXT_STYLE_BOUND_FIELDS = [
+  "fontFamily", "fontStyle", "fontWeight", "fontSize", "letterSpacing", "lineHeight",
+];
+
+/** Figma stores weight in the style string ("Regular"/"SemiBold Italic"). Map it to a
+ *  numeric CSS font-weight. Order matters: compound names (Extra/Semi/Ultra) are matched
+ *  before the plain "light"/"bold" they contain. */
+function styleToFontWeight(style) {
+  var s = String(style || "").toLowerCase();
+  if (/thin|hairline/.test(s)) return 100;
+  if (/extra[\s-]?light|ultra[\s-]?light/.test(s)) return 200;
+  if (/semi[\s-]?bold|demi[\s-]?bold/.test(s)) return 600;
+  if (/extra[\s-]?bold|ultra[\s-]?bold/.test(s)) return 800;
+  if (/black|heavy/.test(s)) return 900;
+  if (/medium/.test(s)) return 500;
+  if (/light/.test(s)) return 300;
+  if (/bold/.test(s)) return 700;
+  return 400; // regular / normal / book / anything else
+}
+
+function isItalicStyle(style) {
+  return /italic|oblique/.test(String(style || "").toLowerCase());
+}
+
+/** Figma LineHeight → { value, type } (or null). AUTO→`normal`; PERCENT→unit-less ratio
+ *  (1.4); PIXELS→`24px` string (bypasses the unit-less rule so it keeps its unit). */
+function lineHeightValue(lh) {
+  if (!isRecord(lh)) return null;
+  if (lh.unit === "AUTO") return { value: "normal", type: "string" };
+  if (typeof lh.value !== "number") return null;
+  if (lh.unit === "PERCENT") return { value: Number((lh.value / 100).toFixed(4)), type: "number" };
+  return { value: `${Number(lh.value.toFixed(3))}px`, type: "string" };
+}
+
+/** Figma LetterSpacing → { value, type } (or null). PERCENT→`em` string (percent of font
+ *  size); PIXELS→number (cssValue appends `px`); 0→0. */
+function letterSpacingValue(ls) {
+  if (!isRecord(ls) || typeof ls.value !== "number") return null;
+  if (ls.value === 0) return { value: 0, type: "number" };
+  if (ls.unit === "PERCENT") return { value: `${Number((ls.value / 100).toFixed(4))}em`, type: "string" };
+  return { value: Number(ls.value.toFixed(3)), type: "number" };
+}
+
+/** A text-style field bound to a variable → `{canonical.name}` alias, else undefined. */
+function boundAlias(boundVariables, field, idToName) {
+  if (!isRecord(boundVariables)) return undefined;
+  var id = boundVariables[field];
+  if (typeof id !== "string" || !id) return undefined;
+  var name = idToName ? idToName.get(id) : undefined;
+  return name ? `{${name}}` : undefined; // unknown target → fall back to the literal below
+}
+
+/** One text style → its scalar sub-token leaves ([{ prop, token }]). */
+function textStyleLeaves(ts, idToName) {
+  var bv = ts.boundVariables;
+  var out = [];
+  var push = function (prop, value, type) {
+    if (value === undefined || value === null) return;
+    out.push({ prop: prop, token: { $type: type, $value: value, $extensions: { modes: {}, figma: { collection: TEXT_STYLE_COLLECTION } } } });
+  };
+
+  var family = boundAlias(bv, "fontFamily", idToName);
+  if (family === undefined && ts.fontName && typeof ts.fontName.family === "string") family = ts.fontName.family;
+  push("font-family", family, "string");
+
+  var size = boundAlias(bv, "fontSize", idToName);
+  if (size === undefined && typeof ts.fontSize === "number") size = ts.fontSize;
+  push("font-size", size, "number");
+
+  var weight = boundAlias(bv, "fontWeight", idToName);
+  if (weight === undefined) weight = styleToFontWeight(ts.fontName && ts.fontName.style);
+  push("font-weight", weight, "number");
+
+  if (isItalicStyle(ts.fontName && ts.fontName.style)) push("font-style", "italic", "string");
+
+  var lhAlias = boundAlias(bv, "lineHeight", idToName);
+  if (lhAlias !== undefined) push("line-height", lhAlias, "number");
+  else { var lh = lineHeightValue(ts.lineHeight); if (lh) push("line-height", lh.value, lh.type); }
+
+  var lsAlias = boundAlias(bv, "letterSpacing", idToName);
+  if (lsAlias !== undefined) push("letter-spacing", lsAlias, "number");
+  else { var ls = letterSpacingValue(ts.letterSpacing); if (ls) push("letter-spacing", ls.value, ls.type); }
+
+  return out;
+}
+
+/** Merge text styles into the token tree under `typography/<style>/…`, collision-guarded
+ *  the same way variable paths are (suffix `-2`, `-3`, … on the leaf group). */
+function addTextStyleTokens(out, textStyles, idToName) {
+  var SEP = " ";
+  var list = (Array.isArray(textStyles) ? textStyles : [])
+    .filter(function (t) { return t && typeof t.name === "string" && t.name.trim() !== ""; })
+    .slice()
+    .sort(function (a, b) { return a.name.localeCompare(b.name) || String(a.id).localeCompare(String(b.id)); });
+  var claimed = new Set();
+  for (var i = 0; i < list.length; i++) {
+    var ts = list[i];
+    var base = ["typography"].concat(groupSegments(ts.name));
+    var key = base.join(SEP);
+    if (claimed.has(key)) {
+      var stem = base.slice(0, -1);
+      var last = base[base.length - 1];
+      var n = 2;
+      do { base = stem.concat([`${last}-${n}`]); key = base.join(SEP); n++; } while (claimed.has(key));
+    }
+    claimed.add(key);
+    var leavesArr = textStyleLeaves(ts, idToName);
+    for (var j = 0; j < leavesArr.length; j++) setToken(out, base.concat([leavesArr[j].prop]), leavesArr[j].token);
+  }
+}
+
 /** Figma variable graph → W3C token tree preserving every mode + collection identity. */
 function variablesToW3CMultiMode(graph) {
   const out = {};
@@ -167,6 +289,7 @@ function variablesToW3CMultiMode(graph) {
     if (collectionName) $extensions.figma = { collection: collectionName, defaultMode: defaultMode.name };
     setToken(out, path, { $type: explicitType, $value: defaultValue, $extensions: $extensions });
   }
+  addTextStyleTokens(out, graph && graph.textStyles, idToName);
   return out;
 }
 
@@ -567,10 +690,15 @@ function buildSummary(graph, tree) {
     modes: (c.modes || []).map((m) => m.name),
     variableCount: (graph.variables || []).filter((v) => v.collectionId === c.id).length,
   }));
+  const textStyleCount = (graph.textStyles || []).length;
+  // Surface text styles as a mode-less pseudo-collection so they show in the UI list and
+  // the README alongside variable collections.
+  if (textStyleCount > 0) collections.push({ name: TEXT_STYLE_COLLECTION, modes: [], variableCount: textStyleCount });
   return {
     fileName: graph.fileName || "Untitled",
     collections: collections,
     totalVariables: (graph.variables || []).length,
+    textStyleCount: textStyleCount,
     tokenCount: all.length,
     themes: themeModesOf(all),
   };
@@ -582,7 +710,11 @@ function buildReadme(summary, options) {
   const themeList = summary.themes.map((t) => `\`${t}\``).join(", ");
   const moduleList = summary.themes.map((t) => `\`${varName([t])}.module.css\``).join(", ");
   const collLines = summary.collections
-    .map((c) => `- **${c.name}** — ${c.variableCount} variables, modes: ${c.modes.map((m) => `\`${m}\``).join(", ")}`)
+    .map((c) =>
+      c.modes.length
+        ? `- **${c.name}** — ${c.variableCount} variables, modes: ${c.modes.map((m) => `\`${m}\``).join(", ")}`
+        : `- **${c.name}** — ${c.variableCount} text styles → \`typography/…\` tokens`
+    )
     .join("\n");
   const defaultTheme = summary.themes[0] || "Light";
   const others = summary.themes.filter((t) => t !== defaultTheme);
@@ -632,7 +764,9 @@ all \`*.module.css\`) and toggle \`${attr}\` on an ancestor.`
 
 Generated by the **Altery Design System Export** Figma plugin from **${summary.fileName}**.
 
-- ${summary.totalVariables} variables across ${summary.collections.length} collection(s)
+- ${summary.totalVariables} variables across ${summary.collections.length} collection(s)${
+    summary.textStyleCount ? `\n- ${summary.textStyleCount} text styles → \`typography/…\` tokens` : ""
+  }
 - Themes (modes): ${themeList || "`default`"}
 -Settings: ${settingsLine}
 
@@ -694,10 +828,21 @@ if (typeof figma !== "undefined") {
     } catch (e) {}
   }
 
+  function serializeBoundVars(bv) {
+    const out = {};
+    if (!isRecord(bv)) return out;
+    for (const field of TEXT_STYLE_BOUND_FIELDS) {
+      const b = bv[field];
+      if (isRecord(b) && typeof b.id === "string") out[field] = b.id;
+    }
+    return out;
+  }
+
   async function readGraph() {
-    const [collections, variables] = await Promise.all([
+    const [collections, variables, textStyles] = await Promise.all([
       figma.variables.getLocalVariableCollectionsAsync(),
       figma.variables.getLocalVariablesAsync(),
+      typeof figma.getLocalTextStylesAsync === "function" ? figma.getLocalTextStylesAsync() : Promise.resolve([]),
     ]);
     return {
       fileName: figma.root.name,
@@ -713,6 +858,15 @@ if (typeof figma !== "undefined") {
         collectionId: v.variableCollectionId,
         resolvedType: v.resolvedType,
         valuesByMode: v.valuesByMode,
+      })),
+      textStyles: textStyles.map((t) => ({
+        id: t.id,
+        name: t.name,
+        fontName: t.fontName ? { family: t.fontName.family, style: t.fontName.style } : null,
+        fontSize: t.fontSize,
+        lineHeight: t.lineHeight,
+        letterSpacing: t.letterSpacing,
+        boundVariables: serializeBoundVars(t.boundVariables),
       })),
     };
   }
