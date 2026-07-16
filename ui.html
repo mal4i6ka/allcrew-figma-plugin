@@ -558,7 +558,7 @@ var FILES = {};       // { "tokens.css": "...", ... }
 var SUMMARY = null;
 var TAB = null;       // active preview filename
 var OPTIONS = { inlinePrimitives: true, flattenAliases: false, themeAttr: "data-theme-name", emitModuleFiles: true, cssModulesGlobal: true,
-  typoExtract: true, typoNaming: "tshirt", typoShorthand: false,
+  typoExtract: false, typoNaming: "tshirt", typoShorthand: false,
   delivery: { endpoint: "", secret: "", target: "folder", route: { repo: "", branch: "", path: "", package: "" }, onChange: false, onOpen: false } };
 var lastDeliveredHash = null;   // FILES snapshot last successfully delivered
 var firstResultDone = false;    // for "deliver on open"

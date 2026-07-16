@@ -746,7 +746,7 @@ var DEFAULT_OPTIONS = {
   // shared primitive scale (`--font-size-lg`) + per-style var() refs, instead of a full
   // literal set per style. Figma can't bind most text-style fields to variables (and never
   // % line-height/letter-spacing), so the scale is synthesised from the literals here.
-  typoExtract: true, // on = tiered scale + refs (dev's default); off = literal per-style tokens
+  typoExtract: false, // off (default) = faithful literal per-style tokens; on = tiered scale + var() refs
   typoNaming: "tshirt", // "tshirt" (--font-size-lg) | "value" (--font-size-32) — primitive names
   typoShorthand: false, // also emit a CSS `font` shorthand token per style (`--<style>-font`)
 };
