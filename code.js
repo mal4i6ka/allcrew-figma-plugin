@@ -994,7 +994,10 @@ if (typeof figma !== "undefined") {
     const out = {};
     if (!isRecord(bv)) return out;
     for (const field of TEXT_STYLE_BOUND_FIELDS) {
-      const b = bv[field];
+      // A bound field is a VariableAlias `{ id }` on a text style, but the text APIs can
+      // also hand back an array of aliases (per-character ranges) — take the first.
+      const raw = bv[field];
+      const b = Array.isArray(raw) ? raw[0] : raw;
       if (isRecord(b) && typeof b.id === "string") out[field] = b.id;
     }
     return out;
