@@ -656,16 +656,6 @@ function hasTypographyVars(graph) {
  *  styleName,field,varName}] }. Deterministic; unit-aware (% values are dropped). */
 function planTypographyVariables(graph, options) {
   var naming = options && options.typoNaming === "value" ? "value" : "tshirt";
-  var normPct = !!(options && options.typoNormalizePct);
-  // % line-height/letter-spacing can't be a Figma variable, but with normPct we convert it
-  // to its px equivalent (relative to the style's font size) so it can be. Same rendered
-  // value, but now a fixed px (loses the unitless/em scaling — opt-in for that reason).
-  var pctToPx = function (t, obj) {
-    if (!isRecord(obj) || typeof obj.value !== "number") return undefined;
-    if (obj.unit === "PIXELS") return obj.value;
-    if (obj.unit === "PERCENT" && normPct && typeof t.fontSize === "number") return Number((t.fontSize * obj.value / 100).toFixed(3));
-    return undefined;
-  };
   var styles = (Array.isArray(graph && graph.textStyles) ? graph.textStyles : [])
     .filter(function (t) { return t && typeof t.name === "string" && t.name.trim() !== ""; })
     .slice()
@@ -679,8 +669,24 @@ function planTypographyVariables(graph, options) {
     // the exporter reads back, and it yields valid CSS (font-weight: 600). Same naming as
     // the CSS extractor (WEIGHT_NAMES) so the generated collection and the export line up.
     "font-weight": { type: "FLOAT", field: "fontWeight", get: function (t) { return t.fontName && typeof t.fontName.style === "string" ? styleToFontWeight(t.fontName.style) : undefined; } },
-    "line-height": { type: "FLOAT", field: "lineHeight", get: function (t) { return pctToPx(t, t.lineHeight); } },
-    "letter-spacing": { type: "FLOAT", field: "letterSpacing", get: function (t) { return pctToPx(t, t.letterSpacing); } },
+    // line-height: px binds normally; % becomes a unit-less ratio variable (150% → 1.5) that
+    // is CREATED but NOT bound — Figma reads a bound number as px, so binding 1.5 would render
+    // 1.5px. The variable still lands in the collection + the export (where "line-height"
+    // exports unit-less), it just can't be used inside Figma. bindOk gates the binding.
+    "line-height": {
+      type: "FLOAT", field: "lineHeight",
+      get: function (t) {
+        var lh = t.lineHeight;
+        if (!isRecord(lh) || typeof lh.value !== "number") return undefined;
+        if (lh.unit === "PIXELS") return lh.value;
+        if (lh.unit === "PERCENT") return Number((lh.value / 100).toFixed(4));
+        return undefined;
+      },
+      bindOk: function (t) { return isRecord(t.lineHeight) && t.lineHeight.unit === "PIXELS"; },
+    },
+    // letter-spacing: only px. % has no unit-less CSS form (it'd need em), and a bare Figma
+    // number exports as px, so a % letter-spacing variable would be wrong — left as a literal.
+    "letter-spacing": { type: "FLOAT", field: "letterSpacing", get: function (t) { return isRecord(t.letterSpacing) && t.letterSpacing.unit === "PIXELS" && typeof t.letterSpacing.value === "number" ? t.letterSpacing.value : undefined; } },
     // plain px numbers; skip 0 (default) so we don't create pointless /0 variables
     "paragraph-spacing": { type: "FLOAT", field: "paragraphSpacing", get: function (t) { return typeof t.paragraphSpacing === "number" && t.paragraphSpacing > 0 ? t.paragraphSpacing : undefined; } },
     "paragraph-indent": { type: "FLOAT", field: "paragraphIndent", get: function (t) { return typeof t.paragraphIndent === "number" && t.paragraphIndent > 0 ? t.paragraphIndent : undefined; } },
@@ -730,9 +736,11 @@ function planTypographyVariables(graph, options) {
   var bindings = [];
   styles.forEach(function (t) {
     order.forEach(function (axis) {
-      var v = axes[axis].get(t);
+      var ax = axes[axis];
+      var v = ax.get(t);
       if (v === undefined || v === null) return;
-      bindings.push({ styleId: t.id, styleName: t.name, field: axes[axis].field, varName: nameByAxisValue[axis].get(keyOf(v)) });
+      if (ax.bindOk && !ax.bindOk(t)) return; // variable created but not bound (e.g. % line-height)
+      bindings.push({ styleId: t.id, styleName: t.name, field: ax.field, varName: nameByAxisValue[axis].get(keyOf(v)) });
     });
   });
 
@@ -876,7 +884,6 @@ var DEFAULT_OPTIONS = {
   typoExtract: false, // off (default) = faithful literal per-style tokens; on = tiered scale + var() refs
   typoNaming: "tshirt", // "tshirt" (--font-size-lg) | "value" (--font-size-32) — primitive names
   typoShorthand: false, // also emit a CSS `font` shorthand token per style (`--<style>-font`)
-  typoNormalizePct: false, // (Generate) convert % line-height/letter-spacing to px so they become variables too
 };
 
 function sanitizeAttr(value) {
@@ -917,7 +924,6 @@ function normalizeOptions(o) {
     typoExtract: pick("typoExtract"),
     typoNaming: o.typoNaming === "value" ? "value" : "tshirt",
     typoShorthand: pick("typoShorthand"),
-    typoNormalizePct: pick("typoNormalizePct"),
     themeAttr: sanitizeAttr(o.themeAttr),
     delivery: normalizeDelivery(o.delivery),
   };
