@@ -139,6 +139,7 @@ function resolveCanonicalPaths(variables, collectionById) {
 var TEXT_STYLE_COLLECTION = "Text Styles";
 var TEXT_STYLE_BOUND_FIELDS = [
   "fontFamily", "fontStyle", "fontWeight", "fontSize", "letterSpacing", "lineHeight",
+  "paragraphSpacing", "paragraphIndent",
 ];
 
 /** Figma stores weight in the style string ("Regular"/"SemiBold Italic"). Map it to a
@@ -219,6 +220,16 @@ function textStyleLeaves(ts, idToName) {
   var lsAlias = boundAlias(bv, "letterSpacing", idToName);
   if (lsAlias !== undefined) push("letter-spacing", lsAlias, "number");
   else { var ls = letterSpacingValue(ts.letterSpacing); if (ls) push("letter-spacing", ls.value, ls.type); }
+
+  // paragraph spacing / indent — plain px numbers; emit when bound or non-zero (0 is the
+  // default, skipped to avoid noise).
+  var psAlias = boundAlias(bv, "paragraphSpacing", idToName);
+  if (psAlias !== undefined) push("paragraph-spacing", psAlias, "number");
+  else if (typeof ts.paragraphSpacing === "number" && ts.paragraphSpacing > 0) push("paragraph-spacing", ts.paragraphSpacing, "number");
+
+  var piAlias = boundAlias(bv, "paragraphIndent", idToName);
+  if (piAlias !== undefined) push("paragraph-indent", piAlias, "number");
+  else if (typeof ts.paragraphIndent === "number" && ts.paragraphIndent > 0) push("paragraph-indent", ts.paragraphIndent, "number");
 
   return out;
 }
@@ -493,7 +504,7 @@ function isScaleToken(token) {
 }
 
 function typoAxisOf(prop) {
-  if (prop === "font-family" || prop === "font-size" || prop === "font-weight" || prop === "line-height" || prop === "letter-spacing") return prop;
+  if (prop === "font-family" || prop === "font-size" || prop === "font-weight" || prop === "line-height" || prop === "letter-spacing" || prop === "paragraph-spacing" || prop === "paragraph-indent") return prop;
   return null; // font-style etc. stay literal
 }
 
@@ -627,6 +638,7 @@ function extractTypographyScale(tree, options) {
 var TYPO_AXIS_SCOPE = {
   "font-size": ["FONT_SIZE"], "line-height": ["LINE_HEIGHT"], "letter-spacing": ["LETTER_SPACING"],
   "font-family": ["FONT_FAMILY"], "font-weight": ["FONT_WEIGHT"],
+  "paragraph-spacing": ["PARAGRAPH_SPACING"], "paragraph-indent": ["PARAGRAPH_INDENT"],
 };
 
 /** True if the file already has variables that look like a typography scale (so we don't
@@ -659,8 +671,11 @@ function planTypographyVariables(graph, options) {
     "font-weight": { type: "FLOAT", field: "fontWeight", get: function (t) { return t.fontName && typeof t.fontName.style === "string" ? styleToFontWeight(t.fontName.style) : undefined; } },
     "line-height": { type: "FLOAT", field: "lineHeight", get: function (t) { return isRecord(t.lineHeight) && t.lineHeight.unit === "PIXELS" && typeof t.lineHeight.value === "number" ? t.lineHeight.value : undefined; } },
     "letter-spacing": { type: "FLOAT", field: "letterSpacing", get: function (t) { return isRecord(t.letterSpacing) && t.letterSpacing.unit === "PIXELS" && typeof t.letterSpacing.value === "number" ? t.letterSpacing.value : undefined; } },
+    // plain px numbers; skip 0 (default) so we don't create pointless /0 variables
+    "paragraph-spacing": { type: "FLOAT", field: "paragraphSpacing", get: function (t) { return typeof t.paragraphSpacing === "number" && t.paragraphSpacing > 0 ? t.paragraphSpacing : undefined; } },
+    "paragraph-indent": { type: "FLOAT", field: "paragraphIndent", get: function (t) { return typeof t.paragraphIndent === "number" && t.paragraphIndent > 0 ? t.paragraphIndent : undefined; } },
   };
-  var order = ["font-size", "font-family", "font-weight", "line-height", "letter-spacing"];
+  var order = ["font-size", "font-family", "font-weight", "line-height", "letter-spacing", "paragraph-spacing", "paragraph-indent"];
   var keyOf = function (v) { return typeof v + ":" + String(v); };
 
   var variables = [];
@@ -1134,6 +1149,8 @@ if (typeof figma !== "undefined") {
         fontSize: t.fontSize,
         lineHeight: t.lineHeight,
         letterSpacing: t.letterSpacing,
+        paragraphSpacing: t.paragraphSpacing,
+        paragraphIndent: t.paragraphIndent,
         boundVariables: serializeBoundVars(t.boundVariables),
       })),
     };
