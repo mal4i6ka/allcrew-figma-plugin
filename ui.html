@@ -120,6 +120,16 @@
 
   .label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); margin: 0 0 7px; }
 
+  /* generate typography variables banner */
+  .gen { padding: 13px 14px; display: flex; flex-direction: column; gap: 11px; border-color: rgba(251,91,10,0.34); background: var(--accent-tint); }
+  .gen-row { display: flex; gap: 10px; align-items: flex-start; }
+  .gen-row .ic { color: var(--accent); flex: none; margin-top: 1px; }
+  .gen-text b { display: block; color: var(--text); font-weight: 500; font-size: 12.5px; font-family: var(--brand); }
+  .gen-text i { display: block; color: var(--muted); font-style: normal; font-size: 11px; line-height: 1.5; margin-top: 3px; }
+  .gen-text i.err { color: var(--accent-hi); }
+  .gen .btn { width: 100%; }
+  .gen.busy { opacity: .65; pointer-events: none; }
+
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 13px; }
   .chip {
     display: inline-flex; align-items: center; gap: 6px;
@@ -352,6 +362,14 @@
         <ul class="colls" id="colls"></ul>
       </section>
 
+      <section class="card gen hidden" id="genTypoCard">
+        <div class="gen-row">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8 19 13M15 9h.01M17.8 6.2 19 5M3 21l9-9M12.2 6.2 11 5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="gen-text"><b>Generate typography variables</b><i id="genTypoHint">No typography variables found. Build a scoped collection from your text styles and bind the styles to it.</i></span>
+        </div>
+        <button class="btn primary" id="genTypoBtn">Generate from text styles</button>
+      </section>
+
       <section class="card preview">
         <div class="tabs">
           <div class="tablist" id="tabs" role="tablist"></div>
@@ -560,6 +578,7 @@ var TAB = null;       // active preview filename
 var OPTIONS = { inlinePrimitives: true, flattenAliases: false, themeAttr: "data-theme-name", emitModuleFiles: true, cssModulesGlobal: true,
   typoExtract: false, typoNaming: "tshirt", typoShorthand: false,
   delivery: { endpoint: "", secret: "", target: "folder", route: { repo: "", branch: "", path: "", package: "" }, onChange: false, onOpen: false } };
+var EDITOR = "figma";           // figma.editorType — gates variable creation (Dev Mode is read-only)
 var lastDeliveredHash = null;   // FILES snapshot last successfully delivered
 var firstResultDone = false;    // for "deliver on open"
 var watchTimer = null;          // poll interval while "auto-deliver on change" is on
@@ -641,9 +660,11 @@ function renderPreview(){
 function applyResult(msg){
   SUMMARY = msg.summary;
   FILES = msg.files || {};
+  if(msg.editor) EDITOR = msg.editor;
   var has = Object.keys(FILES).length>0;
   $("zip").disabled = !has;
   if(has){ renderSummary(); renderFiles(); renderTabs(); renderPreview(); }
+  refreshGenCard();
   MAIN_VIEW = has ? "content" : "empty";
   // a settings-triggered rescan must not yank the user off a sub-page
   if(!PAGE_TITLES[VIEW]) show(MAIN_VIEW);
@@ -652,6 +673,22 @@ function applyResult(msg){
   var d = OPTIONS.delivery || {};
   if(!firstResultDone){ firstResultDone = true; if(d.onOpen) maybeAutoDeliver(); }
   if(d.onChange) maybeAutoDeliver();
+}
+
+// Offer to generate a typography variable collection when the file has text styles but no
+// typography variables yet. Design-mode only (Dev Mode can't create variables).
+function refreshGenCard(){
+  var s = SUMMARY || {};
+  var offer = s.hasTypographyVars === false && s.textStyleCount > 0;
+  $("genTypoCard").classList.toggle("hidden", !offer);
+  if(!offer) return;
+  var dev = EDITOR === "dev";
+  $("genTypoBtn").disabled = dev;
+  $("genTypoCard").classList.remove("busy");
+  $("genTypoHint").className = "";
+  $("genTypoHint").textContent = dev
+    ? "Switch to Design mode to create variables (Dev Mode is read-only)."
+    : "No typography variables found. Build a scoped collection from your " + s.textStyleCount + " text styles and bind the styles to it.";
 }
 
 /* ---- wire UI ---- */
@@ -795,6 +832,13 @@ $("rescan").addEventListener("click", function(){
   parent.postMessage({pluginMessage:{type:"scan", options: OPTIONS}}, "*");
 });
 
+$("genTypoBtn").addEventListener("click", function(){
+  $("genTypoCard").classList.add("busy");
+  $("genTypoHint").className = "";
+  $("genTypoHint").textContent = "Creating variables and binding styles…";
+  parent.postMessage({pluginMessage:{type:"genTypographyVars", options: OPTIONS}}, "*");
+});
+
 /* ---- receive from sandbox ---- */
 window.onmessage = function(event){
   var msg = event.data && event.data.pluginMessage;
@@ -802,6 +846,18 @@ window.onmessage = function(event){
   if(msg.type==="settings"){ if(msg.options){ OPTIONS = msg.options; syncControls(); } }
   else if(msg.type==="result"){ if(msg.options){ OPTIONS = msg.options; syncControls(); } applyResult(msg); }
   else if(msg.type==="error"){ $("errorMsg").textContent = msg.message || "Unknown error"; show("error"); }
+  else if(msg.type==="genResult"){
+    // a fresh scan follows and will hide the card (typography vars now exist); just clear busy
+    $("genTypoCard").classList.remove("busy");
+    var r = msg.report || {};
+    notify("Created " + r.created + " variables · bound " + r.bound + (r.failed ? (" · " + r.failed + " failed") : ""));
+  }
+  else if(msg.type==="genError"){
+    $("genTypoCard").classList.remove("busy");
+    $("genTypoBtn").disabled = false;
+    $("genTypoHint").className = "err";
+    $("genTypoHint").textContent = msg.message || "Generation failed.";
+  }
 };
 </script>
 </body>

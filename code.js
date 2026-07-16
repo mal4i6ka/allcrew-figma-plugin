@@ -612,6 +612,94 @@ function extractTypographyScale(tree, options) {
   return out;
 }
 
+/* ------------------------------------------ generate Figma variables from styles */
+
+/* The INVERSE-of-export write path: build a real, correctly-scoped variable collection
+ * out of the values baked into the used text styles, so the designer no longer has to
+ * hand-create them (and so Figma's contextual bind pickers actually appear — they only
+ * show up when a variable carries the matching scope). Pure planner here; the Figma glue
+ * (createVariable/setBoundVariable) consumes the plan. Fields Figma can't hold as
+ * variables (line-height / letter-spacing in %) are skipped, not faked. */
+
+var TYPO_AXIS_SCOPE = {
+  "font-size": ["FONT_SIZE"], "line-height": ["LINE_HEIGHT"], "letter-spacing": ["LETTER_SPACING"],
+  "font-family": ["FONT_FAMILY"], "font-style": ["FONT_STYLE"],
+};
+
+/** True if the file already has variables that look like a typography scale (so we don't
+ *  nag / offer to generate). Detected by the axis group prefix in the variable name. */
+function hasTypographyVars(graph) {
+  var axes = { "font-size": 1, "font-family": 1, "font-weight": 1, "font-style": 1, "line-height": 1, "letter-spacing": 1 };
+  return (graph && graph.variables ? graph.variables : []).some(function (v) {
+    var segs = groupSegments(v && v.name);
+    return segs.length > 1 && axes[segs[0].toLowerCase()];
+  });
+}
+
+/** Plan a "Typography" variable collection + per-style bindings from the raw text styles.
+ *  Returns { collectionName, variables:[{name,type,value,scopes}], bindings:[{styleId,
+ *  styleName,field,varName}] }. Deterministic; unit-aware (% values are dropped). */
+function planTypographyVariables(graph, options) {
+  var naming = options && options.typoNaming === "value" ? "value" : "tshirt";
+  var styles = (Array.isArray(graph && graph.textStyles) ? graph.textStyles : [])
+    .filter(function (t) { return t && typeof t.name === "string" && t.name.trim() !== ""; })
+    .slice()
+    .sort(function (a, b) { return a.name.localeCompare(b.name) || String(a.id).localeCompare(String(b.id)); });
+
+  // axis → how to pull a bindable value out of a raw text style (undefined = not bindable)
+  var axes = {
+    "font-size": { type: "FLOAT", field: "fontSize", get: function (t) { return typeof t.fontSize === "number" ? t.fontSize : undefined; } },
+    "font-family": { type: "STRING", field: "fontFamily", get: function (t) { return t.fontName && typeof t.fontName.family === "string" ? t.fontName.family : undefined; } },
+    "font-style": { type: "STRING", field: "fontStyle", get: function (t) { return t.fontName && typeof t.fontName.style === "string" ? t.fontName.style : undefined; } },
+    "line-height": { type: "FLOAT", field: "lineHeight", get: function (t) { return isRecord(t.lineHeight) && t.lineHeight.unit === "PIXELS" && typeof t.lineHeight.value === "number" ? t.lineHeight.value : undefined; } },
+    "letter-spacing": { type: "FLOAT", field: "letterSpacing", get: function (t) { return isRecord(t.letterSpacing) && t.letterSpacing.unit === "PIXELS" && typeof t.letterSpacing.value === "number" ? t.letterSpacing.value : undefined; } },
+  };
+  var order = ["font-size", "font-family", "font-style", "line-height", "letter-spacing"];
+  var keyOf = function (v) { return typeof v + ":" + String(v); };
+
+  var variables = [];
+  var nameByAxisValue = {}; // axis → Map(valueKey → variable name)
+  order.forEach(function (axis) {
+    var ax = axes[axis];
+    var distinct = new Map();
+    styles.forEach(function (t) { var v = ax.get(t); if (v === undefined || v === null) return; if (!distinct.has(keyOf(v))) distinct.set(keyOf(v), v); });
+    if (distinct.size === 0) return;
+    var entries = Array.from(distinct.values());
+    var nameFor;
+    if (axis === "font-family" || axis === "font-style") {
+      nameFor = function (v) { return varName([String(v)]) || "default"; };
+    } else if (naming === "tshirt" && (axis === "font-size" || axis === "line-height")) {
+      entries.sort(function (a, b) { return numericKey(a) - numericKey(b); });
+      var idx = new Map();
+      entries.forEach(function (v, i) { idx.set(keyOf(v), TSHIRT_LADDER[i] || valueNameToken(v)); });
+      nameFor = function (v) { return idx.get(keyOf(v)); };
+    } else {
+      nameFor = function (v) { return valueNameToken(v); };
+    }
+    nameByAxisValue[axis] = new Map();
+    var used = {};
+    entries.forEach(function (v) {
+      var leaf = nameFor(v);
+      while (used[leaf]) leaf = leaf + "-2";
+      used[leaf] = true;
+      var name = axis + "/" + leaf;
+      nameByAxisValue[axis].set(keyOf(v), name);
+      variables.push({ name: name, type: ax.type, value: v, scopes: TYPO_AXIS_SCOPE[axis] });
+    });
+  });
+
+  var bindings = [];
+  styles.forEach(function (t) {
+    order.forEach(function (axis) {
+      var v = axes[axis].get(t);
+      if (v === undefined || v === null) return;
+      bindings.push({ styleId: t.id, styleName: t.name, field: axes[axis].field, varName: nameByAxisValue[axis].get(keyOf(v)) });
+    });
+  });
+
+  return { collectionName: "Typography", variables: variables, bindings: bindings };
+}
+
 function themeDeclarations(allLeaves, theme) {
   const order = [];
   const groups = new Map();
@@ -852,6 +940,7 @@ function buildSummary(graph, tree) {
     collections: collections,
     totalVariables: (graph.variables || []).length,
     textStyleCount: textStyleCount,
+    hasTypographyVars: hasTypographyVars(graph),
     tokenCount: all.length,
     themes: themeModesOf(all),
   };
@@ -1040,10 +1129,52 @@ if (typeof figma !== "undefined") {
     try {
       const graph = await readGraph();
       const pkg = buildPackage(graph, options);
-      figma.ui.postMessage({ type: "result", summary: pkg.summary, files: pkg.files, options: pkg.options });
+      figma.ui.postMessage({ type: "result", summary: pkg.summary, files: pkg.files, options: pkg.options, editor: figma.editorType });
     } catch (err) {
       figma.ui.postMessage({ type: "error", message: String((err && err.message) || err) });
     }
+  }
+
+  function createTypographyVariable(name, collection, type) {
+    // createVariable's signature took a collectionId string in older API versions and the
+    // collection object in newer ones — try the current shape first, fall back to the id.
+    try {
+      return figma.variables.createVariable(name, collection, type);
+    } catch (e) {
+      return figma.variables.createVariable(name, collection.id, type);
+    }
+  }
+
+  // Write path: build a scoped "Typography" variable collection from the text styles and
+  // bind each style's fields to it. Design-mode only (Dev Mode is read-only). Non-destructive
+  // — only creates; Figma's native undo reverts the whole batch.
+  async function generateTypographyVariables(options) {
+    if (figma.editorType === "dev") throw new Error("Switch to Design mode — Dev Mode can't create variables.");
+    const graph = await readGraph();
+    const plan = planTypographyVariables(graph, normalizeOptions(options));
+    if (plan.variables.length === 0) throw new Error("No text styles with bindable values found.");
+
+    const collection = figma.variables.createVariableCollection(plan.collectionName);
+    const modeId = collection.modes[0].modeId;
+    const byName = {};
+    for (const spec of plan.variables) {
+      const v = createTypographyVariable(spec.name, collection, spec.type);
+      v.setValueForMode(modeId, spec.value);
+      try { v.scopes = spec.scopes; } catch (e) {} // scopes make Figma's bind pickers appear
+      byName[spec.name] = v;
+    }
+
+    const styleById = {};
+    for (const s of await figma.getLocalTextStylesAsync()) styleById[s.id] = s;
+    let bound = 0, failed = 0;
+    const failures = [];
+    for (const b of plan.bindings) {
+      const style = styleById[b.styleId], variable = byName[b.varName];
+      if (!style || !variable) { failed++; continue; }
+      try { style.setBoundVariable(b.field, variable); bound++; }
+      catch (e) { failed++; if (failures.length < 8) failures.push(`${b.styleName} · ${b.field}: ${String((e && e.message) || e)}`); }
+    }
+    return { collection: plan.collectionName, created: plan.variables.length, bound: bound, failed: failed, failures: failures };
   }
 
   figma.ui.onmessage = (msg) => {
@@ -1052,6 +1183,19 @@ if (typeof figma !== "undefined") {
       const options = normalizeOptions(msg.options);
       saveSettings(options);
       scan(options);
+    } else if (msg.type === "genTypographyVars") {
+      const options = normalizeOptions(msg.options);
+      generateTypographyVariables(options)
+        .then((report) => {
+          figma.notify(`Created ${report.created} variables · bound ${report.bound} field(s)` + (report.failed ? ` · ${report.failed} failed` : ""));
+          figma.ui.postMessage({ type: "genResult", report: report });
+          scan(options); // reflect the new collection in the summary/preview
+        })
+        .catch((err) => {
+          const message = String((err && err.message) || err);
+          figma.notify("Generate failed: " + message);
+          figma.ui.postMessage({ type: "genError", message: message });
+        });
     } else if (msg.type === "notify") figma.notify(String(msg.message || ""));
     else if (msg.type === "resize" && msg.height) {
       figma.ui.resize(408, Math.max(420, Math.min(900, Math.round(msg.height))));
