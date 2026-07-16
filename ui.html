@@ -679,16 +679,22 @@ function applyResult(msg){
 // typography variables yet. Design-mode only (Dev Mode can't create variables).
 function refreshGenCard(){
   var s = SUMMARY || {};
-  var offer = s.hasTypographyVars === false && s.textStyleCount > 0;
+  var regen = !!s.hasGeneratedTypoCollection; // our collection already exists → offer regenerate
+  // offer when there are text styles and either no typography vars at all, or ours to rebuild
+  // (don't nag when the user has their own, non-generated typography vars)
+  var offer = s.textStyleCount > 0 && (s.hasTypographyVars === false || regen);
   $("genTypoCard").classList.toggle("hidden", !offer);
   if(!offer) return;
   var dev = EDITOR === "dev";
   $("genTypoBtn").disabled = dev;
+  $("genTypoBtn").textContent = regen ? "Regenerate typography variables" : "Generate from text styles";
   $("genTypoCard").classList.remove("busy");
   $("genTypoHint").className = "";
   $("genTypoHint").textContent = dev
     ? "Switch to Design mode to create variables (Dev Mode is read-only)."
-    : "No typography variables found. Build a scoped collection from your " + s.textStyleCount + " text styles and bind the styles to it.";
+    : regen
+      ? "Rebuilds the plugin's Typography collection from your " + s.textStyleCount + " text styles, replacing the previous one."
+      : "No typography variables found. Build a scoped collection from your " + s.textStyleCount + " text styles and bind the styles to it.";
 }
 
 /* ---- wire UI ---- */
@@ -848,7 +854,7 @@ window.onmessage = function(event){
     // a fresh scan follows and will hide the card (typography vars now exist); just clear busy
     $("genTypoCard").classList.remove("busy");
     var r = msg.report || {};
-    notify("Created " + r.created + " variables · bound " + r.bound + (r.failed ? (" · " + r.failed + " failed") : ""));
+    notify((r.replaced ? "Replaced previous · " : "") + "Created " + r.created + " variables · bound " + r.bound + (r.failed ? (" · " + r.failed + " failed") : ""));
   }
   else if(msg.type==="genError"){
     $("genTypoCard").classList.remove("busy");

@@ -641,6 +641,10 @@ var TYPO_AXIS_SCOPE = {
   "paragraph-spacing": ["PARAGRAPH_SPACING"], "paragraph-indent": ["PARAGRAPH_INDENT"],
 };
 
+// pluginData marker stamped on collections the plugin generates, so "Regenerate" only ever
+// removes OUR collection — never a same-named collection the user made by hand.
+var TYPO_COLLECTION_PLUGIN_KEY = "altery-typography-generated";
+
 /** True if the file already has variables that look like a typography scale (so we don't
  *  nag / offer to generate). Detected by the axis group prefix in the variable name. */
 function hasTypographyVars(graph) {
@@ -988,6 +992,7 @@ function buildSummary(graph, tree) {
     totalVariables: (graph.variables || []).length,
     textStyleCount: textStyleCount,
     hasTypographyVars: hasTypographyVars(graph),
+    hasGeneratedTypoCollection: (graph.collections || []).some(function (c) { return c && c.generated; }),
     tokenCount: all.length,
     themes: themeModesOf(all),
   };
@@ -1147,12 +1152,17 @@ if (typeof figma !== "undefined") {
     ]);
     return {
       fileName: figma.root.name,
-      collections: collections.map((c) => ({
-        id: c.id,
-        name: c.name,
-        defaultModeId: c.defaultModeId,
-        modes: (c.modes || []).map((m) => ({ modeId: m.modeId, name: m.name })),
-      })),
+      collections: collections.map((c) => {
+        var generated = false;
+        try { generated = c.getPluginData(TYPO_COLLECTION_PLUGIN_KEY) === "1"; } catch (e) {}
+        return {
+          id: c.id,
+          name: c.name,
+          defaultModeId: c.defaultModeId,
+          modes: (c.modes || []).map((m) => ({ modeId: m.modeId, name: m.name })),
+          generated: generated,
+        };
+      }),
       variables: variables.map((v) => ({
         id: v.id,
         name: v.name,
@@ -1195,15 +1205,25 @@ if (typeof figma !== "undefined") {
   }
 
   // Write path: build a scoped "Typography" variable collection from the text styles and
-  // bind each style's fields to it. Design-mode only (Dev Mode is read-only). Non-destructive
-  // — only creates; Figma's native undo reverts the whole batch.
+  // bind each style's fields to it. Design-mode only (Dev Mode is read-only). Regenerating
+  // removes the plugin's OWN previous collection first (marked via pluginData — never a
+  // same-named collection the user made). Figma's native undo reverts the whole batch.
   async function generateTypographyVariables(options) {
     if (figma.editorType === "dev") throw new Error("Switch to Design mode — Dev Mode can't create variables.");
     const graph = await readGraph();
     const plan = planTypographyVariables(graph, normalizeOptions(options));
     if (plan.variables.length === 0) throw new Error("No text styles with bindable values found.");
 
+    // replace: drop any collection we generated before (removing it unbinds the styles too)
+    let replaced = 0;
+    for (const c of await figma.variables.getLocalVariableCollectionsAsync()) {
+      let mine = false;
+      try { mine = c.getPluginData(TYPO_COLLECTION_PLUGIN_KEY) === "1"; } catch (e) {}
+      if (mine) { try { c.remove(); replaced++; } catch (e) {} }
+    }
+
     const collection = figma.variables.createVariableCollection(plan.collectionName);
+    try { collection.setPluginData(TYPO_COLLECTION_PLUGIN_KEY, "1"); } catch (e) {}
     const modeId = collection.modes[0].modeId;
     const byName = {};
     for (const spec of plan.variables) {
@@ -1223,7 +1243,7 @@ if (typeof figma !== "undefined") {
       try { style.setBoundVariable(b.field, variable); bound++; }
       catch (e) { failed++; if (failures.length < 8) failures.push(`${b.styleName} · ${b.field}: ${String((e && e.message) || e)}`); }
     }
-    return { collection: plan.collectionName, created: plan.variables.length, bound: bound, failed: failed, failures: failures };
+    return { collection: plan.collectionName, created: plan.variables.length, bound: bound, failed: failed, failures: failures, replaced: replaced };
   }
 
   figma.ui.onmessage = (msg) => {
