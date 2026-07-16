@@ -626,7 +626,7 @@ function extractTypographyScale(tree, options) {
 
 var TYPO_AXIS_SCOPE = {
   "font-size": ["FONT_SIZE"], "line-height": ["LINE_HEIGHT"], "letter-spacing": ["LETTER_SPACING"],
-  "font-family": ["FONT_FAMILY"], "font-style": ["FONT_STYLE"],
+  "font-family": ["FONT_FAMILY"], "font-weight": ["FONT_WEIGHT"],
 };
 
 /** True if the file already has variables that look like a typography scale (so we don't
@@ -653,11 +653,14 @@ function planTypographyVariables(graph, options) {
   var axes = {
     "font-size": { type: "FLOAT", field: "fontSize", get: function (t) { return typeof t.fontSize === "number" ? t.fontSize : undefined; } },
     "font-family": { type: "STRING", field: "fontFamily", get: function (t) { return t.fontName && typeof t.fontName.family === "string" ? t.fontName.family : undefined; } },
-    "font-style": { type: "STRING", field: "fontStyle", get: function (t) { return t.fontName && typeof t.fontName.style === "string" ? t.fontName.style : undefined; } },
+    // Weight as a NUMBER bound via fontWeight (not the fontStyle string) — that's the field
+    // the exporter reads back, and it yields valid CSS (font-weight: 600). Same naming as
+    // the CSS extractor (WEIGHT_NAMES) so the generated collection and the export line up.
+    "font-weight": { type: "FLOAT", field: "fontWeight", get: function (t) { return t.fontName && typeof t.fontName.style === "string" ? styleToFontWeight(t.fontName.style) : undefined; } },
     "line-height": { type: "FLOAT", field: "lineHeight", get: function (t) { return isRecord(t.lineHeight) && t.lineHeight.unit === "PIXELS" && typeof t.lineHeight.value === "number" ? t.lineHeight.value : undefined; } },
     "letter-spacing": { type: "FLOAT", field: "letterSpacing", get: function (t) { return isRecord(t.letterSpacing) && t.letterSpacing.unit === "PIXELS" && typeof t.letterSpacing.value === "number" ? t.letterSpacing.value : undefined; } },
   };
-  var order = ["font-size", "font-family", "font-style", "line-height", "letter-spacing"];
+  var order = ["font-size", "font-family", "font-weight", "line-height", "letter-spacing"];
   var keyOf = function (v) { return typeof v + ":" + String(v); };
 
   var variables = [];
@@ -670,14 +673,16 @@ function planTypographyVariables(graph, options) {
     // Sort up front so variables land in the collection in a sensible order (ascending for
     // numeric axes, alphabetical for family/style) regardless of the naming scheme.
     var entries = Array.from(distinct.values());
-    if (axis === "font-family" || axis === "font-style") {
+    if (axis === "font-family") {
       entries.sort(function (a, b) { return String(a).localeCompare(String(b)); });
     } else {
       entries.sort(function (a, b) { return numericKey(a) - numericKey(b); });
     }
     var nameFor;
-    if (axis === "font-family" || axis === "font-style") {
+    if (axis === "font-family") {
       nameFor = function (v) { return varName([String(v)]) || "default"; };
+    } else if (axis === "font-weight") {
+      nameFor = function (v) { return WEIGHT_NAMES[v] || valueNameToken(v); };
     } else if (naming === "tshirt" && (axis === "font-size" || axis === "line-height")) {
       var idx = new Map();
       entries.forEach(function (v, i) { idx.set(keyOf(v), TSHIRT_LADDER[i] || valueNameToken(v)); });
