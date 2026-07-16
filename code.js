@@ -549,12 +549,15 @@ function extractTypographyScale(tree, options) {
   var pathByValue = {}; // axis → Map(valueKey → primitive path)
   Object.keys(axisValues).forEach(function (axis) {
     var entries = Array.from(axisValues[axis].values());
+    // Order primitives ascending (numeric) / alphabetical (family) so the CSS scale lists
+    // in the same order as the generated Figma collection.
+    if (axis === "font-family") entries.sort(function (a, b) { return String(a.value).localeCompare(String(b.value)); });
+    else entries.sort(function (a, b) { return numericKey(a.value) - numericKey(b.value); });
     if (axis === "font-weight") {
       entries.forEach(function (en) { en.name = WEIGHT_NAMES[en.value] || valueNameToken(en.value); });
     } else if (axis === "font-family") {
       entries.forEach(function (en) { en.name = varName([String(en.value)]) || "base"; });
     } else if (naming === "tshirt" && TSHIRT_AXES[axis]) {
-      entries.sort(function (a, b) { return numericKey(a.value) - numericKey(b.value); });
       entries.forEach(function (en, i) { en.name = TSHIRT_LADDER[i] || valueNameToken(en.value); });
     } else {
       entries.forEach(function (en) { en.name = valueNameToken(en.value); });
@@ -664,12 +667,18 @@ function planTypographyVariables(graph, options) {
     var distinct = new Map();
     styles.forEach(function (t) { var v = ax.get(t); if (v === undefined || v === null) return; if (!distinct.has(keyOf(v))) distinct.set(keyOf(v), v); });
     if (distinct.size === 0) return;
+    // Sort up front so variables land in the collection in a sensible order (ascending for
+    // numeric axes, alphabetical for family/style) regardless of the naming scheme.
     var entries = Array.from(distinct.values());
+    if (axis === "font-family" || axis === "font-style") {
+      entries.sort(function (a, b) { return String(a).localeCompare(String(b)); });
+    } else {
+      entries.sort(function (a, b) { return numericKey(a) - numericKey(b); });
+    }
     var nameFor;
     if (axis === "font-family" || axis === "font-style") {
       nameFor = function (v) { return varName([String(v)]) || "default"; };
     } else if (naming === "tshirt" && (axis === "font-size" || axis === "line-height")) {
-      entries.sort(function (a, b) { return numericKey(a) - numericKey(b); });
       var idx = new Map();
       entries.forEach(function (v, i) { idx.set(keyOf(v), TSHIRT_LADDER[i] || valueNameToken(v)); });
       nameFor = function (v) { return idx.get(keyOf(v)); };
