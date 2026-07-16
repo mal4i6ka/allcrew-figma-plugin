@@ -656,6 +656,16 @@ function hasTypographyVars(graph) {
  *  styleName,field,varName}] }. Deterministic; unit-aware (% values are dropped). */
 function planTypographyVariables(graph, options) {
   var naming = options && options.typoNaming === "value" ? "value" : "tshirt";
+  var normPct = !!(options && options.typoNormalizePct);
+  // % line-height/letter-spacing can't be a Figma variable, but with normPct we convert it
+  // to its px equivalent (relative to the style's font size) so it can be. Same rendered
+  // value, but now a fixed px (loses the unitless/em scaling — opt-in for that reason).
+  var pctToPx = function (t, obj) {
+    if (!isRecord(obj) || typeof obj.value !== "number") return undefined;
+    if (obj.unit === "PIXELS") return obj.value;
+    if (obj.unit === "PERCENT" && normPct && typeof t.fontSize === "number") return Number((t.fontSize * obj.value / 100).toFixed(3));
+    return undefined;
+  };
   var styles = (Array.isArray(graph && graph.textStyles) ? graph.textStyles : [])
     .filter(function (t) { return t && typeof t.name === "string" && t.name.trim() !== ""; })
     .slice()
@@ -669,8 +679,8 @@ function planTypographyVariables(graph, options) {
     // the exporter reads back, and it yields valid CSS (font-weight: 600). Same naming as
     // the CSS extractor (WEIGHT_NAMES) so the generated collection and the export line up.
     "font-weight": { type: "FLOAT", field: "fontWeight", get: function (t) { return t.fontName && typeof t.fontName.style === "string" ? styleToFontWeight(t.fontName.style) : undefined; } },
-    "line-height": { type: "FLOAT", field: "lineHeight", get: function (t) { return isRecord(t.lineHeight) && t.lineHeight.unit === "PIXELS" && typeof t.lineHeight.value === "number" ? t.lineHeight.value : undefined; } },
-    "letter-spacing": { type: "FLOAT", field: "letterSpacing", get: function (t) { return isRecord(t.letterSpacing) && t.letterSpacing.unit === "PIXELS" && typeof t.letterSpacing.value === "number" ? t.letterSpacing.value : undefined; } },
+    "line-height": { type: "FLOAT", field: "lineHeight", get: function (t) { return pctToPx(t, t.lineHeight); } },
+    "letter-spacing": { type: "FLOAT", field: "letterSpacing", get: function (t) { return pctToPx(t, t.letterSpacing); } },
     // plain px numbers; skip 0 (default) so we don't create pointless /0 variables
     "paragraph-spacing": { type: "FLOAT", field: "paragraphSpacing", get: function (t) { return typeof t.paragraphSpacing === "number" && t.paragraphSpacing > 0 ? t.paragraphSpacing : undefined; } },
     "paragraph-indent": { type: "FLOAT", field: "paragraphIndent", get: function (t) { return typeof t.paragraphIndent === "number" && t.paragraphIndent > 0 ? t.paragraphIndent : undefined; } },
@@ -866,6 +876,7 @@ var DEFAULT_OPTIONS = {
   typoExtract: false, // off (default) = faithful literal per-style tokens; on = tiered scale + var() refs
   typoNaming: "tshirt", // "tshirt" (--font-size-lg) | "value" (--font-size-32) — primitive names
   typoShorthand: false, // also emit a CSS `font` shorthand token per style (`--<style>-font`)
+  typoNormalizePct: false, // (Generate) convert % line-height/letter-spacing to px so they become variables too
 };
 
 function sanitizeAttr(value) {
@@ -906,6 +917,7 @@ function normalizeOptions(o) {
     typoExtract: pick("typoExtract"),
     typoNaming: o.typoNaming === "value" ? "value" : "tshirt",
     typoShorthand: pick("typoShorthand"),
+    typoNormalizePct: pick("typoNormalizePct"),
     themeAttr: sanitizeAttr(o.themeAttr),
     delivery: normalizeDelivery(o.delivery),
   };

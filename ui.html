@@ -129,6 +129,8 @@
   .gen-text i.err { color: var(--accent-hi); }
   .gen .btn { width: 100%; }
   .gen.busy { opacity: .65; pointer-events: none; }
+  .gen-opt { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 11px; cursor: pointer; }
+  .gen-opt code { font-family: var(--mono); font-size: 10px; }
 
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 13px; }
   .chip {
@@ -367,6 +369,10 @@
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8 19 13M15 9h.01M17.8 6.2 19 5M3 21l9-9M12.2 6.2 11 5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="gen-text"><b>Generate typography variables</b><i id="genTypoHint">No typography variables found. Build a scoped collection from your text styles and bind the styles to it.</i></span>
         </div>
+        <label class="gen-opt" for="genNormPct">
+          <span class="switch"><input type="checkbox" id="genNormPct"><span class="track"></span></span>
+          <span>Convert <code>%</code> line-height / letter-spacing to px</span>
+        </label>
         <button class="btn primary" id="genTypoBtn">Generate from text styles</button>
       </section>
 
@@ -836,7 +842,8 @@ $("genTypoBtn").addEventListener("click", function(){
   $("genTypoCard").classList.add("busy");
   $("genTypoHint").className = "";
   $("genTypoHint").textContent = "Creating variables and binding styles…";
-  parent.postMessage({pluginMessage:{type:"genTypographyVars", options: OPTIONS}}, "*");
+  var opts = Object.assign({}, OPTIONS, { typoNormalizePct: $("genNormPct").checked });
+  parent.postMessage({pluginMessage:{type:"genTypographyVars", options: opts}}, "*");
 });
 
 /* ---- receive from sandbox ---- */
