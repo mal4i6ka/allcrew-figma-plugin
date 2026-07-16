@@ -441,7 +441,7 @@
           </label>
           <label class="set-row" for="optTypoTshirt" id="optTypoTshirtRow">
             <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 7h.01" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
-            <span class="set-text"><b>T-shirt scale names</b><i>On <code>--font-size-lg</code> &middot; off <code>--font-size-32</code> (by value)</i></span>
+            <span class="set-text"><b>T-shirt scale names</b><i>Scale &amp; generated variables &middot; on <code>font-size/lg</code>, off <code>font-size/32</code></i></span>
             <span class="switch"><input type="checkbox" id="optTypoTshirt"><span class="track"></span></span>
           </label>
           <label class="set-row" for="optTypoShorthand" id="optTypoShorthandRow">
@@ -719,7 +719,6 @@ function syncControls(){
   $("optTypoShorthand").checked = !!OPTIONS.typoShorthand;
   $("optFlattenRow").classList.toggle("disabled", !OPTIONS.inlinePrimitives);
   $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
-  $("optTypoTshirtRow").classList.toggle("disabled", !OPTIONS.typoExtract);
   $("optTypoShorthandRow").classList.toggle("disabled", !OPTIONS.typoExtract);
   // delivery
   var d = OPTIONS.delivery || {}, r = d.route || {};
@@ -754,7 +753,6 @@ function pushOptions(){
   };
   $("optFlattenRow").classList.toggle("disabled", !OPTIONS.inlinePrimitives);
   $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
-  $("optTypoTshirtRow").classList.toggle("disabled", !OPTIONS.typoExtract);
   $("optTypoShorthandRow").classList.toggle("disabled", !OPTIONS.typoExtract);
   applyTargetVisibility();
   refreshDeliverUI();
