@@ -943,8 +943,17 @@ function normalizeOptions(o) {
 function buildPackage(graph, options) {
   const opts = normalizeOptions(options);
   const rawTree = variablesToW3CMultiMode(graph);
-  // Typography scale extraction is layered on top of the board-exact core, like inlining.
-  const sourceTree = opts.typoExtract ? extractTypographyScale(rawTree, opts) : rawTree;
+  // If the plugin already generated a real Typography variable collection, THOSE variables
+  // are the scale — don't synthesise a second (duplicate) one on export.
+  const generated = (graph.collections || []).some((c) => c && c.generated);
+  // Typography handling is layered on top of the board-exact core, like inlining:
+  //  - synthesise a scale from the text styles (extract), unless real generated vars exist;
+  //  - scale-only: drop the per-style `typography/…` tokens so only the scale is emitted
+  //    (when reading real generated vars, that means stripping them here directly).
+  let sourceTree;
+  if (opts.typoExtract && !generated) sourceTree = extractTypographyScale(rawTree, opts);
+  else if (opts.typoScaleOnly) { sourceTree = Object.assign({}, rawTree); delete sourceTree.typography; }
+  else sourceTree = rawTree;
   const summary = buildSummary(graph, sourceTree);
   const files = {};
   if (summary.tokenCount > 0) {
