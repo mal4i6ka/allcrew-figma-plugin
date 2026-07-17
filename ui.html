@@ -201,12 +201,16 @@
   .set-input:focus { outline: none; border-color: var(--accent); background: var(--surface); }
 
   /* presets */
-  .presets { display: flex; flex-wrap: wrap; gap: 7px; padding: 11px 2px 6px; }
-  .preset { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-2); border: 1px solid var(--border); color: var(--muted); border-radius: 999px; padding: 5px 11px; font-family: var(--brand); font-size: 11px; cursor: pointer; }
-  .preset:hover { border-color: var(--border-2); color: var(--text); }
-  .preset.active { background: var(--accent-tint); border-color: rgba(251,91,10,0.4); color: var(--accent-hi); }
-  .preset .del { display: inline-flex; color: var(--faint); font-size: 14px; line-height: 1; margin: -2px -3px -2px 1px; padding: 0 2px; }
-  .preset .del:hover { color: var(--accent-hi); }
+  .preset-row { display: flex; gap: 8px; align-items: stretch; padding: 11px 2px 6px; }
+  #presetSelect {
+    flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--r-sm); padding: 7px 9px; font-family: var(--mono); font-size: 11px; cursor: pointer;
+    transition: border-color .16s, background .16s;
+  }
+  #presetSelect:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+  .preset-del-btn { flex: none; width: 34px; }
+  .preset-del-btn:disabled { opacity: .38; cursor: not-allowed; }
+  .preset-del-btn:not(:disabled):hover { color: var(--accent-hi); border-color: rgba(251,91,10,0.4); }
   .preset-save { display: flex; gap: 8px; padding: 2px 2px 4px; }
   .preset-save input { flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 6px 9px; font-family: var(--mono); font-size: 11px; }
   .preset-save input:focus { outline: none; border-color: var(--accent); }
@@ -416,7 +420,12 @@
           <span>Presets</span>
           <span class="sec-hint">export settings only</span>
         </div>
-        <div class="presets" id="presets"></div>
+        <div class="preset-row">
+          <select id="presetSelect" aria-label="Preset"></select>
+          <button class="icon-btn preset-del-btn" id="presetDelBtn" title="Delete selected preset" aria-label="Delete preset" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg>
+          </button>
+        </div>
         <div class="preset-save">
           <input id="presetName" type="text" spellcheck="false" autocomplete="off" placeholder="Save current settings as…" />
           <button class="btn ghost" id="presetSaveBtn">Save</button>
@@ -781,19 +790,20 @@ function syncControls(){
 
 /* ---- presets (export settings only) ---- */
 function allPresets(){ return BUILTIN_PRESETS.concat(PRESETS); }
+function activePresetName(){
+  var cur = exportSubset(OPTIONS), name = null;
+  allPresets().forEach(function(p){ if(name===null && presetsEqual(p.options, cur)) name = p.name; });
+  return name;
+}
 function renderPresets(){
-  var cur = exportSubset(OPTIONS);
-  $("presets").innerHTML = allPresets().map(function(p){
-    var active = presetsEqual(p.options, cur) ? " active" : "";
-    var del = p.builtin ? "" : '<span class="del" data-del="'+esc(p.name)+'" title="Delete preset">&times;</span>';
-    return '<span class="preset'+active+'" data-apply="'+esc(p.name)+'">'+esc(p.name)+del+'</span>';
+  var active = activePresetName();
+  var opts = active === null ? '<option value="" selected>Custom (unsaved)</option>' : "";
+  opts += allPresets().map(function(p){
+    return '<option value="'+esc(p.name)+'"'+(p.name===active?" selected":"")+'>'+esc(p.name)+(p.builtin?" · built-in":"")+'</option>';
   }).join("");
-  Array.prototype.forEach.call($("presets").querySelectorAll(".preset"), function(el){
-    el.addEventListener("click", function(e){
-      if(e.target && e.target.getAttribute("data-del")){ deletePreset(e.target.getAttribute("data-del")); return; }
-      applyPreset(el.getAttribute("data-apply"));
-    });
-  });
+  $("presetSelect").innerHTML = opts;
+  var sel = allPresets().filter(function(p){ return p.name===active; })[0];
+  $("presetDelBtn").disabled = !sel || !!sel.builtin; // only user presets are deletable
 }
 function applyPreset(name){
   var p = allPresets().filter(function(x){ return x.name === name; })[0];
@@ -908,6 +918,8 @@ $("optAttr").addEventListener("change", function(){ clearTimeout(attrTimer); pus
 $("deliverNow").addEventListener("click", function(){ deliver(true); });
 $("presetSaveBtn").addEventListener("click", savePreset);
 $("presetName").addEventListener("keydown", function(e){ if(e.key === "Enter"){ e.preventDefault(); savePreset(); } });
+$("presetSelect").addEventListener("change", function(){ var n=$("presetSelect").value; if(n) applyPreset(n); });
+$("presetDelBtn").addEventListener("click", function(){ var n=$("presetSelect").value; if(n) deletePreset(n); });
 
 $("rescan").addEventListener("click", function(){
   show("loading");
