@@ -200,6 +200,18 @@
   }
   .set-input:focus { outline: none; border-color: var(--accent); background: var(--surface); }
 
+  /* presets */
+  .presets { display: flex; flex-wrap: wrap; gap: 7px; padding: 11px 2px 6px; }
+  .preset { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-2); border: 1px solid var(--border); color: var(--muted); border-radius: 999px; padding: 5px 11px; font-family: var(--brand); font-size: 11px; cursor: pointer; }
+  .preset:hover { border-color: var(--border-2); color: var(--text); }
+  .preset.active { background: var(--accent-tint); border-color: rgba(251,91,10,0.4); color: var(--accent-hi); }
+  .preset .del { display: inline-flex; color: var(--faint); font-size: 14px; line-height: 1; margin: -2px -3px -2px 1px; padding: 0 2px; }
+  .preset .del:hover { color: var(--accent-hi); }
+  .preset-save { display: flex; gap: 8px; padding: 2px 2px 4px; }
+  .preset-save input { flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 6px 9px; font-family: var(--mono); font-size: 11px; }
+  .preset-save input:focus { outline: none; border-color: var(--accent); }
+  .preset-save .btn { flex: none; width: auto; padding: 6px 13px; font-size: 11.5px; }
+
   /* delivery */
   .set-section {
     margin: 18px 2px 0; padding-top: 14px; border-top: 1px solid var(--border);
@@ -400,6 +412,16 @@
     <div id="settings" class="page hidden">
       <div class="set-body-page">
         <div class="set-section">
+          <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Presets</span>
+          <span class="sec-hint">export settings only</span>
+        </div>
+        <div class="presets" id="presets"></div>
+        <div class="preset-save">
+          <input id="presetName" type="text" spellcheck="false" autocomplete="off" placeholder="Save current settings as…" />
+          <button class="btn ghost" id="presetSaveBtn">Save</button>
+        </div>
+        <div class="set-section">
           <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M15.536 11.293a1 1 0 0 0 0 1.414l2.376 2.377a1 1 0 0 0 1.414 0l2.377-2.377a1 1 0 0 0 0-1.414l-2.377-2.376a1 1 0 0 0-1.414 0zM2.297 11.293a1 1 0 0 0 0 1.414l2.377 2.377a1 1 0 0 0 1.414 0l2.377-2.377a1 1 0 0 0 0-1.414L6.088 8.917a1 1 0 0 0-1.414 0zM8.917 4.674a1 1 0 0 0 0 1.414l2.376 2.377a1 1 0 0 0 1.414 0l2.377-2.377a1 1 0 0 0 0-1.414l-2.377-2.376a1 1 0 0 0-1.414 0zM8.917 17.912a1 1 0 0 0 0 1.415l2.376 2.376a1 1 0 0 0 1.414 0l2.377-2.376a1 1 0 0 0 0-1.415l-2.377-2.376a1 1 0 0 0-1.414 0z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span>Tokens</span>
           <span class="sec-hint">tokens.css &middot; .json &middot; .ts</span>
@@ -584,6 +606,16 @@ var OPTIONS = { inlinePrimitives: true, flattenAliases: false, themeAttr: "data-
   typoExtract: true, typoScaleOnly: true, typoNaming: "tshirt", typoShorthand: false,
   delivery: { endpoint: "", secret: "", target: "folder", route: { repo: "", branch: "", path: "", package: "" }, onChange: false, onOpen: false } };
 var EDITOR = "figma";           // figma.editorType — gates variable creation (Dev Mode is read-only)
+var PRESETS = [];               // user-saved export presets (from clientStorage)
+// Built-in preset: Sergey's flat, scale-only setup. Non-deletable, always first.
+var BUILTIN_PRESETS = [{ name: "Flat scale", builtin: true, options: {
+  inlinePrimitives: true, flattenAliases: false, themeAttr: "data-theme-name", emitModuleFiles: true, cssModulesGlobal: true,
+  typoExtract: true, typoScaleOnly: true, typoNaming: "tshirt", typoShorthand: false
+} }];
+// The export half of OPTIONS — a preset captures this, never the delivery config.
+var PRESET_KEYS = ["inlinePrimitives","flattenAliases","themeAttr","emitModuleFiles","cssModulesGlobal","typoExtract","typoScaleOnly","typoNaming","typoShorthand"];
+function exportSubset(o){ var r={}; PRESET_KEYS.forEach(function(k){ r[k]=o[k]; }); return r; }
+function presetsEqual(a,b){ return PRESET_KEYS.every(function(k){ return a[k]===b[k]; }); }
 var lastDeliveredHash = null;   // FILES snapshot last successfully delivered
 var firstResultDone = false;    // for "deliver on open"
 var watchTimer = null;          // poll interval while "auto-deliver on change" is on
@@ -744,6 +776,41 @@ function syncControls(){
   applyTargetVisibility();
   refreshDeliverUI();
   manageWatch();
+  renderPresets();
+}
+
+/* ---- presets (export settings only) ---- */
+function allPresets(){ return BUILTIN_PRESETS.concat(PRESETS); }
+function renderPresets(){
+  var cur = exportSubset(OPTIONS);
+  $("presets").innerHTML = allPresets().map(function(p){
+    var active = presetsEqual(p.options, cur) ? " active" : "";
+    var del = p.builtin ? "" : '<span class="del" data-del="'+esc(p.name)+'" title="Delete preset">&times;</span>';
+    return '<span class="preset'+active+'" data-apply="'+esc(p.name)+'">'+esc(p.name)+del+'</span>';
+  }).join("");
+  Array.prototype.forEach.call($("presets").querySelectorAll(".preset"), function(el){
+    el.addEventListener("click", function(e){
+      if(e.target && e.target.getAttribute("data-del")){ deletePreset(e.target.getAttribute("data-del")); return; }
+      applyPreset(el.getAttribute("data-apply"));
+    });
+  });
+}
+function applyPreset(name){
+  var p = allPresets().filter(function(x){ return x.name === name; })[0];
+  if(!p) return;
+  PRESET_KEYS.forEach(function(k){ OPTIONS[k] = p.options[k]; });
+  syncControls();
+  pushOptions();
+  notify("Applied preset “"+name+"”");
+}
+function savePreset(){
+  var name = ($("presetName").value || "").trim();
+  if(!name) return;
+  parent.postMessage({pluginMessage:{type:"savePreset", name: name, options: exportSubset(OPTIONS)}}, "*");
+  $("presetName").value = "";
+}
+function deletePreset(name){
+  parent.postMessage({pluginMessage:{type:"deletePreset", name: name}}, "*");
 }
 function readDelivery(){
   return {
@@ -839,6 +906,8 @@ $("optAttr").addEventListener("change", function(){ clearTimeout(attrTimer); pus
   $(id).addEventListener("change", function(){ clearTimeout(delivTimer); pushOptions(); });
 });
 $("deliverNow").addEventListener("click", function(){ deliver(true); });
+$("presetSaveBtn").addEventListener("click", savePreset);
+$("presetName").addEventListener("keydown", function(e){ if(e.key === "Enter"){ e.preventDefault(); savePreset(); } });
 
 $("rescan").addEventListener("click", function(){
   show("loading");
@@ -858,6 +927,7 @@ window.onmessage = function(event){
   if(!msg) return;
   if(msg.type==="settings"){ if(msg.options){ OPTIONS = msg.options; syncControls(); } }
   else if(msg.type==="result"){ if(msg.options){ OPTIONS = msg.options; syncControls(); } applyResult(msg); }
+  else if(msg.type==="presets"){ PRESETS = Array.isArray(msg.presets) ? msg.presets : []; renderPresets(); }
   else if(msg.type==="error"){ $("errorMsg").textContent = msg.message || "Unknown error"; show("error"); }
   else if(msg.type==="genResult"){
     // a fresh scan follows and will hide the card (typography vars now exist); just clear busy

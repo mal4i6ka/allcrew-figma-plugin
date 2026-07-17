@@ -1134,6 +1134,21 @@ if (typeof figma !== "undefined") {
   figma.showUI(__html__, { width: 408, height: 660, themeColors: false });
 
   var SETTINGS_KEY = "altery-export-settings";
+  var PRESETS_KEY = "altery-export-presets";
+
+  // User-saved export presets (name → export options; delivery is never part of a preset).
+  async function loadPresets() {
+    try {
+      var list = await figma.clientStorage.getAsync(PRESETS_KEY);
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function savePresets(list) {
+    try { await figma.clientStorage.setAsync(PRESETS_KEY, Array.isArray(list) ? list : []); } catch (e) {}
+  }
 
   async function loadSettings() {
     try {
@@ -1283,6 +1298,19 @@ if (typeof figma !== "undefined") {
           figma.notify("Generate failed: " + message);
           figma.ui.postMessage({ type: "genError", message: message });
         });
+    } else if (msg.type === "savePreset") {
+      const name = String(msg.name || "").trim();
+      if (!name) return;
+      loadPresets().then((list) => {
+        const next = list.filter((p) => p && p.name !== name).concat([{ name: name, options: msg.options }]);
+        savePresets(next).then(() => figma.ui.postMessage({ type: "presets", presets: next }));
+      });
+    } else if (msg.type === "deletePreset") {
+      const name = String(msg.name || "");
+      loadPresets().then((list) => {
+        const next = list.filter((p) => p && p.name !== name);
+        savePresets(next).then(() => figma.ui.postMessage({ type: "presets", presets: next }));
+      });
     } else if (msg.type === "notify") figma.notify(String(msg.message || ""));
     else if (msg.type === "resize" && msg.height) {
       figma.ui.resize(408, Math.max(420, Math.min(900, Math.round(msg.height))));
@@ -1291,7 +1319,9 @@ if (typeof figma !== "undefined") {
 
   (async function start() {
     const options = await loadSettings();
+    const presets = await loadPresets();
     figma.ui.postMessage({ type: "settings", options: options });
+    figma.ui.postMessage({ type: "presets", presets: presets });
     scan(options);
   })();
 }
