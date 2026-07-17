@@ -535,7 +535,8 @@ function quoteFamily(v) {
 
 function extractTypographyScale(tree, options) {
   var naming = options && options.typoNaming === "value" ? "value" : "tshirt";
-  var shorthand = !!(options && options.typoShorthand);
+  var scaleOnly = !!(options && options.typoScaleOnly);
+  var shorthand = !scaleOnly && !!(options && options.typoShorthand); // shorthand is a per-style token → moot under scale-only
   var all = leaves(tree);
   var isTypo = function (path) { return path.length > 1 && path[0] === "typography"; };
   if (!all.some(function (e) { return isTypo(e.path); })) return tree; // no text styles → unchanged
@@ -585,10 +586,13 @@ function extractTypographyScale(tree, options) {
     });
   });
 
-  // 3) semantic layer: drop the `typography/` prefix, point each field at its primitive
+  // 3) semantic layer: drop the `typography/` prefix, point each field at its primitive.
+  // Under scale-only we skip this entirely — the export is just the primitive scale and
+  // components reference it directly (no per-style `--headings-h3-*` tokens).
   var styles = new Map(); // styleKey → { prefix, props: { prop: {value,type} } }
   all.forEach(function (e) {
     if (!isTypo(e.path)) { setToken(out, e.path, e.token); return; }
+    if (scaleOnly) return;
     var prop = e.path[e.path.length - 1];
     var semanticPath = e.path.slice(1); // drop "typography"
     var axis = typoAxisOf(prop);
@@ -885,9 +889,10 @@ var DEFAULT_OPTIONS = {
   // shared primitive scale (`--font-size-lg`) + per-style var() refs, instead of a full
   // literal set per style. Figma can't bind most text-style fields to variables (and never
   // % line-height/letter-spacing), so the scale is synthesised from the literals here.
-  typoExtract: false, // off (default) = faithful literal per-style tokens; on = tiered scale + var() refs
+  typoExtract: true, // on (default) = dedupe text-style values into a shared scale; off = literal per-style tokens
+  typoScaleOnly: true, // default: emit ONLY the primitive scale (--font-size-md …); components reference it directly, no per-style tokens
   typoNaming: "tshirt", // "tshirt" (--font-size-lg) | "value" (--font-size-32) — primitive names
-  typoShorthand: false, // also emit a CSS `font` shorthand token per style (`--<style>-font`)
+  typoShorthand: false, // also emit a CSS `font` shorthand token per style (`--<style>-font`) — ignored when typoScaleOnly
 };
 
 function sanitizeAttr(value) {
@@ -926,6 +931,7 @@ function normalizeOptions(o) {
     emitModuleFiles: pick("emitModuleFiles"),
     cssModulesGlobal: pick("cssModulesGlobal"),
     typoExtract: pick("typoExtract"),
+    typoScaleOnly: pick("typoScaleOnly"),
     typoNaming: o.typoNaming === "value" ? "value" : "tshirt",
     typoShorthand: pick("typoShorthand"),
     themeAttr: sanitizeAttr(o.themeAttr),
@@ -1032,8 +1038,9 @@ function buildReadme(summary, options) {
     `inline primitives \`${opts.inlinePrimitives ? "on" : "off"}\``,
     opts.inlinePrimitives ? `flatten all \`${opts.flattenAliases ? "on" : "off"}\`` : null,
     `typography scale \`${opts.typoExtract ? "on" : "off"}\``,
+    opts.typoExtract ? `scale only \`${opts.typoScaleOnly ? "on" : "off"}\`` : null,
     opts.typoExtract ? `scale names \`${opts.typoNaming === "value" ? "by value" : "t-shirt"}\`` : null,
-    opts.typoExtract ? `font shorthand \`${opts.typoShorthand ? "on" : "off"}\`` : null,
+    opts.typoExtract && !opts.typoScaleOnly ? `font shorthand \`${opts.typoShorthand ? "on" : "off"}\`` : null,
     `theme attribute \`${attr}\``,
     `per-theme modules \`${opts.emitModuleFiles ? "on" : "off"}\``,
     opts.emitModuleFiles ? `\`:global()\` \`${opts.cssModulesGlobal ? "on" : "off"}\`` : null,
@@ -1042,9 +1049,11 @@ function buildReadme(summary, options) {
     .join(" · ");
 
   const typoNote = opts.typoExtract && summary.textStyleCount
-    ? "\n\nText-style values are factored into a shared typography scale (`--font-size-…`, `--font-weight-…`, …); each style references the scale with `var(--…)`" +
-      (opts.typoShorthand ? ", plus a CSS `font` shorthand token per style (`--<style>-font`)" : "") +
-      "."
+    ? opts.typoScaleOnly
+      ? "\n\nText-style values are factored into a shared typography scale (`--font-size-…`, `--font-weight-…`, …). Only the scale is emitted — compose each text style in your own CSS by referencing the primitives directly (e.g. `font-size: var(--font-size-md)`)."
+      : "\n\nText-style values are factored into a shared typography scale (`--font-size-…`, `--font-weight-…`, …); each style references the scale with `var(--…)`" +
+        (opts.typoShorthand ? ", plus a CSS `font` shorthand token per style (`--<style>-font`)" : "") +
+        "."
     : "";
 
   const moduleSection = opts.emitModuleFiles

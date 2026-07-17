@@ -439,6 +439,11 @@
             <span class="set-text"><b>Extract typography scale</b><i>Dedupe text-style values into <code>--font-size-&hellip;</code> primitives &middot; styles use <code>var()</code></i></span>
             <span class="switch"><input type="checkbox" id="optTypo"><span class="track"></span></span>
           </label>
+          <label class="set-row" for="optTypoScaleOnly" id="optTypoScaleOnlyRow">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12h16M4 7h16M4 17h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="set-text"><b>Scale only</b><i>Emit just the scale &middot; components reference <code>--font-size-md</code> directly, no per-style tokens</i></span>
+            <span class="switch"><input type="checkbox" id="optTypoScaleOnly"><span class="track"></span></span>
+          </label>
           <label class="set-row" for="optTypoTshirt" id="optTypoTshirtRow">
             <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 7h.01" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
             <span class="set-text"><b>T-shirt scale names</b><i>Scale &amp; generated variables &middot; on <code>font-size/lg</code>, off <code>font-size/32</code></i></span>
@@ -576,7 +581,7 @@ var FILES = {};       // { "tokens.css": "...", ... }
 var SUMMARY = null;
 var TAB = null;       // active preview filename
 var OPTIONS = { inlinePrimitives: true, flattenAliases: false, themeAttr: "data-theme-name", emitModuleFiles: true, cssModulesGlobal: true,
-  typoExtract: false, typoNaming: "tshirt", typoShorthand: false,
+  typoExtract: true, typoScaleOnly: true, typoNaming: "tshirt", typoShorthand: false,
   delivery: { endpoint: "", secret: "", target: "folder", route: { repo: "", branch: "", path: "", package: "" }, onChange: false, onOpen: false } };
 var EDITOR = "figma";           // figma.editorType — gates variable creation (Dev Mode is read-only)
 var lastDeliveredHash = null;   // FILES snapshot last successfully delivered
@@ -721,11 +726,13 @@ function syncControls(){
   $("optGlobal").checked = !!OPTIONS.cssModulesGlobal;
   if(document.activeElement !== $("optAttr")) $("optAttr").value = OPTIONS.themeAttr;
   $("optTypo").checked = !!OPTIONS.typoExtract;
+  $("optTypoScaleOnly").checked = !!OPTIONS.typoScaleOnly;
   $("optTypoTshirt").checked = OPTIONS.typoNaming !== "value";
   $("optTypoShorthand").checked = !!OPTIONS.typoShorthand;
   $("optFlattenRow").classList.toggle("disabled", !OPTIONS.inlinePrimitives);
   $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
-  $("optTypoShorthandRow").classList.toggle("disabled", !OPTIONS.typoExtract);
+  $("optTypoScaleOnlyRow").classList.toggle("disabled", !OPTIONS.typoExtract);
+  $("optTypoShorthandRow").classList.toggle("disabled", !OPTIONS.typoExtract || OPTIONS.typoScaleOnly);
   // delivery
   var d = OPTIONS.delivery || {}, r = d.route || {};
   var setIf = function(id, v){ if(document.activeElement !== $(id)) $(id).value = v || ""; };
@@ -752,6 +759,7 @@ function pushOptions(){
     emitModuleFiles: $("optModules").checked,
     cssModulesGlobal: $("optGlobal").checked,
     typoExtract: $("optTypo").checked,
+    typoScaleOnly: $("optTypoScaleOnly").checked,
     typoNaming: $("optTypoTshirt").checked ? "tshirt" : "value",
     typoShorthand: $("optTypoShorthand").checked,
     themeAttr: $("optAttr").value,
@@ -759,7 +767,8 @@ function pushOptions(){
   };
   $("optFlattenRow").classList.toggle("disabled", !OPTIONS.inlinePrimitives);
   $("optGlobalRow").classList.toggle("disabled", !OPTIONS.emitModuleFiles);
-  $("optTypoShorthandRow").classList.toggle("disabled", !OPTIONS.typoExtract);
+  $("optTypoScaleOnlyRow").classList.toggle("disabled", !OPTIONS.typoExtract);
+  $("optTypoShorthandRow").classList.toggle("disabled", !OPTIONS.typoExtract || OPTIONS.typoScaleOnly);
   applyTargetVisibility();
   refreshDeliverUI();
   manageWatch();
@@ -795,7 +804,7 @@ function deliver(manual){
   if(!hasFiles()){ if(manual) setStatus("err", "nothing to deliver yet"); return Promise.resolve(false); }
   var payload = {
     files: FILES, target: d.target, route: d.route,
-    options: { inlinePrimitives: OPTIONS.inlinePrimitives, flattenAliases: OPTIONS.flattenAliases, emitModuleFiles: OPTIONS.emitModuleFiles, cssModulesGlobal: OPTIONS.cssModulesGlobal, typoExtract: OPTIONS.typoExtract, typoNaming: OPTIONS.typoNaming, typoShorthand: OPTIONS.typoShorthand, themeAttr: OPTIONS.themeAttr },
+    options: { inlinePrimitives: OPTIONS.inlinePrimitives, flattenAliases: OPTIONS.flattenAliases, emitModuleFiles: OPTIONS.emitModuleFiles, cssModulesGlobal: OPTIONS.cssModulesGlobal, typoExtract: OPTIONS.typoExtract, typoScaleOnly: OPTIONS.typoScaleOnly, typoNaming: OPTIONS.typoNaming, typoShorthand: OPTIONS.typoShorthand, themeAttr: OPTIONS.themeAttr },
     meta: { fileName: SUMMARY && SUMMARY.fileName, themes: (SUMMARY && SUMMARY.themes) || [] }
   };
   setStatus("", "delivering…"); $("deliverNow").disabled = true;
@@ -817,7 +826,7 @@ function maybeAutoDeliver(){
 
 $("openSettings").addEventListener("click", function(){ show("settings"); });
 $("closeSettings").addEventListener("click", function(){ show(MAIN_VIEW); });
-["optInline","optFlatten","optModules","optGlobal","optTypo","optTypoTshirt","optTypoShorthand"].forEach(function(id){
+["optInline","optFlatten","optModules","optGlobal","optTypo","optTypoScaleOnly","optTypoTshirt","optTypoShorthand"].forEach(function(id){
   $(id).addEventListener("change", pushOptions);
 });
 var attrTimer;
