@@ -339,11 +339,21 @@ function aliasTarget(value) {
 
 var UNITLESS_TOKEN = /(^|[-_])(opacity|z-?index|font-?weight|weight|line-?height|lineheight|flex|order|aspect|ratio|scale|count|columns?)([-_]|$)/i;
 
+// line-height is the one ambiguous axis: it can be a unit-less ratio (1.5) OR pixels
+// (16px), and a bare Figma number variable carries no unit. Split by magnitude — a ratio
+// is always small (~1–2.5), a px line-height always large (≥ ~8) — so <4 → unit-less, else px.
+var LINE_HEIGHT_TOKEN = /(^|[-_])line-?height([-_]|$)/i;
+var LINE_HEIGHT_RATIO_MAX = 4;
+
 function cssValue(value, path) {
   const alias = aliasTarget(value);
   if (alias) return `var(--${varName(alias)})`;
   if (typeof value === "number") {
-    const unitless = value === 0 || (path ? path.some((seg) => UNITLESS_TOKEN.test(seg)) : false);
+    if (value === 0) return "0";
+    if (path && path.some((seg) => LINE_HEIGHT_TOKEN.test(seg))) {
+      return Math.abs(value) < LINE_HEIGHT_RATIO_MAX ? String(value) : `${value}px`;
+    }
+    const unitless = path ? path.some((seg) => UNITLESS_TOKEN.test(seg)) : false;
     return unitless ? String(value) : `${value}px`;
   }
   if (typeof value === "boolean") return String(value);
