@@ -540,6 +540,7 @@
          The target picker hides on the settings page (its views live under the main dash). -->
     <select id="target-select" class="target-select" aria-label="Export target">
       <option value="django">Django × Bootstrap</option>
+      <option value="tauri">Tauri</option>
       <option value="design-tokens">Design Tokens</option>
       <option value="ds-tools">DS Tools</option>
     </select>
@@ -1259,9 +1260,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function applyExportOptions(options) {
         OPTIONS = options
         if (!relaunchPending) setScopeMode(options.scopeMode)
-        document.getElementById('target-select').value = options.target || 'django'
-        onTargetChange(options.target || 'django')
+        document.getElementById('target-select').value = targetDisplayValue()
+        onTargetChange(targetDisplayValue())
         syncSettingsControls()
+      }
+
+      // Tauri is a first-class entry in the header picker, but it rides the shared export
+      // pipeline: the persisted TargetId stays 'django' and `targetOptions.platform` decides
+      // the emitted package shape. These two map OPTIONS ↔ the picker's display value.
+      function targetDisplayValue() {
+        if (!OPTIONS) return 'django'
+        if (OPTIONS.target === 'django' && OPTIONS.targetOptions && OPTIONS.targetOptions.platform === 'tauri') return 'tauri'
+        return OPTIONS.target || 'django'
+      }
+      function syncTargetSelect() {
+        var el = document.getElementById('target-select')
+        if (el !== document.activeElement) el.value = targetDisplayValue()
       }
 
       // M12/REFORM: persists the full options object on every change. Scope radios and module
@@ -1273,6 +1287,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         payload.scopeMode = currentScope().mode
         payload.modules = currentModules()
         updatePresetIndicator()
+        syncTargetSelect()
         parent.postMessage({ pluginMessage: { type: 'SAVE_EXPORT_OPTIONS', options: payload } }, '*')
       }
 
@@ -1333,10 +1348,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         document.getElementById('crumb').textContent = settings ? ' · Settings' : ''
       }
 
-      // Target switching
-      function onTargetChange(target) {
+      // Target switching. `picked` is the header picker's value: 'tauri' selects the shared
+      // export pipeline (TargetId 'django') with the tauri platform; picking 'django' switches
+      // the platform back. Preset application passes the display value too (see below).
+      function onTargetChange(picked) {
         if (!OPTIONS) return
+        var target = picked === 'tauri' ? 'django' : picked
         OPTIONS.target = target
+        if (picked === 'tauri') OPTIONS.targetOptions.platform = 'tauri'
+        if (picked === 'django') OPTIONS.targetOptions.platform = 'django'
+        syncSettingsControls()
         var isDjango = target === 'django'
         var isTokens = target === 'design-tokens'
         document.getElementById('export-btn').classList.toggle('hidden', !isDjango)
@@ -1748,8 +1769,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         // picker and the visible dashboard in step with it — otherwise closing Settings reveals a
         // page the picker doesn't name. onTargetChange persists and rescans for the new target.
         if (targetChanged) {
-          document.getElementById('target-select').value = values.target
-          onTargetChange(values.target)
+          // Pass the DISPLAY value: a tauri preset must not have its platform clobbered back
+          // to django by onTargetChange's picked-value mapping.
+          var display = values.target === 'django' && values.targetOptions && values.targetOptions.platform === 'tauri' ? 'tauri' : values.target
+          document.getElementById('target-select').value = display
+          onTargetChange(display)
         } else {
           persistExportOptions()
         }
