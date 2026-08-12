@@ -4,5 +4,9 @@
 # tooling (none required today — plugin is zero-build)
 node_modules/
 *.log
+
+# python bytecode (cli/, tests/)
+__pycache__/
+*.pyc
 # CocoIndex Code (ccc)
 /.cocoindex_code/
