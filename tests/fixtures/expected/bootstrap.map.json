@@ -1,0 +1,27 @@
+{
+  "$comment": "Bootstrap variable → design-token mapping (paths are dotted keys into tokens.json). Edit and run `altery-dj tokens` to rebuild bootstrap-tokens.css / _tokens.scss without a Figma re-export.",
+  "map": {
+    "--bs-primary": "color.primary",
+    "--bs-secondary": "color.secondary",
+    "--bs-body-bg": "color.background",
+    "--bs-body-color": "color.text",
+    "--bs-body-font-family": "typography.font-family-base",
+    "--bs-body-font-size": "typography.font-size-base"
+  },
+  "unmatched": [
+    "--bs-success",
+    "--bs-danger",
+    "--bs-warning",
+    "--bs-info",
+    "--bs-light",
+    "--bs-dark",
+    "--bs-secondary-color",
+    "--bs-border-color",
+    "--bs-link-color",
+    "--bs-link-hover-color",
+    "--bs-border-radius",
+    "--bs-border-radius-sm",
+    "--bs-border-radius-lg",
+    "--bs-border-radius-xl"
+  ]
+}

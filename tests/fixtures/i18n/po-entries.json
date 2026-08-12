@@ -1,0 +1,21 @@
+{
+  "description": "T7.2 fixture for the PO generator (src/i18n/po.ts emitPo): entries shaped like extractStrings() output — one with a context/comment/reference, one relying on inline markup with no context or comment.",
+  "entries": [
+    {
+      "msgid": "Place order",
+      "msgctxt": "checkout.submit",
+      "markup": null,
+      "references": ["figma://REF-Figma2Django-0001?node-id=10:2 Card/Title"],
+      "comment": "Primary CTA button label",
+      "nodeIds": ["10:2"]
+    },
+    {
+      "msgid": "Read the docs",
+      "msgctxt": "",
+      "markup": "Read <strong>the docs</strong>",
+      "references": ["figma://REF-Figma2Django-0001?node-id=11:3 Badge/Label"],
+      "comment": "",
+      "nodeIds": ["11:3"]
+    }
+  ]
+}

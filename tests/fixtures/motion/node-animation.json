@@ -1,0 +1,15 @@
+{
+  "description": "T7.2 fixture for the keyframes emitter (src/motion/css-emitter.ts emitNodeAnimationCss): a single OPACITY track fading 0 -> 1 over 0.8s with an EASE_OUT preset easing.",
+  "selector": ".card-9c41",
+  "tracks": [
+    {
+      "field": "OPACITY",
+      "baseValue": { "type": "FLOAT", "value": 0 },
+      "timelineDuration": 0.8,
+      "keyframes": [
+        { "id": "op-0", "timelinePosition": 0, "easing": { "type": "LINEAR" }, "value": { "type": "FLOAT", "value": 0 } },
+        { "id": "op-1", "timelinePosition": 0.8, "easing": { "type": "EASE_OUT" }, "value": { "type": "FLOAT", "value": 1 } }
+      ]
+    }
+  ]
+}

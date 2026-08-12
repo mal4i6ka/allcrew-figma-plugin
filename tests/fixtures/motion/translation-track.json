@@ -1,0 +1,16 @@
+{
+  "description": "T7.2 fixture for the keyframes emitter (src/motion/css-emitter.ts emitKeyframesRule): reference example from docs/research/06-motion-to-gsap-tokens.md §2.7 — 0.8s timeline, TRANSLATION_Y 40 -> 0 with EASE_OUT_BACK entering the 0.6s keyframe, then HOLD at 0.8s.",
+  "field": "TRANSLATION_Y",
+  "baseValue": { "type": "FLOAT", "value": 40 },
+  "timelineDuration": 0.8,
+  "keyframes": [
+    { "id": "kf-0", "timelinePosition": 0.0, "easing": { "type": "LINEAR" }, "value": { "type": "FLOAT", "value": 40 } },
+    {
+      "id": "kf-1",
+      "timelinePosition": 0.6,
+      "easing": { "type": "EASE_OUT_BACK", "easingFunctionCubicBezier": { "x1": 0.34, "y1": 1.56, "x2": 0.64, "y2": 1 } },
+      "value": { "type": "FLOAT", "value": 0 }
+    },
+    { "id": "kf-2", "timelinePosition": 0.8, "easing": { "type": "HOLD" }, "value": { "type": "FLOAT", "value": 0 } }
+  ]
+}

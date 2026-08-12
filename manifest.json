@@ -2,13 +2,15 @@
   "name": "Altery Design System Export",
   "id": "1651718430682497631",
   "api": "1.0.0",
-  "main": "code.js",
-  "ui": "ui.html",
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
   "editorType": ["figma", "dev"],
   "capabilities": ["inspect"],
   "documentAccess": "dynamic-page",
   "networkAccess": {
     "allowedDomains": ["*"],
     "reasoning": "Token extraction is fully client-side. The optional delivery step POSTs the generated package to a user-configured receiver endpoint (which may be any host — local, Tailscale, CI), so the domain can't be fixed ahead of time."
-  }
+  },
+  "permissions": ["currentuser", "teamlibrary"],
+  "relaunchButtons": [{ "command": "reexport", "name": "Re-export", "multipleSelection": true }]
 }

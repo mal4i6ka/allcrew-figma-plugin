@@ -1,0 +1,28 @@
+/* Bootstrap variable overrides generated from design tokens — link AFTER bootstrap.css.
+   Mapping: bootstrap.map.json (edit + `altery-dj tokens` to rebuild without Figma). */
+:root,
+[data-bs-theme="light"] {
+  --bs-primary: #4f46e5;
+  --bs-primary-rgb: 79, 70, 229;
+  --bs-secondary: #14b8a6;
+  --bs-secondary-rgb: 20, 184, 166;
+  --bs-body-bg: #ffffff;
+  --bs-body-bg-rgb: 255, 255, 255;
+  --bs-body-color: #111214;
+  --bs-body-color-rgb: 17, 18, 20;
+  --bs-body-font-family: 'Inter', sans-serif;
+  --bs-body-font-size: 16px;
+}
+
+[data-bs-theme="dark"] {
+  --bs-primary: #8472f6;
+  --bs-primary-rgb: 132, 114, 246;
+  --bs-secondary: #14b8a6;
+  --bs-secondary-rgb: 20, 184, 166;
+  --bs-body-bg: #111114;
+  --bs-body-bg-rgb: 17, 17, 20;
+  --bs-body-color: #f2f3f6;
+  --bs-body-color-rgb: 242, 243, 246;
+  --bs-body-font-family: 'Inter', sans-serif;
+  --bs-body-font-size: 16px;
+}

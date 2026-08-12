@@ -1,0 +1,64 @@
+{
+  "description": "T7.2 fixture for the alias resolver (src/variables.ts resolveVariableValue/resolveForConsumer): a semantic 'spacing/gap' variable that VARIABLE_ALIAS-references a primitive 'spacing/md' variable in a different collection, plus a two-variable alias cycle.",
+  "collections": [
+    {
+      "id": "col-primitives",
+      "defaultModeId": "prim-default",
+      "modes": [{ "modeId": "prim-default", "name": "Default" }]
+    },
+    {
+      "id": "col-semantic",
+      "defaultModeId": "sem-light",
+      "modes": [
+        { "modeId": "sem-light", "name": "Light" },
+        { "modeId": "sem-dark", "name": "Dark" }
+      ]
+    }
+  ],
+  "variables": [
+    {
+      "id": "var-spacing-md",
+      "name": "spacing/md",
+      "variableCollectionId": "col-primitives",
+      "resolvedType": "FLOAT",
+      "valuesByMode": { "prim-default": 16 }
+    },
+    {
+      "id": "var-spacing-gap",
+      "name": "spacing/gap",
+      "variableCollectionId": "col-semantic",
+      "resolvedType": "FLOAT",
+      "valuesByMode": {
+        "sem-light": { "type": "VARIABLE_ALIAS", "id": "var-spacing-md" },
+        "sem-dark": { "type": "VARIABLE_ALIAS", "id": "var-spacing-md" }
+      }
+    },
+    {
+      "id": "var-cycle-a",
+      "name": "cycle/a",
+      "variableCollectionId": "col-semantic",
+      "resolvedType": "FLOAT",
+      "valuesByMode": { "sem-light": { "type": "VARIABLE_ALIAS", "id": "var-cycle-b" } }
+    },
+    {
+      "id": "var-cycle-b",
+      "name": "cycle/b",
+      "variableCollectionId": "col-semantic",
+      "resolvedType": "FLOAT",
+      "valuesByMode": { "sem-light": { "type": "VARIABLE_ALIAS", "id": "var-cycle-a" } }
+    }
+  ],
+  "consumerWithExplicitMode": {
+    "id": "child-node",
+    "explicitVariableModes": {},
+    "parent": {
+      "id": "frame-node",
+      "explicitVariableModes": { "col-semantic": "sem-dark" },
+      "parent": {
+        "id": "root-node",
+        "explicitVariableModes": {},
+        "parent": null
+      }
+    }
+  }
+}

@@ -1,0 +1,179 @@
+{
+  "file_key": "REF-Figma2Django-0001",
+  "file_name": "Figma-to-Django Reference Stand",
+  "description": "Эталонный Figma-файл для тестового стенда T0.3: Local Variables, компоненты с props, именованные текстовые стили и анимированный фрейм.",
+  "collections": [
+    {
+      "id": "VariableCollectionId:1:1",
+      "name": "Color",
+      "modes": [
+        { "modeId": "1:0", "name": "Light" },
+        { "modeId": "1:1", "name": "Dark" }
+      ]
+    },
+    {
+      "id": "VariableCollectionId:2:1",
+      "name": "Spacing",
+      "modes": [{ "modeId": "2:0", "name": "Default" }]
+    },
+    {
+      "id": "VariableCollectionId:3:1",
+      "name": "Typography",
+      "modes": [{ "modeId": "3:0", "name": "Default" }]
+    }
+  ],
+  "variables": [
+    {
+      "id": "VariableID:1:2",
+      "key": "color-primary",
+      "name": "color/primary",
+      "collectionId": "VariableCollectionId:1:1",
+      "scopes": ["ALL_FILLS"],
+      "resolvedType": "COLOR",
+      "valuesByMode": {
+        "1:0": { "r": 0.30980393, "g": 0.27450982, "b": 0.8980392, "a": 1 },
+        "1:1": { "r": 0.5176471, "g": 0.44705883, "b": 0.9647059, "a": 1 }
+      }
+    },
+    {
+      "id": "VariableID:1:3",
+      "key": "color-secondary",
+      "name": "color/secondary",
+      "collectionId": "VariableCollectionId:1:1",
+      "scopes": ["ALL_FILLS"],
+      "resolvedType": "COLOR",
+      "valuesByMode": {
+        "1:0": { "r": 0.078431375, "g": 0.7215686, "b": 0.6509804, "a": 1 },
+        "1:1": { "r": 0.078431375, "g": 0.7215686, "b": 0.6509804, "a": 1 }
+      }
+    },
+    {
+      "id": "VariableID:1:4",
+      "key": "color-background",
+      "name": "color/background",
+      "collectionId": "VariableCollectionId:1:1",
+      "scopes": ["ALL_FILLS", "FRAME_FILL"],
+      "resolvedType": "COLOR",
+      "valuesByMode": {
+        "1:0": { "r": 1, "g": 1, "b": 1, "a": 1 },
+        "1:1": { "r": 0.06666667, "g": 0.06666667, "b": 0.078431375, "a": 1 }
+      }
+    },
+    {
+      "id": "VariableID:1:5",
+      "key": "color-text",
+      "name": "color/text",
+      "collectionId": "VariableCollectionId:1:1",
+      "scopes": ["ALL_FILLS", "TEXT_FILL"],
+      "resolvedType": "COLOR",
+      "valuesByMode": {
+        "1:0": { "r": 0.06666667, "g": 0.07058824, "b": 0.078431375, "a": 1 },
+        "1:1": { "r": 0.9490196, "g": 0.9529412, "b": 0.9647059, "a": 1 }
+      }
+    },
+    {
+      "id": "VariableID:2:2",
+      "key": "spacing-sm",
+      "name": "spacing/sm",
+      "collectionId": "VariableCollectionId:2:1",
+      "scopes": ["GAP", "WIDTH_HEIGHT"],
+      "resolvedType": "FLOAT",
+      "valuesByMode": { "2:0": 8 }
+    },
+    {
+      "id": "VariableID:2:3",
+      "key": "spacing-md",
+      "name": "spacing/md",
+      "collectionId": "VariableCollectionId:2:1",
+      "scopes": ["GAP", "WIDTH_HEIGHT"],
+      "resolvedType": "FLOAT",
+      "valuesByMode": { "2:0": 16 }
+    },
+    {
+      "id": "VariableID:2:4",
+      "key": "spacing-lg",
+      "name": "spacing/lg",
+      "collectionId": "VariableCollectionId:2:1",
+      "scopes": ["GAP", "WIDTH_HEIGHT"],
+      "resolvedType": "FLOAT",
+      "valuesByMode": { "2:0": 32 }
+    },
+    {
+      "id": "VariableID:3:2",
+      "key": "font-size-base",
+      "name": "typography/font-size-base",
+      "collectionId": "VariableCollectionId:3:1",
+      "scopes": ["FONT_SIZE"],
+      "resolvedType": "FLOAT",
+      "valuesByMode": { "3:0": 16 }
+    },
+    {
+      "id": "VariableID:3:3",
+      "key": "font-size-heading",
+      "name": "typography/font-size-heading",
+      "collectionId": "VariableCollectionId:3:1",
+      "scopes": ["FONT_SIZE"],
+      "resolvedType": "FLOAT",
+      "valuesByMode": { "3:0": 32 }
+    },
+    {
+      "id": "VariableID:3:4",
+      "key": "font-family-base",
+      "name": "typography/font-family-base",
+      "collectionId": "VariableCollectionId:3:1",
+      "scopes": ["FONT_FAMILY"],
+      "resolvedType": "STRING",
+      "valuesByMode": { "3:0": "'Inter', sans-serif" }
+    }
+  ],
+  "textStyles": [
+    { "id": "S:1:1", "name": "Heading/H1", "fontFamily": "Inter", "fontStyle": "Bold", "fontSize": 32, "lineHeightPx": 40 },
+    { "id": "S:1:2", "name": "Body/Base", "fontFamily": "Inter", "fontStyle": "Regular", "fontSize": 16, "lineHeightPx": 24 }
+  ],
+  "components": [
+    {
+      "id": "COMP:10:1",
+      "key": "component-card",
+      "name": "Card",
+      "node_id": "10:1",
+      "componentPropertyDefinitions": {
+        "title": { "type": "TEXT", "defaultValue": "Card title" },
+        "visible": { "type": "BOOLEAN", "defaultValue": true }
+      }
+    },
+    {
+      "id": "COMP:11:1",
+      "key": "component-badge",
+      "name": "Badge",
+      "node_id": "11:1",
+      "componentPropertyDefinitions": {
+        "label": { "type": "TEXT", "defaultValue": "New" },
+        "highlighted": { "type": "BOOLEAN", "defaultValue": false }
+      }
+    }
+  ],
+  "frames": [
+    {
+      "id": "FRAME:20:1",
+      "name": "Onboarding / Step 1",
+      "node_id": "20:1",
+      "reactions": [
+        {
+          "trigger": { "type": "ON_CLICK" },
+          "action": {
+            "type": "NODE",
+            "destinationId": "20:2",
+            "navigation": "NAVIGATE",
+            "transition": { "type": "SMART_ANIMATE", "easing": { "type": "EASE_IN_AND_OUT" }, "duration": 0.3 }
+          }
+        }
+      ]
+    },
+    {
+      "id": "FRAME:20:2",
+      "name": "Onboarding / Step 2",
+      "node_id": "20:2",
+      "reactions": []
+    }
+  ]
+}

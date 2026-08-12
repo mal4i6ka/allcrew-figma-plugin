@@ -1,0 +1,17 @@
+[project]
+name = "altery"
+version = "0.2.0"
+description = "Terminal companion for the Altery Design System Export Figma plugin: apply packages, merge PO catalogs, rebuild token files, vendor Bootstrap, run checks."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+[project.scripts]
+altery = "altery_dj.cli:main"
+altery-dj = "altery_dj.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["altery_dj"]

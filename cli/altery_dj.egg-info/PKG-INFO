@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: altery-dj
+Version: 0.1.0
+Summary: Terminal companion for the Altery Django Export Figma plugin: apply packages, merge PO catalogs, rebuild token files, vendor Bootstrap, run checks.
+License: Proprietary
+Requires-Python: >=3.11
