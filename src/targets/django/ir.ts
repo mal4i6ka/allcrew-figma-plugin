@@ -6,7 +6,7 @@
  * nodes by identity rather than position.
  */
 
-import { isExportedGraphic } from '../../utils/graphics.ts'
+import { resolveExportSettings, type ExportMarkedInstanceNode } from '../../utils/graphics.ts'
 import { needsSvg, ellipseArcPath, isDefaultArc } from './geometry.ts'
 import { rgbaToCss } from './tokens.ts'
 import { transitionToCssTiming } from './smart-animate/easing-adapter.ts'
@@ -654,11 +654,54 @@ const OVERFLOW_DIRECTION: Record<'HORIZONTAL' | 'VERTICAL' | 'BOTH', IrOverflow>
 }
 
 /** `overflowDirection` (M4c) — only meaningful when the frame also clips, since an un-clipped
- * frame's children already render outside its box in Figma (nothing to scroll inside). */
-function overflowFlag(node: { clipsContent?: boolean; overflowDirection?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH' }): { overflow?: IrOverflow } {
+ * frame's children already render outside its box in Figma (nothing to scroll inside).
+ * When the designer did NOT set a scroll behavior, `measuredOverflowFlag` falls back to the
+ * live geometry: a clipping auto-layout frame whose in-flow content overruns its FIXED primary
+ * axis is a list the designer overfilled — in a real app that container scrolls, so the export
+ * gives it a scrollbar instead of silently clipping (the "containers with overflow but no
+ * scroll" fidelity gap). Decorative bleeds stay clipped: absolutely-positioned children are
+ * excluded from the measurement, and hug-sized frames grow instead of overflowing. */
+function overflowFlag(node: {
+  clipsContent?: boolean
+  overflowDirection?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'
+}): { overflow?: IrOverflow } {
   if (!node.clipsContent) return {}
   const direction = node.overflowDirection
   return direction && direction !== 'NONE' ? { overflow: OVERFLOW_DIRECTION[direction] } : {}
+}
+
+/** Content must overrun the box by more than this to count — Figma float noise and 1-2px
+ * shadow/stroke spill must not turn every clipped card into a scroll container. */
+const MEASURED_OVERFLOW_SLACK_PX = 8
+
+function measuredOverflowFlag(node: {
+  clipsContent?: boolean
+  layoutMode?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'GRID'
+  primaryAxisSizingMode?: 'FIXED' | 'AUTO'
+  width?: number
+  height?: number
+  children?: readonly SceneNode[]
+}): { overflow?: IrOverflow } {
+  try {
+    if (!node.clipsContent || !node.children) return {}
+    const mode = node.layoutMode
+    if (mode !== 'HORIZONTAL' && mode !== 'VERTICAL') return {}
+    // A hug-sized primary axis grows with content — nothing can overflow it.
+    if (node.primaryAxisSizingMode !== 'FIXED') return {}
+    const size = mode === 'VERTICAL' ? node.height : node.width
+    if (typeof size !== 'number') return {}
+    let extent = 0
+    for (const child of node.children) {
+      if (child.visible === false) continue
+      if ('layoutPositioning' in child && child.layoutPositioning === 'ABSOLUTE') continue
+      const edge = mode === 'VERTICAL' ? child.y + child.height : child.x + child.width
+      if (edge > extent) extent = edge
+    }
+    if (extent > size + MEASURED_OVERFLOW_SLACK_PX) return { overflow: mode === 'VERTICAL' ? 'y' : 'x' }
+    return {}
+  } catch {
+    return {} // detached/variant edge cases — no scroll is the safe default
+  }
 }
 
 /** The `AutoLayoutMixin` fields a flex layout reads. A real auto-layout frame and an
@@ -686,7 +729,15 @@ type FlexSource = Pick<
  * an inferred result carries the auto-layout fields but not the frame's own clip/scroll settings. */
 function flexLayout(
   al: FlexSource,
-  node: { clipsContent?: boolean; overflowDirection?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH' }
+  node: {
+    clipsContent?: boolean
+    overflowDirection?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'
+    layoutMode?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'GRID'
+    primaryAxisSizingMode?: 'FIXED' | 'AUTO'
+    width?: number
+    height?: number
+    children?: readonly SceneNode[]
+  }
 ): IrFlexLayout {
   const wrap = al.layoutMode === 'HORIZONTAL' && al.layoutWrap === 'WRAP'
   // counterAxisSpacing (wrap-only cross-axis gap): null means "same as itemSpacing".
@@ -714,7 +765,8 @@ function flexLayout(
     ...(al.strokesIncludedInLayout ? { strokesIncludedInLayout: true as const } : {}),
     ...(al.itemReverseZIndex ? { reverseZIndex: true as const } : {}),
     ...clipFlag(node),
-    ...overflowFlag(node),
+    // The designer's explicit scroll behavior wins; measured content overflow fills the gap.
+    ...(overflowFlag(node).overflow ? overflowFlag(node) : measuredOverflowFlag(node)),
   }
 }
 
@@ -1581,9 +1633,13 @@ export async function serializeInstance(node: InstanceNode, isGridChild = false)
  * vector tree, so its internals are never linted or serialized. The asset pass exports every
  * format/scale the designer configured in Figma's Export panel; `assetSrc` names the primary file
  * (SVG > 1x raster > any raster, defaulting to a 1x PNG) the template's `<img>` references. */
-async function serializeExportedGraphic(node: SceneNode, isGridChild: boolean): Promise<IrImageNode | IrVectorNode> {
+async function serializeExportedGraphic(
+  node: SceneNode,
+  isGridChild: boolean,
+  settingsOverride?: ReadonlyArray<DesignerExportSetting>
+): Promise<IrImageNode | IrVectorNode> {
   const base = { ...baseProps(node as Parameters<typeof baseProps>[0], isGridChild), ...(await readStyleRefs(node)) }
-  const settings = ((node as ExportMixin).exportSettings ?? []) as ReadonlyArray<DesignerExportSetting>
+  const settings = settingsOverride ?? (((node as ExportMixin).exportSettings ?? []) as ReadonlyArray<DesignerExportSetting>)
   const assetSrc = `img/${primaryDesignerAssetFilename(node.id, node.name, settings)}`
   if (primaryDesignerSetting(settings)?.format === 'SVG') {
     return { ...base, type: 'vector', assetSrc }
@@ -1621,11 +1677,14 @@ export async function serializeNode(node: SceneNode, isGridChild = false): Promi
   if ((node as { removed?: boolean }).removed) return null
   if (node.visible === false) return null
   // A node with export settings is an opaque graphic — emit it as one asset, don't walk its tree.
+  // For an INSTANCE without its own settings, the master component's Export panel counts
+  // (`resolveExportSettings`) — Figma never mirrors the master root's settings onto instances.
   // EXCEPTION: a video fill wins over the convention. Export settings on a video layer (usually a
   // leftover from a Dev Mode → Assets → Download attempt) can only produce stills — routing the
   // node to serializeExportedGraphic would silently freeze the <video> into an <img>.
-  if (isExportedGraphic(node) && !hasVideoFill(node as unknown as { fills?: MinimalFillsMixin['fills'] })) {
-    return serializeExportedGraphic(node, isGridChild)
+  const exportSettings = await resolveExportSettings(node as unknown as ExportMarkedInstanceNode)
+  if (exportSettings.length > 0 && !hasVideoFill(node as unknown as { fills?: MinimalFillsMixin['fills'] })) {
+    return serializeExportedGraphic(node, isGridChild, exportSettings as ReadonlyArray<DesignerExportSetting>)
   }
 
   switch (node.type) {

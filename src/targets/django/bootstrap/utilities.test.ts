@@ -176,3 +176,25 @@ test('emitDjangoProject at utilities fidelity rewrites the page markup and shrin
   assert.ok(utilized.css.length < plain.css.length, 'extracted declarations shrink project.css')
   assert.doesNotMatch(utilized.css, /display: flex/)
 })
+
+test('same-rule kept longhand blocks extracting its shorthand sibling (scroll axis survives)', () => {
+  // The kanban-column case: clip → `overflow: hidden`, Figma scroll behavior → `overflow-y: auto`.
+  // Extracting `.overflow-hidden` (!important) would kill the scroll axis — the whole rule's
+  // overflow group must stay inline instead.
+  const css = ['.col {', '  display: flex;', '  overflow: hidden;', '  overflow-y: auto;', '}', ''].join('\n')
+  const result = applyBootstrapUtilities({ css, pages: {}, partials: {} })
+  assert.deepEqual(result.utilities.get('col'), ['d-flex'])
+  assert.match(result.css, /overflow: hidden;/)
+  assert.match(result.css, /overflow-y: auto;/)
+
+  // Same-family-prefix but different property group must still extract: `flex: 1 0 0` (kept)
+  // does not block `flex-direction` → `.flex-column`.
+  const flexCss = ['.fill {', '  flex: 1 0 0;', '  flex-direction: column;', '}', ''].join('\n')
+  const flexResult = applyBootstrapUtilities({ css: flexCss, pages: {}, partials: {} })
+  assert.deepEqual(flexResult.utilities.get('fill'), ['flex-column'])
+  assert.match(flexResult.css, /flex: 1 0 0;/)
+
+  // A rule whose overflow has no kept sibling still extracts.
+  const plain = applyBootstrapUtilities({ css: ['.clip {', '  overflow: hidden;', '}', ''].join('\n'), pages: {}, partials: {} })
+  assert.deepEqual(plain.utilities.get('clip'), ['overflow-hidden'])
+})

@@ -4030,6 +4030,18 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   function isExportedGraphic(node) {
     return Array.isArray(node.exportSettings) && node.exportSettings.length > 0;
   }
+  async function resolveExportSettings(node) {
+    var _a, _b, _c;
+    const own = (_a = node.exportSettings) != null ? _a : [];
+    if (own.length > 0) return own;
+    if (node.type !== "INSTANCE") return [];
+    try {
+      const master = node.getMainComponentAsync ? await node.getMainComponentAsync() : (_b = node.mainComponent) != null ? _b : null;
+      return (_c = master == null ? void 0 : master.exportSettings) != null ? _c : [];
+    } catch (e) {
+      return [];
+    }
+  }
 
   // src/targets/django/geometry.ts
   var TWO_PI = Math.PI * 2;
@@ -4374,9 +4386,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const filename = primary ? designerAssetFilename(id, name, primary) : null;
     return filename != null ? filename : rasterFilename(id, name, "png", 1);
   }
-  async function exportDesignerAssets(node) {
+  async function exportDesignerAssets(node, settingsOverride) {
     var _a;
-    const settings = (_a = node.exportSettings) != null ? _a : [];
+    const settings = (_a = settingsOverride != null ? settingsOverride : node.exportSettings) != null ? _a : [];
     const assets = [];
     const seen = /* @__PURE__ */ new Set();
     for (const setting of settings) {
@@ -4541,6 +4553,28 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const direction = node.overflowDirection;
     return direction && direction !== "NONE" ? { overflow: OVERFLOW_DIRECTION[direction] } : {};
   }
+  var MEASURED_OVERFLOW_SLACK_PX = 8;
+  function measuredOverflowFlag(node) {
+    try {
+      if (!node.clipsContent || !node.children) return {};
+      const mode = node.layoutMode;
+      if (mode !== "HORIZONTAL" && mode !== "VERTICAL") return {};
+      if (node.primaryAxisSizingMode !== "FIXED") return {};
+      const size = mode === "VERTICAL" ? node.height : node.width;
+      if (typeof size !== "number") return {};
+      let extent = 0;
+      for (const child of node.children) {
+        if (child.visible === false) continue;
+        if ("layoutPositioning" in child && child.layoutPositioning === "ABSOLUTE") continue;
+        const edge = mode === "VERTICAL" ? child.y + child.height : child.x + child.width;
+        if (edge > extent) extent = edge;
+      }
+      if (extent > size + MEASURED_OVERFLOW_SLACK_PX) return { overflow: mode === "VERTICAL" ? "y" : "x" };
+      return {};
+    } catch (e) {
+      return {};
+    }
+  }
   function flexLayout(al, node) {
     const wrap = al.layoutMode === "HORIZONTAL" && al.layoutWrap === "WRAP";
     const crossGap = wrap && al.counterAxisSpacing != null && al.counterAxisSpacing !== al.itemSpacing ? { crossGap: al.counterAxisSpacing } : {};
@@ -4558,7 +4592,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
         bottom: al.paddingBottom,
         left: al.paddingLeft
       }
-    }, crossGap), alignContent), al.strokesIncludedInLayout ? { strokesIncludedInLayout: true } : {}), al.itemReverseZIndex ? { reverseZIndex: true } : {}), clipFlag(node)), overflowFlag(node));
+    }, crossGap), alignContent), al.strokesIncludedInLayout ? { strokesIncludedInLayout: true } : {}), al.itemReverseZIndex ? { reverseZIndex: true } : {}), clipFlag(node)), overflowFlag(node).overflow ? overflowFlag(node) : measuredOverflowFlag(node));
   }
   function gridLayout(node) {
     return __spreadValues(__spreadValues(__spreadValues(__spreadValues({
@@ -5100,10 +5134,10 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       children: await serializeChildren(node, isManualGridParent(node))
     });
   }
-  async function serializeExportedGraphic(node, isGridChild) {
+  async function serializeExportedGraphic(node, isGridChild, settingsOverride) {
     var _a, _b;
     const base = __spreadValues(__spreadValues({}, baseProps(node, isGridChild)), await readStyleRefs(node));
-    const settings = (_a = node.exportSettings) != null ? _a : [];
+    const settings = settingsOverride != null ? settingsOverride : (_a = node.exportSettings) != null ? _a : [];
     const assetSrc = `img/${primaryDesignerAssetFilename(node.id, node.name, settings)}`;
     if (((_b = primaryDesignerSetting(settings)) == null ? void 0 : _b.format) === "SVG") {
       return __spreadProps(__spreadValues({}, base), { type: "vector", assetSrc });
@@ -5141,8 +5175,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   async function serializeNode(node, isGridChild = false) {
     if (node.removed) return null;
     if (node.visible === false) return null;
-    if (isExportedGraphic(node) && !hasVideoFill(node)) {
-      return serializeExportedGraphic(node, isGridChild);
+    const exportSettings = await resolveExportSettings(node);
+    if (exportSettings.length > 0 && !hasVideoFill(node)) {
+      return serializeExportedGraphic(node, isGridChild, exportSettings);
     }
     switch (node.type) {
       case "FRAME":
@@ -7704,6 +7739,13 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
     const dash = property.indexOf("-");
     return dash === -1 ? property : property.slice(0, dash);
   }
+  function conflictFamily(property) {
+    if (property === "overflow" || property.startsWith("overflow-")) return "overflow";
+    if (property === "margin" || property.startsWith("margin-")) return "margin";
+    if (property === "padding" || property.startsWith("padding-")) return "padding";
+    if (property === "gap" || property.endsWith("-gap")) return "gap";
+    return property;
+  }
   function scanTopLevelBlocks(css) {
     const blocks = [];
     let cursor = 0;
@@ -7778,6 +7820,14 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
       if (!simple || block.selector.startsWith("@")) continue;
       const className = simple[1];
       const families = protectedFamilies.get(className);
+      const keptFamilies = /* @__PURE__ */ new Set();
+      for (const line of block.body.split("\n")) {
+        const declaration = DECLARATION_LINE.exec(line);
+        if (!declaration) continue;
+        const [, property, value] = declaration;
+        const wouldMap = (families == null ? void 0 : families.has(propertyFamily(property))) ? null : declarationUtilities(property, value);
+        if (!wouldMap) keptFamilies.add(conflictFamily(property));
+      }
       const keptLines = [];
       const extracted = [];
       for (const line of block.body.split("\n")) {
@@ -7788,7 +7838,7 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
           continue;
         }
         const [, property, value] = declaration;
-        const mapped = (families == null ? void 0 : families.has(propertyFamily(property))) ? null : declarationUtilities(property, value);
+        const mapped = (families == null ? void 0 : families.has(propertyFamily(property))) || keptFamilies.has(conflictFamily(property)) ? null : declarationUtilities(property, value);
         if (mapped) {
           extracted.push(...mapped.filter((utility) => !extracted.includes(utility)));
           stats.extractedDeclarations += 1;
@@ -8468,7 +8518,7 @@ ${mediaCss}`;
     return assets.map((asset) => ({ filename: asset.filename, content: asset.bytes }));
   }
   async function collectExportAssets(nodes, sceneNodesById, getImageByHash, videoBytesById, inlineThresholdBytes = DEFAULT_VECTOR_INLINE_THRESHOLD_BYTES) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c;
     const { leaves: leaves2, fills, videoFills, masks } = collectAssetTargets(nodes);
     const assets = [];
     const warnSkipped = (source, error) => console.warn(
@@ -8480,9 +8530,10 @@ ${mediaCss}`;
       if (!source) continue;
       if (leaf.inline) continue;
       try {
-        if (((_b = (_a = source.exportSettings) == null ? void 0 : _a.length) != null ? _b : 0) > 0) {
-          assets.push(...await exportDesignerAssets(source));
-        } else if ((_c = leaf.assetSrc) == null ? void 0 : _c.endsWith(".mp4")) {
+        const designerSettings = await resolveExportSettings(source);
+        if (designerSettings.length > 0) {
+          assets.push(...await exportDesignerAssets(source, designerSettings));
+        } else if ((_a = leaf.assetSrc) == null ? void 0 : _a.endsWith(".mp4")) {
           const cached = videoBytesById == null ? void 0 : videoBytesById.get(leaf.id);
           if (cached) {
             assets.push({ filename: leaf.assetSrc.replace(/^img\//, ""), content: cached });
@@ -8503,7 +8554,7 @@ ${mediaCss}`;
             }
           }
         } else if (leaf.type === "image" && leaf.imageHash && leaf.assetSrc && !leaf.assetSrc.endsWith(".png")) {
-          const image = (_d = getImageByHash == null ? void 0 : getImageByHash(leaf.imageHash)) != null ? _d : null;
+          const image = (_b = getImageByHash == null ? void 0 : getImageByHash(leaf.imageHash)) != null ? _b : null;
           if (image) assets.push({ filename: leaf.assetSrc.replace(/^img\//, ""), content: await image.getBytesAsync() });
         } else if (leaf.type === "image") {
           assets.push(...toExportAssets(await exportRasterAsset(source)));
@@ -8526,7 +8577,7 @@ ${mediaCss}`;
       }
     }
     for (const fill of fills) {
-      const image = (_e = getImageByHash == null ? void 0 : getImageByHash(fill.imageHash)) != null ? _e : null;
+      const image = (_c = getImageByHash == null ? void 0 : getImageByHash(fill.imageHash)) != null ? _c : null;
       if (!image) continue;
       try {
         assets.push({ filename: fill.filename, content: await image.getBytesAsync() });
@@ -12101,6 +12152,41 @@ ${body}
     return lines.join("\n");
   }
 
+  // src/targets/tauri/scroll-guards.ts
+  function isGuardCandidate(child, mainAxis) {
+    if (child.type !== "container" && child.type !== "instance-ref") return false;
+    if (!("children" in child) || child.children.length === 0) return false;
+    const layout = "layout" in child ? child.layout : void 0;
+    if (layout && "clip" in layout && layout.clip) return false;
+    return child.sizing[mainAxis].mode === "fill";
+  }
+  function emitScrollGuardsCss(pageRoots) {
+    const guards = /* @__PURE__ */ new Map();
+    const visit = (node) => {
+      if (!("children" in node)) return;
+      const layout = "layout" in node ? node.layout : void 0;
+      if (layout && layout.kind === "flex") {
+        const mainAxis = layout.direction === "row" ? "width" : "height";
+        for (const child of node.children) {
+          if (isGuardCandidate(child, mainAxis)) {
+            guards.set(toClassName(child.id), layout.direction === "row" ? "x" : "y");
+          }
+        }
+      }
+      node.children.forEach(visit);
+    };
+    pageRoots.forEach(visit);
+    if (guards.size === 0) return "";
+    const lines = [
+      "/* Tauri squeeze guards: FILL regions scroll instead of painting over siblings when the",
+      "   window is smaller than the design frame. Invisible at design size. */"
+    ];
+    for (const [className, axis] of guards) {
+      lines.push(`.${className} { overflow-${axis}: auto; }`);
+    }
+    return lines.join("\n") + "\n";
+  }
+
   // src/targets/tauri/scaffold.ts
   function identifierFor(slug2) {
     return `com.figma-export.${slug2 || "app"}`;
@@ -12346,7 +12432,10 @@ ${gsap}${manualAssets}`;
       files[`src/${(_e = hrefByPath.get(path)) != null ? _e : path.replace(/^pages\//, "")}`] = doc;
     }
     if (input.tokensCss) files["src/assets/css/tokens.css"] = input.tokensCss;
-    files[`src/assets/${input.cssFile}`] = project.css;
+    const scrollGuards = emitScrollGuardsCss(renderedRoots);
+    files[`src/assets/${input.cssFile}`] = scrollGuards ? `${project.css}
+
+${scrollGuards}` : project.css;
     if (project.interactionsCss) files["src/assets/css/interactions.css"] = project.interactionsCss;
     if (project.interactionsJs) files["src/assets/js/interactions.js"] = project.interactionsJs;
     if (project.themeCss) files["src/assets/css/bootstrap-theme.css"] = project.themeCss;

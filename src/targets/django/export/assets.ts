@@ -15,12 +15,18 @@ import {
   type RasterAsset,
   type DesignerExportSetting,
 } from '../assets.ts'
+import { resolveExportSettings } from '../../../utils/graphics.ts'
 
-/** Structural shape of a live Figma node this module needs — matches `SceneNode`'s `ExportMixin`. */
+/** Structural shape of a live Figma node this module needs — matches `SceneNode`'s `ExportMixin`.
+ * `type`/`getMainComponentAsync`/`mainComponent` feed the master-settings lookup for instances of
+ * export-marked components (utils/graphics `resolveExportSettings`). */
 export interface AssetSourceNode {
   readonly id: string
   readonly name: string
+  readonly type?: string
   readonly exportSettings?: ReadonlyArray<DesignerExportSetting>
+  getMainComponentAsync?(): Promise<{ exportSettings?: ReadonlyArray<DesignerExportSetting> } | null>
+  readonly mainComponent?: { exportSettings?: ReadonlyArray<DesignerExportSetting> } | null
   exportAsync(settings: { format: 'PNG' | 'JPG'; constraint: { type: 'SCALE'; value: 1 | 2 } }): Promise<Uint8Array>
   exportAsync(settings: { format: 'SVG_STRING' }): Promise<string>
   exportAsync(settings: DesignerExportSetting): Promise<Uint8Array | string>
@@ -287,9 +293,11 @@ export async function collectExportAssets(
     if (!source) continue
     if (leaf.inline) continue // inlined into the markup — no file
     try {
-      if ((source.exportSettings?.length ?? 0) > 0) {
-        // Designer-marked: one file per configured export setting (format/scale/suffix as-is).
-        assets.push(...(await exportDesignerAssets(source)))
+      const designerSettings = (await resolveExportSettings(source)) as ReadonlyArray<DesignerExportSetting>
+      if (designerSettings.length > 0) {
+        // Designer-marked (own settings, or the master component's for an instance): one file per
+        // configured export setting (format/scale/suffix as-is).
+        assets.push(...(await exportDesignerAssets(source, designerSettings)))
       } else if (leaf.assetSrc?.endsWith('.mp4')) {
         // A video-fill layer (or FigJam MediaNode): exportAsync renders the node's video content
         // as MP4. The typings lag the runtime here (the format enum accepts MP4/GIF/WEBM).

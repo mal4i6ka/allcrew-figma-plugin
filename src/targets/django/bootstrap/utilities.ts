@@ -196,6 +196,20 @@ function propertyFamily(property: string): string {
   return dash === -1 ? property : property.slice(0, dash)
 }
 
+/** SAME-RULE conflict key: a declaration this rule KEEPS must block extracting a shorthand
+ * sibling of the same concrete property group — `overflow: hidden; overflow-y: auto` extracting
+ * `.overflow-hidden` (!important) silently kills the scroll axis (the exact bug: a Figma frame
+ * with clip + vertical scroll lost its scrollbar at utilities fidelity). Narrower than
+ * `propertyFamily` on purpose: `flex: 1 0 0` must NOT block extracting `flex-direction` —
+ * they share a family prefix but not a CSS property group. */
+function conflictFamily(property: string): string {
+  if (property === 'overflow' || property.startsWith('overflow-')) return 'overflow'
+  if (property === 'margin' || property.startsWith('margin-')) return 'margin'
+  if (property === 'padding' || property.startsWith('padding-')) return 'padding'
+  if (property === 'gap' || property.endsWith('-gap')) return 'gap'
+  return property
+}
+
 interface TopLevelBlock {
   selector: string
   body: string
@@ -306,6 +320,18 @@ export function applyBootstrapUtilities(input: BootstrapUtilitiesInput): Bootstr
     const className = simple[1]
     const families = protectedFamilies.get(className)
 
+    // Pass 1: conflict families of the declarations this rule will KEEP (no utility mapping).
+    // An extraction whose !important utility would override a kept sibling longhand is skipped —
+    // see `conflictFamily` (`overflow: hidden` + `overflow-y: auto` is the canonical case).
+    const keptFamilies = new Set<string>()
+    for (const line of block.body.split('\n')) {
+      const declaration = DECLARATION_LINE.exec(line)
+      if (!declaration) continue
+      const [, property, value] = declaration
+      const wouldMap = families?.has(propertyFamily(property)) ? null : declarationUtilities(property, value)
+      if (!wouldMap) keptFamilies.add(conflictFamily(property))
+    }
+
     const keptLines: string[] = []
     const extracted: string[] = []
     for (const line of block.body.split('\n')) {
@@ -316,7 +342,10 @@ export function applyBootstrapUtilities(input: BootstrapUtilitiesInput): Bootstr
         continue
       }
       const [, property, value] = declaration
-      const mapped = families?.has(propertyFamily(property)) ? null : declarationUtilities(property, value)
+      const mapped =
+        families?.has(propertyFamily(property)) || keptFamilies.has(conflictFamily(property))
+          ? null
+          : declarationUtilities(property, value)
       if (mapped) {
         extracted.push(...mapped.filter((utility) => !extracted.includes(utility)))
         stats.extractedDeclarations += 1

@@ -19,6 +19,7 @@ import type { ExportAsset } from '../django/export/assets.ts'
 import type { ExportFileContent } from '../django/export/file-tree.ts'
 import { renderStaticPage } from './render-static.ts'
 import { collectNavEdges, emitViewTransitionsCss } from './transitions.ts'
+import { emitScrollGuardsCss } from './scroll-guards.ts'
 import { buildTauriScaffold } from './scaffold.ts'
 
 export interface TauriBuildInput {
@@ -137,7 +138,9 @@ export function buildTauriExportTree(input: TauriBuildInput): TauriBuildOutput {
 
   /* ---- assets, same internal layout as the django static/ tree */
   if (input.tokensCss) files['src/assets/css/tokens.css'] = input.tokensCss
-  files[`src/assets/${input.cssFile}`] = project.css
+  // Squeeze guards append AFTER the emitted rules so they win same-specificity overflow ties.
+  const scrollGuards = emitScrollGuardsCss(renderedRoots)
+  files[`src/assets/${input.cssFile}`] = scrollGuards ? `${project.css}\n\n${scrollGuards}` : project.css
   if (project.interactionsCss) files['src/assets/css/interactions.css'] = project.interactionsCss
   if (project.interactionsJs) files['src/assets/js/interactions.js'] = project.interactionsJs
   if (project.themeCss) files['src/assets/css/bootstrap-theme.css'] = project.themeCss

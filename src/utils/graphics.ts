@@ -17,3 +17,30 @@ export interface ExportMarkedNode {
 export function isExportedGraphic(node: ExportMarkedNode): boolean {
   return Array.isArray(node.exportSettings) && node.exportSettings.length > 0
 }
+
+/** Structural instance shape for the master-settings lookup — `getMainComponentAsync` under
+ * `documentAccess: dynamic-page`, `mainComponent` as the legacy/test fallback. */
+export interface ExportMarkedInstanceNode extends ExportMarkedNode {
+  readonly type?: string
+  getMainComponentAsync?(): Promise<ExportMarkedNode | null>
+  readonly mainComponent?: ExportMarkedNode | null
+}
+
+/**
+ * The export settings that apply to `node` under the "marked graphic" rule: its own when it has
+ * any, else — for an INSTANCE — its master component's. Figma does NOT mirror the master ROOT's
+ * Export panel onto placed instances (`instance.exportSettings` stays empty), so without this
+ * lookup marking an icon COMPONENT for export would still let every placed instance be walked
+ * into its vector internals instead of collapsing to one asset.
+ */
+export async function resolveExportSettings(node: ExportMarkedInstanceNode): Promise<ReadonlyArray<{ readonly format?: string }>> {
+  const own = node.exportSettings ?? []
+  if (own.length > 0) return own
+  if (node.type !== 'INSTANCE') return []
+  try {
+    const master = node.getMainComponentAsync ? await node.getMainComponentAsync() : node.mainComponent ?? null
+    return master?.exportSettings ?? []
+  } catch {
+    return [] // detached / library-unavailable master — behave like an unmarked node
+  }
+}

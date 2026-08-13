@@ -315,8 +315,13 @@ export interface DesignerAsset {
  * setting is browser-usable (PDF-only), a default 1x PNG is added so the template's reference
  * resolves.
  */
-export async function exportDesignerAssets(node: DesignerExportableNode): Promise<DesignerAsset[]> {
-  const settings = node.exportSettings ?? []
+export async function exportDesignerAssets(
+  node: DesignerExportableNode,
+  /** Overrides the node's own settings — an INSTANCE of a marked master exports with the
+   * MASTER's Export panel settings (its own list is empty; see utils/graphics). */
+  settingsOverride?: ReadonlyArray<DesignerExportSetting>
+): Promise<DesignerAsset[]> {
+  const settings = settingsOverride ?? node.exportSettings ?? []
   const assets: DesignerAsset[] = []
   const seen = new Set<string>()
 
