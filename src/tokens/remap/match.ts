@@ -88,7 +88,7 @@ const PARTIAL_NAME_BONUS = 0.2
  * same family, and it outranks a threshold either ramp may sit near.
  */
 export const sameFamilyName = (from: InferredSpectrum, to: InferredSpectrum): boolean =>
-  familyKey(from.label) === familyKey(to.label)
+  familyKey(from.family) === familyKey(to.family)
 
 export function familyCost(from: InferredSpectrum, to: InferredSpectrum): number {
   const named = sameFamilyName(from, to)
@@ -103,8 +103,8 @@ export function familyCost(from: InferredSpectrum, to: InferredSpectrum): number
   const toCount = to.stops.length
   cost += (Math.abs(fromCount - toCount) / Math.max(fromCount, toCount)) * WEIGHT_STOP_COUNT
 
-  const toKey = familyKey(to.label)
-  const fromKey = familyKey(from.label)
+  const toKey = familyKey(to.family)
+  const fromKey = familyKey(from.family)
   if (named) cost -= EXACT_NAME_BONUS
   else if (fromKey.includes(toKey) || toKey.includes(fromKey)) cost -= PARTIAL_NAME_BONUS
 
@@ -379,18 +379,24 @@ function fitLadder(
   const span = source.length - 1
   const reach = target.length - 1
 
-  if (source.length > target.length) {
+  const indexOf = new Map(target.map((stop, index) => [stop, index]))
+  const at = (stop: SpectrumStop | null): number => (stop === null ? -1 : (indexOf.get(stop) ?? -1))
+  const anchors = source.map((stop) => at(anchorOf(stop)))
+  const wanted = source.map((stop) => at(preferred(stop)))
+
+  // The proportional stretch is for ladders with nothing in common — ten unnumbered rungs
+  // onto twelve, where index position is the only structure there is. With even one exact
+  // step match it is the wrong tool: spreading a twelve-rung violet over an eleven-rung blue
+  // by index lands `200` on `250` and shifts everything below by one, when `50…900` matched
+  // number for number and only the two tails had nowhere to go. Anchors are structure; when
+  // they exist, the anchored fit below runs instead and the tails share their nearest rung.
+  if (source.length > target.length && !anchors.some((index) => index >= 0)) {
     if (!allowProportional) return assigned
     for (const [index, stop] of source.entries()) {
       assigned.set(stop, target[span === 0 ? 0 : Math.round((index * reach) / span)])
     }
     return assigned
   }
-
-  const indexOf = new Map(target.map((stop, index) => [stop, index]))
-  const at = (stop: SpectrumStop | null): number => (stop === null ? -1 : (indexOf.get(stop) ?? -1))
-  const anchors = source.map((stop) => at(anchorOf(stop)))
-  const wanted = source.map((stop) => at(preferred(stop)))
 
   // A rung with no counterpart can either share the one beside it or push the ladder inward
   // until it finds a gap, and which is right depends entirely on the price. An old `10` above

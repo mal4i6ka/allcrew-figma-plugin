@@ -249,3 +249,30 @@ Worth noting for the next fault of this shape: (1) and (3) both look identical f
 panel — a color moving somewhere obviously wrong — but only (3) depends on where the palette
 came from. Pasting the same palette as JSON never showed it, because the paste parser does
 not fold duplicates.
+
+## Found on the live file (эталон board + карта, 2026-08-20)
+
+Verified against the эталон's own variables (via Figma MCP): the canonical collection is the
+strict ladder the operator described — blue is 50…900 with **no 250**; the `A-tokens.json`
+export carries extra steps (blue/250, red/150, amber/150, green/150, neutral/925) that the
+эталон board does not.
+
+Two more faults, both reproduced and fixed:
+
+1. **The proportional stretch ignored anchors.** When the old ladder is longer than the new
+   one (violet 12 → blue 11), the stretch spread rungs by *index*: violet/200 landed on
+   blue/250 and everything below shifted one step, even though 50…900 matched number for
+   number. Proportional is now reserved for ladders with *no* shared numbers; with even one
+   anchor, the anchored fit runs and the tails share their nearest rung. Verified: violet
+   50…900 → blue 50…900 exactly, 10 shares 50, 950 shares 900, blue/250 untouched.
+2. **Families merged by their last word.** Named grouping keyed on the leaf family name, so
+   `colors/neutral`, `colour/neutral` (a British-spelt copy holding old-teal values) and any
+   other `…/neutral` in the document fused into one ramp — teal swatches drawn inside the
+   neutral strip. A family is now **one group in one place** (keyed and labelled by its full
+   group path); name *matching* still compares the leaf word, so `legacy/colors/teal` and
+   `colour/neutral` each find their family, but as their own strips.
+
+Plus a new warning: when one opaque color leaves in two directions under two names
+(`colors/teal/900` → teal/900 while `colour/neutral/900` → neutral/900, both `#314245`),
+the plan says so — `one color, two directions: …` — and leaves the choice to the row-level
+override, which is what it exists for.

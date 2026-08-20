@@ -13916,11 +13916,12 @@ ${scrollGuards}` : project.css;
     const path = String(name != null ? name : "").split(SEGMENT_RE).map(clean).filter((segment) => segment !== "");
     const leaf = path.length > 0 ? path[path.length - 1] : "";
     const group = path.length > 1 ? path[path.length - 2] : null;
+    const groupPath = path.length > 1 ? path.slice(0, -1).join("/") : null;
     const match = STEP_RE.exec(leaf);
-    if (!match) return { path, leaf, group, family: group, step: null };
+    if (!match) return { path, leaf, group, groupPath, family: group, step: null };
     const prefix = ((_a = match[1]) != null ? _a : "").replace(/[\s_-]+$/, "").trim();
     const family = group != null ? group : prefix !== "" ? prefix : null;
-    return { path, leaf, group, family, step: Number(match[2]) };
+    return { path, leaf, group, groupPath, family, step: Number(match[2]) };
   }
   var familyKey = (family) => family.toLowerCase().replace(/[\s._-]+/g, "").trim();
   function renameFamily(name, newFamily, newStep) {
@@ -14045,7 +14046,7 @@ ${scrollGuards}` : project.css;
     }
     return clusters;
   }
-  function makeSpectrum(stops, source, label3, usedKeys) {
+  function makeSpectrum(stops, source, label3, family, usedKeys) {
     const sorted = [...stops].sort(byLightness);
     const neutral = sorted.every(isNeutral);
     const translucent = !sorted.some(isOpaque);
@@ -14057,6 +14058,7 @@ ${scrollGuards}` : project.css;
     return {
       key,
       label: label3,
+      family,
       source,
       neutral,
       translucent,
@@ -14067,7 +14069,7 @@ ${scrollGuards}` : project.css;
     };
   }
   function inferSpectra(members) {
-    var _a;
+    var _a, _b;
     const stops = members.map(toStop);
     const usedKeys = /* @__PURE__ */ new Set();
     const spectra = [];
@@ -14083,25 +14085,27 @@ ${scrollGuards}` : project.css;
         unnamed.push(stop);
         continue;
       }
-      const key = familyKey(stop.family);
-      const entry = (_a = named.get(key)) != null ? _a : { label: stop.family, stops: [] };
+      const where = (_a = stop.group) != null ? _a : stop.family;
+      const key = familyKey(where);
+      const entry = (_b = named.get(key)) != null ? _b : { label: where, family: stop.family, stops: [] };
       entry.stops.push(stop);
       named.set(key, entry);
     }
-    for (const { label: label3, stops: group } of named.values()) {
-      if (looksLikeRamp(group)) spectra.push(makeSpectrum(group, "named", label3, usedKeys));
+    for (const { label: label3, family, stops: group } of named.values()) {
+      if (looksLikeRamp(group)) spectra.push(makeSpectrum(group, "named", label3, family, usedKeys));
       else unnamed.push(...group);
     }
     const grays = unnamed.filter(isNeutral);
     const colored = unnamed.filter((stop) => !isNeutral(stop));
-    if (grays.length >= 2) spectra.push(makeSpectrum(grays, "clustered", "Neutral", usedKeys));
+    if (grays.length >= 2) spectra.push(makeSpectrum(grays, "clustered", "Neutral", "Neutral", usedKeys));
     else loose.push(...grays);
     for (const cluster of clusterByHue(colored)) {
       if (cluster.length < 2) {
         loose.push(...cluster);
         continue;
       }
-      spectra.push(makeSpectrum(cluster, "clustered", hueName2(meanHue(cluster)), usedKeys));
+      const label3 = hueName2(meanHue(cluster));
+      spectra.push(makeSpectrum(cluster, "clustered", label3, label3, usedKeys));
     }
     spectra.sort((a, b) => Number(a.neutral) - Number(b.neutral) || a.hue - b.hue);
     const warnings = spectra.filter((spectrum) => spectrum.crowded).map(
@@ -14137,7 +14141,7 @@ ${scrollGuards}` : project.css;
   var NEUTRAL_MISMATCH = 2;
   var EXACT_NAME_BONUS = 0.5;
   var PARTIAL_NAME_BONUS = 0.2;
-  var sameFamilyName = (from, to) => familyKey(from.label) === familyKey(to.label);
+  var sameFamilyName = (from, to) => familyKey(from.family) === familyKey(to.family);
   function familyCost(from, to) {
     const named = sameFamilyName(from, to);
     let cost;
@@ -14147,8 +14151,8 @@ ${scrollGuards}` : project.css;
     const fromCount = from.stops.length;
     const toCount = to.stops.length;
     cost += Math.abs(fromCount - toCount) / Math.max(fromCount, toCount) * WEIGHT_STOP_COUNT;
-    const toKey = familyKey(to.label);
-    const fromKey = familyKey(from.label);
+    const toKey = familyKey(to.family);
+    const fromKey = familyKey(from.family);
     if (named) cost -= EXACT_NAME_BONUS;
     else if (fromKey.includes(toKey) || toKey.includes(fromKey)) cost -= PARTIAL_NAME_BONUS;
     return cost;
@@ -14287,13 +14291,6 @@ ${scrollGuards}` : project.css;
     const assigned = /* @__PURE__ */ new Map();
     const span = source.length - 1;
     const reach = target.length - 1;
-    if (source.length > target.length) {
-      if (!allowProportional) return assigned;
-      for (const [index, stop] of source.entries()) {
-        assigned.set(stop, target[span === 0 ? 0 : Math.round(index * reach / span)]);
-      }
-      return assigned;
-    }
     const indexOf = new Map(target.map((stop, index) => [stop, index]));
     const at = (stop) => {
       var _a;
@@ -14301,6 +14298,13 @@ ${scrollGuards}` : project.css;
     };
     const anchors = source.map((stop) => at(anchorOf(stop)));
     const wanted = source.map((stop) => at(preferred(stop)));
+    if (source.length > target.length && !anchors.some((index) => index >= 0)) {
+      if (!allowProportional) return assigned;
+      for (const [index, stop] of source.entries()) {
+        assigned.set(stop, target[span === 0 ? 0 : Math.round(index * reach / span)]);
+      }
+      return assigned;
+    }
     const budget = 3;
     let cursor = -1;
     let displaced = 0;
@@ -15803,13 +15807,21 @@ ${scrollGuards}` : project.css;
   var NO_MODE = "\0no-mode";
   var siteMember = (site) => {
     const parsed = parseTokenName(site.name);
-    return { ref: site.id, name: site.name, rgba: site.rgba, family: parsed.family, step: parsed.step };
+    return {
+      ref: site.id,
+      name: site.name,
+      rgba: site.rgba,
+      family: parsed.family,
+      group: parsed.groupPath,
+      step: parsed.step
+    };
   };
   var swatchMember = (swatch, index) => ({
     ref: `new:${index}`,
     name: swatch.name,
     rgba: swatch.rgba,
     family: swatch.family,
+    group: parseTokenName(swatch.name).groupPath,
     step: swatch.step
   });
   var land = (site, target) => ({ r: target.r, g: target.g, b: target.b, a: site.rgba.a });
@@ -15829,12 +15841,14 @@ ${scrollGuards}` : project.css;
   function readPalette(palette) {
     const { spectra, loose, warnings } = inferSpectra(palette.map(swatchMember));
     const candidates = [
-      ...spectra.flatMap((spectrum) => spectrum.stops.map((stop) => __spreadProps(__spreadValues({}, stop), { familyLabel: spectrum.label }))),
+      // The *family name*, not the label: this value ends up in `toFamily`, and `toFamily` is
+      // what renames are built from — a group path there would be written into a name segment.
+      ...spectra.flatMap((spectrum) => spectrum.stops.map((stop) => __spreadProps(__spreadValues({}, stop), { familyLabel: spectrum.family }))),
       ...loose.map((stop) => __spreadProps(__spreadValues({}, stop), { familyLabel: null }))
     ];
     return { spectra, candidates, warnings };
   }
-  function entryFor(site, target, via, toFamily, flags) {
+  function entryFor(site, target, via, toFamily, flags, fromFamily) {
     const parsed = parseTokenName(site.name);
     const to = land(site, target.rgba);
     const all = [...flags];
@@ -15845,7 +15859,9 @@ ${scrollGuards}` : project.css;
       from: site.rgba,
       to,
       toName: target.name === "" ? null : target.name,
-      fromFamily: parsed.family,
+      // The spectrum's label when the site came through a family match — `colour/neutral` and
+      // `colors/neutral` are different rows of the story, not one family told twice.
+      fromFamily: fromFamily !== void 0 ? fromFamily : parsed.family,
       toFamily,
       fromStep: parsed.step,
       toStep: target.step,
@@ -15873,7 +15889,16 @@ ${scrollGuards}` : project.css;
       for (const match of matchStops(assignment.from, assignment.to)) {
         const site = byId.get(match.from.ref);
         if (!site) continue;
-        entries.push(entryFor(site, match.to, match.via, assignment.to.label, assignment.shared ? ["shared-family"] : []));
+        entries.push(
+          entryFor(
+            site,
+            match.to,
+            match.via,
+            assignment.to.family,
+            assignment.shared ? ["shared-family"] : [],
+            assignment.from.label
+          )
+        );
       }
     }
     const matched = new Set(entries.map((entry) => entry.site.id));
@@ -15888,7 +15913,7 @@ ${scrollGuards}` : project.css;
   function separateAdjacent(entries, palette, adjacency, warnings) {
     if (adjacency.length === 0) return;
     const byId = new Map(entries.map((entry) => [entry.site.id, entry]));
-    const stopsByFamily = new Map(palette.spectra.map((spectrum) => [spectrum.label, spectrum.stops]));
+    const stopsByFamily = new Map(palette.spectra.map((spectrum) => [spectrum.family, spectrum.stops]));
     for (const [left, right] of adjacency) {
       const a = byId.get(left);
       const b = byId.get(right);
@@ -15958,6 +15983,28 @@ ${scrollGuards}` : project.css;
       if (families.size < 2) continue;
       for (const entry of group) entry.flags.push("mode-divergence");
       warnings.push(`${name} lands in different families per mode: ${[...families].join(" / ")}`);
+    }
+  }
+  function flagColorForks(entries, warnings) {
+    var _a;
+    const byColor = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      if (entry.from.a < 0.999 || entry.flags.includes("excluded")) continue;
+      const key = `${(_a = entry.site.modeId) != null ? _a : NO_MODE}|${colorKey(entry.from)}`;
+      const group = byColor.get(key);
+      if (group) group.push(entry);
+      else byColor.set(key, [entry]);
+    }
+    for (const group of byColor.values()) {
+      const landings = new Set(group.map((entry) => colorKey(entry.to)));
+      if (landings.size < 2) continue;
+      const tell = (entry) => {
+        var _a2;
+        return `${entry.site.name} \u2192 ${(_a2 = entry.toName) != null ? _a2 : "nearest"}`;
+      };
+      const shown = group.slice(0, 4).map(tell).join(", ");
+      const more = group.length > 4 ? ` and ${group.length - 4} more` : "";
+      warnings.push(`one color, two directions: ${shown}${more}`);
     }
   }
   function planRenames(entries, primaryModeId, taken, options, warnings) {
@@ -16046,6 +16093,7 @@ ${scrollGuards}` : project.css;
     }
     if (options.separateAdjacent) separateAdjacent(entries, palette, (_b = request.adjacency) != null ? _b : [], warnings);
     flagDuplicates(entries);
+    flagColorForks(entries, warnings);
     flagModeDivergence(entries, warnings);
     const taken = new Set(request.sites.filter((site) => site.kind === "variable").map((site) => site.name));
     const renames = planRenames(entries, request.primaryModeId, taken, options, warnings);

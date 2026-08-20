@@ -42,7 +42,9 @@ test('a whole ramp moves onto the new family, keeping every step number', () => 
     plan.entries.map((entry) => entry.fromStep),
     plan.entries.map((entry) => entry.toStep)
   )
-  assert.deepEqual(plan.families.map((family) => [family.fromLabel, family.toLabel]), [['Blue', 'Violet']])
+  // The from-label is the group's address in the file, not just its last word — that is what
+  // keeps a `colour/neutral` from another collection out of `colors/neutral`'s strip.
+  assert.deepEqual(plan.families.map((family) => [family.fromLabel, family.toLabel]), [['colors/Blue', 'Violet']])
 })
 
 test('alpha is carried through untouched — a remap moves color, not transparency', () => {

@@ -300,9 +300,28 @@ test('a tail with nowhere to go takes the first rung, and the ends stay pinned',
   )
 })
 
-test('when there is no room, the sharing lands in the middle rather than at an end', () => {
+test('with anchors and no room, the numbers hold and only the tails share', () => {
+  // Eleven rungs onto nine, but 50…700 match number for number. Stretching by index — the old
+  // behaviour — would land old `200` on new `250`-style off-by-ones all the way down; instead
+  // the anchored rungs stay put and the two dark tails share the darkest rung there is.
   const shorter = NEW_RED.slice(0, 9)
   const matches = matchStops(rungs('red', OLD_RED), rungs('red', shorter))
+
+  // The new ladder's 150 has no old counterpart; every number both ladders share holds.
+  for (const step of [50, 100, 200, 300, 400, 500, 600, 700]) {
+    assert.equal(matches.find((match) => match.from.step === step)!.to.step, step, `${step} keeps its number`)
+  }
+  assert.equal(matches.find((match) => match.from.step === 10)!.to.step, 50)
+  assert.equal(matches.find((match) => match.from.step === 800)!.to.step, 700)
+  assert.equal(matches.find((match) => match.from.step === 900)!.to.step, 700)
+})
+
+test('with no shared numbers and no room, the sharing lands in the middle', () => {
+  // Disjoint numbering leaves index position as the only structure, so the proportional
+  // stretch still applies: ends pinned, crowding pushed to the middle of the ladder.
+  const renumbered: Array<[number, string]> = OLD_RED.map(([, hex], index) => [index + 1, hex])
+  const shorter = NEW_RED.slice(0, 9)
+  const matches = matchStops(rungs('red', renumbered), rungs('red', shorter))
 
   assert.equal(matches[0].to.step, 50, 'the light end is pinned')
   assert.equal(matches[matches.length - 1].to.step, shorter[shorter.length - 1][0], 'so is the dark end')
