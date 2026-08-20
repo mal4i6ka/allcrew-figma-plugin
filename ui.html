@@ -902,6 +902,13 @@
         <p class="pal-hint">Moves what things point at: semantic aliases, node and style bindings land on the
           library's own tokens. Needs the palette read from a library. Preview first — it counts every pointer
           that would move and writes nothing.</p>
+        <label class="pal-field pal-wide" style="margin-top:2px">Layers to rebind
+          <select id="rmp-rebind-scope">
+            <option value="document">Whole document — variables, styles and canvas</option>
+            <option value="page">This page — canvas bindings only</option>
+            <option value="selection">Selection only — canvas bindings only</option>
+          </select>
+        </label>
         <div class="rmp-actions">
           <button class="btn ghost" id="rmp-rebind-preview" type="button" disabled>Preview rebind</button>
           <button class="btn primary" id="rmp-rebind" type="button" disabled>Rebind</button>
@@ -3467,7 +3474,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           source: rmpSource(),
           options: rmpOptions(),
           overrides: RMP_OVERRIDES,
-          excluded: rmpExcluded()
+          excluded: rmpExcluded(),
+          scope: rmpEl('rmp-rebind-scope').value
         } }, '*')
       }
       rmpEl('rmp-rebind-preview').addEventListener('click', function () { rmpRebindMessage('REMAP_REBIND_PREVIEW') })

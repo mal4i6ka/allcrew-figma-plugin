@@ -15794,6 +15794,7 @@ ${scrollGuards}` : project.css;
   }
 
   // src/targets/ds-tools/remap-rebind.ts
+  var DEFAULT_REBIND_OPTIONS = { scope: "document" };
   var SNAPSHOT_KEY2 = "altery-rebind-snapshot";
   var SNAPSHOT_COUNT_KEY2 = "altery-rebind-snapshot-chunks";
   var CHUNK_BYTES2 = 8e4;
@@ -15830,7 +15831,7 @@ ${scrollGuards}` : project.css;
     const alias = (_a = holder == null ? void 0 : holder.boundVariables) == null ? void 0 : _a.color;
     return alias && alias.type === "VARIABLE_ALIAS" ? alias.id : null;
   };
-  async function scanRebind(plan, progress2) {
+  async function scanRebind(plan, options = DEFAULT_REBIND_OPTIONS, progress2) {
     const { byVariable, divergent } = rebindTargets(plan);
     const counts = emptyCounts();
     counts.skipped.divergent = divergent.length;
@@ -15879,8 +15880,12 @@ ${scrollGuards}` : project.css;
     const locals = await figma.variables.getLocalVariablesAsync("COLOR");
     const localIds = new Set(locals.map((variable) => variable.id));
     for (const id of byVariable.keys()) if (!localIds.has(id)) foreignIds.add(id);
+    const wholeFile = options.scope === "document";
+    if (!wholeFile) {
+      warnings.push("variables and styles are file-global \u2014 they move only on a whole-document rebind");
+    }
     const planBySite = new Map(plan.entries.map((entry) => [entry.site.id, entry]));
-    for (const [index, variable] of locals.entries()) {
+    for (const [index, variable] of wholeFile ? locals.entries() : []) {
       if (index % 50 === 0) await yieldToHost();
       for (const [modeId, value] of Object.entries(variable.valuesByMode)) {
         if (isAliasValue2(value)) {
@@ -15922,7 +15927,7 @@ ${scrollGuards}` : project.css;
       }
     }
     progress2 == null ? void 0 : progress2("reading styles\u2026");
-    const paintStyles = await figma.getLocalPaintStylesAsync();
+    const paintStyles = wholeFile ? await figma.getLocalPaintStylesAsync() : [];
     for (const style of paintStyles) {
       for (const [index, paint] of style.paints.entries()) {
         if (paint.type === "SOLID") {
@@ -15961,7 +15966,7 @@ ${scrollGuards}` : project.css;
         }
       }
     }
-    const effectStyles = await figma.getLocalEffectStylesAsync();
+    const effectStyles = wholeFile ? await figma.getLocalEffectStylesAsync() : [];
     for (const style of effectStyles) {
       for (const [index, effect] of style.effects.entries()) {
         const oldId = boundColorId(effect);
@@ -15976,7 +15981,7 @@ ${scrollGuards}` : project.css;
         }
       }
     }
-    await loadAllPagesAsync();
+    if (wholeFile) await loadAllPagesAsync();
     const overridden = /* @__PURE__ */ new Map();
     const noteOverrides = (instance) => {
       var _a;
@@ -16058,10 +16063,11 @@ ${scrollGuards}` : project.css;
     figma.skipInvisibleInstanceChildren = true;
     try {
       let visited = 0;
-      for (const page of figma.root.children) {
-        progress2 == null ? void 0 : progress2(`scanning ${page.name}\u2026`);
+      const rootSets = wholeFile ? figma.root.children.map((page) => ({ label: page.name, roots: page.children })) : [{ label: options.scope, roots: await scopeRoots(options.scope) }];
+      for (const { label: label3, roots } of rootSets) {
+        progress2 == null ? void 0 : progress2(`scanning ${label3}\u2026`);
         const stack = [];
-        for (let i = page.children.length - 1; i >= 0; i--) stack.push({ node: page.children[i], inInstance: false });
+        for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], inInstance: false });
         while (stack.length > 0) {
           const { node, inInstance } = stack.pop();
           if (++visited % 400 === 0) await yieldToHost();
@@ -16182,12 +16188,12 @@ ${scrollGuards}` : project.css;
     }
     return counts;
   }
-  async function previewRebind(plan, progress2) {
-    const scan = await scanRebind(plan, progress2);
+  async function previewRebind(plan, options = DEFAULT_REBIND_OPTIONS, progress2) {
+    const scan = await scanRebind(plan, options, progress2);
     return { counts: scan.counts, summary: describeRebind(scan.counts), warnings: scan.warnings };
   }
-  async function applyRebind(plan, progress2) {
-    const scan = await scanRebind(plan, progress2);
+  async function applyRebind(plan, options = DEFAULT_REBIND_OPTIONS, progress2) {
+    const scan = await scanRebind(plan, options, progress2);
     const snapshot = { version: 1, ops: scan.ops };
     const serialized = JSON.stringify(snapshot);
     if (serialized.length > REBIND_BUDGET_BYTES) {
@@ -17933,7 +17939,7 @@ ${renderSections(sections)}
   }
   figma.on("selectionchange", postSelectionToUi);
   figma.ui.onmessage = async (msg) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
@@ -18123,7 +18129,8 @@ ${renderSections(sections)}
           }
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const progress2 = (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 });
-          const report = msg.type === "REMAP_REBIND_APPLY" ? await applyRebind(plan, progress2) : await previewRebind(plan, progress2);
+          const rebindOptions = { scope: (_g = msg.scope) != null ? _g : "document" };
+          const report = msg.type === "REMAP_REBIND_APPLY" ? await applyRebind(plan, rebindOptions, progress2) : await previewRebind(plan, rebindOptions, progress2);
           if (msg.type === "REMAP_REBIND_APPLY") {
             remapInventory = null;
             figma.notify(`Rebound: ${report.summary}`);
@@ -18201,7 +18208,7 @@ ${renderSections(sections)}
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind });
-          const settings = { snap: (_g = msg.snap) != null ? _g : 2, byName: (_h = msg.byName) != null ? _h : false, mode: (_i = msg.mode) != null ? _i : null };
+          const settings = { snap: (_h = msg.snap) != null ? _h : 2, byName: (_i = msg.byName) != null ? _i : false, mode: (_j = msg.mode) != null ? _j : null };
           let replaced = 0;
           let untouched = 0;
           const warnings = /* @__PURE__ */ new Set();
@@ -18322,7 +18329,7 @@ ${renderSections(sections)}
             { nodeId: fileNodeIds[path], content }
           ])
         );
-        const existingFiles = new Map(Object.entries((_j = msg.existingFiles) != null ? _j : {}));
+        const existingFiles = new Map(Object.entries((_k = msg.existingFiles) != null ? _k : {}));
         const plan = planRegeneration(existingFiles, freshFiles);
         let tokensCss;
         let bootstrapTokensCss;
@@ -18380,7 +18387,7 @@ ${renderSections(sections)}
         break;
       }
       case "SCROLL_INTO_VIEW": {
-        const node = (_k = lastScanIndex.get(msg.nodeId)) != null ? _k : await figma.getNodeByIdAsync(msg.nodeId);
+        const node = (_l = lastScanIndex.get(msg.nodeId)) != null ? _l : await figma.getNodeByIdAsync(msg.nodeId);
         if (node && "visible" in node) {
           const target = node;
           figma.viewport.scrollAndZoomIntoView([target]);
@@ -18582,10 +18589,10 @@ ${renderSections(sections)}
           if (exportOptions.targetOptions.platform === "tauri" && project) {
             let startPageId;
             try {
-              startPageId = (_l = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _l.nodeId;
+              startPageId = (_m = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _m.nodeId;
             } catch (e) {
             }
-            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_m = pageRoots[0]) == null ? void 0 : _m.id;
+            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_n = pageRoots[0]) == null ? void 0 : _n.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -18618,9 +18625,9 @@ ${renderSections(sections)}
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_n = sceneNodesById.get(nodeId)) != null ? _n : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (_o = sceneNodesById.get(nodeId)) != null ? _o : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_o = node.parent) == null ? void 0 : _o.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((_p = node.parent) == null ? void 0 : _p.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -18643,7 +18650,7 @@ ${renderSections(sections)}
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((_p = counts[finding.rule]) != null ? _p : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_q = counts[finding.rule]) != null ? _q : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -18693,7 +18700,7 @@ ${renderSections(sections)}
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (_r = (_q = figma.currentUser) == null ? void 0 : _q.name) != null ? _r : "unknown";
+            exportedBy = (_s = (_r = figma.currentUser) == null ? void 0 : _r.name) != null ? _s : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }

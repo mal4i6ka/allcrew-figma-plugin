@@ -449,7 +449,7 @@ async function applyStyles(
 
 /* ------------------------------------------------------------------ canvas */
 
-async function scopeRoots(scope: RemapScope): Promise<readonly SceneNode[]> {
+export async function scopeRoots(scope: RemapScope): Promise<readonly SceneNode[]> {
   if (scope === 'selection') return figma.currentPage.selection
   if (scope === 'page') return figma.currentPage.children
   const roots: SceneNode[] = []

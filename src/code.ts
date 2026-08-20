@@ -66,6 +66,7 @@ import {
   revertRemap,
   unparkLegacyNames,
   type RemapApplyOptions,
+  type RemapScope,
 } from './targets/ds-tools/remap-apply'
 import { drawRemapBoard } from './targets/ds-tools/remap-board'
 import { applyRebind, hasRebindSnapshot, previewRebind, revertRebind } from './targets/ds-tools/remap-rebind'
@@ -138,8 +139,8 @@ type PluginMessage =
   | { type: 'REMAP_REVERT' }
   | { type: 'REMAP_BOARD'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[] }
   | { type: 'REMAP_UNPARK' }
-  | { type: 'REMAP_REBIND_PREVIEW'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[] }
-  | { type: 'REMAP_REBIND_APPLY'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[] }
+  | { type: 'REMAP_REBIND_PREVIEW'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[]; scope?: RemapScope }
+  | { type: 'REMAP_REBIND_APPLY'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[]; scope?: RemapScope }
   | { type: 'REMAP_REBIND_REVERT' }
   | { type: 'REMAP_EXPORT_MAPPING'; source: RemapSource; options?: Partial<RemapOptions>; format: 'json' | 'csv'; overrides?: Record<string, string>; excluded?: string[] }
   | {
@@ -1049,8 +1050,11 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         }
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const progress = (label: string) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label })
+        const rebindOptions = { scope: msg.scope ?? 'document' }
         const report =
-          msg.type === 'REMAP_REBIND_APPLY' ? await applyRebind(plan, progress) : await previewRebind(plan, progress)
+          msg.type === 'REMAP_REBIND_APPLY'
+            ? await applyRebind(plan, rebindOptions, progress)
+            : await previewRebind(plan, rebindOptions, progress)
         if (msg.type === 'REMAP_REBIND_APPLY') {
           // Bindings changed under the inventory's feet; the next Read starts clean.
           remapInventory = null

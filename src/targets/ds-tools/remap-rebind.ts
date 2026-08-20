@@ -21,8 +21,20 @@ import type { RemapPlan } from '../../tokens/remap/plan.ts'
 import { describeRebind, emptyCounts, rebindTargets, sameRgba, type RebindCounts } from '../../tokens/remap/rebind.ts'
 import { loadAllPagesAsync, yieldToHost } from '../../utils/tree.ts'
 import { isGradient } from './remap-inventory.ts'
+import { scopeRoots, type RemapScope } from './remap-apply.ts'
 
 type Progress = (label: string) => void
+
+export interface RebindOptions {
+  /**
+   * What the canvas pass covers. Variables and styles are file-global — a "selection" does
+   * not own its semantic tokens — so they move only on a whole-document run; a narrower
+   * scope rebinds the bindings inside it and says what it left alone.
+   */
+  scope: RemapScope
+}
+
+export const DEFAULT_REBIND_OPTIONS: RebindOptions = { scope: 'document' }
 
 /* ------------------------------------------------------------------ ops */
 
@@ -125,7 +137,11 @@ const boundColorId = (holder: unknown): string | null => {
  * would perform. Nothing is written: this is the preview, the plan and the undo budget in
  * one list.
  */
-export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<RebindScan> {
+export async function scanRebind(
+  plan: RemapPlan,
+  options: RebindOptions = DEFAULT_REBIND_OPTIONS,
+  progress?: Progress
+): Promise<RebindScan> {
   const { byVariable, divergent } = rebindTargets(plan)
   const counts = emptyCounts()
   counts.skipped.divergent = divergent.length
@@ -189,9 +205,14 @@ export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<
   const localIds = new Set(locals.map((variable) => variable.id))
   for (const id of byVariable.keys()) if (!localIds.has(id)) foreignIds.add(id)
 
+  const wholeFile = options.scope === 'document'
+  if (!wholeFile) {
+    warnings.push('variables and styles are file-global — they move only on a whole-document rebind')
+  }
+
   const planBySite = new Map(plan.entries.map((entry) => [entry.site.id, entry]))
 
-  for (const [index, variable] of locals.entries()) {
+  for (const [index, variable] of wholeFile ? locals.entries() : ([] as Array<[number, Variable]>)) {
     if (index % 50 === 0) await yieldToHost()
     for (const [modeId, value] of Object.entries(variable.valuesByMode)) {
       if (isAliasValue(value)) {
@@ -242,7 +263,7 @@ export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<
   /* ---- styles ---- */
 
   progress?.('reading styles…')
-  const paintStyles = await figma.getLocalPaintStylesAsync()
+  const paintStyles = wholeFile ? await figma.getLocalPaintStylesAsync() : []
   for (const style of paintStyles) {
     for (const [index, paint] of style.paints.entries()) {
       if (paint.type === 'SOLID') {
@@ -281,7 +302,7 @@ export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<
       }
     }
   }
-  const effectStyles = await figma.getLocalEffectStylesAsync()
+  const effectStyles = wholeFile ? await figma.getLocalEffectStylesAsync() : []
   for (const style of effectStyles) {
     for (const [index, effect] of style.effects.entries()) {
       const oldId = boundColorId(effect)
@@ -299,7 +320,7 @@ export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<
 
   /* ---- canvas ---- */
 
-  await loadAllPagesAsync()
+  if (wholeFile) await loadAllPagesAsync()
   const overridden = new Map<string, Set<string>>()
 
   const noteOverrides = (instance: InstanceNode): void => {
@@ -394,10 +415,13 @@ export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<
   figma.skipInvisibleInstanceChildren = true
   try {
     let visited = 0
-    for (const page of figma.root.children) {
-      progress?.(`scanning ${page.name}…`)
+    const rootSets: Array<{ label: string; roots: readonly SceneNode[] }> = wholeFile
+      ? figma.root.children.map((page) => ({ label: page.name, roots: page.children }))
+      : [{ label: options.scope, roots: await scopeRoots(options.scope) }]
+    for (const { label, roots } of rootSets) {
+      progress?.(`scanning ${label}…`)
       const stack: Array<{ node: SceneNode; inInstance: boolean }> = []
-      for (let i = page.children.length - 1; i >= 0; i--) stack.push({ node: page.children[i], inInstance: false })
+      for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], inInstance: false })
       while (stack.length > 0) {
         const { node, inInstance } = stack.pop() as { node: SceneNode; inInstance: boolean }
         if (++visited % 400 === 0) await yieldToHost()
@@ -549,13 +573,21 @@ async function executeOps(ops: readonly RebindOp[], undo: boolean, progress?: Pr
 
 /* ------------------------------------------------------------------ entry points */
 
-export async function previewRebind(plan: RemapPlan, progress?: Progress): Promise<RebindReport> {
-  const scan = await scanRebind(plan, progress)
+export async function previewRebind(
+  plan: RemapPlan,
+  options: RebindOptions = DEFAULT_REBIND_OPTIONS,
+  progress?: Progress
+): Promise<RebindReport> {
+  const scan = await scanRebind(plan, options, progress)
   return { counts: scan.counts, summary: describeRebind(scan.counts), warnings: scan.warnings }
 }
 
-export async function applyRebind(plan: RemapPlan, progress?: Progress): Promise<RebindReport> {
-  const scan = await scanRebind(plan, progress)
+export async function applyRebind(
+  plan: RemapPlan,
+  options: RebindOptions = DEFAULT_REBIND_OPTIONS,
+  progress?: Progress
+): Promise<RebindReport> {
+  const scan = await scanRebind(plan, options, progress)
   const snapshot: RebindSnapshot = { version: 1, ops: scan.ops }
   const serialized = JSON.stringify(snapshot)
   if (serialized.length > REBIND_BUDGET_BYTES) {
