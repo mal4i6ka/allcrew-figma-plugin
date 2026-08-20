@@ -31,6 +31,9 @@ export interface SpectrumMember {
   step: number | null
 }
 
+/** Below this a color is translucent, and translucency is an axis of its own. */
+export const OPAQUE = 0.999
+
 export interface SpectrumStop extends SpectrumMember {
   /** OKLCH lightness, 0…1. */
   l: number
@@ -45,6 +48,8 @@ export interface SpectrumStop extends SpectrumMember {
 export interface InferredSpectrum {
   key: string
   label: string
+  /** Every member is see-through — an alpha ramp, not a lightness ramp. */
+  translucent: boolean
   /** `named` when the file said so, `clustered` when hue geometry had to say it. */
   source: 'named' | 'clustered'
   neutral: boolean
@@ -159,6 +164,8 @@ export function hueDistance(a: number, b: number): number {
 
 const isNeutral = (stop: SpectrumStop): boolean => stop.saturation < NEUTRAL_SATURATION
 
+const isOpaque = (stop: SpectrumStop): boolean => stop.rgba.a >= OPAQUE
+
 /** Chroma-weighted so near-gray ends of a ramp do not drag the family's hue around. */
 function meanHue(stops: readonly SpectrumStop[]): number {
   let x = 0
@@ -245,6 +252,7 @@ function makeSpectrum(
 ): InferredSpectrum {
   const sorted = [...stops].sort(byLightness)
   const neutral = sorted.every(isNeutral)
+  const translucent = !sorted.some(isOpaque)
   const range = hueRange(sorted)
 
   let key = familyKey(label)
@@ -257,6 +265,7 @@ function makeSpectrum(
     label,
     source,
     neutral,
+    translucent,
     hue: neutral ? 0 : meanHue(sorted),
     hueRange: range,
     crowded: source === 'clustered' && !neutral && range > CROWDED_SPREAD,
@@ -276,14 +285,19 @@ export function inferSpectra(members: readonly SpectrumMember[]): SpectrumInfere
   const spectra: InferredSpectrum[] = []
   const unnamed: SpectrumStop[] = []
 
+  // Opacity is part of a family's identity, not a property of one of its members. A palette's
+  // `alpha/orange/10` is a tenth-opacity orange, and its "10" is a percentage — file it beside
+  // the opaque orange ramp and it offers that ramp a step 10 it does not have, so an old pale
+  // tint lands on a tenth-opacity brand colour. They are different ladders on different axes.
   const named = new Map<string, { label: string; stops: SpectrumStop[] }>()
   for (const stop of stops) {
     if (stop.family === null || stop.family.trim() === '') {
       unnamed.push(stop)
       continue
     }
-    const key = familyKey(stop.family)
-    const entry = named.get(key) ?? { label: stop.family, stops: [] }
+    const opaque = isOpaque(stop)
+    const key = familyKey(stop.family) + (opaque ? '' : '~alpha')
+    const entry = named.get(key) ?? { label: stop.family + (opaque ? '' : ' (translucent)'), stops: [] }
     entry.stops.push(stop)
     named.set(key, entry)
   }
@@ -293,19 +307,24 @@ export function inferSpectra(members: readonly SpectrumMember[]): SpectrumInfere
     else unnamed.push(...group)
   }
 
-  const grays = unnamed.filter(isNeutral)
-  const colored = unnamed.filter((stop) => !isNeutral(stop))
   const loose: SpectrumStop[] = []
 
-  if (grays.length >= 2) spectra.push(makeSpectrum(grays, 'clustered', 'Neutral', usedKeys))
-  else loose.push(...grays)
+  for (const opaque of [true, false]) {
+    const layer = unnamed.filter((stop) => isOpaque(stop) === opaque)
+    const suffix = opaque ? '' : ' (translucent)'
+    const grays = layer.filter(isNeutral)
+    const colored = layer.filter((stop) => !isNeutral(stop))
 
-  for (const cluster of clusterByHue(colored)) {
-    if (cluster.length < 2) {
-      loose.push(...cluster)
-      continue
+    if (grays.length >= 2) spectra.push(makeSpectrum(grays, 'clustered', `Neutral${suffix}`, usedKeys))
+    else loose.push(...grays)
+
+    for (const cluster of clusterByHue(colored)) {
+      if (cluster.length < 2) {
+        loose.push(...cluster)
+        continue
+      }
+      spectra.push(makeSpectrum(cluster, 'clustered', hueName(meanHue(cluster)) + suffix, usedKeys))
     }
-    spectra.push(makeSpectrum(cluster, 'clustered', hueName(meanHue(cluster)), usedKeys))
   }
 
   spectra.sort((a, b) => Number(a.neutral) - Number(b.neutral) || a.hue - b.hue)

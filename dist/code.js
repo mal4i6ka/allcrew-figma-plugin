@@ -13952,6 +13952,7 @@ ${scrollGuards}` : project.css;
   }
 
   // src/tokens/remap/spectrum.ts
+  var OPAQUE = 0.999;
   var NEUTRAL_SATURATION = 0.5;
   var HUE_GAP = 12;
   var CROWDED_SPREAD = 25;
@@ -13992,6 +13993,7 @@ ${scrollGuards}` : project.css;
     return diff > 180 ? 360 - diff : diff;
   }
   var isNeutral = (stop) => stop.saturation < NEUTRAL_SATURATION;
+  var isOpaque = (stop) => stop.rgba.a >= OPAQUE;
   function meanHue(stops) {
     let x = 0;
     let y = 0;
@@ -14046,6 +14048,7 @@ ${scrollGuards}` : project.css;
   function makeSpectrum(stops, source, label3, usedKeys) {
     const sorted = [...stops].sort(byLightness);
     const neutral = sorted.every(isNeutral);
+    const translucent = !sorted.some(isOpaque);
     const range2 = hueRange(sorted);
     let key = familyKey(label3);
     let suffix = 2;
@@ -14056,6 +14059,7 @@ ${scrollGuards}` : project.css;
       label: label3,
       source,
       neutral,
+      translucent,
       hue: neutral ? 0 : meanHue(sorted),
       hueRange: range2,
       crowded: source === "clustered" && !neutral && range2 > CROWDED_SPREAD,
@@ -14074,8 +14078,9 @@ ${scrollGuards}` : project.css;
         unnamed.push(stop);
         continue;
       }
-      const key = familyKey(stop.family);
-      const entry = (_a = named.get(key)) != null ? _a : { label: stop.family, stops: [] };
+      const opaque = isOpaque(stop);
+      const key = familyKey(stop.family) + (opaque ? "" : "~alpha");
+      const entry = (_a = named.get(key)) != null ? _a : { label: stop.family + (opaque ? "" : " (translucent)"), stops: [] };
       entry.stops.push(stop);
       named.set(key, entry);
     }
@@ -14083,17 +14088,21 @@ ${scrollGuards}` : project.css;
       if (looksLikeRamp(group)) spectra.push(makeSpectrum(group, "named", label3, usedKeys));
       else unnamed.push(...group);
     }
-    const grays = unnamed.filter(isNeutral);
-    const colored = unnamed.filter((stop) => !isNeutral(stop));
     const loose = [];
-    if (grays.length >= 2) spectra.push(makeSpectrum(grays, "clustered", "Neutral", usedKeys));
-    else loose.push(...grays);
-    for (const cluster of clusterByHue(colored)) {
-      if (cluster.length < 2) {
-        loose.push(...cluster);
-        continue;
+    for (const opaque of [true, false]) {
+      const layer = unnamed.filter((stop) => isOpaque(stop) === opaque);
+      const suffix = opaque ? "" : " (translucent)";
+      const grays = layer.filter(isNeutral);
+      const colored = layer.filter((stop) => !isNeutral(stop));
+      if (grays.length >= 2) spectra.push(makeSpectrum(grays, "clustered", `Neutral${suffix}`, usedKeys));
+      else loose.push(...grays);
+      for (const cluster of clusterByHue(colored)) {
+        if (cluster.length < 2) {
+          loose.push(...cluster);
+          continue;
+        }
+        spectra.push(makeSpectrum(cluster, "clustered", hueName2(meanHue(cluster)) + suffix, usedKeys));
       }
-      spectra.push(makeSpectrum(cluster, "clustered", hueName2(meanHue(cluster)), usedKeys));
     }
     spectra.sort((a, b) => Number(a.neutral) - Number(b.neutral) || a.hue - b.hue);
     const warnings = spectra.filter((spectrum) => spectrum.crowded).map(
@@ -14134,6 +14143,7 @@ ${scrollGuards}` : project.css;
     if (from.neutral && to.neutral) cost = 0;
     else if (from.neutral !== to.neutral) cost = NEUTRAL_MISMATCH;
     else cost = hueDistance2(from.hue, to.hue) / 180;
+    if (from.translucent !== to.translucent) cost += NEUTRAL_MISMATCH;
     const fromCount = from.stops.length;
     const toCount = to.stops.length;
     cost += Math.abs(fromCount - toCount) / Math.max(fromCount, toCount) * WEIGHT_STOP_COUNT;
@@ -14282,6 +14292,32 @@ ${scrollGuards}` : project.css;
     }
     return outliers;
   }
+  function fitLadder(source, target, preferred) {
+    var _a;
+    const assigned = /* @__PURE__ */ new Map();
+    const span = source.length - 1;
+    const reach = target.length - 1;
+    if (source.length > target.length) {
+      for (const [index, stop] of source.entries()) {
+        assigned.set(stop, target[span === 0 ? 0 : Math.round(index * reach / span)]);
+      }
+      return assigned;
+    }
+    const indexOf = new Map(target.map((stop, index) => [stop, index]));
+    let floor = -1;
+    for (const stop of source) {
+      const wanted = preferred(stop);
+      const at = wanted === null ? floor + 1 : (_a = indexOf.get(wanted)) != null ? _a : floor + 1;
+      const index = Math.min(Math.max(at, floor + 1), reach);
+      assigned.set(stop, target[index]);
+      floor = index;
+    }
+    return assigned;
+  }
+  var byStepAscending = (a, b) => {
+    var _a, _b;
+    return ((_a = a.step) != null ? _a : 0) - ((_b = b.step) != null ? _b : 0);
+  };
   function matchStops(from, to) {
     const untrusted = ladderOutliers(to);
     const byStep = /* @__PURE__ */ new Map();
@@ -14289,15 +14325,23 @@ ${scrollGuards}` : project.css;
       if (stop.step === null || untrusted.has(stop.step) || byStep.has(stop.step)) continue;
       byStep.set(stop.step, stop);
     }
+    const preferred = (stop) => {
+      var _a;
+      return (_a = stop.step === null ? void 0 : byStep.get(stop.step)) != null ? _a : nearestByLightness(to.stops, stop.l);
+    };
+    const sourceLadder = from.neutral || to.neutral ? [] : from.stops.filter((stop) => stop.step !== null);
+    const targetLadder = to.stops.filter((stop) => stop.step !== null && !untrusted.has(stop.step));
+    const fitted = sourceLadder.length >= 3 && targetLadder.length >= 2 ? fitLadder([...sourceLadder].sort(byStepAscending), [...targetLadder].sort(byStepAscending), preferred) : /* @__PURE__ */ new Map();
     const matches = [];
     for (const stop of from.stops) {
-      const exact = stop.step === null ? void 0 : byStep.get(stop.step);
-      const target = exact != null ? exact : nearestByLightness(to.stops, stop.l);
+      const placed = fitted.get(stop);
+      const target = placed != null ? placed : preferred(stop);
       if (!target) continue;
+      const kept = stop.step !== null && target.step === stop.step;
       matches.push({
         from: stop,
         to: target,
-        via: exact ? "step" : "lightness",
+        via: kept ? "step" : placed ? "stretched" : "lightness",
         lightnessShift: Math.abs(target.l - stop.l)
       });
     }
@@ -15834,13 +15878,14 @@ ${scrollGuards}` : project.css;
       }
     }
     const candidates = [...perEntity.values()];
-    const proposals = candidates.map((entry) => {
-      var _a2;
-      return {
-        entry,
-        to: renameFamily(entry.site.name, entry.toFamily, (_a2 = entry.toStep) != null ? _a2 : void 0)
-      };
-    }).filter((proposal) => proposal.to !== proposal.entry.site.name).sort((a, b) => b.entry.site.usage - a.entry.site.usage || a.entry.site.name.localeCompare(b.entry.site.name));
+    const proposals = candidates.map((entry) => ({
+      entry,
+      // The family changes; the number does not. A step number describes a rung of *this*
+      // file's ladder, and that rung is still where it was — renumbering it to the target's
+      // step is what turns a palette move into a rename avalanche, with half the ramp parked
+      // in legacy/ because it collided with the rung that already had that number.
+      to: renameFamily(entry.site.name, entry.toFamily)
+    })).filter((proposal) => proposal.to !== proposal.entry.site.name).sort((a, b) => b.entry.site.usage - a.entry.site.usage || a.entry.site.name.localeCompare(b.entry.site.name));
     const claimed = /* @__PURE__ */ new Set();
     const renaming = new Set(proposals.map((proposal) => proposal.entry.site.name));
     const renames = [];

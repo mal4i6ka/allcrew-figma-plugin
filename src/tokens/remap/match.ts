@@ -80,6 +80,10 @@ export function familyCost(from: InferredSpectrum, to: InferredSpectrum): number
   else if (from.neutral !== to.neutral) cost = NEUTRAL_MISMATCH
   else cost = hueDistance(from.hue, to.hue) / 180
 
+  // An alpha ramp and a lightness ramp are ladders on different axes; pairing them is a last
+  // resort in the same way as pairing a gray ramp with a colored one.
+  if (from.translucent !== to.translucent) cost += NEUTRAL_MISMATCH
+
   const fromCount = from.stops.length
   const toCount = to.stops.length
   cost += (Math.abs(fromCount - toCount) / Math.max(fromCount, toCount)) * WEIGHT_STOP_COUNT
@@ -240,8 +244,11 @@ export function assignFamilies(
 export interface StopMatch {
   from: SpectrumStop
   to: SpectrumStop
-  /** `step` when the new scale carried the same number, `lightness` when it had to interpolate. */
-  via: 'step' | 'lightness'
+  /**
+   * `step` when the new scale carried the same number, `lightness` when it had to interpolate,
+   * `stretched` when the whole family was rescaled because the old ladder had more steps.
+   */
+  via: 'step' | 'lightness' | 'stretched'
   /** How far the landing lightness sits from the original, 0…1. */
   lightnessShift: number
 }
@@ -317,6 +324,59 @@ export function ladderOutliers(spectrum: InferredSpectrum): Set<number> {
   return outliers
 }
 
+/**
+ * Fitting one ladder onto another, ends pinned.
+ *
+ * The tails are the whole problem. An old ramp that starts at `10` where the new one starts at
+ * `50` has a rung with nowhere to go, so it lands on the new `50` — which the old `50` also
+ * took, and the lightest tint stops being distinguishable from the one beside it. That is the
+ * end where it shows: a pale background and its border become one colour.
+ *
+ * So the ends are pinned and the crowding is pushed inward, which is the same idea in both of
+ * the two cases that can arise:
+ *
+ * - **There is room** (the new ladder has at least as many rungs). Each old rung keeps its own
+ *   number where the new ladder has it, and where that rung is already taken the assignment
+ *   walks inward to the next free one. The shift stops at the first gap, so most of the ramp
+ *   never moves.
+ * - **There is not** (the old ladder is longer). Some rungs must share, so the ends are pinned
+ *   and the rest spaced proportionally — the sharing lands in the middle, where neighbouring
+ *   steps are furthest apart and losing one costs least.
+ *
+ * Only numbered rungs take part. A `pumpkin` or a `900 less saturated` sitting in the same
+ * family is a one-off colour, not a position on the ladder, and counting it as a rung shifts
+ * everything else by one.
+ */
+function fitLadder(
+  source: readonly SpectrumStop[],
+  target: readonly SpectrumStop[],
+  preferred: (stop: SpectrumStop) => SpectrumStop | null
+): Map<SpectrumStop, SpectrumStop> {
+  const assigned = new Map<SpectrumStop, SpectrumStop>()
+  const span = source.length - 1
+  const reach = target.length - 1
+
+  if (source.length > target.length) {
+    for (const [index, stop] of source.entries()) {
+      assigned.set(stop, target[span === 0 ? 0 : Math.round((index * reach) / span)])
+    }
+    return assigned
+  }
+
+  const indexOf = new Map(target.map((stop, index) => [stop, index]))
+  let floor = -1
+  for (const stop of source) {
+    const wanted = preferred(stop)
+    const at = wanted === null ? floor + 1 : (indexOf.get(wanted) ?? floor + 1)
+    const index = Math.min(Math.max(at, floor + 1), reach)
+    assigned.set(stop, target[index])
+    floor = index
+  }
+  return assigned
+}
+
+const byStepAscending = (a: SpectrumStop, b: SpectrumStop): number => (a.step ?? 0) - (b.step ?? 0)
+
 export function matchStops(from: InferredSpectrum, to: InferredSpectrum): StopMatch[] {
   const untrusted = ladderOutliers(to)
   const byStep = new Map<number, SpectrumStop>()
@@ -325,15 +385,29 @@ export function matchStops(from: InferredSpectrum, to: InferredSpectrum): StopMa
     byStep.set(stop.step, stop)
   }
 
+  const preferred = (stop: SpectrumStop): SpectrumStop | null =>
+    (stop.step === null ? undefined : byStep.get(stop.step)) ?? nearestByLightness(to.stops, stop.l)
+
+  // Neutrals are fitted to nothing: backgrounds and text live on them, a shift in lightness
+  // shows there first, and a palette whose neutrals reach pure white and black would pull every
+  // pale surface to #FFFFFF. They match by the colour they are, wherever that lands.
+  const sourceLadder = from.neutral || to.neutral ? [] : from.stops.filter((stop) => stop.step !== null)
+  const targetLadder = to.stops.filter((stop) => stop.step !== null && !untrusted.has(stop.step))
+  const fitted =
+    sourceLadder.length >= 3 && targetLadder.length >= 2
+      ? fitLadder([...sourceLadder].sort(byStepAscending), [...targetLadder].sort(byStepAscending), preferred)
+      : new Map<SpectrumStop, SpectrumStop>()
+
   const matches: StopMatch[] = []
   for (const stop of from.stops) {
-    const exact = stop.step === null ? undefined : byStep.get(stop.step)
-    const target = exact ?? nearestByLightness(to.stops, stop.l)
+    const placed = fitted.get(stop)
+    const target = placed ?? preferred(stop)
     if (!target) continue
+    const kept = stop.step !== null && target.step === stop.step
     matches.push({
       from: stop,
       to: target,
-      via: exact ? 'step' : 'lightness',
+      via: kept ? 'step' : placed ? 'stretched' : 'lightness',
       lightnessShift: Math.abs(target.l - stop.l),
     })
   }

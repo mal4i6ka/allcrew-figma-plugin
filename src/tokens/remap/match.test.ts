@@ -229,13 +229,13 @@ test('an old light tint does not become a saturated fill just because the number
   const matches = matchStops(conventionalRed(), alteryRed())
   const ten = matches.find((match) => match.from.step === 10)!
 
-  assert.equal(ten.via, 'lightness', 'the number was declined, not the colour')
+  assert.notEqual(ten.via, 'step', 'the number was declined, not the colour')
   assert.ok(ten.to.l > 0.9, `landed on ${ten.to.name} at L ${ten.to.l.toFixed(2)}`)
   assert.ok(ten.lightnessShift < 0.1)
 
-  // Every other step still keeps its number, because those numbers do mean the same thing.
-  const rest = matches.filter((match) => match.from.step !== 10)
-  assert.ok(rest.every((match) => match.via === 'step'))
+  // Nothing else piles onto that one dark rung either.
+  const landings = matches.map((match) => match.to.name)
+  assert.equal(new Set(landings).size >= matches.length - 1, true, 'at most one pair shares a rung')
 })
 
 test('the untrusted stop is still reachable as a colour', () => {
@@ -260,4 +260,58 @@ test('a short scale is left alone — there is not enough of it to call anything
     }))
   )
   assert.deepEqual([...ladderOutliers(short)], [])
+})
+
+/* ------------------------------------------------------------------ real ladders */
+
+const rungs = (family: string, steps: Array<[number, string]>): InferredSpectrum => {
+  const { spectra } = inferSpectra(
+    steps.map(([step, hex], index) => ({
+      ref: `${family}/${index}`,
+      name: `${family}/${step}`,
+      rgba: rgba(hex),
+      family,
+      step,
+    }))
+  )
+  return spectra[0]
+}
+
+/** The two ladders that produced the collapsed tails, taken from the real exports. */
+const OLD_RED: Array<[number, string]> = [
+  [10, '#FFE6E6'], [50, '#FFC0BF'], [100, '#F99D99'], [200, '#EE7D73'], [300, '#DF5F4D'], [400, '#CC4426'],
+  [500, '#B42B02'], [600, '#A61C00'], [700, '#931000'], [800, '#790700'], [900, '#5A0200'],
+]
+const NEW_RED: Array<[number, string]> = [
+  [50, '#fff0f0'], [100, '#ffcfc6'], [150, '#ffbbbc'], [200, '#f7bbbb'], [300, '#ee8f8f'], [400, '#e05e5e'],
+  [500, '#d63a36'], [600, '#cd1918'], [700, '#a81413'], [800, '#7e1c19'], [850, '#651616'], [900, '#521614'],
+]
+
+test('a tail with nowhere to go takes the first rung, and the ends stay pinned', () => {
+  // The old ladder starts at 10 where the new one starts at 50. Landing both on 50 is what made
+  // a pale background and its border the same colour.
+  const matches = matchStops(rungs('red', OLD_RED), rungs('red', NEW_RED))
+  assert.equal(matches.find((match) => match.from.step === 10)!.to.step, 50)
+  assert.equal(matches.find((match) => match.from.step === 900)!.to.step, 900)
+  assert.equal(
+    new Set(matches.map((match) => match.to.step)).size,
+    matches.length,
+    'nothing shares a rung — this new ladder had room'
+  )
+})
+
+test('when there is no room, the sharing lands in the middle rather than at an end', () => {
+  const shorter = NEW_RED.slice(0, 9)
+  const matches = matchStops(rungs('red', OLD_RED), rungs('red', shorter))
+
+  assert.equal(matches[0].to.step, 50, 'the light end is pinned')
+  assert.equal(matches[matches.length - 1].to.step, shorter[shorter.length - 1][0], 'so is the dark end')
+
+  const landings = matches.map((match) => match.to.step)
+  const shared = landings.filter((step, index) => landings.indexOf(step) !== index)
+  assert.ok(shared.length > 0, 'eleven rungs cannot fit nine without sharing')
+  for (const step of shared) {
+    const position = shorter.findIndex(([number]) => number === step)
+    assert.ok(position > 0 && position < shorter.length - 1, `sharing at ${step} is at an end, not the middle`)
+  }
 })
