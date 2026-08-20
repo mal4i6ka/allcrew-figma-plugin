@@ -287,17 +287,18 @@ const NEW_RED: Array<[number, string]> = [
   [500, '#d63a36'], [600, '#cd1918'], [700, '#a81413'], [800, '#7e1c19'], [850, '#651616'], [900, '#521614'],
 ]
 
-test('a tail with nowhere to go takes the first rung, and the ends stay pinned', () => {
-  // The old ladder starts at 10 where the new one starts at 50. Landing both on 50 is what made
-  // a pale background and its border the same colour.
+test('every shared number holds, and the tail collapses rather than shifting the ladder', () => {
+  // The old ladder starts at 10 where the new one starts at 50, and the new one carries 150
+  // and 850 that the old one never had. The reference is 1:1: every number both ladders share
+  // stays put, the 10 collapses onto the 50 beside it, and the new-only steps stay empty —
+  // landing anything on them is how a remapped file sprouts steps it never asked for.
   const matches = matchStops(rungs('red', OLD_RED), rungs('red', NEW_RED))
-  assert.equal(matches.find((match) => match.from.step === 10)!.to.step, 50)
-  assert.equal(matches.find((match) => match.from.step === 900)!.to.step, 900)
-  assert.equal(
-    new Set(matches.map((match) => match.to.step)).size,
-    matches.length,
-    'nothing shares a rung — this new ladder had room'
-  )
+  for (const step of [50, 100, 200, 300, 400, 500, 600, 700, 800, 900]) {
+    assert.equal(matches.find((match) => match.from.step === step)!.to.step, step, `${step} keeps its number`)
+  }
+  assert.equal(matches.find((match) => match.from.step === 10)!.to.step, 50, 'the tail collapses onto 50')
+  const landings = new Set(matches.map((match) => match.to.step))
+  assert.ok(!landings.has(150) && !landings.has(850), 'new-only steps stay empty')
 })
 
 test('with anchors and no room, the numbers hold and only the tails share', () => {
@@ -385,9 +386,11 @@ test('a rung the new ladder cannot name still sits above the one it can', () => 
   const matches = matchStops(from, to)
   const landings = matches.map((match) => match.to.l)
   for (let i = 1; i < landings.length; i++) {
-    assert.ok(landings[i] < landings[i - 1], `${matches[i].from.step} landed lighter than ${matches[i - 1].from.step}`)
+    assert.ok(landings[i] <= landings[i - 1], `${matches[i].from.step} landed lighter than ${matches[i - 1].from.step}`)
   }
-  assert.equal(matches[0].to.step, 0, 'the unnamed rung takes the one above the first anchor')
+  // The free slot above the first anchor is pure white, and a pale gray must not become pure
+  // white just because the slot was free — the 10 shares the 50 its lightness actually sits by.
+  assert.equal(matches[0].to.step, 50, 'the unnamed rung shares the anchor nearest its lightness')
   assert.equal(matches[1].to.step, 50, 'and the anchor keeps its own number')
 })
 

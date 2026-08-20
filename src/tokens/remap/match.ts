@@ -346,23 +346,18 @@ export function ladderOutliers(spectrum: InferredSpectrum): Set<number> {
 }
 
 /**
- * Fitting one ladder onto another, ends pinned.
+ * Fitting one ladder onto another. Three rules, in order of authority:
  *
- * The tails are the whole problem. An old ramp that starts at `10` where the new one starts at
- * `50` has a rung with nowhere to go, so it lands on the new `50` — which the old `50` also
- * took, and the lightest tint stops being distinguishable from the one beside it. That is the
- * end where it shows: a pale background and its border become one colour.
+ * 1. **A shared number is law.** A rung whose number the new ladder has lands on that number,
+ *    and nothing displaces it.
+ * 2. **A rung without a number fits between the anchors around it**, on whichever position —
+ *    free slot or shared anchor — is nearest its own lightness. Order is preserved: it can
+ *    collapse onto a neighbour, it can never leapfrog one.
+ * 3. **The proportional stretch exists only for ladders with no numbers in common**, where
+ *    index position is the only structure there is.
  *
- * So the ends are pinned and the crowding is pushed inward, which is the same idea in both of
- * the two cases that can arise:
- *
- * - **There is room** (the new ladder has at least as many rungs). Each old rung keeps its own
- *   number where the new ladder has it, and where that rung is already taken the assignment
- *   walks inward to the next free one. The shift stops at the first gap, so most of the ramp
- *   never moves.
- * - **There is not** (the old ladder is longer). Some rungs must share, so the ends are pinned
- *   and the rest spaced proportionally — the sharing lands in the middle, where neighbouring
- *   steps are furthest apart and losing one costs least.
+ * Collapsing two old shades onto one new rung is the honest outcome of a palette that shrank;
+ * inventing an off-by-one landing to avoid the collapse is how a whole ramp drifts.
  *
  * Only numbered rungs take part. A `pumpkin` or a `900 less saturated` sitting in the same
  * family is a one-off colour, not a position on the ladder, and counting it as a rung shifts
@@ -371,7 +366,6 @@ export function ladderOutliers(spectrum: InferredSpectrum): Set<number> {
 function fitLadder(
   source: readonly SpectrumStop[],
   target: readonly SpectrumStop[],
-  preferred: (stop: SpectrumStop) => SpectrumStop | null,
   anchorOf: (stop: SpectrumStop) => SpectrumStop | null,
   allowProportional: boolean
 ): Map<SpectrumStop, SpectrumStop> {
@@ -382,7 +376,6 @@ function fitLadder(
   const indexOf = new Map(target.map((stop, index) => [stop, index]))
   const at = (stop: SpectrumStop | null): number => (stop === null ? -1 : (indexOf.get(stop) ?? -1))
   const anchors = source.map((stop) => at(anchorOf(stop)))
-  const wanted = source.map((stop) => at(preferred(stop)))
 
   // The proportional stretch is for ladders with nothing in common — ten unnumbered rungs
   // onto twelve, where index position is the only structure there is. With even one exact
@@ -398,55 +391,24 @@ function fitLadder(
     return assigned
   }
 
-  // A rung with no counterpart can either share the one beside it or push the ladder inward
-  // until it finds a gap, and which is right depends entirely on the price. An old `10` above
-  // a new `50` costs two displaced rungs before the gap at `150` — cheap, and it buys back a
-  // pale tint that would otherwise be indistinguishable from its neighbour. One stray `10`
-  // left behind in a retired group costs *twelve*, sliding a whole ramp that matched the new
-  // one number for number. Past this many, sharing is the smaller lie.
-  const budget = 3
-  let cursor = -1
-  let displaced = 0
-  const shifted = source.map((_, index) => {
-    const desire = anchors[index] >= 0 ? anchors[index] : wanted[index] < 0 ? cursor + 1 : wanted[index]
-    cursor = Math.max(desire, cursor + 1)
-    if (anchors[index] >= 0 && cursor !== anchors[index]) displaced++
-    return cursor
-  })
-
-  if (cursor <= reach && displaced <= budget) {
-    for (const [index, stop] of source.entries()) assigned.set(stop, target[shifted[index]])
-    return assigned
-  }
-
-  /** Of the two rungs a crowded-out step is wedged between, the one nearer it in lightness. */
-  const nearestOf = (stop: SpectrumStop, below: number, above: number): number => {
-    const options = [below, above].filter((index) => index >= 0 && index <= reach)
-    if (options.length === 0) return 0
-    let best = options[0]
-    for (const option of options) {
-      if (Math.abs(target[option].l - stop.l) < Math.abs(target[best].l - stop.l)) best = option
-    }
-    return best
-  }
-
+  // Anchors are law. A rung whose number exists in the new ladder lands on that number, full
+  // stop — no unanchored neighbour may displace it, however good that neighbour's own claim
+  // looks. The one time this tool let a stray rung push a ladder "just a little" (a budgeted
+  // shift of up to three anchors), a `grey/10` shoved the whole top of a gray ramp: `50`
+  // ended up on `150`, a step its own number says it is not. The operator's rule is simpler
+  // and better: the reference is 1:1; whatever has no number of its own fits into the gaps,
+  // and when there is no gap it collapses onto the nearest existing rung. Collapsing shades
+  // is what a palette migration *is* — inventing positions is not.
   let floor = -1
   for (const [index, stop] of source.entries()) {
     if (anchors[index] >= 0) {
-      // An anchor never moves. A rung whose number the new ladder has is the strongest signal
-      // there is, and letting an unanchored neighbour shove it displaces every anchor below it
-      // — one stray `10` from a retired group and the whole neutral ramp slides a step, which
-      // reads as the palette having been normalised rather than mapped.
       assigned.set(stop, target[anchors[index]])
-      floor = anchors[index]
+      floor = Math.max(floor, anchors[index])
       continue
     }
 
-    // A rung whose number the new ladder does not have has to fit *between* the rungs whose
-    // numbers it does. Without that, an old `10` takes the rung nearest its lightness — which
-    // is the one the old `50` is about to claim by name — and the ramp comes out inverted at
-    // the top: 10 darker than 50. Room is reserved for every unanchored rung still to come
-    // before the next anchor, so they cannot pile onto it either.
+    // A rung without a number fits *between* the anchored ones. Room is reserved for every
+    // unanchored rung still to come before the next anchor, so they cannot pile onto it.
     let nextAnchor = reach + 1
     let waiting = 0
     for (let ahead = index + 1; ahead < source.length; ahead++) {
@@ -457,16 +419,27 @@ function fitLadder(
       waiting++
     }
     const ceiling = Math.min(reach, nextAnchor - 1 - waiting)
-    const wish = wanted[index] < 0 ? floor + 1 : wanted[index]
 
-    // Room between the anchors, or none. With none the rung shares one of the two anchors it is
-    // wedged between — a duplicate is a smaller lie than a ladder off by one — and *which* of
-    // them is not a matter of taste: an old `10` wedged between a new `0` and a new `50` is a
-    // pale gray, and handing it the `0` turns it into pure white. It takes the neighbour whose
-    // lightness is nearer its own, which is the same question the rest of the matcher answers.
-    const settled = ceiling >= floor + 1 ? Math.min(Math.max(wish, floor + 1), ceiling) : nearestOf(stop, floor, nextAnchor)
-    assigned.set(stop, target[Math.min(settled, reach)])
-    floor = Math.max(floor, Math.min(settled, reach))
+    // Candidates: every free slot between the anchors, or sharing either anchor itself. All
+    // judged by one measure — whose lightness is nearest — so a `10` above a `50` shares the
+    // `50` rather than taking a pure-white `0` merely because the slot was free.
+    let best = -1
+    let bestDiff = Infinity
+    const consider = (position: number): void => {
+      if (position < 0 || position > reach) return
+      const diff = Math.abs(target[position].l - stop.l)
+      if (diff < bestDiff) {
+        bestDiff = diff
+        best = position
+      }
+    }
+    for (let position = floor + 1; position <= ceiling; position++) consider(position)
+    consider(floor)
+    if (nextAnchor <= reach) consider(nextAnchor)
+    if (best < 0) best = Math.max(0, Math.min(floor, reach))
+
+    assigned.set(stop, target[best])
+    floor = Math.max(floor, best)
   }
   return assigned
 }
@@ -481,8 +454,24 @@ export function matchStops(from: InferredSpectrum, to: InferredSpectrum): StopMa
     byStep.set(stop.step, stop)
   }
 
-  const preferred = (stop: SpectrumStop): SpectrumStop | null =>
-    (stop.step === null ? undefined : byStep.get(stop.step)) ?? nearestByLightness(to.stops, stop.l)
+  // For rungs of a fitted ladder the number is law and this function never decides. It only
+  // decides for the thin-evidence cases — families too short to fit, and one-off colours —
+  // and there a number that grossly contradicts the colour's own lightness is not trusted: a
+  // two-stop `toxic` family's `50` is a dark olive, and sending it to a near-white `green/50`
+  // because the numerals match would invert the pair it came with.
+  const preferred = (stop: SpectrumStop): SpectrumStop | null => {
+    const byNumber = stop.step === null ? undefined : byStep.get(stop.step)
+    const byLight = nearestByLightness(to.stops, stop.l)
+    if (!byNumber) return byLight
+    if (
+      byLight &&
+      Math.abs(byNumber.l - stop.l) > LADDER_BREAK &&
+      Math.abs(byLight.l - stop.l) < Math.abs(byNumber.l - stop.l)
+    ) {
+      return byLight
+    }
+    return byNumber
+  }
 
   const anchorOf = (stop: SpectrumStop): SpectrumStop | null =>
     (stop.step === null ? undefined : byStep.get(stop.step)) ?? null
@@ -498,7 +487,6 @@ export function matchStops(from: InferredSpectrum, to: InferredSpectrum): StopMa
       ? fitLadder(
           [...sourceLadder].sort(byStepAscending),
           [...targetLadder].sort(byStepAscending),
-          preferred,
           anchorOf,
           !from.neutral && !to.neutral
         )

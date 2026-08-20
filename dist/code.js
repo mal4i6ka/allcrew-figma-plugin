@@ -14287,7 +14287,7 @@ ${scrollGuards}` : project.css;
     }
     return outliers;
   }
-  function fitLadder(source, target, preferred, anchorOf, allowProportional) {
+  function fitLadder(source, target, anchorOf, allowProportional) {
     const assigned = /* @__PURE__ */ new Map();
     const span = source.length - 1;
     const reach = target.length - 1;
@@ -14297,7 +14297,6 @@ ${scrollGuards}` : project.css;
       return stop === null ? -1 : (_a = indexOf.get(stop)) != null ? _a : -1;
     };
     const anchors = source.map((stop) => at(anchorOf(stop)));
-    const wanted = source.map((stop) => at(preferred(stop)));
     if (source.length > target.length && !anchors.some((index) => index >= 0)) {
       if (!allowProportional) return assigned;
       for (const [index, stop] of source.entries()) {
@@ -14305,33 +14304,11 @@ ${scrollGuards}` : project.css;
       }
       return assigned;
     }
-    const budget = 3;
-    let cursor = -1;
-    let displaced = 0;
-    const shifted = source.map((_, index) => {
-      const desire = anchors[index] >= 0 ? anchors[index] : wanted[index] < 0 ? cursor + 1 : wanted[index];
-      cursor = Math.max(desire, cursor + 1);
-      if (anchors[index] >= 0 && cursor !== anchors[index]) displaced++;
-      return cursor;
-    });
-    if (cursor <= reach && displaced <= budget) {
-      for (const [index, stop] of source.entries()) assigned.set(stop, target[shifted[index]]);
-      return assigned;
-    }
-    const nearestOf = (stop, below, above) => {
-      const options = [below, above].filter((index) => index >= 0 && index <= reach);
-      if (options.length === 0) return 0;
-      let best = options[0];
-      for (const option of options) {
-        if (Math.abs(target[option].l - stop.l) < Math.abs(target[best].l - stop.l)) best = option;
-      }
-      return best;
-    };
     let floor = -1;
     for (const [index, stop] of source.entries()) {
       if (anchors[index] >= 0) {
         assigned.set(stop, target[anchors[index]]);
-        floor = anchors[index];
+        floor = Math.max(floor, anchors[index]);
         continue;
       }
       let nextAnchor = reach + 1;
@@ -14344,10 +14321,22 @@ ${scrollGuards}` : project.css;
         waiting++;
       }
       const ceiling = Math.min(reach, nextAnchor - 1 - waiting);
-      const wish = wanted[index] < 0 ? floor + 1 : wanted[index];
-      const settled = ceiling >= floor + 1 ? Math.min(Math.max(wish, floor + 1), ceiling) : nearestOf(stop, floor, nextAnchor);
-      assigned.set(stop, target[Math.min(settled, reach)]);
-      floor = Math.max(floor, Math.min(settled, reach));
+      let best = -1;
+      let bestDiff = Infinity;
+      const consider = (position) => {
+        if (position < 0 || position > reach) return;
+        const diff = Math.abs(target[position].l - stop.l);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = position;
+        }
+      };
+      for (let position = floor + 1; position <= ceiling; position++) consider(position);
+      consider(floor);
+      if (nextAnchor <= reach) consider(nextAnchor);
+      if (best < 0) best = Math.max(0, Math.min(floor, reach));
+      assigned.set(stop, target[best]);
+      floor = Math.max(floor, best);
     }
     return assigned;
   }
@@ -14363,8 +14352,13 @@ ${scrollGuards}` : project.css;
       byStep.set(stop.step, stop);
     }
     const preferred = (stop) => {
-      var _a;
-      return (_a = stop.step === null ? void 0 : byStep.get(stop.step)) != null ? _a : nearestByLightness(to.stops, stop.l);
+      const byNumber = stop.step === null ? void 0 : byStep.get(stop.step);
+      const byLight = nearestByLightness(to.stops, stop.l);
+      if (!byNumber) return byLight;
+      if (byLight && Math.abs(byNumber.l - stop.l) > LADDER_BREAK && Math.abs(byLight.l - stop.l) < Math.abs(byNumber.l - stop.l)) {
+        return byLight;
+      }
+      return byNumber;
     };
     const anchorOf = (stop) => {
       var _a;
@@ -14375,7 +14369,6 @@ ${scrollGuards}` : project.css;
     const fitted = sourceLadder.length >= 3 && targetLadder.length >= 2 ? fitLadder(
       [...sourceLadder].sort(byStepAscending),
       [...targetLadder].sort(byStepAscending),
-      preferred,
       anchorOf,
       !from.neutral && !to.neutral
     ) : /* @__PURE__ */ new Map();
@@ -15876,6 +15869,18 @@ ${scrollGuards}` : project.css;
     const { assignments } = assignFamilies(spectra, palette.spectra);
     const entries = [];
     const families = [];
+    const identical = /* @__PURE__ */ new Map();
+    for (const candidate of palette.candidates) {
+      const key = colorKey(candidate.rgba);
+      const held = identical.get(key);
+      if (!held || held.familyLabel === null && candidate.familyLabel !== null) identical.set(key, candidate);
+    }
+    for (const site of sites) {
+      const candidate = identical.get(colorKey(site.rgba));
+      if (!candidate) continue;
+      entries.push(entryFor(site, candidate, "exact", candidate.familyLabel, []));
+      byId.delete(site.id);
+    }
     for (const assignment of assignments) {
       families.push({
         fromKey: assignment.from.key,
