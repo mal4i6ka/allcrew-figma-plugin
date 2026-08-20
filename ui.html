@@ -871,7 +871,6 @@
           <label><input type="checkbox" id="rmp-w-styles" checked /> <span><b>Paint &amp; effect styles</b>, including every gradient stop inside them</span></label>
           <label><input type="checkbox" id="rmp-w-canvas" checked /> <span><b>Loose colors on layers</b> &mdash; unbound fills, strokes, gradient stops and shadows</span></label>
           <label><input type="checkbox" id="rmp-w-bind" checked /> <span>Bind a loose color to the variable it turns out to be, instead of repainting it</span></label>
-          <label><input type="checkbox" id="rmp-w-board" /> <span>Draw the old&rarr;new pairs as a <b>Color remap</b> section on this page</span></label>
         </div>
         <label class="pal-field pal-wide" style="margin-top:2px">Layers to repaint
           <select id="rmp-scope">
@@ -887,6 +886,9 @@
         </div>
         <div class="rmp-actions">
           <button class="btn ghost" id="rmp-unpark" type="button">Restore names this plugin parked in legacy/</button>
+        </div>
+        <div class="rmp-actions">
+          <button class="btn ghost" id="rmp-board" type="button" disabled>Draw the board on this page</button>
         </div>
         <div class="rmp-actions">
           <button class="btn ghost" id="rmp-json" type="button" disabled>mapping.json</button>
@@ -3083,6 +3085,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         rmpEl('rmp-apply').disabled = !hasPlan
         rmpEl('rmp-json').disabled = !hasPlan
         rmpEl('rmp-csv').disabled = !hasPlan
+        rmpEl('rmp-board').disabled = !hasPlan
       }
 
       function rmpSwatch(hex, alpha) {
@@ -3386,8 +3389,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           options: rmpOptions(),
           applyOptions: rmpApplyOptions(),
           overrides: RMP_OVERRIDES,
-          excluded: rmpExcluded(),
-          board: rmpEl('rmp-w-board').checked
+          excluded: rmpExcluded()
         } }, '*')
       })
 
@@ -3413,6 +3415,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           format: format
         } }, '*')
       }
+      // Drawing the board writes nothing but a picture, so it is its own button rather than a
+      // rider on Apply — and it replaces the section it drew last time, every time.
+      rmpEl('rmp-board').addEventListener('click', function () {
+        rmpSetBusy(true)
+        rmpText('rmp-result', 'Drawing the board…')
+        parent.postMessage({ pluginMessage: {
+          type: 'REMAP_BOARD',
+          source: rmpSource(),
+          options: rmpOptions(),
+          overrides: RMP_OVERRIDES,
+          excluded: rmpExcluded()
+        } }, '*')
+      })
+
       rmpEl('rmp-json').addEventListener('click', function () { rmpExport('json') })
       rmpEl('rmp-csv').addEventListener('click', function () { rmpExport('csv') })
 
@@ -3725,7 +3741,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           if (rr.skippedLibrary) done.push(rr.skippedLibrary + ' skipped (library)')
           if (rr.instanceOverrides) done.push(rr.instanceOverrides + ' instance overrides left alone')
           if (rr.failed) done.push(rr.failed + ' failed')
-          if (msg.board && msg.board.rows) done.push('board: ' + msg.board.rows + ' pairs drawn')
           var tail = '. Revert restores the previous values.'
           // The point of renaming safely: the next export still declares the old keys.
           if (rr.renamed) tail += ' The next export keeps the old custom-property names as aliases.'
@@ -3782,6 +3797,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpText('rmp-result', msg.replaced + ' colour(s) rewritten in ' + touched + ' of ' +
             msg.files.length + ' file(s) · ' + msg.untouched + ' colour(s) left alone' +
             (touched ? ' — downloaded' : ''))
+        } else if (msg.type === 'REMAP_BOARD_DRAWN') {
+          rmpSetBusy(false)
+          rmpProgress('')
+          var bd = msg.report || {}
+          rmpText('rmp-result', bd.rows
+            ? 'Board redrawn on this page: ' + bd.rows + ' pairs across ' + bd.families + ' families' +
+              (bd.omitted ? ' · ' + bd.omitted + ' more summarised' : '') + '.'
+            : 'Board redrawn: nothing moves — this file already holds that palette.')
         } else if (msg.type === 'REMAP_UNPARKED') {
           rmpSetBusy(false)
           rmpProgress('')

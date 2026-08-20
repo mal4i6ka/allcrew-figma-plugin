@@ -15487,7 +15487,6 @@ ${scrollGuards}` : project.css;
     var _a;
     const fonts = await loadFonts2();
     const groups = groupEntries(plan);
-    if (groups.length === 0) return { section: SECTION_NAME, rows: 0, families: 0, omitted: 0 };
     const previous = figma.currentPage.findAllWithCriteria({ types: ["SECTION"] }).find((node) => node.getPluginData(SECTION_KEY) === "1");
     const previousBox = (_a = previous == null ? void 0 : previous.absoluteBoundingBox) != null ? _a : null;
     const spot = previousBox ? { x: previousBox.x, y: previousBox.y } : placementFor2(groups);
@@ -15495,11 +15494,15 @@ ${scrollGuards}` : project.css;
     const content = autoLayout2(SECTION_NAME, "VERTICAL", ROW_GAP2);
     content.x = spot.x + PADDING;
     content.y = spot.y + PADDING;
+    const moving = groups.reduce((total, group) => total + group.entries.length, 0);
     const heading = autoLayout2("heading", "VERTICAL", 4);
     heading.appendChild(label2(SECTION_NAME, fonts, LABEL_SIZE2 + 3, "#1A1A1A"));
     heading.appendChild(
       label2(
-        `old above, new below \xB7 ${plan.entries.filter((entry) => !entry.flags.includes("unchanged")).length} of ${plan.entries.length} colors move`,
+        // An empty board is a result too: it says the file already holds this palette. Drawing
+        // it — rather than leaving the previous one standing — is the difference between "no
+        // change" and "the button did nothing".
+        moving === 0 ? `nothing moves \xB7 all ${plan.entries.length} colors already match this palette` : `old above, new below \xB7 ${moving} of ${plan.entries.length} colors move`,
         fonts,
         CAPTION_SIZE2 + 1,
         "#8A8A8A"
@@ -17303,14 +17306,6 @@ ${renderSections(sections)}
             options,
             (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 })
           );
-          let board = null;
-          if (msg.board) {
-            try {
-              board = await drawRemapBoard(plan);
-            } catch (err) {
-              report.warnings.push("the canvas board could not be drawn: " + String((err == null ? void 0 : err.message) || err));
-            }
-          }
           remapInventory = null;
           figma.notify(
             [
@@ -17322,7 +17317,6 @@ ${renderSections(sections)}
           figma.ui.postMessage({
             type: "REMAP_APPLIED",
             report,
-            board,
             audit: {
               checked: audit.checked,
               improved: audit.improved,
@@ -17344,6 +17338,18 @@ ${renderSections(sections)}
           remapInventory = null;
           figma.notify(`Reverted ${report.values} values` + (report.names ? ` and ${report.names} names` : ""));
           figma.ui.postMessage({ type: "REMAP_REVERTED", report, canRevert: hasRemapSnapshot() });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_BOARD": {
+        try {
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
+          figma.ui.postMessage({ type: "REMAP_PROGRESS", label: "drawing the board\u2026" });
+          const report = await drawRemapBoard(plan);
+          figma.notify(report.rows ? `Board: ${report.rows} pairs on this page` : "Board: nothing moves");
+          figma.ui.postMessage({ type: "REMAP_BOARD_DRAWN", report });
         } catch (err) {
           figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }

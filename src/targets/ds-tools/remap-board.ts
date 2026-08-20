@@ -200,7 +200,6 @@ export interface RemapBoardReport {
 export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport> {
   const fonts = await loadFonts()
   const groups = groupEntries(plan)
-  if (groups.length === 0) return { section: SECTION_NAME, rows: 0, families: 0, omitted: 0 }
 
   const previous = figma.currentPage
     .findAllWithCriteria({ types: ['SECTION'] })
@@ -213,11 +212,17 @@ export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport>
   content.x = spot.x + PADDING
   content.y = spot.y + PADDING
 
+  const moving = groups.reduce((total, group) => total + group.entries.length, 0)
   const heading = autoLayout('heading', 'VERTICAL', 4)
   heading.appendChild(label(SECTION_NAME, fonts, LABEL_SIZE + 3, '#1A1A1A'))
   heading.appendChild(
     label(
-      `old above, new below · ${plan.entries.filter((entry) => !entry.flags.includes('unchanged')).length} of ${plan.entries.length} colors move`,
+      // An empty board is a result too: it says the file already holds this palette. Drawing
+      // it — rather than leaving the previous one standing — is the difference between "no
+      // change" and "the button did nothing".
+      moving === 0
+        ? `nothing moves · all ${plan.entries.length} colors already match this palette`
+        : `old above, new below · ${moving} of ${plan.entries.length} colors move`,
       fonts,
       CAPTION_SIZE + 1,
       '#8A8A8A'
