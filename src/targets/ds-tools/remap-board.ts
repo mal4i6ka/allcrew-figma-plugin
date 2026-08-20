@@ -100,6 +100,29 @@ function block(color: { r: number; g: number; b: number; a: number }, caption: s
   return frame
 }
 
+/**
+ * The left-hand gutter naming the two rows.
+ *
+ * "old above, new below" in the heading is a caption someone reads once and then loses while
+ * scrolling through a hundred swatches; the pair only reads unambiguously if the axis is
+ * labelled where the eye already is.
+ */
+function gutter(fonts: Fonts): FrameNode {
+  const column = autoLayout('legend', 'VERTICAL', 3)
+  for (const text of ['old', 'new']) {
+    const cell = autoLayout(text, 'VERTICAL', 0)
+    cell.primaryAxisSizingMode = 'FIXED'
+    cell.counterAxisSizingMode = 'FIXED'
+    cell.resize(34, SWATCH_HEIGHT)
+    cell.primaryAxisAlignItems = 'CENTER'
+    cell.counterAxisAlignItems = 'MAX'
+    cell.paddingRight = 8
+    cell.appendChild(label(text, fonts, CAPTION_SIZE, '#8A8A8A'))
+    column.appendChild(cell)
+  }
+  return column
+}
+
 function pair(entry: RemapEntry, fonts: Fonts): FrameNode {
   const column = autoLayout(entry.site.name, 'VERTICAL', 3)
   column.appendChild(block(entry.from, entry.fromStep === null ? '' : String(entry.fromStep), fonts))
@@ -189,6 +212,7 @@ export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport>
     row.appendChild(label(group.title, fonts, LABEL_SIZE, '#1A1A1A'))
 
     const strip = autoLayout('strip', 'HORIZONTAL', 6)
+    strip.appendChild(gutter(fonts))
     const shown = group.entries.slice(0, MAX_ROWS_PER_FAMILY)
     for (const entry of shown) strip.appendChild(pair(entry, fonts))
     row.appendChild(strip)
@@ -214,6 +238,16 @@ export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport>
   section.y = spot.y
   section.resizeWithoutConstraints(content.width + PADDING * 2, content.height + PADDING * 2)
   section.appendChild(content)
+
+  // Re-parenting into a section may or may not preserve the absolute position, and guessing
+  // wrong leaves the board sitting outside its own frame. Measure where the content actually
+  // landed and close the gap, which is right either way.
+  const sectionBox = section.absoluteBoundingBox
+  const contentBox = content.absoluteBoundingBox
+  if (sectionBox && contentBox) {
+    content.x += sectionBox.x + PADDING - contentBox.x
+    content.y += sectionBox.y + PADDING - contentBox.y
+  }
 
   return { section: SECTION_NAME, rows, families: groups.length, omitted }
 }

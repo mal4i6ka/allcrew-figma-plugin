@@ -249,8 +249,13 @@ const REMAP_ROW_LIMIT = 500
 /** The plan as the table renders it — colors as hex, one row per site. */
 function remapPlanView(plan: RemapPlan) {
   const renamedById = new Map(plan.renames.map((rename) => [rename.siteId, rename]))
-  // Rows a human would actually act on first: the ones that move, most-used first.
+  // Rows a human would actually act on first. Named things lead: a loose colour's usage count
+  // is a number of painted places and a variable's is a number of bindings, so ranking them
+  // together lets one hex on a hundred thousand layers push every token out of the view.
+  const rank = (entry: (typeof plan.entries)[number]): number => (entry.site.kind === 'detached' ? 1 : 0)
   const ranked = [...plan.entries].sort((a, b) => {
+    const kind = rank(a) - rank(b)
+    if (kind !== 0) return kind
     const moved = Number(a.flags.includes('unchanged')) - Number(b.flags.includes('unchanged'))
     return moved !== 0 ? moved : b.site.usage - a.site.usage
   })

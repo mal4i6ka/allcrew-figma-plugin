@@ -14257,9 +14257,38 @@ ${scrollGuards}` : project.css;
     }
     return best;
   }
+  var LADDER_BREAK = 0.15;
+  function ladderOutliers(spectrum) {
+    const ladder = spectrum.stops.filter((stop) => stop.step !== null).sort((a, b) => a.step - b.step);
+    const outliers = /* @__PURE__ */ new Set();
+    if (ladder.length < 4) return outliers;
+    let up = 0;
+    let down = 0;
+    for (let i = 1; i < ladder.length; i++) {
+      const delta = ladder[i].l - ladder[i - 1].l;
+      if (delta > 0.01) up++;
+      else if (delta < -0.01) down++;
+    }
+    const direction = down > up ? -1 : up > down ? 1 : 0;
+    if (direction === 0) return outliers;
+    const follows = (earlier, later) => direction < 0 ? earlier >= later - LADDER_BREAK : earlier <= later + LADDER_BREAK;
+    for (let i = 0; i < ladder.length; i++) {
+      const previous = ladder[i - 1];
+      const next = ladder[i + 1];
+      const breaksBefore = previous !== void 0 && !follows(previous.l, ladder[i].l);
+      const breaksAfter = next !== void 0 && !follows(ladder[i].l, next.l);
+      const isEnd = previous === void 0 || next === void 0;
+      if (isEnd ? breaksBefore || breaksAfter : breaksBefore && breaksAfter) outliers.add(ladder[i].step);
+    }
+    return outliers;
+  }
   function matchStops(from, to) {
+    const untrusted = ladderOutliers(to);
     const byStep = /* @__PURE__ */ new Map();
-    for (const stop of to.stops) if (stop.step !== null && !byStep.has(stop.step)) byStep.set(stop.step, stop);
+    for (const stop of to.stops) {
+      if (stop.step === null || untrusted.has(stop.step) || byStep.has(stop.step)) continue;
+      byStep.set(stop.step, stop);
+    }
     const matches = [];
     for (const stop of from.stops) {
       const exact = stop.step === null ? void 0 : byStep.get(stop.step);
@@ -15330,6 +15359,21 @@ ${scrollGuards}` : project.css;
     if (caption !== "") frame2.appendChild(label2(caption, fonts, CAPTION_SIZE2, inkOn(color)));
     return frame2;
   }
+  function gutter(fonts) {
+    const column = autoLayout2("legend", "VERTICAL", 3);
+    for (const text2 of ["old", "new"]) {
+      const cell = autoLayout2(text2, "VERTICAL", 0);
+      cell.primaryAxisSizingMode = "FIXED";
+      cell.counterAxisSizingMode = "FIXED";
+      cell.resize(34, SWATCH_HEIGHT);
+      cell.primaryAxisAlignItems = "CENTER";
+      cell.counterAxisAlignItems = "MAX";
+      cell.paddingRight = 8;
+      cell.appendChild(label2(text2, fonts, CAPTION_SIZE2, "#8A8A8A"));
+      column.appendChild(cell);
+    }
+    return column;
+  }
   function pair(entry, fonts) {
     const column = autoLayout2(entry.site.name, "VERTICAL", 3);
     column.appendChild(block(entry.from, entry.fromStep === null ? "" : String(entry.fromStep), fonts));
@@ -15390,6 +15434,7 @@ ${scrollGuards}` : project.css;
       const row = autoLayout2(group.title, "VERTICAL", 8);
       row.appendChild(label2(group.title, fonts, LABEL_SIZE2, "#1A1A1A"));
       const strip = autoLayout2("strip", "HORIZONTAL", 6);
+      strip.appendChild(gutter(fonts));
       const shown = group.entries.slice(0, MAX_ROWS_PER_FAMILY);
       for (const entry of shown) strip.appendChild(pair(entry, fonts));
       row.appendChild(strip);
@@ -15410,6 +15455,12 @@ ${scrollGuards}` : project.css;
     section.y = spot.y;
     section.resizeWithoutConstraints(content.width + PADDING * 2, content.height + PADDING * 2);
     section.appendChild(content);
+    const sectionBox = section.absoluteBoundingBox;
+    const contentBox = content.absoluteBoundingBox;
+    if (sectionBox && contentBox) {
+      content.x += sectionBox.x + PADDING - contentBox.x;
+      content.y += sectionBox.y + PADDING - contentBox.y;
+    }
     return { section: SECTION_NAME, rows, families: groups.length, omitted };
   }
   function placementFor2(groups) {
@@ -16502,7 +16553,10 @@ ${renderSections(sections)}
   var REMAP_ROW_LIMIT = 500;
   function remapPlanView(plan) {
     const renamedById = new Map(plan.renames.map((rename) => [rename.siteId, rename]));
+    const rank = (entry) => entry.site.kind === "detached" ? 1 : 0;
     const ranked = [...plan.entries].sort((a, b) => {
+      const kind = rank(a) - rank(b);
+      if (kind !== 0) return kind;
       const moved = Number(a.flags.includes("unchanged")) - Number(b.flags.includes("unchanged"));
       return moved !== 0 ? moved : b.site.usage - a.site.usage;
     });

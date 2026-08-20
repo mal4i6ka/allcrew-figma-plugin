@@ -474,6 +474,9 @@
   .rmp-flag.warn { color: var(--accent-hi); background: var(--accent-tint); box-shadow: inset 0 0 0 1px rgba(251,91,10,0.3); }
   .rmp-override { width: 66px; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 2px 4px; font-family: var(--mono); font-size: 10px; }
   .rmp-override:focus { outline: none; border-color: var(--accent); }
+  .rmp-pick { width: 18px; height: 18px; padding: 0; border: 1px solid var(--border); border-radius: 4px; background: transparent; cursor: pointer; flex: none; }
+  .rmp-pick::-webkit-color-swatch-wrapper { padding: 1px; }
+  .rmp-pick::-webkit-color-swatch { border: 0; border-radius: 3px; }
   .rmp-depth { flex: 0 0 auto; background: var(--bg-2); border: 1px solid var(--border); color: var(--muted); border-radius: var(--r-sm); padding: 0 8px; font-family: var(--mono); font-size: 11px; }
   .rmp-depth:focus { outline: none; border-color: var(--accent); }
   .rmp-drop { border: 1px dashed var(--border); border-radius: var(--r-sm); padding: 12px 12px 13px; text-align: center; cursor: pointer; transition: border-color .16s, background .16s; }
@@ -3078,12 +3081,30 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         override.placeholder = row.to
         override.value = RMP_OVERRIDES[row.id] || ''
         override.title = 'Override this row with a color of your own'
-        override.addEventListener('change', function () {
-          var value = this.value.trim()
-          if (value === '') delete RMP_OVERRIDES[row.id]
-          else RMP_OVERRIDES[row.id] = value
+
+        // The picker and the field are one control: typing a hex is precise, and picking one
+        // is how anybody actually chooses a colour.
+        var picker = document.createElement('input')
+        picker.className = 'rmp-pick'
+        picker.type = 'color'
+        picker.value = RMP_OVERRIDES[row.id] || row.to
+        picker.title = 'Pick a color'
+
+        function setOverride(value) {
+          var trimmed = String(value).trim()
+          if (trimmed === '') delete RMP_OVERRIDES[row.id]
+          else RMP_OVERRIDES[row.id] = trimmed
           rmpPreview()
+        }
+        override.addEventListener('change', function () {
+          if (/^#?[0-9a-fA-F]{6}$/.test(this.value.trim())) picker.value = '#' + this.value.trim().replace('#', '')
+          setOverride(this.value)
         })
+        picker.addEventListener('change', function () {
+          override.value = this.value.toUpperCase()
+          setOverride(this.value)
+        })
+        meta.appendChild(picker)
         meta.appendChild(override)
         node.appendChild(meta)
         return node
@@ -3103,7 +3124,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var order = []
         var grouped = {}
         for (var i = 0; i < rows.length; i++) {
-          var key = rows[i].fromFamily || 'Ungrouped'
+          var key = rows[i].fromFamily || (rows[i].kind === 'detached' ? 'Loose colours on layers' : 'Ungrouped')
           if (!grouped[key]) { grouped[key] = []; order.push(key) }
           grouped[key].push(rows[i])
         }

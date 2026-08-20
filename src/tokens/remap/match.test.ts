@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseHex } from '../color.ts'
-import { assignFamilies, deltaE, familyCost, hungarian, matchStops, nearestByColor } from './match.ts'
+import { assignFamilies, deltaE, familyCost, hungarian, ladderOutliers, matchStops, nearestByColor } from './match.ts'
 import { inferSpectra, spectrumSteps, type InferredSpectrum, type SpectrumMember } from './spectrum.ts'
 
 const BLUE = ['#EFF6FF', '#DBEAFE', '#BFDBFE', '#93C5FD', '#60A5FA', '#3B82F6', '#2563EB', '#1D4ED8', '#1E40AF', '#1E3A8A']
@@ -164,4 +164,100 @@ test('nearest by color is the fallback for anything that belongs to no ramp', ()
   const candidates = [{ rgba: rgba('#7C3AED') }, { rgba: rgba('#14B8A6') }, { rgba: rgba('#F97316') }]
   assert.deepEqual(nearestByColor(candidates, rgba('#0D9488')), candidates[1])
   assert.equal(nearestByColor([], rgba('#000000')), null)
+})
+
+/* ------------------------------------------------------------------ untrustworthy steps */
+
+/** Altery's own library: `10` is the brand colour and `50…900` are tints of it. */
+const ALTERY_RED = [
+  [10, '#D63A36'],
+  [50, '#FFF0F0'],
+  [100, '#FFCFC6'],
+  [200, '#F7BBBB'],
+  [300, '#EE9A9A'],
+  [400, '#E06764'],
+  [500, '#D63A36'],
+  [600, '#B32B28'],
+  [700, '#8C1F1D'],
+  [800, '#661513'],
+] as const
+
+const alteryRed = (): InferredSpectrum =>
+  only(
+    ALTERY_RED.map(([step, hex], index) => ({
+      ref: `alx/${index}`,
+      name: `colors/red/${step}`,
+      rgba: rgba(hex),
+      family: 'red',
+      step,
+    }))
+  )
+
+/** A conventional scale: 10 is the lightest tint, 900 the darkest shade. */
+const CONVENTIONAL_RED = [
+  [10, '#FFE6E6'],
+  [50, '#FFC0BF'],
+  [100, '#F99D99'],
+  [200, '#EE7D73'],
+  [300, '#E35C50'],
+  [400, '#D63A36'],
+  [500, '#C22B27'],
+  [600, '#A31F1C'],
+  [700, '#851714'],
+  [800, '#66100E'],
+] as const
+
+const conventionalRed = (): InferredSpectrum =>
+  only(
+    CONVENTIONAL_RED.map(([step, hex], index) => ({
+      ref: `old/${index}`,
+      name: `colors/red/${step}`,
+      rgba: rgba(hex),
+      family: 'red',
+      step,
+    }))
+  )
+
+test('a step that breaks its own ladder is not trusted as a number', () => {
+  // `10` sits far outside the run 50…800 descends through, so in that scale the number means
+  // something else — the brand colour rather than the lightest tint.
+  assert.deepEqual([...ladderOutliers(alteryRed())], [10])
+  assert.deepEqual([...ladderOutliers(conventionalRed())], [], 'a monotone ladder has none')
+})
+
+test('an old light tint does not become a saturated fill just because the numbers agree', () => {
+  const matches = matchStops(conventionalRed(), alteryRed())
+  const ten = matches.find((match) => match.from.step === 10)!
+
+  assert.equal(ten.via, 'lightness', 'the number was declined, not the colour')
+  assert.ok(ten.to.l > 0.9, `landed on ${ten.to.name} at L ${ten.to.l.toFixed(2)}`)
+  assert.ok(ten.lightnessShift < 0.1)
+
+  // Every other step still keeps its number, because those numbers do mean the same thing.
+  const rest = matches.filter((match) => match.from.step !== 10)
+  assert.ok(rest.every((match) => match.via === 'step'))
+})
+
+test('the untrusted stop is still reachable as a colour', () => {
+  // Declining `10` as a *number* must not remove #D63A36 from the palette: something in the
+  // old ramp is that dark, and it should land there.
+  const matches = matchStops(conventionalRed(), alteryRed())
+  assert.ok(matches.some((match) => match.to.name === 'colors/red/10' || match.to.rgba.r < 0.9))
+})
+
+test('a short scale is left alone — there is not enough of it to call anything an outlier', () => {
+  const short = only(
+    [
+      [10, '#FFE6E6'],
+      [500, '#C22B27'],
+      [900, '#3D0908'],
+    ].map(([step, hex], index) => ({
+      ref: `s/${index}`,
+      name: `red/${step}`,
+      rgba: rgba(hex as string),
+      family: 'red',
+      step: step as number,
+    }))
+  )
+  assert.deepEqual([...ladderOutliers(short)], [])
 })

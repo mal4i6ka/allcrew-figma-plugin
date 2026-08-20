@@ -267,9 +267,63 @@ export function nearestByLightness(stops: readonly SpectrumStop[], l: number): S
  * or a named scale onto one that arrived as bare hexes with no numbers at all. Both are
  * handled by the same two branches, and both only ever return a stop that exists in `to`.
  */
+/** A lightness break this wide is a step that means something else, not a bumpy ramp. */
+const LADDER_BREAK = 0.15
+
+/**
+ * Steps whose number cannot be trusted, because they break their own family's ladder.
+ *
+ * A scale is only comparable to another scale if a step number means the same *kind* of thing
+ * in both. Real systems break that: a palette whose `10` is the brand colour and whose
+ * `50…900` are tints of it has a `10` sitting far outside its own monotone run, and matching
+ * an old light `10` onto it by number turns every pale background into a saturated fill. The
+ * number is right and the result is absurd, which is exactly the case worth detecting.
+ *
+ * Such a stop is excluded from *exact* matching only. It stays available as a lightness
+ * target, because as a colour it is perfectly real.
+ */
+export function ladderOutliers(spectrum: InferredSpectrum): Set<number> {
+  const ladder = spectrum.stops
+    .filter((stop): stop is SpectrumStop & { step: number } => stop.step !== null)
+    .sort((a, b) => a.step - b.step)
+  const outliers = new Set<number>()
+  if (ladder.length < 4) return outliers
+
+  let up = 0
+  let down = 0
+  for (let i = 1; i < ladder.length; i++) {
+    const delta = ladder[i].l - ladder[i - 1].l
+    if (delta > 0.01) up++
+    else if (delta < -0.01) down++
+  }
+  const direction = down > up ? -1 : up > down ? 1 : 0
+  if (direction === 0) return outliers
+
+  /** Does this pair run the way the ladder as a whole runs? */
+  const follows = (earlier: number, later: number): boolean =>
+    direction < 0 ? earlier >= later - LADDER_BREAK : earlier <= later + LADDER_BREAK
+
+  for (let i = 0; i < ladder.length; i++) {
+    const previous = ladder[i - 1]
+    const next = ladder[i + 1]
+    const breaksBefore = previous !== undefined && !follows(previous.l, ladder[i].l)
+    const breaksAfter = next !== undefined && !follows(ladder[i].l, next.l)
+    // An end only has one neighbour to disagree with; an interior stop has to disagree with
+    // both, or it is the *next* stop that is out of place rather than this one.
+    const isEnd = previous === undefined || next === undefined
+    if (isEnd ? breaksBefore || breaksAfter : breaksBefore && breaksAfter) outliers.add(ladder[i].step)
+  }
+
+  return outliers
+}
+
 export function matchStops(from: InferredSpectrum, to: InferredSpectrum): StopMatch[] {
+  const untrusted = ladderOutliers(to)
   const byStep = new Map<number, SpectrumStop>()
-  for (const stop of to.stops) if (stop.step !== null && !byStep.has(stop.step)) byStep.set(stop.step, stop)
+  for (const stop of to.stops) {
+    if (stop.step === null || untrusted.has(stop.step) || byStep.has(stop.step)) continue
+    byStep.set(stop.step, stop)
+  }
 
   const matches: StopMatch[] = []
   for (const stop of from.stops) {
