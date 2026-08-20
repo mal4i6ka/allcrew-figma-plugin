@@ -14291,52 +14291,70 @@ ${scrollGuards}` : project.css;
     const assigned = /* @__PURE__ */ new Map();
     const span = source.length - 1;
     const reach = target.length - 1;
-    const indexOf = new Map(target.map((stop, index) => [stop, index]));
+    const indexOf = new Map(target.map((stop, index2) => [stop, index2]));
     const at = (stop) => {
       var _a;
       return stop === null ? -1 : (_a = indexOf.get(stop)) != null ? _a : -1;
     };
     const anchors = source.map((stop) => at(anchorOf(stop)));
-    if (source.length > target.length && !anchors.some((index) => index >= 0)) {
+    if (source.length > target.length && !anchors.some((index2) => index2 >= 0)) {
       if (!allowProportional) return assigned;
-      for (const [index, stop] of source.entries()) {
-        assigned.set(stop, target[span === 0 ? 0 : Math.round(index * reach / span)]);
+      for (const [index2, stop] of source.entries()) {
+        assigned.set(stop, target[span === 0 ? 0 : Math.round(index2 * reach / span)]);
       }
       return assigned;
     }
     let floor = -1;
-    for (const [index, stop] of source.entries()) {
+    let index = 0;
+    while (index < source.length) {
       if (anchors[index] >= 0) {
-        assigned.set(stop, target[anchors[index]]);
+        assigned.set(source[index], target[anchors[index]]);
         floor = Math.max(floor, anchors[index]);
+        index++;
         continue;
       }
-      let nextAnchor = reach + 1;
-      let waiting = 0;
-      for (let ahead = index + 1; ahead < source.length; ahead++) {
-        if (anchors[ahead] >= 0) {
-          nextAnchor = anchors[ahead];
-          break;
+      let end = index;
+      while (end < source.length && anchors[end] < 0) end++;
+      const nextAnchor = end < source.length ? anchors[end] : -1;
+      const positions = [];
+      if (floor >= 0) positions.push(floor);
+      const upper = nextAnchor >= 0 ? nextAnchor - 1 : reach;
+      for (let position = floor + 1; position <= upper; position++) positions.push(position);
+      if (nextAnchor >= 0) positions.push(nextAnchor);
+      if (positions.length === 0) positions.push(Math.max(0, Math.min(floor, reach)));
+      const run = source.slice(index, end);
+      const width = positions.length;
+      let previous = new Array(width).fill(0);
+      const picks = [];
+      for (const stop of run) {
+        const current = new Array(width).fill(Infinity);
+        const pick = new Array(width).fill(-1);
+        let bestBefore = Infinity;
+        let bestAt = -1;
+        for (let p = 0; p < width; p++) {
+          if (previous[p] < bestBefore) {
+            bestBefore = previous[p];
+            bestAt = p;
+          }
+          current[p] = bestBefore + Math.abs(target[positions[p]].l - stop.l);
+          pick[p] = bestAt;
         }
-        waiting++;
+        picks.push(pick);
+        previous = current;
       }
-      const ceiling = Math.min(reach, nextAnchor - 1 - waiting);
-      let best = -1;
-      let bestDiff = Infinity;
-      const consider = (position) => {
-        if (position < 0 || position > reach) return;
-        const diff = Math.abs(target[position].l - stop.l);
-        if (diff < bestDiff) {
-          bestDiff = diff;
-          best = position;
-        }
-      };
-      for (let position = floor + 1; position <= ceiling; position++) consider(position);
-      consider(floor);
-      if (nextAnchor <= reach) consider(nextAnchor);
-      if (best < 0) best = Math.max(0, Math.min(floor, reach));
-      assigned.set(stop, target[best]);
-      floor = Math.max(floor, best);
+      let at2 = 0;
+      for (let p = 1; p < width; p++) if (previous[p] < previous[at2]) at2 = p;
+      const chosen = new Array(run.length);
+      for (let i = run.length - 1; i >= 0; i--) {
+        chosen[i] = at2;
+        at2 = picks[i][at2];
+      }
+      for (const [i, stop] of run.entries()) {
+        const position = positions[chosen[i]];
+        assigned.set(stop, target[position]);
+        floor = Math.max(floor, position);
+      }
+      index = end;
     }
     return assigned;
   }
@@ -15875,8 +15893,27 @@ ${scrollGuards}` : project.css;
       const held = identical.get(key);
       if (!held || held.familyLabel === null && candidate.familyLabel !== null) identical.set(key, candidate);
     }
+    const identityOf = (color) => {
+      const channels = [color.r, color.g, color.b].map((channel) => channel * 255);
+      const options = channels.map((value) => {
+        const rounded = Math.round(value);
+        const keys = [rounded];
+        if (Math.abs(value - rounded + 0.5) < 0.51) keys.push(rounded - 1);
+        if (Math.abs(rounded + 0.5 - value) < 0.51) keys.push(rounded + 1);
+        return keys;
+      });
+      for (const r of options[0]) {
+        for (const g of options[1]) {
+          for (const b of options[2]) {
+            const candidate = identical.get(`${r},${g},${b}`);
+            if (candidate && sameColor(candidate.rgba, color)) return candidate;
+          }
+        }
+      }
+      return null;
+    };
     for (const site of sites) {
-      const candidate = identical.get(colorKey(site.rgba));
+      const candidate = identityOf(site.rgba);
       if (!candidate) continue;
       entries.push(entryFor(site, candidate, "exact", candidate.familyLabel, []));
       byId.delete(site.id);
@@ -15924,7 +15961,11 @@ ${scrollGuards}` : project.css;
       const b = byId.get(right);
       if (!a || !b || a === b) continue;
       if (!sameColor(a.to, b.to)) continue;
-      const mover = a.site.usage <= b.site.usage ? a : b;
+      if (sameColor(a.from, b.from)) continue;
+      const aFixed = a.via === "exact";
+      const bFixed = b.via === "exact";
+      if (aFixed && bFixed) continue;
+      const mover = aFixed ? b : bFixed ? a : a.site.usage <= b.site.usage ? a : b;
       const anchor = mover === a ? b : a;
       const stops = mover.toFamily === null ? void 0 : stopsByFamily.get(mover.toFamily);
       if (!stops || stops.length < 2) {
@@ -16016,7 +16057,11 @@ ${scrollGuards}` : project.css;
     var _a, _b, _c, _d;
     if (!options.rename) return [];
     const eligible = entries.filter(
-      (entry) => entry.site.kind === "variable" && entry.site.primitive && entry.site.editable && entry.toFamily !== null && // A translucent token is matched as a colour, not as a rung of a ladder, so the family it
+      (entry) => entry.site.kind === "variable" && entry.site.primitive && entry.site.editable && // A pair struck out of the run is struck out of everything the run writes. Renaming a
+      // variable is writing to it — and worse, the phantom rename claims the target name in
+      // collision resolution, so a variable the human kept can end up parked in legacy/ by
+      // one the human excluded.
+      !entry.flags.includes("excluded") && entry.toFamily !== null && // A translucent token is matched as a colour, not as a rung of a ladder, so the family it
       // happened to land near is not a family it belongs to. Renaming `colors/black/50` into
       // `colors/neutral/50` only collides with the neutral that is already there.
       entry.from.a >= 0.999
@@ -16441,6 +16486,32 @@ ${scrollGuards}` : project.css;
   var isAlias2 = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
   var isRgb2 = (value) => typeof value === "object" && value !== null && "r" in value && "g" in value && "b" in value;
   var IMPORT_CHUNK = 50;
+  var ALIAS_DEPTH = 6;
+  async function resolveColor(variable, modeId) {
+    var _a, _b, _c;
+    let current = variable;
+    let mode = modeId;
+    for (let depth = 0; depth < ALIAS_DEPTH; depth++) {
+      const value = (_a = current.valuesByMode[mode]) != null ? _a : await defaultValueOf(current);
+      if (value === void 0) return null;
+      if (isRgb2(value)) return value;
+      if (!isAlias2(value)) return null;
+      const next = await figma.variables.getVariableByIdAsync(value.id).catch(() => null);
+      if (!next) return null;
+      current = next;
+      if (!(mode in current.valuesByMode)) {
+        const collection = await figma.variables.getVariableCollectionByIdAsync(current.variableCollectionId).catch(() => null);
+        mode = (_c = (_b = collection == null ? void 0 : collection.defaultModeId) != null ? _b : Object.keys(current.valuesByMode)[0]) != null ? _c : mode;
+      }
+    }
+    return null;
+  }
+  var defaultValueOf = async (variable) => {
+    var _a;
+    const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId).catch(() => null);
+    const mode = (_a = collection == null ? void 0 : collection.defaultModeId) != null ? _a : Object.keys(variable.valuesByMode)[0];
+    return mode === void 0 ? void 0 : variable.valuesByMode[mode];
+  };
   async function swatchesFromLibrary(key, modeName, progress2) {
     var _a, _b;
     const warnings = [];
@@ -16455,7 +16526,7 @@ ${scrollGuards}` : project.css;
     const entries = [];
     let modeId = null;
     let chosenMode = null;
-    let aliased = 0;
+    let unresolved = 0;
     for (const [index, candidate] of colors.entries()) {
       if (index % IMPORT_CHUNK === 0) {
         progress2 == null ? void 0 : progress2(`importing library colors\u2026 ${index}/${colors.length}`);
@@ -16474,19 +16545,17 @@ ${scrollGuards}` : project.css;
         chosenMode = mode.name;
         if (modeName && !wanted) warnings.push(`that library has no "${modeName}" mode \u2014 read "${mode.name}" instead`);
       }
-      const value = variable.valuesByMode[modeId];
-      if (value === void 0) continue;
-      if (isAlias2(value)) {
-        aliased++;
+      const value = await resolveColor(variable, modeId);
+      if (value === null) {
+        unresolved++;
         continue;
       }
-      if (!isRgb2(value)) continue;
       const color = withAlpha(value);
       entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name });
     }
     const { swatches, duplicates } = swatchesFromNamedColors(entries);
     if (chosenMode) warnings.unshift(`read the "${chosenMode}" mode of that collection`);
-    if (aliased > 0) warnings.push(`${aliased} alias-valued token(s) skipped \u2014 they point at colors already in the list`);
+    if (unresolved > 0) warnings.push(`${unresolved} token(s) could not be resolved to a color and were left out`);
     if (duplicates > 0) warnings.push(`${duplicates} repeated color(s) were read once`);
     return { swatches, warnings };
   }

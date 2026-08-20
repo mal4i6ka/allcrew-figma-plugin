@@ -298,3 +298,27 @@ numerals alone would send it to a near-white `green/50`.
 Verified on the real A → B exports plus the live file's strays with a standing invariant
 script: identity holds for all 15 byte-equal colors, every shared number lands 1:1 in every
 family, no ladder comes out inverted, `blue/250`/`neutral/150`/`red/850` stay empty.
+
+## The library reader was the thief (2026-08-20, evening)
+
+The operator reads the reference from **Library → "Altery Design System 3.0 · Colors"** — the
+right channel. The reader skipped alias-valued tokens on the reasoning that they point at
+colors already in the list. That is only true for aliases *inside the collection being read*;
+a `neutral/0` aliasing into a base collection left the palette with no white at all, and
+every white in the file "moved" to the lightest gray that made it in. Proven from the drawn
+board: 417 pairs and not one lands on #FFFFFF or #000000. Aliases now resolve through their
+chain (depth-capped); identical results still collapse afterwards.
+
+An adversarial verification pass (three independent refuters) also confirmed and led to
+fixing:
+- `fitLadder`'s slot reservation could strand the very slot it reserved — a rung two
+  hundredths from a near-white slot took the far anchor and the slot went to nobody. The
+  unanchored rungs between two anchors are now placed **jointly**: a monotone assignment
+  minimizing total lightness shift (prefix-min DP), which also covers the crowded-tail case.
+- Excluded pairs were still renamed, and the phantom rename claimed the target name in
+  collision resolution — parking a variable the human kept in `legacy/`. Excluded means
+  excluded from every write.
+- `separateAdjacent` could move an identity match and could "separate" a pair that was
+  already one color in the source file, manufacturing a fork. Both barred.
+- The identity lookup keyed on the 8-bit grid missed colors a hair under a rounding boundary
+  (hsl()/oklch() palettes); the probe now honors `sameColor`'s tolerance.

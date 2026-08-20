@@ -397,49 +397,72 @@ function fitLadder(
   // shift of up to three anchors), a `grey/10` shoved the whole top of a gray ramp: `50`
   // ended up on `150`, a step its own number says it is not. The operator's rule is simpler
   // and better: the reference is 1:1; whatever has no number of its own fits into the gaps,
-  // and when there is no gap it collapses onto the nearest existing rung. Collapsing shades
-  // is what a palette migration *is* — inventing positions is not.
+  // and when there is no gap it collapses onto the nearest existing rung.
+  //
+  // The unanchored rungs between two anchors are placed *together*, as one monotone
+  // assignment minimizing total lightness shift. Placing them one at a time with reserved
+  // slots was tried and refuted: the reservation could strand the very slot it was holding —
+  // a rung two steps from a near-white slot got the far anchor instead, and the slot went to
+  // nobody. The joint assignment cannot make that mistake, and collapsing (two rungs sharing
+  // a landing) stays legal because the mapping is non-decreasing, not strictly increasing.
   let floor = -1
-  for (const [index, stop] of source.entries()) {
+  let index = 0
+  while (index < source.length) {
     if (anchors[index] >= 0) {
-      assigned.set(stop, target[anchors[index]])
+      assigned.set(source[index], target[anchors[index]])
       floor = Math.max(floor, anchors[index])
+      index++
       continue
     }
 
-    // A rung without a number fits *between* the anchored ones. Room is reserved for every
-    // unanchored rung still to come before the next anchor, so they cannot pile onto it.
-    let nextAnchor = reach + 1
-    let waiting = 0
-    for (let ahead = index + 1; ahead < source.length; ahead++) {
-      if (anchors[ahead] >= 0) {
-        nextAnchor = anchors[ahead]
-        break
-      }
-      waiting++
-    }
-    const ceiling = Math.min(reach, nextAnchor - 1 - waiting)
+    let end = index
+    while (end < source.length && anchors[end] < 0) end++
+    const nextAnchor = end < source.length ? anchors[end] : -1
 
-    // Candidates: every free slot between the anchors, or sharing either anchor itself. All
-    // judged by one measure — whose lightness is nearest — so a `10` above a `50` shares the
-    // `50` rather than taking a pure-white `0` merely because the slot was free.
-    let best = -1
-    let bestDiff = Infinity
-    const consider = (position: number): void => {
-      if (position < 0 || position > reach) return
-      const diff = Math.abs(target[position].l - stop.l)
-      if (diff < bestDiff) {
-        bestDiff = diff
-        best = position
-      }
-    }
-    for (let position = floor + 1; position <= ceiling; position++) consider(position)
-    consider(floor)
-    if (nextAnchor <= reach) consider(nextAnchor)
-    if (best < 0) best = Math.max(0, Math.min(floor, reach))
+    // Candidate positions for this run: the anchor below (shared), every free slot between
+    // the anchors, the anchor above (shared).
+    const positions: number[] = []
+    if (floor >= 0) positions.push(floor)
+    const upper = nextAnchor >= 0 ? nextAnchor - 1 : reach
+    for (let position = floor + 1; position <= upper; position++) positions.push(position)
+    if (nextAnchor >= 0) positions.push(nextAnchor)
+    if (positions.length === 0) positions.push(Math.max(0, Math.min(floor, reach)))
 
-    assigned.set(stop, target[best])
-    floor = Math.max(floor, best)
+    // Non-decreasing assignment of run rungs to positions, minimum total |Δl| — a prefix-min
+    // dynamic program over a handful of rungs and slots.
+    const run = source.slice(index, end)
+    const width = positions.length
+    let previous = new Array<number>(width).fill(0)
+    const picks: number[][] = []
+    for (const stop of run) {
+      const current = new Array<number>(width).fill(Infinity)
+      const pick = new Array<number>(width).fill(-1)
+      let bestBefore = Infinity
+      let bestAt = -1
+      for (let p = 0; p < width; p++) {
+        if (previous[p] < bestBefore) {
+          bestBefore = previous[p]
+          bestAt = p
+        }
+        current[p] = bestBefore + Math.abs(target[positions[p]].l - stop.l)
+        pick[p] = bestAt
+      }
+      picks.push(pick)
+      previous = current
+    }
+    let at = 0
+    for (let p = 1; p < width; p++) if (previous[p] < previous[at]) at = p
+    const chosen = new Array<number>(run.length)
+    for (let i = run.length - 1; i >= 0; i--) {
+      chosen[i] = at
+      at = picks[i][at]
+    }
+    for (const [i, stop] of run.entries()) {
+      const position = positions[chosen[i]]
+      assigned.set(stop, target[position])
+      floor = Math.max(floor, position)
+    }
+    index = end
   }
   return assigned
 }

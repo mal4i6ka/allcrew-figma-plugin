@@ -244,3 +244,62 @@ test('a color the new palette already holds does not move, wherever it was filed
   const gray = plan.entries.find((entry) => entry.site.name === 'colors/grey/500')!
   assert.notEqual(gray.via, 'exact', 'a color the palette does not hold still maps normally')
 })
+
+test('an excluded pair is out of everything the run writes — renames included', () => {
+  // Refuted by the adversarial pass twice over: the phantom rename not only wrote a name the
+  // human struck out, it claimed that name in collision resolution, parking a variable the
+  // human kept in legacy/.
+  const sites = [
+    site({ id: 'kept', name: 'colors/Indigo/500', rgba: rgba('#6366F1'), usage: 3 }),
+    site({ id: 'struck', name: 'colors/Blue/500', rgba: rgba('#8B5CF6'), usage: 40 }),
+  ]
+  const plan = buildRemapPlan({ sites, palette: palette(pasted('Violet', VIOLET)), excluded: ['struck'] })
+
+  assert.ok(!plan.renames.some((rename) => rename.siteId === 'struck'), 'the excluded variable is not renamed')
+  const kept = plan.renames.find((rename) => rename.siteId === 'kept')
+  assert.ok(kept && !kept.legacy, 'the kept variable takes the name — no phantom claim parks it in legacy/')
+})
+
+test('separation never moves an identity match, and never forks a pair that was already one color', () => {
+  const twin = [
+    site({ id: 'fill', name: 'surface/brand', rgba: rgba('#8B5CF6'), usage: 30 }),
+    site({ id: 'border', name: 'border/brand', rgba: rgba('#8B5CF6'), usage: 2 }),
+  ]
+  const already = buildRemapPlan({
+    sites: twin,
+    palette: palette(pasted('Violet', VIOLET)),
+    adjacency: [['fill', 'border']],
+  })
+  for (const entry of already.entries) {
+    assert.ok(!entry.flags.includes('separated'), 'a pair the designer drew as one color stays one color')
+    assert.equal(entry.via, 'exact')
+  }
+
+  const mixed = [
+    site({ id: 'fill', name: 'surface/brand', rgba: rgba('#8D5EF4'), usage: 30 }),
+    site({ id: 'border', name: 'border/brand', rgba: rgba('#8B5CF6'), usage: 2 }),
+  ]
+  const plan = buildRemapPlan({
+    sites: mixed,
+    palette: palette(pasted('Violet', VIOLET)),
+    adjacency: [['fill', 'border']],
+  })
+  const border = plan.entries.find((entry) => entry.site.id === 'border')!
+  assert.equal(border.via, 'exact', 'the identity match is never the mover, whatever its usage')
+  assert.ok(!border.flags.includes('separated'))
+})
+
+test('identity holds for palette colors that sit off the 8-bit grid', () => {
+  // hsl() parses to channels that need not land on n/255; a variable a hair under the rounding
+  // boundary is the same color by this module's own equality and must not miss the exact pass.
+  const swatches = parsePaletteInput('blue/300, hsl(210, 40%, 50%)\nblue/500, #1D4ED8').swatches
+  const nudge = 1.6e-6
+  const sites = [
+    site({
+      name: 'colors/blue/500',
+      rgba: { r: 0.3 - nudge, g: 0.5 - nudge, b: 0.7 - nudge, a: 1 },
+    }),
+  ]
+  const plan = buildRemapPlan({ sites, palette: swatches })
+  assert.equal(plan.entries[0].via, 'exact', 'equal is equal, wherever the rounding boundary falls')
+})
