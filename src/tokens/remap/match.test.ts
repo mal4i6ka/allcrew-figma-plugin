@@ -348,3 +348,26 @@ test('a target family does not drag a gray ramp in just to have a source', () =>
     'the colours nothing landed on are reported, not filled with grays'
   )
 })
+
+test('a rung the new ladder cannot name still sits above the one it can', () => {
+  // The old ladder starts at 10 where the new one starts at 0/50. Taking the rung nearest its
+  // lightness puts 10 on the 100 that the 50 is about to claim by name, and the ramp comes out
+  // inverted at the top — 10 darker than 50, which no gradient should ever be.
+  const grey = (steps: Array<[number, string]>) => rungs('grey', steps)
+  const from = grey([
+    [10, '#F4F4F4'], [50, '#E4E4E4'], [100, '#D4D4D4'], [200, '#C4C4C4'],
+    [300, '#B3B3B3'], [400, '#A3A3A3'], [500, '#939393'], [600, '#7C7C7C'],
+  ])
+  const to = grey([
+    [0, '#FFFFFF'], [50, '#F7F8F8'], [100, '#F2F4F5'], [150, '#E8EBEC'], [200, '#D9DCDE'],
+    [300, '#B8BBBD'], [400, '#8C8C8C'], [500, '#797979'], [600, '#616161'],
+  ])
+
+  const matches = matchStops(from, to)
+  const landings = matches.map((match) => match.to.l)
+  for (let i = 1; i < landings.length; i++) {
+    assert.ok(landings[i] < landings[i - 1], `${matches[i].from.step} landed lighter than ${matches[i - 1].from.step}`)
+  }
+  assert.equal(matches[0].to.step, 0, 'the unnamed rung takes the one above the first anchor')
+  assert.equal(matches[1].to.step, 50, 'and the anchor keeps its own number')
+})

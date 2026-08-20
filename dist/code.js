@@ -14281,25 +14281,45 @@ ${scrollGuards}` : project.css;
     }
     return outliers;
   }
-  function fitLadder(source, target, preferred) {
-    var _a;
+  function fitLadder(source, target, preferred, anchorOf, allowProportional) {
     const assigned = /* @__PURE__ */ new Map();
     const span = source.length - 1;
     const reach = target.length - 1;
     if (source.length > target.length) {
+      if (!allowProportional) return assigned;
       for (const [index, stop] of source.entries()) {
         assigned.set(stop, target[span === 0 ? 0 : Math.round(index * reach / span)]);
       }
       return assigned;
     }
     const indexOf = new Map(target.map((stop, index) => [stop, index]));
+    const at = (stop) => {
+      var _a;
+      return stop === null ? -1 : (_a = indexOf.get(stop)) != null ? _a : -1;
+    };
+    const anchors = source.map((stop) => at(anchorOf(stop)));
+    const wanted = source.map((stop) => at(preferred(stop)));
     let floor = -1;
-    for (const stop of source) {
-      const wanted = preferred(stop);
-      const at = wanted === null ? floor + 1 : (_a = indexOf.get(wanted)) != null ? _a : floor + 1;
-      const index = Math.min(Math.max(at, floor + 1), reach);
-      assigned.set(stop, target[index]);
-      floor = index;
+    for (const [index, stop] of source.entries()) {
+      if (anchors[index] >= 0) {
+        const settled2 = Math.min(Math.max(anchors[index], floor + 1), reach);
+        assigned.set(stop, target[settled2]);
+        floor = settled2;
+        continue;
+      }
+      let nextAnchor = reach + 1;
+      let waiting = 0;
+      for (let ahead = index + 1; ahead < source.length; ahead++) {
+        if (anchors[ahead] >= 0) {
+          nextAnchor = anchors[ahead];
+          break;
+        }
+        waiting++;
+      }
+      const ceiling = Math.min(reach, nextAnchor - 1 - waiting);
+      const settled = Math.min(Math.max(wanted[index] < 0 ? floor + 1 : wanted[index], floor + 1), Math.max(ceiling, floor + 1));
+      assigned.set(stop, target[Math.min(settled, reach)]);
+      floor = Math.min(settled, reach);
     }
     return assigned;
   }
@@ -14318,9 +14338,19 @@ ${scrollGuards}` : project.css;
       var _a;
       return (_a = stop.step === null ? void 0 : byStep.get(stop.step)) != null ? _a : nearestByLightness(to.stops, stop.l);
     };
-    const sourceLadder = from.neutral || to.neutral ? [] : from.stops.filter((stop) => stop.step !== null);
+    const anchorOf = (stop) => {
+      var _a;
+      return (_a = stop.step === null ? void 0 : byStep.get(stop.step)) != null ? _a : null;
+    };
+    const sourceLadder = from.stops.filter((stop) => stop.step !== null);
     const targetLadder = to.stops.filter((stop) => stop.step !== null && !untrusted.has(stop.step));
-    const fitted = sourceLadder.length >= 3 && targetLadder.length >= 2 ? fitLadder([...sourceLadder].sort(byStepAscending), [...targetLadder].sort(byStepAscending), preferred) : /* @__PURE__ */ new Map();
+    const fitted = sourceLadder.length >= 3 && targetLadder.length >= 2 ? fitLadder(
+      [...sourceLadder].sort(byStepAscending),
+      [...targetLadder].sort(byStepAscending),
+      preferred,
+      anchorOf,
+      !from.neutral && !to.neutral
+    ) : /* @__PURE__ */ new Map();
     const matches = [];
     for (const stop of from.stops) {
       const placed = fitted.get(stop);
