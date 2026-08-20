@@ -460,12 +460,24 @@
   .rmp-actions .btn { flex: 1 1 auto; }
   .rmp-stats { color: var(--faint); font-size: 11px; line-height: 1.5; }
   .rmp-stats b { color: var(--text); font-family: var(--mono); font-weight: 500; }
-  .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow-y: auto; overflow-x: hidden; }
+  /* Taller than the panel strictly needs: a filter above the list is only worth its row if
+     the list it filters did not shrink by the same amount. */
+  .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: 520px; overflow-y: auto; overflow-x: hidden; }
+  .rmp-filter { display: flex; align-items: center; gap: 6px; }
+  .rmp-filter input { flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 6px 8px; font-family: var(--mono); font-size: 11px; }
+  .rmp-filter input:focus { outline: none; border-color: var(--accent); }
+  .rmp-filter span { color: var(--faint); font-size: 10px; font-family: var(--mono); flex: none; }
   .rmp-group { color: var(--faint); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; margin: 9px 0 3px; display: flex; align-items: center; gap: 6px; }
   .rmp-group b { color: var(--text); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0; text-transform: none; }
   .rmp-head { display: grid; grid-template-columns: 14px 14px 1fr auto; align-items: center; gap: 7px; padding: 0 5px 4px; color: var(--faint); font-size: 9px; letter-spacing: .05em; text-transform: uppercase; position: sticky; top: 0; background: var(--surface); z-index: 1; }
   .rmp-head .rmp-head-old { color: var(--muted); }
   .rmp-row { display: grid; grid-template-columns: 14px 14px 1fr auto; align-items: center; gap: 7px; padding: 4px 5px; border-radius: 5px; }
+  /* Struck out: still legible, plainly out of the run, one click from coming back. */
+  .rmp-row.out { opacity: .45; }
+  .rmp-row.out .rmp-name b { text-decoration: line-through; }
+  .rmp-drop-pair { width: 15px; height: 15px; flex: none; display: flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--border); border-radius: 3px; background: transparent; color: var(--faint); font-size: 11px; line-height: 1; cursor: pointer; }
+  .rmp-drop-pair:hover { color: var(--accent-hi); border-color: var(--accent); }
+  .rmp-row.out .rmp-drop-pair { color: var(--accent-hi); border-color: var(--accent); }
   .rmp-row:hover { background: var(--bg-2); }
   .rmp-sw { width: 14px; height: 14px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14); }
   .rmp-name { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 10.5px; color: var(--text); }
@@ -840,6 +852,12 @@
         <div id="rmp-stats" class="rmp-stats"></div>
         <div id="rmp-warnings" class="pal-warnings"></div>
 
+        <div class="rmp-filter">
+          <input type="text" id="rmp-search" spellcheck="false" autocomplete="off"
+                 placeholder="Filter — name, colors/blue/500, #2563EB, family, flag&hellip;" />
+          <button class="icon-btn hidden" id="rmp-search-clear" type="button" title="Clear the filter" aria-label="Clear">&times;</button>
+          <span id="rmp-filter-count"></span>
+        </div>
         <div id="rmp-table" class="rmp-table"></div>
 
         <div class="pal-opts" id="rmp-opts">
@@ -2992,6 +3010,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       var RMP_OVERRIDES = {}
       var RMP_SCANNED = false
       var RMP_BUSY = false
+      var RMP_EXCLUDED = {}
+      var RMP_QUERY = ''
       var RMP_SOURCE = 'paste'
       var RMP_LIBRARIES_ASKED = false
 
@@ -3024,6 +3044,27 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function rmpProgress(text) {
         var bar = document.getElementById('status')
         if (bar) { bar.textContent = text || ''; bar.className = '' }
+      }
+
+      function rmpExcluded() {
+        var out = []
+        for (var id in RMP_EXCLUDED) if (RMP_EXCLUDED[id]) out.push(id)
+        return out
+      }
+
+      /** Everything a row says, for the filter to match against — including the slashed name. */
+      function rmpHaystack(row) {
+        return [
+          row.name, row.newName, row.mode, row.kind, row.via,
+          row.from, row.to, row.toName, row.fromFamily, row.toFamily,
+          row.fromStep === null ? '' : row.fromStep, row.toStep === null ? '' : row.toStep,
+          (row.flags || []).join(' ')
+        ].join(' ').toLowerCase()
+      }
+
+      function rmpMatches(row) {
+        if (RMP_QUERY === '') return true
+        return rmpHaystack(row).indexOf(RMP_QUERY) !== -1
       }
 
       function rmpOptions() {
@@ -3153,15 +3194,48 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         })
         meta.appendChild(picker)
         meta.appendChild(override)
+
+        // Struck out here, struck out everywhere: not written to the file, not drawn on the
+        // board, and not handed to the repository in mapping.json either.
+        var drop = document.createElement('button')
+        drop.className = 'rmp-drop-pair'
+        drop.type = 'button'
+        drop.textContent = '×'
+        drop.title = RMP_EXCLUDED[row.id] ? 'Put this pair back in the run' : 'Leave this pair out of the run'
+        drop.addEventListener('click', function () {
+          if (RMP_EXCLUDED[row.id]) delete RMP_EXCLUDED[row.id]
+          else RMP_EXCLUDED[row.id] = true
+          rmpRenderTable(RMP_ROWS, RMP_FAMILIES)
+        })
+        meta.appendChild(drop)
+
         node.appendChild(meta)
+        if (RMP_EXCLUDED[row.id]) node.classList.add('out')
         return node
       }
+
+      var RMP_FAMILIES = null
 
       function rmpRenderTable(rows, families) {
         var table = rmpEl('rmp-table')
         table.innerHTML = ''
         RMP_ROWS = rows
+        if (families) RMP_FAMILIES = families
         if (!rows || rows.length === 0) { rmpSyncButtons(); return }
+
+        var shown = []
+        for (var f = 0; f < rows.length; f++) if (rmpMatches(rows[f])) shown.push(rows[f])
+        rmpText('rmp-filter-count', RMP_QUERY === '' ? '' : shown.length + ' / ' + rows.length)
+        rmpEl('rmp-search-clear').classList.toggle('hidden', RMP_QUERY === '')
+        if (shown.length === 0) {
+          var empty = document.createElement('div')
+          empty.className = 'rmp-stats'
+          empty.textContent = 'Nothing matches “' + RMP_QUERY + '”.'
+          table.appendChild(empty)
+          rmpSyncButtons()
+          return
+        }
+        rows = shown
 
         // Two unlabelled swatches are a riddle; the header answers it once, at the top.
         var head = document.createElement('div')
@@ -3180,8 +3254,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         table.appendChild(head)
 
         var familyNote = {}
-        for (var f = 0; f < (families || []).length; f++) {
-          familyNote[families[f].fromLabel] = families[f].toLabel + (families[f].shared ? ' (shared)' : '')
+        var known = families || RMP_FAMILIES || []
+        for (var fi = 0; fi < known.length; fi++) {
+          familyNote[known[fi].fromLabel] = known[fi].toLabel + (known[fi].shared ? ' (shared)' : '')
         }
 
         var order = []
@@ -3262,13 +3337,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           type: 'REMAP_PREVIEW',
           source: rmpSource(),
           options: rmpOptions(),
-          overrides: RMP_OVERRIDES
+          overrides: RMP_OVERRIDES,
+          excluded: rmpExcluded()
         } }, '*')
       }
 
       rmpEl('rmp-paste').addEventListener('input', function () {
-        // A new palette invalidates every override: they were chosen against the old one.
+        // A new palette invalidates every override and every strikeout: both were decided
+        // against the old one.
         RMP_OVERRIDES = {}
+        RMP_EXCLUDED = {}
         RMP_ROWS = null
         rmpEl('rmp-table').innerHTML = ''
         rmpSyncButtons()
@@ -3308,6 +3386,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           options: rmpOptions(),
           applyOptions: rmpApplyOptions(),
           overrides: RMP_OVERRIDES,
+          excluded: rmpExcluded(),
           board: rmpEl('rmp-w-board').checked
         } }, '*')
       })
@@ -3330,6 +3409,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           source: rmpSource(),
           options: rmpOptions(),
           overrides: RMP_OVERRIDES,
+          excluded: rmpExcluded(),
           format: format
         } }, '*')
       }
@@ -3369,6 +3449,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                 source: rmpSource(),
                 options: rmpOptions(),
                 overrides: RMP_OVERRIDES,
+                excluded: rmpExcluded(),
                 files: payload,
                 byName: rmpEl('rmp-f-byname').checked,
                 snap: rmpEl('rmp-f-exact').checked ? 0 : 2
@@ -3400,8 +3481,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             parent.postMessage({ pluginMessage: { type: 'REMAP_LIST_LIBRARIES' } }, '*')
           }
 
-          // A different source is a different palette, so the overrides and the table both go.
+          // A different source is a different palette, so the decisions made against the old
+          // one go with it.
           RMP_OVERRIDES = {}
+          RMP_EXCLUDED = {}
           RMP_ROWS = null
           rmpEl('rmp-table').innerHTML = ''
           rmpText('rmp-parse', '')
@@ -3414,6 +3497,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         rmpEl('rmp-table').innerHTML = ''
         rmpSyncButtons()
         if (this.value) rmpPreview()
+      })
+
+      rmpEl('rmp-search').addEventListener('input', function () {
+        RMP_QUERY = this.value.trim().toLowerCase()
+        if (RMP_ROWS) rmpRenderTable(RMP_ROWS, RMP_FAMILIES)
+      })
+      rmpEl('rmp-search-clear').addEventListener('click', function () {
+        rmpEl('rmp-search').value = ''
+        RMP_QUERY = ''
+        if (RMP_ROWS) rmpRenderTable(RMP_ROWS, RMP_FAMILIES)
       })
 
       rmpEl('rmp-drop').addEventListener('click', function () { rmpEl('rmp-files').click() })

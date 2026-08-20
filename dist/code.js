@@ -5747,8 +5747,8 @@ ${rules.join("\n\n")}
     "-webkit-box-orient"
   ]);
   function sanitizeTransform(value) {
-    const kept = value.match(/(?:rotate|skew|scale|matrix)[a-zA-Z]*\([^)]*\)/g);
-    return kept ? kept.join(" ") : void 0;
+    const kept2 = value.match(/(?:rotate|skew|scale|matrix)[a-zA-Z]*\([^)]*\)/g);
+    return kept2 ? kept2.join(" ") : void 0;
   }
   function splitTopLevelCommas(value) {
     const parts = [];
@@ -14326,11 +14326,11 @@ ${scrollGuards}` : project.css;
       const placed = fitted.get(stop);
       const target = placed != null ? placed : preferred(stop);
       if (!target) continue;
-      const kept = stop.step !== null && target.step === stop.step;
+      const kept2 = stop.step !== null && target.step === stop.step;
       matches.push({
         from: stop,
         to: target,
-        via: kept ? "step" : placed ? "stretched" : "lightness",
+        via: kept2 ? "step" : placed ? "stretched" : "lightness",
         lightnessShift: Math.abs(target.l - stop.l)
       });
     }
@@ -14428,9 +14428,10 @@ ${scrollGuards}` : project.css;
     ];
   };
   var colorOf = (channels) => ({ r: channels[0], g: channels[1], b: channels[2], a: channels[3] });
-  var writableVariable = (entry) => entry.site.kind === "variable" && entry.site.editable && !entry.flags.includes("library") && !entry.flags.includes("unchanged");
-  var writableStyle = (entry) => (entry.site.kind === "style" || entry.site.kind === "gradient-stop" || entry.site.kind === "effect") && entry.site.editable && !entry.flags.includes("unchanged");
-  var writableLoose = (entry) => entry.site.kind === "detached" && !entry.flags.includes("unchanged");
+  var kept = (entry) => !entry.flags.includes("excluded");
+  var writableVariable = (entry) => kept(entry) && entry.site.kind === "variable" && entry.site.editable && !entry.flags.includes("library") && !entry.flags.includes("unchanged");
+  var writableStyle = (entry) => kept(entry) && (entry.site.kind === "style" || entry.site.kind === "gradient-stop" || entry.site.kind === "effect") && entry.site.editable && !entry.flags.includes("unchanged");
+  var writableLoose = (entry) => kept(entry) && entry.site.kind === "detached" && !entry.flags.includes("unchanged");
   function makeLoader() {
     const cache = /* @__PURE__ */ new Map();
     return {
@@ -15459,7 +15460,9 @@ ${scrollGuards}` : project.css;
   }
   function groupEntries(plan) {
     var _a;
-    const moving = plan.entries.filter((entry) => !entry.flags.includes("unchanged"));
+    const moving = plan.entries.filter(
+      (entry) => !entry.flags.includes("unchanged") && !entry.flags.includes("excluded")
+    );
     const targetByFamily = new Map(plan.families.map((family) => [family.fromLabel, family.toLabel]));
     const order = [];
     const grouped = /* @__PURE__ */ new Map();
@@ -15692,7 +15695,7 @@ ${scrollGuards}` : project.css;
   }
   function dedupe(swatches, warnings) {
     const seen = /* @__PURE__ */ new Set();
-    const kept = [];
+    const kept2 = [];
     let dropped = 0;
     for (const swatch of swatches) {
       const key = `${swatch.hex}|${swatch.alpha.toFixed(4)}|${swatch.name.toLowerCase()}`;
@@ -15701,10 +15704,10 @@ ${scrollGuards}` : project.css;
         continue;
       }
       seen.add(key);
-      kept.push(swatch);
+      kept2.push(swatch);
     }
     if (dropped > 0) warnings.push(`${dropped} duplicate ${dropped === 1 ? "row" : "rows"} dropped`);
-    return kept;
+    return kept2;
   }
   function parsePaletteInput(raw) {
     const text2 = String(raw != null ? raw : "");
@@ -15952,7 +15955,7 @@ ${scrollGuards}` : project.css;
     return renames;
   }
   function buildRemapPlan(request) {
-    var _a;
+    var _a, _b;
     const options = __spreadValues(__spreadValues({}, DEFAULT_REMAP_OPTIONS), request.options);
     const warnings = [];
     const palette = readPalette(request.palette);
@@ -15970,7 +15973,11 @@ ${scrollGuards}` : project.css;
       families.push(...planned.families);
       for (const assignment of planned.assignments) landedOn.add(assignment.to.key);
     }
-    if (options.separateAdjacent) separateAdjacent(entries, palette, (_a = request.adjacency) != null ? _a : [], warnings);
+    const excluded = new Set((_a = request.excluded) != null ? _a : []);
+    if (excluded.size > 0) {
+      for (const entry of entries) if (excluded.has(entry.site.id)) entry.flags.push("excluded");
+    }
+    if (options.separateAdjacent) separateAdjacent(entries, palette, (_b = request.adjacency) != null ? _b : [], warnings);
     flagDuplicates(entries);
     flagModeDivergence(entries, warnings);
     const taken = new Set(request.sites.filter((site) => site.kind === "variable").map((site) => site.name));
@@ -16137,22 +16144,22 @@ ${scrollGuards}` : project.css;
   }
   function applyEdits(text2, edits) {
     const ordered = [...edits].sort((a, b) => a.start - b.start);
-    const kept = [];
+    const kept2 = [];
     let reach = -1;
     for (const edit of ordered) {
       if (edit.start < reach) continue;
-      kept.push(edit);
+      kept2.push(edit);
       reach = edit.end;
     }
-    const replacements = kept.map((edit) => __spreadProps(__spreadValues({}, positionOf(text2, edit.start)), {
+    const replacements = kept2.map((edit) => __spreadProps(__spreadValues({}, positionOf(text2, edit.start)), {
       from: edit.from,
       to: edit.to,
       via: edit.via,
       snapped: edit.snapped
     }));
     let out = text2;
-    for (let i = kept.length - 1; i >= 0; i--) {
-      const edit = kept[i];
+    for (let i = kept2.length - 1; i >= 0; i--) {
+      const edit = kept2[i];
       out = out.slice(0, edit.start) + edit.to + out.slice(edit.end);
     }
     return { text: out, replacements };
@@ -16595,7 +16602,16 @@ ${renderSections(sections)}
     }
     return plan;
   }
+  var remapPalette = null;
   async function resolveRemapSource(source) {
+    if (source.kind === "selection") return readRemapSource(source);
+    const key = JSON.stringify(source);
+    if (remapPalette && remapPalette.key === key) return remapPalette.palette;
+    const palette = await readRemapSource(source);
+    remapPalette = { key, palette };
+    return palette;
+  }
+  async function readRemapSource(source) {
     var _a;
     switch (source.kind) {
       case "generator": {
@@ -16621,7 +16637,7 @@ ${renderSections(sections)}
       }
     }
   }
-  async function planRemap(source, options, overrides) {
+  async function planRemap(source, options, overrides, excluded) {
     if (!remapInventory) {
       remapInventory = await readRemapInventory(
         (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }),
@@ -16636,6 +16652,7 @@ ${renderSections(sections)}
       primaryModeId: remapInventory.primaryModeId,
       // The plan only needs the pair; the text/boundary distinction belongs to the audit.
       adjacency: remapInventory.adjacency.map((pair2) => [pair2.a, pair2.b]),
+      excluded,
       options
     });
     plan.warnings.push(...resolved.warnings);
@@ -17269,7 +17286,7 @@ ${renderSections(sections)}
       }
       case "REMAP_PREVIEW": {
         try {
-          const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides);
+          const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           figma.ui.postMessage(__spreadProps(__spreadValues({ type: "REMAP_PLAN" }, remapPlanView(plan)), { paletteSize: palette.length }));
         } catch (err) {
           figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
@@ -17278,7 +17295,7 @@ ${renderSections(sections)}
       }
       case "REMAP_APPLY": {
         try {
-          const { plan } = await planRemap(msg.source, msg.options, msg.overrides);
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const options = __spreadValues(__spreadValues({}, DEFAULT_REMAP_APPLY_OPTIONS), (_f = msg.applyOptions) != null ? _f : {});
           const audit = remapInventory ? auditContrast(plan, remapInventory.adjacency) : { findings: [], checked: 0, improved: 0 };
           const report = await applyRemap(
@@ -17347,7 +17364,7 @@ ${renderSections(sections)}
       }
       case "REMAP_EXPORT_MAPPING": {
         try {
-          const { plan } = await planRemap(msg.source, msg.options, msg.overrides);
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind });
           figma.ui.postMessage({
             type: "REMAP_MAPPING",
@@ -17362,7 +17379,7 @@ ${renderSections(sections)}
       }
       case "REMAP_REWRITE_FILES": {
         try {
-          const { plan } = await planRemap(msg.source, msg.options, msg.overrides);
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind });
           const settings = { snap: (_g = msg.snap) != null ? _g : 2, byName: (_h = msg.byName) != null ? _h : false, mode: (_i = msg.mode) != null ? _i : null };
           let replaced = 0;

@@ -255,19 +255,24 @@ type PaintProperty = (typeof PROPERTY_CODES)[number]
 
 /* ------------------------------------------------------------------ variables */
 
+/** Struck out by hand: planned and shown, never written. */
+const kept = (entry: RemapEntry): boolean => !entry.flags.includes('excluded')
+
 const writableVariable = (entry: RemapEntry): boolean =>
+  kept(entry) &&
   entry.site.kind === 'variable' &&
   entry.site.editable &&
   !entry.flags.includes('library') &&
   !entry.flags.includes('unchanged')
 
 const writableStyle = (entry: RemapEntry): boolean =>
+  kept(entry) &&
   (entry.site.kind === 'style' || entry.site.kind === 'gradient-stop' || entry.site.kind === 'effect') &&
   entry.site.editable &&
   !entry.flags.includes('unchanged')
 
 const writableLoose = (entry: RemapEntry): boolean =>
-  entry.site.kind === 'detached' && !entry.flags.includes('unchanged')
+  kept(entry) && entry.site.kind === 'detached' && !entry.flags.includes('unchanged')
 
 /* ------------------------------------------------------------------ apply */
 

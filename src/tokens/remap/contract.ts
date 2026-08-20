@@ -158,6 +158,8 @@ export function colorReplacements(mapping: MappingFile, mode?: string | null): C
 
   for (const record of mapping.records) {
     if (mode !== undefined && mode !== null && record.mode !== mode) continue
+    // A pair struck out in the panel was struck out of the migration, not only out of Figma.
+    if (record.flags.includes('excluded')) continue
     if (record.from === record.to) continue
     const existing = replacements.get(record.from)
     if (existing && existing !== record.to) {

@@ -125,23 +125,25 @@ type PluginMessage =
   | { type: 'SAVE_PALETTE_SETTINGS'; settings: unknown }
   | { type: 'REMAP_SCAN'; depth?: ScanDepth }
   | { type: 'REMAP_LIST_LIBRARIES' }
-  | { type: 'REMAP_PREVIEW'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string> }
+  | { type: 'REMAP_PREVIEW'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[] }
   | {
       type: 'REMAP_APPLY'
       source: RemapSource
       options?: Partial<RemapOptions>
       applyOptions?: Partial<RemapApplyOptions>
       overrides?: Record<string, string>
+      excluded?: string[]
       board?: boolean
     }
   | { type: 'REMAP_REVERT' }
   | { type: 'REMAP_UNPARK' }
-  | { type: 'REMAP_EXPORT_MAPPING'; source: RemapSource; options?: Partial<RemapOptions>; format: 'json' | 'csv'; overrides?: Record<string, string> }
+  | { type: 'REMAP_EXPORT_MAPPING'; source: RemapSource; options?: Partial<RemapOptions>; format: 'json' | 'csv'; overrides?: Record<string, string>; excluded?: string[] }
   | {
       type: 'REMAP_REWRITE_FILES'
       source: RemapSource
       options?: Partial<RemapOptions>
       overrides?: Record<string, string>
+      excluded?: string[]
       files: Array<{ name: string; text: string }>
       snap?: number
       byName?: boolean
@@ -188,9 +190,33 @@ export type RemapSource =
   | { kind: 'selection' }
   | { kind: 'library'; key: string; mode?: string | null }
 
-async function resolveRemapSource(
-  source: RemapSource
-): Promise<{ swatches: ReturnType<typeof parsePaletteInput>['swatches']; warnings: string[] }> {
+type ResolvedPalette = { swatches: ReturnType<typeof parsePaletteInput>['swatches']; warnings: string[] }
+
+/**
+ * The last palette read, kept against the source that produced it.
+ *
+ * The table rebuilds on every edit — an override, a toggle — and each rebuild used to re-read
+ * the source from scratch. For a library that is a hundred-odd round-trips per keystroke,
+ * which is most of the time a preview takes. Everything but a canvas selection is a pure
+ * function of the descriptor, so the same descriptor gives the same answer — and a selection,
+ * which is not, is never cached.
+ */
+let remapPalette: { key: string; palette: ResolvedPalette } | null = null
+
+async function resolveRemapSource(source: RemapSource): Promise<ResolvedPalette> {
+  // A selection is the one source whose input is not in its descriptor: `{kind:'selection'}`
+  // says nothing about what is selected, so the same key would hand back a palette read from a
+  // different set of layers.
+  if (source.kind === 'selection') return readRemapSource(source)
+
+  const key = JSON.stringify(source)
+  if (remapPalette && remapPalette.key === key) return remapPalette.palette
+  const palette = await readRemapSource(source)
+  remapPalette = { key, palette }
+  return palette
+}
+
+async function readRemapSource(source: RemapSource): Promise<ResolvedPalette> {
   switch (source.kind) {
     case 'generator': {
       const settings = normalizePaletteSettings(source.settings)
@@ -217,7 +243,8 @@ async function resolveRemapSource(
 async function planRemap(
   source: RemapSource,
   options: Partial<RemapOptions> | undefined,
-  overrides: Record<string, string> | undefined
+  overrides: Record<string, string> | undefined,
+  excluded?: readonly string[]
 ): Promise<{ plan: RemapPlan; palette: ReturnType<typeof parsePaletteInput>['swatches'] }> {
   if (!remapInventory) {
     remapInventory = await readRemapInventory(
@@ -233,6 +260,7 @@ async function planRemap(
     primaryModeId: remapInventory.primaryModeId,
     // The plan only needs the pair; the text/boundary distinction belongs to the audit.
     adjacency: remapInventory.adjacency.map((pair) => [pair.a, pair.b] as [string, string]),
+    excluded,
     options,
   })
   plan.warnings.push(...resolved.warnings)
@@ -959,7 +987,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     }
     case 'REMAP_PREVIEW': {
       try {
-        const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides)
+        const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         figma.ui.postMessage({ type: 'REMAP_PLAN', ...remapPlanView(plan), paletteSize: palette.length })
       } catch (err) {
         figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
@@ -968,7 +996,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     }
     case 'REMAP_APPLY': {
       try {
-        const { plan } = await planRemap(msg.source, msg.options, msg.overrides)
+        const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const options: RemapApplyOptions = { ...DEFAULT_REMAP_APPLY_OPTIONS, ...(msg.applyOptions ?? {}) }
         // Measured before the write, from the plan and the pairs the walk already found —
         // afterwards the old colors are gone and there is nothing left to compare against.
@@ -985,7 +1013,8 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
           }
         }
         // The document moved under the cached reading: usage counts and adjacency still hold,
-        // but every value did not, so the next preview must scan again.
+        // but every value did not, so the next preview must scan again. A palette read off the
+        // canvas is stale for the same reason; one read from a library or a paste is not.
         remapInventory = null
         figma.notify(
           [
@@ -1041,7 +1070,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     }
     case 'REMAP_EXPORT_MAPPING': {
       try {
-        const { plan } = await planRemap(msg.source, msg.options, msg.overrides)
+        const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind })
         figma.ui.postMessage({
           type: 'REMAP_MAPPING',
@@ -1057,7 +1086,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
 
     case 'REMAP_REWRITE_FILES': {
       try {
-        const { plan } = await planRemap(msg.source, msg.options, msg.overrides)
+        const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind })
         const settings = { snap: msg.snap ?? 2, byName: msg.byName ?? false, mode: msg.mode ?? null }
 

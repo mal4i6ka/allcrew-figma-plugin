@@ -157,7 +157,9 @@ function inReadingOrder(entries: readonly RemapEntry[]): RemapEntry[] {
 }
 
 function groupEntries(plan: RemapPlan): FamilyGroup[] {
-  const moving = plan.entries.filter((entry) => !entry.flags.includes('unchanged'))
+  const moving = plan.entries.filter(
+    (entry) => !entry.flags.includes('unchanged') && !entry.flags.includes('excluded')
+  )
   const targetByFamily = new Map(plan.families.map((family) => [family.fromLabel, family.toLabel]))
 
   const order: string[] = []
