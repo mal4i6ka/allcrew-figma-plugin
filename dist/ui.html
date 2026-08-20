@@ -3835,6 +3835,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpText('rmp-rebind-result', verb + msg.summary)
           rmpRenderWarnings(msg.warnings)
           rmpEl('rmp-rebind-revert').disabled = !msg.canRevertRebind
+          if (msg.type !== 'REMAP_REBIND_PLAN') {
+            // Bindings moved (or moved back): the table on screen describes a file that no
+            // longer exists, and a stale Rebind button would re-run against it.
+            RMP_ROWS = null
+            rmpEl('rmp-table').innerHTML = ''
+            rmpSyncButtons()
+          }
         } else if (msg.type === 'REMAP_REWRITTEN') {
           rmpSetBusy(false)
           var lines = []

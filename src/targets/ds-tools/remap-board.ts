@@ -87,7 +87,8 @@ function block(
   color: { r: number; g: number; b: number; a: number },
   caption: string,
   fonts: Fonts,
-  variable?: Variable | null
+  variable?: Variable | null,
+  mode?: { collection: VariableCollection; modeId: string } | null
 ): FrameNode {
   const frame = autoLayout('swatch', 'VERTICAL', 0)
   frame.primaryAxisSizingMode = 'FIXED'
@@ -98,6 +99,17 @@ function block(
   // later follows its variable.
   const paint: SolidPaint = { type: 'SOLID', color: { r: color.r, g: color.g, b: color.b }, opacity: color.a }
   frame.fills = [variable ? figma.variables.setBoundVariableForPaint(paint, 'color', variable) : paint]
+  // A bound fill resolves in the page's default mode, and this card describes one specific
+  // mode — a Light/Dark variable would otherwise paint its *other* value: a dark row's swatch
+  // rendered white, captioned with the dark hex. Pinning the row's own mode on the swatch
+  // keeps the binding and the drawn color telling the same story.
+  if (variable && mode) {
+    try {
+      frame.setExplicitVariableModeForCollection(mode.collection, mode.modeId)
+    } catch {
+      /* a mode id from a retired collection — the default-mode fill stands */
+    }
+  }
   frame.paddingLeft = 8
   frame.paddingTop = 7
   frame.primaryAxisAlignItems = 'MIN'
@@ -135,7 +147,12 @@ function pair(entry: RemapEntry, fonts: Fonts, bindings: BoardBindings, repeats 
   const column = autoLayout(entry.site.name, 'VERTICAL', 3)
   const oldVariable = entry.site.kind === 'variable' ? bindings.old.get(variableIdOf(entry.site.id)) : undefined
   const newVariable = entry.toVariableKey === null ? undefined : bindings.imported.get(entry.toVariableKey)
-  column.appendChild(block(entry.from, entry.fromStep === null ? '' : String(entry.fromStep), fonts, oldVariable))
+  const oldCollection = oldVariable ? bindings.collections.get(oldVariable.variableCollectionId) : undefined
+  const oldMode =
+    oldVariable && oldCollection && entry.site.modeId !== null
+      ? { collection: oldCollection, modeId: entry.site.modeId }
+      : null
+  column.appendChild(block(entry.from, entry.fromStep === null ? '' : String(entry.fromStep), fonts, oldVariable, oldMode))
   column.appendChild(block(entry.to, entry.toStep === null ? '' : String(entry.toStep), fonts, newVariable))
 
   const name = entry.site.name.length > 22 ? '…' + entry.site.name.slice(-21) : entry.site.name
@@ -224,6 +241,8 @@ function groupEntries(plan: RemapPlan): FamilyGroup[] {
 interface BoardBindings {
   old: Map<string, Variable>
   imported: Map<string, Variable>
+  /** Collections of the old-side variables, for pinning a row's mode on its swatch. */
+  collections: Map<string, VariableCollection>
 }
 
 const variableIdOf = (siteId: string): string => {
@@ -259,7 +278,14 @@ async function collectBindings(entries: readonly RemapEntry[]): Promise<BoardBin
     const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null)
     if (variable) imported.set(key, variable)
   }
-  return { old, imported }
+  const collections = new Map<string, VariableCollection>()
+  for (const variable of old.values()) {
+    const id = variable.variableCollectionId
+    if (collections.has(id)) continue
+    const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)
+    if (collection) collections.set(id, collection)
+  }
+  return { old, imported, collections }
 }
 
 export interface RemapBoardReport {

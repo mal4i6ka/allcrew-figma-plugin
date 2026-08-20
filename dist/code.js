@@ -15479,13 +15479,19 @@ ${scrollGuards}` : project.css;
     return frame2;
   }
   var inkOn = (color) => contrastRatio(color, { r: 0, g: 0, b: 0 }) >= contrastRatio(color, { r: 1, g: 1, b: 1 }) ? "#000000" : "#FFFFFF";
-  function block(color, caption, fonts, variable) {
+  function block(color, caption, fonts, variable, mode) {
     const frame2 = autoLayout2("swatch", "VERTICAL", 0);
     frame2.primaryAxisSizingMode = "FIXED";
     frame2.counterAxisSizingMode = "FIXED";
     frame2.resize(SWATCH_WIDTH2, SWATCH_HEIGHT);
     const paint = { type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a };
     frame2.fills = [variable ? figma.variables.setBoundVariableForPaint(paint, "color", variable) : paint];
+    if (variable && mode) {
+      try {
+        frame2.setExplicitVariableModeForCollection(mode.collection, mode.modeId);
+      } catch (e) {
+      }
+    }
     frame2.paddingLeft = 8;
     frame2.paddingTop = 7;
     frame2.primaryAxisAlignItems = "MIN";
@@ -15513,7 +15519,9 @@ ${scrollGuards}` : project.css;
     const column = autoLayout2(entry.site.name, "VERTICAL", 3);
     const oldVariable = entry.site.kind === "variable" ? bindings.old.get(variableIdOf(entry.site.id)) : void 0;
     const newVariable = entry.toVariableKey === null ? void 0 : bindings.imported.get(entry.toVariableKey);
-    column.appendChild(block(entry.from, entry.fromStep === null ? "" : String(entry.fromStep), fonts, oldVariable));
+    const oldCollection = oldVariable ? bindings.collections.get(oldVariable.variableCollectionId) : void 0;
+    const oldMode = oldVariable && oldCollection && entry.site.modeId !== null ? { collection: oldCollection, modeId: entry.site.modeId } : null;
+    column.appendChild(block(entry.from, entry.fromStep === null ? "" : String(entry.fromStep), fonts, oldVariable, oldMode));
     column.appendChild(block(entry.to, entry.toStep === null ? "" : String(entry.toStep), fonts, newVariable));
     const name = entry.site.name.length > 22 ? "\u2026" + entry.site.name.slice(-21) : entry.site.name;
     column.appendChild(label2(repeats > 1 ? `${name}  \xB7  \xD7${repeats}` : name, fonts, CAPTION_SIZE2, "#8A8A8A"));
@@ -15595,7 +15603,14 @@ ${scrollGuards}` : project.css;
       const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null);
       if (variable) imported.set(key, variable);
     }
-    return { old, imported };
+    const collections = /* @__PURE__ */ new Map();
+    for (const variable of old.values()) {
+      const id = variable.variableCollectionId;
+      if (collections.has(id)) continue;
+      const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null);
+      if (collection) collections.set(id, collection);
+    }
+    return { old, imported, collections };
   }
   async function drawRemapBoard(plan) {
     var _a;
@@ -15695,10 +15710,11 @@ ${scrollGuards}` : project.css;
       plan.entries.filter((entry) => entry.toVariableKey !== null).map((entry) => [entry.toVariableKey, entry.toName])
     );
     for (const [variableId, perMode] of keys) {
-      const distinct = new Set(perMode.values());
-      distinct.delete(null);
+      const votes = [...perMode.values()];
+      const distinct = new Set(votes);
+      const abstained = distinct.delete(null);
       if (distinct.size === 0) continue;
-      if (distinct.size > 1) {
+      if (distinct.size > 1 || abstained) {
         divergent.push(variableId);
         continue;
       }
@@ -15806,10 +15822,11 @@ ${scrollGuards}` : project.css;
       return { rgba: { r: value.r, g: value.g, b: value.b, a: alphaOf(value) }, id: variable.id };
     };
     const foreignIds = /* @__PURE__ */ new Set();
+    const divergentIds = new Set(divergent);
     const rebindOf = (oldId) => {
       if (importedIds.has(oldId)) return "already";
       const target = byVariable.get(oldId);
-      if (!target) return "no-target";
+      if (!target || !importedByKey.has(target.key)) return "no-target";
       return { key: target.key, foreign: foreignIds.has(oldId) };
     };
     progress2 == null ? void 0 : progress2("reading local variables\u2026");
@@ -15836,6 +15853,7 @@ ${scrollGuards}` : project.css;
           continue;
         }
         if (!isRgbValue(value)) continue;
+        if (divergentIds.has(variable.id)) continue;
         const entry = planBySite.get(`${variable.id}|${modeId}`);
         if (!entry || entry.toVariableKey === null || entry.flags.includes("excluded")) continue;
         const landing = await valueOfKey(entry.toVariableKey);
@@ -15929,13 +15947,19 @@ ${scrollGuards}` : project.css;
       }
     };
     const collectPaintOps = (node, property, inInstance) => {
-      var _a;
+      var _a, _b, _c, _d;
+      const styleId = node[property === "fills" ? "fillStyleId" : "strokeStyleId"];
+      if (typeof styleId === "string" && styleId !== "") return;
       const paints = node[property];
       if (!Array.isArray(paints)) return;
       if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has(property))) return;
+      const nodeLevel = (_b = node.boundVariables) == null ? void 0 : _b[property];
+      const nodeLevelIds = Array.isArray(nodeLevel) ? nodeLevel.map(
+        (alias) => alias && alias.type === "VARIABLE_ALIAS" ? alias.id : null
+      ) : [];
       for (const [index, paint] of paints.entries()) {
         if (paint.type === "SOLID") {
-          const oldId = boundColorId(paint);
+          const oldId = (_d = (_c = boundColorId(paint)) != null ? _c : nodeLevelIds[index]) != null ? _d : null;
           if (!oldId) continue;
           const decision = rebindOf(oldId);
           if (decision === "already") counts.skipped.already++;
@@ -15966,6 +15990,8 @@ ${scrollGuards}` : project.css;
     };
     const collectEffectOps = (node, inInstance) => {
       var _a;
+      const effectStyleId = node.effectStyleId;
+      if (typeof effectStyleId === "string" && effectStyleId !== "") return;
       const effects = node.effects;
       if (!Array.isArray(effects)) return;
       if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has("effects"))) return;
@@ -15995,9 +16021,10 @@ ${scrollGuards}` : project.css;
           if (++visited % 400 === 0) await yieldToHost();
           const isInstance = node.type === "INSTANCE";
           if (isInstance) noteOverrides(node);
-          collectPaintOps(node, "fills", inInstance);
-          collectPaintOps(node, "strokes", inInstance);
-          collectEffectOps(node, inInstance);
+          const gated = inInstance || isInstance;
+          collectPaintOps(node, "fills", gated);
+          collectPaintOps(node, "strokes", gated);
+          collectEffectOps(node, gated);
           if ("children" in node) {
             const inside = inInstance || isInstance;
             const children = node.children;
@@ -16122,9 +16149,9 @@ ${scrollGuards}` : project.css;
         `this rebind would touch ${scan.ops.length} places \u2014 more than one undo snapshot can hold. Run it scope by scope, or shrink the mapping.`
       );
     }
-    const counts = await executeOps(scan.ops, false, progress2);
     writeChunked2(serialized);
-    return { counts, summary: describeRebind(counts), warnings: scan.warnings };
+    await executeOps(scan.ops, false, progress2);
+    return { counts: scan.counts, summary: describeRebind(scan.counts), warnings: scan.warnings };
   }
   async function revertRebind(progress2) {
     const raw = readChunked2();
@@ -16452,6 +16479,7 @@ ${scrollGuards}` : project.css;
     return { entries, families, assignments };
   }
   function separateAdjacent(entries, palette, adjacency, warnings) {
+    var _a;
     if (adjacency.length === 0) return;
     const byId = new Map(entries.map((entry) => [entry.site.id, entry]));
     const stopsByFamily = new Map(palette.spectra.map((spectrum) => [spectrum.family, spectrum.stops]));
@@ -16489,6 +16517,7 @@ ${scrollGuards}` : project.css;
       mover.to = land(mover.site, best.rgba);
       mover.toStep = best.step;
       mover.toName = best.name === "" ? null : best.name;
+      mover.toVariableKey = (_a = best.variableKey) != null ? _a : null;
       mover.via = "lightness";
       mover.deltaE = deltaE(mover.from, mover.to);
       mover.flags = mover.flags.filter((flag2) => flag2 !== "unchanged");

@@ -303,3 +303,25 @@ test('identity holds for palette colors that sit off the 8-bit grid', () => {
   const plan = buildRemapPlan({ sites, palette: swatches })
   assert.equal(plan.entries[0].via, 'exact', 'equal is equal, wherever the rounding boundary falls')
 })
+
+test('separation moves the variable key along with the color', () => {
+  // A stale key here and the rebind later moves the separated variable onto the very token
+  // it was just separated away from — re-merging the pair for every alias consumer.
+  const keyed = palette(pasted('Violet', VIOLET)).map((swatch) => ({
+    ...swatch,
+    variableKey: `key:${swatch.name}`,
+  }))
+  const sites = [
+    site({ id: 'fill', name: 'surface/brand', rgba: rgba('#8D5EF4'), usage: 30 }),
+    site({ id: 'border', name: 'border/brand', rgba: rgba('#8C5DF5'), usage: 2 }),
+  ]
+  const plan = buildRemapPlan({ sites, palette: keyed, adjacency: [['fill', 'border']] })
+  const border = plan.entries.find((entry) => entry.site.id === 'border')!
+  if (border.flags.includes('separated')) {
+    assert.equal(border.toVariableKey, `key:${border.toName}`, 'the key names the rung the color landed on')
+  }
+  for (const entry of plan.entries) {
+    if (entry.toName === null) continue
+    assert.equal(entry.toVariableKey, `key:${entry.toName}`, `${entry.site.name}: key and name agree`)
+  }
+})

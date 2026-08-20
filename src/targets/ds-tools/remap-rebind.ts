@@ -170,12 +170,15 @@ export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<
   }
 
   const foreignIds = new Set<string>()
+  const divergentIds = new Set(divergent)
 
   /** The rebind decision for one existing binding: an op, or a skip counted by its reason. */
   const rebindOf = (oldId: string): { key: string; foreign: boolean } | 'already' | 'no-target' => {
     if (importedIds.has(oldId)) return 'already'
     const target = byVariable.get(oldId)
-    if (!target) return 'no-target'
+    // A key that failed to import is a landing that does not exist here: promising it in the
+    // preview would store an op the apply can never perform.
+    if (!target || !importedByKey.has(target.key)) return 'no-target'
     return { key: target.key, foreign: foreignIds.has(oldId) }
   }
 
@@ -208,7 +211,10 @@ export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<
       }
       if (!isRgbValue(value)) continue
       // A literal only becomes an alias when it is byte-equal to the library token the plan
-      // lands it on — an alias takes the target's value whole, alpha included.
+      // lands it on — an alias takes the target's value whole, alpha included. And a variable
+      // whose modes disagree about the landing does not move by this door either: the refusal
+      // in the report has to be the refusal in the writes.
+      if (divergentIds.has(variable.id)) continue
       const entry = planBySite.get(`${variable.id}|${modeId}`)
       if (!entry || entry.toVariableKey === null || entry.flags.includes('excluded')) continue
       const landing = await valueOfKey(entry.toVariableKey)
@@ -315,12 +321,26 @@ export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<
     property: 'fills' | 'strokes',
     inInstance: boolean
   ): void => {
+    // A node wearing a style mirrors the style's paints, bindings included. The style is
+    // rebound in its own pass; writing the mirror would detach the node from its style —
+    // the one loss no Revert can restore.
+    const styleId = (node as unknown as Record<string, unknown>)[property === 'fills' ? 'fillStyleId' : 'strokeStyleId']
+    if (typeof styleId === 'string' && styleId !== '') return
     const paints = (node as unknown as Record<string, unknown>)[property]
     if (!Array.isArray(paints)) return
     if (inInstance && !overridden.get(node.id)?.has(property)) return
+    // Older files carry the binding on the node (`boundVariables.fills[i]`) rather than on
+    // the paint. Both are pointers at a variable; both move. The rewrite lands on the paint,
+    // which is where Figma itself puts it today.
+    const nodeLevel = (node as unknown as { boundVariables?: Record<string, unknown> }).boundVariables?.[property]
+    const nodeLevelIds = Array.isArray(nodeLevel)
+      ? (nodeLevel as Array<VariableAlias | undefined>).map((alias) =>
+          alias && alias.type === 'VARIABLE_ALIAS' ? alias.id : null
+        )
+      : []
     for (const [index, paint] of (paints as Paint[]).entries()) {
       if (paint.type === 'SOLID') {
-        const oldId = boundColorId(paint)
+        const oldId = boundColorId(paint) ?? nodeLevelIds[index] ?? null
         if (!oldId) continue
         const decision = rebindOf(oldId)
         if (decision === 'already') counts.skipped.already++
@@ -351,6 +371,8 @@ export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<
   }
 
   const collectEffectOps = (node: SceneNode, inInstance: boolean): void => {
+    const effectStyleId = (node as unknown as Record<string, unknown>).effectStyleId
+    if (typeof effectStyleId === 'string' && effectStyleId !== '') return
     const effects = (node as unknown as Record<string, unknown>).effects
     if (!Array.isArray(effects)) return
     if (inInstance && !overridden.get(node.id)?.has('effects')) return
@@ -381,9 +403,13 @@ export async function scanRebind(plan: RemapPlan, progress?: Progress): Promise<
         if (++visited % 400 === 0) await yieldToHost()
         const isInstance = node.type === 'INSTANCE'
         if (isInstance) noteOverrides(node as InstanceNode)
-        collectPaintOps(node, 'fills', inInstance)
-        collectPaintOps(node, 'strokes', inInstance)
-        collectEffectOps(node, inInstance)
+        // The instance's own fills are as inherited as its children's: gate the root by its
+        // own overrides too, or every top-level instance of a bound master gets an override
+        // minted onto it — which Revert can rewrite but never un-mint.
+        const gated = inInstance || isInstance
+        collectPaintOps(node, 'fills', gated)
+        collectPaintOps(node, 'strokes', gated)
+        collectEffectOps(node, gated)
         if ('children' in node) {
           const inside = inInstance || isInstance
           const children = node.children
@@ -539,9 +565,15 @@ export async function applyRebind(plan: RemapPlan, progress?: Progress): Promise
     )
   }
 
-  const counts = await executeOps(scan.ops, false, progress)
+  // The snapshot goes down BEFORE the first write. It is exactly the scan list, and every op
+  // addresses a unique site, so reverting an op that never got applied merely re-asserts the
+  // old target that is still in place — while the opposite order turns a mid-apply failure
+  // (a locked node, a closed plugin) into a half-rebound file with no way back.
   writeChunked(serialized)
-  return { counts, summary: describeRebind(counts), warnings: scan.warnings }
+  await executeOps(scan.ops, false, progress)
+  // The report is the scan's: that is what the preview promised and what the ops encode. The
+  // executor's own tally can only drift below it (a node deleted mid-run), never above.
+  return { counts: scan.counts, summary: describeRebind(scan.counts), warnings: scan.warnings }
 }
 
 export async function revertRebind(progress?: Progress): Promise<RebindReport> {

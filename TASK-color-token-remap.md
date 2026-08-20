@@ -374,3 +374,31 @@ per-variable target aggregation across modes, exclusion voting, byte-equality.
 
 UI: "Rebind to reference library" block — Preview / Rebind / Revert rebind — enabled only
 when the palette source is a library, since only that carries variable keys.
+
+## Refuters' pass on the rebind stage (2026-08-20, late night)
+
+Three independent skeptics, six confirmed defects, all fixed with tests where the logic is
+pure:
+
+1. **Undo could be lost mid-apply**: the snapshot was persisted after the writes. It now goes
+   down first — it is exactly the scan list, and every op addresses a unique site, so
+   reverting an op that never got applied merely re-asserts the old target still in place.
+2. **Instance roots were not gated**: a top-level instance's own inherited fills were written,
+   minting an override Revert can rewrite but never un-mint. The root is now gated by its own
+   overrides, same as its children.
+3. **Style-wearing nodes were rebound**, which would detach them from their styles — the one
+   loss no Revert restores. They now contribute nothing; the style is rebound in its own pass.
+4. **Mode-divergent variables slipped through the literal path** while the report called them
+   refused. Both doors now refuse; and a key that failed to import is a no-target, not a
+   promise stored in the snapshot.
+5. **`separateAdjacent` left a stale `toVariableKey`**, so the rebind would move a separated
+   variable onto the very token it was separated away from — and the exported mapping named
+   the wrong token. The key now travels with the color.
+6. **A keyless mode counted as an abstention** in `rebindTargets`; it is now a vote against
+   moving the whole variable (the alias rewrite is per variable).
+
+Plus: node-level `boundVariables.fills[i]` bindings (older files) are now seen and moved;
+Apply reports the scan's counts so preview and apply cannot disagree; the panel clears its
+table after a rebind or its revert. And the board pins each old swatch's own mode on the
+swatch (`setExplicitVariableModeForCollection`), so a Light/Dark variable no longer paints
+its other mode's value under a dark hex caption — the "white holes" the operator caught.
