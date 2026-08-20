@@ -373,12 +373,36 @@ function fitLadder(
   const anchors = source.map((stop) => at(anchorOf(stop)))
   const wanted = source.map((stop) => at(preferred(stop)))
 
+  // A rung with no counterpart can either share the one beside it or push the ladder inward
+  // until it finds a gap, and which is right depends entirely on the price. An old `10` above
+  // a new `50` costs two displaced rungs before the gap at `150` — cheap, and it buys back a
+  // pale tint that would otherwise be indistinguishable from its neighbour. One stray `10`
+  // left behind in a retired group costs *twelve*, sliding a whole ramp that matched the new
+  // one number for number. Past this many, sharing is the smaller lie.
+  const budget = 3
+  let cursor = -1
+  let displaced = 0
+  const shifted = source.map((_, index) => {
+    const desire = anchors[index] >= 0 ? anchors[index] : wanted[index] < 0 ? cursor + 1 : wanted[index]
+    cursor = Math.max(desire, cursor + 1)
+    if (anchors[index] >= 0 && cursor !== anchors[index]) displaced++
+    return cursor
+  })
+
+  if (cursor <= reach && displaced <= budget) {
+    for (const [index, stop] of source.entries()) assigned.set(stop, target[shifted[index]])
+    return assigned
+  }
+
   let floor = -1
   for (const [index, stop] of source.entries()) {
     if (anchors[index] >= 0) {
-      const settled = Math.min(Math.max(anchors[index], floor + 1), reach)
-      assigned.set(stop, target[settled])
-      floor = settled
+      // An anchor never moves. A rung whose number the new ladder has is the strongest signal
+      // there is, and letting an unanchored neighbour shove it displaces every anchor below it
+      // — one stray `10` from a retired group and the whole neutral ramp slides a step, which
+      // reads as the palette having been normalised rather than mapped.
+      assigned.set(stop, target[anchors[index]])
+      floor = anchors[index]
       continue
     }
 
@@ -397,9 +421,16 @@ function fitLadder(
       waiting++
     }
     const ceiling = Math.min(reach, nextAnchor - 1 - waiting)
-    const settled = Math.min(Math.max(wanted[index] < 0 ? floor + 1 : wanted[index], floor + 1), Math.max(ceiling, floor + 1))
+    const wish = wanted[index] < 0 ? floor + 1 : wanted[index]
+
+    // Room between the anchors, or none. With none the rung shares the nearest boundary rather
+    // than pushing an anchor aside — a duplicate is a smaller lie than a ladder off by one.
+    const settled =
+      ceiling >= floor + 1
+        ? Math.min(Math.max(wish, floor + 1), ceiling)
+        : Math.min(Math.max(wish, 0), Math.max(floor, 0))
     assigned.set(stop, target[Math.min(settled, reach)])
-    floor = Math.min(settled, reach)
+    floor = Math.max(floor, Math.min(settled, reach))
   }
   return assigned
 }

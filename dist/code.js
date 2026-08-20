@@ -14299,12 +14299,24 @@ ${scrollGuards}` : project.css;
     };
     const anchors = source.map((stop) => at(anchorOf(stop)));
     const wanted = source.map((stop) => at(preferred(stop)));
+    const budget = 3;
+    let cursor = -1;
+    let displaced = 0;
+    const shifted = source.map((_, index) => {
+      const desire = anchors[index] >= 0 ? anchors[index] : wanted[index] < 0 ? cursor + 1 : wanted[index];
+      cursor = Math.max(desire, cursor + 1);
+      if (anchors[index] >= 0 && cursor !== anchors[index]) displaced++;
+      return cursor;
+    });
+    if (cursor <= reach && displaced <= budget) {
+      for (const [index, stop] of source.entries()) assigned.set(stop, target[shifted[index]]);
+      return assigned;
+    }
     let floor = -1;
     for (const [index, stop] of source.entries()) {
       if (anchors[index] >= 0) {
-        const settled2 = Math.min(Math.max(anchors[index], floor + 1), reach);
-        assigned.set(stop, target[settled2]);
-        floor = settled2;
+        assigned.set(stop, target[anchors[index]]);
+        floor = anchors[index];
         continue;
       }
       let nextAnchor = reach + 1;
@@ -14317,9 +14329,10 @@ ${scrollGuards}` : project.css;
         waiting++;
       }
       const ceiling = Math.min(reach, nextAnchor - 1 - waiting);
-      const settled = Math.min(Math.max(wanted[index] < 0 ? floor + 1 : wanted[index], floor + 1), Math.max(ceiling, floor + 1));
+      const wish = wanted[index] < 0 ? floor + 1 : wanted[index];
+      const settled = ceiling >= floor + 1 ? Math.min(Math.max(wish, floor + 1), ceiling) : Math.min(Math.max(wish, 0), Math.max(floor, 0));
       assigned.set(stop, target[Math.min(settled, reach)]);
-      floor = Math.min(settled, reach);
+      floor = Math.max(floor, Math.min(settled, reach));
     }
     return assigned;
   }
@@ -15395,7 +15408,6 @@ ${scrollGuards}` : project.css;
   var LABEL_SIZE2 = 11;
   var ROW_GAP2 = 22;
   var PADDING = 48;
-  var MAX_ROWS_PER_FAMILY = 24;
   async function loadFonts2() {
     var _a;
     const candidates = [
@@ -15470,12 +15482,12 @@ ${scrollGuards}` : project.css;
     }
     return column;
   }
-  function pair(entry, fonts) {
+  function pair(entry, fonts, repeats = 1) {
     const column = autoLayout2(entry.site.name, "VERTICAL", 3);
     column.appendChild(block(entry.from, entry.fromStep === null ? "" : String(entry.fromStep), fonts));
     column.appendChild(block(entry.to, entry.toStep === null ? "" : String(entry.toStep), fonts));
     const name = entry.site.name.length > 22 ? "\u2026" + entry.site.name.slice(-21) : entry.site.name;
-    column.appendChild(label2(name, fonts, CAPTION_SIZE2, "#8A8A8A"));
+    column.appendChild(label2(repeats > 1 ? `${name}  \xB7  \xD7${repeats}` : name, fonts, CAPTION_SIZE2, "#8A8A8A"));
     return column;
   }
   function inReadingOrder(entries) {
@@ -15487,6 +15499,21 @@ ${scrollGuards}` : project.css;
       if (rungA !== rungB) return rungA ? -1 : 1;
       return ((_a = lightness.get(b)) != null ? _a : 0) - ((_b = lightness.get(a)) != null ? _b : 0);
     });
+  }
+  function foldRepeats(entries) {
+    const order = [];
+    const seen = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      const key = `${toHex(entry.from)}|${entry.from.a}|${toHex(entry.to)}|${entry.to.a}`;
+      const found = seen.get(key);
+      if (found) found.count++;
+      else {
+        seen.set(key, { entry, count: 1 });
+        order.push(key);
+      }
+    }
+    const folded = order.map((key) => seen.get(key));
+    return { entries: folded.map((item) => item.entry), counts: folded.map((item) => item.count) };
   }
   function groupEntries(plan) {
     var _a;
@@ -15507,9 +15534,11 @@ ${scrollGuards}` : project.css;
     }
     return order.map((key) => {
       const target = targetByFamily.get(key);
+      const folded = foldRepeats(inReadingOrder(grouped.get(key)));
       return {
         title: target ? `${key}  \u2192  ${target}` : key,
-        entries: inReadingOrder(grouped.get(key))
+        entries: folded.entries,
+        counts: folded.counts
       };
     });
   }
@@ -15546,15 +15575,12 @@ ${scrollGuards}` : project.css;
       row.appendChild(label2(group.title, fonts, LABEL_SIZE2, "#1A1A1A"));
       const strip = autoLayout2("strip", "HORIZONTAL", 6);
       strip.appendChild(gutter(fonts));
-      const shown = group.entries.slice(0, MAX_ROWS_PER_FAMILY);
-      for (const entry of shown) strip.appendChild(pair(entry, fonts));
-      row.appendChild(strip);
-      rows += shown.length;
-      const hidden = group.entries.length - shown.length;
-      if (hidden > 0) {
-        omitted += hidden;
-        row.appendChild(label2(`+ ${hidden} more in this family`, fonts, CAPTION_SIZE2, "#8A8A8A"));
+      for (const [index, entry] of group.entries.entries()) {
+        strip.appendChild(pair(entry, fonts, group.counts[index]));
+        omitted += group.counts[index] - 1;
       }
+      row.appendChild(strip);
+      rows += group.entries.length;
       content.appendChild(row);
     }
     const section = figma.createSection();
@@ -15575,10 +15601,7 @@ ${scrollGuards}` : project.css;
     return { section: SECTION_NAME, rows, families: groups.length, omitted };
   }
   function placementFor2(groups) {
-    const widest = groups.reduce(
-      (most, group) => Math.max(most, Math.min(group.entries.length, MAX_ROWS_PER_FAMILY)),
-      0
-    );
+    const widest = groups.reduce((most, group) => Math.max(most, group.entries.length), 0);
     const width = widest * (SWATCH_WIDTH2 + 6) + PADDING * 2;
     const nodes = figma.currentPage.children;
     if (nodes.length === 0) {
@@ -16691,7 +16714,6 @@ ${renderSections(sections)}
     plan.warnings.push(...resolved.warnings);
     return { plan: applyRemapOverrides(plan, overrides), palette: resolved.swatches };
   }
-  var REMAP_ROW_LIMIT = 500;
   function remapPlanView(plan) {
     const renamedById = new Map(plan.renames.map((rename) => [rename.siteId, rename]));
     const rank = (entry) => entry.site.kind === "detached" ? 1 : 0;
@@ -16701,11 +16723,10 @@ ${renderSections(sections)}
       const moved = Number(a.flags.includes("unchanged")) - Number(b.flags.includes("unchanged"));
       return moved !== 0 ? moved : b.site.usage - a.site.usage;
     });
-    const shown = ranked.slice(0, REMAP_ROW_LIMIT);
     return {
       total: plan.entries.length,
-      withheld: plan.entries.length - shown.length,
-      rows: shown.map((entry) => {
+      withheld: 0,
+      rows: ranked.map((entry) => {
         var _a, _b;
         return {
           id: entry.site.id,
