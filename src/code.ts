@@ -57,7 +57,7 @@ import { applyPaletteFix, generatePalette, suggestHarmoniousSpectrum, type Palet
 import { normalizePaletteFix, normalizePaletteSettings } from './tokens/palette-settings'
 import { foldSplitThemeCollections } from './tokens/split-theme'
 import { applyPalette, DEFAULT_APPLY_OPTIONS, type PaletteApplyOptions } from './targets/ds-tools/palette-apply'
-import { readRemapInventory, type RemapInventory } from './targets/ds-tools/remap-inventory'
+import { readRemapInventory, type RemapInventory, type ScanDepth } from './targets/ds-tools/remap-inventory'
 import {
   applyRemap,
   DEFAULT_REMAP_APPLY_OPTIONS,
@@ -121,7 +121,7 @@ type PluginMessage =
   | { type: 'FIX_PALETTE'; settings: unknown; fix: unknown }
   | { type: 'APPLY_PALETTE'; settings: unknown; applyOptions?: Partial<PaletteApplyOptions> }
   | { type: 'SAVE_PALETTE_SETTINGS'; settings: unknown }
-  | { type: 'REMAP_SCAN' }
+  | { type: 'REMAP_SCAN'; depth?: ScanDepth }
   | { type: 'REMAP_LIST_LIBRARIES' }
   | { type: 'REMAP_PREVIEW'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string> }
   | {
@@ -152,6 +152,8 @@ type PluginMessage =
  * table re-plans on every edit. Any write invalidates it.
  */
 let remapInventory: RemapInventory | null = null
+/** How deep the last reading went, so an implicit rescan does not silently widen it. */
+let remapDepth: ScanDepth = 'document'
 
 /** A row the human overrode in the approval table: site id → forced `#RRGGBB`. */
 function applyRemapOverrides(plan: RemapPlan, overrides: Record<string, string> | undefined): RemapPlan {
@@ -215,7 +217,10 @@ async function planRemap(
   overrides: Record<string, string> | undefined
 ): Promise<{ plan: RemapPlan; palette: ReturnType<typeof parsePaletteInput>['swatches'] }> {
   if (!remapInventory) {
-    remapInventory = await readRemapInventory((label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }))
+    remapInventory = await readRemapInventory(
+      (label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }),
+      remapDepth
+    )
   }
   const resolved = await resolveRemapSource(source)
   figma.ui.postMessage({ type: 'REMAP_PROGRESS', label: `matching ${resolved.swatches.length} new colors…` })
@@ -917,9 +922,11 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     /* ---- DS Tools: color token remapping ---- */
     case 'REMAP_SCAN': {
       try {
-        remapInventory = await readRemapInventory((label) =>
-          figma.ui.postMessage({ type: 'REMAP_PROGRESS', label })
+        remapInventory = await readRemapInventory(
+          (label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }),
+          msg.depth ?? 'document'
         )
+        remapDepth = msg.depth ?? 'document'
         figma.ui.postMessage({
           type: 'REMAP_INVENTORY',
           stats: remapInventory.stats,

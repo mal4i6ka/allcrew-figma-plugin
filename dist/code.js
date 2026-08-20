@@ -13546,69 +13546,10 @@ ${scrollGuards}` : project.css;
     walk.loosePlaces++;
     return id;
   }
-  function colorRefs(node, property, walk) {
-    var _a, _b;
-    if (styleIdOf2(node, property) !== "") return [];
-    const refs = [];
-    const nodeLevel = nodeLevelBindings(node, property);
-    for (const [index, paint] of paintsOf(node, property).entries()) {
-      if (paint.visible === false) continue;
-      const bound = [
-        ...boundIdsOf((_a = paint.boundVariables) == null ? void 0 : _a.color),
-        ...boundIdsOf(nodeLevel[index])
-      ];
-      if (bound.length > 0) {
-        refs.push(...bound);
-        continue;
-      }
-      if (paint.type === "SOLID") {
-        refs.push(noteLoose(walk, __spreadProps(__spreadValues({}, paint.color), { a: (_b = paint.opacity) != null ? _b : 1 })));
-        continue;
-      }
-      if (isGradient(paint)) {
-        for (const stop of paint.gradientStops) noteLoose(walk, withAlpha(stop.color));
-      }
-    }
-    return refs;
-  }
-  function boundRefsOnly(node, noteVariable) {
-    var _a, _b;
-    for (const property of ["fills", "strokes"]) {
-      if (styleIdOf2(node, property) !== "") continue;
-      const nodeLevel = nodeLevelBindings(node, property);
-      for (const [index, paint] of paintsOf(node, property).entries()) {
-        if (paint.visible === false) continue;
-        for (const id of boundIdsOf((_a = paint.boundVariables) == null ? void 0 : _a.color)) {
-          noteVariable(id);
-        }
-        for (const id of boundIdsOf(nodeLevel[index])) noteVariable(id);
-      }
-    }
-    if (styleIdOf2(node, "effects") !== "" || !("effects" in node) || !Array.isArray(node.effects)) return;
-    for (const effect of node.effects) {
-      if (!isShadow(effect) || effect.visible === false) continue;
-      for (const id of boundIdsOf((_b = effect.boundVariables) == null ? void 0 : _b.color)) {
-        noteVariable(id);
-      }
-    }
-  }
-  function noteEffects(node, walk, noteVariable) {
-    var _a;
-    if (styleIdOf2(node, "effects") !== "") return;
-    if (!("effects" in node) || !Array.isArray(node.effects)) return;
-    for (const effect of node.effects) {
-      if (!isShadow(effect) || effect.visible === false) continue;
-      const bound = boundIdsOf((_a = effect.boundVariables) == null ? void 0 : _a.color);
-      if (bound.length > 0) {
-        for (const id of bound) noteVariable(id);
-        continue;
-      }
-      noteLoose(walk, withAlpha(effect.color));
-    }
-  }
   var pairKey = (a, b, text2) => (a < b ? `${a} ${b}` : `${b} ${a}`) + (text2 ? " t" : " n");
-  async function walkDocument(localIds, progress2) {
-    var _a, _b, _c, _d;
+  var EMPTY = [];
+  async function walkDocument(localIds, depth, progress2) {
+    var _a;
     const walk = {
       usage: /* @__PURE__ */ new Map(),
       styleUsage: /* @__PURE__ */ new Map(),
@@ -13621,6 +13562,7 @@ ${scrollGuards}` : project.css;
       instances: 0,
       truncated: false
     };
+    if (depth === "tokens") return walk;
     const noteVariable = (id) => {
       var _a2;
       walk.usage.set(id, ((_a2 = walk.usage.get(id)) != null ? _a2 : 0) + 1);
@@ -13631,42 +13573,100 @@ ${scrollGuards}` : project.css;
       const key = pairKey(a, b, text2);
       if (!walk.neighbours.has(key)) walk.neighbours.set(key, { a, b, text: text2 });
     };
+    const noteStyle = (styleId) => {
+      var _a2;
+      if (styleId !== "") walk.styleUsage.set(styleId, ((_a2 = walk.styleUsage.get(styleId)) != null ? _a2 : 0) + 1);
+    };
+    const refsOf = (paints, nodeLevel, boundOnly) => {
+      var _a2, _b;
+      const refs = [];
+      for (let index = 0; index < paints.length; index++) {
+        const paint = paints[index];
+        if (paint.visible === false) continue;
+        const bound = [
+          ...boundIdsOf((_a2 = paint.boundVariables) == null ? void 0 : _a2.color),
+          ...boundIdsOf(nodeLevel[index])
+        ];
+        if (bound.length > 0) {
+          refs.push(...bound);
+          continue;
+        }
+        if (boundOnly) continue;
+        if (paint.type === "SOLID") {
+          refs.push(noteLoose(walk, __spreadProps(__spreadValues({}, paint.color), { a: (_b = paint.opacity) != null ? _b : 1 })));
+          continue;
+        }
+        if (isGradient(paint)) for (const stop of paint.gradientStops) noteLoose(walk, withAlpha(stop.color));
+      }
+      return refs;
+    };
+    const pages = depth === "page" ? [figma.currentPage] : figma.root.children;
     figma.skipInvisibleInstanceChildren = true;
     try {
-      for (const page of figma.root.children) {
+      for (const page of pages) {
         progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026`);
-        const stack = [...page.children];
-        const backdrop = /* @__PURE__ */ new Map();
+        const stack = [];
+        const roots = page.children;
+        for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], behind: EMPTY });
         while (stack.length > 0) {
           if (walk.nodes >= MAX_NODES) {
             walk.truncated = true;
             break;
           }
-          const node = stack.pop();
+          const pending = stack.pop();
+          const node = pending.node;
           walk.nodes++;
-          if (node.type === "INSTANCE") {
-            walk.instances++;
-            boundRefsOnly(node, noteVariable);
+          const type = node.type;
+          const record = node;
+          const fillStyle = record.fillStyleId;
+          const strokeStyle = record.strokeStyleId;
+          const effectStyle = record.effectStyleId;
+          const fillPaints = record.fills;
+          const strokePaints = record.strokes;
+          const effects = record.effects;
+          const bound = record.boundVariables;
+          const children = "children" in node ? node.children : null;
+          noteStyle(typeof fillStyle === "string" ? fillStyle : "");
+          noteStyle(typeof strokeStyle === "string" ? strokeStyle : "");
+          noteStyle(typeof effectStyle === "string" ? effectStyle : "");
+          const isInstance = type === "INSTANCE";
+          if (isInstance) walk.instances++;
+          const fills = typeof fillStyle === "string" && fillStyle !== "" ? EMPTY : Array.isArray(fillPaints) ? refsOf(fillPaints, Array.isArray(bound == null ? void 0 : bound.fills) ? bound.fills : [], isInstance) : EMPTY;
+          const strokes = typeof strokeStyle === "string" && strokeStyle !== "" ? EMPTY : Array.isArray(strokePaints) ? refsOf(
+            strokePaints,
+            Array.isArray(bound == null ? void 0 : bound.strokes) ? bound.strokes : [],
+            isInstance
+          ) : EMPTY;
+          if ((typeof effectStyle !== "string" || effectStyle === "") && Array.isArray(effects)) {
+            for (const effect of effects) {
+              if (!isShadow(effect) || effect.visible === false) continue;
+              const boundEffect = boundIdsOf((_a = effect.boundVariables) == null ? void 0 : _a.color);
+              if (boundEffect.length > 0) {
+                for (const id of boundEffect) noteVariable(id);
+                continue;
+              }
+              if (!isInstance) noteLoose(walk, withAlpha(effect.color));
+            }
+          }
+          for (const ref of fills) if (!isLooseSite(ref)) noteVariable(ref);
+          for (const ref of strokes) if (!isLooseSite(ref)) noteVariable(ref);
+          if (isInstance) {
+            if (walk.nodes % 500 === 0) {
+              progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk.nodes} nodes`);
+              await yieldToHost();
+            }
             continue;
           }
-          for (const property of ["fills", "strokes", "effects"]) {
-            const styleId = styleIdOf2(node, property);
-            if (styleId !== "") walk.styleUsage.set(styleId, ((_a = walk.styleUsage.get(styleId)) != null ? _a : 0) + 1);
-          }
-          const fills = colorRefs(node, "fills", walk);
-          const strokes = colorRefs(node, "strokes", walk);
-          noteEffects(node, walk, noteVariable);
-          for (const ref of [...fills, ...strokes]) if (!isLooseSite(ref)) noteVariable(ref);
           for (const fill of fills) for (const stroke of strokes) if (fill !== stroke) notePair(fill, stroke, false);
-          const behind = (_d = backdrop.get((_c = (_b = node.parent) == null ? void 0 : _b.id) != null ? _c : "")) != null ? _d : [];
-          const isText = node.type === "TEXT";
-          for (const own of isText ? fills : [...fills, ...strokes]) {
-            for (const parent of behind) if (own !== parent) notePair(own, parent, isText);
+          const behind = pending.behind;
+          if (behind.length > 0) {
+            const isText = type === "TEXT";
+            const own = isText ? fills : strokes.length === 0 ? fills : [...fills, ...strokes];
+            for (const ref of own) for (const parent of behind) if (ref !== parent) notePair(ref, parent, isText);
           }
-          if ("children" in node && node.children.length > 0) {
+          if (children !== null && children.length > 0) {
             const passes = fills.length > 0 ? fills : behind;
-            if (passes.length > 0) backdrop.set(node.id, passes);
-            for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
+            for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], behind: passes });
           }
           if (walk.nodes % 500 === 0) {
             progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk.nodes} nodes`);
@@ -13747,7 +13747,7 @@ ${scrollGuards}` : project.css;
     }
     return { paints: paintStyles, effects: effectStyles };
   }
-  async function readRemapInventory(progress2) {
+  async function readRemapInventory(progress2, depth = "document") {
     var _a, _b, _c, _d;
     const warnings = [];
     progress2 == null ? void 0 : progress2("reading variables\u2026");
@@ -13761,12 +13761,14 @@ ${scrollGuards}` : project.css;
         modes.push({ id: mode.modeId, name: mode.name, collection: collection.name, collectionId: collection.id });
       }
     }
-    try {
-      await loadAllPagesAsync();
-    } catch (e) {
-      warnings.push("some pages could not be loaded \u2014 their colors are missing from this reading");
+    if (depth === "document") {
+      try {
+        await loadAllPagesAsync();
+      } catch (e) {
+        warnings.push("some pages could not be loaded \u2014 their colors are missing from this reading");
+      }
     }
-    const walk = await walkDocument(localIds, progress2);
+    const walk = await walkDocument(localIds, depth, progress2);
     progress2 == null ? void 0 : progress2("building the inventory\u2026");
     const sites = [];
     const modesByVariable = /* @__PURE__ */ new Map();
@@ -13858,6 +13860,13 @@ ${scrollGuards}` : project.css;
       count: variables.filter((variable) => variable.variableCollectionId === collection.id).length
     })).sort((a, b) => b.count - a.count)[0];
     if (sites.length === 0) warnings.push("this file holds no colors this tool can remap");
+    if (depth === "tokens") {
+      warnings.push(
+        "read variables and styles only \u2014 loose colors on layers are not in this mapping, and the name that wins a collision is decided without usage counts"
+      );
+    } else if (depth === "page") {
+      warnings.push(`read this page only \u2014 loose colors on other pages are not in this mapping`);
+    }
     if (walk.looseDropped > 0) {
       warnings.push(
         `${walk.looseDropped} rarely used loose color(s) beyond the first ${MAX_LOOSE_COLORS} were left out of this reading \u2014 they stay as they are`
@@ -16427,6 +16436,7 @@ ${renderSections(sections)}
 
   // src/code.ts
   var remapInventory = null;
+  var remapDepth = "document";
   function applyRemapOverrides(plan, overrides) {
     if (!overrides) return plan;
     for (const entry of plan.entries) {
@@ -16471,7 +16481,10 @@ ${renderSections(sections)}
   }
   async function planRemap(source, options, overrides) {
     if (!remapInventory) {
-      remapInventory = await readRemapInventory((label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }));
+      remapInventory = await readRemapInventory(
+        (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }),
+        remapDepth
+      );
     }
     const resolved = await resolveRemapSource(source);
     figma.ui.postMessage({ type: "REMAP_PROGRESS", label: `matching ${resolved.swatches.length} new colors\u2026` });
@@ -16981,7 +16994,7 @@ ${renderSections(sections)}
   }
   figma.on("selectionchange", postSelectionToUi);
   figma.ui.onmessage = async (msg) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
@@ -17083,8 +17096,10 @@ ${renderSections(sections)}
       case "REMAP_SCAN": {
         try {
           remapInventory = await readRemapInventory(
-            (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 })
+            (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }),
+            (_d = msg.depth) != null ? _d : "document"
           );
+          remapDepth = (_e = msg.depth) != null ? _e : "document";
           figma.ui.postMessage({
             type: "REMAP_INVENTORY",
             stats: remapInventory.stats,
@@ -17116,7 +17131,7 @@ ${renderSections(sections)}
       case "REMAP_APPLY": {
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides);
-          const options = __spreadValues(__spreadValues({}, DEFAULT_REMAP_APPLY_OPTIONS), (_d = msg.applyOptions) != null ? _d : {});
+          const options = __spreadValues(__spreadValues({}, DEFAULT_REMAP_APPLY_OPTIONS), (_f = msg.applyOptions) != null ? _f : {});
           const audit = remapInventory ? auditContrast(plan, remapInventory.adjacency) : { findings: [], checked: 0, improved: 0 };
           const report = await applyRemap(
             plan,
@@ -17188,7 +17203,7 @@ ${renderSections(sections)}
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides);
           const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind });
-          const settings = { snap: (_e = msg.snap) != null ? _e : 2, byName: (_f = msg.byName) != null ? _f : false, mode: (_g = msg.mode) != null ? _g : null };
+          const settings = { snap: (_g = msg.snap) != null ? _g : 2, byName: (_h = msg.byName) != null ? _h : false, mode: (_i = msg.mode) != null ? _i : null };
           let replaced = 0;
           let untouched = 0;
           const warnings = /* @__PURE__ */ new Set();
@@ -17309,7 +17324,7 @@ ${renderSections(sections)}
             { nodeId: fileNodeIds[path], content }
           ])
         );
-        const existingFiles = new Map(Object.entries((_h = msg.existingFiles) != null ? _h : {}));
+        const existingFiles = new Map(Object.entries((_j = msg.existingFiles) != null ? _j : {}));
         const plan = planRegeneration(existingFiles, freshFiles);
         let tokensCss;
         let bootstrapTokensCss;
@@ -17367,7 +17382,7 @@ ${renderSections(sections)}
         break;
       }
       case "SCROLL_INTO_VIEW": {
-        const node = (_i = lastScanIndex.get(msg.nodeId)) != null ? _i : await figma.getNodeByIdAsync(msg.nodeId);
+        const node = (_k = lastScanIndex.get(msg.nodeId)) != null ? _k : await figma.getNodeByIdAsync(msg.nodeId);
         if (node && "visible" in node) {
           const target = node;
           figma.viewport.scrollAndZoomIntoView([target]);
@@ -17569,10 +17584,10 @@ ${renderSections(sections)}
           if (exportOptions.targetOptions.platform === "tauri" && project) {
             let startPageId;
             try {
-              startPageId = (_j = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _j.nodeId;
+              startPageId = (_l = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _l.nodeId;
             } catch (e) {
             }
-            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_k = pageRoots[0]) == null ? void 0 : _k.id;
+            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_m = pageRoots[0]) == null ? void 0 : _m.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -17605,9 +17620,9 @@ ${renderSections(sections)}
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_l = sceneNodesById.get(nodeId)) != null ? _l : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (_n = sceneNodesById.get(nodeId)) != null ? _n : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_m = node.parent) == null ? void 0 : _m.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((_o = node.parent) == null ? void 0 : _o.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -17630,7 +17645,7 @@ ${renderSections(sections)}
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((_n = counts[finding.rule]) != null ? _n : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_p = counts[finding.rule]) != null ? _p : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -17680,7 +17695,7 @@ ${renderSections(sections)}
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (_p = (_o = figma.currentUser) == null ? void 0 : _o.name) != null ? _p : "unknown";
+            exportedBy = (_r = (_q = figma.currentUser) == null ? void 0 : _q.name) != null ? _r : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }

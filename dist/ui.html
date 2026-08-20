@@ -474,6 +474,8 @@
   .rmp-flag.warn { color: var(--accent-hi); background: var(--accent-tint); box-shadow: inset 0 0 0 1px rgba(251,91,10,0.3); }
   .rmp-override { width: 66px; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 2px 4px; font-family: var(--mono); font-size: 10px; }
   .rmp-override:focus { outline: none; border-color: var(--accent); }
+  .rmp-depth { flex: 0 0 auto; background: var(--bg-2); border: 1px solid var(--border); color: var(--muted); border-radius: var(--r-sm); padding: 0 8px; font-family: var(--mono); font-size: 11px; }
+  .rmp-depth:focus { outline: none; border-color: var(--accent); }
   .rmp-drop { border: 1px dashed var(--border); border-radius: var(--r-sm); padding: 12px 12px 13px; text-align: center; cursor: pointer; transition: border-color .16s, background .16s; }
   .rmp-drop:hover, .rmp-drop.over { border-color: var(--accent); background: var(--accent-tint); }
   .rmp-drop b { display: block; color: var(--text); font-weight: 500; font-size: 12px; font-family: var(--brand); }
@@ -814,6 +816,11 @@
         <div id="rmp-parse" class="rmp-stats"></div>
 
         <div class="rmp-actions">
+          <select id="rmp-depth" class="rmp-depth" aria-label="How much of the file to read">
+            <option value="document">Whole document</option>
+            <option value="page">This page only</option>
+            <option value="tokens">Variables &amp; styles only</option>
+          </select>
           <button class="btn ghost" id="rmp-scan" type="button">Read this file</button>
           <button class="btn primary" id="rmp-preview" type="button" disabled>Build mapping</button>
         </div>
@@ -3149,9 +3156,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       })
 
       rmpEl('rmp-scan').addEventListener('click', function () {
+        var depth = rmpEl('rmp-depth').value
         rmpSetBusy(true)
-        rmpText('rmp-result', 'Reading the whole document…')
-        parent.postMessage({ pluginMessage: { type: 'REMAP_SCAN' } }, '*')
+        rmpText('rmp-result', depth === 'tokens' ? 'Reading variables and styles…' : 'Reading layers…')
+        parent.postMessage({ pluginMessage: { type: 'REMAP_SCAN', depth: depth } }, '*')
       })
 
       rmpEl('rmp-preview').addEventListener('click', rmpPreview)

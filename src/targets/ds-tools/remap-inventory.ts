@@ -266,7 +266,31 @@ function noteEffects(node: SceneNode, walk: WalkResult, noteVariable: (id: strin
 const pairKey = (a: string, b: string, text: boolean): string =>
   (a < b ? `${a} ${b}` : `${b} ${a}`) + (text ? ' t' : ' n')
 
-async function walkDocument(localIds: ReadonlySet<string>, progress?: Progress): Promise<WalkResult> {
+/** How deep a reading goes. The document is the honest default; the others exist for files
+ * where a full walk is too expensive, and for finding out which half of it is. */
+export type ScanDepth = 'tokens' | 'page' | 'document'
+
+const EMPTY: readonly string[] = []
+
+/** What the walk carries down instead of asking each node for its parent. */
+interface Pending {
+  node: SceneNode
+  behind: readonly string[]
+}
+
+/**
+ * Every property read here crosses the sandbox boundary, and the host deep-freezes whatever it
+ * hands back — so the cost of this loop is measured in *property reads*, not in nodes. The
+ * earlier version asked each node about seventeen questions and re-read `children` once per
+ * child; on a real design system that is over a million round-trips and the plugin is killed
+ * rather than slowed. Everything below is read exactly once, and the backdrop travels on the
+ * stack rather than being looked up through `node.parent`.
+ */
+async function walkDocument(
+  localIds: ReadonlySet<string>,
+  depth: ScanDepth,
+  progress?: Progress
+): Promise<WalkResult> {
   const walk: WalkResult = {
     usage: new Map(),
     styleUsage: new Map(),
@@ -279,6 +303,7 @@ async function walkDocument(localIds: ReadonlySet<string>, progress?: Progress):
     instances: 0,
     truncated: false,
   }
+  if (depth === 'tokens') return walk
 
   const noteVariable = (id: string): void => {
     walk.usage.set(id, (walk.usage.get(id) ?? 0) + 1)
@@ -289,59 +314,133 @@ async function walkDocument(localIds: ReadonlySet<string>, progress?: Progress):
     const key = pairKey(a, b, text)
     if (!walk.neighbours.has(key)) walk.neighbours.set(key, { a, b, text })
   }
+  const noteStyle = (styleId: string): void => {
+    if (styleId !== '') walk.styleUsage.set(styleId, (walk.styleUsage.get(styleId) ?? 0) + 1)
+  }
+
+  /** Refs for one paint list, from values already read off the node. */
+  const refsOf = (paints: readonly Paint[], nodeLevel: unknown[], boundOnly: boolean): string[] => {
+    const refs: string[] = []
+    for (let index = 0; index < paints.length; index++) {
+      const paint = paints[index]
+      if (paint.visible === false) continue
+      const bound = [
+        ...boundIdsOf((paint as { boundVariables?: { color?: unknown } }).boundVariables?.color),
+        ...boundIdsOf(nodeLevel[index]),
+      ]
+      if (bound.length > 0) {
+        refs.push(...bound)
+        continue
+      }
+      if (boundOnly) continue
+      if (paint.type === 'SOLID') {
+        refs.push(noteLoose(walk, { ...paint.color, a: paint.opacity ?? 1 }))
+        continue
+      }
+      // A gradient has no single colour to pair with a neighbour, but every stop is still a
+      // colour the remap has to move.
+      if (isGradient(paint)) for (const stop of paint.gradientStops) noteLoose(walk, withAlpha(stop.color))
+    }
+    return refs
+  }
+
+  const pages = depth === 'page' ? [figma.currentPage] : figma.root.children
 
   figma.skipInvisibleInstanceChildren = true
   try {
-    for (const page of figma.root.children) {
+    for (const page of pages) {
       progress?.(`reading ${page.name}…`)
-      const stack: BaseNode[] = [...page.children]
-      /** What each container paints behind its children, so a text can be paired with it. */
-      const backdrop = new Map<string, string[]>()
+      const stack: Pending[] = []
+      const roots = page.children
+      for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], behind: EMPTY })
 
       while (stack.length > 0) {
         if (walk.nodes >= MAX_NODES) {
           walk.truncated = true
           break
         }
-        const node = stack.pop() as SceneNode
+        const pending = stack.pop() as Pending
+        const node = pending.node
         walk.nodes++
 
+        const type = node.type
+        const record = node as unknown as Record<string, unknown>
+
+        // Each of these is one crossing, and each is made once.
+        const fillStyle = record.fillStyleId
+        const strokeStyle = record.strokeStyleId
+        const effectStyle = record.effectStyleId
+        const fillPaints = record.fills
+        const strokePaints = record.strokes
+        const effects = record.effects
+        const bound = record.boundVariables as Record<string, unknown> | undefined
+        const children = 'children' in node ? node.children : null
+
+        noteStyle(typeof fillStyle === 'string' ? fillStyle : '')
+        noteStyle(typeof strokeStyle === 'string' ? strokeStyle : '')
+        noteStyle(typeof effectStyle === 'string' ? effectStyle : '')
+
         // An instance mirrors its main component, which this same walk reads on its own page.
-        // Descending would re-count every sublayer of every copy — on a real design system the
-        // difference between thousands of nodes and millions — and would read colours the
-        // *apply* pass deliberately refuses to write, so the table would promise changes that
+        // Descending would re-count every sublayer of every copy, and would read colours the
+        // *apply* pass deliberately refuses to write — the table would promise changes that
         // never happen. Bindings are still noted: those are information, not a promise.
-        if (node.type === 'INSTANCE') {
-          walk.instances++
-          boundRefsOnly(node, noteVariable)
+        const isInstance = type === 'INSTANCE'
+        if (isInstance) walk.instances++
+
+        const fills =
+          typeof fillStyle === 'string' && fillStyle !== ''
+            ? EMPTY
+            : Array.isArray(fillPaints)
+              ? refsOf(fillPaints as Paint[], Array.isArray(bound?.fills) ? (bound.fills as unknown[]) : [], isInstance)
+              : EMPTY
+        const strokes =
+          typeof strokeStyle === 'string' && strokeStyle !== ''
+            ? EMPTY
+            : Array.isArray(strokePaints)
+              ? refsOf(
+                  strokePaints as Paint[],
+                  Array.isArray(bound?.strokes) ? (bound.strokes as unknown[]) : [],
+                  isInstance
+                )
+              : EMPTY
+
+        if ((typeof effectStyle !== 'string' || effectStyle === '') && Array.isArray(effects)) {
+          for (const effect of effects as Effect[]) {
+            if (!isShadow(effect) || effect.visible === false) continue
+            const boundEffect = boundIdsOf((effect as { boundVariables?: { color?: unknown } }).boundVariables?.color)
+            if (boundEffect.length > 0) {
+              for (const id of boundEffect) noteVariable(id)
+              continue
+            }
+            if (!isInstance) noteLoose(walk, withAlpha(effect.color))
+          }
+        }
+
+        for (const ref of fills) if (!isLooseSite(ref)) noteVariable(ref)
+        for (const ref of strokes) if (!isLooseSite(ref)) noteVariable(ref)
+
+        if (isInstance) {
+          if (walk.nodes % 500 === 0) {
+            progress?.(`reading ${page.name}… ${walk.nodes} nodes`)
+            await yieldToHost()
+          }
           continue
         }
 
-        for (const property of ['fills', 'strokes', 'effects'] as const) {
-          const styleId = styleIdOf(node, property)
-          if (styleId !== '') walk.styleUsage.set(styleId, (walk.styleUsage.get(styleId) ?? 0) + 1)
-        }
-
-        const fills = colorRefs(node, 'fills', walk)
-        const strokes = colorRefs(node, 'strokes', walk)
-        noteEffects(node, walk, noteVariable)
-        for (const ref of [...fills, ...strokes]) if (!isLooseSite(ref)) noteVariable(ref)
-
-        // A fill and a stroke on one node are as adjacent as two colors get.
+        // A fill and a stroke on one node are as adjacent as two colours get.
         for (const fill of fills) for (const stroke of strokes) if (fill !== stroke) notePair(fill, stroke, false)
 
-        const behind = backdrop.get(node.parent?.id ?? '') ?? []
-        const isText = node.type === 'TEXT'
-        for (const own of isText ? fills : [...fills, ...strokes]) {
-          for (const parent of behind) if (own !== parent) notePair(own, parent, isText)
+        const behind = pending.behind
+        if (behind.length > 0) {
+          const isText = type === 'TEXT'
+          const own = isText ? fills : strokes.length === 0 ? fills : [...fills, ...strokes]
+          for (const ref of own) for (const parent of behind) if (ref !== parent) notePair(ref, parent, isText)
         }
 
-        if ('children' in node && node.children.length > 0) {
-          // An unpainted container passes whatever is behind it through to its children; when
-          // there is nothing to pass, storing an entry per container is pure memory.
+        if (children !== null && children.length > 0) {
+          // An unpainted container passes whatever is behind it through to its children.
           const passes = fills.length > 0 ? fills : behind
-          if (passes.length > 0) backdrop.set(node.id, passes)
-          for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i])
+          for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], behind: passes })
         }
 
         if (walk.nodes % 500 === 0) {
@@ -434,7 +533,7 @@ async function readStyles(walk: WalkResult, sites: ColorSite[]): Promise<{ paint
 
 /* ------------------------------------------------------------------ entry point */
 
-export async function readRemapInventory(progress?: Progress): Promise<RemapInventory> {
+export async function readRemapInventory(progress?: Progress, depth: ScanDepth = 'document'): Promise<RemapInventory> {
   const warnings: string[] = []
 
   progress?.('reading variables…')
@@ -450,13 +549,15 @@ export async function readRemapInventory(progress?: Progress): Promise<RemapInve
     }
   }
 
-  try {
-    await loadAllPagesAsync()
-  } catch {
-    warnings.push('some pages could not be loaded — their colors are missing from this reading')
+  if (depth === 'document') {
+    try {
+      await loadAllPagesAsync()
+    } catch {
+      warnings.push('some pages could not be loaded — their colors are missing from this reading')
+    }
   }
 
-  const walk = await walkDocument(localIds, progress)
+  const walk = await walkDocument(localIds, depth, progress)
   progress?.('building the inventory…')
 
   const sites: ColorSite[] = []
@@ -567,6 +668,14 @@ export async function readRemapInventory(progress?: Progress): Promise<RemapInve
     .sort((a, b) => b.count - a.count)[0]
 
   if (sites.length === 0) warnings.push('this file holds no colors this tool can remap')
+  if (depth === 'tokens') {
+    warnings.push(
+      'read variables and styles only — loose colors on layers are not in this mapping, and the name that ' +
+        'wins a collision is decided without usage counts'
+    )
+  } else if (depth === 'page') {
+    warnings.push(`read this page only — loose colors on other pages are not in this mapping`)
+  }
   if (walk.looseDropped > 0) {
     warnings.push(
       `${walk.looseDropped} rarely used loose color(s) beyond the first ${MAX_LOOSE_COLORS} were left out of ` +
