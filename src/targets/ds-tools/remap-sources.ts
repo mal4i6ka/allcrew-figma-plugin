@@ -174,7 +174,7 @@ export async function swatchesFromLibrary(
   const colors = published.filter((variable) => variable.resolvedType === 'COLOR')
   if (colors.length === 0) return { swatches: [], warnings: ['that collection holds no color variables'] }
 
-  const entries: Array<{ hex: string; alpha: number; name: string }> = []
+  const entries: Array<{ hex: string; alpha: number; name: string; key?: string }> = []
   let modeId: string | null = null
   let chosenMode: string | null = null
   let unresolved = 0
@@ -207,7 +207,7 @@ export async function swatchesFromLibrary(
       continue
     }
     const color = withAlpha(value)
-    entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name })
+    entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name, key: variable.key })
   }
 
   const { swatches, duplicates } = swatchesFromNamedColors(entries)

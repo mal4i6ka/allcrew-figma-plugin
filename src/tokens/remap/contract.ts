@@ -34,7 +34,9 @@ export interface MappingRecord {
   fromStep: number | null
   toFamily: string | null
   toStep: number | null
-  /** How the landing was chosen — `step`, `lightness` or `nearest`. */
+  /** Library variable key of the landing, when the palette is a published collection. */
+  toVariable: string | null
+  /** How the landing was chosen — `exact`, `step`, `lightness` or `nearest`. */
   via: RemapEntry['via']
   deltaE: number
   flags: RemapFlag[]
@@ -94,6 +96,7 @@ export function buildMappingFile(plan: RemapPlan, meta: MappingMeta = {}): Mappi
       fromStep: entry.fromStep,
       toFamily: entry.toFamily,
       toStep: entry.toStep,
+      toVariable: entry.toVariableKey,
       via: entry.via,
       deltaE: round(entry.deltaE, 2),
       flags: entry.flags,

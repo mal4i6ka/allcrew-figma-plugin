@@ -36,6 +36,8 @@ export interface SpectrumMember {
   group?: string | null
   /** Step read off the name, when the name carried one. */
   step: number | null
+  /** Library variable key, for palette members that are real published variables. */
+  variableKey?: string | null
 }
 
 /** Below this a color is translucent, and translucency is an axis of its own. */

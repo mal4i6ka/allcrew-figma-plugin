@@ -62,7 +62,7 @@ const describes = (family: string | null, step: number | null): number =>
   family !== null && step !== null ? 2 : family !== null ? 1 : 0
 
 export function swatchesFromNamedColors(
-  entries: ReadonlyArray<{ hex: string; alpha?: number; name: string }>
+  entries: ReadonlyArray<{ hex: string; alpha?: number; name: string; key?: string }>
 ): { swatches: ParsedSwatch[]; duplicates: number } {
   const at = new Map<string, number>()
   const swatches: ParsedSwatch[] = []
@@ -80,7 +80,13 @@ export function swatchesFromNamedColors(
       duplicates++
       const held = swatches[existing]
       if (describes(parsed.family, parsed.step) > describes(held.family, held.step)) {
-        swatches[existing] = { ...held, name: entry.name, family: parsed.family, step: parsed.step }
+        swatches[existing] = {
+          ...held,
+          name: entry.name,
+          family: parsed.family,
+          step: parsed.step,
+          variableKey: entry.key ?? held.variableKey ?? null,
+        }
       }
       continue
     }
@@ -93,6 +99,7 @@ export function swatchesFromNamedColors(
       name: entry.name,
       family: parsed.family,
       step: parsed.step,
+      variableKey: entry.key ?? null,
     })
   }
 

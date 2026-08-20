@@ -15479,12 +15479,13 @@ ${scrollGuards}` : project.css;
     return frame2;
   }
   var inkOn = (color) => contrastRatio(color, { r: 0, g: 0, b: 0 }) >= contrastRatio(color, { r: 1, g: 1, b: 1 }) ? "#000000" : "#FFFFFF";
-  function block(color, caption, fonts) {
+  function block(color, caption, fonts, variable) {
     const frame2 = autoLayout2("swatch", "VERTICAL", 0);
     frame2.primaryAxisSizingMode = "FIXED";
     frame2.counterAxisSizingMode = "FIXED";
     frame2.resize(SWATCH_WIDTH2, SWATCH_HEIGHT);
-    frame2.fills = [{ type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a }];
+    const paint = { type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a };
+    frame2.fills = [variable ? figma.variables.setBoundVariableForPaint(paint, "color", variable) : paint];
     frame2.paddingLeft = 8;
     frame2.paddingTop = 7;
     frame2.primaryAxisAlignItems = "MIN";
@@ -15508,10 +15509,12 @@ ${scrollGuards}` : project.css;
     }
     return column;
   }
-  function pair(entry, fonts, repeats = 1) {
+  function pair(entry, fonts, bindings, repeats = 1) {
     const column = autoLayout2(entry.site.name, "VERTICAL", 3);
-    column.appendChild(block(entry.from, entry.fromStep === null ? "" : String(entry.fromStep), fonts));
-    column.appendChild(block(entry.to, entry.toStep === null ? "" : String(entry.toStep), fonts));
+    const oldVariable = entry.site.kind === "variable" ? bindings.old.get(variableIdOf(entry.site.id)) : void 0;
+    const newVariable = entry.toVariableKey === null ? void 0 : bindings.imported.get(entry.toVariableKey);
+    column.appendChild(block(entry.from, entry.fromStep === null ? "" : String(entry.fromStep), fonts, oldVariable));
+    column.appendChild(block(entry.to, entry.toStep === null ? "" : String(entry.toStep), fonts, newVariable));
     const name = entry.site.name.length > 22 ? "\u2026" + entry.site.name.slice(-21) : entry.site.name;
     column.appendChild(label2(repeats > 1 ? `${name}  \xB7  \xD7${repeats}` : name, fonts, CAPTION_SIZE2, "#8A8A8A"));
     return column;
@@ -15568,10 +15571,37 @@ ${scrollGuards}` : project.css;
       };
     });
   }
+  var variableIdOf = (siteId2) => {
+    const separator = siteId2.lastIndexOf("|");
+    return separator <= 0 ? siteId2 : siteId2.slice(0, separator);
+  };
+  async function collectBindings(entries) {
+    const oldIds = /* @__PURE__ */ new Set();
+    const keys = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      if (entry.site.kind === "variable") oldIds.add(variableIdOf(entry.site.id));
+      if (entry.toVariableKey !== null) keys.add(entry.toVariableKey);
+    }
+    const old = /* @__PURE__ */ new Map();
+    let fetched = 0;
+    for (const id of oldIds) {
+      if (++fetched % 25 === 0) await yieldToHost();
+      const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
+      if (variable) old.set(id, variable);
+    }
+    const imported = /* @__PURE__ */ new Map();
+    for (const key of keys) {
+      if (++fetched % 25 === 0) await yieldToHost();
+      const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null);
+      if (variable) imported.set(key, variable);
+    }
+    return { old, imported };
+  }
   async function drawRemapBoard(plan) {
     var _a;
     const fonts = await loadFonts2();
     const groups = groupEntries(plan);
+    const bindings = await collectBindings(groups.flatMap((group) => group.entries));
     const previous = figma.currentPage.findAllWithCriteria({ types: ["SECTION"] }).find((node) => node.getPluginData(SECTION_KEY) === "1");
     const previousBox = (_a = previous == null ? void 0 : previous.absoluteBoundingBox) != null ? _a : null;
     const spot = previousBox ? { x: previousBox.x, y: previousBox.y } : placementFor2(groups);
@@ -15602,7 +15632,7 @@ ${scrollGuards}` : project.css;
       const strip = autoLayout2("strip", "HORIZONTAL", 6);
       strip.appendChild(gutter(fonts));
       for (const [index, entry] of group.entries.entries()) {
-        strip.appendChild(pair(entry, fonts, group.counts[index]));
+        strip.appendChild(pair(entry, fonts, bindings, group.counts[index]));
         omitted += group.counts[index] - 1;
       }
       row.appendChild(strip);
@@ -15827,14 +15857,18 @@ ${scrollGuards}` : project.css;
       step: parsed.step
     };
   };
-  var swatchMember = (swatch, index) => ({
-    ref: `new:${index}`,
-    name: swatch.name,
-    rgba: swatch.rgba,
-    family: swatch.family,
-    group: parseTokenName(swatch.name).groupPath,
-    step: swatch.step
-  });
+  var swatchMember = (swatch, index) => {
+    var _a;
+    return {
+      ref: `new:${index}`,
+      name: swatch.name,
+      rgba: swatch.rgba,
+      family: swatch.family,
+      group: parseTokenName(swatch.name).groupPath,
+      step: swatch.step,
+      variableKey: (_a = swatch.variableKey) != null ? _a : null
+    };
+  };
   var land = (site, target) => ({ r: target.r, g: target.g, b: target.b, a: site.rgba.a });
   var sameColor = (a, b) => Math.abs(a.r - b.r) < 1 / 512 && Math.abs(a.g - b.g) < 1 / 512 && Math.abs(a.b - b.b) < 1 / 512;
   var colorKey = (color) => [color.r, color.g, color.b].map((channel) => Math.round(channel * 255)).join(",");
@@ -15860,6 +15894,7 @@ ${scrollGuards}` : project.css;
     return { spectra, candidates, warnings };
   }
   function entryFor(site, target, via, toFamily, flags, fromFamily) {
+    var _a;
     const parsed = parseTokenName(site.name);
     const to = land(site, target.rgba);
     const all = [...flags];
@@ -15870,6 +15905,7 @@ ${scrollGuards}` : project.css;
       from: site.rgba,
       to,
       toName: target.name === "" ? null : target.name,
+      toVariableKey: (_a = target.variableKey) != null ? _a : null,
       // The spectrum's label when the site came through a family match — `colour/neutral` and
       // `colors/neutral` are different rows of the story, not one family told twice.
       fromFamily: fromFamily !== void 0 ? fromFamily : parsed.family,
@@ -16201,6 +16237,7 @@ ${scrollGuards}` : project.css;
           fromStep: entry.fromStep,
           toFamily: entry.toFamily,
           toStep: entry.toStep,
+          toVariable: entry.toVariableKey,
           via: entry.via,
           deltaE: round8(entry.deltaE, 2),
           flags: entry.flags
@@ -16402,7 +16439,7 @@ ${scrollGuards}` : project.css;
   }
   var describes = (family, step) => family !== null && step !== null ? 2 : family !== null ? 1 : 0;
   function swatchesFromNamedColors(entries) {
-    var _a;
+    var _a, _b, _c, _d;
     const at = /* @__PURE__ */ new Map();
     const swatches = [];
     let duplicates = 0;
@@ -16417,7 +16454,12 @@ ${scrollGuards}` : project.css;
         duplicates++;
         const held = swatches[existing];
         if (describes(parsed.family, parsed.step) > describes(held.family, held.step)) {
-          swatches[existing] = __spreadProps(__spreadValues({}, held), { name: entry.name, family: parsed.family, step: parsed.step });
+          swatches[existing] = __spreadProps(__spreadValues({}, held), {
+            name: entry.name,
+            family: parsed.family,
+            step: parsed.step,
+            variableKey: (_c = (_b = entry.key) != null ? _b : held.variableKey) != null ? _c : null
+          });
         }
         continue;
       }
@@ -16428,7 +16470,8 @@ ${scrollGuards}` : project.css;
         rgba: __spreadProps(__spreadValues({}, rgb), { a: alpha }),
         name: entry.name,
         family: parsed.family,
-        step: parsed.step
+        step: parsed.step,
+        variableKey: (_d = entry.key) != null ? _d : null
       });
     }
     return { swatches, duplicates };
@@ -16551,7 +16594,7 @@ ${scrollGuards}` : project.css;
         continue;
       }
       const color = withAlpha(value);
-      entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name });
+      entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name, key: variable.key });
     }
     const { swatches, duplicates } = swatchesFromNamedColors(entries);
     if (chosenMode) warnings.unshift(`read the "${chosenMode}" mode of that collection`);
