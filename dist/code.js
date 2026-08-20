@@ -14419,7 +14419,34 @@ ${scrollGuards}` : project.css;
   var SNAPSHOT_COUNT_KEY = "altery-remap-snapshot-chunks";
   var RENAME_KEY = "altery-remap-renames";
   var CHUNK_BYTES = 8e4;
-  var MAX_CHUNKS = 12;
+  var MAX_CHUNKS = 32;
+  var channelKey = (channels) => channels.join(",");
+  function packSnapshot(snapshot) {
+    const paints = {};
+    for (const place of snapshot.paints) {
+      const key = channelKey([place[4], place[5], place[6], place[7]]);
+      const packed = place[8] === 1 ? [place[0], place[1], place[2], place[3], 1] : [place[0], place[1], place[2], place[3]];
+      const group = paints[key];
+      if (group) group.push(packed);
+      else paints[key] = [packed];
+    }
+    return { version: 3, values: snapshot.values, names: snapshot.names, styles: snapshot.styles, paints };
+  }
+  function unpackSnapshot(parsed) {
+    var _a;
+    const raw = parsed;
+    if (raw.version === 2) return parsed;
+    if (raw.version !== 3) throw new Error(`the undo snapshot has version ${String(raw.version)}, which this build cannot read`);
+    const packed = parsed;
+    const paints = [];
+    for (const [key, group] of Object.entries(packed.paints)) {
+      const channels = key.split(",").map(Number);
+      for (const place of group) {
+        paints.push([place[0], place[1], place[2], place[3], channels[0], channels[1], channels[2], channels[3], (_a = place[4]) != null ? _a : 0]);
+      }
+    }
+    return { version: 2, values: packed.values, names: packed.names, styles: packed.styles, paints };
+  }
   function writeChunked(text2) {
     const chunks = [];
     for (let i = 0; i < text2.length; i += CHUNK_BYTES) chunks.push(text2.slice(i, i + CHUNK_BYTES));
@@ -14635,6 +14662,10 @@ ${scrollGuards}` : project.css;
         const alpha = (_b = paint.opacity) != null ? _b : 1;
         const entry = context.targets.get(looseSiteId(hexOf(paint.color), alpha));
         if (!entry) continue;
+        if (context.dry) {
+          context.report.paints++;
+          continue;
+        }
         const variable = context.bindTo.get(entry.site.id);
         let replacement = __spreadProps(__spreadValues({}, paint), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b }, opacity: entry.to.a });
         if (variable) {
@@ -14654,6 +14685,10 @@ ${scrollGuards}` : project.css;
         const color = withAlpha(stop.color);
         const entry = context.targets.get(looseSiteId(hexOf(color), color.a));
         if (!entry) continue;
+        if (context.dry) {
+          context.report.paints++;
+          continue;
+        }
         stops[stopIndex] = __spreadProps(__spreadValues({}, stop), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
         context.snapshot.paints.push([node.id, code, index, stopIndex, ...channelsOf(color), 0]);
         context.report.paints++;
@@ -14680,6 +14715,10 @@ ${scrollGuards}` : project.css;
       const color = withAlpha(effect.color);
       const entry = context.targets.get(looseSiteId(hexOf(color), color.a));
       if (!entry) continue;
+      if (context.dry) {
+        context.report.paints++;
+        continue;
+      }
       next[index] = __spreadProps(__spreadValues({}, effect), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
       context.snapshot.paints.push([node.id, 2, index, -1, ...channelsOf(color), 0]);
       context.report.paints++;
@@ -14689,13 +14728,13 @@ ${scrollGuards}` : project.css;
     node.effects = next;
     return true;
   }
-  async function applyCanvas(plan, options, snapshot, report, loader, progress2) {
+  async function applyCanvas(plan, options, snapshot, report, loader, progress2, dry = false) {
     var _a;
     const targets = /* @__PURE__ */ new Map();
     for (const entry of plan.entries) if (writableLoose(entry)) targets.set(entry.site.id, entry);
     if (targets.size === 0) return;
     const bindTo = /* @__PURE__ */ new Map();
-    if (options.bind && options.values) {
+    if (!dry && options.bind && options.values) {
       const exact = bindingCandidates(plan);
       for (const entry of targets.values()) {
         const variableId = (_a = exact.get(entry.site.id)) != null ? _a : nearestVariableFor(entry, plan);
@@ -14704,7 +14743,7 @@ ${scrollGuards}` : project.css;
         if (variable) bindTo.set(entry.site.id, variable);
       }
     }
-    const context = { targets, bindTo, snapshot, report, loader };
+    const context = { targets, bindTo, snapshot, report, loader, dry };
     const roots = await scopeRoots(options.scope);
     figma.skipInvisibleInstanceChildren = true;
     try {
@@ -14722,7 +14761,7 @@ ${scrollGuards}` : project.css;
         rewriteEffects(node, context);
         if ("children" in node) for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
         if (visited % 200 === 0) {
-          progress2 == null ? void 0 : progress2(`repainting\u2026 ${report.paints} places`);
+          progress2 == null ? void 0 : progress2(dry ? `sizing the undo\u2026 ${report.paints} places` : `repainting\u2026 ${report.paints} places`);
           await yieldToHost();
         }
       }
@@ -14735,7 +14774,7 @@ ${scrollGuards}` : project.css;
       );
     }
   }
-  var BYTES = { value: 90, name: 70, style: 70, paint: 60 };
+  var BYTES = { value: 90, name: 70, style: 70, paint: 28 };
   function estimateSnapshotBytes(plan, options) {
     const values = options.values ? plan.entries.filter(writableVariable).length : 0;
     const names = options.rename ? plan.renames.length : 0;
@@ -14768,7 +14807,14 @@ ${scrollGuards}` : project.css;
       warnings.push("nothing to write");
       return report;
     }
-    const estimate = estimateSnapshotBytes(plan, options);
+    let estimate = estimateSnapshotBytes(plan, options);
+    if (estimate > SNAPSHOT_BUDGET_BYTES && options.canvas) {
+      progress2 == null ? void 0 : progress2("sizing the undo for this scope\u2026");
+      const dryReport = __spreadProps(__spreadValues({}, report), { paints: 0, instanceOverrides: 0, warnings: [] });
+      const drySnapshot = { version: 2, values: [], names: [], styles: [], paints: [] };
+      await applyCanvas(plan, options, drySnapshot, dryReport, makeLoader(), progress2, true);
+      estimate = estimateSnapshotBytes(plan, __spreadProps(__spreadValues({}, options), { canvas: false })) + dryReport.paints * BYTES.paint;
+    }
     if (estimate > SNAPSHOT_BUDGET_BYTES) {
       throw new Error(
         `This remap would need about ${Math.round(estimate / 1024)} kB of undo data, more than the ${Math.round(SNAPSHOT_BUDGET_BYTES / 1024)} kB a Figma file can hold for a plugin. Nothing was written \u2014 narrow the scope, or turn off repainting loose layers and run that pass on its own.`
@@ -14802,7 +14848,7 @@ ${scrollGuards}` : project.css;
     }
     progress2 == null ? void 0 : progress2("storing the snapshot\u2026");
     try {
-      report.snapshotBytes = writeChunked(JSON.stringify(snapshot));
+      report.snapshotBytes = writeChunked(JSON.stringify(packSnapshot(snapshot)));
     } catch (error) {
       clearSnapshot();
       warnings.push(
@@ -15012,7 +15058,7 @@ ${scrollGuards}` : project.css;
     if (raw === "") return __spreadProps(__spreadValues({}, empty), { warnings: ["there is nothing to revert"] });
     let snapshot;
     try {
-      snapshot = JSON.parse(raw);
+      snapshot = unpackSnapshot(JSON.parse(raw));
     } catch (e) {
       clearSnapshot();
       return __spreadProps(__spreadValues({}, empty), { warnings: ["the stored snapshot is unreadable and has been discarded"] });

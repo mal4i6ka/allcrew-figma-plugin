@@ -402,3 +402,22 @@ Apply reports the scan's counts so preview and apply cannot disagree; the panel 
 table after a rebind or its revert. And the board pins each old swatch's own mode on the
 swatch (`setExplicitVariableModeForCollection`), so a Light/Dark variable no longer paints
 its other mode's value under a dark hex caption — the "white holes" the operator caught.
+
+## The undo budget stopped lying (2026-08-20, night II)
+
+A real Apply on one page refused with "about 7140 kB of undo data". Two causes, both fixed:
+
+1. **The estimate priced the whole document against a one-page scope.** A loose color's
+   `usage` counts every place it is worn anywhere — that is what the inventory measures — so
+   the pre-flight rejected a page-scoped run for the document's weight. When the quick
+   estimate exceeds the budget, Apply now runs the canvas pass **dry** over the actual scope
+   (same walk, same predicates, counting instead of writing) and re-prices with the real
+   number before deciding.
+2. **The snapshot spent most of its bytes repeating color channels.** Version 3 groups paint
+   places under their old color once — `[nodeId, prop, index, stop]` per place, the exact
+   round4 channels as the group key, nothing re-quantized — roughly a third of the bytes.
+   Revert reads versions 2 and 3; round-trip is under test. The chunk ceiling rose 12 → 32
+   (2.5 MB), which together with packing raises real capacity ~6×.
+
+The refusal message survives for the honest case: a scope that genuinely holds more places
+than any snapshot can carry now fails with the *measured* number, not a guess.
