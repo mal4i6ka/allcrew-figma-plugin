@@ -13499,6 +13499,7 @@ ${scrollGuards}` : project.css;
   // src/targets/ds-tools/remap-inventory.ts
   var MAX_ADJACENT_PAIRS = 2e4;
   var MAX_LOOSE_COLORS = 400;
+  var MAX_NODES = 2e5;
   var siteId = (variableId, modeId) => `${variableId}|${modeId}`;
   var styleSiteId = (styleId, property, index, stop) => `style:${styleId}#${property}:${index}${stop === void 0 ? "" : `.${stop}`}`;
   var looseSiteId = (hex, alpha) => `loose:${hex}:${alpha.toFixed(3)}`;
@@ -13570,6 +13571,27 @@ ${scrollGuards}` : project.css;
     }
     return refs;
   }
+  function boundRefsOnly(node, noteVariable) {
+    var _a, _b;
+    for (const property of ["fills", "strokes"]) {
+      if (styleIdOf2(node, property) !== "") continue;
+      const nodeLevel = nodeLevelBindings(node, property);
+      for (const [index, paint] of paintsOf(node, property).entries()) {
+        if (paint.visible === false) continue;
+        for (const id of boundIdsOf((_a = paint.boundVariables) == null ? void 0 : _a.color)) {
+          noteVariable(id);
+        }
+        for (const id of boundIdsOf(nodeLevel[index])) noteVariable(id);
+      }
+    }
+    if (styleIdOf2(node, "effects") !== "" || !("effects" in node) || !Array.isArray(node.effects)) return;
+    for (const effect of node.effects) {
+      if (!isShadow(effect) || effect.visible === false) continue;
+      for (const id of boundIdsOf((_b = effect.boundVariables) == null ? void 0 : _b.color)) {
+        noteVariable(id);
+      }
+    }
+  }
   function noteEffects(node, walk, noteVariable) {
     var _a;
     if (styleIdOf2(node, "effects") !== "") return;
@@ -13595,7 +13617,9 @@ ${scrollGuards}` : project.css;
       neighbours: /* @__PURE__ */ new Map(),
       nodes: 0,
       loosePlaces: 0,
-      looseDropped: 0
+      looseDropped: 0,
+      instances: 0,
+      truncated: false
     };
     const noteVariable = (id) => {
       var _a2;
@@ -13614,8 +13638,17 @@ ${scrollGuards}` : project.css;
         const stack = [...page.children];
         const backdrop = /* @__PURE__ */ new Map();
         while (stack.length > 0) {
+          if (walk.nodes >= MAX_NODES) {
+            walk.truncated = true;
+            break;
+          }
           const node = stack.pop();
           walk.nodes++;
+          if (node.type === "INSTANCE") {
+            walk.instances++;
+            boundRefsOnly(node, noteVariable);
+            continue;
+          }
           for (const property of ["fills", "strokes", "effects"]) {
             const styleId = styleIdOf2(node, property);
             if (styleId !== "") walk.styleUsage.set(styleId, ((_a = walk.styleUsage.get(styleId)) != null ? _a : 0) + 1);
@@ -13631,7 +13664,8 @@ ${scrollGuards}` : project.css;
             for (const parent of behind) if (own !== parent) notePair(own, parent, isText);
           }
           if ("children" in node && node.children.length > 0) {
-            backdrop.set(node.id, fills.length > 0 ? fills : behind);
+            const passes = fills.length > 0 ? fills : behind;
+            if (passes.length > 0) backdrop.set(node.id, passes);
             for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
           }
           if (walk.nodes % 500 === 0) {
@@ -13829,6 +13863,16 @@ ${scrollGuards}` : project.css;
         `${walk.looseDropped} rarely used loose color(s) beyond the first ${MAX_LOOSE_COLORS} were left out of this reading \u2014 they stay as they are`
       );
     }
+    if (walk.instances > 0) {
+      warnings.push(
+        `${walk.instances} instance(s) were skipped \u2014 their colors belong to a main component, which is read and written on its own; a color overridden by hand on one instance stays as it is`
+      );
+    }
+    if (walk.truncated) {
+      warnings.push(
+        `this file is larger than one pass can read (stopped at ${MAX_NODES} nodes) \u2014 variables and styles are complete, but loose colors on layers beyond that point are missing`
+      );
+    }
     if (walk.neighbours.size >= MAX_ADJACENT_PAIRS) {
       warnings.push(
         `this file has more touching colour pairs than one pass can hold \u2014 duplicate separation and the contrast audit ran on the first ${MAX_ADJACENT_PAIRS}`
@@ -13847,7 +13891,8 @@ ${scrollGuards}` : project.css;
         effectStyles: styles.effects,
         looseColors: walk.loose.size,
         loosePlaces: walk.loosePlaces,
-        nodes: walk.nodes
+        nodes: walk.nodes,
+        instances: walk.instances
       },
       warnings
     };

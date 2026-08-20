@@ -3434,6 +3434,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           ]
           if (st.paintStyles || st.effectStyles) read.push(st.paintStyles + ' paint · ' + st.effectStyles + ' effect styles')
           if (st.looseColors) read.push(st.looseColors + ' loose colors on ' + st.loosePlaces + ' places')
+          if (st.instances) read.push(st.instances + ' instances skipped')
           if (st.libraryVariables) read.push(st.libraryVariables + ' from libraries (read-only)')
           rmpEl('rmp-stats').innerHTML = '<b>' + read.join('</b> · <b>') + '</b>'
           rmpRenderWarnings(msg.warnings)

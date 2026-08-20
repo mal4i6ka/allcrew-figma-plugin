@@ -51,6 +51,8 @@ export interface RemapInventory {
     /** Paints, gradient stops and shadows those colors were found on. */
     loosePlaces: number
     nodes: number
+    /** Instances read as single layers rather than descended into. */
+    instances: number
   }
   warnings: string[]
 }
@@ -68,6 +70,9 @@ export type Progress = (label: string) => void
  */
 const MAX_ADJACENT_PAIRS = 20000
 const MAX_LOOSE_COLORS = 400
+
+/** A file past this many nodes is read as far as it went, rather than not at all. */
+const MAX_NODES = 200000
 
 /* ------------------------------------------------------------------ site addressing */
 
@@ -126,6 +131,10 @@ interface LooseColor {
 interface WalkResult {
   /** Distinct loose colours seen after the cap was reached. */
   looseDropped: number
+  /** Instance subtrees left unread — their colours belong to a main component. */
+  instances: number
+  /** True when the walk stopped early. */
+  truncated: boolean
   /** Variable id → how many bindings point at it. */
   usage: Map<string, number>
   /** Style id → how many nodes wear it. */
@@ -211,6 +220,35 @@ function colorRefs(node: SceneNode, property: 'fills' | 'strokes', walk: WalkRes
   return refs
 }
 
+/**
+ * The variable ids a node's paints point at, and nothing else.
+ *
+ * For an instance this is the only safe thing to read: a binding is information (it tells us a
+ * token is in use, and whether it came from a library), while a loose colour would be a promise
+ * — the apply pass refuses to write inside instances, so inventorying one would put a row in
+ * the table that Apply then silently ignores.
+ */
+function boundRefsOnly(node: SceneNode, noteVariable: (id: string) => void): void {
+  for (const property of ['fills', 'strokes'] as const) {
+    if (styleIdOf(node, property) !== '') continue
+    const nodeLevel = nodeLevelBindings(node, property)
+    for (const [index, paint] of paintsOf(node, property).entries()) {
+      if (paint.visible === false) continue
+      for (const id of boundIdsOf((paint as { boundVariables?: { color?: unknown } }).boundVariables?.color)) {
+        noteVariable(id)
+      }
+      for (const id of boundIdsOf(nodeLevel[index])) noteVariable(id)
+    }
+  }
+  if (styleIdOf(node, 'effects') !== '' || !('effects' in node) || !Array.isArray(node.effects)) return
+  for (const effect of node.effects) {
+    if (!isShadow(effect) || effect.visible === false) continue
+    for (const id of boundIdsOf((effect as { boundVariables?: { color?: unknown } }).boundVariables?.color)) {
+      noteVariable(id)
+    }
+  }
+}
+
 function noteEffects(node: SceneNode, walk: WalkResult, noteVariable: (id: string) => void): void {
   if (styleIdOf(node, 'effects') !== '') return
   if (!('effects' in node) || !Array.isArray(node.effects)) return
@@ -238,6 +276,8 @@ async function walkDocument(localIds: ReadonlySet<string>, progress?: Progress):
     nodes: 0,
     loosePlaces: 0,
     looseDropped: 0,
+    instances: 0,
+    truncated: false,
   }
 
   const noteVariable = (id: string): void => {
@@ -259,8 +299,23 @@ async function walkDocument(localIds: ReadonlySet<string>, progress?: Progress):
       const backdrop = new Map<string, string[]>()
 
       while (stack.length > 0) {
+        if (walk.nodes >= MAX_NODES) {
+          walk.truncated = true
+          break
+        }
         const node = stack.pop() as SceneNode
         walk.nodes++
+
+        // An instance mirrors its main component, which this same walk reads on its own page.
+        // Descending would re-count every sublayer of every copy — on a real design system the
+        // difference between thousands of nodes and millions — and would read colours the
+        // *apply* pass deliberately refuses to write, so the table would promise changes that
+        // never happen. Bindings are still noted: those are information, not a promise.
+        if (node.type === 'INSTANCE') {
+          walk.instances++
+          boundRefsOnly(node, noteVariable)
+          continue
+        }
 
         for (const property of ['fills', 'strokes', 'effects'] as const) {
           const styleId = styleIdOf(node, property)
@@ -282,8 +337,10 @@ async function walkDocument(localIds: ReadonlySet<string>, progress?: Progress):
         }
 
         if ('children' in node && node.children.length > 0) {
-          // An unpainted container passes whatever is behind it through to its children.
-          backdrop.set(node.id, fills.length > 0 ? fills : behind)
+          // An unpainted container passes whatever is behind it through to its children; when
+          // there is nothing to pass, storing an entry per container is pure memory.
+          const passes = fills.length > 0 ? fills : behind
+          if (passes.length > 0) backdrop.set(node.id, passes)
           for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i])
         }
 
@@ -516,6 +573,18 @@ export async function readRemapInventory(progress?: Progress): Promise<RemapInve
         'this reading — they stay as they are'
     )
   }
+  if (walk.instances > 0) {
+    warnings.push(
+      `${walk.instances} instance(s) were skipped — their colors belong to a main component, which is read ` +
+        'and written on its own; a color overridden by hand on one instance stays as it is'
+    )
+  }
+  if (walk.truncated) {
+    warnings.push(
+      `this file is larger than one pass can read (stopped at ${MAX_NODES} nodes) — variables and styles ` +
+        'are complete, but loose colors on layers beyond that point are missing'
+    )
+  }
   if (walk.neighbours.size >= MAX_ADJACENT_PAIRS) {
     warnings.push(
       `this file has more touching colour pairs than one pass can hold — duplicate separation and the ` +
@@ -537,6 +606,7 @@ export async function readRemapInventory(progress?: Progress): Promise<RemapInve
       looseColors: walk.loose.size,
       loosePlaces: walk.loosePlaces,
       nodes: walk.nodes,
+      instances: walk.instances,
     },
     warnings,
   }
