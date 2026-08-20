@@ -8866,8 +8866,8 @@ ${mediaCss}`;
     return { kind: "library" };
   }
   function colorsMatch(a, b, epsilon = 1e-3) {
-    const alphaOf = (c) => "a" in c ? c.a : 1;
-    return Math.abs(a.r - b.r) <= epsilon && Math.abs(a.g - b.g) <= epsilon && Math.abs(a.b - b.b) <= epsilon && Math.abs(alphaOf(a) - alphaOf(b)) <= epsilon;
+    const alphaOf2 = (c) => "a" in c ? c.a : 1;
+    return Math.abs(a.r - b.r) <= epsilon && Math.abs(a.g - b.g) <= epsilon && Math.abs(a.b - b.b) <= epsilon && Math.abs(alphaOf2(a) - alphaOf2(b)) <= epsilon;
   }
   function srgbToLab({ r, g, b }) {
     const linear = (c) => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
@@ -15673,6 +15673,469 @@ ${scrollGuards}` : project.css;
     return { x: right + 200, y: top };
   }
 
+  // src/tokens/remap/rebind.ts
+  var variableIdOf2 = (siteId2) => {
+    const separator = siteId2.lastIndexOf("|");
+    return separator <= 0 ? null : siteId2.slice(0, separator);
+  };
+  function rebindTargets(plan) {
+    var _a, _b, _c, _d;
+    const keys = /* @__PURE__ */ new Map();
+    for (const entry of plan.entries) {
+      if (entry.site.kind !== "variable") continue;
+      if (entry.flags.includes("excluded")) continue;
+      const variableId = (_a = variableIdOf2(entry.site.id)) != null ? _a : entry.site.id;
+      const perMode = (_b = keys.get(variableId)) != null ? _b : /* @__PURE__ */ new Map();
+      perMode.set((_c = entry.site.modeId) != null ? _c : "", entry.toVariableKey);
+      keys.set(variableId, perMode);
+    }
+    const byVariable = /* @__PURE__ */ new Map();
+    const divergent = [];
+    const names = new Map(
+      plan.entries.filter((entry) => entry.toVariableKey !== null).map((entry) => [entry.toVariableKey, entry.toName])
+    );
+    for (const [variableId, perMode] of keys) {
+      const distinct = new Set(perMode.values());
+      distinct.delete(null);
+      if (distinct.size === 0) continue;
+      if (distinct.size > 1) {
+        divergent.push(variableId);
+        continue;
+      }
+      const key = [...distinct][0];
+      byVariable.set(variableId, { key, toName: (_d = names.get(key)) != null ? _d : null });
+    }
+    return { byVariable, divergent };
+  }
+  function sameRgba(a, b) {
+    const close = (x, y) => Math.abs(x - y) < 1 / 512;
+    return close(a.r, b.r) && close(a.g, b.g) && close(a.b, b.b) && close(a.a, b.a);
+  }
+  var emptyCounts = () => ({
+    aliases: 0,
+    literalsBound: 0,
+    nodes: 0,
+    instanceOverrides: 0,
+    styles: 0,
+    thirdParty: 0,
+    skipped: { alphaMismatch: 0, noTarget: 0, divergent: 0, already: 0 }
+  });
+  function describeRebind(counts) {
+    const parts = [
+      `${counts.aliases + counts.literalsBound} variable(s)`,
+      `${counts.styles} style color(s)`,
+      `${counts.nodes} canvas binding(s)` + (counts.instanceOverrides > 0 ? ` (${counts.instanceOverrides} in instances)` : "")
+    ];
+    if (counts.thirdParty > 0) parts.push(`${counts.thirdParty} from other libraries`);
+    const skips = counts.skipped.alphaMismatch + counts.skipped.noTarget + counts.skipped.divergent;
+    return parts.join(" \xB7 ") + (skips > 0 ? ` \xB7 ${skips} left as-is` : "");
+  }
+
+  // src/targets/ds-tools/remap-rebind.ts
+  var SNAPSHOT_KEY2 = "altery-rebind-snapshot";
+  var SNAPSHOT_COUNT_KEY2 = "altery-rebind-snapshot-chunks";
+  var CHUNK_BYTES2 = 8e4;
+  var MAX_CHUNKS2 = 12;
+  var REBIND_BUDGET_BYTES = CHUNK_BYTES2 * MAX_CHUNKS2;
+  function writeChunked2(text2) {
+    const chunks = [];
+    for (let i = 0; i < text2.length; i += CHUNK_BYTES2) chunks.push(text2.slice(i, i + CHUNK_BYTES2));
+    if (chunks.length > MAX_CHUNKS2) {
+      throw new Error(`the rebind snapshot needs ${chunks.length} slots, more than the ${MAX_CHUNKS2} available`);
+    }
+    const previous = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    for (const [index, chunk] of chunks.entries()) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, chunk);
+    for (let index = chunks.length; index < previous; index++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, "");
+    figma.root.setPluginData(SNAPSHOT_COUNT_KEY2, String(chunks.length));
+  }
+  function readChunked2() {
+    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    let text2 = "";
+    for (let index = 0; index < count; index++) text2 += figma.root.getPluginData(`${SNAPSHOT_KEY2}-${index}`);
+    return text2;
+  }
+  function clearChunked() {
+    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    for (let index = 0; index < count; index++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, "");
+    figma.root.setPluginData(SNAPSHOT_COUNT_KEY2, "0");
+  }
+  var hasRebindSnapshot = () => Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0") > 0;
+  var isAliasValue2 = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
+  var isRgbValue = (value) => typeof value === "object" && value !== null && "r" in value;
+  var alphaOf = (value) => "a" in value ? value.a : 1;
+  var boundColorId = (holder) => {
+    var _a;
+    const alias = (_a = holder == null ? void 0 : holder.boundVariables) == null ? void 0 : _a.color;
+    return alias && alias.type === "VARIABLE_ALIAS" ? alias.id : null;
+  };
+  async function scanRebind(plan, progress2) {
+    const { byVariable, divergent } = rebindTargets(plan);
+    const counts = emptyCounts();
+    counts.skipped.divergent = divergent.length;
+    const warnings = [];
+    const ops = [];
+    if (byVariable.size === 0) {
+      return { ops, counts, warnings: ["the plan carries no library keys \u2014 read the new palette from a library"] };
+    }
+    const importedByKey = /* @__PURE__ */ new Map();
+    const importedIds = /* @__PURE__ */ new Set();
+    const keys = new Set([...byVariable.values()].map((target) => target.key));
+    let fetched = 0;
+    for (const key of keys) {
+      if (++fetched % 25 === 0) {
+        progress2 == null ? void 0 : progress2(`importing library tokens\u2026 ${fetched}/${keys.size}`);
+        await yieldToHost();
+      }
+      const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null);
+      if (variable) {
+        importedByKey.set(key, variable);
+        importedIds.add(variable.id);
+      }
+    }
+    if (importedByKey.size < keys.size) {
+      warnings.push(`${keys.size - importedByKey.size} library token(s) could not be imported and keep their bindings`);
+    }
+    const valueOfKey = async (key) => {
+      var _a;
+      const variable = importedByKey.get(key);
+      if (!variable) return null;
+      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId).catch(() => null);
+      const mode = (_a = collection == null ? void 0 : collection.defaultModeId) != null ? _a : Object.keys(variable.valuesByMode)[0];
+      const value = mode === void 0 ? void 0 : variable.valuesByMode[mode];
+      if (!isRgbValue(value)) return null;
+      return { rgba: { r: value.r, g: value.g, b: value.b, a: alphaOf(value) }, id: variable.id };
+    };
+    const foreignIds = /* @__PURE__ */ new Set();
+    const rebindOf = (oldId) => {
+      if (importedIds.has(oldId)) return "already";
+      const target = byVariable.get(oldId);
+      if (!target) return "no-target";
+      return { key: target.key, foreign: foreignIds.has(oldId) };
+    };
+    progress2 == null ? void 0 : progress2("reading local variables\u2026");
+    const locals = await figma.variables.getLocalVariablesAsync("COLOR");
+    const localIds = new Set(locals.map((variable) => variable.id));
+    for (const id of byVariable.keys()) if (!localIds.has(id)) foreignIds.add(id);
+    const planBySite = new Map(plan.entries.map((entry) => [entry.site.id, entry]));
+    for (const [index, variable] of locals.entries()) {
+      if (index % 50 === 0) await yieldToHost();
+      for (const [modeId, value] of Object.entries(variable.valuesByMode)) {
+        if (isAliasValue2(value)) {
+          const decision = rebindOf(value.id);
+          if (decision === "already") {
+            counts.skipped.already++;
+            continue;
+          }
+          if (decision === "no-target") {
+            counts.skipped.noTarget++;
+            continue;
+          }
+          ops.push({ kind: "variable", variableId: variable.id, modeId, old: value.id, key: decision.key });
+          counts.aliases++;
+          if (decision.foreign) counts.thirdParty++;
+          continue;
+        }
+        if (!isRgbValue(value)) continue;
+        const entry = planBySite.get(`${variable.id}|${modeId}`);
+        if (!entry || entry.toVariableKey === null || entry.flags.includes("excluded")) continue;
+        const landing = await valueOfKey(entry.toVariableKey);
+        if (!landing) continue;
+        const current = { r: value.r, g: value.g, b: value.b, a: alphaOf(value) };
+        const target = __spreadValues({}, entry.to);
+        if (!sameRgba(target, landing.rgba)) {
+          if (sameRgba(__spreadProps(__spreadValues({}, target), { a: landing.rgba.a }), landing.rgba)) counts.skipped.alphaMismatch++;
+          continue;
+        }
+        if (!sameRgba(current, landing.rgba)) continue;
+        ops.push({
+          kind: "variable",
+          variableId: variable.id,
+          modeId,
+          old: [current.r, current.g, current.b, current.a],
+          key: entry.toVariableKey
+        });
+        counts.literalsBound++;
+      }
+    }
+    progress2 == null ? void 0 : progress2("reading styles\u2026");
+    const paintStyles = await figma.getLocalPaintStylesAsync();
+    for (const style of paintStyles) {
+      for (const [index, paint] of style.paints.entries()) {
+        if (paint.type === "SOLID") {
+          const oldId = boundColorId(paint);
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({ kind: "style", styleId: style.id, property: "paints", index, stop: -1, old: oldId, key: decision.key });
+            counts.styles++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+          continue;
+        }
+        if (!isGradient(paint)) continue;
+        for (const [stopIndex, stop] of paint.gradientStops.entries()) {
+          const oldId = boundColorId(stop);
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({
+              kind: "style",
+              styleId: style.id,
+              property: "paints",
+              index,
+              stop: stopIndex,
+              old: oldId,
+              key: decision.key
+            });
+            counts.styles++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+        }
+      }
+    }
+    const effectStyles = await figma.getLocalEffectStylesAsync();
+    for (const style of effectStyles) {
+      for (const [index, effect] of style.effects.entries()) {
+        const oldId = boundColorId(effect);
+        if (!oldId) continue;
+        const decision = rebindOf(oldId);
+        if (decision === "already") counts.skipped.already++;
+        else if (decision === "no-target") counts.skipped.noTarget++;
+        else {
+          ops.push({ kind: "style", styleId: style.id, property: "effects", index, stop: -1, old: oldId, key: decision.key });
+          counts.styles++;
+          if (decision.foreign) counts.thirdParty++;
+        }
+      }
+    }
+    await loadAllPagesAsync();
+    const overridden = /* @__PURE__ */ new Map();
+    const noteOverrides = (instance) => {
+      var _a;
+      let overrides;
+      try {
+        overrides = instance.overrides;
+      } catch (e) {
+        return;
+      }
+      for (const override of overrides) {
+        const fields = (_a = overridden.get(override.id)) != null ? _a : /* @__PURE__ */ new Set();
+        for (const field of override.overriddenFields) fields.add(field);
+        overridden.set(override.id, fields);
+      }
+    };
+    const collectPaintOps = (node, property, inInstance) => {
+      var _a;
+      const paints = node[property];
+      if (!Array.isArray(paints)) return;
+      if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has(property))) return;
+      for (const [index, paint] of paints.entries()) {
+        if (paint.type === "SOLID") {
+          const oldId = boundColorId(paint);
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({ kind: "node", nodeId: node.id, property, index, stop: -1, old: oldId, key: decision.key, instance: inInstance });
+            counts.nodes++;
+            if (inInstance) counts.instanceOverrides++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+          continue;
+        }
+        if (!isGradient(paint)) continue;
+        for (const [stopIndex, stop] of paint.gradientStops.entries()) {
+          const oldId = boundColorId(stop);
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({ kind: "node", nodeId: node.id, property, index, stop: stopIndex, old: oldId, key: decision.key, instance: inInstance });
+            counts.nodes++;
+            if (inInstance) counts.instanceOverrides++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+        }
+      }
+    };
+    const collectEffectOps = (node, inInstance) => {
+      var _a;
+      const effects = node.effects;
+      if (!Array.isArray(effects)) return;
+      if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has("effects"))) return;
+      for (const [index, effect] of effects.entries()) {
+        const oldId = boundColorId(effect);
+        if (!oldId) continue;
+        const decision = rebindOf(oldId);
+        if (decision === "already") counts.skipped.already++;
+        else if (decision === "no-target") counts.skipped.noTarget++;
+        else {
+          ops.push({ kind: "node", nodeId: node.id, property: "effects", index, stop: -1, old: oldId, key: decision.key, instance: inInstance });
+          counts.nodes++;
+          if (inInstance) counts.instanceOverrides++;
+          if (decision.foreign) counts.thirdParty++;
+        }
+      }
+    };
+    figma.skipInvisibleInstanceChildren = true;
+    try {
+      let visited = 0;
+      for (const page of figma.root.children) {
+        progress2 == null ? void 0 : progress2(`scanning ${page.name}\u2026`);
+        const stack = [];
+        for (let i = page.children.length - 1; i >= 0; i--) stack.push({ node: page.children[i], inInstance: false });
+        while (stack.length > 0) {
+          const { node, inInstance } = stack.pop();
+          if (++visited % 400 === 0) await yieldToHost();
+          const isInstance = node.type === "INSTANCE";
+          if (isInstance) noteOverrides(node);
+          collectPaintOps(node, "fills", inInstance);
+          collectPaintOps(node, "strokes", inInstance);
+          collectEffectOps(node, inInstance);
+          if ("children" in node) {
+            const inside = inInstance || isInstance;
+            const children = node.children;
+            for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], inInstance: inside });
+          }
+        }
+      }
+    } finally {
+      figma.skipInvisibleInstanceChildren = false;
+    }
+    return { ops, counts, warnings };
+  }
+  var aliasTo = (variable) => ({ type: "VARIABLE_ALIAS", id: variable.id });
+  async function writePaintBinding(holder, property, index, stop, variable, restoreId) {
+    const record = holder;
+    const paints = record[property];
+    if (!Array.isArray(paints) || !paints[index]) return false;
+    const next = [...paints];
+    const paint = next[index];
+    const target = variable != null ? variable : restoreId ? await figma.variables.getVariableByIdAsync(restoreId).catch(() => null) : null;
+    if (!target) return false;
+    if (stop < 0) {
+      if (paint.type !== "SOLID") return false;
+      next[index] = figma.variables.setBoundVariableForPaint(paint, "color", target);
+    } else {
+      if (!isGradient(paint)) return false;
+      const stops = paint.gradientStops.map((gradientStop) => __spreadValues({}, gradientStop));
+      if (!stops[stop]) return false;
+      stops[stop] = __spreadProps(__spreadValues({}, stops[stop]), { boundVariables: { color: aliasTo(target) } });
+      next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+    }
+    record[property] = next;
+    return true;
+  }
+  async function writeEffectBinding(holder, index, variable) {
+    const record = holder;
+    const effects = record.effects;
+    if (!Array.isArray(effects) || !effects[index]) return false;
+    const next = [...effects];
+    next[index] = figma.variables.setBoundVariableForEffect(next[index], "color", variable);
+    record.effects = next;
+    return true;
+  }
+  async function executeOps(ops, undo, progress2) {
+    const counts = emptyCounts();
+    const importedByKey = /* @__PURE__ */ new Map();
+    const importOf = async (key) => {
+      var _a;
+      if (!importedByKey.has(key)) {
+        importedByKey.set(key, await figma.variables.importVariableByKeyAsync(key).catch(() => null));
+      }
+      return (_a = importedByKey.get(key)) != null ? _a : null;
+    };
+    for (const [index, op] of ops.entries()) {
+      if (index % 25 === 0) {
+        progress2 == null ? void 0 : progress2(`${undo ? "restoring" : "rebinding"}\u2026 ${index}/${ops.length}`);
+        await yieldToHost();
+      }
+      if (op.kind === "variable") {
+        const variable = await figma.variables.getVariableByIdAsync(op.variableId).catch(() => null);
+        if (!variable) continue;
+        if (undo) {
+          if (typeof op.old === "string") {
+            const previous = await figma.variables.getVariableByIdAsync(op.old).catch(() => null);
+            if (previous) variable.setValueForMode(op.modeId, aliasTo(previous));
+          } else {
+            const [r, g, b, a] = op.old;
+            variable.setValueForMode(op.modeId, { r, g, b, a });
+          }
+          counts.aliases++;
+          continue;
+        }
+        const target2 = await importOf(op.key);
+        if (!target2) continue;
+        variable.setValueForMode(op.modeId, aliasTo(target2));
+        if (typeof op.old === "string") counts.aliases++;
+        else counts.literalsBound++;
+        continue;
+      }
+      const target = undo ? null : await importOf(op.key);
+      if (!undo && !target) continue;
+      if (op.kind === "style") {
+        const style = await figma.getStyleByIdAsync(op.styleId).catch(() => null);
+        if (!style) continue;
+        if (op.property === "paints" && style.type === "PAINT") {
+          const done = await writePaintBinding(style, "paints", op.index, op.stop, target, undo ? op.old : void 0);
+          if (done) counts.styles++;
+        } else if (op.property === "effects" && style.type === "EFFECT") {
+          const restore = undo ? await figma.variables.getVariableByIdAsync(op.old).catch(() => null) : target;
+          if (restore && await writeEffectBinding(style, op.index, restore)) counts.styles++;
+        }
+        continue;
+      }
+      const node = await figma.getNodeByIdAsync(op.nodeId).catch(() => null);
+      if (!node) continue;
+      if (op.property === "effects") {
+        const restore = undo ? await figma.variables.getVariableByIdAsync(op.old).catch(() => null) : target;
+        if (restore && await writeEffectBinding(node, op.index, restore)) {
+          counts.nodes++;
+          if (op.instance) counts.instanceOverrides++;
+        }
+      } else {
+        const done = await writePaintBinding(node, op.property, op.index, op.stop, target, undo ? op.old : void 0);
+        if (done) {
+          counts.nodes++;
+          if (op.instance) counts.instanceOverrides++;
+        }
+      }
+    }
+    return counts;
+  }
+  async function previewRebind(plan, progress2) {
+    const scan = await scanRebind(plan, progress2);
+    return { counts: scan.counts, summary: describeRebind(scan.counts), warnings: scan.warnings };
+  }
+  async function applyRebind(plan, progress2) {
+    const scan = await scanRebind(plan, progress2);
+    const snapshot = { version: 1, ops: scan.ops };
+    const serialized = JSON.stringify(snapshot);
+    if (serialized.length > REBIND_BUDGET_BYTES) {
+      throw new Error(
+        `this rebind would touch ${scan.ops.length} places \u2014 more than one undo snapshot can hold. Run it scope by scope, or shrink the mapping.`
+      );
+    }
+    const counts = await executeOps(scan.ops, false, progress2);
+    writeChunked2(serialized);
+    return { counts, summary: describeRebind(counts), warnings: scan.warnings };
+  }
+  async function revertRebind(progress2) {
+    const raw = readChunked2();
+    if (raw === "") throw new Error("no rebind snapshot to revert");
+    const snapshot = JSON.parse(raw);
+    if (snapshot.version !== 1 || !Array.isArray(snapshot.ops)) throw new Error("the rebind snapshot is unreadable");
+    const counts = await executeOps(snapshot.ops, true, progress2);
+    clearChunked();
+    return { counts, summary: describeRebind(counts), warnings: [] };
+  }
+
   // src/tokens/remap/audit.ts
   var TEXT_CONTRAST_MIN = 4.5;
   var NON_TEXT_CONTRAST_MIN = 3;
@@ -17508,7 +17971,8 @@ ${renderSections(sections)}
             sites: remapInventory.sites.length,
             adjacency: remapInventory.adjacency.length,
             warnings: remapInventory.warnings,
-            canRevert: hasRemapSnapshot()
+            canRevert: hasRemapSnapshot(),
+            canRevertRebind: hasRebindSnapshot()
           });
         } catch (err) {
           figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
@@ -17571,6 +18035,48 @@ ${renderSections(sections)}
           remapInventory = null;
           figma.notify(`Reverted ${report.values} values` + (report.names ? ` and ${report.names} names` : ""));
           figma.ui.postMessage({ type: "REMAP_REVERTED", report, canRevert: hasRemapSnapshot() });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_REBIND_PREVIEW":
+      case "REMAP_REBIND_APPLY": {
+        try {
+          if (msg.source.kind !== "library") {
+            throw new Error("rebinding needs the new palette read from a library \u2014 its variable keys are the destination");
+          }
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
+          const progress2 = (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 });
+          const report = msg.type === "REMAP_REBIND_APPLY" ? await applyRebind(plan, progress2) : await previewRebind(plan, progress2);
+          if (msg.type === "REMAP_REBIND_APPLY") {
+            remapInventory = null;
+            figma.notify(`Rebound: ${report.summary}`);
+          }
+          figma.ui.postMessage({
+            type: msg.type === "REMAP_REBIND_APPLY" ? "REMAP_REBOUND" : "REMAP_REBIND_PLAN",
+            counts: report.counts,
+            summary: report.summary,
+            warnings: report.warnings,
+            canRevertRebind: hasRebindSnapshot()
+          });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_REBIND_REVERT": {
+        try {
+          const report = await revertRebind((label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }));
+          remapInventory = null;
+          figma.notify(`Rebind reverted: ${report.summary}`);
+          figma.ui.postMessage({
+            type: "REMAP_REBIND_REVERTED",
+            counts: report.counts,
+            summary: report.summary,
+            warnings: report.warnings,
+            canRevertRebind: hasRebindSnapshot()
+          });
         } catch (err) {
           figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }

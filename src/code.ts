@@ -68,6 +68,7 @@ import {
   type RemapApplyOptions,
 } from './targets/ds-tools/remap-apply'
 import { drawRemapBoard } from './targets/ds-tools/remap-board'
+import { applyRebind, hasRebindSnapshot, previewRebind, revertRebind } from './targets/ds-tools/remap-rebind'
 import { auditContrast, describeContrast } from './tokens/remap/audit'
 import { parsePaletteInput } from './tokens/remap/input'
 import { buildRemapPlan, type RemapOptions, type RemapPlan } from './tokens/remap/plan'
@@ -137,6 +138,9 @@ type PluginMessage =
   | { type: 'REMAP_REVERT' }
   | { type: 'REMAP_BOARD'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[] }
   | { type: 'REMAP_UNPARK' }
+  | { type: 'REMAP_REBIND_PREVIEW'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[] }
+  | { type: 'REMAP_REBIND_APPLY'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[] }
+  | { type: 'REMAP_REBIND_REVERT' }
   | { type: 'REMAP_EXPORT_MAPPING'; source: RemapSource; options?: Partial<RemapOptions>; format: 'json' | 'csv'; overrides?: Record<string, string>; excluded?: string[] }
   | {
       type: 'REMAP_REWRITE_FILES'
@@ -964,6 +968,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
           adjacency: remapInventory.adjacency.length,
           warnings: remapInventory.warnings,
           canRevert: hasRemapSnapshot(),
+          canRevertRebind: hasRebindSnapshot(),
         })
       } catch (err) {
         figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
@@ -1031,6 +1036,50 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         remapInventory = null
         figma.notify(`Reverted ${report.values} values` + (report.names ? ` and ${report.names} names` : ''))
         figma.ui.postMessage({ type: 'REMAP_REVERTED', report, canRevert: hasRemapSnapshot() })
+      } catch (err) {
+        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'REMAP_REBIND_PREVIEW':
+    case 'REMAP_REBIND_APPLY': {
+      try {
+        if (msg.source.kind !== 'library') {
+          throw new Error('rebinding needs the new palette read from a library — its variable keys are the destination')
+        }
+        const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
+        const progress = (label: string) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label })
+        const report =
+          msg.type === 'REMAP_REBIND_APPLY' ? await applyRebind(plan, progress) : await previewRebind(plan, progress)
+        if (msg.type === 'REMAP_REBIND_APPLY') {
+          // Bindings changed under the inventory's feet; the next Read starts clean.
+          remapInventory = null
+          figma.notify(`Rebound: ${report.summary}`)
+        }
+        figma.ui.postMessage({
+          type: msg.type === 'REMAP_REBIND_APPLY' ? 'REMAP_REBOUND' : 'REMAP_REBIND_PLAN',
+          counts: report.counts,
+          summary: report.summary,
+          warnings: report.warnings,
+          canRevertRebind: hasRebindSnapshot(),
+        })
+      } catch (err) {
+        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'REMAP_REBIND_REVERT': {
+      try {
+        const report = await revertRebind((label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }))
+        remapInventory = null
+        figma.notify(`Rebind reverted: ${report.summary}`)
+        figma.ui.postMessage({
+          type: 'REMAP_REBIND_REVERTED',
+          counts: report.counts,
+          summary: report.summary,
+          warnings: report.warnings,
+          canRevertRebind: hasRebindSnapshot(),
+        })
       } catch (err) {
         figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }

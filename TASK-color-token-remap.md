@@ -344,3 +344,33 @@ new-side swatches bind the imported library variable (`ParsedSwatch.variableKey`
 Figma's UI. Best-effort: an unfetchable token leaves a plain fill. The hex label keeps the
 as-drawn value even where a bound fill later follows its variable. `mapping.json` records the
 landing's `toVariable` key for the developer side.
+
+## Stage: Rebind to the reference library (2026-08-20, grilled and built)
+
+Decided with the operator, round by round:
+- Semantic Б's aliases move onto **A's primitives** (deterministic via the plan), not onto
+  A's own semantics (role matching would be guesswork). Semantics stay local; the primitive
+  layer underneath becomes the library.
+- Node bindings pointing at Б primitives — and at **third-party libraries** — move to A too.
+  Bindings on semantics are left alone: they follow the semantic.
+- Repaint AND rebind: Б's primitive values still get the reference values (external
+  consumers of Б see the new colors after a manual publish), while this file's pointers move.
+- **Instances are written into** (operator's call, full coverage) — but only at nodes whose
+  fields the instance genuinely overrides; inherited bindings are the master's business.
+- Local primitives stay untouched; nothing is deleted. Colors/Kit go through the same rules
+  (alias → rebind, literal → repaint). Scope is color only; the pass is written
+  type-agnostically for when sizes/typography appear in A.
+- A binding is only created where the landing equals the library token's value byte for
+  byte, alpha included — an alias takes the target's value whole. Translucent disagreements
+  stay literals.
+- A variable whose modes land on different library tokens is refused and reported, never
+  guessed.
+
+Shape: scan → ops → write (`remap-rebind.ts`). The scan is the preview, the plan and the
+undo budget in one list; Apply executes exactly that list and stores it as the snapshot;
+Revert replays it backwards (`old` in place of `key`). Own pluginData keys, own budget,
+independent of the repaint snapshot. Pure decisions in `tokens/remap/rebind.ts` under test:
+per-variable target aggregation across modes, exclusion voting, byte-equality.
+
+UI: "Rebind to reference library" block — Preview / Rebind / Revert rebind — enabled only
+when the palette source is a library, since only that carries variable keys.
