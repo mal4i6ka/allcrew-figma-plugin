@@ -14137,17 +14137,19 @@ ${scrollGuards}` : project.css;
   var NEUTRAL_MISMATCH = 2;
   var EXACT_NAME_BONUS = 0.5;
   var PARTIAL_NAME_BONUS = 0.2;
+  var sameFamilyName = (from, to) => familyKey(from.label) === familyKey(to.label);
   function familyCost(from, to) {
+    const named = sameFamilyName(from, to);
     let cost;
     if (from.neutral && to.neutral) cost = 0;
-    else if (from.neutral !== to.neutral) cost = NEUTRAL_MISMATCH;
+    else if (from.neutral !== to.neutral) cost = named ? 0 : NEUTRAL_MISMATCH;
     else cost = hueDistance2(from.hue, to.hue) / 180;
     const fromCount = from.stops.length;
     const toCount = to.stops.length;
     cost += Math.abs(fromCount - toCount) / Math.max(fromCount, toCount) * WEIGHT_STOP_COUNT;
-    const fromKey = familyKey(from.label);
     const toKey = familyKey(to.label);
-    if (fromKey === toKey) cost -= EXACT_NAME_BONUS;
+    const fromKey = familyKey(from.label);
+    if (named) cost -= EXACT_NAME_BONUS;
     else if (fromKey.includes(toKey) || toKey.includes(fromKey)) cost -= PARTIAL_NAME_BONUS;
     return cost;
   }
@@ -14202,7 +14204,7 @@ ${scrollGuards}` : project.css;
     for (let j = 1; j <= cols; j++) if (match[j] > 0) assignment[match[j] - 1] = j - 1;
     return assignment;
   }
-  var compatible = (from, to) => from.neutral === to.neutral;
+  var compatible = (from, to) => from.neutral === to.neutral || sameFamilyName(from, to);
   function assignFamilies(from, to) {
     var _a, _b;
     if (from.length === 0 || to.length === 0) return { assignments: [], unused: [...to] };
@@ -14312,6 +14314,15 @@ ${scrollGuards}` : project.css;
       for (const [index, stop] of source.entries()) assigned.set(stop, target[shifted[index]]);
       return assigned;
     }
+    const nearestOf = (stop, below, above) => {
+      const options = [below, above].filter((index) => index >= 0 && index <= reach);
+      if (options.length === 0) return 0;
+      let best = options[0];
+      for (const option of options) {
+        if (Math.abs(target[option].l - stop.l) < Math.abs(target[best].l - stop.l)) best = option;
+      }
+      return best;
+    };
     let floor = -1;
     for (const [index, stop] of source.entries()) {
       if (anchors[index] >= 0) {
@@ -14330,7 +14341,7 @@ ${scrollGuards}` : project.css;
       }
       const ceiling = Math.min(reach, nextAnchor - 1 - waiting);
       const wish = wanted[index] < 0 ? floor + 1 : wanted[index];
-      const settled = ceiling >= floor + 1 ? Math.min(Math.max(wish, floor + 1), ceiling) : Math.min(Math.max(wish, 0), Math.max(floor, 0));
+      const settled = ceiling >= floor + 1 ? Math.min(Math.max(wish, floor + 1), ceiling) : nearestOf(stop, floor, nextAnchor);
       assigned.set(stop, target[Math.min(settled, reach)]);
       floor = Math.max(floor, Math.min(settled, reach));
     }
@@ -16291,9 +16302,10 @@ ${scrollGuards}` : project.css;
     }
     return swatches;
   }
+  var describes = (family, step) => family !== null && step !== null ? 2 : family !== null ? 1 : 0;
   function swatchesFromNamedColors(entries) {
     var _a;
-    const seen = /* @__PURE__ */ new Set();
+    const at = /* @__PURE__ */ new Map();
     const swatches = [];
     let duplicates = 0;
     for (const entry of entries) {
@@ -16301,12 +16313,17 @@ ${scrollGuards}` : project.css;
       if (!rgb) continue;
       const alpha = (_a = entry.alpha) != null ? _a : 1;
       const key = `${entry.hex.toUpperCase()}|${alpha.toFixed(3)}`;
-      if (seen.has(key)) {
+      const parsed = parseTokenName(entry.name);
+      const existing = at.get(key);
+      if (existing !== void 0) {
         duplicates++;
+        const held = swatches[existing];
+        if (describes(parsed.family, parsed.step) > describes(held.family, held.step)) {
+          swatches[existing] = __spreadProps(__spreadValues({}, held), { name: entry.name, family: parsed.family, step: parsed.step });
+        }
         continue;
       }
-      seen.add(key);
-      const parsed = parseTokenName(entry.name);
+      at.set(key, swatches.length);
       swatches.push({
         hex: entry.hex.toUpperCase(),
         alpha,

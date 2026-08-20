@@ -87,3 +87,32 @@ test('anything that is not a color is dropped rather than guessed at', () => {
     ['#123']
   )
 })
+
+test('when identical colors collapse, the rung outlives the alias that shares its color', () => {
+  // A swatch board draws `background/base` before the `neutral/0` it aliases, and both are pure
+  // white. Keeping whichever came first leaves the new neutral ramp with no `0` at all — and
+  // then every white in the file, having nothing white left to land on, moves to the lightest
+  // gray the ramp still has. Which name survives decides what the palette *is*.
+  const { swatches, duplicates } = swatchesFromNamedColors([
+    { hex: '#FFFFFF', name: 'background/base' },
+    { hex: '#FFFFFF', name: 'neutral/0' },
+    { hex: '#F7F8F8', name: 'neutral/50' },
+    { hex: '#F7F8F8', name: 'surface/raised' },
+  ])
+
+  assert.equal(duplicates, 2)
+  assert.deepEqual(
+    swatches.map((swatch) => `${swatch.name}=${swatch.family}/${swatch.step}`),
+    ['neutral/0=neutral/0', 'neutral/50=neutral/50']
+  )
+})
+
+test('a name that describes nothing does not displace one that describes something', () => {
+  const { swatches } = swatchesFromNamedColors([
+    { hex: '#FFFFFF', name: 'Rectangle' },
+    { hex: '#FFFFFF', name: 'neutral/0' },
+    { hex: '#FFFFFF', name: 'neutral/25' },
+  ])
+  assert.equal(swatches.length, 1)
+  assert.equal(swatches[0].name, 'neutral/0', 'the first rung wins; a later one is no better')
+})

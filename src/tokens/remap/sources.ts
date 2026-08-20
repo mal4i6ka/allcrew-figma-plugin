@@ -48,13 +48,23 @@ export function swatchesFromPalette(palette: Palette): ParsedSwatch[] {
  *
  * The name is trusted the same way a pasted `Violet/500` is: whatever family and step it
  * carries are read off it, and a name that carries neither simply leaves the clustering to
- * work it out. Identical colors collapse, keeping the first name, because a swatch board
- * repeats the same fill on a label and its frame more often than not.
+ * work it out. Identical colors collapse, because a swatch board repeats the same fill on a
+ * label and its frame more often than not.
+ *
+ * Which of the collapsed names survives decides what the *palette* is, not merely what one
+ * row is called, so it cannot be whichever came first. A board that draws `background/base`
+ * before the `neutral/0` it aliases would otherwise leave the new neutral ramp with no `0` at
+ * all — and then every white in the file, having nothing white left to land on, moves to the
+ * lightest gray the ramp still has. A name carrying a family and a step is a rung and outranks
+ * a name carrying only a family, which outranks a name carrying neither.
  */
+const describes = (family: string | null, step: number | null): number =>
+  family !== null && step !== null ? 2 : family !== null ? 1 : 0
+
 export function swatchesFromNamedColors(
   entries: ReadonlyArray<{ hex: string; alpha?: number; name: string }>
 ): { swatches: ParsedSwatch[]; duplicates: number } {
-  const seen = new Set<string>()
+  const at = new Map<string, number>()
   const swatches: ParsedSwatch[] = []
   let duplicates = 0
 
@@ -63,12 +73,19 @@ export function swatchesFromNamedColors(
     if (!rgb) continue
     const alpha = entry.alpha ?? 1
     const key = `${entry.hex.toUpperCase()}|${alpha.toFixed(3)}`
-    if (seen.has(key)) {
+    const parsed = parseTokenName(entry.name)
+
+    const existing = at.get(key)
+    if (existing !== undefined) {
       duplicates++
+      const held = swatches[existing]
+      if (describes(parsed.family, parsed.step) > describes(held.family, held.step)) {
+        swatches[existing] = { ...held, name: entry.name, family: parsed.family, step: parsed.step }
+      }
       continue
     }
-    seen.add(key)
-    const parsed = parseTokenName(entry.name)
+
+    at.set(key, swatches.length)
     swatches.push({
       hex: entry.hex.toUpperCase(),
       alpha,

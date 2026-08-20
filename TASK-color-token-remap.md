@@ -224,3 +224,28 @@ the new pure modules, but `src/targets/ds-tools/**/*.test.ts` is not in the list
   post-Apply report catches it.
 - The `pluginData` snapshot has a size ceiling. It must be chunked, and Apply must refuse
   rather than silently lose the ability to revert.
+
+## Found on real files (A → B)
+
+Three separate faults, all reproduced from the two token exports and all fixed:
+
+1. **A muted ramp fell into the grays.** Neutrality is a threshold on relative chroma, and a
+   real `teal` running `#F3F8F9 → #1A2527` holds a steady 207° hue while never rising above
+   0.36 of the chroma sRGB allows. The arithmetic called it gray, the gray/colored
+   compatibility rule then forbade `teal → teal`, and twelve teal rungs landed on the new
+   neutrals — which reads as the palette having been normalised. **A family name shared by
+   both palettes now settles the question**, in the cost function and in the compatibility
+   rule alike: it is the author of both palettes saying these are the same family.
+2. **A crowded-out rung took the wrong neighbour.** With no room between two anchors, the
+   unanchored rung shared whichever anchor sat below it — so an old `10` wedged between a new
+   `0` and a new `50` became pure white. It now takes the neighbour nearer its own lightness.
+3. **The wrong name survived a collapsed duplicate.** Canvas and library sources fold
+   identical colors and kept the first name. A board that draws `background/base` before the
+   `neutral/0` it aliases therefore left the new neutral ramp with no `0` at all, and every
+   white in the file — nothing white left to land on — moved to the lightest gray in the ramp.
+   The name carrying a family *and* a step now wins.
+
+Worth noting for the next fault of this shape: (1) and (3) both look identical from the
+panel — a color moving somewhere obviously wrong — but only (3) depends on where the palette
+came from. Pasting the same palette as JSON never showed it, because the paste parser does
+not fold duplicates.

@@ -74,20 +74,38 @@ const NEUTRAL_MISMATCH = 2
 const EXACT_NAME_BONUS = 0.5
 const PARTIAL_NAME_BONUS = 0.2
 
+/**
+ * Both sides calling a family by the same name settles what it is.
+ *
+ * Neutrality is measured, and the measurement is a threshold on relative chroma — which means
+ * a muted ramp falls on the gray side of it. A real one: a `teal` running #F3F8F9 → #1A2527
+ * holds a rock-steady 207° hue at every step and never rises above 0.36 of the chroma sRGB
+ * allows, so it reads as gray to the arithmetic and as teal to everyone else. Ruling it
+ * incompatible with the new palette's `teal` sends a whole ramp into the grays, and the file
+ * comes out looking normalised rather than remapped.
+ *
+ * A shared name is not a hint here, it is the author of both palettes saying these are the
+ * same family, and it outranks a threshold either ramp may sit near.
+ */
+export const sameFamilyName = (from: InferredSpectrum, to: InferredSpectrum): boolean =>
+  familyKey(from.label) === familyKey(to.label)
+
 export function familyCost(from: InferredSpectrum, to: InferredSpectrum): number {
+  const named = sameFamilyName(from, to)
+
   let cost: number
   if (from.neutral && to.neutral) cost = 0
-  else if (from.neutral !== to.neutral) cost = NEUTRAL_MISMATCH
+  // A gray ramp and a colored one are only the same family when both were given the same name.
+  else if (from.neutral !== to.neutral) cost = named ? 0 : NEUTRAL_MISMATCH
   else cost = hueDistance(from.hue, to.hue) / 180
-
 
   const fromCount = from.stops.length
   const toCount = to.stops.length
   cost += (Math.abs(fromCount - toCount) / Math.max(fromCount, toCount)) * WEIGHT_STOP_COUNT
 
-  const fromKey = familyKey(from.label)
   const toKey = familyKey(to.label)
-  if (fromKey === toKey) cost -= EXACT_NAME_BONUS
+  const fromKey = familyKey(from.label)
+  if (named) cost -= EXACT_NAME_BONUS
   else if (fromKey.includes(toKey) || toKey.includes(fromKey)) cost -= PARTIAL_NAME_BONUS
 
   return cost
@@ -185,7 +203,8 @@ export interface FamilyAssignmentResult {
  * mostly grays against a palette that is mostly colours, that is how red and orange end up
  * holding the gray ramps, at a distance of thirty. A target does not need a source.
  */
-const compatible = (from: InferredSpectrum, to: InferredSpectrum): boolean => from.neutral === to.neutral
+const compatible = (from: InferredSpectrum, to: InferredSpectrum): boolean =>
+  from.neutral === to.neutral || sameFamilyName(from, to)
 
 export function assignFamilies(
   from: readonly InferredSpectrum[],
@@ -394,6 +413,17 @@ function fitLadder(
     return assigned
   }
 
+  /** Of the two rungs a crowded-out step is wedged between, the one nearer it in lightness. */
+  const nearestOf = (stop: SpectrumStop, below: number, above: number): number => {
+    const options = [below, above].filter((index) => index >= 0 && index <= reach)
+    if (options.length === 0) return 0
+    let best = options[0]
+    for (const option of options) {
+      if (Math.abs(target[option].l - stop.l) < Math.abs(target[best].l - stop.l)) best = option
+    }
+    return best
+  }
+
   let floor = -1
   for (const [index, stop] of source.entries()) {
     if (anchors[index] >= 0) {
@@ -423,12 +453,12 @@ function fitLadder(
     const ceiling = Math.min(reach, nextAnchor - 1 - waiting)
     const wish = wanted[index] < 0 ? floor + 1 : wanted[index]
 
-    // Room between the anchors, or none. With none the rung shares the nearest boundary rather
-    // than pushing an anchor aside — a duplicate is a smaller lie than a ladder off by one.
-    const settled =
-      ceiling >= floor + 1
-        ? Math.min(Math.max(wish, floor + 1), ceiling)
-        : Math.min(Math.max(wish, 0), Math.max(floor, 0))
+    // Room between the anchors, or none. With none the rung shares one of the two anchors it is
+    // wedged between — a duplicate is a smaller lie than a ladder off by one — and *which* of
+    // them is not a matter of taste: an old `10` wedged between a new `0` and a new `50` is a
+    // pale gray, and handing it the `0` turns it into pure white. It takes the neighbour whose
+    // lightness is nearer its own, which is the same question the rest of the matcher answers.
+    const settled = ceiling >= floor + 1 ? Math.min(Math.max(wish, floor + 1), ceiling) : nearestOf(stop, floor, nextAnchor)
     assigned.set(stop, target[Math.min(settled, reach)])
     floor = Math.max(floor, Math.min(settled, reach))
   }
