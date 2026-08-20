@@ -3020,6 +3020,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function rmpEl(id) { return document.getElementById(id) }
       function rmpText(id, text) { var node = rmpEl(id); if (node) node.textContent = text || '' }
 
+      /** Long jobs report in the footer, the way the rest of the plugin does. */
+      function rmpProgress(text) {
+        var bar = document.getElementById('status')
+        if (bar) { bar.textContent = text || ''; bar.className = '' }
+      }
+
       function rmpOptions() {
         return { rename: rmpEl('rmp-opt-rename').checked, separateAdjacent: rmpEl('rmp-opt-separate').checked }
       }
@@ -3234,7 +3240,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
 
       function rmpPreview() {
-        if (RMP_BUSY) return
+        if (RMP_BUSY) {
+          rmpProgress('still working — the mapping will rebuild when this finishes')
+          return
+        }
         if (!rmpSourceReady()) return
         rmpSetBusy(true)
         rmpText('rmp-result', RMP_SCANNED ? 'Building the mapping…' : 'Reading the file…')
@@ -3536,10 +3545,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           renderPresetOptions()
           updatePresetIndicator()
         } else if (msg.type === 'REMAP_PROGRESS') {
-          rmpText('rmp-result', msg.label)
+          rmpProgress(msg.label)
         } else if (msg.type === 'REMAP_INVENTORY') {
           RMP_SCANNED = true
           rmpSetBusy(false)
+          rmpProgress('')
           var st = msg.stats || {}
           var read = [
             st.variables + ' color variables',
@@ -3555,7 +3565,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpEl('rmp-revert').disabled = !msg.canRevert
           rmpText('rmp-result', '')
           rmpSyncButtons()
-          if (rmpEl('rmp-paste').value.trim() !== '') rmpPreview()
+          if (rmpSourceReady()) rmpPreview()
         } else if (msg.type === 'REMAP_LIBRARIES') {
           var picker = rmpEl('rmp-library')
           picker.innerHTML = ''
@@ -3574,8 +3584,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         } else if (msg.type === 'REMAP_PLAN') {
           RMP_SCANNED = true
           rmpSetBusy(false)
+          rmpProgress('')
           rmpText('rmp-parse', msg.paletteSize + ' colors read from the ' + RMP_SOURCE)
           rmpRenderTable(msg.rows, msg.families)
+          if (!msg.rows || msg.rows.length === 0) {
+            rmpText('rmp-result', msg.paletteSize === 0
+              ? 'That source produced no colours — nothing to map against.'
+              : 'This file holds no colours the mapping can touch.')
+            rmpRenderWarnings(msg.warnings)
+            return
+          }
           rmpRenderWarnings((msg.warnings || []).concat(
             (msg.unusedFamilies || []).length
               ? ['nothing in this file landed on ' + msg.unusedFamilies.join(', ') + ' — new colors the file never had']
@@ -3591,6 +3609,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpText('rmp-result', scope + (msg.renames.length ? ' · ' + msg.renames.length + ' renamed' : ''))
         } else if (msg.type === 'REMAP_APPLIED') {
           rmpSetBusy(false)
+          rmpProgress('')
           var rr = msg.report || {}
           var done = [rr.values + ' values written']
           if (rr.renamed) done.push(rr.renamed + ' renamed')
@@ -3630,6 +3649,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpSyncButtons()
         } else if (msg.type === 'REMAP_REVERTED') {
           rmpSetBusy(false)
+          rmpProgress('')
           var rv = msg.report || {}
           var back = [rv.values + ' values']
           if (rv.names) back.push(rv.names + ' names')
@@ -3660,6 +3680,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             (touched ? ' — downloaded' : ''))
         } else if (msg.type === 'REMAP_UNPARKED') {
           rmpSetBusy(false)
+          rmpProgress('')
           var un = msg.report || {}
           rmpText('rmp-result', un.restored
             ? 'Restored ' + un.restored + ' name(s) out of legacy/.'
@@ -3669,6 +3690,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           dtDownload(msg.name, msg.content, msg.format === 'csv' ? 'text/csv' : 'application/json')
         } else if (msg.type === 'REMAP_ERROR') {
           rmpSetBusy(false)
+          rmpProgress('')
           rmpText('rmp-result', msg.message)
           rmpEl('rmp-result').style.color = 'var(--accent-hi)'
           setTimeout(function () { rmpEl('rmp-result').style.color = 'var(--faint)' }, 4000)

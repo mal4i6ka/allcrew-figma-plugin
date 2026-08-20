@@ -315,3 +315,36 @@ test('when there is no room, the sharing lands in the middle rather than at an e
     assert.ok(position > 0 && position < shorter.length - 1, `sharing at ${step} is at an end, not the middle`)
   }
 })
+
+test('a target family does not drag a gray ramp in just to have a source', () => {
+  // A file that is mostly grays against a palette that is mostly colours. Solving so that every
+  // target gets its best source means every target gets *a* source — which is how red and
+  // orange ended up holding the gray ramps, thirty ΔE away.
+  const grey = (family: string, hexes: readonly string[]) => ramp(family, hexes, [100, 200, 300, 400, 500, 600])
+  const oldSide = inferSpectra([
+    ...grey('grey', ['#FFFFFF', '#D4D4D4', '#A3A3A3', '#7C7C7C', '#4C4C4C', '#000000']),
+    ...grey('slate', ['#F5F5F5', '#E0E0E0', '#BDBDBD', '#757575', '#424242', '#212121']),
+    ...grey('Neutral', ['#FAFAFA', '#DDDDDD', '#AAAAAA', '#777777', '#444444', '#111111']),
+    ...ramp('blue', BLUE),
+  ]).spectra
+  const newSide = inferSpectra([
+    ...grey('neutral', ['#F7F8F8', '#D9DCDE', '#B8BBBD', '#797979', '#333434', '#0F1011']),
+    ...ramp('orange', ORANGE),
+    ...ramp('red', ['#FFF0F0', '#F7BBBB', '#EE8F8F', '#D63A36', '#A81413', '#521614', '#3D1010', '#2A0B0B', '#1C0707', '#0E0303']),
+    ...ramp('blue', VIOLET),
+  ]).spectra
+
+  const { assignments, unused } = assignFamilies(oldSide, newSide)
+  for (const assignment of assignments) {
+    assert.equal(
+      assignment.from.neutral,
+      assignment.to.neutral,
+      `${assignment.from.label} → ${assignment.to.label} crosses the gray line`
+    )
+  }
+  assert.deepEqual(
+    unused.map((spectrum) => spectrum.label).sort(),
+    ['orange', 'red'],
+    'the colours nothing landed on are reported, not filled with grays'
+  )
+})

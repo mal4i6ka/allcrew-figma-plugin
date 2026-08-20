@@ -176,6 +176,17 @@ export interface FamilyAssignmentResult {
   unused: InferredSpectrum[]
 }
 
+/**
+ * A gray ramp is never a coloured one, whichever way the arithmetic leans.
+ *
+ * The optimal matching is over *pairs*, and when the file has more families than the palette
+ * the solve runs the other way round so every target gets its best source — which quietly
+ * means every target gets *a* source, whether or not one belongs to it. On a file that is
+ * mostly grays against a palette that is mostly colours, that is how red and orange end up
+ * holding the gray ramps, at a distance of thirty. A target does not need a source.
+ */
+const compatible = (from: InferredSpectrum, to: InferredSpectrum): boolean => from.neutral === to.neutral
+
 export function assignFamilies(
   from: readonly InferredSpectrum[],
   to: readonly InferredSpectrum[]
@@ -186,39 +197,33 @@ export function assignFamilies(
   const assignments: FamilyAssignment[] = []
   const placed = new Set<number>()
 
-  if (from.length <= to.length) {
-    const chosen = hungarian(matrix)
-    for (const [index, column] of chosen.entries()) {
-      if (column < 0) continue
-      placed.add(index)
-      assignments.push({ from: from[index], to: to[column], cost: matrix[index][column], shared: false, overflow: false })
-    }
-  } else {
-    // More old families than new ones: solve it the other way round so every *target* gets
-    // its best source, then let the leftovers pile on. That keeps the shrink deliberate —
-    // each surviving family is the best representative of what merged into it.
-    const transposed = to.map((_, column) => from.map((_source, row) => matrix[row][column]))
-    const chosen = hungarian(transposed)
-    for (const [column, row] of chosen.entries()) {
-      if (row < 0) continue
-      placed.add(row)
-      assignments.push({ from: from[row], to: to[column], cost: matrix[row][column], shared: false, overflow: false })
-    }
+  const take = (row: number, column: number, overflow: boolean): void => {
+    if (!compatible(from[row], to[column])) return
+    placed.add(row)
+    assignments.push({ from: from[row], to: to[column], cost: matrix[row][column], shared: false, overflow })
   }
 
+  if (from.length <= to.length) {
+    for (const [index, column] of hungarian(matrix).entries()) if (column >= 0) take(index, column, false)
+  } else {
+    // More old families than new ones: solve it the other way round so every *target* gets its
+    // best source, then let the leftovers pile on.
+    const transposed = to.map((_, column) => from.map((_source, row) => matrix[row][column]))
+    for (const [column, row] of hungarian(transposed).entries()) if (row >= 0) take(row, column, false)
+  }
+
+  // Anything the solve could not place — or placed somewhere it does not belong — takes its own
+  // cheapest *compatible* target instead. A family with no compatible target keeps none: its
+  // colours are matched one by one, which is the honest answer when the palette has nothing of
+  // that kind.
   for (const [index, source] of from.entries()) {
     if (placed.has(index)) continue
-    let bestColumn = 0
-    for (let column = 1; column < to.length; column++) {
-      if (matrix[index][column] < matrix[index][bestColumn]) bestColumn = column
+    let best = -1
+    for (let column = 0; column < to.length; column++) {
+      if (!compatible(source, to[column])) continue
+      if (best < 0 || matrix[index][column] < matrix[index][best]) best = column
     }
-    assignments.push({
-      from: source,
-      to: to[bestColumn],
-      cost: matrix[index][bestColumn],
-      shared: true,
-      overflow: true,
-    })
+    if (best >= 0) take(index, best, true)
   }
 
   const perTarget = new Map<string, number>()
