@@ -464,8 +464,12 @@
      the list it filters did not shrink by the same amount. */
   .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: 520px; overflow-y: auto; overflow-x: hidden; }
   .rmp-filter { display: flex; align-items: center; gap: 6px; }
-  .rmp-filter input { flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 6px 8px; font-family: var(--mono); font-size: 11px; }
+  .rmp-search-wrap { position: relative; display: flex; flex: 1; min-width: 0; }
+  .rmp-filter input { flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 6px 24px 6px 8px; font-family: var(--mono); font-size: 11px; }
   .rmp-filter input:focus { outline: none; border-color: var(--accent); }
+  /* Inside the field, where a clear belongs — it clears that field and nothing else. */
+  .rmp-search-clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--faint); font-size: 13px; line-height: 1; cursor: pointer; }
+  .rmp-search-clear:hover { color: var(--muted); }
   .rmp-filter span { color: var(--faint); font-size: 10px; font-family: var(--mono); flex: none; }
   .rmp-group { color: var(--faint); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; margin: 9px 0 3px; display: flex; align-items: center; gap: 6px; }
   .rmp-group b { color: var(--text); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0; text-transform: none; }
@@ -853,9 +857,11 @@
         <div id="rmp-warnings" class="pal-warnings"></div>
 
         <div class="rmp-filter">
-          <input type="text" id="rmp-search" spellcheck="false" autocomplete="off"
-                 placeholder="Filter — name, colors/blue/500, #2563EB, family, flag&hellip;" />
-          <button class="icon-btn hidden" id="rmp-search-clear" type="button" title="Clear the filter" aria-label="Clear">&times;</button>
+          <span class="rmp-search-wrap">
+            <input type="text" id="rmp-search" spellcheck="false" autocomplete="off"
+                   placeholder="Filter — name, colors/blue/500, #2563EB, family, flag&hellip;" />
+            <button class="rmp-search-clear hidden" id="rmp-search-clear" type="button" title="Clear the filter" aria-label="Clear">&times;</button>
+          </span>
           <span id="rmp-filter-count"></span>
         </div>
         <div id="rmp-table" class="rmp-table"></div>
