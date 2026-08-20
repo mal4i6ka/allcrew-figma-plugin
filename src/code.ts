@@ -77,6 +77,7 @@ import { swatchesFromPalette } from './tokens/remap/sources'
 import { listLibraryCollections, swatchesFromLibrary, swatchesFromSelection } from './targets/ds-tools/remap-sources'
 import { parseColorLiteral, toHex } from './tokens/remap/color-literal'
 import { deltaE } from './tokens/remap/match'
+import { rgbToOklch } from './tokens/color'
 import { buildDjangoDesignMd, buildTokenAudit, type DjangoDesignMdInput } from './targets/design-md/index'
 import { buildComponentsMd, COMPONENTS_FILE, type ComponentDoc, type ComponentProperty } from './targets/design-md/component-docs'
 import { buildTokenEntries } from './targets/design-md/model'
@@ -279,6 +280,9 @@ function remapPlanView(plan: RemapPlan) {
       toAlpha: entry.to.a,
       fromFamily: entry.fromFamily,
       fromStep: entry.fromStep,
+      // The panel sorts each family the way the board draws it, and needs the same lightness
+      // to do it — the UI has no colour maths of its own.
+      fromL: Math.round(rgbToOklch(entry.from).l * 1000),
       toFamily: entry.toFamily,
       toStep: entry.toStep,
       via: entry.via,

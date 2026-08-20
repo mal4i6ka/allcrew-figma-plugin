@@ -10,7 +10,7 @@
  * bigger change than it was.
  */
 
-import { contrastRatio, parseHex } from '../../tokens/color.ts'
+import { contrastRatio, parseHex, rgbToOklch } from '../../tokens/color.ts'
 import { toHex } from '../../tokens/remap/color-literal.ts'
 import type { RemapEntry, RemapPlan } from '../../tokens/remap/plan.ts'
 
@@ -138,6 +138,24 @@ interface FamilyGroup {
   entries: RemapEntry[]
 }
 
+/**
+ * A family reads as a ramp only if its ramp is drawn as one.
+ *
+ * Entries arrive ordered by lightness, which puts a `pumpkin` or a `900 less saturated`
+ * wherever its lightness happens to fall — in the middle of the ladder, breaking the run the
+ * board exists to show. The numbered rungs go first as one block, the one-off colours follow,
+ * and both run light to dark.
+ */
+function inReadingOrder(entries: readonly RemapEntry[]): RemapEntry[] {
+  const lightness = new Map(entries.map((entry) => [entry, rgbToOklch(entry.from).l]))
+  return [...entries].sort((a, b) => {
+    const rungA = a.fromStep !== null
+    const rungB = b.fromStep !== null
+    if (rungA !== rungB) return rungA ? -1 : 1
+    return (lightness.get(b) ?? 0) - (lightness.get(a) ?? 0)
+  })
+}
+
 function groupEntries(plan: RemapPlan): FamilyGroup[] {
   const moving = plan.entries.filter((entry) => !entry.flags.includes('unchanged'))
   const targetByFamily = new Map(plan.families.map((family) => [family.fromLabel, family.toLabel]))
@@ -158,7 +176,7 @@ function groupEntries(plan: RemapPlan): FamilyGroup[] {
     const target = targetByFamily.get(key)
     return {
       title: target ? `${key}  →  ${target}` : key,
-      entries: grouped.get(key)!,
+      entries: inReadingOrder(grouped.get(key)!),
     }
   })
 }

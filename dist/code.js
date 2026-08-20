@@ -15447,6 +15447,16 @@ ${scrollGuards}` : project.css;
     column.appendChild(label2(name, fonts, CAPTION_SIZE2, "#8A8A8A"));
     return column;
   }
+  function inReadingOrder(entries) {
+    const lightness = new Map(entries.map((entry) => [entry, rgbToOklch(entry.from).l]));
+    return [...entries].sort((a, b) => {
+      var _a, _b;
+      const rungA = a.fromStep !== null;
+      const rungB = b.fromStep !== null;
+      if (rungA !== rungB) return rungA ? -1 : 1;
+      return ((_a = lightness.get(b)) != null ? _a : 0) - ((_b = lightness.get(a)) != null ? _b : 0);
+    });
+  }
   function groupEntries(plan) {
     var _a;
     const moving = plan.entries.filter((entry) => !entry.flags.includes("unchanged"));
@@ -15466,7 +15476,7 @@ ${scrollGuards}` : project.css;
       const target = targetByFamily.get(key);
       return {
         title: target ? `${key}  \u2192  ${target}` : key,
-        entries: grouped.get(key)
+        entries: inReadingOrder(grouped.get(key))
       };
     });
   }
@@ -16660,6 +16670,9 @@ ${renderSections(sections)}
           toAlpha: entry.to.a,
           fromFamily: entry.fromFamily,
           fromStep: entry.fromStep,
+          // The panel sorts each family the way the board draws it, and needs the same lightness
+          // to do it — the UI has no colour maths of its own.
+          fromL: Math.round(rgbToOklch(entry.from).l * 1e3),
           toFamily: entry.toFamily,
           toStep: entry.toStep,
           via: entry.via,

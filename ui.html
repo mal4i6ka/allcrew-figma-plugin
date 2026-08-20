@@ -3192,6 +3192,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           grouped[key].push(rows[i])
         }
 
+        // A family reads as a ramp only if its ramp is listed as one: numbered rungs together
+        // as a block, one-off colours after them, both light to dark. Same order as the board.
+        for (var key in grouped) {
+          grouped[key].sort(function (a, b) {
+            var rungA = a.fromStep !== null
+            var rungB = b.fromStep !== null
+            if (rungA !== rungB) return rungA ? -1 : 1
+            return (b.fromL || 0) - (a.fromL || 0)
+          })
+        }
+
         for (var g = 0; g < order.length; g++) {
           var head = document.createElement('div')
           head.className = 'rmp-group'
