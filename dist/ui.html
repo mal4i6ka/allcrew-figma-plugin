@@ -451,6 +451,34 @@
   .pal-opts label { display: flex; align-items: flex-start; gap: 8px; color: var(--muted); font-size: 11px; line-height: 1.4; cursor: pointer; }
   .pal-opts input { accent-color: var(--accent); margin-top: 1px; flex: none; }
   .pal-opts b { color: var(--text); font-weight: 500; font-family: var(--mono); font-size: 10.5px; }
+
+  /* Remap: the approval table. Density matters more than decoration — a real file produces
+     hundreds of rows and the eye has to compare two swatches per row without scrolling twice. */
+  .rmp-paste { width: 100%; box-sizing: border-box; min-height: 78px; resize: vertical; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 8px 9px; font-family: var(--mono); font-size: 11px; line-height: 1.5; }
+  .rmp-paste:focus { outline: none; border-color: var(--accent); }
+  .rmp-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .rmp-actions .btn { flex: 1 1 auto; }
+  .rmp-stats { color: var(--faint); font-size: 11px; line-height: 1.5; }
+  .rmp-stats b { color: var(--text); font-family: var(--mono); font-weight: 500; }
+  .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow-y: auto; overflow-x: hidden; }
+  .rmp-group { color: var(--faint); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; margin: 9px 0 3px; display: flex; align-items: center; gap: 6px; }
+  .rmp-group b { color: var(--text); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0; text-transform: none; }
+  .rmp-row { display: grid; grid-template-columns: 14px 14px 1fr auto; align-items: center; gap: 7px; padding: 4px 5px; border-radius: 5px; }
+  .rmp-row:hover { background: var(--bg-2); }
+  .rmp-sw { width: 14px; height: 14px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14); }
+  .rmp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 10.5px; color: var(--text); }
+  .rmp-name i { font-style: normal; color: var(--faint); }
+  .rmp-meta { display: flex; align-items: center; gap: 5px; flex: none; }
+  .rmp-de { font-family: var(--mono); font-size: 10px; color: var(--faint); min-width: 26px; text-align: right; }
+  .rmp-flag { font-size: 9px; letter-spacing: .03em; text-transform: uppercase; padding: 1px 4px; border-radius: 3px; background: var(--bg-2); color: var(--muted); box-shadow: inset 0 0 0 1px var(--border); }
+  .rmp-flag.warn { color: var(--accent-hi); background: var(--accent-tint); box-shadow: inset 0 0 0 1px rgba(251,91,10,0.3); }
+  .rmp-override { width: 66px; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 2px 4px; font-family: var(--mono); font-size: 10px; }
+  .rmp-override:focus { outline: none; border-color: var(--accent); }
+  .rmp-drop { border: 1px dashed var(--border); border-radius: var(--r-sm); padding: 12px 12px 13px; text-align: center; cursor: pointer; transition: border-color .16s, background .16s; }
+  .rmp-drop:hover, .rmp-drop.over { border-color: var(--accent); background: var(--accent-tint); }
+  .rmp-drop b { display: block; color: var(--text); font-weight: 500; font-size: 12px; font-family: var(--brand); }
+  .rmp-drop i { display: block; color: var(--muted); font-style: normal; font-size: 10.5px; line-height: 1.5; margin-top: 4px; }
+
   #view-design-tokens .preview { padding: 0; display: flex; flex-direction: column; min-height: 0; }
   #view-design-tokens .tabs { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-bottom: 1px solid var(--border); background: var(--surface-2); border-radius: var(--r-lg) var(--r-lg) 0 0; }
   #view-design-tokens .tablist { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
@@ -759,6 +787,82 @@
         </div>
         <button class="btn primary" id="pal-apply">Generate in Figma</button>
         <div id="pal-result" class="gen-result" style="margin-top:8px;font-size:11px;line-height:1.45;color:var(--faint)"></div>
+      </section>
+
+      <!-- Moving an existing file onto a palette somebody else designed. The generator above
+           builds a scheme; this one adopts one, matching family to family and step to step
+           against what the document already holds. -->
+      <section class="card gen" id="rmp-card" style="border-color:var(--border);background:var(--surface);">
+        <div class="gen-row">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h11m0 0-3-3m3 3-3 3M20 17H9m0 0 3-3m-3 3 3 3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="gen-text"><b>Remap color tokens</b><i>Move this file onto a new palette. Families are matched to families and steps to steps &mdash; and only to steps the new scale actually has.</i></span>
+        </div>
+
+        <p class="label">New palette</p>
+        <div class="pal-seg" role="group" aria-label="Where the new palette comes from">
+          <button type="button" class="seg active" data-source="paste">Paste</button>
+          <button type="button" class="seg" data-source="generator">Generator</button>
+          <button type="button" class="seg" data-source="selection">Selection</button>
+          <button type="button" class="seg" data-source="library">Library</button>
+        </div>
+
+        <textarea id="rmp-paste" class="rmp-paste" spellcheck="false" autocomplete="off" placeholder="Paste the designer&rsquo;s colors — hex per line, name and hex, CSV, or a JSON token tree.&#10;&#10;Violet/500  #7C3AED&#10;Violet/600  #6D28D9"></textarea>
+        <div class="rmp-stats hidden" id="rmp-source-note"></div>
+        <label class="pal-field pal-wide hidden" id="rmp-library-row">Library collection
+          <select id="rmp-library"><option value="">Loading&hellip;</option></select>
+        </label>
+        <div id="rmp-parse" class="rmp-stats"></div>
+
+        <div class="rmp-actions">
+          <button class="btn ghost" id="rmp-scan" type="button">Read this file</button>
+          <button class="btn primary" id="rmp-preview" type="button" disabled>Build mapping</button>
+        </div>
+        <div id="rmp-stats" class="rmp-stats"></div>
+        <div id="rmp-warnings" class="pal-warnings"></div>
+
+        <div id="rmp-table" class="rmp-table"></div>
+
+        <div class="pal-opts" id="rmp-opts">
+          <label><input type="checkbox" id="rmp-opt-rename" checked /> <span>Rename primitives onto their new family &mdash; <b>colors/Blue/500</b> becomes <b>colors/Violet/500</b></span></label>
+          <label><input type="checkbox" id="rmp-opt-separate" checked /> <span>Pull apart two tokens that land on one color <b>and touch on canvas</b></span></label>
+        </div>
+
+        <p class="label">Write</p>
+        <div class="pal-opts" id="rmp-writes">
+          <label><input type="checkbox" id="rmp-w-values" checked /> <span><b>Variables</b> &mdash; values in place, so every binding follows</span></label>
+          <label><input type="checkbox" id="rmp-w-styles" checked /> <span><b>Paint &amp; effect styles</b>, including every gradient stop inside them</span></label>
+          <label><input type="checkbox" id="rmp-w-canvas" checked /> <span><b>Loose colors on layers</b> &mdash; unbound fills, strokes, gradient stops and shadows</span></label>
+          <label><input type="checkbox" id="rmp-w-bind" checked /> <span>Bind a loose color to the variable it turns out to be, instead of repainting it</span></label>
+          <label><input type="checkbox" id="rmp-w-board" /> <span>Draw the old&rarr;new pairs as a <b>Color remap</b> section on this page</span></label>
+        </div>
+        <label class="pal-field pal-wide" style="margin-top:2px">Layers to repaint
+          <select id="rmp-scope">
+            <option value="document">Whole document</option>
+            <option value="page">This page</option>
+            <option value="selection">Selection only</option>
+          </select>
+        </label>
+
+        <div class="rmp-actions">
+          <button class="btn primary" id="rmp-apply" type="button" disabled>Apply to this file</button>
+          <button class="btn ghost" id="rmp-revert" type="button" disabled>Revert</button>
+        </div>
+        <div class="rmp-actions">
+          <button class="btn ghost" id="rmp-json" type="button" disabled>mapping.json</button>
+          <button class="btn ghost" id="rmp-csv" type="button" disabled>mapping.csv</button>
+        </div>
+
+        <p class="label">Developer files</p>
+        <div class="rmp-drop" id="rmp-drop">
+          <input type="file" id="rmp-files" multiple hidden />
+          <b>Drop CSS, SCSS, JSON, SVG&hellip;</b>
+          <i>The same rewrite <code>altery-dj remap</code> runs in the repository &mdash; values change, keys never do. Files come back as downloads; nothing leaves this machine.</i>
+        </div>
+        <div class="pal-opts">
+          <label><input type="checkbox" id="rmp-f-byname" /> <span>Also rewrite by <b>token name</b>, whatever value the declaration holds</span></label>
+          <label><input type="checkbox" id="rmp-f-exact" /> <span>Exact colours only &mdash; no near matches within &Delta;E&nbsp;2</span></label>
+        </div>
+        <div id="rmp-result" class="gen-result" style="margin-top:8px;font-size:11px;line-height:1.45;color:var(--faint)"></div>
       </section>
     </div>
 
@@ -2857,6 +2961,344 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         ds.textContent = 'Delivering…'; ds.className = 'deliver-status'
         parent.postMessage({ pluginMessage: { type: 'DELIVER', zipBase64: b64 } }, '*')
       })
+      // ── Remap ────────────────────────────────────────────────────────────────────────
+      // The plan is rebuilt on the plugin side for every preview, so the UI keeps only what a
+      // human typed: the palette text and any row they overrode. Nothing here is state that
+      // could drift from what Apply will write.
+      var RMP_ROWS = null
+      var RMP_OVERRIDES = {}
+      var RMP_SCANNED = false
+      var RMP_BUSY = false
+      var RMP_SOURCE = 'paste'
+      var RMP_LIBRARIES_ASKED = false
+
+      var RMP_SOURCE_NOTES = {
+        generator: 'Uses the Color palettes card above, exactly as configured there — families and steps come across intact, so every step maps to its own number.',
+        selection: 'Reads every solid fill and gradient stop under the current selection. Layer names are read as token names, so a swatch called Violet/500 arrives already sorted.',
+        library: 'Reads a published collection\u2019s color variables. Alias-valued tokens are skipped \u2014 they point at colors already in the list.'
+      }
+
+      /** What the sandbox needs to know about where the new palette comes from. */
+      function rmpSource() {
+        if (RMP_SOURCE === 'generator') return { kind: 'generator', settings: PAL }
+        if (RMP_SOURCE === 'selection') return { kind: 'selection' }
+        if (RMP_SOURCE === 'library') return { kind: 'library', key: rmpEl('rmp-library').value }
+        return { kind: 'paste', text: rmpEl('rmp-paste').value }
+      }
+
+      /** Whether the chosen source can produce a palette at all yet. */
+      function rmpSourceReady() {
+        if (RMP_SOURCE === 'paste') return rmpEl('rmp-paste').value.trim() !== ''
+        if (RMP_SOURCE === 'library') return rmpEl('rmp-library').value !== ''
+        if (RMP_SOURCE === 'generator') return PAL !== null && PAL !== undefined
+        return true
+      }
+
+      function rmpEl(id) { return document.getElementById(id) }
+      function rmpText(id, text) { var node = rmpEl(id); if (node) node.textContent = text || '' }
+
+      function rmpOptions() {
+        return { rename: rmpEl('rmp-opt-rename').checked, separateAdjacent: rmpEl('rmp-opt-separate').checked }
+      }
+
+      function rmpSetBusy(busy) {
+        RMP_BUSY = busy
+        rmpEl('rmp-card').classList.toggle('busy', busy)
+      }
+
+      function rmpSyncButtons() {
+        var hasPalette = rmpSourceReady()
+        var hasPlan = RMP_ROWS !== null && RMP_ROWS.length > 0
+        rmpEl('rmp-preview').disabled = !hasPalette
+        rmpEl('rmp-apply').disabled = !hasPlan
+        rmpEl('rmp-json').disabled = !hasPlan
+        rmpEl('rmp-csv').disabled = !hasPlan
+      }
+
+      function rmpSwatch(hex, alpha) {
+        var node = document.createElement('span')
+        node.className = 'rmp-sw'
+        node.style.background = hex
+        if (alpha < 0.999) node.style.opacity = String(Math.max(0.15, alpha))
+        node.title = hex + (alpha < 0.999 ? ' · ' + Math.round(alpha * 100) + '%' : '')
+        return node
+      }
+
+      var RMP_LOUD_FLAGS = { orphan: 1, duplicate: 1, 'mode-divergence': 1, library: 1, separated: 1, manual: 1 }
+
+      function rmpRow(row) {
+        var node = document.createElement('div')
+        node.className = 'rmp-row'
+        node.appendChild(rmpSwatch(row.from, row.fromAlpha))
+        node.appendChild(rmpSwatch(row.to, row.toAlpha))
+
+        var name = document.createElement('span')
+        name.className = 'rmp-name'
+        name.textContent = row.name
+        var trail = []
+        if (row.mode) trail.push(row.mode)
+        if (row.newName) trail.push('→ ' + row.newName)
+        if (row.usage) trail.push(row.usage + '×')
+        if (trail.length) {
+          var hint = document.createElement('i')
+          hint.textContent = '  ' + trail.join(' · ')
+          name.appendChild(hint)
+        }
+        name.title = row.from + ' → ' + row.to + (row.toFamily ? '  (' + row.toFamily + (row.toStep !== null ? '/' + row.toStep : '') + ')' : '')
+        node.appendChild(name)
+
+        var meta = document.createElement('span')
+        meta.className = 'rmp-meta'
+        for (var i = 0; i < row.flags.length; i++) {
+          if (row.flags[i] === 'unchanged' || row.flags[i] === 'shared-family') continue
+          var flag = document.createElement('span')
+          flag.className = 'rmp-flag' + (RMP_LOUD_FLAGS[row.flags[i]] ? ' warn' : '')
+          flag.textContent = row.flags[i]
+          meta.appendChild(flag)
+        }
+        var delta = document.createElement('span')
+        delta.className = 'rmp-de'
+        delta.textContent = row.deltaE ? String(row.deltaE) : '·'
+        delta.title = 'perceptual distance from the old color'
+        meta.appendChild(delta)
+
+        // Overriding a row is the escape hatch the whole table exists for: everything is
+        // automatic, and a human who disagrees types the color they want instead.
+        var override = document.createElement('input')
+        override.className = 'rmp-override'
+        override.type = 'text'
+        override.spellcheck = false
+        override.placeholder = row.to
+        override.value = RMP_OVERRIDES[row.id] || ''
+        override.title = 'Override this row with a color of your own'
+        override.addEventListener('change', function () {
+          var value = this.value.trim()
+          if (value === '') delete RMP_OVERRIDES[row.id]
+          else RMP_OVERRIDES[row.id] = value
+          rmpPreview()
+        })
+        meta.appendChild(override)
+        node.appendChild(meta)
+        return node
+      }
+
+      function rmpRenderTable(rows, families) {
+        var table = rmpEl('rmp-table')
+        table.innerHTML = ''
+        RMP_ROWS = rows
+        if (!rows || rows.length === 0) { rmpSyncButtons(); return }
+
+        var familyNote = {}
+        for (var f = 0; f < (families || []).length; f++) {
+          familyNote[families[f].fromLabel] = families[f].toLabel + (families[f].shared ? ' (shared)' : '')
+        }
+
+        var order = []
+        var grouped = {}
+        for (var i = 0; i < rows.length; i++) {
+          var key = rows[i].fromFamily || 'Ungrouped'
+          if (!grouped[key]) { grouped[key] = []; order.push(key) }
+          grouped[key].push(rows[i])
+        }
+
+        for (var g = 0; g < order.length; g++) {
+          var head = document.createElement('div')
+          head.className = 'rmp-group'
+          var label = document.createElement('b')
+          label.textContent = order[g]
+          head.appendChild(label)
+          var arrow = document.createElement('span')
+          arrow.textContent = familyNote[order[g]] ? '→ ' + familyNote[order[g]] : '(' + grouped[order[g]].length + ')'
+          head.appendChild(arrow)
+          table.appendChild(head)
+          for (var r = 0; r < grouped[order[g]].length; r++) table.appendChild(rmpRow(grouped[order[g]][r]))
+        }
+        rmpSyncButtons()
+      }
+
+      function rmpRenderWarnings(warnings) {
+        var box = rmpEl('rmp-warnings')
+        box.innerHTML = ''
+        for (var i = 0; i < (warnings || []).length; i++) {
+          var node = document.createElement('div')
+          node.className = 'pal-warning'
+          node.textContent = warnings[i]
+          box.appendChild(node)
+        }
+      }
+
+      function rmpPreview() {
+        if (RMP_BUSY) return
+        if (!rmpSourceReady()) return
+        rmpSetBusy(true)
+        rmpText('rmp-result', RMP_SCANNED ? 'Building the mapping…' : 'Reading the file…')
+        parent.postMessage({ pluginMessage: {
+          type: 'REMAP_PREVIEW',
+          source: rmpSource(),
+          options: rmpOptions(),
+          overrides: RMP_OVERRIDES
+        } }, '*')
+      }
+
+      rmpEl('rmp-paste').addEventListener('input', function () {
+        // A new palette invalidates every override: they were chosen against the old one.
+        RMP_OVERRIDES = {}
+        RMP_ROWS = null
+        rmpEl('rmp-table').innerHTML = ''
+        rmpSyncButtons()
+      })
+
+      rmpEl('rmp-scan').addEventListener('click', function () {
+        rmpSetBusy(true)
+        rmpText('rmp-result', 'Reading the whole document…')
+        parent.postMessage({ pluginMessage: { type: 'REMAP_SCAN' } }, '*')
+      })
+
+      rmpEl('rmp-preview').addEventListener('click', rmpPreview)
+
+      Array.prototype.forEach.call(document.querySelectorAll('#rmp-opts input'), function (input) {
+        input.addEventListener('change', function () { if (RMP_ROWS) rmpPreview() })
+      })
+
+      function rmpApplyOptions() {
+        return {
+          values: rmpEl('rmp-w-values').checked,
+          rename: rmpEl('rmp-opt-rename').checked,
+          styles: rmpEl('rmp-w-styles').checked,
+          canvas: rmpEl('rmp-w-canvas').checked,
+          bind: rmpEl('rmp-w-bind').checked,
+          scope: rmpEl('rmp-scope').value
+        }
+      }
+
+      rmpEl('rmp-apply').addEventListener('click', function () {
+        rmpSetBusy(true)
+        rmpText('rmp-result', 'Applying…')
+        parent.postMessage({ pluginMessage: {
+          type: 'REMAP_APPLY',
+          source: rmpSource(),
+          options: rmpOptions(),
+          applyOptions: rmpApplyOptions(),
+          overrides: RMP_OVERRIDES,
+          board: rmpEl('rmp-w-board').checked
+        } }, '*')
+      })
+
+      rmpEl('rmp-revert').addEventListener('click', function () {
+        rmpSetBusy(true)
+        rmpText('rmp-result', 'Reverting…')
+        parent.postMessage({ pluginMessage: { type: 'REMAP_REVERT' } }, '*')
+      })
+
+      function rmpExport(format) {
+        parent.postMessage({ pluginMessage: {
+          type: 'REMAP_EXPORT_MAPPING',
+          source: rmpSource(),
+          options: rmpOptions(),
+          overrides: RMP_OVERRIDES,
+          format: format
+        } }, '*')
+      }
+      rmpEl('rmp-json').addEventListener('click', function () { rmpExport('json') })
+      rmpEl('rmp-csv').addEventListener('click', function () { rmpExport('csv') })
+
+      // Both executors run the same code: this one hands the file to the sandbox, which owns
+      // the rewriter, and `altery-dj remap` runs the Python port of it over a repository.
+      var RMP_FILE_BUDGET = 2 * 1024 * 1024
+
+      function rmpSendFiles(fileList) {
+        var files = Array.prototype.slice.call(fileList)
+        if (files.length === 0) return
+        if (!rmpSourceReady()) {
+          rmpText('rmp-result', 'Choose the new palette first — the rewrite needs a mapping.')
+          return
+        }
+
+        var budget = 0
+        for (var i = 0; i < files.length; i++) budget += files[i].size
+        if (budget > RMP_FILE_BUDGET) {
+          rmpText('rmp-result', 'That is more than 2 MB of files — run altery-dj remap over the repository instead.')
+          return
+        }
+
+        rmpSetBusy(true)
+        rmpText('rmp-result', 'Reading ' + files.length + ' file(s)…')
+        var payload = []
+        var pending = files.length
+        files.forEach(function (file) {
+          var reader = new FileReader()
+          reader.onload = function () {
+            payload.push({ name: file.name, text: String(reader.result) })
+            if (--pending === 0) {
+              parent.postMessage({ pluginMessage: {
+                type: 'REMAP_REWRITE_FILES',
+                source: rmpSource(),
+                options: rmpOptions(),
+                overrides: RMP_OVERRIDES,
+                files: payload,
+                byName: rmpEl('rmp-f-byname').checked,
+                snap: rmpEl('rmp-f-exact').checked ? 0 : 2
+              } }, '*')
+            }
+          }
+          reader.onerror = function () {
+            if (--pending === 0) rmpSetBusy(false)
+          }
+          reader.readAsText(file)
+        })
+      }
+
+      Array.prototype.forEach.call(document.querySelectorAll('#rmp-card .pal-seg .seg'), function (button) {
+        button.addEventListener('click', function () {
+          Array.prototype.forEach.call(document.querySelectorAll('#rmp-card .pal-seg .seg'), function (other) {
+            other.classList.toggle('active', other === button)
+          })
+          RMP_SOURCE = button.getAttribute('data-source')
+
+          rmpEl('rmp-paste').classList.toggle('hidden', RMP_SOURCE !== 'paste')
+          rmpEl('rmp-library-row').classList.toggle('hidden', RMP_SOURCE !== 'library')
+          var note = rmpEl('rmp-source-note')
+          note.textContent = RMP_SOURCE_NOTES[RMP_SOURCE] || ''
+          note.classList.toggle('hidden', !RMP_SOURCE_NOTES[RMP_SOURCE])
+
+          if (RMP_SOURCE === 'library' && !RMP_LIBRARIES_ASKED) {
+            RMP_LIBRARIES_ASKED = true
+            parent.postMessage({ pluginMessage: { type: 'REMAP_LIST_LIBRARIES' } }, '*')
+          }
+
+          // A different source is a different palette, so the overrides and the table both go.
+          RMP_OVERRIDES = {}
+          RMP_ROWS = null
+          rmpEl('rmp-table').innerHTML = ''
+          rmpText('rmp-parse', '')
+          rmpSyncButtons()
+        })
+      })
+
+      rmpEl('rmp-library').addEventListener('change', function () {
+        RMP_ROWS = null
+        rmpEl('rmp-table').innerHTML = ''
+        rmpSyncButtons()
+        if (this.value) rmpPreview()
+      })
+
+      rmpEl('rmp-drop').addEventListener('click', function () { rmpEl('rmp-files').click() })
+      rmpEl('rmp-files').addEventListener('change', function () {
+        rmpSendFiles(this.files)
+        this.value = ''
+      })
+      rmpEl('rmp-drop').addEventListener('dragover', function (event) {
+        event.preventDefault()
+        this.classList.add('over')
+      })
+      rmpEl('rmp-drop').addEventListener('dragleave', function () { this.classList.remove('over') })
+      rmpEl('rmp-drop').addEventListener('drop', function (event) {
+        event.preventDefault()
+        this.classList.remove('over')
+        rmpSendFiles(event.dataTransfer.files)
+      })
+      // ── end Remap ────────────────────────────────────────────────────────────────────
+
       // ── end Design Tokens ────────────────────────────────────────────────────────────
       onmessage = function (event) {
         var msg = event.data.pluginMessage
@@ -2979,6 +3421,131 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           USER_PRESETS = msg.userPresets || []
           renderPresetOptions()
           updatePresetIndicator()
+        } else if (msg.type === 'REMAP_PROGRESS') {
+          rmpText('rmp-result', msg.label)
+        } else if (msg.type === 'REMAP_INVENTORY') {
+          RMP_SCANNED = true
+          rmpSetBusy(false)
+          var st = msg.stats || {}
+          var read = [
+            st.variables + ' color variables',
+            msg.sites + ' colors across ' + (msg.modes || []).length + ' modes',
+            st.nodes + ' nodes'
+          ]
+          if (st.paintStyles || st.effectStyles) read.push(st.paintStyles + ' paint · ' + st.effectStyles + ' effect styles')
+          if (st.looseColors) read.push(st.looseColors + ' loose colors on ' + st.loosePlaces + ' places')
+          if (st.libraryVariables) read.push(st.libraryVariables + ' from libraries (read-only)')
+          rmpEl('rmp-stats').innerHTML = '<b>' + read.join('</b> · <b>') + '</b>'
+          rmpRenderWarnings(msg.warnings)
+          rmpEl('rmp-revert').disabled = !msg.canRevert
+          rmpText('rmp-result', '')
+          rmpSyncButtons()
+          if (rmpEl('rmp-paste').value.trim() !== '') rmpPreview()
+        } else if (msg.type === 'REMAP_LIBRARIES') {
+          var picker = rmpEl('rmp-library')
+          picker.innerHTML = ''
+          var blank = document.createElement('option')
+          blank.value = ''
+          blank.textContent = (msg.collections || []).length ? 'Choose a collection…' : 'No libraries available'
+          picker.appendChild(blank)
+          for (var ci = 0; ci < (msg.collections || []).length; ci++) {
+            var collection = msg.collections[ci]
+            var option = document.createElement('option')
+            option.value = collection.key
+            option.textContent = collection.library + ' · ' + collection.name
+            picker.appendChild(option)
+          }
+          if ((msg.warnings || []).length) rmpRenderWarnings(msg.warnings)
+        } else if (msg.type === 'REMAP_PLAN') {
+          RMP_SCANNED = true
+          rmpSetBusy(false)
+          rmpText('rmp-parse', msg.paletteSize + ' colors read from the ' + RMP_SOURCE)
+          rmpRenderTable(msg.rows, msg.families)
+          rmpRenderWarnings((msg.warnings || []).concat(
+            (msg.unusedFamilies || []).length
+              ? ['nothing in this file landed on ' + msg.unusedFamilies.join(', ') + ' — new colors the file never had']
+              : []
+          ))
+          var moved = 0
+          for (var ri = 0; ri < msg.rows.length; ri++) if (msg.rows[ri].flags.indexOf('unchanged') === -1) moved++
+          rmpText('rmp-result', moved + ' of ' + msg.rows.length + ' values move' +
+            (msg.renames.length ? ' · ' + msg.renames.length + ' renamed' : ''))
+        } else if (msg.type === 'REMAP_APPLIED') {
+          rmpSetBusy(false)
+          var rr = msg.report || {}
+          var done = [rr.values + ' values written']
+          if (rr.renamed) done.push(rr.renamed + ' renamed')
+          if (rr.legacy) done.push(rr.legacy + ' parked in legacy/')
+          if (rr.styles) done.push(rr.styles + ' styles')
+          if (rr.paints) done.push(rr.paints + ' painted places')
+          if (rr.bound) done.push(rr.bound + ' bound to variables')
+          if (rr.unchanged) done.push(rr.unchanged + ' already correct')
+          if (rr.skippedLibrary) done.push(rr.skippedLibrary + ' skipped (library)')
+          if (rr.instanceOverrides) done.push(rr.instanceOverrides + ' instance overrides left alone')
+          if (rr.failed) done.push(rr.failed + ' failed')
+          if (msg.board && msg.board.rows) done.push('board: ' + msg.board.rows + ' pairs drawn')
+          var tail = '. Revert restores the previous values.'
+          // The point of renaming safely: the next export still declares the old keys.
+          if (rr.renamed) tail += ' The next export keeps the old custom-property names as aliases.'
+          rmpText('rmp-result', done.join(' · ') + tail)
+
+          // Nothing blocked this Apply, so the readability cost is reported after the fact —
+          // it is the only place a regression the automation caused becomes visible.
+          var audit = msg.audit || { findings: [], checked: 0, improved: 0 }
+          var notes = (rr.warnings || []).slice()
+          if (audit.findings.length) {
+            notes.push(
+              audit.findings.length + ' of ' + audit.checked + ' touching pairs lost readable contrast' +
+              (audit.total > audit.findings.length ? ' (' + audit.total + ' in total)' : '') + ':'
+            )
+            notes = notes.concat(audit.findings)
+          } else if (audit.checked) {
+            notes.push('contrast checked on ' + audit.checked + ' touching pairs — nothing fell below the threshold' +
+              (audit.improved ? ', ' + audit.improved + ' improved' : ''))
+          }
+          rmpRenderWarnings(notes)
+          rmpEl('rmp-revert').disabled = !msg.canRevert
+          // The document moved, so the table on screen describes a file that no longer exists.
+          RMP_ROWS = null
+          rmpEl('rmp-table').innerHTML = ''
+          rmpSyncButtons()
+        } else if (msg.type === 'REMAP_REVERTED') {
+          rmpSetBusy(false)
+          var rv = msg.report || {}
+          var back = [rv.values + ' values']
+          if (rv.names) back.push(rv.names + ' names')
+          if (rv.styles) back.push(rv.styles + ' style colors')
+          if (rv.paints) back.push(rv.paints + ' painted places')
+          rmpText('rmp-result', 'Reverted ' + back.join(', ') + '.')
+          rmpRenderWarnings(rv.warnings)
+          rmpEl('rmp-revert').disabled = !msg.canRevert
+          RMP_ROWS = null
+          rmpEl('rmp-table').innerHTML = ''
+          rmpSyncButtons()
+        } else if (msg.type === 'REMAP_REWRITTEN') {
+          rmpSetBusy(false)
+          var lines = []
+          var touched = 0
+          for (var fi = 0; fi < msg.files.length; fi++) {
+            var file = msg.files[fi]
+            if (file.changed === 0) continue
+            touched++
+            // Only the files that actually changed come back — handing someone an identical
+            // copy to re-save is a way to lose the original.
+            dtDownload(file.name, file.text, 'text/plain')
+            lines = lines.concat(file.lines)
+          }
+          rmpRenderWarnings((msg.warnings || []).concat(lines))
+          rmpText('rmp-result', msg.replaced + ' colour(s) rewritten in ' + touched + ' of ' +
+            msg.files.length + ' file(s) · ' + msg.untouched + ' colour(s) left alone' +
+            (touched ? ' — downloaded' : ''))
+        } else if (msg.type === 'REMAP_MAPPING') {
+          dtDownload(msg.name, msg.content, msg.format === 'csv' ? 'text/csv' : 'application/json')
+        } else if (msg.type === 'REMAP_ERROR') {
+          rmpSetBusy(false)
+          rmpText('rmp-result', msg.message)
+          rmpEl('rmp-result').style.color = 'var(--accent-hi)'
+          setTimeout(function () { rmpEl('rmp-result').style.color = 'var(--faint)' }, 4000)
         } else if (msg.type === 'IMPORT_TRANSLATIONS_RESULT') {
           renderImportResult(msg)
         } else if (msg.type === 'IMPORT_TRANSLATIONS_ERROR') {

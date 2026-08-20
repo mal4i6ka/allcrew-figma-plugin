@@ -1,0 +1,19 @@
+logo.svg:2:15 #3B82F6 -> #8B5CF6
+logo.svg:3:39 #2563EB -> #7C3AED
+logo.svg:3:56 #FFFFFF -> #FAFAFA
+logo.svg: 3 replaced, 0 untouched
+theme.css:3:20 #3B82F6 -> #8B5CF6
+theme.css:4:27 #2563EB -> #7C3AED
+theme.css:5:20 white -> #FAFAFA
+theme.css:6:19 rgba(15, 23, 42, 0.12) -> rgba(30, 27, 75, 0.12)
+theme.css:7:22 #3F86FA -> #8B5CF6 [by name]
+theme.css:11:15 rgb(59, 130, 246) -> rgb(139, 92, 246)
+theme.css:12:21 #2563eb -> #7C3AED
+theme.css:13:25 rgba(15, 23, 42, 0.12) -> rgba(30, 27, 75, 0.12)
+theme.css:14:10 hsl(0, 0%, 100%) -> hsl(0, 0%, 98.04%)
+theme.css:18:22 #3B82F680 -> #8B5CF680
+theme.css: 10 replaced, 0 untouched
+tokens.json:2:23 #3B82F6 -> #8B5CF6 [by name]
+tokens.json:3:23 #2563EB -> #7C3AED [by name]
+tokens.json:4:21 #FFFFFF -> #FAFAFA [by name]
+tokens.json: 3 replaced, 1 untouched

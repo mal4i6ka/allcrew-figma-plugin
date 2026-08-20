@@ -1,0 +1,152 @@
+{
+  "color": {
+    "primary": {
+      "$type": "color",
+      "$value": "#4f46e5",
+      "$extensions": {
+        "modes": {
+          "Light": "#4f46e5",
+          "Dark": "#8472f6"
+        },
+        "figma": {
+          "collection": "Color",
+          "defaultMode": "Light"
+        }
+      }
+    },
+    "secondary": {
+      "$type": "color",
+      "$value": "#14b8a6",
+      "$extensions": {
+        "modes": {
+          "Light": "#14b8a6",
+          "Dark": "#14b8a6"
+        },
+        "figma": {
+          "collection": "Color",
+          "defaultMode": "Light"
+        }
+      }
+    },
+    "background": {
+      "$type": "color",
+      "$value": "#ffffff",
+      "$extensions": {
+        "modes": {
+          "Light": "#ffffff",
+          "Dark": "#111114"
+        },
+        "figma": {
+          "collection": "Color",
+          "defaultMode": "Light"
+        }
+      }
+    },
+    "text": {
+      "$type": "color",
+      "$value": "#111214",
+      "$extensions": {
+        "modes": {
+          "Light": "#111214",
+          "Dark": "#f2f3f6"
+        },
+        "figma": {
+          "collection": "Color",
+          "defaultMode": "Light"
+        }
+      }
+    }
+  },
+  "spacing": {
+    "sm": {
+      "$type": "number",
+      "$value": 8,
+      "$extensions": {
+        "modes": {
+          "Default": 8
+        },
+        "figma": {
+          "collection": "Spacing",
+          "defaultMode": "Default"
+        }
+      }
+    },
+    "md": {
+      "$type": "number",
+      "$value": 16,
+      "$extensions": {
+        "modes": {
+          "Default": 16
+        },
+        "figma": {
+          "collection": "Spacing",
+          "defaultMode": "Default"
+        }
+      }
+    },
+    "lg": {
+      "$type": "number",
+      "$value": 32,
+      "$extensions": {
+        "modes": {
+          "Default": 32
+        },
+        "figma": {
+          "collection": "Spacing",
+          "defaultMode": "Default"
+        }
+      }
+    }
+  },
+  "typography": {
+    "font-size-base": {
+      "$type": "number",
+      "$value": 16,
+      "$extensions": {
+        "modes": {
+          "Default": 16
+        },
+        "figma": {
+          "collection": "Typography",
+          "defaultMode": "Default"
+        }
+      }
+    },
+    "font-size-heading": {
+      "$type": "number",
+      "$value": 32,
+      "$extensions": {
+        "modes": {
+          "Default": 32
+        },
+        "figma": {
+          "collection": "Typography",
+          "defaultMode": "Default"
+        }
+      }
+    },
+    "font-family-base": {
+      "$type": "string",
+      "$value": "'Inter', sans-serif",
+      "$extensions": {
+        "modes": {
+          "Default": "'Inter', sans-serif"
+        },
+        "figma": {
+          "collection": "Typography",
+          "defaultMode": "Default"
+        }
+      }
+    }
+  },
+  "$extensions": {
+    "altery": {
+      "renames": {
+        "color/brand": "color/primary",
+        "color/accent": "color/secondary",
+        "color/primary": "color/text",
+        "color/ghost": "color/nowhere"
+      }
+    }
+  }
+}

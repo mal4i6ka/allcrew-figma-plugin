@@ -57,6 +57,25 @@ import { applyPaletteFix, generatePalette, suggestHarmoniousSpectrum, type Palet
 import { normalizePaletteFix, normalizePaletteSettings } from './tokens/palette-settings'
 import { foldSplitThemeCollections } from './tokens/split-theme'
 import { applyPalette, DEFAULT_APPLY_OPTIONS, type PaletteApplyOptions } from './targets/ds-tools/palette-apply'
+import { readRemapInventory, type RemapInventory } from './targets/ds-tools/remap-inventory'
+import {
+  applyRemap,
+  DEFAULT_REMAP_APPLY_OPTIONS,
+  hasRemapSnapshot,
+  readRenameMap,
+  revertRemap,
+  type RemapApplyOptions,
+} from './targets/ds-tools/remap-apply'
+import { drawRemapBoard } from './targets/ds-tools/remap-board'
+import { auditContrast, describeContrast } from './tokens/remap/audit'
+import { parsePaletteInput } from './tokens/remap/input'
+import { buildRemapPlan, type RemapOptions, type RemapPlan } from './tokens/remap/plan'
+import { buildMappingFile, toCsv } from './tokens/remap/contract'
+import { rewriteColors } from './tokens/remap/rewrite'
+import { swatchesFromPalette } from './tokens/remap/sources'
+import { listLibraryCollections, swatchesFromLibrary, swatchesFromSelection } from './targets/ds-tools/remap-sources'
+import { parseColorLiteral, toHex } from './tokens/remap/color-literal'
+import { deltaE } from './tokens/remap/match'
 import { buildDjangoDesignMd, buildTokenAudit, type DjangoDesignMdInput } from './targets/design-md/index'
 import { buildComponentsMd, COMPONENTS_FILE, type ComponentDoc, type ComponentProperty } from './targets/design-md/component-docs'
 import { buildTokenEntries } from './targets/design-md/model'
@@ -102,6 +121,141 @@ type PluginMessage =
   | { type: 'FIX_PALETTE'; settings: unknown; fix: unknown }
   | { type: 'APPLY_PALETTE'; settings: unknown; applyOptions?: Partial<PaletteApplyOptions> }
   | { type: 'SAVE_PALETTE_SETTINGS'; settings: unknown }
+  | { type: 'REMAP_SCAN' }
+  | { type: 'REMAP_LIST_LIBRARIES' }
+  | { type: 'REMAP_PREVIEW'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string> }
+  | {
+      type: 'REMAP_APPLY'
+      source: RemapSource
+      options?: Partial<RemapOptions>
+      applyOptions?: Partial<RemapApplyOptions>
+      overrides?: Record<string, string>
+      board?: boolean
+    }
+  | { type: 'REMAP_REVERT' }
+  | { type: 'REMAP_EXPORT_MAPPING'; source: RemapSource; options?: Partial<RemapOptions>; format: 'json' | 'csv'; overrides?: Record<string, string> }
+  | {
+      type: 'REMAP_REWRITE_FILES'
+      source: RemapSource
+      options?: Partial<RemapOptions>
+      overrides?: Record<string, string>
+      files: Array<{ name: string; text: string }>
+      snap?: number
+      byName?: boolean
+      mode?: string | null
+    }
+
+/* ------------------------------------------------------------------ remap */
+
+/**
+ * The document reading is kept between messages: the walk is the expensive part, and the
+ * table re-plans on every edit. Any write invalidates it.
+ */
+let remapInventory: RemapInventory | null = null
+
+/** A row the human overrode in the approval table: site id → forced `#RRGGBB`. */
+function applyRemapOverrides(plan: RemapPlan, overrides: Record<string, string> | undefined): RemapPlan {
+  if (!overrides) return plan
+  for (const entry of plan.entries) {
+    const forced = overrides[entry.site.id]
+    if (!forced) continue
+    const literal = parseColorLiteral(forced)
+    if (!literal) continue
+    entry.to = { r: literal.rgba.r, g: literal.rgba.g, b: literal.rgba.b, a: entry.from.a }
+    entry.deltaE = deltaE(entry.from, entry.to)
+    entry.toName = null
+    entry.via = 'nearest'
+    entry.flags = entry.flags.filter((flag) => flag !== 'unchanged')
+    if (!entry.flags.includes('manual')) entry.flags.push('manual')
+  }
+  return plan
+}
+
+/**
+ * Where the new palette comes from. A paste always works and is the fallback; the others know
+ * more — the generator knows its own families and steps exactly, a library knows the names a
+ * team already agreed on — and that structure is worth more than anything inferred from bare
+ * hexes.
+ */
+export type RemapSource =
+  | { kind: 'paste'; text: string }
+  | { kind: 'generator'; settings: unknown }
+  | { kind: 'selection' }
+  | { kind: 'library'; key: string; mode?: string | null }
+
+async function resolveRemapSource(
+  source: RemapSource
+): Promise<{ swatches: ReturnType<typeof parsePaletteInput>['swatches']; warnings: string[] }> {
+  switch (source.kind) {
+    case 'generator': {
+      const settings = normalizePaletteSettings(source.settings)
+      return { swatches: swatchesFromPalette(generatePalette(settings)), warnings: [] }
+    }
+    case 'selection': {
+      const result = await swatchesFromSelection()
+      return { swatches: result.swatches, warnings: result.warnings }
+    }
+    case 'library': {
+      const result = await swatchesFromLibrary(source.key, source.mode ?? null)
+      return { swatches: result.swatches, warnings: result.warnings }
+    }
+    default: {
+      const parsed = parsePaletteInput(source.text)
+      return { swatches: parsed.swatches, warnings: parsed.warnings }
+    }
+  }
+}
+
+async function planRemap(
+  source: RemapSource,
+  options: Partial<RemapOptions> | undefined,
+  overrides: Record<string, string> | undefined
+): Promise<{ plan: RemapPlan; palette: ReturnType<typeof parsePaletteInput>['swatches'] }> {
+  if (!remapInventory) {
+    remapInventory = await readRemapInventory((label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }))
+  }
+  const resolved = await resolveRemapSource(source)
+  const plan = buildRemapPlan({
+    sites: remapInventory.sites,
+    palette: resolved.swatches,
+    primaryModeId: remapInventory.primaryModeId,
+    // The plan only needs the pair; the text/boundary distinction belongs to the audit.
+    adjacency: remapInventory.adjacency.map((pair) => [pair.a, pair.b] as [string, string]),
+    options,
+  })
+  plan.warnings.push(...resolved.warnings)
+  return { plan: applyRemapOverrides(plan, overrides), palette: resolved.swatches }
+}
+
+/** The plan as the table renders it — colors as hex, one row per site. */
+function remapPlanView(plan: RemapPlan) {
+  const renamedById = new Map(plan.renames.map((rename) => [rename.siteId, rename]))
+  return {
+    rows: plan.entries.map((entry) => ({
+      id: entry.site.id,
+      kind: entry.site.kind,
+      name: entry.site.name,
+      newName: renamedById.get(entry.site.id)?.to ?? null,
+      mode: entry.site.modeName,
+      usage: entry.site.usage,
+      from: toHex(entry.from),
+      fromAlpha: entry.from.a,
+      to: toHex(entry.to),
+      toAlpha: entry.to.a,
+      fromFamily: entry.fromFamily,
+      fromStep: entry.fromStep,
+      toFamily: entry.toFamily,
+      toStep: entry.toStep,
+      via: entry.via,
+      deltaE: Math.round(entry.deltaE * 10) / 10,
+      flags: entry.flags,
+    })),
+    families: plan.families,
+    renames: plan.renames,
+    unusedFamilies: plan.unusedFamilies,
+    warnings: plan.warnings,
+  }
+}
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -644,7 +798,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
           : { docs: [], files: {} }
         // `buildDesignTokens` writes COMPONENTS.md (it owns the token model the descriptions
         // resolve against); the previews are binary and travel separately.
-        const artifacts = buildDesignTokens(graph, options, undefined, componentDocs.docs)
+        const artifacts = buildDesignTokens(graph, options, undefined, componentDocs.docs, readRenameMap())
         for (const path of Object.keys(componentDocs.files)) artifacts.files[path] = componentDocs.files[path]
         artifacts.summary.componentCount = componentDocs.docs.length
         artifacts.summary.previewCount = Object.keys(componentDocs.files).length
@@ -737,6 +891,155 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
 
+    /* ---- DS Tools: color token remapping ---- */
+    case 'REMAP_SCAN': {
+      try {
+        remapInventory = await readRemapInventory((label) =>
+          figma.ui.postMessage({ type: 'REMAP_PROGRESS', label })
+        )
+        figma.ui.postMessage({
+          type: 'REMAP_INVENTORY',
+          stats: remapInventory.stats,
+          modes: remapInventory.modes,
+          sites: remapInventory.sites.length,
+          adjacency: remapInventory.adjacency.length,
+          warnings: remapInventory.warnings,
+          canRevert: hasRemapSnapshot(),
+        })
+      } catch (err) {
+        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'REMAP_LIST_LIBRARIES': {
+      const result = await listLibraryCollections()
+      figma.ui.postMessage({ type: 'REMAP_LIBRARIES', collections: result.collections, warnings: result.warnings })
+      break
+    }
+    case 'REMAP_PREVIEW': {
+      try {
+        const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides)
+        figma.ui.postMessage({ type: 'REMAP_PLAN', ...remapPlanView(plan), paletteSize: palette.length })
+      } catch (err) {
+        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'REMAP_APPLY': {
+      try {
+        const { plan } = await planRemap(msg.source, msg.options, msg.overrides)
+        const options: RemapApplyOptions = { ...DEFAULT_REMAP_APPLY_OPTIONS, ...(msg.applyOptions ?? {}) }
+        // Measured before the write, from the plan and the pairs the walk already found —
+        // afterwards the old colors are gone and there is nothing left to compare against.
+        const audit = remapInventory ? auditContrast(plan, remapInventory.adjacency) : { findings: [], checked: 0, improved: 0 }
+        const report = await applyRemap(plan, options, (label) =>
+          figma.ui.postMessage({ type: 'REMAP_PROGRESS', label })
+        )
+        let board: Awaited<ReturnType<typeof drawRemapBoard>> | null = null
+        if (msg.board) {
+          try {
+            board = await drawRemapBoard(plan)
+          } catch (err) {
+            report.warnings.push('the canvas board could not be drawn: ' + String((err as Error)?.message || err))
+          }
+        }
+        // The document moved under the cached reading: usage counts and adjacency still hold,
+        // but every value did not, so the next preview must scan again.
+        remapInventory = null
+        figma.notify(
+          [
+            report.values ? `${report.values} values` : '',
+            report.renamed ? `${report.renamed} renamed` : '',
+            report.legacy ? `${report.legacy} parked in legacy/` : '',
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'Nothing to write'
+        )
+        figma.ui.postMessage({
+          type: 'REMAP_APPLIED',
+          report,
+          board,
+          audit: {
+            checked: audit.checked,
+            improved: audit.improved,
+            findings: audit.findings.slice(0, 30).map(describeContrast),
+            total: audit.findings.length,
+          },
+          canRevert: hasRemapSnapshot(),
+        })
+      } catch (err) {
+        const message = String((err as Error)?.message || err)
+        figma.notify('Remap failed: ' + message, { error: true })
+        figma.ui.postMessage({ type: 'REMAP_ERROR', message })
+      }
+      break
+    }
+    case 'REMAP_REVERT': {
+      try {
+        const report = await revertRemap((label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }))
+        remapInventory = null
+        figma.notify(`Reverted ${report.values} values` + (report.names ? ` and ${report.names} names` : ''))
+        figma.ui.postMessage({ type: 'REMAP_REVERTED', report, canRevert: hasRemapSnapshot() })
+      } catch (err) {
+        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'REMAP_EXPORT_MAPPING': {
+      try {
+        const { plan } = await planRemap(msg.source, msg.options, msg.overrides)
+        const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind })
+        figma.ui.postMessage({
+          type: 'REMAP_MAPPING',
+          format: msg.format,
+          name: msg.format === 'csv' ? 'mapping.csv' : 'mapping.json',
+          content: msg.format === 'csv' ? toCsv(mapping) : JSON.stringify(mapping, null, 2),
+        })
+      } catch (err) {
+        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+
+    case 'REMAP_REWRITE_FILES': {
+      try {
+        const { plan } = await planRemap(msg.source, msg.options, msg.overrides)
+        const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind })
+        const settings = { snap: msg.snap ?? 2, byName: msg.byName ?? false, mode: msg.mode ?? null }
+
+        let replaced = 0
+        let untouched = 0
+        const warnings = new Set<string>()
+        const files = msg.files.map((file) => {
+          const result = rewriteColors(file.text, mapping, settings)
+          replaced += result.replacements.length
+          untouched += result.untouched
+          for (const warning of result.warnings) warnings.add(warning)
+          return {
+            name: file.name,
+            text: result.text,
+            changed: result.replacements.length,
+            // Enough for a report a human reads, not the whole edit list for a big file.
+            lines: result.replacements
+              .slice(0, 40)
+              .map((entry) => `${file.name}:${entry.line}:${entry.column}  ${entry.from} → ${entry.to}` +
+                (entry.snapped ? '  [snapped]' : '') + (entry.via === 'name' ? '  [by name]' : '')),
+          }
+        })
+
+        figma.ui.postMessage({
+          type: 'REMAP_REWRITTEN',
+          files,
+          replaced,
+          untouched,
+          warnings: [...warnings],
+        })
+      } catch (err) {
+        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+
     /* ---- shared ---- */
     case 'READ_VARIABLES': {
       const data = await readAllVariables()
@@ -748,7 +1051,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         readAllVariables(),
         figma.clientStorage.getAsync('exportOptions'),
       ])
-      const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored))).css
+      const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored), readRenameMap())).css
       figma.ui.postMessage({ type: 'TOKENS_CSS', css })
       break
     }
@@ -838,7 +1141,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       let tokensCss: string | undefined
       let bootstrapTokensCss: string | undefined
       if (tokensOn) {
-        const tokenEmitOptions = tokenEmitOptionsFrom(previewOptions)
+        const tokenEmitOptions = tokenEmitOptionsFrom(previewOptions, readRenameMap())
         const tokenArtifacts = emitTokenArtifacts(snapshot, tokenEmitOptions)
         tokensCss = tokenArtifacts.css
         if (previewOptions.targetOptions.framework === 'bootstrap') {
@@ -1110,7 +1413,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         let tokenArtifacts: ReturnType<typeof emitTokenArtifacts> | undefined
         let bootstrapArtifacts: ReturnType<typeof emitBootstrapArtifacts> | undefined
         if (modules.tokens) {
-          tokenArtifacts = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions))
+          tokenArtifacts = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions, readRenameMap()))
           files['static/css/tokens.css'] = tokenArtifacts.css
           if (exportOptions.tokens.emitJson) files['tokens.json'] = tokenArtifacts.json
           if (exportOptions.targetOptions.framework === 'bootstrap') {
