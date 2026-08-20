@@ -192,11 +192,14 @@ async function resolveRemapSource(
       return { swatches: swatchesFromPalette(generatePalette(settings)), warnings: [] }
     }
     case 'selection': {
+      figma.ui.postMessage({ type: 'REMAP_PROGRESS', label: 'reading the selection…' })
       const result = await swatchesFromSelection()
       return { swatches: result.swatches, warnings: result.warnings }
     }
     case 'library': {
-      const result = await swatchesFromLibrary(source.key, source.mode ?? null)
+      const result = await swatchesFromLibrary(source.key, source.mode ?? null, (label) =>
+        figma.ui.postMessage({ type: 'REMAP_PROGRESS', label })
+      )
       return { swatches: result.swatches, warnings: result.warnings }
     }
     default: {
@@ -215,6 +218,7 @@ async function planRemap(
     remapInventory = await readRemapInventory((label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }))
   }
   const resolved = await resolveRemapSource(source)
+  figma.ui.postMessage({ type: 'REMAP_PROGRESS', label: `matching ${resolved.swatches.length} new colors…` })
   const plan = buildRemapPlan({
     sites: remapInventory.sites,
     palette: resolved.swatches,
@@ -227,11 +231,30 @@ async function planRemap(
   return { plan: applyRemapOverrides(plan, overrides), palette: resolved.swatches }
 }
 
+/**
+ * How many rows the table is handed at once.
+ *
+ * Everything crossing into the UI is deep-frozen by the host, and a real design system's
+ * inventory runs to thousands of colours — enough of them at once and the plugin VM is killed
+ * outright ("Plugin runtime aborted"). The cap is a *view* limit only: Apply works from the
+ * plan on this side, so every row is still written whether or not it was displayed.
+ */
+const REMAP_ROW_LIMIT = 500
+
 /** The plan as the table renders it — colors as hex, one row per site. */
 function remapPlanView(plan: RemapPlan) {
   const renamedById = new Map(plan.renames.map((rename) => [rename.siteId, rename]))
+  // Rows a human would actually act on first: the ones that move, most-used first.
+  const ranked = [...plan.entries].sort((a, b) => {
+    const moved = Number(a.flags.includes('unchanged')) - Number(b.flags.includes('unchanged'))
+    return moved !== 0 ? moved : b.site.usage - a.site.usage
+  })
+  const shown = ranked.slice(0, REMAP_ROW_LIMIT)
+
   return {
-    rows: plan.entries.map((entry) => ({
+    total: plan.entries.length,
+    withheld: plan.entries.length - shown.length,
+    rows: shown.map((entry) => ({
       id: entry.site.id,
       kind: entry.site.kind,
       name: entry.site.name,

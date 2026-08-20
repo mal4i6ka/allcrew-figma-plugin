@@ -13497,6 +13497,8 @@ ${scrollGuards}` : project.css;
   }
 
   // src/targets/ds-tools/remap-inventory.ts
+  var MAX_ADJACENT_PAIRS = 2e4;
+  var MAX_LOOSE_COLORS = 400;
   var siteId = (variableId, modeId) => `${variableId}|${modeId}`;
   var styleSiteId = (styleId, property, index, stop) => `style:${styleId}#${property}:${index}${stop === void 0 ? "" : `.${stop}`}`;
   var looseSiteId = (hex, alpha) => `loose:${hex}:${alpha.toFixed(3)}`;
@@ -13538,7 +13540,8 @@ ${scrollGuards}` : project.css;
     const id = looseSiteId(hex, color.a);
     const existing = walk.loose.get(id);
     if (existing) existing.count++;
-    else walk.loose.set(id, { hex, alpha: color.a, rgba: color, count: 1 });
+    else if (walk.loose.size < MAX_LOOSE_COLORS) walk.loose.set(id, { hex, alpha: color.a, rgba: color, count: 1 });
+    else walk.looseDropped++;
     walk.loosePlaces++;
     return id;
   }
@@ -13591,7 +13594,8 @@ ${scrollGuards}` : project.css;
       loose: /* @__PURE__ */ new Map(),
       neighbours: /* @__PURE__ */ new Map(),
       nodes: 0,
-      loosePlaces: 0
+      loosePlaces: 0,
+      looseDropped: 0
     };
     const noteVariable = (id) => {
       var _a2;
@@ -13599,6 +13603,7 @@ ${scrollGuards}` : project.css;
       if (!localIds.has(id)) walk.foreign.add(id);
     };
     const notePair = (a, b, text2) => {
+      if (walk.neighbours.size >= MAX_ADJACENT_PAIRS) return;
       const key = pairKey(a, b, text2);
       if (!walk.neighbours.has(key)) walk.neighbours.set(key, { a, b, text: text2 });
     };
@@ -13819,6 +13824,16 @@ ${scrollGuards}` : project.css;
       count: variables.filter((variable) => variable.variableCollectionId === collection.id).length
     })).sort((a, b) => b.count - a.count)[0];
     if (sites.length === 0) warnings.push("this file holds no colors this tool can remap");
+    if (walk.looseDropped > 0) {
+      warnings.push(
+        `${walk.looseDropped} rarely used loose color(s) beyond the first ${MAX_LOOSE_COLORS} were left out of this reading \u2014 they stay as they are`
+      );
+    }
+    if (walk.neighbours.size >= MAX_ADJACENT_PAIRS) {
+      warnings.push(
+        `this file has more touching colour pairs than one pass can hold \u2014 duplicate separation and the contrast audit ran on the first ${MAX_ADJACENT_PAIRS}`
+      );
+    }
     return {
       sites,
       adjacency,
@@ -16096,7 +16111,8 @@ ${scrollGuards}` : project.css;
   }
   var isAlias2 = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
   var isRgb2 = (value) => typeof value === "object" && value !== null && "r" in value && "g" in value && "b" in value;
-  async function swatchesFromLibrary(key, modeName) {
+  var IMPORT_CHUNK = 50;
+  async function swatchesFromLibrary(key, modeName, progress2) {
     var _a, _b;
     const warnings = [];
     let published;
@@ -16111,7 +16127,11 @@ ${scrollGuards}` : project.css;
     let modeId = null;
     let chosenMode = null;
     let aliased = 0;
-    for (const candidate of colors) {
+    for (const [index, candidate] of colors.entries()) {
+      if (index % IMPORT_CHUNK === 0) {
+        progress2 == null ? void 0 : progress2(`importing library colors\u2026 ${index}/${colors.length}`);
+        await yieldToHost();
+      }
       const variable = await figma.variables.importVariableByKeyAsync(candidate.key).catch(() => null);
       if (!variable) continue;
       if (modeId === null) {
@@ -16386,11 +16406,16 @@ ${renderSections(sections)}
         return { swatches: swatchesFromPalette(generatePalette(settings)), warnings: [] };
       }
       case "selection": {
+        figma.ui.postMessage({ type: "REMAP_PROGRESS", label: "reading the selection\u2026" });
         const result = await swatchesFromSelection();
         return { swatches: result.swatches, warnings: result.warnings };
       }
       case "library": {
-        const result = await swatchesFromLibrary(source.key, (_a = source.mode) != null ? _a : null);
+        const result = await swatchesFromLibrary(
+          source.key,
+          (_a = source.mode) != null ? _a : null,
+          (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 })
+        );
         return { swatches: result.swatches, warnings: result.warnings };
       }
       default: {
@@ -16404,6 +16429,7 @@ ${renderSections(sections)}
       remapInventory = await readRemapInventory((label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }));
     }
     const resolved = await resolveRemapSource(source);
+    figma.ui.postMessage({ type: "REMAP_PROGRESS", label: `matching ${resolved.swatches.length} new colors\u2026` });
     const plan = buildRemapPlan({
       sites: remapInventory.sites,
       palette: resolved.swatches,
@@ -16415,10 +16441,18 @@ ${renderSections(sections)}
     plan.warnings.push(...resolved.warnings);
     return { plan: applyRemapOverrides(plan, overrides), palette: resolved.swatches };
   }
+  var REMAP_ROW_LIMIT = 500;
   function remapPlanView(plan) {
     const renamedById = new Map(plan.renames.map((rename) => [rename.siteId, rename]));
+    const ranked = [...plan.entries].sort((a, b) => {
+      const moved = Number(a.flags.includes("unchanged")) - Number(b.flags.includes("unchanged"));
+      return moved !== 0 ? moved : b.site.usage - a.site.usage;
+    });
+    const shown = ranked.slice(0, REMAP_ROW_LIMIT);
     return {
-      rows: plan.entries.map((entry) => {
+      total: plan.entries.length,
+      withheld: plan.entries.length - shown.length,
+      rows: shown.map((entry) => {
         var _a, _b;
         return {
           id: entry.site.id,

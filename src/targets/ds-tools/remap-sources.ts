@@ -13,7 +13,7 @@
 
 import type { ParsedSwatch } from '../../tokens/remap/input.ts'
 import { swatchesFromNamedColors } from '../../tokens/remap/sources.ts'
-import { findAllWithCriteria } from '../../utils/tree.ts'
+import { findAllWithCriteria, yieldToHost } from '../../utils/tree.ts'
 import { hexOf, isGradient, paintsOf, withAlpha } from './remap-inventory.ts'
 
 export interface SourceResult {
@@ -100,13 +100,24 @@ const isRgb = (value: VariableValue): value is RGB | RGBA =>
   typeof value === 'object' && value !== null && 'r' in value && 'g' in value && 'b' in value
 
 /**
+ * Importing a published design system is thousands of round-trips, and doing them without
+ * coming up for air is how a plugin gets killed rather than merely slowed — the same reason
+ * the linter chunks its own library reads.
+ */
+const IMPORT_CHUNK = 50
+
+/**
  * A published collection's color variables, taken from one mode.
  *
  * Alias-valued variables are skipped: a semantic token pointing at a primitive is not a color
  * the new palette offers, it is a second name for one that is already in the list, and
  * entering it twice would let it compete with itself in the family assignment.
  */
-export async function swatchesFromLibrary(key: string, modeName?: string | null): Promise<SourceResult> {
+export async function swatchesFromLibrary(
+  key: string,
+  modeName?: string | null,
+  progress?: (label: string) => void
+): Promise<SourceResult> {
   const warnings: string[] = []
   let published: LibraryVariable[]
   try {
@@ -123,7 +134,11 @@ export async function swatchesFromLibrary(key: string, modeName?: string | null)
   let chosenMode: string | null = null
   let aliased = 0
 
-  for (const candidate of colors) {
+  for (const [index, candidate] of colors.entries()) {
+    if (index % IMPORT_CHUNK === 0) {
+      progress?.(`importing library colors… ${index}/${colors.length}`)
+      await yieldToHost()
+    }
     const variable = await figma.variables.importVariableByKeyAsync(candidate.key).catch(() => null)
     if (!variable) continue
 

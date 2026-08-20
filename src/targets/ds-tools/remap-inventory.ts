@@ -57,6 +57,18 @@ export interface RemapInventory {
 
 export type Progress = (label: string) => void
 
+/**
+ * Ceilings on what one reading may accumulate.
+ *
+ * A design system with tens of thousands of layers produces a combinatorial number of
+ * adjacent-colour pairs and can hold thousands of distinct loose colours; both feed structures
+ * the plugin VM has to hold in memory and then hand across the sandbox boundary, and enough of
+ * either kills the plugin outright rather than slowing it down. Both caps are on *extras* —
+ * duplicate separation and the contrast audit degrade, nothing is mis-mapped.
+ */
+const MAX_ADJACENT_PAIRS = 20000
+const MAX_LOOSE_COLORS = 400
+
 /* ------------------------------------------------------------------ site addressing */
 
 /** Variables live per mode, so a site is a variable *and* a mode. */
@@ -112,6 +124,8 @@ interface LooseColor {
 }
 
 interface WalkResult {
+  /** Distinct loose colours seen after the cap was reached. */
+  looseDropped: number
   /** Variable id → how many bindings point at it. */
   usage: Map<string, number>
   /** Style id → how many nodes wear it. */
@@ -155,7 +169,8 @@ function noteLoose(walk: WalkResult, color: { r: number; g: number; b: number; a
   const id = looseSiteId(hex, color.a)
   const existing = walk.loose.get(id)
   if (existing) existing.count++
-  else walk.loose.set(id, { hex, alpha: color.a, rgba: color, count: 1 })
+  else if (walk.loose.size < MAX_LOOSE_COLORS) walk.loose.set(id, { hex, alpha: color.a, rgba: color, count: 1 })
+  else walk.looseDropped++
   walk.loosePlaces++
   return id
 }
@@ -222,6 +237,7 @@ async function walkDocument(localIds: ReadonlySet<string>, progress?: Progress):
     neighbours: new Map(),
     nodes: 0,
     loosePlaces: 0,
+    looseDropped: 0,
   }
 
   const noteVariable = (id: string): void => {
@@ -229,6 +245,7 @@ async function walkDocument(localIds: ReadonlySet<string>, progress?: Progress):
     if (!localIds.has(id)) walk.foreign.add(id)
   }
   const notePair = (a: string, b: string, text: boolean): void => {
+    if (walk.neighbours.size >= MAX_ADJACENT_PAIRS) return
     const key = pairKey(a, b, text)
     if (!walk.neighbours.has(key)) walk.neighbours.set(key, { a, b, text })
   }
@@ -493,6 +510,18 @@ export async function readRemapInventory(progress?: Progress): Promise<RemapInve
     .sort((a, b) => b.count - a.count)[0]
 
   if (sites.length === 0) warnings.push('this file holds no colors this tool can remap')
+  if (walk.looseDropped > 0) {
+    warnings.push(
+      `${walk.looseDropped} rarely used loose color(s) beyond the first ${MAX_LOOSE_COLORS} were left out of ` +
+        'this reading — they stay as they are'
+    )
+  }
+  if (walk.neighbours.size >= MAX_ADJACENT_PAIRS) {
+    warnings.push(
+      `this file has more touching colour pairs than one pass can hold — duplicate separation and the ` +
+        `contrast audit ran on the first ${MAX_ADJACENT_PAIRS}`
+    )
+  }
 
   return {
     sites,

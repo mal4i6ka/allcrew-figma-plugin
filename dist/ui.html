@@ -405,7 +405,7 @@
   /* ── Color palette panel ─────────────────────────────────────────────────────────── */
   #pal-card { gap: 13px; }
   .pal-seg { display: flex; gap: 4px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 3px; }
-  .pal-seg .seg { flex: 1; appearance: none; border: 0; background: transparent; cursor: pointer; color: var(--muted); font-family: var(--mono); font-size: 11px; padding: 6px 8px; border-radius: 6px; transition: background .16s, color .16s; }
+  .pal-seg .seg { flex: 1 1 0; min-width: 0; display: block; text-align: center; white-space: nowrap; appearance: none; border: 0; padding: 6px 8px; background: transparent; cursor: pointer; color: var(--muted); font-family: var(--mono); font-size: 11px; border-radius: 6px; transition: background .16s, color .16s; }
   .pal-seg .seg:hover { color: var(--text); }
   .pal-seg .seg.active { background: var(--accent-tint); color: var(--accent-hi); box-shadow: inset 0 0 0 1px rgba(251,91,10,0.3); }
   .pal-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -3468,8 +3468,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           ))
           var moved = 0
           for (var ri = 0; ri < msg.rows.length; ri++) if (msg.rows[ri].flags.indexOf('unchanged') === -1) moved++
-          rmpText('rmp-result', moved + ' of ' + msg.rows.length + ' values move' +
-            (msg.renames.length ? ' · ' + msg.renames.length + ' renamed' : ''))
+          // The table is a view with a ceiling; Apply always works from the whole plan.
+          var scope = msg.withheld
+            ? moved + ' of the ' + msg.rows.length + ' rows shown move · ' + msg.total +
+              ' colours in total, all of them applied'
+            : moved + ' of ' + msg.total + ' values move'
+          rmpText('rmp-result', scope + (msg.renames.length ? ' · ' + msg.renames.length + ' renamed' : ''))
         } else if (msg.type === 'REMAP_APPLIED') {
           rmpSetBusy(false)
           var rr = msg.report || {}
