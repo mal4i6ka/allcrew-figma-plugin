@@ -40,7 +40,7 @@ export type RemapScope = 'document' | 'page' | 'selection'
 export interface RemapApplyOptions {
   /** Write the new color values into variables. */
   values: boolean
-  /** Rewrite primitive names onto their new family. */
+  /** Rewrite primitive names onto their new family. Only ever with `values`: a rename is a write. */
   rename: boolean
   /** Write paint styles, gradient stops inside them, and effect styles. */
   styles: boolean
@@ -624,7 +624,10 @@ export async function applyRemap(
   }
 
   const valueTargets = options.values ? plan.entries.filter(writableVariable) : []
-  const renames = options.rename ? plan.renames : []
+  // Renaming a variable is writing to it. Letting the two come apart is how a run that was
+  // asked only to draw a board on canvas ended up renaming the palette and parking the
+  // collisions in legacy/.
+  const renames = options.rename && options.values ? plan.renames : []
   const hasStyles = options.styles && plan.entries.some(writableStyle)
   const hasCanvas = options.canvas && plan.entries.some(writableLoose)
   if (valueTargets.length === 0 && renames.length === 0 && !hasStyles && !hasCanvas) {
@@ -748,6 +751,59 @@ export async function applyRemap(
     writeRenameMap(foldRenames(readRenameMap(), applied))
   }
 
+  return report
+}
+
+/* ------------------------------------------------------------------ unparking */
+
+export interface UnparkReport {
+  restored: number
+  blocked: string[]
+  warnings: string[]
+}
+
+/**
+ * Puts back the names this plugin moved into the legacy group.
+ *
+ * Only those: the stored rename map says which variables *this tool* renamed and where to, so
+ * a `legacy/` group the team curated by hand is never touched. A name that something else has
+ * taken since is reported rather than forced, because forcing it would just move the collision
+ * somewhere else.
+ */
+export async function unparkLegacyNames(legacyGroup = 'legacy'): Promise<UnparkReport> {
+  const map = readRenameMap()
+  const parked = Object.entries(map).filter(([, to]) => to.startsWith(`${legacyGroup}/`))
+  if (parked.length === 0) return { restored: 0, blocked: [], warnings: ['this plugin has parked no names in this file'] }
+
+  const variables = await figma.variables.getLocalVariablesAsync('COLOR')
+  const byName = new Map<string, Variable>()
+  for (const variable of variables) byName.set(variable.name, variable)
+
+  const report: UnparkReport = { restored: 0, blocked: [], warnings: [] }
+  const remaining: RenameMap = { ...map }
+
+  for (const [original, current] of parked) {
+    const variable = byName.get(current)
+    if (!variable) {
+      report.blocked.push(`${current} is not in this file any more`)
+      continue
+    }
+    if (byName.has(original)) {
+      report.blocked.push(`${original} is taken — ${current} stays where it is`)
+      continue
+    }
+    try {
+      variable.name = original
+      byName.delete(current)
+      byName.set(original, variable)
+      delete remaining[original]
+      report.restored++
+    } catch (error) {
+      report.blocked.push(`${current}: ${String((error as Error).message)}`)
+    }
+  }
+
+  writeRenameMap(remaining)
   return report
 }
 

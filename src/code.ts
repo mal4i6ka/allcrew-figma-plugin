@@ -64,6 +64,7 @@ import {
   hasRemapSnapshot,
   readRenameMap,
   revertRemap,
+  unparkLegacyNames,
   type RemapApplyOptions,
 } from './targets/ds-tools/remap-apply'
 import { drawRemapBoard } from './targets/ds-tools/remap-board'
@@ -133,6 +134,7 @@ type PluginMessage =
       board?: boolean
     }
   | { type: 'REMAP_REVERT' }
+  | { type: 'REMAP_UNPARK' }
   | { type: 'REMAP_EXPORT_MAPPING'; source: RemapSource; options?: Partial<RemapOptions>; format: 'json' | 'csv'; overrides?: Record<string, string> }
   | {
       type: 'REMAP_REWRITE_FILES'
@@ -1015,6 +1017,19 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         remapInventory = null
         figma.notify(`Reverted ${report.values} values` + (report.names ? ` and ${report.names} names` : ''))
         figma.ui.postMessage({ type: 'REMAP_REVERTED', report, canRevert: hasRemapSnapshot() })
+      } catch (err) {
+        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'REMAP_UNPARK': {
+      try {
+        const report = await unparkLegacyNames()
+        remapInventory = null
+        figma.notify(
+          report.restored ? `Restored ${report.restored} name(s) from legacy/` : 'Nothing of this plugin’s to restore'
+        )
+        figma.ui.postMessage({ type: 'REMAP_UNPARKED', report })
       } catch (err) {
         figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }

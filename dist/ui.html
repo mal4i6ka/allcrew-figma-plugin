@@ -833,13 +833,13 @@
         <div id="rmp-table" class="rmp-table"></div>
 
         <div class="pal-opts" id="rmp-opts">
-          <label><input type="checkbox" id="rmp-opt-rename" checked /> <span>Rename primitives onto their new family &mdash; <b>colors/Blue/500</b> becomes <b>colors/Violet/500</b></span></label>
           <label><input type="checkbox" id="rmp-opt-separate" checked /> <span>Pull apart two tokens that land on one color <b>and touch on canvas</b></span></label>
         </div>
 
         <p class="label">Write</p>
         <div class="pal-opts" id="rmp-writes">
           <label><input type="checkbox" id="rmp-w-values" checked /> <span><b>Variables</b> &mdash; values in place, so every binding follows</span></label>
+          <label><input type="checkbox" id="rmp-opt-rename" checked /> <span>&hellip;and <b>rename primitives</b> onto their new family. A rename is a write: this does nothing unless Variables is on.</span></label>
           <label><input type="checkbox" id="rmp-w-styles" checked /> <span><b>Paint &amp; effect styles</b>, including every gradient stop inside them</span></label>
           <label><input type="checkbox" id="rmp-w-canvas" checked /> <span><b>Loose colors on layers</b> &mdash; unbound fills, strokes, gradient stops and shadows</span></label>
           <label><input type="checkbox" id="rmp-w-bind" checked /> <span>Bind a loose color to the variable it turns out to be, instead of repainting it</span></label>
@@ -856,6 +856,9 @@
         <div class="rmp-actions">
           <button class="btn primary" id="rmp-apply" type="button" disabled>Apply to this file</button>
           <button class="btn ghost" id="rmp-revert" type="button" disabled>Revert</button>
+        </div>
+        <div class="rmp-actions">
+          <button class="btn ghost" id="rmp-unpark" type="button">Restore names this plugin parked in legacy/</button>
         </div>
         <div class="rmp-actions">
           <button class="btn ghost" id="rmp-json" type="button" disabled>mapping.json</button>
@@ -3192,7 +3195,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function rmpApplyOptions() {
         return {
           values: rmpEl('rmp-w-values').checked,
-          rename: rmpEl('rmp-opt-rename').checked,
+          // A rename is a write to a variable, so it cannot happen while variables are off.
+          rename: rmpEl('rmp-w-values').checked && rmpEl('rmp-opt-rename').checked,
           styles: rmpEl('rmp-w-styles').checked,
           canvas: rmpEl('rmp-w-canvas').checked,
           bind: rmpEl('rmp-w-bind').checked,
@@ -3211,6 +3215,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           overrides: RMP_OVERRIDES,
           board: rmpEl('rmp-w-board').checked
         } }, '*')
+      })
+
+      rmpEl('rmp-unpark').addEventListener('click', function () {
+        rmpSetBusy(true)
+        rmpText('rmp-result', 'Looking for names this plugin moved…')
+        parent.postMessage({ pluginMessage: { type: 'REMAP_UNPARK' } }, '*')
       })
 
       rmpEl('rmp-revert').addEventListener('click', function () {
@@ -3573,6 +3583,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpText('rmp-result', msg.replaced + ' colour(s) rewritten in ' + touched + ' of ' +
             msg.files.length + ' file(s) · ' + msg.untouched + ' colour(s) left alone' +
             (touched ? ' — downloaded' : ''))
+        } else if (msg.type === 'REMAP_UNPARKED') {
+          rmpSetBusy(false)
+          var un = msg.report || {}
+          rmpText('rmp-result', un.restored
+            ? 'Restored ' + un.restored + ' name(s) out of legacy/.'
+            : 'Nothing of this plugin’s to restore — a legacy/ group it never wrote is left alone.')
+          rmpRenderWarnings((un.warnings || []).concat(un.blocked || []))
         } else if (msg.type === 'REMAP_MAPPING') {
           dtDownload(msg.name, msg.content, msg.format === 'csv' ? 'text/csv' : 'application/json')
         } else if (msg.type === 'REMAP_ERROR') {

@@ -14702,7 +14702,7 @@ ${scrollGuards}` : project.css;
       warnings
     };
     const valueTargets = options.values ? plan.entries.filter(writableVariable) : [];
-    const renames = options.rename ? plan.renames : [];
+    const renames = options.rename && options.values ? plan.renames : [];
     const hasStyles = options.styles && plan.entries.some(writableStyle);
     const hasCanvas = options.canvas && plan.entries.some(writableLoose);
     if (valueTargets.length === 0 && renames.length === 0 && !hasStyles && !hasCanvas) {
@@ -14804,6 +14804,38 @@ ${scrollGuards}` : project.css;
       }
       writeRenameMap(foldRenames(readRenameMap(), applied));
     }
+    return report;
+  }
+  async function unparkLegacyNames(legacyGroup = "legacy") {
+    const map = readRenameMap();
+    const parked = Object.entries(map).filter(([, to]) => to.startsWith(`${legacyGroup}/`));
+    if (parked.length === 0) return { restored: 0, blocked: [], warnings: ["this plugin has parked no names in this file"] };
+    const variables = await figma.variables.getLocalVariablesAsync("COLOR");
+    const byName = /* @__PURE__ */ new Map();
+    for (const variable of variables) byName.set(variable.name, variable);
+    const report = { restored: 0, blocked: [], warnings: [] };
+    const remaining = __spreadValues({}, map);
+    for (const [original, current] of parked) {
+      const variable = byName.get(current);
+      if (!variable) {
+        report.blocked.push(`${current} is not in this file any more`);
+        continue;
+      }
+      if (byName.has(original)) {
+        report.blocked.push(`${original} is taken \u2014 ${current} stays where it is`);
+        continue;
+      }
+      try {
+        variable.name = original;
+        byName.delete(current);
+        byName.set(original, variable);
+        delete remaining[original];
+        report.restored++;
+      } catch (error) {
+        report.blocked.push(`${current}: ${String(error.message)}`);
+      }
+    }
+    writeRenameMap(remaining);
     return report;
   }
   async function revertStyles(snapshot, warnings) {
@@ -17278,6 +17310,19 @@ ${renderSections(sections)}
           remapInventory = null;
           figma.notify(`Reverted ${report.values} values` + (report.names ? ` and ${report.names} names` : ""));
           figma.ui.postMessage({ type: "REMAP_REVERTED", report, canRevert: hasRemapSnapshot() });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_UNPARK": {
+        try {
+          const report = await unparkLegacyNames();
+          remapInventory = null;
+          figma.notify(
+            report.restored ? `Restored ${report.restored} name(s) from legacy/` : "Nothing of this plugin\u2019s to restore"
+          );
+          figma.ui.postMessage({ type: "REMAP_UNPARKED", report });
         } catch (err) {
           figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
