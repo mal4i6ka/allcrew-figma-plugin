@@ -463,16 +463,26 @@
   .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow-y: auto; overflow-x: hidden; }
   .rmp-group { color: var(--faint); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; margin: 9px 0 3px; display: flex; align-items: center; gap: 6px; }
   .rmp-group b { color: var(--text); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0; text-transform: none; }
+  .rmp-head { display: grid; grid-template-columns: 14px 14px 1fr auto; align-items: center; gap: 7px; padding: 0 5px 4px; color: var(--faint); font-size: 9px; letter-spacing: .05em; text-transform: uppercase; position: sticky; top: 0; background: var(--surface); z-index: 1; }
+  .rmp-head .rmp-head-old { color: var(--muted); }
   .rmp-row { display: grid; grid-template-columns: 14px 14px 1fr auto; align-items: center; gap: 7px; padding: 4px 5px; border-radius: 5px; }
   .rmp-row:hover { background: var(--bg-2); }
   .rmp-sw { width: 14px; height: 14px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14); }
-  .rmp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 10.5px; color: var(--text); }
-  .rmp-name i { font-style: normal; color: var(--faint); }
+  .rmp-name { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 10.5px; color: var(--text); }
+  .rmp-name b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
+  .rmp-name i { font-style: normal; color: var(--faint); flex: none; }
   .rmp-meta { display: flex; align-items: center; gap: 5px; flex: none; }
   .rmp-de { font-family: var(--mono); font-size: 10px; color: var(--faint); min-width: 26px; text-align: right; }
-  .rmp-flag { font-size: 9px; letter-spacing: .03em; text-transform: uppercase; padding: 1px 4px; border-radius: 3px; background: var(--bg-2); color: var(--muted); box-shadow: inset 0 0 0 1px var(--border); }
+  /* One glyph per flag, with the word in the tooltip: at this row height a spelled-out chip
+     costs more width than the name it pushes off the edge. */
+  .rmp-flag { width: 14px; height: 14px; flex: none; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 9px; border-radius: 3px; background: var(--bg-2); color: var(--muted); box-shadow: inset 0 0 0 1px var(--border); cursor: help; }
   .rmp-flag.warn { color: var(--accent-hi); background: var(--accent-tint); box-shadow: inset 0 0 0 1px rgba(251,91,10,0.3); }
-  .rmp-override { width: 66px; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 2px 4px; font-family: var(--mono); font-size: 10px; }
+  .rmp-notes { border: 0; padding: 0; margin: 0; }
+  .rmp-notes > summary { cursor: pointer; color: var(--muted); font-size: 11px; padding: 2px 0; list-style: none; }
+  .rmp-notes > summary::-webkit-details-marker { display: none; }
+  .rmp-notes > summary::before { content: '▸ '; color: var(--faint); }
+  .rmp-notes[open] > summary::before { content: '▾ '; }
+  .rmp-override { width: 58px; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 2px 4px; font-family: var(--mono); font-size: 10px; }
   .rmp-override:focus { outline: none; border-color: var(--accent); }
   .rmp-pick { width: 18px; height: 18px; padding: 0; border: 1px solid var(--border); border-radius: 4px; background: transparent; cursor: pointer; flex: none; }
   .rmp-pick::-webkit-color-swatch-wrapper { padding: 1px; }
@@ -3037,7 +3047,25 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return node
       }
 
-      var RMP_LOUD_FLAGS = { orphan: 1, duplicate: 1, 'mode-divergence': 1, library: 1, separated: 1, manual: 1 }
+      // Glyph, and the word it stands for. The word lives in the tooltip because spelling it
+      // out in the row costs more width than the token name it pushes off the edge.
+      var RMP_FLAGS = {
+        orphan: ['?', 'no family matched — took its nearest colour', 1],
+        duplicate: ['=', 'another token lands on this same colour', 1],
+        separated: ['⇄', 'pulled apart from a token it touches on canvas', 1],
+        library: ['⌂', 'lives in a library — read here, written in its source file', 1],
+        manual: ['✎', 'you set this one by hand', 1],
+        'mode-divergence': ['≠', 'this token’s modes landed in different families', 1],
+        'shared-family': ['⊂', 'its family shares a target with another family', 0],
+        unchanged: ['', '', 0]
+      }
+
+      /** 117500 reads as noise; 117k reads as a number. */
+      function rmpCount(value) {
+        if (value >= 10000) return Math.round(value / 1000) + 'k'
+        if (value >= 1000) return (value / 1000).toFixed(1).replace('.0', '') + 'k'
+        return String(value)
+      }
 
       function rmpRow(row) {
         var node = document.createElement('div')
@@ -3047,32 +3075,42 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
         var name = document.createElement('span')
         name.className = 'rmp-name'
-        name.textContent = row.name
-        var trail = []
-        if (row.mode) trail.push(row.mode)
-        if (row.newName) trail.push('→ ' + row.newName)
-        if (row.usage) trail.push(row.usage + '×')
-        if (trail.length) {
-          var hint = document.createElement('i')
-          hint.textContent = '  ' + trail.join(' · ')
-          name.appendChild(hint)
+        var label = document.createElement('b')
+        label.textContent = row.name
+        name.appendChild(label)
+        if (row.usage > 1) {
+          var count = document.createElement('i')
+          count.textContent = rmpCount(row.usage) + '×'
+          count.title = row.usage + ' places use it'
+          name.appendChild(count)
         }
-        name.title = row.from + ' → ' + row.to + (row.toFamily ? '  (' + row.toFamily + (row.toStep !== null ? '/' + row.toStep : '') + ')' : '')
+        // Everything else a row could say goes here rather than on screen: the full name, the
+        // mode, the new name, where it landed.
+        name.title = [
+          row.name,
+          row.mode ? 'mode ' + row.mode : '',
+          row.from + ' → ' + row.to,
+          row.toFamily ? 'lands on ' + row.toFamily + (row.toStep !== null ? '/' + row.toStep : '') : '',
+          row.newName ? 'renamed to ' + row.newName : '',
+          'chosen by ' + row.via
+        ].filter(Boolean).join('\n')
         node.appendChild(name)
 
         var meta = document.createElement('span')
         meta.className = 'rmp-meta'
         for (var i = 0; i < row.flags.length; i++) {
-          if (row.flags[i] === 'unchanged' || row.flags[i] === 'shared-family') continue
+          var mark = RMP_FLAGS[row.flags[i]]
+          if (!mark || mark[0] === '') continue
           var flag = document.createElement('span')
-          flag.className = 'rmp-flag' + (RMP_LOUD_FLAGS[row.flags[i]] ? ' warn' : '')
-          flag.textContent = row.flags[i]
+          flag.className = 'rmp-flag' + (mark[2] ? ' warn' : '')
+          flag.textContent = mark[0]
+          flag.title = row.flags[i] + ' — ' + mark[1]
           meta.appendChild(flag)
         }
         var delta = document.createElement('span')
         delta.className = 'rmp-de'
         delta.textContent = row.deltaE ? String(row.deltaE) : '·'
-        delta.title = 'perceptual distance from the old color'
+        delta.title = 'how far the colour moved, on a scale where 1 is just noticeable'
         meta.appendChild(delta)
 
         // Overriding a row is the escape hatch the whole table exists for: everything is
@@ -3119,6 +3157,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         RMP_ROWS = rows
         if (!rows || rows.length === 0) { rmpSyncButtons(); return }
 
+        // Two unlabelled swatches are a riddle; the header answers it once, at the top.
+        var head = document.createElement('div')
+        head.className = 'rmp-head'
+        var oldMark = document.createElement('span')
+        oldMark.className = 'rmp-head-old'
+        oldMark.textContent = 'now'
+        head.appendChild(oldMark)
+        var newMark = document.createElement('span')
+        newMark.textContent = 'new'
+        head.appendChild(newMark)
+        head.appendChild(document.createElement('span'))
+        var right = document.createElement('span')
+        right.textContent = 'Δ · replace with'
+        head.appendChild(right)
+        table.appendChild(head)
+
         var familyNote = {}
         for (var f = 0; f < (families || []).length; f++) {
           familyNote[families[f].fromLabel] = families[f].toLabel + (families[f].shared ? ' (shared)' : '')
@@ -3150,12 +3204,33 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function rmpRenderWarnings(warnings) {
         var box = rmpEl('rmp-warnings')
         box.innerHTML = ''
-        for (var i = 0; i < (warnings || []).length; i++) {
+        var list = warnings || []
+        if (list.length === 0) return
+
+        // Past a few, notes stop being read and start being scrolled past. Keep the first two
+        // in the open and fold the rest behind a count.
+        var visible = list.length <= 3 ? list : list.slice(0, 2)
+        for (var i = 0; i < visible.length; i++) {
           var node = document.createElement('div')
           node.className = 'pal-warning'
-          node.textContent = warnings[i]
+          node.textContent = visible[i]
           box.appendChild(node)
         }
+        if (list.length <= 3) return
+
+        var rest = list.slice(2)
+        var details = document.createElement('details')
+        details.className = 'rmp-notes'
+        var summary = document.createElement('summary')
+        summary.textContent = rest.length + ' more note' + (rest.length === 1 ? '' : 's')
+        details.appendChild(summary)
+        for (var j = 0; j < rest.length; j++) {
+          var more = document.createElement('div')
+          more.className = 'pal-warning'
+          more.textContent = rest[j]
+          details.appendChild(more)
+        }
+        box.appendChild(details)
       }
 
       function rmpPreview() {

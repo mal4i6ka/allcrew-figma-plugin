@@ -80,9 +80,6 @@ export function familyCost(from: InferredSpectrum, to: InferredSpectrum): number
   else if (from.neutral !== to.neutral) cost = NEUTRAL_MISMATCH
   else cost = hueDistance(from.hue, to.hue) / 180
 
-  // An alpha ramp and a lightness ramp are ladders on different axes; pairing them is a last
-  // resort in the same way as pairing a gray ramp with a colored one.
-  if (from.translucent !== to.translucent) cost += NEUTRAL_MISMATCH
 
   const fromCount = from.stops.length
   const toCount = to.stops.length

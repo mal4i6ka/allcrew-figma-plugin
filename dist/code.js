@@ -14072,15 +14072,19 @@ ${scrollGuards}` : project.css;
     const usedKeys = /* @__PURE__ */ new Set();
     const spectra = [];
     const unnamed = [];
+    const loose = [];
     const named = /* @__PURE__ */ new Map();
     for (const stop of stops) {
+      if (!isOpaque(stop)) {
+        loose.push(stop);
+        continue;
+      }
       if (stop.family === null || stop.family.trim() === "") {
         unnamed.push(stop);
         continue;
       }
-      const opaque = isOpaque(stop);
-      const key = familyKey(stop.family) + (opaque ? "" : "~alpha");
-      const entry = (_a = named.get(key)) != null ? _a : { label: stop.family + (opaque ? "" : " (translucent)"), stops: [] };
+      const key = familyKey(stop.family);
+      const entry = (_a = named.get(key)) != null ? _a : { label: stop.family, stops: [] };
       entry.stops.push(stop);
       named.set(key, entry);
     }
@@ -14088,21 +14092,16 @@ ${scrollGuards}` : project.css;
       if (looksLikeRamp(group)) spectra.push(makeSpectrum(group, "named", label3, usedKeys));
       else unnamed.push(...group);
     }
-    const loose = [];
-    for (const opaque of [true, false]) {
-      const layer = unnamed.filter((stop) => isOpaque(stop) === opaque);
-      const suffix = opaque ? "" : " (translucent)";
-      const grays = layer.filter(isNeutral);
-      const colored = layer.filter((stop) => !isNeutral(stop));
-      if (grays.length >= 2) spectra.push(makeSpectrum(grays, "clustered", `Neutral${suffix}`, usedKeys));
-      else loose.push(...grays);
-      for (const cluster of clusterByHue(colored)) {
-        if (cluster.length < 2) {
-          loose.push(...cluster);
-          continue;
-        }
-        spectra.push(makeSpectrum(cluster, "clustered", hueName2(meanHue(cluster)) + suffix, usedKeys));
+    const grays = unnamed.filter(isNeutral);
+    const colored = unnamed.filter((stop) => !isNeutral(stop));
+    if (grays.length >= 2) spectra.push(makeSpectrum(grays, "clustered", "Neutral", usedKeys));
+    else loose.push(...grays);
+    for (const cluster of clusterByHue(colored)) {
+      if (cluster.length < 2) {
+        loose.push(...cluster);
+        continue;
       }
+      spectra.push(makeSpectrum(cluster, "clustered", hueName2(meanHue(cluster)), usedKeys));
     }
     spectra.sort((a, b) => Number(a.neutral) - Number(b.neutral) || a.hue - b.hue);
     const warnings = spectra.filter((spectrum) => spectrum.crowded).map(
@@ -14143,7 +14142,6 @@ ${scrollGuards}` : project.css;
     if (from.neutral && to.neutral) cost = 0;
     else if (from.neutral !== to.neutral) cost = NEUTRAL_MISMATCH;
     else cost = hueDistance2(from.hue, to.hue) / 180;
-    if (from.translucent !== to.translucent) cost += NEUTRAL_MISMATCH;
     const fromCount = from.stops.length;
     const toCount = to.stops.length;
     cost += Math.abs(fromCount - toCount) / Math.max(fromCount, toCount) * WEIGHT_STOP_COUNT;
@@ -15892,10 +15890,13 @@ ${scrollGuards}` : project.css;
     }
   }
   function planRenames(entries, primaryModeId, taken, options, warnings) {
-    var _a;
+    var _a, _b, _c, _d;
     if (!options.rename) return [];
     const eligible = entries.filter(
-      (entry) => entry.site.kind === "variable" && entry.site.primitive && entry.site.editable && entry.toFamily !== null
+      (entry) => entry.site.kind === "variable" && entry.site.primitive && entry.site.editable && entry.toFamily !== null && // A translucent token is matched as a colour, not as a rung of a ladder, so the family it
+      // happened to land near is not a family it belongs to. Renaming `colors/black/50` into
+      // `colors/neutral/50` only collides with the neutral that is already there.
+      entry.from.a >= 0.999
     );
     const perEntity = /* @__PURE__ */ new Map();
     for (const entry of eligible) {
@@ -15920,10 +15921,21 @@ ${scrollGuards}` : project.css;
     })).filter((proposal) => proposal.to !== proposal.entry.site.name).sort((a, b) => b.entry.site.usage - a.entry.site.usage || a.entry.site.name.localeCompare(b.entry.site.name));
     const claimed = /* @__PURE__ */ new Set();
     const renaming = new Set(proposals.map((proposal) => proposal.entry.site.name));
+    const collides = (to) => claimed.has(to) || taken.has(to) && !renaming.has(to);
+    const perFamily = /* @__PURE__ */ new Map();
+    for (const proposal of proposals) {
+      const family = (_b = proposal.entry.fromFamily) != null ? _b : proposal.entry.site.name;
+      if (taken.has(proposal.to) && !renaming.has(proposal.to)) {
+        perFamily.set(family, ((_c = perFamily.get(family)) != null ? _c : 0) + 1);
+      }
+    }
+    const blockedFamilies = /* @__PURE__ */ new Set();
+    for (const [family, count] of perFamily) if (count >= 2) blockedFamilies.add(family);
     const renames = [];
     for (const proposal of proposals) {
-      const collides = claimed.has(proposal.to) || taken.has(proposal.to) && !renaming.has(proposal.to);
-      if (!collides) {
+      const family = (_d = proposal.entry.fromFamily) != null ? _d : proposal.entry.site.name;
+      if (blockedFamilies.has(family)) continue;
+      if (!collides(proposal.to)) {
         claimed.add(proposal.to);
         renames.push({ siteId: proposal.entry.site.id, from: proposal.entry.site.name, to: proposal.to, legacy: false });
         continue;
@@ -15931,9 +15943,10 @@ ${scrollGuards}` : project.css;
       const parked = `${options.legacyGroup}/${proposal.entry.site.name}`;
       claimed.add(parked);
       renames.push({ siteId: proposal.entry.site.id, from: proposal.entry.site.name, to: parked, legacy: true });
-      warnings.push(
-        `${proposal.entry.site.name} and another variable both become ${proposal.to} \u2014 the less used one moves to ${parked}, keeping its exported key alive as an alias`
-      );
+      warnings.push(`${proposal.entry.site.name}: ${proposal.to} is taken, parked as ${parked}`);
+    }
+    for (const family of blockedFamilies) {
+      warnings.push(`${family} keeps its names \u2014 the family it moves to already uses them`);
     }
     return renames;
   }

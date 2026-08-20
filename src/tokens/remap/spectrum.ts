@@ -285,19 +285,26 @@ export function inferSpectra(members: readonly SpectrumMember[]): SpectrumInfere
   const spectra: InferredSpectrum[] = []
   const unnamed: SpectrumStop[] = []
 
-  // Opacity is part of a family's identity, not a property of one of its members. A palette's
-  // `alpha/orange/10` is a tenth-opacity orange, and its "10" is a percentage — file it beside
-  // the opaque orange ramp and it offers that ramp a step 10 it does not have, so an old pale
-  // tint lands on a tenth-opacity brand colour. They are different ladders on different axes.
+  // Translucency is not a rung and not a family — it is a property of one colour. A palette's
+  // `alpha/orange/10` is a tenth-opacity orange whose "10" is a percentage: file it beside the
+  // opaque orange ramp and it hands that ramp a step 10 it does not have. Group the translucent
+  // ones together instead and they compare by *hue*, so a see-through black lands on a
+  // see-through white because both are neutral. Neither is a ladder. Each is matched on the
+  // colour it is, by nearest neighbour, and keeps its own alpha — which is what the rest of the
+  // tool already promises about alpha everywhere else.
+  const loose: SpectrumStop[] = []
   const named = new Map<string, { label: string; stops: SpectrumStop[] }>()
   for (const stop of stops) {
+    if (!isOpaque(stop)) {
+      loose.push(stop)
+      continue
+    }
     if (stop.family === null || stop.family.trim() === '') {
       unnamed.push(stop)
       continue
     }
-    const opaque = isOpaque(stop)
-    const key = familyKey(stop.family) + (opaque ? '' : '~alpha')
-    const entry = named.get(key) ?? { label: stop.family + (opaque ? '' : ' (translucent)'), stops: [] }
+    const key = familyKey(stop.family)
+    const entry = named.get(key) ?? { label: stop.family, stops: [] }
     entry.stops.push(stop)
     named.set(key, entry)
   }
@@ -307,24 +314,18 @@ export function inferSpectra(members: readonly SpectrumMember[]): SpectrumInfere
     else unnamed.push(...group)
   }
 
-  const loose: SpectrumStop[] = []
+  const grays = unnamed.filter(isNeutral)
+  const colored = unnamed.filter((stop) => !isNeutral(stop))
 
-  for (const opaque of [true, false]) {
-    const layer = unnamed.filter((stop) => isOpaque(stop) === opaque)
-    const suffix = opaque ? '' : ' (translucent)'
-    const grays = layer.filter(isNeutral)
-    const colored = layer.filter((stop) => !isNeutral(stop))
+  if (grays.length >= 2) spectra.push(makeSpectrum(grays, 'clustered', 'Neutral', usedKeys))
+  else loose.push(...grays)
 
-    if (grays.length >= 2) spectra.push(makeSpectrum(grays, 'clustered', `Neutral${suffix}`, usedKeys))
-    else loose.push(...grays)
-
-    for (const cluster of clusterByHue(colored)) {
-      if (cluster.length < 2) {
-        loose.push(...cluster)
-        continue
-      }
-      spectra.push(makeSpectrum(cluster, 'clustered', hueName(meanHue(cluster)) + suffix, usedKeys))
+  for (const cluster of clusterByHue(colored)) {
+    if (cluster.length < 2) {
+      loose.push(...cluster)
+      continue
     }
+    spectra.push(makeSpectrum(cluster, 'clustered', hueName(meanHue(cluster)), usedKeys))
   }
 
   spectra.sort((a, b) => Number(a.neutral) - Number(b.neutral) || a.hue - b.hue)

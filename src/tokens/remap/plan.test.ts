@@ -93,7 +93,7 @@ test('a name collision parks the less used variable under legacy/ instead of del
   assert.equal(renamed.get('colors/Blue/500')!.to, 'colors/Violet/500', 'the more used name wins the claim')
   assert.equal(renamed.get('colors/Indigo/500')!.to, 'legacy/colors/Indigo/500')
   assert.equal(renamed.get('colors/Indigo/500')!.legacy, true)
-  assert.ok(plan.warnings.some((warning) => /moves to legacy/.test(warning)))
+  assert.ok(plan.warnings.some((warning) => /parked as legacy/.test(warning)))
   assert.equal(plan.entries.length, 2, 'both variables survive — nothing is consolidated away')
 })
 
@@ -193,4 +193,26 @@ test('a variable with several modes is renamed once, decided by the primary mode
   const plan = buildRemapPlan({ sites, palette: palette(pasted('Violet', VIOLET)), primaryModeId: 'm-light' })
   assert.equal(plan.renames.length, 1)
   assert.equal(plan.renames[0].siteId, 'v1|m-light')
+})
+
+test('a family that would collide at every rung keeps its names instead of burying half a ramp', () => {
+  // Renaming teal onto neutral means teal/100 meets the neutral/100 that is already there, and
+  // so on down the ladder. Parking those one by one is how ten variables end up in legacy/.
+  const sites = [
+    ...[50, 100, 200, 300].map((step) =>
+      site({ name: `colors/teal/${step}`, rgba: rgba(['#BFD6D9', '#A1BCC0', '#93AEB2', '#60797D'][[50, 100, 200, 300].indexOf(step)]) })
+    ),
+    ...[50, 100, 200, 300].map((step) =>
+      site({ name: `colors/neutral/${step}`, rgba: rgba(['#F5F5F5', '#E0E0E0', '#BDBDBD', '#757575'][[50, 100, 200, 300].indexOf(step)]) })
+    ),
+  ]
+  const greys = [50, 100, 200, 300].map((step, index) => `neutral/${step}, ${['#F7F8F8', '#F2F4F5', '#D9DCDE', '#B8BBBD'][index]}`)
+  const plan = buildRemapPlan({ sites, palette: palette(greys.join('\n')) })
+
+  const parked = plan.renames.filter((rename) => rename.legacy)
+  assert.deepEqual(parked, [], 'nothing is buried')
+  assert.ok(
+    plan.warnings.some((warning) => /keeps its names/.test(warning)),
+    `expected a family-level note, got ${JSON.stringify(plan.warnings)}`
+  )
 })
