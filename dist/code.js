@@ -6,7 +6,7 @@
   var __getOwnPropSymbols = Object.getOwnPropertySymbols;
   var __hasOwnProp = Object.prototype.hasOwnProperty;
   var __propIsEnum = Object.prototype.propertyIsEnumerable;
-  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __defNormalProp = (obj2, key, value) => key in obj2 ? __defProp(obj2, key, { enumerable: true, configurable: true, writable: true, value }) : obj2[key] = value;
   var __spreadValues = (a, b) => {
     for (var prop in b || (b = {}))
       if (__hasOwnProp.call(b, prop))
@@ -437,9 +437,9 @@
   }
   function addTextStyleTokens(out, textStyles, idToName) {
     const SEP = "";
-    const list = (Array.isArray(textStyles) ? textStyles : []).filter((t) => t && typeof t.name === "string" && t.name.trim() !== "").slice().sort((a, b) => a.name.localeCompare(b.name) || String(a.id).localeCompare(String(b.id)));
+    const list2 = (Array.isArray(textStyles) ? textStyles : []).filter((t) => t && typeof t.name === "string" && t.name.trim() !== "").slice().sort((a, b) => a.name.localeCompare(b.name) || String(a.id).localeCompare(String(b.id)));
     const claimed = /* @__PURE__ */ new Set();
-    for (const ts of list) {
+    for (const ts of list2) {
       let base = ["typography"].concat(groupSegments(ts.name));
       let key = base.join(SEP);
       if (claimed.has(key)) {
@@ -487,10 +487,10 @@
     return `blur(${round((_a = effect.radius) != null ? _a : 0)}px)`;
   }
   function addEffectStyleTokens(out, effectStyles) {
-    const list = (Array.isArray(effectStyles) ? effectStyles : []).filter(
+    const list2 = (Array.isArray(effectStyles) ? effectStyles : []).filter(
       (style) => style && typeof style.name === "string" && style.name.trim() !== ""
     );
-    for (const style of list) {
+    for (const style of list2) {
       const visible = (style.effects || []).filter((effect) => effect && effect.visible !== false);
       const shadows = visible.map(shadowEffectToCss).filter((css) => css !== null);
       const blurs = visible.map(blurEffectToCss).filter((css) => css !== null);
@@ -1126,27 +1126,27 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
     return cleaned || DEFAULT_OPTIONS.themeAttr;
   }
   function normalizeDelivery(d) {
-    const obj = isRecord(d) ? d : {};
+    const obj2 = isRecord(d) ? d : {};
     const s = (v) => typeof v === "string" ? v : "";
-    const route = isRecord(obj.route) ? obj.route : {};
+    const route = isRecord(obj2.route) ? obj2.route : {};
     const targets = ["folder", "git", "pr", "npm"];
     return {
-      endpoint: s(obj.endpoint).trim(),
-      secret: s(obj.secret),
-      target: targets.indexOf(obj.target) !== -1 ? obj.target : "folder",
+      endpoint: s(obj2.endpoint).trim(),
+      secret: s(obj2.secret),
+      target: targets.indexOf(obj2.target) !== -1 ? obj2.target : "folder",
       route: {
         repo: s(route.repo).trim(),
         branch: s(route.branch).trim(),
         path: s(route.path).trim(),
         package: s(route.package).trim()
       },
-      onChange: !!obj.onChange,
-      onOpen: !!obj.onOpen
+      onChange: !!obj2.onChange,
+      onOpen: !!obj2.onOpen
     };
   }
   function normalizeOptions(o) {
-    const obj = isRecord(o) ? o : {};
-    const pick = (key) => obj[key] === void 0 ? DEFAULT_OPTIONS[key] : !!obj[key];
+    const obj2 = isRecord(o) ? o : {};
+    const pick = (key) => obj2[key] === void 0 ? DEFAULT_OPTIONS[key] : !!obj2[key];
     return {
       inlinePrimitives: pick("inlinePrimitives"),
       flattenAliases: pick("flattenAliases"),
@@ -1154,10 +1154,10 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
       cssModulesGlobal: pick("cssModulesGlobal"),
       typoExtract: pick("typoExtract"),
       typoScaleOnly: pick("typoScaleOnly"),
-      typoNaming: obj.typoNaming === "value" ? "value" : "tshirt",
+      typoNaming: obj2.typoNaming === "value" ? "value" : "tshirt",
       typoShorthand: pick("typoShorthand"),
-      themeAttr: sanitizeAttr(obj.themeAttr),
-      delivery: normalizeDelivery(obj.delivery)
+      themeAttr: sanitizeAttr(obj2.themeAttr),
+      delivery: normalizeDelivery(obj2.delivery)
     };
   }
   function buildPackage(graph, options) {
@@ -2373,12 +2373,12 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   function inst(of, values, opts = {}) {
     return __spreadValues({ type: "instance", of, values }, opts);
   }
-  function txt(name, text2, opts = {}) {
+  function txt(name, text3, opts = {}) {
     var _a, _b;
     return {
       type: "text",
       name,
-      text: text2,
+      text: text3,
       fontSize: (_a = opts.fontSize) != null ? _a : FONT.base,
       color: (_b = opts.color) != null ? _b : opts.muted ? solid(COLOR.secondaryText) : solid(COLOR.bodyText),
       bold: opts.bold,
@@ -2421,20 +2421,20 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const role = isOutline ? raw.replace(/^outline-?/i, "") : raw;
     let fill = NONE;
     let stroke;
-    let text2;
+    let text3;
     if (isLink) {
-      text2 = solid(roleColor("primary"));
+      text3 = solid(roleColor("primary"));
     } else if (isOutline) {
       stroke = { color: roleColor(role), weight: 1 };
       if (state === "hover" || state === "active") {
         fill = stateFill(role, state);
-        text2 = solid(roleTextColor(role));
+        text3 = solid(roleTextColor(role));
       } else {
-        text2 = solid(roleColor(role));
+        text3 = solid(roleColor(role));
       }
     } else {
       fill = stateFill(role, state);
-      text2 = solid(roleTextColor(role));
+      text3 = solid(roleTextColor(role));
     }
     return frame("Button", {
       direction: "horizontal",
@@ -2448,13 +2448,13 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       stroke,
       radius: sizeRadius(size),
       opacity: state === "disabled" ? 0.65 : 1,
-      children: [txt("Label", labelText(spec, "Button"), { fontSize: sizeFont(size), color: text2 })]
+      children: [txt("Label", labelText(spec, "Button"), { fontSize: sizeFont(size), color: text3 })]
     });
   };
   var badge = (spec, v) => {
     var _a, _b;
     const role = (_a = v.Variant) != null ? _a : "Primary";
-    const pill = ((_b = v.Shape) != null ? _b : "").trim().toLowerCase() === "pill";
+    const pill2 = ((_b = v.Shape) != null ? _b : "").trim().toLowerCase() === "pill";
     return frame("Badge", {
       direction: "horizontal",
       padding: [SPACE.badge.padV, SPACE.badge.padH, SPACE.badge.padV, SPACE.badge.padH],
@@ -2463,7 +2463,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       width: "hug",
       height: "hug",
       fill: token(role),
-      radius: pill ? RADIUS.pill : SPACE.badge.radius,
+      radius: pill2 ? RADIUS.pill : SPACE.badge.radius,
       children: [txt("Label", labelText(spec, "Badge"), { fontSize: SPACE.badge.font, bold: true, color: solid(roleTextColor(role)) })]
     });
   };
@@ -2616,7 +2616,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const activeColor = dark ? COLOR.surface : roleColor("primary");
     const mutedColor = dark ? { r: 0.73, g: 0.75, b: 0.78 } : COLOR.secondaryText;
     const navPad = [SPACE.navLink.padV, SPACE.navLink.padH, SPACE.navLink.padV, SPACE.navLink.padH];
-    const link = (text2, active) => frame("Item", { direction: "horizontal", padding: navPad, width: "hug", children: [txt("ItemText", text2, { color: solid(active ? activeColor : mutedColor) })] });
+    const link = (text3, active) => frame("Item", { direction: "horizontal", padding: navPad, width: "hug", children: [txt("ItemText", text3, { color: solid(active ? activeColor : mutedColor) })] });
     return frame("Navbar", {
       direction: "horizontal",
       padding: [SPACE.navbar.padV, SPACE.navbar.padH, SPACE.navbar.padV, SPACE.navbar.padH],
@@ -2923,7 +2923,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const size = (_a = v.Size) != null ? _a : "md";
     const [padV, padH] = (_b = CONTROL_PAD[size]) != null ? _b : CONTROL_PAD.md;
     const font = sizeFont(size);
-    const seg = (text2, active = false) => frame("Button", {
+    const seg = (text3, active = false) => frame("Button", {
       direction: "horizontal",
       primaryAlign: "center",
       counterAlign: "center",
@@ -2931,7 +2931,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       width: "hug",
       fill: active ? token("Primary") : NONE,
       stroke: { color: roleColor("primary"), weight: 1 },
-      children: [txt("Label", text2, { fontSize: font, color: active ? solid(roleTextColor("Primary")) : solid(roleColor("primary")) })]
+      children: [txt("Label", text3, { fontSize: font, color: active ? solid(roleTextColor("Primary")) : solid(roleColor("primary")) })]
     });
     return frame("ButtonGroup", { direction: "horizontal", gap: 0, width: "hug", slot: openSlot("Buttons \u2014 drop Button instances", ["Button"]), children: [seg("Left", true), seg("Middle"), seg("Right")] });
   };
@@ -3709,9 +3709,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   }
   function applyOwnSizing(el, node) {
     var _a, _b, _c, _d;
-    const num = (v) => typeof v === "number" ? v : void 0;
+    const num2 = (v) => typeof v === "number" ? v : void 0;
     if (!node.direction || node.direction === "none") {
-      el.resizeWithoutConstraints(Math.max(0.01, (_a = num(node.width)) != null ? _a : el.width), Math.max(0.01, (_b = num(node.height)) != null ? _b : el.height));
+      el.resizeWithoutConstraints(Math.max(0.01, (_a = num2(node.width)) != null ? _a : el.width), Math.max(0.01, (_b = num2(node.height)) != null ? _b : el.height));
       return;
     }
     const horizontal = node.direction === "horizontal";
@@ -3719,8 +3719,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const counterDim = horizontal ? node.height : node.width;
     el.primaryAxisSizingMode = primaryDim === "hug" || primaryDim == null ? "AUTO" : "FIXED";
     el.counterAxisSizingMode = counterDim === "hug" || counterDim == null ? "AUTO" : "FIXED";
-    if (num(node.width) != null || num(node.height) != null) {
-      el.resizeWithoutConstraints(Math.max(0.01, (_c = num(node.width)) != null ? _c : el.width), Math.max(0.01, (_d = num(node.height)) != null ? _d : el.height));
+    if (num2(node.width) != null || num2(node.height) != null) {
+      el.resizeWithoutConstraints(Math.max(0.01, (_c = num2(node.width)) != null ? _c : el.width), Math.max(0.01, (_d = num2(node.height)) != null ? _d : el.height));
     }
   }
   function applyParentFill(el, node, parentDir) {
@@ -4016,20 +4016,20 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const masterPlans = plans.filter((plan) => !ITEM_SPEC_NAMES.has(plan.name));
     let bound = 0;
     const keyByName = /* @__PURE__ */ new Map();
-    const record = (name, cluster) => keyByName.set(name, { type: cluster.isSet ? "COMPONENT_SET" : "COMPONENT", key: cluster.key });
+    const record2 = (name, cluster) => keyByName.set(name, { type: cluster.isSet ? "COMPONENT_SET" : "COMPONENT", key: cluster.key });
     const itemClusters = [];
     for (const plan of itemPlans) {
       const { cluster, bound: clusterBound } = buildCluster(page, plan, ctx);
       bound += clusterBound;
       ctx.itemComponents.set(plan.name, cluster.node);
-      record(plan.name, cluster);
+      record2(plan.name, cluster);
       itemClusters.push(cluster);
     }
     const masterClusters = [];
     for (const plan of masterPlans) {
       const { cluster, bound: clusterBound } = buildCluster(page, plan, ctx);
       bound += clusterBound;
-      record(plan.name, cluster);
+      record2(plan.name, cluster);
       masterClusters.push(cluster);
     }
     const clusters = [...masterClusters, ...itemClusters];
@@ -4333,10 +4333,10 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   function maskFilename(id, name) {
     return `${idSegment(id)}-${slugify(name)}-mask.svg`;
   }
-  function utf8ByteLength(text2) {
+  function utf8ByteLength(text3) {
     var _a;
     let bytes = 0;
-    for (const char of text2) {
+    for (const char of text3) {
       const codePoint = (_a = char.codePointAt(0)) != null ? _a : 0;
       if (codePoint <= 127) bytes += 1;
       else if (codePoint <= 2047) bytes += 2;
@@ -5039,9 +5039,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   }
   function firstSolidCss(paints) {
     if (!Array.isArray(paints)) return void 0;
-    const solid3 = paints.find((p) => (p == null ? void 0 : p.type) === "SOLID" && p.visible !== false);
-    if (!(solid3 == null ? void 0 : solid3.color)) return void 0;
-    return rgbaToCss(solid3.opacity != null && solid3.opacity < 1 ? __spreadProps(__spreadValues({}, solid3.color), { a: solid3.opacity }) : solid3.color);
+    const solid4 = paints.find((p) => (p == null ? void 0 : p.type) === "SOLID" && p.visible !== false);
+    if (!(solid4 == null ? void 0 : solid4.color)) return void 0;
+    return rgbaToCss(solid4.opacity != null && solid4.opacity < 1 ? __spreadProps(__spreadValues({}, solid4.color), { a: solid4.opacity }) : solid4.color);
   }
   function arcStrokeAttrs(node) {
     const stroke = firstSolidCss(node.strokes);
@@ -5356,7 +5356,7 @@ ${body}
     return paragraphs;
   }
   function isMultiBlockText(paragraphs) {
-    return paragraphs.length > 1 || paragraphs.some((paragraph) => paragraph.listType !== "NONE");
+    return paragraphs.length > 1 || paragraphs.some((paragraph2) => paragraph2.listType !== "NONE");
   }
 
   // src/targets/django/bootstrap/theme.ts
@@ -6063,9 +6063,9 @@ ${body}
     "color"
   ]);
   function solidStrokeColor(strokes) {
-    const solid3 = strokes == null ? void 0 : strokes.find((paint) => paint.type === "SOLID" && paint.visible !== false);
-    if (!(solid3 == null ? void 0 : solid3.color)) return void 0;
-    return rgbaToCss(solid3.opacity != null && solid3.opacity < 1 ? __spreadProps(__spreadValues({}, solid3.color), { a: solid3.opacity }) : solid3.color);
+    const solid4 = strokes == null ? void 0 : strokes.find((paint) => paint.type === "SOLID" && paint.visible !== false);
+    if (!(solid4 == null ? void 0 : solid4.color)) return void 0;
+    return rgbaToCss(solid4.opacity != null && solid4.opacity < 1 ? __spreadProps(__spreadValues({}, solid4.color), { a: solid4.opacity }) : solid4.color);
   }
   var STROKE_OWNED_CSS = /* @__PURE__ */ new Set([
     "border",
@@ -7160,7 +7160,7 @@ ${indent2}</div>`;
       if (frames.length < 2) continue;
       const sorted = [...frames].sort((a, b) => b.width - a.width);
       groups.push({ slug: slug2, frames: sorted });
-      for (const frame2 of sorted) groupedIds.add(frame2.node.id);
+      for (const frame3 of sorted) groupedIds.add(frame3.node.id);
       widestIds.add(sorted[0].node.id);
     }
     const rendered = roots.filter((root) => !groupedIds.has(root.id) || widestIds.has(root.id));
@@ -7186,14 +7186,14 @@ ${indent2}</div>`;
     const widestDiffable = toDiffable(widest.node);
     const blocks = [];
     for (let index = 0; index < narrower.length; index++) {
-      const frame2 = narrower[index];
+      const frame3 = narrower[index];
       const nextWiderWidth = index === 0 ? widest.width : narrower[index - 1].width;
-      const result = matchLayers(widestDiffable, toDiffable(frame2.node));
-      const idAliases = /* @__PURE__ */ new Map([[frame2.node.id, widest.node.id]]);
+      const result = matchLayers(widestDiffable, toDiffable(frame3.node));
+      const idAliases = /* @__PURE__ */ new Map([[frame3.node.id, widest.node.id]]);
       for (const pair of result.matched) {
         if (pair.a.id && pair.b.id) idAliases.set(pair.b.id, pair.a.id);
       }
-      const overrides = await emitCss([frame2.node], sceneNodesById, variableNamesById, {
+      const overrides = await emitCss([frame3.node], sceneNodesById, variableNamesById, {
         idAliases,
         preamble: false
       });
@@ -7470,8 +7470,8 @@ ${destBlock}
           const dialogId = `${className}--overlay-${overlay.destinationId.replace(/[^a-zA-Z0-9]+/g, "-")}`;
           const destComponentName = overlayDestinationComponentName(irNodeById.get(overlay.destinationId));
           if (options.bootstrapModals && (destComponentName === "tooltip" || destComponentName === "popover")) {
-            const text2 = escapeHtml(firstTextOf(irNodeById.get(overlay.destinationId)));
-            const attr = destComponentName === "tooltip" ? ` data-bs-toggle="tooltip" data-bs-title="${text2}"` : ` data-bs-toggle="popover" data-bs-content="${text2}"`;
+            const text3 = escapeHtml(firstTextOf(irNodeById.get(overlay.destinationId)));
+            const attr = destComponentName === "tooltip" ? ` data-bs-toggle="tooltip" data-bs-title="${text3}"` : ` data-bs-toggle="popover" data-bs-content="${text3}"`;
             triggerAttributes.set(className, `${(_d = triggerAttributes.get(className)) != null ? _d : ""}${attr}`);
             needsTooltipInit || (needsTooltipInit = destComponentName === "tooltip");
             needsPopoverInit || (needsPopoverInit = destComponentName === "popover");
@@ -8180,17 +8180,17 @@ ${mediaCss}`;
     const slash = name.lastIndexOf("/");
     return slash >= 0 ? name.slice(0, slash) : "";
   }
-  function applyPlaceholders(text2, placeholders) {
-    if (!placeholders || placeholders.length === 0) return text2;
+  function applyPlaceholders(text3, placeholders) {
+    if (!placeholders || placeholders.length === 0) return text3;
     const sorted = [...placeholders].sort((a, b) => a.start - b.start);
     let result = "";
     let cursor = 0;
     for (const ph of sorted) {
-      result += text2.slice(cursor, ph.start);
+      result += text3.slice(cursor, ph.start);
       result += `%(${ph.name})s`;
       cursor = ph.end;
     }
-    result += text2.slice(cursor);
+    result += text3.slice(cursor);
     return result;
   }
   function resolveManualKey(node) {
@@ -9159,8 +9159,8 @@ ${mediaCss}`;
     (_a = ctx.progress) == null ? void 0 : _a.call(ctx, "collecting page text styles\u2026");
     try {
       const seen = /* @__PURE__ */ new Set();
-      for (const text2 of figma.currentPage.findAllWithCriteria({ types: ["TEXT"] })) {
-        const styleId = text2.textStyleId;
+      for (const text3 of figma.currentPage.findAllWithCriteria({ types: ["TEXT"] })) {
+        const styleId = text3.textStyleId;
         if (typeof styleId !== "string" || styleId === "" || seen.has(styleId)) continue;
         seen.add(styleId);
         const style = await figma.getStyleByIdAsync(styleId);
@@ -9276,13 +9276,13 @@ ${mediaCss}`;
     var _a;
     if (!node.clipsContent) return false;
     if (node.rotation) return true;
-    const frame2 = node.absoluteBoundingBox;
-    if (!frame2) return true;
+    const frame3 = node.absoluteBoundingBox;
+    if (!frame3) return true;
     for (const child of node.children) {
       if (child.visible === false) continue;
       const bounds = (_a = "absoluteRenderBounds" in child ? child.absoluteRenderBounds : null) != null ? _a : child.absoluteBoundingBox;
       if (!bounds) return true;
-      if (bounds.x < frame2.x - 0.5 || bounds.y < frame2.y - 0.5 || bounds.x + bounds.width > frame2.x + frame2.width + 0.5 || bounds.y + bounds.height > frame2.y + frame2.height + 0.5) {
+      if (bounds.x < frame3.x - 0.5 || bounds.y < frame3.y - 0.5 || bounds.x + bounds.width > frame3.x + frame3.width + 0.5 || bounds.y + bounds.height > frame3.y + frame3.height + 0.5) {
         return true;
       }
     }
@@ -9907,10 +9907,10 @@ ${mediaCss}`;
   function formatPercent(percent) {
     return `${round4(percent, 3)}%`;
   }
-  function formatFrame(frame2) {
-    const declarations = [`${frame2.declaration};`];
-    if (frame2.timingFunction) declarations.push(`animation-timing-function: ${frame2.timingFunction};`);
-    return `  ${formatPercent(frame2.percent)} { ${declarations.join(" ")} }`;
+  function formatFrame(frame3) {
+    const declarations = [`${frame3.declaration};`];
+    if (frame3.timingFunction) declarations.push(`animation-timing-function: ${frame3.timingFunction};`);
+    return `  ${formatPercent(frame3.percent)} { ${declarations.join(" ")} }`;
   }
   function emitKeyframesRule(name, track) {
     const frames = buildPercentFrames(track);
@@ -10109,8 +10109,8 @@ ${frames.map(formatFrame).join("\n")}
     let lastVars = fromVars;
     let lastPercent = 0;
     for (const keyframe of sorted) {
-      const text2 = requireTextData(keyframe.value, `${track.field} keyframe ${keyframe.id}`);
-      const vars = { text: { value: text2 } };
+      const text3 = requireTextData(keyframe.value, `${track.field} keyframe ${keyframe.id}`);
+      const vars = { text: { value: text3 } };
       lastVars = vars;
       if (keyframe.timelinePosition <= 0) {
         lastPercent = 0;
@@ -11271,9 +11271,9 @@ ${options.intro}`;
     }
     return index;
   }
-  function mentionKey(text2) {
+  function mentionKey(text3) {
     return varName([
-      text2.trim().replace(/^--/, "").replace(/^\{|\}$/g, "").replace(/[/.]+/g, "-").replace(/\s+/g, "-")
+      text3.trim().replace(/^--/, "").replace(/^\{|\}$/g, "").replace(/[/.]+/g, "-").replace(/\s+/g, "-")
     ]);
   }
   var REFERENCE_SHAPED = /^(?:--[A-Za-z0-9-]+|\{[^}]+\}|[A-Za-z0-9][A-Za-z0-9_-]*(?:[/.][A-Za-z0-9_-]+)+)$/;
@@ -11287,23 +11287,23 @@ ${options.intro}`;
     const rampMisses = [];
     const seen = /* @__PURE__ */ new Set();
     for (const match of (_a = description.match(CANDIDATE)) != null ? _a : []) {
-      const text2 = match.trim();
-      const referenceShaped = REFERENCE_SHAPED.test(text2);
-      if (!referenceShaped && !HAS_LETTER.test(text2)) continue;
-      const key = mentionKey(text2);
+      const text3 = match.trim();
+      const referenceShaped = REFERENCE_SHAPED.test(text3);
+      if (!referenceShaped && !HAS_LETTER.test(text3)) continue;
+      const key = mentionKey(text3);
       if (!key || seen.has(key)) continue;
       const entry = index.byKey.get(key);
       if (entry) {
         seen.add(key);
-        resolved.push({ text: text2, entry });
+        resolved.push({ text: text3, entry });
         continue;
       }
       if (referenceShaped) {
         seen.add(key);
-        unresolved.push(text2);
-      } else if (RAMP_STEP.test(text2)) {
+        unresolved.push(text3);
+      } else if (RAMP_STEP.test(text3)) {
         seen.add(key);
-        rampMisses.push(text2);
+        rampMisses.push(text3);
       }
     }
     if (resolved.length > 0) unresolved.push(...rampMisses);
@@ -11316,16 +11316,16 @@ ${options.intro}`;
   var TAG_SEGMENT = /^[A-Za-z][A-Za-z0-9 '’&/-]{0,40}$/;
   var BEHAVIOUR_LANGUAGE = /\b(if|when|while|unless|until|then|must|should|never|always|only|hover(ed)?|press(ed)?|focus(ed)?|disabled|active|selected|checked|loading|error|invalid|state|states|min|max|fill|chang(e|es|ing)|switch(es)?|toggle(s)?|show(s)?|hide(s)?|limit(s)?)\b|%|\d+\s*px/i;
   function classifyDescription(description, properties = [], resolvedMentionCount = 0) {
-    const text2 = description.trim();
-    if (!text2) return "notes";
-    const segments = text2.split(/[,;\n]+/).map((segment) => segment.trim()).filter(Boolean);
+    const text3 = description.trim();
+    if (!text3) return "notes";
+    const segments = text3.split(/[,;\n]+/).map((segment) => segment.trim()).filter(Boolean);
     const tagLike = segments.filter(
       (segment) => TAG_SEGMENT.test(segment) && segment.split(/\s+/).length <= 3
     );
     if (segments.length >= 3 && tagLike.length >= segments.length * 0.8) return "tags";
     if (resolvedMentionCount > 0) return "contract";
-    if (BEHAVIOUR_LANGUAGE.test(text2)) return "contract";
-    const lower = text2.toLowerCase();
+    if (BEHAVIOUR_LANGUAGE.test(text3)) return "contract";
+    const lower = text3.toLowerCase();
     if (properties.some((property) => property.name && lower.indexOf(property.name.toLowerCase()) !== -1))
       return "contract";
     return "notes";
@@ -11389,7 +11389,7 @@ ${mdTable(["Property", "Type", "Options", "Default"], rows)}`;
     }
     if (unresolved.length > 0) {
       parts.push(
-        `**Stale references:** ${unresolved.map((text2) => `\`${text2}\``).join(", ")} \u2014 written like a variable name but matching nothing in this file (renamed, removed, or ambiguous between several variables). Do NOT invent a value: ask the designer which variable is meant.`
+        `**Stale references:** ${unresolved.map((text3) => `\`${text3}\``).join(", ")} \u2014 written like a variable name but matching nothing in this file (renamed, removed, or ambiguous between several variables). Do NOT invent a value: ask the designer which variable is meant.`
       );
     }
     return parts.length > 0 ? `
@@ -11644,12 +11644,12 @@ ${mdTable(["Component", "Contract (first line)", "Preview"], rows)}${more}${note
     const recipeLines = [];
     const recipeGaps = [];
     const surface = (_d = (_b = model.byRole.get("surface")) == null ? void 0 : _b[0]) != null ? _d : (_c = model.byRole.get("color")) == null ? void 0 : _c[0];
-    const text2 = (_e = model.byRole.get("text")) == null ? void 0 : _e[0];
+    const text3 = (_e = model.byRole.get("text")) == null ? void 0 : _e[0];
     const border = (_f = model.byRole.get("border")) == null ? void 0 : _f[0];
     const radius = (_g = model.byRole.get("radius")) == null ? void 0 : _g[0];
     const spacing = (_h = model.byRole.get("spacing")) == null ? void 0 : _h[0];
     if (surface) recipeLines.push(`  background: ${surface.cssRef};`);
-    if (text2) recipeLines.push(`  color: ${text2.cssRef};`);
+    if (text3) recipeLines.push(`  color: ${text3.cssRef};`);
     if (border) recipeLines.push(`  border: 1px solid ${border.cssRef};`);
     if (radius) recipeLines.push(`  border-radius: ${radius.cssRef};`);
     else recipeGaps.push("radius");
@@ -13242,24 +13242,24 @@ ${scrollGuards}` : project.css;
     return { body: first };
   }
   var solid2 = (hex) => ({ type: "SOLID", color: rgbOf(hex) });
-  function label(text2, fonts, size, hex) {
+  function label(text3, fonts, size, hex) {
     const node = figma.createText();
     node.fontName = fonts.body;
     node.fontSize = size;
-    node.characters = text2;
+    node.characters = text3;
     node.fills = [solid2(hex)];
     return node;
   }
   function autoLayout(name, direction, gap) {
-    const frame2 = figma.createFrame();
-    frame2.name = name;
-    frame2.layoutMode = direction;
-    frame2.itemSpacing = gap;
-    frame2.primaryAxisSizingMode = "AUTO";
-    frame2.counterAxisSizingMode = "AUTO";
-    frame2.fills = [];
-    frame2.clipsContent = false;
-    return frame2;
+    const frame3 = figma.createFrame();
+    frame3.name = name;
+    frame3.layoutMode = direction;
+    frame3.itemSpacing = gap;
+    frame3.primaryAxisSizingMode = "AUTO";
+    frame3.counterAxisSizingMode = "AUTO";
+    frame3.fills = [];
+    frame3.clipsContent = false;
+    return frame3;
   }
   var PART = { color: "color", step: "step", hex: "hex", mark: "mark", markName: "markName" };
   function buildSwatchComponent(fonts) {
@@ -13343,10 +13343,10 @@ ${scrollGuards}` : project.css;
         (name) => existing.findOne((node) => node.name === name) !== null
       );
       if (intact) {
-        for (const text2 of existing.findAllWithCriteria({ types: ["TEXT"] })) {
-          if (text2.fontName !== figma.mixed) {
+        for (const text3 of existing.findAllWithCriteria({ types: ["TEXT"] })) {
+          if (text3.fontName !== figma.mixed) {
             try {
-              await figma.loadFontAsync(text2.fontName);
+              await figma.loadFontAsync(text3.fontName);
             } catch (e) {
             }
           }
@@ -13678,8 +13678,8 @@ ${renderSections(sections)}
         body: zipBytes
       });
       if (!response.ok) {
-        const text2 = await response.text().catch(() => "");
-        return { ok: false, status: response.status, message: text2 || response.statusText };
+        const text3 = await response.text().catch(() => "");
+        return { ok: false, status: response.status, message: text3 || response.statusText };
       }
       return { ok: true, status: response.status };
     } catch (err) {
@@ -13736,13 +13736,13 @@ ${renderSections(sections)}
         return value;
       }
       case "number": {
-        const num = typeof value === "string" ? Number(value) : value;
-        if (typeof num !== "number" || !Number.isFinite(num)) {
+        const num2 = typeof value === "string" ? Number(value) : value;
+        if (typeof num2 !== "number" || !Number.isFinite(num2)) {
           throw new ParamError(`param "${key}" must be a number`);
         }
-        if (spec.min !== void 0 && num < spec.min) throw new ParamError(`param "${key}" must be >= ${spec.min}`);
-        if (spec.max !== void 0 && num > spec.max) throw new ParamError(`param "${key}" must be <= ${spec.max}`);
-        return num;
+        if (spec.min !== void 0 && num2 < spec.min) throw new ParamError(`param "${key}" must be >= ${spec.min}`);
+        if (spec.max !== void 0 && num2 > spec.max) throw new ParamError(`param "${key}" must be <= ${spec.max}`);
+        return num2;
       }
       case "boolean": {
         if (typeof value === "boolean") return value;
@@ -13756,8 +13756,1020 @@ ${renderSections(sections)}
         }
         return value;
       }
+      // Batch writes and board specs are trees, not scalars. Nothing to coerce — the op that
+      // asked for the tree is the only thing that knows its shape, so it does its own checking
+      // and reports failures per entry instead of losing the whole batch to one bad row.
+      case "json": {
+        if (typeof value !== "object") throw new ParamError(`param "${key}" must be a JSON object or array`);
+        return value;
+      }
     }
   }
+
+  // src/agent/values.ts
+  var clamp012 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
+  function parseColor(input) {
+    if (typeof input === "object" && input !== null) {
+      const raw = input;
+      if (["r", "g", "b"].every((key) => typeof raw[key] === "number")) {
+        return {
+          r: clamp012(raw.r),
+          g: clamp012(raw.g),
+          b: clamp012(raw.b),
+          a: typeof raw.a === "number" ? clamp012(raw.a) : 1
+        };
+      }
+      return null;
+    }
+    if (typeof input !== "string") return null;
+    const text3 = input.trim();
+    const withPercent = /^(#?[0-9a-fA-F]{3,8})\s*[@/]?\s*([0-9.]+)\s*%$/.exec(text3);
+    if (withPercent) {
+      const rgb2 = parseHex(withPercent[1]);
+      if (!rgb2) return null;
+      return __spreadProps(__spreadValues({}, rgb2), { a: clamp012(Number(withPercent[2]) / 100) });
+    }
+    const hex = text3.replace(/^#/, "");
+    if (/^[0-9a-fA-F]{8}$/.test(hex)) {
+      const rgb2 = parseHex(hex.slice(0, 6));
+      if (!rgb2) return null;
+      return __spreadProps(__spreadValues({}, rgb2), { a: parseInt(hex.slice(6, 8), 16) / 255 });
+    }
+    const rgb = parseHex(text3);
+    return rgb ? __spreadProps(__spreadValues({}, rgb), { a: 1 }) : null;
+  }
+  function describeColor(color) {
+    const hex = formatHex(color);
+    return color.a >= 0.999 ? hex : `${hex} ${Math.round(color.a * 100)}%`;
+  }
+  var VARIABLE_ID = /^VariableID:/;
+  var COLLECTION_ID = /^VariableCollectionId:/;
+  async function resolveCollection(ref) {
+    if (typeof ref !== "string" || ref === "") throw new Error("collection reference must be a non-empty string");
+    if (COLLECTION_ID.test(ref)) {
+      const collection = await figma.variables.getVariableCollectionByIdAsync(ref);
+      if (!collection) throw new Error(`no variable collection with id ${ref}`);
+      return collection;
+    }
+    const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    const matches = collections.filter((collection) => collection.name.toLowerCase() === ref.toLowerCase());
+    if (matches.length === 0) {
+      throw new Error(`no local collection named "${ref}" \u2014 have: ${collections.map((c) => c.name).join(", ")}`);
+    }
+    if (matches.length > 1) throw new Error(`"${ref}" names ${matches.length} collections \u2014 use the id`);
+    return matches[0];
+  }
+  var LIBRARY_KEY = /^[0-9a-f]{20,}$/i;
+  var isLibraryKey = (ref) => typeof ref === "string" && LIBRARY_KEY.test(ref);
+  async function resolveVariableRef(ref) {
+    if (isLibraryKey(ref)) {
+      try {
+        return await figma.variables.importVariableByKeyAsync(ref);
+      } catch (err) {
+        throw new Error(
+          `no library variable with key ${ref} \u2014 is that library enabled in this file? (${String((err == null ? void 0 : err.message) || err)})`
+        );
+      }
+    }
+    return resolveVariable(ref);
+  }
+  async function resolveVariable(ref) {
+    if (typeof ref !== "string" || ref === "") throw new Error("variable reference must be a non-empty string");
+    if (VARIABLE_ID.test(ref)) {
+      const variable = await figma.variables.getVariableByIdAsync(ref);
+      if (!variable) throw new Error(`no variable with id ${ref}`);
+      return variable;
+    }
+    const variables = await figma.variables.getLocalVariablesAsync();
+    const exact = variables.filter((variable) => variable.name === ref);
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) {
+      const owners = await collectionNames(exact);
+      throw new Error(`"${ref}" exists in ${owners.join(", ")} \u2014 qualify it as "Collection/${ref}"`);
+    }
+    const slash = ref.indexOf("/");
+    if (slash > 0) {
+      const collectionName = ref.slice(0, slash).toLowerCase();
+      const variableName = ref.slice(slash + 1);
+      const collections = await figma.variables.getLocalVariableCollectionsAsync();
+      const collection = collections.find((entry) => entry.name.toLowerCase() === collectionName);
+      if (collection) {
+        const match = variables.find(
+          (variable) => variable.variableCollectionId === collection.id && variable.name === variableName
+        );
+        if (match) return match;
+      }
+    }
+    throw new Error(`no variable named "${ref}"`);
+  }
+  async function collectionNames(variables) {
+    var _a;
+    const names = [];
+    for (const variable of variables) {
+      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+      names.push((_a = collection == null ? void 0 : collection.name) != null ? _a : variable.variableCollectionId);
+    }
+    return names;
+  }
+  function resolveModes(collection, ref) {
+    var _a;
+    if (ref === void 0 || ref === null || ref === "") {
+      const fallback = (_a = collection.modes.find((mode) => mode.modeId === collection.defaultModeId)) != null ? _a : collection.modes[0];
+      return [{ modeId: fallback.modeId, name: fallback.name }];
+    }
+    if (ref === "*") return collection.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name }));
+    if (typeof ref !== "string") throw new Error("mode must be a string");
+    const byId = collection.modes.find((mode) => mode.modeId === ref);
+    if (byId) return [{ modeId: byId.modeId, name: byId.name }];
+    const byName = collection.modes.filter((mode) => mode.name.toLowerCase() === ref.toLowerCase());
+    if (byName.length === 1) return [{ modeId: byName[0].modeId, name: byName[0].name }];
+    throw new Error(
+      `collection "${collection.name}" has no mode "${ref}" \u2014 have: ${collection.modes.map((m) => m.name).join(", ")}`
+    );
+  }
+  function isAlias(value) {
+    return typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
+  }
+  async function describeValue(value) {
+    if (value === void 0) return "(unset)";
+    if (isAlias(value)) {
+      const target = await figma.variables.getVariableByIdAsync(value.id);
+      if (!target) return `\u2192 ${value.id}`;
+      return target.remote ? `\u2192 ${target.name} (library)` : `\u2192 ${target.name}`;
+    }
+    if (typeof value === "object" && value !== null && "r" in value) {
+      const color = value;
+      return describeColor({ r: color.r, g: color.g, b: color.b, a: "a" in color ? color.a : 1 });
+    }
+    return String(value);
+  }
+  async function coerceVariableValue(variable, raw) {
+    if (typeof raw === "object" && raw !== null && "alias" in raw) {
+      const target = await resolveVariableRef(raw.alias);
+      if (target.id === variable.id) throw new Error(`"${variable.name}" cannot alias itself`);
+      if (target.resolvedType !== variable.resolvedType) {
+        throw new Error(
+          `"${variable.name}" is ${variable.resolvedType} but "${target.name}" is ${target.resolvedType}`
+        );
+      }
+      return figma.variables.createVariableAlias(target);
+    }
+    switch (variable.resolvedType) {
+      case "COLOR": {
+        const color = parseColor(raw);
+        if (!color) throw new Error(`"${variable.name}" needs a colour \u2014 got ${JSON.stringify(raw)}`);
+        return { r: color.r, g: color.g, b: color.b, a: color.a };
+      }
+      case "FLOAT": {
+        const num2 = typeof raw === "string" ? Number(raw) : raw;
+        if (typeof num2 !== "number" || !Number.isFinite(num2)) {
+          throw new Error(`"${variable.name}" needs a number \u2014 got ${JSON.stringify(raw)}`);
+        }
+        return num2;
+      }
+      case "BOOLEAN": {
+        if (typeof raw === "boolean") return raw;
+        if (raw === "true") return true;
+        if (raw === "false") return false;
+        throw new Error(`"${variable.name}" needs a boolean \u2014 got ${JSON.stringify(raw)}`);
+      }
+      case "STRING": {
+        if (typeof raw !== "string") throw new Error(`"${variable.name}" needs a string \u2014 got ${JSON.stringify(raw)}`);
+        return raw;
+      }
+    }
+  }
+
+  // src/agent/board.ts
+  var CHROME = {
+    light: { bg: "#FFFFFF", panel: "#F7F8F8", panelAlt: "#F2F4F5", ink: "#191B1C", inkMuted: "#797979", border: "#E4E7E9" },
+    dark: { bg: "#0F1011", panel: "#191B1C", panelAlt: "#202020", ink: "#FFFFFF", inkMuted: "#8C8C8C", border: "#333434" }
+  };
+  var TONES = {
+    info: "#435E93",
+    ok: "#26A23F",
+    warn: "#B8860B",
+    danger: "#CD1918",
+    neutral: "#797979"
+  };
+  var STATUS_TONE = {
+    same: "neutral",
+    unchanged: "neutral",
+    changed: "info",
+    new: "ok",
+    added: "ok",
+    removed: "danger",
+    warn: "warn",
+    check: "warn"
+  };
+  var FONTS = {
+    regular: { family: "Inter", style: "Regular" },
+    medium: { family: "Inter", style: "Medium" },
+    bold: { family: "Inter", style: "Semi Bold" }
+  };
+  async function loadFonts2() {
+    const candidates = [
+      FONTS,
+      { regular: { family: "Roboto", style: "Regular" }, medium: { family: "Roboto", style: "Medium" }, bold: { family: "Roboto", style: "Bold" } }
+    ];
+    for (const set of candidates) {
+      try {
+        await Promise.all(Object.values(set).map((font) => figma.loadFontAsync(font)));
+        FONTS = set;
+        return;
+      } catch (e) {
+      }
+    }
+    throw new Error("no usable font \u2014 install Inter or Roboto");
+  }
+  function solid3(hex, fallback = "#000000") {
+    var _a, _b;
+    const color = (_b = (_a = parseColor(hex)) != null ? _a : parseColor(fallback)) != null ? _b : { r: 0, g: 0, b: 0, a: 1 };
+    return { type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a };
+  }
+  function str(value, fallback = "") {
+    return typeof value === "string" ? value : value === void 0 || value === null ? fallback : String(value);
+  }
+  function num(value, fallback) {
+    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  }
+  function list(value) {
+    return Array.isArray(value) ? value : [];
+  }
+  function obj(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+  }
+  function frame2(name, direction, gap) {
+    const node = figma.createFrame();
+    node.name = name;
+    node.layoutMode = direction;
+    node.itemSpacing = gap;
+    node.primaryAxisSizingMode = "AUTO";
+    node.counterAxisSizingMode = "AUTO";
+    node.fills = [];
+    node.clipsContent = false;
+    return node;
+  }
+  function pad(node, vertical, horizontal) {
+    node.paddingTop = vertical;
+    node.paddingBottom = vertical;
+    node.paddingLeft = horizontal;
+    node.paddingRight = horizontal;
+  }
+  function text2(chars, size, weight, color) {
+    const node = figma.createText();
+    node.fontName = FONTS[weight];
+    node.characters = chars;
+    node.fontSize = size;
+    node.lineHeight = { unit: "PERCENT", value: 140 };
+    node.fills = [solid3(color)];
+    return node;
+  }
+  function paragraph(chars, size, weight, color, width) {
+    const node = text2(chars, size, weight, color);
+    node.textAutoResize = "HEIGHT";
+    node.resize(width, node.height);
+    return node;
+  }
+  async function chip(spec, ctx, width, height) {
+    const rect = figma.createRectangle();
+    rect.resize(width, height);
+    rect.cornerRadius = Math.min(14, Math.round(height / 3));
+    rect.strokes = [solid3(ctx.chrome.border)];
+    rect.strokeWeight = 1;
+    rect.name = str(spec.label) || str(spec.color) || str(spec.variable) || "swatch";
+    const ref = spec.variable;
+    if (typeof ref === "string" && ref !== "") {
+      const variable = await findVariable(ref);
+      if (variable) {
+        const base = { type: "SOLID", color: { r: 0.5, g: 0.5, b: 0.5 } };
+        rect.fills = [figma.variables.setBoundVariableForPaint(base, "color", variable)];
+        return { node: rect, label: str(spec.sub) };
+      }
+      ctx.warnings.push(`no variable "${ref}" \u2014 chip left empty`);
+      rect.fills = [];
+      rect.dashPattern = [4, 4];
+      return { node: rect, label: str(spec.sub) };
+    }
+    const color = parseColor(spec.color);
+    if (!color) {
+      rect.fills = [];
+      rect.dashPattern = [4, 4];
+      return { node: rect, label: str(spec.sub) };
+    }
+    rect.fills = [solid3(String(spec.color))];
+    return { node: rect, label: str(spec.sub) };
+  }
+  var variableCache = /* @__PURE__ */ new Map();
+  async function findVariable(ref) {
+    var _a, _b, _c;
+    if (variableCache.has(ref)) return (_a = variableCache.get(ref)) != null ? _a : null;
+    let found = null;
+    try {
+      if (ref.startsWith("VariableID:")) {
+        found = await figma.variables.getVariableByIdAsync(ref);
+      } else {
+        const variables = await figma.variables.getLocalVariablesAsync();
+        found = (_b = variables.find((variable) => variable.name === ref)) != null ? _b : null;
+        if (!found) {
+          const slash = ref.indexOf("/");
+          if (slash > 0) {
+            const collections = await figma.variables.getLocalVariableCollectionsAsync();
+            const collection = collections.find((entry) => entry.name.toLowerCase() === ref.slice(0, slash).toLowerCase());
+            const name = ref.slice(slash + 1);
+            found = (_c = variables.find((variable) => variable.variableCollectionId === (collection == null ? void 0 : collection.id) && variable.name === name)) != null ? _c : null;
+          }
+        }
+      }
+    } catch (e) {
+      found = null;
+    }
+    variableCache.set(ref, found);
+    return found;
+  }
+  function pill(label2, tone, chrome) {
+    var _a;
+    const node = frame2(`status/${label2}`, "HORIZONTAL", 0);
+    pad(node, 4, 10);
+    node.cornerRadius = 999;
+    const hex = (_a = TONES[tone]) != null ? _a : TONES.neutral;
+    node.fills = [__spreadProps(__spreadValues({}, solid3(hex)), { opacity: 0.12 })];
+    node.appendChild(text2(label2, 11, "medium", hex));
+    return node;
+  }
+  async function renderBlock(raw, ctx) {
+    var _a, _b, _c;
+    const spec = obj(raw);
+    const type = str(spec.type, "text");
+    const chrome = ctx.chrome;
+    switch (type) {
+      case "heading": {
+        const level = num(spec.level, 2);
+        const size = level <= 1 ? 40 : level === 2 ? 26 : 18;
+        const node = frame2("heading", "VERTICAL", 6);
+        node.appendChild(text2(str(spec.text), size, "bold", chrome.ink));
+        if (spec.sub) node.appendChild(paragraph(str(spec.sub), 14, "regular", chrome.inkMuted, ctx.width - 128));
+        return node;
+      }
+      case "text":
+        return paragraph(str(spec.text), num(spec.size, 14), "regular", str(spec.color) || chrome.inkMuted, ctx.width - 128);
+      case "spacer": {
+        const node = frame2("spacer", "VERTICAL", 0);
+        node.resize(1, num(spec.height, 24));
+        node.counterAxisSizingMode = "FIXED";
+        node.primaryAxisSizingMode = "FIXED";
+        return node;
+      }
+      case "callout": {
+        const tone = str(spec.tone, "info");
+        const hex = (_a = TONES[tone]) != null ? _a : TONES.info;
+        const node = frame2(`callout/${tone}`, "VERTICAL", 6);
+        pad(node, 16, 20);
+        node.cornerRadius = 16;
+        node.fills = [__spreadProps(__spreadValues({}, solid3(hex)), { opacity: 0.08 })];
+        node.strokes = [__spreadProps(__spreadValues({}, solid3(hex)), { opacity: 0.24 })];
+        node.strokeWeight = 1;
+        if (spec.title) node.appendChild(text2(str(spec.title), 14, "bold", hex));
+        if (spec.text) node.appendChild(paragraph(str(spec.text), 13, "regular", chrome.ink, ctx.width - 200));
+        return node;
+      }
+      case "swatches": {
+        const items = list(spec.items);
+        const columns = Math.max(1, num(spec.columns, 8));
+        const cell = num(spec.cellWidth, 132);
+        const node = frame2(str(spec.title, "swatches"), "VERTICAL", 16);
+        if (spec.title) node.appendChild(text2(str(spec.title), 16, "bold", chrome.ink));
+        for (let start = 0; start < items.length; start += columns) {
+          const row = frame2("row", "HORIZONTAL", 12);
+          for (const item of items.slice(start, start + columns)) {
+            const itemSpec = obj(item);
+            const cellFrame = frame2(str(itemSpec.label, "swatch"), "VERTICAL", 8);
+            cellFrame.resize(cell, 10);
+            cellFrame.counterAxisSizingMode = "FIXED";
+            const { node: rect } = await chip(itemSpec, ctx, cell, num(spec.cellHeight, 64));
+            cellFrame.appendChild(rect);
+            if (itemSpec.label) cellFrame.appendChild(text2(str(itemSpec.label), 12, "medium", chrome.ink));
+            if (itemSpec.sub) cellFrame.appendChild(text2(str(itemSpec.sub), 11, "regular", chrome.inkMuted));
+            row.appendChild(cellFrame);
+          }
+          node.appendChild(row);
+        }
+        return node;
+      }
+      case "diff": {
+        const rows = list(spec.rows);
+        const labelWidth = num(spec.labelWidth, 260);
+        const node = frame2(str(spec.title, "diff"), "VERTICAL", 8);
+        if (spec.title) node.appendChild(text2(str(spec.title), 16, "bold", chrome.ink));
+        for (const raw2 of rows) {
+          const row = obj(raw2);
+          const line = frame2(str(row.label, "row"), "HORIZONTAL", 16);
+          line.counterAxisAlignItems = "CENTER";
+          pad(line, 10, 14);
+          line.cornerRadius = 14;
+          line.fills = [solid3(chrome.panel)];
+          line.layoutAlign = "STRETCH";
+          line.primaryAxisSizingMode = "FIXED";
+          const label2 = frame2("label", "VERTICAL", 2);
+          label2.resize(labelWidth, 10);
+          label2.counterAxisSizingMode = "FIXED";
+          label2.appendChild(text2(str(row.label), 13, "medium", chrome.ink));
+          if (row.sub) label2.appendChild(text2(str(row.sub), 11, "regular", chrome.inkMuted));
+          line.appendChild(label2);
+          for (const side of ["old", "new"]) {
+            const value = row[side];
+            const cell = frame2(side, "VERTICAL", 6);
+            cell.resize(96, 10);
+            cell.counterAxisSizingMode = "FIXED";
+            const spec2 = typeof value === "object" && value !== null ? obj(value) : { color: value };
+            const { node: rect } = await chip(spec2, ctx, 96, 40);
+            cell.appendChild(rect);
+            const caption = typeof spec2.caption === "string" ? spec2.caption : str((_b = spec2.color) != null ? _b : spec2.variable, "\u2014");
+            cell.appendChild(text2(caption, 11, "regular", chrome.inkMuted));
+            line.appendChild(cell);
+            if (side === "old") line.appendChild(text2("\u2192", 16, "regular", chrome.inkMuted));
+          }
+          if (row.status) line.appendChild(pill(str(row.status), (_c = STATUS_TONE[str(row.status)]) != null ? _c : "neutral", chrome));
+          if (row.note) {
+            const note = paragraph(str(row.note), 12, "regular", chrome.inkMuted, 200);
+            note.layoutGrow = 1;
+            line.appendChild(note);
+          }
+          node.appendChild(line);
+        }
+        return node;
+      }
+      case "table": {
+        const headers = list(spec.headers).map((entry) => str(entry));
+        const rows = list(spec.rows);
+        const widths = list(spec.widths).map((entry) => num(entry, 160));
+        const columnWidth = (index) => {
+          var _a2;
+          return (_a2 = widths[index]) != null ? _a2 : Math.floor((ctx.width - 128 - 16 * Math.max(0, headers.length - 1)) / Math.max(1, headers.length));
+        };
+        const node = frame2(str(spec.title, "table"), "VERTICAL", 4);
+        if (spec.title) node.appendChild(text2(str(spec.title), 16, "bold", chrome.ink));
+        if (headers.length > 0) {
+          const head = frame2("header", "HORIZONTAL", 16);
+          pad(head, 8, 14);
+          headers.forEach((header, index) => {
+            const cell = text2(header, 11, "medium", chrome.inkMuted);
+            cell.textAutoResize = "HEIGHT";
+            cell.resize(columnWidth(index), cell.height);
+            head.appendChild(cell);
+          });
+          node.appendChild(head);
+        }
+        rows.forEach((raw2, rowIndex) => {
+          const cells = list(raw2);
+          const line = frame2(`row/${rowIndex}`, "HORIZONTAL", 16);
+          line.counterAxisAlignItems = "CENTER";
+          pad(line, 10, 14);
+          line.cornerRadius = 10;
+          if (rowIndex % 2 === 0) line.fills = [solid3(chrome.panel)];
+          cells.forEach((value, index) => {
+            const cell = paragraph(str(value), 12, index === 0 ? "medium" : "regular", index === 0 ? chrome.ink : chrome.inkMuted, columnWidth(index));
+            line.appendChild(cell);
+          });
+          node.appendChild(line);
+        });
+        return node;
+      }
+      case "group": {
+        const direction = str(spec.direction, "VERTICAL").toUpperCase() === "HORIZONTAL" ? "HORIZONTAL" : "VERTICAL";
+        const node = frame2(str(spec.title, "group"), direction, num(spec.gap, 24));
+        if (spec.padding !== void 0 || spec.background) {
+          pad(node, num(spec.padding, 24), num(spec.padding, 24));
+          node.cornerRadius = num(spec.radius, 20);
+          node.fills = [solid3(str(spec.background) || chrome.panel)];
+        }
+        if (spec.title && direction === "VERTICAL") node.appendChild(text2(str(spec.title), 18, "bold", chrome.ink));
+        await applyModes(node, obj(spec.modes), ctx);
+        const inner = __spreadProps(__spreadValues({}, ctx), { width: direction === "HORIZONTAL" ? Math.floor(ctx.width / Math.max(1, list(spec.blocks).length)) : ctx.width });
+        for (const child of list(spec.blocks)) {
+          const rendered = await renderBlock(child, inner);
+          if (rendered) node.appendChild(rendered);
+        }
+        return node;
+      }
+      default:
+        ctx.warnings.push(`unknown block type "${type}" \u2014 skipped`);
+        return null;
+    }
+  }
+  async function applyModes(node, modes, ctx) {
+    var _a;
+    const entries = Object.entries(modes);
+    if (entries.length === 0) return;
+    const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    for (const [collectionName, modeRef] of entries) {
+      const collection = collections.find((entry) => entry.name.toLowerCase() === collectionName.toLowerCase());
+      if (!collection) {
+        ctx.warnings.push(`no collection "${collectionName}" \u2014 mode pin skipped`);
+        continue;
+      }
+      const mode = (_a = collection.modes.find((entry) => entry.modeId === modeRef)) != null ? _a : collection.modes.find((entry) => entry.name.toLowerCase() === str(modeRef).toLowerCase());
+      if (!mode) {
+        ctx.warnings.push(`"${collectionName}" has no mode "${str(modeRef)}" \u2014 pin skipped`);
+        continue;
+      }
+      try {
+        node.setExplicitVariableModeForCollection(collection, mode.modeId);
+      } catch (e) {
+        try {
+          ;
+          node.setExplicitVariableModeForCollection(collection.id, mode.modeId);
+        } catch (err) {
+          ctx.warnings.push(`could not pin ${collectionName} \u2192 ${mode.name}: ${String((err == null ? void 0 : err.message) || err)}`);
+        }
+      }
+    }
+  }
+  async function resolveBoardPage(ref) {
+    if (typeof ref !== "string" || ref === "") {
+      await figma.currentPage.loadAsync();
+      return figma.currentPage;
+    }
+    if (/^\d+:\d+$/.test(ref)) {
+      const node = await figma.getNodeByIdAsync(ref);
+      if (node && node.type === "PAGE") {
+        await node.loadAsync();
+        return node;
+      }
+    }
+    const existing = figma.root.children.find((page2) => page2.name === ref);
+    if (existing) {
+      await existing.loadAsync();
+      return existing;
+    }
+    const page = figma.createPage();
+    page.name = ref;
+    return page;
+  }
+  function freeSpot(page) {
+    let right = 0;
+    let top = 0;
+    let first = true;
+    for (const child of page.children) {
+      if (!("x" in child)) continue;
+      right = Math.max(right, child.x + child.width);
+      top = first ? child.y : Math.min(top, child.y);
+      first = false;
+    }
+    return first ? { x: 0, y: 0 } : { x: right + 240, y: top };
+  }
+  async function renderBoard(spec, options) {
+    await loadFonts2();
+    variableCache.clear();
+    const themeName = str(spec.theme, "light") === "dark" ? "dark" : "light";
+    const chrome = CHROME[themeName];
+    const width = num(spec.width, 1680);
+    const name = str(spec.name, "Board");
+    const page = await resolveBoardPage(spec.page);
+    let replaced = false;
+    if (options.replace) {
+      for (const child of [...page.children]) {
+        if (child.name === name && child.type === "FRAME") {
+          child.remove();
+          replaced = true;
+        }
+      }
+    }
+    const ctx = { chrome, width, warnings: [] };
+    const board = frame2(name, "VERTICAL", num(spec.gap, 36));
+    board.fills = [solid3(chrome.bg)];
+    pad(board, 64, 64);
+    board.cornerRadius = 32;
+    board.counterAxisSizingMode = "FIXED";
+    board.resize(width, 100);
+    board.primaryAxisSizingMode = "AUTO";
+    board.strokes = [solid3(chrome.border)];
+    board.strokeWeight = 1;
+    page.appendChild(board);
+    for (const raw of list(spec.blocks)) {
+      const node = await renderBlock(raw, ctx);
+      if (!node) continue;
+      board.appendChild(node);
+      if ("layoutAlign" in node && obj(raw).stretch !== false) node.layoutAlign = "STRETCH";
+    }
+    const spot = spec.x !== void 0 || spec.y !== void 0 ? { x: num(spec.x, 0), y: num(spec.y, 0) } : freeSpot(page);
+    board.x = spot.x;
+    board.y = spot.y;
+    if (options.focus) {
+      await figma.setCurrentPageAsync(page);
+      figma.viewport.scrollAndZoomIntoView([board]);
+      figma.currentPage.selection = [board];
+    }
+    return {
+      board: { id: board.id, name: board.name, width: board.width, height: board.height, x: board.x, y: board.y },
+      page: { id: page.id, name: page.name },
+      replaced,
+      blocks: board.children.length,
+      warnings: ctx.warnings
+    };
+  }
+
+  // src/agent/write-ops.ts
+  function asArray(value, param) {
+    if (!Array.isArray(value)) throw new Error(`param "${param}" must be an array`);
+    return value;
+  }
+  function record(value, what) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error(`${what} must be an object`);
+    }
+    return value;
+  }
+  var RESOLVED_TYPES = ["COLOR", "FLOAT", "BOOLEAN", "STRING"];
+  var SCALAR_FIELDS = {
+    width: "FLOAT",
+    height: "FLOAT",
+    minWidth: "FLOAT",
+    maxWidth: "FLOAT",
+    minHeight: "FLOAT",
+    maxHeight: "FLOAT",
+    topLeftRadius: "FLOAT",
+    topRightRadius: "FLOAT",
+    bottomLeftRadius: "FLOAT",
+    bottomRightRadius: "FLOAT",
+    itemSpacing: "FLOAT",
+    counterAxisSpacing: "FLOAT",
+    paddingLeft: "FLOAT",
+    paddingRight: "FLOAT",
+    paddingTop: "FLOAT",
+    paddingBottom: "FLOAT",
+    strokeWeight: "FLOAT",
+    opacity: "FLOAT",
+    characters: "STRING",
+    visible: "BOOLEAN"
+  };
+  var FIELD_GROUPS = {
+    cornerRadius: ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"],
+    padding: ["paddingLeft", "paddingRight", "paddingTop", "paddingBottom"]
+  };
+  var PAINT_FIELDS = { fill: "fills", stroke: "strokes" };
+  function expandBindField(field) {
+    var _a;
+    return (_a = FIELD_GROUPS[field]) != null ? _a : [field];
+  }
+  function bindFieldType(field) {
+    var _a;
+    if (field in PAINT_FIELDS) return "COLOR";
+    return (_a = SCALAR_FIELDS[field]) != null ? _a : null;
+  }
+  var BINDABLE_FIELDS = [
+    ...Object.keys(PAINT_FIELDS),
+    ...Object.keys(FIELD_GROUPS),
+    ...Object.keys(SCALAR_FIELDS)
+  ];
+  async function loadTextFonts(text3) {
+    const fonts = text3.characters.length > 0 ? text3.getRangeAllFontNames(0, text3.characters.length) : text3.fontName === figma.mixed ? [] : [text3.fontName];
+    await Promise.all(fonts.map((font) => figma.loadFontAsync(font)));
+  }
+  async function bindPaints(node, prop, variable, paintIndex, dryRun) {
+    const styleId = node[prop === "fills" ? "fillStyleId" : "strokeStyleId"];
+    if (typeof styleId === "string" && styleId !== "") {
+      throw new Error(`${prop} come from a paint style \u2014 unlink it first, or the binding would break the style`);
+    }
+    const paints = node[prop];
+    if (!Array.isArray(paints)) throw new Error(`${prop} are unreadable on this node`);
+    const next = paints.slice();
+    const touched = [];
+    for (let i = 0; i < next.length; i++) {
+      if (paintIndex !== void 0 && i !== paintIndex) continue;
+      if (next[i].type !== "SOLID") continue;
+      next[i] = figma.variables.setBoundVariableForPaint(next[i], "color", variable);
+      touched.push(i);
+    }
+    if (touched.length === 0) {
+      throw new Error(paintIndex === void 0 ? `no solid paint in ${prop}` : `${prop}[${paintIndex}] is not a solid paint`);
+    }
+    if (!dryRun) node[prop] = next;
+    return touched.length === next.length ? prop : `${prop}[${touched.join(",")}]`;
+  }
+  var WRITE_OPS = [
+    {
+      name: "variables.set",
+      summary: "Set variable values or aliases, in batch \u2014 the one op a recolor actually needs.",
+      mutates: true,
+      params: {
+        updates: {
+          type: "json",
+          required: true,
+          description: 'Array of { variable, mode?, value }. `variable` is an id or a name ("Colors/orange/500"). `mode` is a mode name, a mode id, or "*" for every mode; omitted means the collection default. `value` is "#RRGGBB" / "#RRGGBBAA" / "#RRGGBB 40%" / a number / a boolean / { "alias": \u2026 }. An alias takes a local name or id, or a *library* variable key (40 hex chars) \u2014 that is how one library inherits another\'s tokens.'
+        },
+        dryRun: {
+          type: "boolean",
+          default: false,
+          description: "Report what would change without writing anything."
+        }
+      },
+      async run(params) {
+        var _a;
+        const updates = asArray(params.updates, "updates");
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const results = [];
+        for (const [index, raw] of updates.entries()) {
+          let label2 = `#${index}`;
+          try {
+            const entry = record(raw, `updates[${index}]`);
+            label2 = String((_a = entry.variable) != null ? _a : label2);
+            const variable = await resolveVariable(entry.variable);
+            const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+            if (!collection) throw new Error(`"${variable.name}" has no readable collection`);
+            if (variable.remote) throw new Error(`"${variable.name}" is a library variable \u2014 it can only change in its own file`);
+            const value = await coerceVariableValue(variable, entry.value);
+            for (const mode of resolveModes(collection, entry.mode)) {
+              const before = await describeValue(variable.valuesByMode[mode.modeId]);
+              if (!dryRun) variable.setValueForMode(mode.modeId, value);
+              const after = await describeValue(value);
+              results.push({
+                variable: variable.id,
+                name: `${collection.name}/${variable.name}`,
+                mode: mode.name,
+                before,
+                after,
+                ok: true,
+                changed: before !== after
+              });
+            }
+          } catch (err) {
+            results.push({
+              variable: label2,
+              name: label2,
+              mode: "\u2014",
+              before: "\u2014",
+              after: "\u2014",
+              ok: false,
+              error: String((err == null ? void 0 : err.message) || err)
+            });
+          }
+        }
+        const failed = results.filter((entry) => !entry.ok);
+        const changed = results.filter((entry) => entry.ok && entry.changed);
+        if (!dryRun && changed.length > 0) {
+          figma.notify(`Agent: ${changed.length} variable value${changed.length === 1 ? "" : "s"} updated`);
+        }
+        return {
+          dryRun,
+          total: results.length,
+          changed: changed.length,
+          unchanged: results.filter((entry) => entry.ok && !entry.changed).length,
+          failed: failed.length,
+          results
+        };
+      }
+    },
+    {
+      name: "variables.create",
+      summary: "Create variables in a collection \u2014 the rungs a new palette adds that the old one lacked.",
+      mutates: true,
+      params: {
+        collection: {
+          type: "string",
+          required: true,
+          description: "Target collection name or id. Created when missing and `createCollection` is true."
+        },
+        variables: {
+          type: "json",
+          required: true,
+          description: 'Array of { name, type?, values?, scopes?, description? }. `type` defaults to COLOR. `values` maps mode name (or id, or "*") to a value in the same forms `variables.set` takes.'
+        },
+        createCollection: {
+          type: "boolean",
+          default: false,
+          description: "Create the collection when no local one matches."
+        },
+        updateExisting: {
+          type: "boolean",
+          default: false,
+          description: "When a variable of that name already exists, write the given values into it instead of skipping."
+        },
+        dryRun: { type: "boolean", default: false, description: "Report without writing." }
+      },
+      async run(params) {
+        var _a, _b, _c, _d;
+        const requested = asArray(params.variables, "variables");
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        let collection = null;
+        try {
+          collection = await resolveCollection(params.collection);
+        } catch (err) {
+          if (params.createCollection !== true || dryRun) {
+            if (params.createCollection !== true) throw err;
+          } else {
+            collection = figma.variables.createVariableCollection(String(params.collection));
+          }
+        }
+        if (!collection) throw new Error(`collection "${params.collection}" does not exist yet \u2014 dry run cannot create it`);
+        const existing = (await figma.variables.getLocalVariablesAsync()).filter(
+          (variable) => variable.variableCollectionId === collection.id
+        );
+        const byName = new Map(existing.map((variable) => [variable.name, variable]));
+        const results = [];
+        for (const [index, raw] of requested.entries()) {
+          try {
+            const entry = record(raw, `variables[${index}]`);
+            const name = String((_a = entry.name) != null ? _a : "").trim();
+            if (!name) throw new Error(`variables[${index}] has no name`);
+            const type = String((_b = entry.type) != null ? _b : "COLOR").toUpperCase();
+            if (!RESOLVED_TYPES.includes(type)) {
+              throw new Error(`"${name}" has unknown type ${type} \u2014 one of ${RESOLVED_TYPES.join(", ")}`);
+            }
+            const already = byName.get(name);
+            if (already && params.updateExisting !== true) {
+              results.push({ name, ok: true, created: false, skipped: "already exists", variable: already.id });
+              continue;
+            }
+            const variable = already != null ? already : dryRun ? null : figma.variables.createVariable(name, collection, type);
+            if (!dryRun && !variable) throw new Error(`could not create "${name}"`);
+            const values = entry.values === void 0 ? {} : record(entry.values, `variables[${index}].values`);
+            const written = {};
+            for (const [modeRef, rawValue] of Object.entries(values)) {
+              for (const mode of resolveModes(collection, modeRef)) {
+                if (variable) {
+                  const value = await coerceVariableValue(variable, rawValue);
+                  if (!dryRun) variable.setValueForMode(mode.modeId, value);
+                  written[mode.name] = await describeValue(value);
+                } else {
+                  written[mode.name] = String(rawValue);
+                }
+              }
+            }
+            if (variable && !dryRun) {
+              if (typeof entry.description === "string") variable.description = entry.description;
+              if (Array.isArray(entry.scopes)) variable.scopes = entry.scopes;
+            }
+            results.push({ name, ok: true, created: !already, variable: (_c = variable == null ? void 0 : variable.id) != null ? _c : null, values: written });
+          } catch (err) {
+            results.push({ name: String((_d = raw == null ? void 0 : raw.name) != null ? _d : index), ok: false, error: String((err == null ? void 0 : err.message) || err) });
+          }
+        }
+        return {
+          dryRun,
+          collection: { id: collection.id, name: collection.name, modes: collection.modes },
+          created: results.filter((entry) => entry.ok && entry.created).length,
+          updated: results.filter((entry) => entry.ok && entry.created === false && !entry.skipped).length,
+          failed: results.filter((entry) => !entry.ok).length,
+          results
+        };
+      }
+    },
+    {
+      name: "board.render",
+      summary: "Draw a documentation board \u2014 headings, callouts, swatch grids, before/after rows \u2014 on a page.",
+      mutates: true,
+      params: {
+        spec: {
+          type: "json",
+          required: true,
+          description: 'Board spec: { page?, name, theme?, x?, y?, width?, blocks: [...] }. Block types: heading, text, callout, swatches, diff, table, group, spacer. A swatch takes either `color` ("#RRGGBB") or `variable` (bound live, so the board repaints with the file). A group may carry `modes: { "One": "Dark" }` to render its bound swatches in that mode.'
+        },
+        replace: {
+          type: "boolean",
+          default: true,
+          description: "Delete an existing top-level frame of the same name on that page first, so re-rendering is idempotent."
+        },
+        focus: {
+          type: "boolean",
+          default: true,
+          description: "Move the designer to the board once it is drawn."
+        }
+      },
+      async run(params) {
+        figma.commitUndo();
+        return renderBoard(record(params.spec, "spec"), {
+          replace: params.replace !== false,
+          focus: params.focus !== false
+        });
+      }
+    },
+    {
+      name: "node.bind",
+      summary: "Bind layer properties to variables \u2014 the op that turns a lint finding into a fix.",
+      mutates: true,
+      params: {
+        bindings: {
+          type: "json",
+          required: true,
+          description: 'Array of { node, field, variable, paintIndex? }. `node` is a layer id, as returned by `lint.colors` or `node.find`. `field` is "fill" / "stroke", a group name ("cornerRadius", "padding"), or a scalar field (width, height, topLeftRadius, itemSpacing, paddingLeft, strokeWeight, opacity, visible, characters, \u2026). `variable` is an id, a name ("Colors/orange/500") or a library key from `library.variables`; null unbinds. `paintIndex` narrows a fill/stroke binding to one paint \u2014 omitted binds every solid paint.'
+        },
+        dryRun: {
+          type: "boolean",
+          default: false,
+          description: "Report what would change without writing anything."
+        }
+      },
+      async run(params) {
+        var _a;
+        const bindings = asArray(params.bindings, "bindings");
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const results = [];
+        for (const [index, raw] of bindings.entries()) {
+          let nodeId = `#${index}`;
+          let nodeName = nodeId;
+          const field = (() => {
+            var _a2;
+            try {
+              return String((_a2 = record(raw, `bindings[${index}]`).field) != null ? _a2 : "");
+            } catch (e) {
+              return "";
+            }
+          })();
+          try {
+            const entry = record(raw, `bindings[${index}]`);
+            nodeId = String((_a = entry.node) != null ? _a : "");
+            if (!nodeId) throw new Error('missing "node"');
+            nodeName = nodeId;
+            if (!field) throw new Error('missing "field"');
+            const found = await figma.getNodeByIdAsync(nodeId);
+            if (!found || found.type === "PAGE" || found.type === "DOCUMENT") {
+              throw new Error(`no layer with id ${nodeId}`);
+            }
+            const node = found;
+            nodeName = node.name;
+            const variable = entry.variable === null || entry.variable === void 0 ? null : await resolveVariableRef(entry.variable);
+            const paintIndex = entry.paintIndex === void 0 ? void 0 : Number(entry.paintIndex);
+            if (paintIndex !== void 0 && !Number.isInteger(paintIndex)) {
+              throw new Error('"paintIndex" must be a whole number');
+            }
+            const target = await resolveEditableTarget(node);
+            const where = target.kind === "library" ? "instance override" : target.onMainComponent ? "main component" : "node";
+            for (const one of expandBindField(field)) {
+              try {
+                const wants = bindFieldType(one);
+                if (!wants) throw new Error(`"${one}" is not bindable \u2014 try: ${BINDABLE_FIELDS.join(", ")}`);
+                if (variable && variable.resolvedType !== wants) {
+                  throw new Error(`"${one}" takes a ${wants} variable, but "${variable.name}" is ${variable.resolvedType}`);
+                }
+                let detail;
+                if (one in PAINT_FIELDS) {
+                  const applyTo = target.kind === "library" ? node : target.node;
+                  detail = await bindPaints(applyTo, PAINT_FIELDS[one], variable, paintIndex, dryRun);
+                } else {
+                  if (target.kind === "library") {
+                    throw new Error(`inside a library instance \u2014 "${one}" cannot be overridden on a sublayer`);
+                  }
+                  const applyTo = target.node;
+                  if (!(one in applyTo)) throw new Error(`a ${applyTo.type} has no "${one}"`);
+                  if (one === "characters" && applyTo.type === "TEXT") await loadTextFonts(applyTo);
+                  if (!dryRun) {
+                    ;
+                    applyTo.setBoundVariable(
+                      one,
+                      variable
+                    );
+                  }
+                  detail = one;
+                }
+                results.push({
+                  node: nodeId,
+                  name: nodeName,
+                  field: one,
+                  variable: variable ? variable.name : null,
+                  ok: true,
+                  target: where,
+                  detail
+                });
+              } catch (err) {
+                results.push({
+                  node: nodeId,
+                  name: nodeName,
+                  field: one,
+                  variable: null,
+                  ok: false,
+                  error: String((err == null ? void 0 : err.message) || err)
+                });
+              }
+            }
+          } catch (err) {
+            results.push({
+              node: nodeId,
+              name: nodeName,
+              field: field || "\u2014",
+              variable: null,
+              ok: false,
+              error: String((err == null ? void 0 : err.message) || err)
+            });
+          }
+        }
+        const bound = results.filter((entry) => entry.ok);
+        if (!dryRun && bound.length > 0) {
+          figma.notify(`Agent: ${bound.length} binding${bound.length === 1 ? "" : "s"} applied`);
+        }
+        return {
+          dryRun,
+          total: results.length,
+          bound: bound.length,
+          failed: results.length - bound.length,
+          results
+        };
+      }
+    }
+  ];
 
   // src/agent/ops.ts
   function round22(value) {
@@ -14005,7 +15017,7 @@ ${renderSections(sections)}
       mutates: false,
       params: {},
       async run() {
-        const [text2, paint, effect, grid] = await Promise.all([
+        const [text3, paint, effect, grid] = await Promise.all([
           figma.getLocalTextStylesAsync(),
           figma.getLocalPaintStylesAsync(),
           figma.getLocalEffectStylesAsync(),
@@ -14018,7 +15030,7 @@ ${renderSections(sections)}
           description: style.description || void 0
         });
         return {
-          text: text2.map((style) => __spreadProps(__spreadValues({}, base(style)), {
+          text: text3.map((style) => __spreadProps(__spreadValues({}, base(style)), {
             fontFamily: style.fontName.family,
             fontStyle: style.fontName.style,
             fontSize: style.fontSize,
@@ -14034,9 +15046,38 @@ ${renderSections(sections)}
       name: "variables.get",
       summary: "Variable collections, modes and values \u2014 the same snapshot the token export reads.",
       mutates: false,
-      params: {},
-      async run() {
-        return readAllVariables();
+      params: {
+        library: {
+          type: "boolean",
+          default: false,
+          description: "Include variables from enabled libraries. Off by default: that sweep imports every variable of every enabled collection one by one and can take minutes on a large file. Use `library.collections` + `library.variables` to read one library collection instead."
+        },
+        collection: {
+          type: "string",
+          description: "Only this collection, by name or id. Omitted returns them all."
+        },
+        limit: { type: "number", default: 2e3, min: 1, max: 2e4, description: "Cap on variables returned." }
+      },
+      async run(params) {
+        const snapshot = params.library === true ? await readAllVariables() : await readLocalVariables();
+        const wanted = typeof params.collection === "string" ? params.collection.toLowerCase() : null;
+        const collections = wanted ? snapshot.collections.filter(
+          (entry) => entry.id === params.collection || entry.name.toLowerCase() === wanted
+        ) : snapshot.collections;
+        if (wanted && collections.length === 0) {
+          throw new Error(
+            `no collection "${params.collection}" \u2014 this file has: ${snapshot.collections.map((c) => c.name).join(", ")}`
+          );
+        }
+        const keep = new Set(collections.map((entry) => entry.id));
+        const variables = snapshot.variables.filter((entry) => keep.has(entry.collectionId));
+        const limit = params.limit;
+        return {
+          collections,
+          total: variables.length,
+          truncated: variables.length > limit,
+          variables: variables.slice(0, limit)
+        };
       }
     },
     {
@@ -14083,9 +15124,137 @@ ${renderSections(sections)}
           edges
         };
       }
+    },
+    {
+      name: "library.collections",
+      summary: "Variable collections published by libraries enabled in this file \u2014 the other file\u2019s tokens.",
+      mutates: false,
+      params: {},
+      async run() {
+        const collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+        return collections.map((collection) => ({
+          key: collection.key,
+          name: collection.name,
+          libraryName: collection.libraryName
+        }));
+      }
+    },
+    {
+      name: "library.variables",
+      summary: "Variables inside one library collection, with their values \u2014 read a palette from another file.",
+      mutates: false,
+      params: {
+        collectionKey: {
+          type: "string",
+          required: true,
+          description: "Library collection key, from `library.collections`."
+        },
+        values: {
+          type: "boolean",
+          default: true,
+          description: "Import each variable to read its per-mode values. Off returns names and types only."
+        },
+        limit: { type: "number", default: 400, min: 1, max: 2e3, description: "Cap on variables returned." }
+      },
+      async run(params) {
+        const key = params.collectionKey;
+        const entries = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(key);
+        const capped = entries.slice(0, params.limit);
+        if (params.values === false) {
+          return {
+            collectionKey: key,
+            total: entries.length,
+            variables: capped.map((entry) => ({ key: entry.key, name: entry.name, resolvedType: entry.resolvedType }))
+          };
+        }
+        const variables = [];
+        let modes = [];
+        let collectionName = null;
+        for (const entry of capped) {
+          try {
+            const imported = await figma.variables.importVariableByKeyAsync(entry.key);
+            if (modes.length === 0) {
+              const collection = await figma.variables.getVariableCollectionByIdAsync(imported.variableCollectionId);
+              if (collection) {
+                collectionName = collection.name;
+                modes = collection.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name }));
+              }
+            }
+            variables.push({
+              key: imported.key,
+              id: imported.id,
+              name: imported.name,
+              resolvedType: imported.resolvedType,
+              valuesByMode: imported.valuesByMode
+            });
+          } catch (err) {
+            variables.push({ key: entry.key, name: entry.name, error: String((err == null ? void 0 : err.message) || err) });
+          }
+        }
+        return { collectionKey: key, collectionName, modes, total: entries.length, variables };
+      }
+    },
+    {
+      name: "lint.colors",
+      summary: "Layers painted with a raw colour instead of a variable \u2014 exactly what a recolor cannot reach.",
+      mutates: false,
+      params: {
+        pageId: { type: "string", description: "Page id. Defaults to the page the designer is on." },
+        scope: {
+          type: "string",
+          default: "page",
+          enum: ["page", "document"],
+          description: "Where to look. `document` walks every page and is slow on a big file."
+        },
+        limit: { type: "number", default: 300, min: 1, max: 5e3, description: "Cap on findings returned." }
+      },
+      async run(params) {
+        var _a;
+        const pages = params.scope === "document" ? (await loadAllPagesAsync(), figma.root.children.slice()) : [await resolvePage(params.pageId)];
+        const findings = [];
+        for (const page of pages) {
+          const roots = page.children.filter((node) => "visible" in node);
+          for (const finding of await lintScopeAsync(roots)) {
+            if (finding.rule !== "unbound-fill" && finding.rule !== "unbound-stroke") continue;
+            findings.push(__spreadProps(__spreadValues({}, finding), { page: page.name }));
+          }
+        }
+        const byRule = {};
+        for (const finding of findings) byRule[finding.rule] = ((_a = byRule[finding.rule]) != null ? _a : 0) + 1;
+        return {
+          scope: params.scope,
+          pages: pages.map((page) => page.name),
+          total: findings.length,
+          byRule,
+          findings: findings.slice(0, params.limit)
+        };
+      }
+    },
+    {
+      name: "sandbox.capabilities",
+      summary: "What this plugin runtime allows \u2014 including whether it can evaluate code at all.",
+      mutates: false,
+      params: {},
+      async run() {
+        var _a;
+        const probe = (label2, run) => {
+          try {
+            return { [label2]: run() === 2 };
+          } catch (err) {
+            return { [label2]: String((err == null ? void 0 : err.message) || err) };
+          }
+        };
+        return __spreadValues(__spreadValues({
+          apiVersion: figma.apiVersion,
+          editorType: figma.editorType,
+          fileName: figma.root.name,
+          fileKey: (_a = figma.fileKey) != null ? _a : null
+        }, probe("eval", () => (0, eval)("1 + 1"))), probe("newFunction", () => new Function("return 1 + 1")()));
+      }
     }
   ];
-  var OPS_BY_NAME = new Map(READ_OPS.map((op) => [op.name, op]));
+  var ALL_OPS = [...READ_OPS, ...WRITE_OPS];
+  var OPS_BY_NAME = new Map(ALL_OPS.map((op) => [op.name, op]));
 
   // src/agent/listener.ts
   var gates = { read: false, write: false };
@@ -14094,7 +15263,7 @@ ${renderSections(sections)}
     return gates;
   }
   function agentManifest() {
-    return toManifest(READ_OPS);
+    return toManifest(ALL_OPS);
   }
   async function handleAgentRequest(request) {
     const started = Date.now();
@@ -14578,7 +15747,7 @@ ${renderSections(sections)}
   }
   figma.on("selectionchange", postSelectionToUi);
   figma.ui.onmessage = async (msg) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
@@ -14895,7 +16064,7 @@ ${renderSections(sections)}
       }
       case "AGENT_SET_GATES": {
         const gates2 = setGates({ read: msg.read, write: msg.write });
-        figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name }));
+        figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name, fileKey: (_f = figma.fileKey) != null ? _f : null }));
         break;
       }
       case "AGENT_REQUEST": {
@@ -15038,10 +16207,10 @@ ${renderSections(sections)}
           if (exportOptions.targetOptions.platform === "tauri" && project) {
             let startPageId;
             try {
-              startPageId = (_f = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _f.nodeId;
+              startPageId = (_g = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _g.nodeId;
             } catch (e) {
             }
-            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_g = pageRoots[0]) == null ? void 0 : _g.id;
+            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_h = pageRoots[0]) == null ? void 0 : _h.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -15074,9 +16243,9 @@ ${renderSections(sections)}
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_h = sceneNodesById.get(nodeId)) != null ? _h : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (_i = sceneNodesById.get(nodeId)) != null ? _i : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_i = node.parent) == null ? void 0 : _i.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((_j = node.parent) == null ? void 0 : _j.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -15099,7 +16268,7 @@ ${renderSections(sections)}
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((_j = counts[finding.rule]) != null ? _j : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_k = counts[finding.rule]) != null ? _k : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -15149,7 +16318,7 @@ ${renderSections(sections)}
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (_l = (_k = figma.currentUser) == null ? void 0 : _k.name) != null ? _l : "unknown";
+            exportedBy = (_m = (_l = figma.currentUser) == null ? void 0 : _l.name) != null ? _m : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }

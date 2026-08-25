@@ -1,17 +1,21 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { READ_OPS, summarizeComponentProperties, summarizeNode, summarizeReactions } from './ops.ts'
+import { ALL_OPS, READ_OPS, summarizeComponentProperties, summarizeNode, summarizeReactions } from './ops.ts'
 
 /* -------------------------------------------------------------- registry */
 
-test('every shipped op is read-only and uniquely named', () => {
-  const names = READ_OPS.map((op) => op.name)
+test('op names are unique across the whole registry', () => {
+  const names = ALL_OPS.map((op) => op.name)
   assert.deepEqual(names, [...new Set(names)])
+})
+
+test('the read registry stays read-only — writes live behind their own gate', () => {
   assert.deepEqual(READ_OPS.filter((op) => op.mutates), [])
+  assert.ok(ALL_OPS.some((op) => op.mutates), 'no mutating op is registered at all')
 })
 
 test('every op carries a summary and describes each param', () => {
-  for (const op of READ_OPS) {
+  for (const op of ALL_OPS) {
     assert.ok(op.summary.length > 0, `${op.name} has no summary`)
     for (const [param, spec] of Object.entries(op.params)) {
       assert.ok(spec.description.length > 0, `${op.name}.${param} has no description`)

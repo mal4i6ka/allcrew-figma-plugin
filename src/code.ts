@@ -986,7 +986,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     }
     case 'AGENT_SET_GATES': {
       const gates = setGates({ read: msg.read, write: msg.write })
-      figma.ui.postMessage({ type: 'AGENT_GATES', ...gates, ops: agentManifest(), file: figma.root.name })
+      figma.ui.postMessage({ type: 'AGENT_GATES', ...gates, ops: agentManifest(), file: figma.root.name, fileKey: figma.fileKey ?? null })
       break
     }
     case 'AGENT_REQUEST': {

@@ -1,17 +1,41 @@
 #!/usr/bin/env node
 /*
- * Altery agent bridge — the local relay between a CLI agent and the running Figma plugin.
+ * Altery agent bridge — the local relay between a CLI agent and the running Figma plugins.
  *
  * Figma plugins cannot be reached from outside: the sandbox has no listening socket, and
- * there is no headless mode. So the plugin dials *out* — its UI long-polls this process —
+ * there is no headless mode. So each plugin dials *out* — its UI long-polls this process —
  * and this process gives a CLI something conventional to talk to:
  *
  *     agent (Claude Code, curl, anything)          plugin (UI iframe → sandbox)
- *        │  POST /call {op, params}                   │
+ *        │  POST /call {op, params, target}           │
  *        ▼                                            │ GET /plugin/poll  (parked ~25s)
  *      bridge ──────── hands the request over ────────┤
  *        │                                            │ POST /plugin/result
  *        ◄──────────── answers the waiting call ──────┘
+ *
+ * MANY plugins, not one. A design system lives in one file and is consumed in others, so the
+ * questions worth asking are usually cross-file: which components are actually instantiated,
+ * what a token change did downstream, where the raw colours are. Figma gives a plugin only a
+ * published-library view of its neighbours; two plugin windows on one bridge give an agent the
+ * full op surface against both documents at once, which no Figma API offers.
+ *
+ * Every connection therefore gets its own registry entry, its own parked poll and its own
+ * queue, and every call names its target:
+ *
+ *     POST /call {"op":"lint.colors","target":"mobile"}   → one file
+ *     POST /call {"op":"lint.colors","target":"*"}        → every file, one answer each
+ *
+ * A call that names no target is answered only when exactly one file is connected. With more
+ * than one it is refused with the roster attached — never routed by guess. That refusal is the
+ * whole safety property: an unaddressed write must not be able to land in the wrong document.
+ *
+ * Identity is a `clientId` the plugin window mints once when it loads and repeats on every
+ * hello. A window says hello more than once — reconnecting after a bridge restart, or whenever
+ * the designer flips a gate — and keying on anything else would file the same window twice,
+ * putting phantom duplicates in the roster and making an unaddressed call look ambiguous when
+ * only one file is really open. `figma.fileKey` would be the natural key but it is exposed only
+ * to private plugins on Organization plans, so it is absent for almost everyone; the file *name*
+ * is carried as the human handle and is what an agent actually types.
  *
  * Deliberately dependency-free, like server/receiver.mjs — Node built-ins only. The plugin
  * carries a copy of this file and hands it over from its Agent Listener screen, so a designer
@@ -34,7 +58,7 @@
  *   ALTERY_AGENT_SECRET_FILE  where the minted secret lives (default ~/.altery/agent-secret)
  *   ALTERY_AGENT_PORT         (default 8788)
  *   ALTERY_AGENT_HOST         (default 127.0.0.1) — loopback on purpose. Anyone who can reach
- *                             this port and knows the secret can read the open Figma file.
+ *                             this port and knows the secret can read every connected file.
  */
 
 import http from 'node:http'
@@ -86,25 +110,95 @@ const POLL_HOLD_MS = 25_000
 /** A call gives up if the plugin has not answered in this long. Ops walking a whole document
  * can genuinely take a few seconds, so this is generous. */
 const CALL_TIMEOUT_MS = 60_000
-/** No poll renewed within this window → treat the plugin as gone. */
+/** No poll renewed within this window → treat that plugin as gone. */
 const OFFLINE_AFTER_MS = 45_000
 
-const state = {
-  /** Last hello from the plugin: what it can do and what the designer has allowed. */
-  plugin: { lastSeen: 0, ops: [], gates: { read: false, write: false }, file: null },
-  /** Requests handed over but not yet answered: id → { res, timer, op, startedAt }. */
-  pending: new Map(),
-  /** Requests not yet picked up by a poll. */
-  queue: [],
-  /** The currently parked /plugin/poll, if any. */
-  poller: null,
-}
+/** session id → connected plugin. One entry per open plugin window. */
+const plugins = new Map()
+/** Requests handed over but not yet answered: id → { resolve, timer, op, session, startedAt }. */
+const pending = new Map()
 
-const online = () => Date.now() - state.plugin.lastSeen < OFFLINE_AFTER_MS
+const isOnline = (plugin) => Date.now() - plugin.lastSeen < OFFLINE_AFTER_MS
+const roster = () => [...plugins.values()].filter(isOnline)
 
 function safeEqual(a, b) {
   const ab = Buffer.from(String(a || '')), bb = Buffer.from(String(b || ''))
   return ab.length === bb.length && crypto.timingSafeEqual(ab, bb)
+}
+
+/* ---------------------------------------------------------------- identity */
+
+/** A short, typeable name for a file — what an agent passes as `target`. Collisions get a
+ * numeric suffix so two files called "Untitled" stay separately addressable. */
+function mintHandle(fileName) {
+  const base =
+    String(fileName || 'file')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 32) || 'file'
+  const taken = new Set([...plugins.values()].map((plugin) => plugin.handle))
+  if (!taken.has(base)) return base
+  for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`
+}
+
+function describe(plugin) {
+  return {
+    session: plugin.session,
+    handle: plugin.handle,
+    file: plugin.file,
+    online: isOnline(plugin),
+    gates: plugin.gates,
+    lastSeen: plugin.lastSeen ? new Date(plugin.lastSeen).toISOString() : null,
+    queued: plugin.queue.length,
+  }
+}
+
+/**
+ * Resolves a `target` to exactly one connected plugin, or explains why it could not. Matching
+ * widens in steps — session id, then handle, then a substring of either — and every step
+ * demands a unique winner. Ambiguity is an error with the candidates listed, never a pick.
+ */
+function resolveTarget(target) {
+  const online = roster()
+  if (online.length === 0) {
+    return {
+      error:
+        'no plugin connected — open the Altery plugin in Figma and turn on Settings → Agent listener → Allow reads',
+    }
+  }
+
+  if (target === undefined || target === null || target === '') {
+    if (online.length === 1) return { plugin: online[0] }
+    return {
+      error:
+        `${online.length} files are connected — name one with "target" ` +
+        `(or "*" to ask all of them): ${online.map((plugin) => plugin.handle).join(', ')}`,
+      candidates: online.map(describe),
+    }
+  }
+
+  const needle = String(target).toLowerCase()
+  const bySession = online.filter((plugin) => plugin.session === target)
+  const byHandle = online.filter((plugin) => plugin.handle === needle)
+  const loose = online.filter(
+    (plugin) => plugin.handle.includes(needle) || String(plugin.file || '').toLowerCase().includes(needle)
+  )
+  const matched = bySession.length ? bySession : byHandle.length ? byHandle : loose
+
+  if (matched.length === 1) return { plugin: matched[0] }
+  if (matched.length === 0) {
+    return {
+      error: `no connected file matches "${target}" — connected: ${online.map((p) => p.handle).join(', ')}`,
+      candidates: online.map(describe),
+    }
+  }
+  return {
+    error: `"${target}" matches ${matched.length} connected files — be more specific: ${matched
+      .map((plugin) => plugin.handle)
+      .join(', ')}`,
+    candidates: matched.map(describe),
+  }
 }
 
 /* ----------------------------------------------------------------- plumbing */
@@ -130,24 +224,47 @@ function readBody(req) {
   })
 }
 
-/** Hands everything queued to a parked poll, if both exist. */
-function flush() {
-  if (!state.poller || state.queue.length === 0) return
-  const { res, timer } = state.poller
-  state.poller = null
+/** Hands everything queued for one plugin to its parked poll, if both exist. */
+function flush(plugin) {
+  if (!plugin.poller || plugin.queue.length === 0) return
+  const { res, timer } = plugin.poller
+  plugin.poller = null
   clearTimeout(timer)
-  const requests = state.queue.splice(0, state.queue.length)
-  send(res, 200, { requests })
+  send(res, 200, { requests: plugin.queue.splice(0, plugin.queue.length) })
 }
 
-/** Fails every in-flight call — used when the plugin disappears mid-request. */
-function failPending(reason) {
-  for (const [id, entry] of state.pending) {
+/** Fails every in-flight call for one plugin — used when it disappears mid-request. */
+function failPending(plugin, reason) {
+  for (const [id, entry] of pending) {
+    if (entry.session !== plugin.session) continue
     clearTimeout(entry.timer)
-    send(entry.res, 503, { ok: false, error: reason })
-    state.pending.delete(id)
+    entry.resolve({ ok: false, error: reason })
+    pending.delete(id)
   }
-  state.queue.length = 0
+  plugin.queue.length = 0
+}
+
+/**
+ * Queues one op for one plugin and resolves when it answers. Everything above this — single
+ * call, broadcast — is just a different way of choosing which plugins to hand it to.
+ */
+function dispatch(plugin, op, params) {
+  return new Promise((resolve) => {
+    const id = crypto.randomUUID()
+    const timer = setTimeout(() => {
+      pending.delete(id)
+      resolve({ ok: false, error: `no answer from "${plugin.handle}" within ${CALL_TIMEOUT_MS / 1000}s` })
+    }, CALL_TIMEOUT_MS)
+    pending.set(id, { resolve, timer, op, session: plugin.session, startedAt: Date.now() })
+    plugin.queue.push({ id, op, params: params ?? {} })
+    flush(plugin)
+  })
+}
+
+/** What one plugin's manifest says about an op — used to refuse a broadcast that would write. */
+function opIsMutating(plugin, op) {
+  const entry = (plugin.ops || []).find((candidate) => candidate.name === op)
+  return entry ? entry.mutates === true : false
 }
 
 /* ------------------------------------------------------------------ routes */
@@ -155,93 +272,157 @@ function failPending(reason) {
 const ROUTES = {
   /* ---- agent side ---- */
 
-  'GET /ops': async () => ({
-    code: 200,
-    body: {
-      online: online(),
-      gates: state.plugin.gates,
-      file: state.plugin.file,
-      ops: state.plugin.ops,
-    },
-  }),
+  'GET /status': async (req, res, url) => {
+    const files = roster().map(describe)
+    return {
+      code: 200,
+      body: { online: files.length > 0, files, count: files.length, inFlight: pending.size },
+    }
+  },
 
-  'GET /status': async () => ({
-    code: 200,
-    body: {
-      online: online(),
-      lastSeen: state.plugin.lastSeen ? new Date(state.plugin.lastSeen).toISOString() : null,
-      gates: state.plugin.gates,
-      file: state.plugin.file,
-      inFlight: state.pending.size,
-      queued: state.queue.length,
-    },
-  }),
+  'GET /ops': async (req, res, url) => {
+    const target = url.searchParams.get('target')
+    if (target) {
+      const found = resolveTarget(target)
+      if (found.error) return { code: 404, body: { ok: false, error: found.error, files: found.candidates || [] } }
+      return { code: 200, body: { ...describe(found.plugin), ops: found.plugin.ops } }
+    }
+    const files = roster().map((plugin) => ({ ...describe(plugin), ops: plugin.ops }))
+    return { code: 200, body: { online: files.length > 0, count: files.length, files } }
+  },
 
-  'POST /call': async (req, res) => {
+  'POST /call': async (req) => {
     const body = await readBody(req)
     const op = typeof body.op === 'string' ? body.op : ''
     if (!op) return { code: 400, body: { ok: false, error: 'missing "op"' } }
-    if (!online()) {
+
+    /* Broadcast: one question, every connected file, one answer each. This is the whole point
+     * of holding a registry — "which of my open files still paints raw hexes" is one call.
+     * Reads only: writing the same thing into every open document is never what someone meant
+     * to type, so it is refused rather than confirmed. */
+    if (body.target === '*') {
+      const online = roster()
+      if (online.length === 0) return { code: 503, body: { ok: false, error: 'no plugin connected' } }
+      const mutating = online.filter((plugin) => opIsMutating(plugin, op))
+      if (mutating.length > 0) {
+        return {
+          code: 400,
+          body: {
+            ok: false,
+            error: `"${op}" writes to the document — a broadcast write is refused. Name one target instead.`,
+            files: online.map(describe),
+          },
+        }
+      }
+      const answers = await Promise.all(
+        online.map(async (plugin) => ({
+          file: plugin.file,
+          handle: plugin.handle,
+          ...(await dispatch(plugin, op, body.params)),
+        }))
+      )
       return {
-        code: 503,
-        body: {
-          ok: false,
-          error: 'plugin not connected — open the Altery plugin in Figma and turn on Settings → Agent listener → Allow reads',
-        },
+        code: 200,
+        body: { ok: true, op, broadcast: true, count: answers.length, results: answers },
       }
     }
 
-    const id = crypto.randomUUID()
-    const timer = setTimeout(() => {
-      state.pending.delete(id)
-      send(res, 504, { ok: false, error: `no answer from the plugin within ${CALL_TIMEOUT_MS / 1000}s` })
-    }, CALL_TIMEOUT_MS)
+    const found = resolveTarget(body.target)
+    if (found.error) {
+      return { code: roster().length === 0 ? 503 : 409, body: { ok: false, error: found.error, files: found.candidates || [] } }
+    }
 
-    state.pending.set(id, { res, timer, op, startedAt: Date.now() })
-    state.queue.push({ id, op, params: body.params ?? {} })
-    flush()
-    return null // answered later, from /plugin/result
+    const plugin = found.plugin
+    const answer = await dispatch(plugin, op, body.params)
+    /* The answer always names the file it came from. An agent that cannot see which document
+     * replied cannot tell a right answer from a right-looking one. */
+    return {
+      code: answer.ok ? 200 : 400,
+      body: { ok: answer.ok, op, file: plugin.file, handle: plugin.handle, ...(answer.ok ? { result: answer.result } : { error: answer.error }) },
+    }
   },
 
   /* ---- plugin side ---- */
 
   'POST /plugin/hello': async (req) => {
     const body = await readBody(req)
-    state.plugin.lastSeen = Date.now()
-    state.plugin.ops = Array.isArray(body.ops) ? body.ops : []
-    state.plugin.gates = { read: body.gates?.read === true, write: body.gates?.write === true }
-    state.plugin.file = typeof body.file === 'string' ? body.file : null
-    console.log(
-      new Date().toISOString(),
-      `plugin connected — "${state.plugin.file}" · ${state.plugin.ops.length} ops ·`,
-      `read=${state.plugin.gates.read} write=${state.plugin.gates.write}`
-    )
-    return { code: 200, body: { ok: true, pollHoldMs: POLL_HOLD_MS } }
-  },
+    const file = typeof body.file === 'string' ? body.file : null
+    // A plugin too old to send one still connects; it just cannot be recognised across a
+    // reconnect, which is exactly the behaviour it had before clientId existed.
+    const session = typeof body.clientId === 'string' && body.clientId ? body.clientId : crypto.randomUUID()
 
-  'GET /plugin/poll': async (req, res) => {
-    state.plugin.lastSeen = Date.now()
-
-    // One poll at a time. A second one (a reloaded plugin window) retires the first.
-    if (state.poller) {
-      clearTimeout(state.poller.timer)
-      send(state.poller.res, 200, { requests: [] })
-      state.poller = null
+    const known = plugins.get(session)
+    if (known) {
+      /* The same window saying hello again. Its handle is kept — an agent may have it in a
+       * command line already — but anything parked or queued belongs to the connection that
+       * just ended, so it is failed now rather than left to time out sixty seconds from here. */
+      if (known.poller) {
+        clearTimeout(known.poller.timer)
+        send(known.poller.res, 200, { requests: [] })
+        known.poller = null
+      }
+      failPending(known, `"${known.handle}" reconnected mid-call`)
+      known.file = file
+      known.fileKey = typeof body.fileKey === 'string' ? body.fileKey : null
+      known.ops = Array.isArray(body.ops) ? body.ops : []
+      known.gates = { read: body.gates?.read === true, write: body.gates?.write === true }
+      known.lastSeen = Date.now()
+      console.log(
+        new Date().toISOString(),
+        `= "${known.file}" (${known.handle}) — reconnected ·`,
+        `read=${known.gates.read} write=${known.gates.write} · ${roster().length} connected`
+      )
+      return { code: 200, body: { ok: true, session, handle: known.handle, pollHoldMs: POLL_HOLD_MS } }
     }
 
-    if (state.queue.length > 0) {
-      return { code: 200, body: { requests: state.queue.splice(0, state.queue.length) } }
+    const plugin = {
+      session,
+      handle: mintHandle(file),
+      file,
+      fileKey: typeof body.fileKey === 'string' ? body.fileKey : null,
+      ops: Array.isArray(body.ops) ? body.ops : [],
+      gates: { read: body.gates?.read === true, write: body.gates?.write === true },
+      lastSeen: Date.now(),
+      poller: null,
+      queue: [],
+    }
+    plugins.set(session, plugin)
+    console.log(
+      new Date().toISOString(),
+      `+ "${plugin.file}" (${plugin.handle}) — ${plugin.ops.length} ops ·`,
+      `read=${plugin.gates.read} write=${plugin.gates.write} · ${roster().length} connected`
+    )
+    return { code: 200, body: { ok: true, session, handle: plugin.handle, pollHoldMs: POLL_HOLD_MS } }
+  },
+
+  'GET /plugin/poll': async (req, res, url) => {
+    const plugin = plugins.get(url.searchParams.get('session'))
+    /* Unknown session means this bridge never said hello to that window — it restarted, or the
+     * plugin is holding an id from a previous run. Telling it to reconnect is what makes a
+     * bridge restart recoverable without the designer touching anything. */
+    if (!plugin) return { code: 409, body: { ok: false, reconnect: true, error: 'unknown session — say hello again' } }
+    plugin.lastSeen = Date.now()
+
+    // One poll at a time per plugin. A second one (a reloaded window) retires the first.
+    if (plugin.poller) {
+      clearTimeout(plugin.poller.timer)
+      send(plugin.poller.res, 200, { requests: [] })
+      plugin.poller = null
+    }
+
+    if (plugin.queue.length > 0) {
+      return { code: 200, body: { requests: plugin.queue.splice(0, plugin.queue.length) } }
     }
 
     const timer = setTimeout(() => {
-      state.poller = null
+      plugin.poller = null
       send(res, 200, { requests: [] })
     }, POLL_HOLD_MS)
-    state.poller = { res, timer }
+    plugin.poller = { res, timer }
     res.on('close', () => {
-      if (state.poller && state.poller.res === res) {
+      if (plugin.poller && plugin.poller.res === res) {
         clearTimeout(timer)
-        state.poller = null
+        plugin.poller = null
       }
     })
     return null
@@ -249,31 +430,38 @@ const ROUTES = {
 
   'POST /plugin/result': async (req) => {
     const body = await readBody(req)
-    state.plugin.lastSeen = Date.now()
-    const entry = state.pending.get(body.id)
+    const plugin = plugins.get(body.session)
+    if (plugin) plugin.lastSeen = Date.now()
+    const entry = pending.get(body.id)
     // No entry means the call already timed out — the plugin answering late is not an error.
     if (!entry) return { code: 200, body: { ok: true, note: 'no caller waiting' } }
     clearTimeout(entry.timer)
-    state.pending.delete(body.id)
-    const ms = Date.now() - entry.startedAt
-    console.log(new Date().toISOString(), `${entry.op} — ${body.ok ? 'ok' : 'error: ' + body.error} (${ms}ms)`)
-    send(entry.res, body.ok ? 200 : 400, {
-      ok: body.ok === true,
-      op: entry.op,
-      ...(body.ok ? { result: body.result } : { error: body.error || 'unknown error' }),
-    })
+    pending.delete(body.id)
+    console.log(
+      new Date().toISOString(),
+      `${plugin ? plugin.handle : '?'} · ${entry.op} — ${body.ok ? 'ok' : 'error: ' + body.error}`,
+      `(${Date.now() - entry.startedAt}ms)`
+    )
+    entry.resolve(body.ok === true ? { ok: true, result: body.result } : { ok: false, error: body.error || 'unknown error' })
     return { code: 200, body: { ok: true } }
   },
 
   'POST /plugin/gates': async (req) => {
     const body = await readBody(req)
-    state.plugin.lastSeen = Date.now()
-    state.plugin.gates = { read: body.read === true, write: body.write === true }
-    if (!state.plugin.gates.read && !state.plugin.gates.write) {
-      state.plugin.lastSeen = 0
-      failPending('the designer turned the agent listener off')
+    const plugin = plugins.get(body.session)
+    if (!plugin) return { code: 409, body: { ok: false, reconnect: true, error: 'unknown session' } }
+    plugin.lastSeen = Date.now()
+    plugin.gates = { read: body.read === true, write: body.write === true }
+    if (!plugin.gates.read && !plugin.gates.write) {
+      failPending(plugin, 'the designer turned that file\'s agent listener off')
+      plugins.delete(plugin.session)
+      console.log(new Date().toISOString(), `- "${plugin.file}" (${plugin.handle}) — listener off · ${roster().length} connected`)
+      return { code: 200, body: { ok: true, disconnected: true } }
     }
-    console.log(new Date().toISOString(), `gates — read=${state.plugin.gates.read} write=${state.plugin.gates.write}`)
+    console.log(
+      new Date().toISOString(),
+      `${plugin.handle} — read=${plugin.gates.read} write=${plugin.gates.write}`
+    )
     return { code: 200, body: { ok: true } }
   },
 }
@@ -287,19 +475,21 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
 
-  const path = (req.url || '/').split('?')[0].replace(/\/+$/, '') || '/'
+  const url = new URL(req.url || '/', `http://${HOST}:${PORT}`)
+  const route = url.pathname.replace(/\/+$/, '') || '/'
 
-  if (path === '/' || path === '/health') {
+  if (route === '/' || route === '/health') {
     return send(res, 200, {
       ok: true,
       service: 'altery-agent-bridge',
-      online: online(),
+      online: roster().length > 0,
+      files: roster().length,
       pairing: pairingOpen(),
     })
   }
 
   // Ahead of the secret gate on purpose: this is how a plugin gets the secret at all.
-  if (path === '/pair') {
+  if (route === '/pair') {
     if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'POST only' })
     if (!isLoopback(req)) return send(res, 403, { ok: false, error: 'pairing is loopback-only' })
     if (!pairingOpen()) {
@@ -317,11 +507,11 @@ const server = http.createServer(async (req, res) => {
     return send(res, 401, { ok: false, error: 'bad or missing x-altery-secret' })
   }
 
-  const route = ROUTES[`${req.method} ${path}`]
-  if (!route) return send(res, 404, { ok: false, error: `no route for ${req.method} ${path}` })
+  const handler = ROUTES[`${req.method} ${route}`]
+  if (!handler) return send(res, 404, { ok: false, error: `no route for ${req.method} ${route}` })
 
   try {
-    const answer = await route(req, res)
+    const answer = await handler(req, res, url)
     if (answer) send(res, answer.code, answer.body)
   } catch (err) {
     const message = (err && err.message) || String(err)
@@ -330,9 +520,14 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-// A dropped poll is how we learn the plugin closed; nothing else notices.
+// A dropped poll is how we learn a plugin closed; nothing else notices.
 setInterval(() => {
-  if (!online() && state.pending.size > 0) failPending('the plugin disconnected')
+  for (const plugin of [...plugins.values()]) {
+    if (isOnline(plugin)) continue
+    failPending(plugin, `"${plugin.handle}" disconnected`)
+    plugins.delete(plugin.session)
+    console.log(new Date().toISOString(), `- "${plugin.file}" (${plugin.handle}) — gone · ${roster().length} connected`)
+  }
 }, 5_000).unref()
 
 server.listen(PORT, HOST, () => {
@@ -348,5 +543,5 @@ server.listen(PORT, HOST, () => {
   } else {
     console.log('  pairing closed (secret came from the environment) — restart with --pair to open it.')
   }
-  console.log('  waiting for the plugin to connect…')
+  console.log('  open the plugin in as many files as you want — each one registers separately.')
 })

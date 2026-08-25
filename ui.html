@@ -3015,7 +3015,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       //
       // `generation` retires loops: every settings change bumps it, and any poll or handshake
       // still in flight from an older generation drops its result on the floor.
-      var AGENT = { generation: 0, ops: [], file: null }
+      // `clientId` is minted once per plugin window and repeated on every hello, so the bridge can
+      // tell "this window again" from "a second file" — a window says hello more than once, and
+      // without it each reconnect would file a phantom duplicate in the roster.
+      var AGENT = {
+        generation: 0,
+        ops: [],
+        file: null,
+        session: null,
+        handle: null,
+        hello: null,
+        // It only has to be unique among the windows one bridge sees at once, and it is a
+        // handle rather than a credential — so a timestamp and a random tail are the right
+        // amount of machinery. `crypto.randomUUID` is not available to reach for: the plugin
+        // iframe is not a secure context, so it is undefined here.
+        clientId: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
+      }
 
       // Replaced at build time with the real agent/bridge.mjs (see build.mjs). It stays a
       // placeholder in the source tree so ui.html remains readable; an unbuilt ui.html simply
@@ -3066,7 +3081,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         agentStatus(cfg.endpoint ? 'off' : 'bridge URL not set', '')
         // Best-effort, so a CLI waiting on /call fails right away instead of on a timeout.
         if (cfg.endpoint) {
-          agentFetch('/plugin/gates', { method: 'POST', body: JSON.stringify({ read: false, write: false }) })
+          agentFetch('/plugin/gates', { method: 'POST', body: JSON.stringify({ session: AGENT.session, read: false, write: false }) })
             .catch(function () { /* bridge already down — nothing to tell */ })
         }
       }
@@ -3076,18 +3091,40 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function agentHandshake(msg) {
         AGENT.ops = msg.ops || []
         AGENT.file = msg.file || null
+        // Kept so a reconnect re-announces the gates the *sandbox* reported, not a guess. The
+        // sandbox stays the authority either way — it refuses on its own copy — but a bridge
+        // told the wrong thing would mislabel the file in every roster an agent reads.
+        AGENT.hello = msg
         agentRenderView()
         if (!msg.read && !msg.write) return
         var generation = AGENT.generation
         agentFetch('/plugin/hello', {
           method: 'POST',
-          body: JSON.stringify({ ops: AGENT.ops, gates: { read: msg.read, write: msg.write }, file: AGENT.file })
+          body: JSON.stringify({
+            clientId: AGENT.clientId,
+            ops: AGENT.ops,
+            gates: { read: msg.read, write: msg.write },
+            file: AGENT.file,
+            fileKey: msg.fileKey || null
+          })
         })
           .then(function (response) {
             if (response.status === 401) throw new Error('secret does not match the bridge')
             if (!response.ok) throw new Error('HTTP ' + response.status)
+            return response.json()
+          })
+          .then(function (hello) {
             if (generation !== AGENT.generation) return
-            agentStatus('listening · ' + AGENT.ops.length + ' ops · ' + (msg.write ? 'read + write' : 'read only'), 'ok')
+            // The bridge owns the id: it is the only side that can see every connected window
+            // and guarantee two of them never collide.
+            AGENT.session = hello.session || null
+            AGENT.handle = hello.handle || null
+            agentRenderView()
+            agentStatus(
+              'listening as "' + AGENT.handle + '" · ' + AGENT.ops.length + ' ops · ' +
+                (msg.write ? 'read + write' : 'read only'),
+              'ok'
+            )
             agentPoll(generation)
           })
           .catch(function (err) {
@@ -3099,13 +3136,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
       function agentPoll(generation) {
         if (generation !== AGENT.generation) return
-        agentFetch('/plugin/poll', { method: 'GET' })
+        agentFetch('/plugin/poll?session=' + encodeURIComponent(AGENT.session || ''), { method: 'GET' })
           .then(function (response) {
+            // 409 means the bridge restarted (or never knew this window) — say hello again
+            // rather than polling a session that will never receive anything.
+            if (response.status === 409) { AGENT.session = null; return null }
             if (!response.ok) throw new Error('HTTP ' + response.status)
             return response.json()
           })
           .then(function (data) {
             if (generation !== AGENT.generation) return
+            if (data === null) { if (AGENT.hello) agentHandshake(AGENT.hello); return }
             var requests = data.requests || []
             for (var i = 0; i < requests.length; i++) {
               parent.postMessage({ pluginMessage: {
@@ -3335,7 +3376,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (msg.type === 'AGENT_RESPONSE') {
           agentFetch('/plugin/result', {
             method: 'POST',
-            body: JSON.stringify({ id: msg.id, ok: msg.ok, result: msg.result, error: msg.error })
+            body: JSON.stringify({ session: AGENT.session, id: msg.id, ok: msg.ok, result: msg.result, error: msg.error })
           }).catch(function () { /* caller times out; the poll loop reports the outage */ })
           return
         }

@@ -7,16 +7,18 @@
  * from components" — an agent has to be able to *name* the frames and components it wants
  * before it can be trusted to touch any of them.
  *
- * Nothing here writes. Mutating ops slot in later with `mutates: true`; `authorize` already
- * refuses them unless the designer flips the second switch.
+ * Nothing in *this* file writes — the mutating ops live in `write-ops.ts` and are gated
+ * separately, so the read surface stays reviewable on its own.
  *
  * `documentAccess: "dynamic-page"` rules apply throughout: pages must be `loadAsync`'d before
  * their subtree is readable, and node lookup goes through `getNodeByIdAsync`.
  */
 
+import { lintScopeAsync, type LintFinding } from '../targets/django/lint/index.ts'
 import { findAllWithCriteria, loadAllPagesAsync } from '../utils/tree.ts'
-import { readAllVariables } from '../variables.ts'
+import { readAllVariables, readLocalVariables } from '../variables.ts'
 import type { OpDef } from './protocol.ts'
+import { WRITE_OPS } from './write-ops.ts'
 
 /* ------------------------------------------------------------- serializers */
 
@@ -374,9 +376,43 @@ export const READ_OPS: readonly OpDef[] = [
     name: 'variables.get',
     summary: 'Variable collections, modes and values — the same snapshot the token export reads.',
     mutates: false,
-    params: {},
-    async run() {
-      return readAllVariables()
+    params: {
+      library: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Include variables from enabled libraries. Off by default: that sweep imports every variable ' +
+          'of every enabled collection one by one and can take minutes on a large file. Use ' +
+          '`library.collections` + `library.variables` to read one library collection instead.',
+      },
+      collection: {
+        type: 'string',
+        description: 'Only this collection, by name or id. Omitted returns them all.',
+      },
+      limit: { type: 'number', default: 2000, min: 1, max: 20000, description: 'Cap on variables returned.' },
+    },
+    async run(params) {
+      const snapshot = params.library === true ? await readAllVariables() : await readLocalVariables()
+      const wanted = typeof params.collection === 'string' ? params.collection.toLowerCase() : null
+      const collections = wanted
+        ? snapshot.collections.filter(
+            (entry) => entry.id === params.collection || entry.name.toLowerCase() === wanted
+          )
+        : snapshot.collections
+      if (wanted && collections.length === 0) {
+        throw new Error(
+          `no collection "${params.collection}" — this file has: ${snapshot.collections.map((c) => c.name).join(', ')}`
+        )
+      }
+      const keep = new Set(collections.map((entry) => entry.id))
+      const variables = snapshot.variables.filter((entry) => keep.has(entry.collectionId))
+      const limit = params.limit as number
+      return {
+        collections,
+        total: variables.length,
+        truncated: variables.length > limit,
+        variables: variables.slice(0, limit),
+      }
     },
   },
 
@@ -429,6 +465,151 @@ export const READ_OPS: readonly OpDef[] = [
       }
     },
   },
+
+  {
+    name: 'library.collections',
+    summary: 'Variable collections published by libraries enabled in this file — the other file’s tokens.',
+    mutates: false,
+    params: {},
+    async run() {
+      // Deliberately unguarded: when this throws, that *is* the answer (the library is not
+      // enabled here, or the plugin lacks the teamlibrary permission), and swallowing it would
+      // report "no libraries" for a file that simply never asked.
+      const collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync()
+      return collections.map((collection) => ({
+        key: collection.key,
+        name: collection.name,
+        libraryName: collection.libraryName,
+      }))
+    },
+  },
+
+  {
+    name: 'library.variables',
+    summary: 'Variables inside one library collection, with their values — read a palette from another file.',
+    mutates: false,
+    params: {
+      collectionKey: {
+        type: 'string',
+        required: true,
+        description: 'Library collection key, from `library.collections`.',
+      },
+      values: {
+        type: 'boolean',
+        default: true,
+        description: 'Import each variable to read its per-mode values. Off returns names and types only.',
+      },
+      limit: { type: 'number', default: 400, min: 1, max: 2000, description: 'Cap on variables returned.' },
+    },
+    async run(params) {
+      const key = params.collectionKey as string
+      const entries = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(key)
+      const capped = entries.slice(0, params.limit as number)
+      if (params.values === false) {
+        return {
+          collectionKey: key,
+          total: entries.length,
+          variables: capped.map((entry) => ({ key: entry.key, name: entry.name, resolvedType: entry.resolvedType })),
+        }
+      }
+
+      const variables: Array<Record<string, unknown>> = []
+      let modes: Array<{ modeId: string; name: string }> = []
+      let collectionName: string | null = null
+      for (const entry of capped) {
+        try {
+          const imported = await figma.variables.importVariableByKeyAsync(entry.key)
+          if (modes.length === 0) {
+            const collection = await figma.variables.getVariableCollectionByIdAsync(imported.variableCollectionId)
+            if (collection) {
+              collectionName = collection.name
+              modes = collection.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name }))
+            }
+          }
+          variables.push({
+            key: imported.key,
+            id: imported.id,
+            name: imported.name,
+            resolvedType: imported.resolvedType,
+            valuesByMode: imported.valuesByMode,
+          })
+        } catch (err) {
+          variables.push({ key: entry.key, name: entry.name, error: String((err as Error)?.message || err) })
+        }
+      }
+      return { collectionKey: key, collectionName, modes, total: entries.length, variables }
+    },
+  },
+
+  {
+    name: 'lint.colors',
+    summary: 'Layers painted with a raw colour instead of a variable — exactly what a recolor cannot reach.',
+    mutates: false,
+    params: {
+      pageId: { type: 'string', description: 'Page id. Defaults to the page the designer is on.' },
+      scope: {
+        type: 'string',
+        default: 'page',
+        enum: ['page', 'document'],
+        description: 'Where to look. `document` walks every page and is slow on a big file.',
+      },
+      limit: { type: 'number', default: 300, min: 1, max: 5000, description: 'Cap on findings returned.' },
+    },
+    async run(params) {
+      const pages: PageNode[] =
+        params.scope === 'document'
+          ? (await loadAllPagesAsync(), figma.root.children.slice())
+          : [await resolvePage(params.pageId)]
+
+      const findings: Array<LintFinding & { page: string }> = []
+      for (const page of pages) {
+        const roots = page.children.filter((node): node is SceneNode => 'visible' in node)
+        for (const finding of await lintScopeAsync(roots)) {
+          if (finding.rule !== 'unbound-fill' && finding.rule !== 'unbound-stroke') continue
+          findings.push({ ...finding, page: page.name })
+        }
+      }
+
+      const byRule: Record<string, number> = {}
+      for (const finding of findings) byRule[finding.rule] = (byRule[finding.rule] ?? 0) + 1
+      return {
+        scope: params.scope,
+        pages: pages.map((page) => page.name),
+        total: findings.length,
+        byRule,
+        findings: findings.slice(0, params.limit as number),
+      }
+    },
+  },
+
+  {
+    name: 'sandbox.capabilities',
+    summary: 'What this plugin runtime allows — including whether it can evaluate code at all.',
+    mutates: false,
+    params: {},
+    async run() {
+      // Whether the Figma sandbox evaluates code decides whether a general "run this against
+      // the Plugin API" op is even buildable, or whether full coverage has to come from named
+      // ops. Cheaper to ask the runtime than to argue about it.
+      const probe = (label: string, run: () => unknown) => {
+        try {
+          return { [label]: run() === 2 }
+        } catch (err) {
+          return { [label]: String((err as Error)?.message || err) }
+        }
+      }
+      return {
+        apiVersion: figma.apiVersion,
+        editorType: figma.editorType,
+        fileName: figma.root.name,
+        fileKey: figma.fileKey ?? null,
+        ...probe('eval', () => (0, eval)('1 + 1')),
+        ...probe('newFunction', () => new Function('return 1 + 1')()),
+      }
+    },
+  },
 ]
 
-export const OPS_BY_NAME: ReadonlyMap<string, OpDef> = new Map(READ_OPS.map((op) => [op.name, op]))
+export const ALL_OPS: readonly OpDef[] = [...READ_OPS, ...WRITE_OPS]
+
+export const OPS_BY_NAME: ReadonlyMap<string, OpDef> = new Map(ALL_OPS.map((op) => [op.name, op]))

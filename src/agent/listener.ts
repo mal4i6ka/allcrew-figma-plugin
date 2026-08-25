@@ -8,7 +8,7 @@
  */
 
 import { authorize, toManifest, validateParams, type AgentGates, type OpManifestEntry } from './protocol.ts'
-import { OPS_BY_NAME, READ_OPS } from './ops.ts'
+import { ALL_OPS, OPS_BY_NAME } from './ops.ts'
 
 export interface AgentRequest {
   id: string
@@ -37,8 +37,11 @@ export function currentGates(): AgentGates {
   return gates
 }
 
+/** Everything the channel can do, reads and writes alike. The manifest is a description, not
+ * a permission: `authorize` still refuses a mutating op while the write gate is off, so an
+ * agent can see what exists and be told plainly why it is unavailable. */
 export function agentManifest(): OpManifestEntry[] {
-  return toManifest(READ_OPS)
+  return toManifest(ALL_OPS)
 }
 
 export async function handleAgentRequest(request: AgentRequest): Promise<AgentResponse> {

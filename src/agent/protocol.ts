@@ -15,7 +15,7 @@
 
 /* ------------------------------------------------------------------ params */
 
-export type ParamType = 'string' | 'number' | 'boolean' | 'string[]'
+export type ParamType = 'string' | 'number' | 'boolean' | 'string[]' | 'json'
 
 export interface ParamSpec {
   type: ParamType
@@ -152,6 +152,13 @@ function coerce(key: string, spec: ParamSpec, value: unknown): unknown {
         throw new ParamError(`param "${key}" must be an array of strings`)
       }
       return value as string[]
+    }
+    // Batch writes and board specs are trees, not scalars. Nothing to coerce — the op that
+    // asked for the tree is the only thing that knows its shape, so it does its own checking
+    // and reports failures per entry instead of losing the whole batch to one bad row.
+    case 'json': {
+      if (typeof value !== 'object') throw new ParamError(`param "${key}" must be a JSON object or array`)
+      return value
     }
   }
 }
