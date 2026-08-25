@@ -176,7 +176,16 @@ const NAMED_RE = /(?<![\w-])([a-zA-Z]{3,20})(?![\w-])/g
 function inValuePosition(text: string, start: number, end: number): boolean {
   const before = text[start - 1]
   const after = text[end]
-  if ((before === '"' || before === "'") && after === before) return true
+  const quotedTight = (before === '"' || before === "'") && after === before
+
+  // A name followed by a colon is a key or an argument label, never a value — `green:` in a
+  // Swift `UIColor(red:green:blue:)` call, `"#f4f4f4":` in a JSON example. Repainting an
+  // argument label is how a color tool edits code that holds no color at all.
+  let probe = quotedTight ? end + 1 : end
+  while (probe < text.length && (text[probe] === ' ' || text[probe] === '\t')) probe++
+  if (text[probe] === ':') return false
+
+  if (quotedTight) return true
 
   let lineStart = start
   while (lineStart > 0 && text[lineStart - 1] !== '\n') lineStart--
@@ -184,6 +193,16 @@ function inValuePosition(text: string, start: number, end: number): boolean {
 
   // `// …` and the continuation lines of a block comment are prose, whatever they contain.
   if (head.indexOf('//') !== -1 || head.trim().startsWith('*')) return false
+
+  // A word inside a string literal is prose too — `content: "tan looks like linen"` — unless
+  // the string is exactly the word, which the tight-quotes case above already accepted.
+  let single = 0
+  let double = 0
+  for (const character of head) {
+    if (character === "'") single++
+    else if (character === '"') double++
+  }
+  if (single % 2 === 1 || double % 2 === 1) return false
 
   for (let i = start - 1; i >= lineStart; i--) {
     const character = text[i]
@@ -269,8 +288,20 @@ function parseHexLiteral(digits: string): { rgba: Rgba; notation: ColorNotation 
  * Overlaps cannot happen — the two patterns are disjoint (`#` versus a function name), and
  * a hex inside a function body is not valid CSS anyway.
  */
+/** `/* … *``/` and `<!-- … -->` spans — nothing inside them is a color to rewrite. */
+function commentSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = []
+  for (const match of text.matchAll(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->/g)) {
+    spans.push([match.index, match.index + match[0].length])
+  }
+  return spans
+}
+
 export function findColorLiterals(text: string): ColorLiteral[] {
   const found: ColorLiteral[] = []
+  const comments = commentSpans(text)
+  const commented = (start: number): boolean =>
+    comments.some(([from, to]) => start >= from && start < to)
 
   for (const match of text.matchAll(HEX_RE)) {
     const parsed = parseHexLiteral(match[1])
@@ -315,7 +346,7 @@ export function findColorLiterals(text: string): ColorLiteral[] {
     })
   }
 
-  return found.sort((a, b) => a.start - b.start)
+  return found.filter((literal) => !commented(literal.start)).sort((a, b) => a.start - b.start)
 }
 
 /** The single literal in `text`, or null when there is none or more than one. */

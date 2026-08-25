@@ -15310,11 +15310,22 @@ ${scrollGuards}` : project.css;
   function inValuePosition(text2, start, end) {
     const before = text2[start - 1];
     const after = text2[end];
-    if ((before === '"' || before === "'") && after === before) return true;
+    const quotedTight = (before === '"' || before === "'") && after === before;
+    let probe = quotedTight ? end + 1 : end;
+    while (probe < text2.length && (text2[probe] === " " || text2[probe] === "	")) probe++;
+    if (text2[probe] === ":") return false;
+    if (quotedTight) return true;
     let lineStart = start;
     while (lineStart > 0 && text2[lineStart - 1] !== "\n") lineStart--;
     const head = text2.slice(lineStart, start);
     if (head.indexOf("//") !== -1 || head.trim().startsWith("*")) return false;
+    let single = 0;
+    let double = 0;
+    for (const character of head) {
+      if (character === "'") single++;
+      else if (character === '"') double++;
+    }
+    if (single % 2 === 1 || double % 2 === 1) return false;
     for (let i = start - 1; i >= lineStart; i--) {
       const character = text2[i];
       if (character === ":") return true;
@@ -15376,8 +15387,17 @@ ${scrollGuards}` : project.css;
       notation: short ? "hex4" : "hex8"
     };
   }
+  function commentSpans(text2) {
+    const spans = [];
+    for (const match of text2.matchAll(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->/g)) {
+      spans.push([match.index, match.index + match[0].length]);
+    }
+    return spans;
+  }
   function findColorLiterals(text2) {
     const found = [];
+    const comments = commentSpans(text2);
+    const commented = (start) => comments.some(([from, to]) => start >= from && start < to);
     for (const match of text2.matchAll(HEX_RE)) {
       const parsed = parseHexLiteral(match[1]);
       if (!parsed) continue;
@@ -15416,7 +15436,7 @@ ${scrollGuards}` : project.css;
         end: match.index + match[0].length
       });
     }
-    return found.sort((a, b) => a.start - b.start);
+    return found.filter((literal) => !commented(literal.start)).sort((a, b) => a.start - b.start);
   }
   function parseColorLiteral(text2) {
     const found = findColorLiterals(text2);
@@ -16828,6 +16848,7 @@ ${scrollGuards}` : project.css;
   function buildLookup(mapping, options) {
     const byHex = /* @__PURE__ */ new Map();
     const byName = /* @__PURE__ */ new Map();
+    const settled = /* @__PURE__ */ new Set();
     const all = [];
     const conflicting = /* @__PURE__ */ new Set();
     const warnings = [];
@@ -16841,6 +16862,7 @@ ${scrollGuards}` : project.css;
       for (const name of [record.name, record.newName]) {
         if (name) byName.set(nameKey(name), target);
       }
+      settled.add(record.to);
       if (record.from === record.to) continue;
       const existing = byHex.get(record.from);
       if (existing && existing.hex !== record.to) {
@@ -16859,10 +16881,11 @@ ${scrollGuards}` : project.css;
       const from = rgbaOf(hex, 1);
       if (from) all.push({ from, target });
     }
-    return { byHex, all, byName, warnings };
+    return { byHex, settled, all, byName, warnings };
   }
   function matchLiteral(literal, lookup, snap) {
     const hex = toHex(literal.rgba);
+    if (lookup.settled.has(hex)) return null;
     const exact = lookup.byHex.get(hex);
     if (exact) return { target: exact, snapped: false };
     if (snap <= 0) return null;

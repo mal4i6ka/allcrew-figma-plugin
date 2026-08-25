@@ -1,3 +1,6 @@
+edge-cases.scss:2:9 #3B82F6 -> #8B5CF6
+edge-cases.scss:15:15 #FBFBFB -> #F0F0F0
+edge-cases.scss: 2 replaced, 1 untouched
 logo.svg:2:15 #3B82F6 -> #8B5CF6
 logo.svg:3:39 #2563EB -> #7C3AED
 logo.svg:3:56 #FFFFFF -> #FAFAFA

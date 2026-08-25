@@ -72,6 +72,10 @@ interface Target {
 
 interface Lookup {
   byHex: Map<string, Target>
+  /** Colors that already speak the reference — every landing, plus everything that did not
+   * move. A literal holding one of these is finished, and snapping it to a *neighbouring*
+   * token would un-migrate it: the second run over a rewritten file must be a no-op. */
+  settled: Set<string>
   /** The same targets as a list, for the near-match scan. */
   all: Array<{ from: Rgba; target: Target }>
   byName: Map<string, Target>
@@ -89,6 +93,7 @@ const nameKey = (name: string): string => varName(name.split(/[/.]/))
 function buildLookup(mapping: MappingFile, options: RewriteOptions): Lookup {
   const byHex = new Map<string, Target>()
   const byName = new Map<string, Target>()
+  const settled = new Set<string>()
   const all: Array<{ from: Rgba; target: Target }> = []
   const conflicting = new Set<string>()
   const warnings: string[] = []
@@ -109,6 +114,7 @@ function buildLookup(mapping: MappingFile, options: RewriteOptions): Lookup {
       if (name) byName.set(nameKey(name), target)
     }
 
+    settled.add(record.to)
     if (record.from === record.to) continue
     const existing = byHex.get(record.from)
     if (existing && existing.hex !== record.to) {
@@ -130,11 +136,12 @@ function buildLookup(mapping: MappingFile, options: RewriteOptions): Lookup {
     if (from) all.push({ from, target })
   }
 
-  return { byHex, all, byName, warnings }
+  return { byHex, settled, all, byName, warnings }
 }
 
 function matchLiteral(literal: ColorLiteral, lookup: Lookup, snap: number): { target: Target; snapped: boolean } | null {
   const hex = toHex(literal.rgba)
+  if (lookup.settled.has(hex)) return null
   const exact = lookup.byHex.get(hex)
   if (exact) return { target: exact, snapped: false }
   if (snap <= 0) return null

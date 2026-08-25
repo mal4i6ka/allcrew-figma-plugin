@@ -386,7 +386,7 @@ def test_remap_rewrites_a_repository_exactly_like_the_typescript_engine(tmp_path
         if expected.name == 'report.txt':
             continue
         assert (repo / expected.name).read_text() == expected.read_text(), expected.name
-    assert 'changed 16 colour(s) in 3 file(s)' in result.stdout
+    assert 'changed 18 colour(s) in 4 file(s)' in result.stdout
 
 
 def test_remap_is_a_dry_run_until_told_otherwise(tmp_path: Path) -> None:

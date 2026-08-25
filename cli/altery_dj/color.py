@@ -318,12 +318,27 @@ def _in_value_position(text: str, start: int, end: int) -> bool:
     value goes: inside a quoted string, or after a `:` on the same line. Comment lines never."""
     before = text[start - 1] if start > 0 else ""
     after = text[end] if end < len(text) else ""
-    if before in ('"', "'") and after == before:
+    quoted_tight = before in ('"', "'") and after == before
+
+    # A name followed by a colon is a key or an argument label, never a value — `green:` in a
+    # Swift `UIColor(red:green:blue:)` call, `"#f4f4f4":` in a JSON example.
+    probe = end + 1 if quoted_tight else end
+    while probe < len(text) and text[probe] in " \t":
+        probe += 1
+    if probe < len(text) and text[probe] == ":":
+        return False
+
+    if quoted_tight:
         return True
 
     line_start = text.rfind("\n", 0, start) + 1
     head = text[line_start:start]
     if "//" in head or head.lstrip().startswith("*"):
+        return False
+
+    # A word inside a string literal is prose too — `content: "tan looks like linen"` —
+    # unless the string is exactly the word, which the tight-quotes case above accepted.
+    if head.count("'") % 2 == 1 or head.count('"') % 2 == 1:
         return False
 
     for index in range(start - 1, line_start - 1, -1):
@@ -335,9 +350,21 @@ def _in_value_position(text: str, start: int, end: int) -> bool:
     return False
 
 
+_COMMENT_RE = re.compile(r"/\*.*?\*/|<!--.*?-->", re.DOTALL)
+
+
+def _comment_spans(text: str) -> list[tuple[int, int]]:
+    """`/* … */` and `<!-- … -->` spans — nothing inside them is a colour to rewrite."""
+    return [(match.start(), match.end()) for match in _COMMENT_RE.finditer(text)]
+
+
 def find_color_literals(text: str) -> list[dict]:
     """Every colour literal in `text`, in source order."""
     found: list[dict] = []
+    comments = _comment_spans(text)
+
+    def commented(start: int) -> bool:
+        return any(begin <= start < finish for begin, finish in comments)
 
     for match in _HEX_RE.finditer(text):
         parsed = _parse_hex_literal(match.group(1))
@@ -368,6 +395,7 @@ def find_color_literals(text: str) -> list[dict]:
         found.append({"rgba": rgb + (1.0,), "notation": "named", "source": match.group(0),
                       "start": match.start(), "end": match.end()})
 
+    found = [literal for literal in found if not commented(literal["start"])]
     found.sort(key=lambda literal: literal["start"])
     return found
 
