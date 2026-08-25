@@ -124,7 +124,22 @@ const plugins = new Map()
 /** Requests handed over but not yet answered: id → { resolve, timer, op, session, startedAt }. */
 const pending = new Map()
 
-const isOnline = (plugin) => Date.now() - plugin.lastSeen < OFFLINE_AFTER_MS
+/** True while a call handed to this plugin is still waiting for its answer. */
+function isBusy(session) {
+  for (const entry of pending.values()) if (entry.session === session) return true
+  return false
+}
+
+/**
+ * A silent plugin is usually a closed one — but not while it is holding work. The poll runs in
+ * the UI iframe and the op runs in the sandbox, and a heavy op (loading every page of a
+ * fifty-page file, say) starves the poll long enough to look dead. Reaping it then fails the
+ * very call it is busy answering, so a plugin with a call in flight gets the call's own
+ * deadline instead of the idle one; if the window really did close, the call times out and the
+ * next sweep collects it.
+ */
+const isOnline = (plugin) =>
+  Date.now() - plugin.lastSeen < (isBusy(plugin.session) ? CALL_TIMEOUT_MS + 5_000 : OFFLINE_AFTER_MS)
 const roster = () => [...plugins.values()].filter(isOnline)
 
 function safeEqual(a, b) {

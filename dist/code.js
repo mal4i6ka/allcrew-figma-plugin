@@ -14137,21 +14137,26 @@ ${scripts}`, "");
     }
     return index;
   }
-  async function tokenUsage(nodes) {
+  async function collectTokens(nodes) {
     var _a;
+    const local = await readLocalVariables();
+    const names = new Map(local.variables.map((variable) => [variable.id, variable.name]));
     const counts = /* @__PURE__ */ new Map();
-    const names = /* @__PURE__ */ new Map();
+    const missing = /* @__PURE__ */ new Set();
     const nameFor = async (id) => {
-      var _a2, _b;
-      if (!names.has(id)) {
-        try {
-          const variable = await figma.variables.getVariableByIdAsync(id);
-          names.set(id, (_a2 = variable == null ? void 0 : variable.name) != null ? _a2 : null);
-        } catch (e) {
-          names.set(id, null);
+      const known = names.get(id);
+      if (known !== void 0) return known;
+      if (missing.has(id)) return null;
+      try {
+        const variable = await figma.variables.getVariableByIdAsync(id);
+        if (variable) {
+          names.set(id, variable.name);
+          return variable.name;
         }
+      } catch (e) {
       }
-      return (_b = names.get(id)) != null ? _b : null;
+      missing.add(id);
+      return null;
     };
     for (const node of nodes) {
       const bound = node.boundVariables;
@@ -14167,7 +14172,10 @@ ${scripts}`, "");
         }
       }
     }
-    return [...counts.entries()].map(([token2, uses]) => ({ token: token2, uses })).sort((a, b) => b.uses - a.uses || a.token.localeCompare(b.token));
+    return {
+      names,
+      usage: [...counts.entries()].map(([token2, uses]) => ({ token: token2, uses })).sort((a, b) => b.uses - a.uses || a.token.localeCompare(b.token))
+    };
   }
   function hasMotionApi2() {
     return Boolean(figma.motion);
@@ -14184,15 +14192,10 @@ ${scripts}`, "");
       return easing;
     }
   }
-  async function emitOne(node, cssFile) {
-    const [ir, sceneNodesById, snapshot] = await Promise.all([
-      serializeNode(node),
-      indexSceneNodes([node]),
-      readAllVariables()
-    ]);
+  async function emitOne(node, cssFile, sceneNodesById, variableNamesById) {
+    const ir = await serializeNode(node);
     if (!ir) throw new Error(`"${node.name}" (${node.type}) produced no exportable structure`);
     const nodes = [ir];
-    const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]));
     await annotateVectorLeaves(nodes, sceneNodesById);
     return emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile });
   }
@@ -14239,7 +14242,8 @@ ${scripts}`, "");
         })();
         if (page) await page.loadAsync();
         const sceneNodesById = await indexSceneNodes([root]);
-        const { html, css } = await emitOne(root, params.cssFile);
+        const tokens = await collectTokens(sceneNodesById.values());
+        const { html, css } = await emitOne(root, params.cssFile, sceneNodesById, tokens.names);
         const slug2 = slugify2(root.name);
         const files = [
           textFile(`${slug2}.html`, "text/html", html),
@@ -14251,7 +14255,7 @@ ${scripts}`, "");
         return {
           node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
           layers: sceneNodesById.size,
-          tokens: await tokenUsage(sceneNodesById.values()),
+          tokens: tokens.usage,
           files
         };
       }
@@ -14287,9 +14291,10 @@ ${scripts}`, "");
           if (snapshot && snapshot.tracks.length > 0) animated.push({ node, tracks: snapshot.tracks });
         }
         if (animated.length === 0) return { available: true, animated: 0, files: [] };
+        const { names } = await collectTokens(sceneNodesById.values());
         const nodes = [];
         for (const entry of animated) {
-          const { html } = await emitOne(entry.node, "preview.css");
+          const { html } = await emitOne(entry.node, "preview.css", sceneNodesById, names);
           nodes.push({ nodeId: entry.node.id, tracks: entry.tracks, html });
         }
         const duration = Math.max(...animated.flatMap((entry) => entry.tracks.map((track) => track.timelineDuration)));

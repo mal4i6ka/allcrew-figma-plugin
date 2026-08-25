@@ -24,7 +24,7 @@ import type { MotionTrack } from '../targets/django/motion/types.ts'
 import { serializeNode, type IrNode } from '../targets/django/ir.ts'
 import { annotateVectorLeaves, type AssetSourceNode } from '../targets/django/export/assets.ts'
 import { findAllWithCriteria } from '../utils/tree.ts'
-import { readAllVariables } from '../variables.ts'
+import { readLocalVariables } from '../variables.ts'
 import { binaryFile, slugify, textFile } from './files.ts'
 import type { OpDef } from './protocol.ts'
 
@@ -50,26 +50,47 @@ async function indexSceneNodes(roots: readonly SceneNode[]): Promise<Map<string,
   return index
 }
 
+interface TokenReport {
+  /** id → name, for the emitter, which takes a static map. */
+  readonly names: Map<string, string>
+  /** What the subtree binds and how often — the part an agent reads. */
+  readonly usage: Array<{ token: string; uses: number }>
+}
+
 /**
  * Every variable the subtree actually binds, by token name and how often. This is the half a
  * screenshot cannot carry: it tells a generating agent which tokens are in play before it
  * writes a single declaration, and — because the count is there — which of them carry the
  * design and which appear once.
+ *
+ * Names come from the *local* variables plus a lookup for each bound id that is not among
+ * them. The obvious alternative, `readAllVariables()`, is what the plugin's own export uses —
+ * and it pulls every enabled library over the network, which is fine for an export a person
+ * asked for and pathological for an op an agent is waiting on. A library variable that a layer
+ * actually binds has already been imported into this file, so resolving it by id is a local
+ * read; the cost stays proportional to the subtree rather than to the libraries.
  */
-async function tokenUsage(nodes: Iterable<SceneNode>): Promise<Array<{ token: string; uses: number }>> {
+async function collectTokens(nodes: Iterable<SceneNode>): Promise<TokenReport> {
+  const local = await readLocalVariables()
+  const names = new Map(local.variables.map((variable) => [variable.id, variable.name]))
   const counts = new Map<string, number>()
-  const names = new Map<string, string | null>()
+  const missing = new Set<string>()
 
   const nameFor = async (id: string): Promise<string | null> => {
-    if (!names.has(id)) {
-      try {
-        const variable = await figma.variables.getVariableByIdAsync(id)
-        names.set(id, variable?.name ?? null)
-      } catch {
-        names.set(id, null)
+    const known = names.get(id)
+    if (known !== undefined) return known
+    if (missing.has(id)) return null
+    try {
+      const variable = await figma.variables.getVariableByIdAsync(id)
+      if (variable) {
+        names.set(id, variable.name)
+        return variable.name
       }
+    } catch {
+      /* fall through — an id we cannot resolve is reported as absent, not as an error */
     }
-    return names.get(id) ?? null
+    missing.add(id)
+    return null
   }
 
   for (const node of nodes) {
@@ -88,9 +109,12 @@ async function tokenUsage(nodes: Iterable<SceneNode>): Promise<Array<{ token: st
       }
     }
   }
-  return [...counts.entries()]
-    .map(([token, uses]) => ({ token, uses }))
-    .sort((a, b) => b.uses - a.uses || a.token.localeCompare(b.token))
+  return {
+    names,
+    usage: [...counts.entries()]
+      .map(([token, uses]) => ({ token, uses }))
+      .sort((a, b) => b.uses - a.uses || a.token.localeCompare(b.token)),
+  }
 }
 
 /** Figma's Motion API is a beta that is simply absent for most accounts. Saying so beats
@@ -118,15 +142,15 @@ async function describeEasing(easing: MotionTrack['keyframes'][number]['easing']
 
 /** One node's own markup and CSS. `design.context` emits a whole subtree; the motion preview
  * needs each animated layer on its own, because that is the unit `buildPreviewDocument` places. */
-async function emitOne(node: SceneNode, cssFile: string): Promise<{ html: string; css: string }> {
-  const [ir, sceneNodesById, snapshot] = await Promise.all([
-    serializeNode(node),
-    indexSceneNodes([node]),
-    readAllVariables(),
-  ])
+async function emitOne(
+  node: SceneNode,
+  cssFile: string,
+  sceneNodesById: Map<string, SceneNode>,
+  variableNamesById: ReadonlyMap<string, string>
+): Promise<{ html: string; css: string }> {
+  const ir = await serializeNode(node)
   if (!ir) throw new Error(`"${node.name}" (${node.type}) produced no exportable structure`)
   const nodes: readonly IrNode[] = [ir]
-  const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
   await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
   return emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile })
 }
@@ -181,7 +205,8 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       if (page) await page.loadAsync()
 
       const sceneNodesById = await indexSceneNodes([root])
-      const { html, css } = await emitOne(root, params.cssFile as string)
+      const tokens = await collectTokens(sceneNodesById.values())
+      const { html, css } = await emitOne(root, params.cssFile as string, sceneNodesById, tokens.names)
 
       const slug = slugify(root.name)
       const files: unknown[] = [
@@ -195,7 +220,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       return {
         node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
         layers: sceneNodesById.size,
-        tokens: await tokenUsage(sceneNodesById.values()),
+        tokens: tokens.usage,
         files,
       }
     },
@@ -233,9 +258,10 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       }
       if (animated.length === 0) return { available: true, animated: 0, files: [] }
 
+      const { names } = await collectTokens(sceneNodesById.values())
       const nodes = []
       for (const entry of animated) {
-        const { html } = await emitOne(entry.node, 'preview.css')
+        const { html } = await emitOne(entry.node, 'preview.css', sceneNodesById, names)
         nodes.push({ nodeId: entry.node.id, tracks: entry.tracks, html })
       }
 
