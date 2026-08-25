@@ -4,11 +4,12 @@
  */
 
 /**
- * `ds-tools` is a page rather than an export target — it generates variables and canvas
- * content instead of a package. It rides the same picker (and the same persisted field) so
- * the plugin reopens on whichever page was last used.
+ * `ds-tools` and `agent` are pages rather than export targets — one generates variables and
+ * canvas content instead of a package, the other is the agent listener's console. They ride
+ * the same picker (and the same persisted field) so the plugin reopens on whichever page was
+ * last used.
  */
-export type TargetId = 'design-tokens' | 'django' | 'ds-tools'
+export type TargetId = 'design-tokens' | 'django' | 'ds-tools' | 'agent'
 
 export interface ExportModulesOptions {
   tokens: boolean
@@ -59,6 +60,24 @@ export interface ExportDeliveryOptions {
   onExport: boolean
 }
 
+/** Agent listener — the plugin's inbound channel for CLI agents (see agent/README.md).
+ * Like `delivery`, NOT package-forming: whether a designer is currently letting an agent read
+ * the file is a session choice, not part of the design package's identity.
+ *
+ * Both gates default OFF and are never persisted as on by a preset: nothing reaches the
+ * document until the designer flips a switch in Settings for this file. */
+export interface ExportAgentOptions {
+  /** Bridge base URL, e.g. `http://127.0.0.1:8788`. Empty = listener unavailable. */
+  endpoint: string
+  /** Shared secret, must match the bridge's `ALTERY_AGENT_SECRET`. */
+  secret: string
+  /** Answer read-only ops (`document.info`, `page.frames`, `node.get`, ...). */
+  read: boolean
+  /** Answer mutating ops. No mutating op ships yet — the gate exists so the dispatcher
+   * can refuse them by default the moment one does. */
+  write: boolean
+}
+
 /** Linter knobs. Like `delivery`, NOT package-forming: a team's depth policy shouldn't flip the
  * preset selector to "Custom" or be overwritten by choosing a preset. */
 export interface ExportLintOptions {
@@ -86,11 +105,15 @@ export interface ExportOptions {
   tokens: ExportTokensOptions
   i18n: ExportI18nOptions
   delivery: ExportDeliveryOptions
+  agent: ExportAgentOptions
   lint: ExportLintOptions
   docs: ExportDocsOptions
 }
 
-export type PackageFormingOptions = Omit<ExportOptions, 'scopeMode' | 'delivery' | 'lint' | 'docs'>
+export type PackageFormingOptions = Omit<
+  ExportOptions,
+  'scopeMode' | 'delivery' | 'agent' | 'lint' | 'docs'
+>
 
 export type ExportPresetId = 'django-bootstrap' | 'design-tokens' | 'bootstrap-tokens' | 'tauri-app'
 
@@ -179,6 +202,12 @@ function clonePackage(values: PackageFormingOptions): PackageFormingOptions {
 }
 
 const DEFAULT_DELIVERY: ExportDeliveryOptions = { endpoint: '', secret: '', onExport: false }
+const DEFAULT_AGENT: ExportAgentOptions = {
+  endpoint: 'http://127.0.0.1:8788',
+  secret: '',
+  read: false,
+  write: false,
+}
 export const DEFAULT_LINT: ExportLintOptions = { maxNestingDepth: 8 }
 /** Descriptions are cheap to read, so they are on; previews cost an export per component, so the
  * team opts in. */
@@ -187,6 +216,7 @@ export const DEFAULT_DOCS: ExportDocsOptions = { componentDocs: true, componentP
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
   scopeMode: 'page',
   delivery: { ...DEFAULT_DELIVERY },
+  agent: { ...DEFAULT_AGENT },
   lint: { ...DEFAULT_LINT },
   docs: { ...DEFAULT_DOCS },
   ...clonePackage(DJANGO_BOOTSTRAP_VALUES),
@@ -201,7 +231,7 @@ function isScopeMode(value: unknown): value is ExportOptions['scopeMode'] {
 }
 
 function isTargetId(value: unknown): value is TargetId {
-  return value === 'design-tokens' || value === 'django' || value === 'ds-tools'
+  return value === 'design-tokens' || value === 'django' || value === 'ds-tools' || value === 'agent'
 }
 
 function normalizeModules(raw: unknown): ExportModulesOptions {
@@ -279,6 +309,16 @@ function normalizeDelivery(raw: unknown): ExportDeliveryOptions {
   }
 }
 
+function normalizeAgent(raw: unknown): ExportAgentOptions {
+  if (!isRecord(raw)) return { ...DEFAULT_AGENT }
+  return {
+    endpoint: typeof raw.endpoint === 'string' ? raw.endpoint.trim() : DEFAULT_AGENT.endpoint,
+    secret: typeof raw.secret === 'string' ? raw.secret : DEFAULT_AGENT.secret,
+    read: raw.read === true,
+    write: raw.write === true,
+  }
+}
+
 function normalizeDocs(raw: unknown): ExportDocsOptions {
   if (!isRecord(raw)) return { ...DEFAULT_DOCS }
   return {
@@ -313,6 +353,7 @@ export function normalizeExportOptions(raw: unknown): ExportOptions {
     tokens: normalizeTokens(candidate.tokens),
     i18n: normalizeI18n(candidate.i18n),
     delivery: normalizeDelivery(candidate.delivery),
+    agent: normalizeAgent(candidate.agent),
     lint: normalizeLint(candidate.lint),
     docs: normalizeDocs(candidate.docs),
   }
@@ -359,6 +400,7 @@ export function applyPreset(
     ...clonePackage(preset.values),
     scopeMode: options.scopeMode,
     delivery: { ...options.delivery },
+    agent: { ...options.agent },
     lint: { ...options.lint },
     docs: { ...options.docs },
   }

@@ -6,7 +6,7 @@
     "build": "node build.mjs",
     "dev": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-transform-types --test src/*.test.ts src/targets/django/**/*.test.ts src/targets/design-md/*.test.ts src/targets/tauri/*.test.ts src/utils/**/*.test.ts src/tokens/**/*.test.ts"
+    "test": "node --experimental-transform-types --test src/*.test.ts src/agent/*.test.ts src/targets/django/**/*.test.ts src/targets/design-md/*.test.ts src/targets/tauri/*.test.ts src/utils/**/*.test.ts src/tokens/**/*.test.ts"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.130.0",

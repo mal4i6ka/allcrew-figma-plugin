@@ -1,0 +1,70 @@
+/**
+ * Agent listener — main-thread dispatcher.
+ *
+ * The UI iframe owns the transport (it long-polls the bridge; the sandbox has `fetch` but no
+ * socket, and keeping the poll out here also keeps the main thread free). Everything that
+ * decides *whether* a request runs lives here instead, so the gate can't be talked around by
+ * anything running in the iframe.
+ */
+
+import { authorize, toManifest, validateParams, type AgentGates, type OpManifestEntry } from './protocol.ts'
+import { OPS_BY_NAME, READ_OPS } from './ops.ts'
+
+export interface AgentRequest {
+  id: string
+  op: string
+  params?: unknown
+}
+
+export interface AgentResponse {
+  id: string
+  ok: boolean
+  result?: unknown
+  error?: string
+}
+
+/** Both off until the designer says otherwise, every time the plugin opens. Gate state is
+ * persisted in export options for convenience, but the dispatcher only ever trusts what the
+ * UI has explicitly pushed into `setGates` this session. */
+let gates: AgentGates = { read: false, write: false }
+
+export function setGates(next: Partial<AgentGates>): AgentGates {
+  gates = { read: next.read === true, write: next.write === true }
+  return gates
+}
+
+export function currentGates(): AgentGates {
+  return gates
+}
+
+export function agentManifest(): OpManifestEntry[] {
+  return toManifest(READ_OPS)
+}
+
+export async function handleAgentRequest(request: AgentRequest): Promise<AgentResponse> {
+  const started = Date.now()
+  const op = OPS_BY_NAME.get(request.op)
+
+  const permitted = authorize(op, gates)
+  if (!permitted.ok) {
+    report(request.op, false, Date.now() - started, permitted.error)
+    return { id: request.id, ok: false, error: permitted.error }
+  }
+
+  try {
+    const params = validateParams(op!.params, request.params)
+    const result = await op!.run(params)
+    report(request.op, true, Date.now() - started)
+    return { id: request.id, ok: true, result }
+  } catch (err) {
+    const message = String((err as Error)?.message || err)
+    report(request.op, false, Date.now() - started, message)
+    return { id: request.id, ok: false, error: message }
+  }
+}
+
+/** Every agent call shows up in the plugin window. A channel a designer can't watch is a
+ * channel they can't sensibly consent to. */
+function report(op: string, ok: boolean, ms: number, error?: string): void {
+  figma.ui.postMessage({ type: 'AGENT_ACTIVITY', op, ok, ms, error })
+}

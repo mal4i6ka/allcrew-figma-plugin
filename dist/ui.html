@@ -458,15 +458,31 @@
   #view-design-tokens .tab { appearance: none; border: 0; background: transparent; cursor: pointer; flex: none; white-space: nowrap; color: var(--muted); font-family: var(--mono); font-size: 11px; padding: 5px 9px; border-radius: 7px; transition: background .16s, color .16s; }
   #view-design-tokens .tab:hover { color: var(--text); background: rgba(255,255,255,0.05); }
   #view-design-tokens .tab.active { color: var(--accent-hi); background: var(--accent-tint); }
-  #view-design-tokens .icon-btn { appearance: none; border: 1px solid var(--border); background: var(--bg-2); color: var(--muted); cursor: pointer; width: 28px; height: 26px; flex: none; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; transition: background .16s, color .16s, border-color .16s; }
-  #view-design-tokens .icon-btn:hover { color: var(--text); border-color: var(--border-2); }
-  #view-design-tokens .icon-btn.copied { color: var(--ok); border-color: rgba(70,192,138,0.4); }
-  #view-design-tokens .icon-btn.copy-failed { color: var(--err); border-color: rgba(255,122,110,0.45); }
-  #view-design-tokens .code { margin: 0; padding: 12px 14px; overflow: auto; max-height: 230px; font-family: var(--mono); font-size: 11px; line-height: 1.65; color: var(--text); white-space: pre; tab-size: 2; }
+  #view-design-tokens .icon-btn, #view-agent .icon-btn { appearance: none; border: 1px solid var(--border); background: var(--bg-2); color: var(--muted); cursor: pointer; width: 28px; height: 26px; flex: none; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; transition: background .16s, color .16s, border-color .16s; }
+  #view-design-tokens .icon-btn:hover, #view-agent .icon-btn:hover { color: var(--text); border-color: var(--border-2); }
+  #view-design-tokens .icon-btn.copied, #view-agent .icon-btn.copied { color: var(--ok); border-color: rgba(70,192,138,0.4); }
+  #view-design-tokens .icon-btn.copy-failed, #view-agent .icon-btn.copy-failed { color: var(--err); border-color: rgba(255,122,110,0.45); }
+  #view-design-tokens .code, #view-agent .code { margin: 0; padding: 12px 14px; overflow: auto; max-height: 230px; font-family: var(--mono); font-size: 11px; line-height: 1.65; color: var(--text); white-space: pre; tab-size: 2; }
   #view-design-tokens .code .c-com { color: var(--faint); }
   #view-design-tokens .code .c-sel { color: var(--accent-hi); }
   #view-design-tokens .code .c-var { color: #9ecbff; }
   #view-design-tokens .code .c-val { color: #d7dbe2; }
+
+  /* ── Agent Listener ───────────────────────────────────────────────────────── */
+  #view-agent .card + .card { margin-top: 0; }
+  #view-agent .agent-state { display: flex; align-items: center; gap: 8px; margin: 0 0 11px; font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.45; }
+  #view-agent .agent-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 3px rgba(255,255,255,0.05); transition: background .2s, box-shadow .2s; }
+  #view-agent .agent-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(70,192,138,0.18); }
+  #view-agent .agent-dot.err { background: var(--err); box-shadow: 0 0 0 3px rgba(255,122,110,0.18); }
+  #view-agent .agent-hint { font-size: 10.5px; color: var(--faint); line-height: 1.55; margin: 10px 0 0; }
+  #view-agent .agent-hint code { font-family: var(--mono); background: var(--bg-2); padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
+  /* Code block and its copy button share one framed box; the button floats over the corner so
+     a long command keeps the full width. */
+  #view-agent .agent-cmd { position: relative; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-sm); }
+  #view-agent .agent-cmd + .agent-cmd { margin-top: 8px; }
+  #view-agent .agent-cmd .code { white-space: pre-wrap; word-break: break-word; padding: 11px 42px 11px 12px; max-height: none; }
+  #view-agent .agent-cmd .code.agent-skill { white-space: pre; word-break: normal; max-height: 260px; font-size: 10.5px; line-height: 1.6; }
+  #view-agent .agent-cmd .icon-btn { position: absolute; top: 7px; right: 7px; }
 
   /* ── Settings page — restored ds .set-section layout ──────────────────────── */
   #view-settings.page { padding: 0; }
@@ -543,6 +559,7 @@
       <option value="tauri">Tauri</option>
       <option value="design-tokens">Design Tokens</option>
       <option value="ds-tools">DS Tools</option>
+      <option value="agent">Agent Listener</option>
     </select>
     <button id="open-settings" class="settings-entry" type="button" aria-label="Export settings">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 15C13.6569 15 15 13.6569 15 12C15 10.3431 13.6569 9 12 9C10.3431 9 9 10.3431 9 12C9 13.6569 10.3431 15 12 15Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M18.7273 14.7273C18.6063 15.0015 18.5702 15.3056 18.6236 15.6005C18.6771 15.8954 18.8177 16.1676 19.0273 16.3818L19.0818 16.4364C19.2509 16.6052 19.385 16.8057 19.4765 17.0265C19.568 17.2472 19.6151 17.4838 19.6151 17.7227C19.6151 17.9617 19.568 18.1983 19.4765 18.419C19.385 18.6397 19.2509 18.8402 19.0818 19.0091C18.913 19.1781 18.7124 19.3122 18.4917 19.4037C18.271 19.4952 18.0344 19.5423 17.7955 19.5423C17.5565 19.5423 17.3199 19.4952 17.0992 19.4037C16.8785 19.3122 16.678 19.1781 16.5091 19.0091L16.4545 18.9545C16.2403 18.745 15.9682 18.6044 15.6733 18.5509C15.3784 18.4974 15.0742 18.5335 14.8 18.6545C14.5311 18.7698 14.3018 18.9611 14.1403 19.205C13.9788 19.4489 13.8921 19.7347 13.8909 20.0273V20.1818C13.8909 20.664 13.6994 21.1265 13.3584 21.4675C13.0174 21.8084 12.5549 22 12.0727 22C11.5905 22 11.1281 21.8084 10.7871 21.4675C10.4461 21.1265 10.2545 20.664 10.2545 20.1818V20.1C10.2475 19.7991 10.1501 19.5073 9.97501 19.2625C9.79991 19.0176 9.55521 18.8312 9.27273 18.7273C8.99853 18.6063 8.69437 18.5702 8.39947 18.6236C8.10456 18.6771 7.83244 18.8177 7.61818 19.0273L7.56364 19.0818C7.39478 19.2509 7.19425 19.385 6.97353 19.4765C6.7528 19.568 6.51621 19.6151 6.27727 19.6151C6.03834 19.6151 5.80174 19.568 5.58102 19.4765C5.36029 19.385 5.15977 19.2509 4.99091 19.0818C4.82186 18.913 4.68775 18.7124 4.59626 18.4917C4.50476 18.271 4.45766 18.0344 4.45766 17.7955C4.45766 17.5565 4.50476 17.3199 4.59626 17.0992C4.68775 16.8785 4.82186 16.678 4.99091 16.5091L5.04545 16.4545C5.25503 16.2403 5.39562 15.9682 5.4491 15.6733C5.50257 15.3784 5.46647 15.0742 5.34545 14.8C5.23022 14.5311 5.03887 14.3018 4.79497 14.1403C4.55107 13.9788 4.26526 13.8921 3.97273 13.8909H3.81818C3.33597 13.8909 2.87351 13.6994 2.53253 13.3584C2.19156 13.0174 2 12.5549 2 12.0727C2 11.5905 2.19156 11.1281 2.53253 10.7871C2.87351 10.4461 3.33597 10.2545 3.81818 10.2545H3.9C4.2009 10.2475 4.49273 10.1501 4.73754 9.97501C4.98236 9.79991 5.16883 9.55521 5.27273 9.27273C5.39374 8.99853 5.42984 8.69437 5.37637 8.39947C5.3229 8.10456 5.18231 7.83244 4.97273 7.61818L4.91818 7.56364C4.74913 7.39478 4.61503 7.19425 4.52353 6.97353C4.43203 6.7528 4.38493 6.51621 4.38493 6.27727C4.38493 6.03834 4.43203 5.80174 4.52353 5.58102C4.61503 5.36029 4.74913 5.15977 4.91818 4.99091C5.08704 4.82186 5.28757 4.68775 5.50829 4.59626C5.72901 4.50476 5.96561 4.45766 6.20455 4.45766C6.44348 4.45766 6.68008 4.50476 6.9008 4.59626C7.12152 4.68775 7.32205 4.82186 7.49091 4.99091L7.54545 5.04545C7.75971 5.25503 8.03183 5.39562 8.32674 5.4491C8.62164 5.50257 8.9258 5.46647 9.2 5.34545H9.27273C9.54161 5.23022 9.77093 5.03887 9.93245 4.79497C10.094 4.55107 10.1807 4.26526 10.1818 3.97273V3.81818C10.1818 3.33597 10.3734 2.87351 10.7144 2.53253C11.0553 2.19156 11.5178 2 12 2C12.4822 2 12.9447 2.19156 13.2856 2.53253C13.6266 2.87351 13.8182 3.33597 13.8182 3.81818V3.9C13.8193 4.19253 13.906 4.47834 14.0676 4.72224C14.2291 4.96614 14.4584 5.15749 14.7273 5.27273C15.0015 5.39374 15.3056 5.42984 15.6005 5.37637C15.8954 5.3229 16.1676 5.18231 16.3818 4.97273L16.4364 4.91818C16.6052 4.74913 16.8057 4.61503 17.0265 4.52353C17.2472 4.43203 17.4838 4.38493 17.7227 4.38493C17.9617 4.38493 18.1983 4.43203 18.419 4.52353C18.6397 4.61503 18.8402 4.74913 19.0091 4.91818C19.1781 5.08704 19.3122 5.28757 19.4037 5.50829C19.4952 5.72901 19.5423 5.96561 19.5423 6.20455C19.5423 6.44348 19.4952 6.68008 19.4037 6.9008C19.3122 7.12152 19.1781 7.32205 19.0091 7.49091L18.9545 7.54545C18.745 7.75971 18.6044 8.03183 18.5509 8.32674C18.4974 8.62164 18.5335 8.9258 18.6545 9.2V9.27273C18.7698 9.54161 18.9611 9.77093 19.205 9.93245C19.4489 10.094 19.7347 10.1807 20.0273 10.1818H20.1818C20.664 10.1818 21.1265 10.3734 21.4675 10.7144C21.8084 11.0553 22 11.5178 22 12C22 12.4822 21.8084 12.9447 21.4675 13.2856C21.1265 13.6266 20.664 13.8182 20.1818 13.8182H20.1C19.8075 13.8193 19.5217 13.906 19.2778 14.0676C19.0339 14.2291 18.8425 14.4584 18.7273 14.7273Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -759,6 +776,53 @@
         </div>
         <button class="btn primary" id="pal-apply">Generate in Figma</button>
         <div id="pal-result" class="gen-result" style="margin-top:8px;font-size:11px;line-height:1.45;color:var(--faint)"></div>
+      </section>
+    </div>
+
+    <!-- Agent Listener: the console for the inbound CLI channel. The main view is the two
+         things a person actually does — flip the channel on, and hand their agent the skill
+         that teaches it to use the channel. Bridge URL, secret and the read/write gates live
+         under Settings (data-needs-target="agent"). -->
+    <div id="view-agent" class="view hidden">
+      <section class="card">
+        <p class="label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="4" y="8" width="16" height="12" rx="3" stroke="currentColor" stroke-width="2"/><path d="M12 4v4M9 14h.01M15 14h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="3" r="1.5" fill="currentColor"/></svg>
+          Channel
+        </p>
+        <div class="agent-state">
+          <span class="agent-dot" id="agent-dot"></span>
+          <span id="agent-state-text">off</span>
+        </div>
+        <button class="btn primary" id="agent-toggle" type="button">Start listening</button>
+        <p class="agent-hint" id="agent-note">Off by default every time the plugin opens &mdash; and while it's off, nothing outside Figma can read this file.</p>
+      </section>
+
+      <section class="card">
+        <p class="label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 17l6-5-6-5M12 19h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          1 &middot; Run the bridge
+        </p>
+        <div class="agent-cmd">
+          <pre class="code" id="agent-bridge-cmd" tabindex="0"></pre>
+          <button class="icon-btn" id="agent-copy-cmd" type="button" title="Copy" aria-label="Copy the bridge command">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+        </div>
+        <p class="agent-hint">Once per machine, from the plugin repo. It mints a secret of its own into <code>~/.altery/agent-secret</code> and opens a five-minute pairing window &mdash; press <b>Pair with bridge</b> above and this plugin picks it up. Nothing to type, nothing shared between machines, nothing baked into the build.</p>
+      </section>
+
+      <section class="card">
+        <p class="label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5zM8 8h7M8 11.5h5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          2 &middot; Teach the agent &mdash; paste once
+        </p>
+        <div class="agent-cmd">
+          <pre class="code agent-skill" id="agent-skill" tabindex="0"></pre>
+          <button class="icon-btn" id="agent-copy-skill" type="button" title="Copy" aria-label="Copy the skill">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+        </div>
+        <p class="agent-hint">Save as <code>.claude/skills/figma/SKILL.md</code> in the project your agent works in &mdash; Claude Code picks it up from then on, no re-explaining. Any other CLI: paste it wherever that tool reads standing instructions. It regenerates from the live op list, so re-copy after a plugin update.</p>
       </section>
     </div>
 
@@ -993,6 +1057,33 @@
         <div class="deliver-bar">
           <button class="btn deliver" id="deliver-now" type="button" disabled>Deliver now</button>
           <span class="deliver-status" id="deliver-status">endpoint not set</span>
+        </div>
+
+        <div class="set-section" data-needs-target="agent">
+          <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="4" y="8" width="16" height="12" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 4v4M9 14h.01M15 14h.01" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="3" r="1.4" fill="currentColor"/></svg>
+          <span>Agent listener</span>
+          <span class="sec-hint">local bridge &middot; off until you allow it</span>
+        </div>
+        <div class="set-field" data-needs-target="agent">
+          <label>Bridge URL <code>agent/bridge.mjs</code></label>
+          <input id="set-agent-endpoint" type="text" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:8788" aria-label="Agent bridge URL" />
+        </div>
+        <div class="set-field" data-needs-target="agent">
+          <label>Shared secret <code>x-altery-secret</code></label>
+          <input id="set-agent-secret" type="password" spellcheck="false" autocomplete="off" placeholder="(must match ALTERY_AGENT_SECRET)" aria-label="Agent bridge secret" />
+        </div>
+        <label class="set-row" data-needs-target="agent" data-needs-agent-endpoint for="set-agent-read">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.6" stroke="currentColor" stroke-width="1.6"/></svg>
+          <span class="set-text"><b>Allow reads</b><i>An agent may inspect pages, frames, components, styles, variables and prototype flows</i></span>
+          <span class="switch"><input type="checkbox" id="set-agent-read" /><span class="track"></span></span>
+        </label>
+        <label class="set-row" data-needs-target="agent" data-needs-agent-read for="set-agent-write">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 20h4L19.5 8.5a2.12 2.12 0 0 0-3-3L5 17v3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 6.5 17.5 10" stroke="currentColor" stroke-width="1.6"/></svg>
+          <span class="set-text"><b>Allow changes</b><i>No write op ships yet &middot; the gate is here so one can never arrive switched on</i></span>
+          <span class="switch"><input type="checkbox" id="set-agent-write" /><span class="track"></span></span>
+        </label>
+        <div class="deliver-bar" data-needs-target="agent">
+          <span class="deliver-status" id="agent-status">off</span>
         </div>
         <p class="set-hint">Settings are saved per-user (via Figma client storage) and re-applied on the next run. <code>tokens.json</code> always keeps the full, un-inlined tree.</p>
       </div>
@@ -1263,6 +1354,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         document.getElementById('target-select').value = targetDisplayValue()
         onTargetChange(targetDisplayValue())
         syncSettingsControls()
+        agentApply()
       }
 
       // Tauri is a first-class entry in the header picker, but it rides the shared export
@@ -1339,6 +1431,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         document.getElementById('view-main').classList.toggle('hidden', settings || target !== 'django')
         document.getElementById('view-design-tokens').classList.toggle('hidden', settings || target !== 'design-tokens')
         document.getElementById('view-ds-tools').classList.toggle('hidden', settings || target !== 'ds-tools')
+        document.getElementById('view-agent').classList.toggle('hidden', settings || target !== 'agent')
         document.getElementById('view-settings').classList.toggle('hidden', !settings)
         document.querySelector('footer').classList.toggle('hidden', settings)
         document.getElementById('open-settings').classList.toggle('hidden', settings)
@@ -1360,17 +1453,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         syncSettingsControls()
         var isDjango = target === 'django'
         var isTokens = target === 'design-tokens'
+        var isAgent = target === 'agent'
         document.getElementById('export-btn').classList.toggle('hidden', !isDjango)
         document.getElementById('pipeline').classList.toggle('hidden', !isDjango)
         document.getElementById('dt-foot').classList.toggle('hidden', !isTokens)
-        // Show/hide Django-only settings sections
-        Array.prototype.forEach.call(document.querySelectorAll('[data-needs-target="django"]'), function (el) {
-          el.classList.toggle('hidden', !isDjango)
+        // Settings sections that belong to exactly one mode — Django's export knobs, the
+        // Agent Listener's bridge fields. Everything untagged is shared and always visible.
+        Array.prototype.forEach.call(document.querySelectorAll('[data-needs-target]'), function (el) {
+          el.classList.toggle('hidden', el.getAttribute('data-needs-target') !== target)
         })
         show(VIEW)
         persistExportOptions()
+        // Agent Listener reads nothing on its own — the agent does the asking. Scanning here
+        // would just spend a document walk on a screen that never displays the result.
+        if (isAgent) agentRenderView()
         // DS Tools needs the same scan: its typography/breakpoint cards key off that summary.
-        if (isDjango) requestScan()
+        else if (isDjango) requestScan()
         else parent.postMessage({ pluginMessage: { type: 'SCAN_TOKENS' } }, '*')
       }
       document.getElementById('target-select').addEventListener('change', function () {
@@ -1467,6 +1565,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('set-dlv-endpoint', 'value', OPTIONS.delivery.endpoint)
         setControl('set-dlv-secret', 'value', OPTIONS.delivery.secret)
         setControl('set-dlv-on-export', 'checked', OPTIONS.delivery.onExport)
+        var agentOpt = agentOptions() || { endpoint: '', secret: '', read: false, write: false }
+        setControl('set-agent-endpoint', 'value', agentOpt.endpoint)
+        setControl('set-agent-secret', 'value', agentOpt.secret)
+        setControl('set-agent-read', 'checked', agentOpt.read)
+        setControl('set-agent-write', 'checked', agentOpt.write)
         syncDependentRows()
         updatePresetIndicator()
       }
@@ -1508,6 +1611,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             dStatus.className = 'deliver-status'
           }
         }
+        // Agent listener: no bridge URL → nothing to allow; reads off → writes unreachable.
+        var agentCfg = agentOptions() || {}
+        var agentEndpointSet = (agentCfg.endpoint || '') !== ''
+        Array.prototype.forEach.call(document.querySelectorAll('[data-needs-agent-endpoint]'), function (row) {
+          row.classList.toggle('disabled', !agentEndpointSet)
+          Array.prototype.forEach.call(row.querySelectorAll('input'), function (ctl) { ctl.disabled = !agentEndpointSet })
+        })
+        var agentReadOn = agentEndpointSet && agentCfg.read === true
+        Array.prototype.forEach.call(document.querySelectorAll('[data-needs-agent-read]'), function (row) {
+          row.classList.toggle('disabled', !agentReadOn)
+          Array.prototype.forEach.call(row.querySelectorAll('input'), function (ctl) { ctl.disabled = !agentReadOn })
+        })
+
         var modulesOn = OPTIONS.tokens.emitModuleFiles
         Array.prototype.forEach.call(document.querySelectorAll('[data-needs-modules]'), function (row) {
           row.classList.toggle('disabled', !modulesOn)
@@ -1602,6 +1718,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       bindSetting('set-dlv-endpoint', function (el) { OPTIONS.delivery.endpoint = el.value.trim() })
       bindSetting('set-dlv-secret', function (el) { OPTIONS.delivery.secret = el.value })
       bindSetting('set-dlv-on-export', function (el) { OPTIONS.delivery.onExport = el.checked })
+      bindSetting('set-agent-endpoint', function (el) { agentOptions().endpoint = el.value.trim(); agentApply() })
+      bindSetting('set-agent-secret', function (el) { agentOptions().secret = el.value; agentApply() })
+      bindSetting('set-agent-read', function (el) {
+        agentOptions().read = el.checked
+        // Writes can't outlive reads: turning inspection off has to close the whole channel,
+        // not leave the more dangerous half of it open.
+        if (!el.checked) { agentOptions().write = false; setControl('set-agent-write', 'checked', false) }
+        agentApply()
+      })
+      bindSetting('set-agent-write', function (el) { agentOptions().write = el.checked; agentApply() })
 
       // REFORM backlog → wired: import a translated PO/JSON catalog back onto the canvas.
       // Uses the CURRENT export scope (the main view's radios stay in the DOM under Settings).
@@ -2858,9 +2984,297 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         parent.postMessage({ pluginMessage: { type: 'DELIVER', zipBase64: b64 } }, '*')
       })
       // ── end Design Tokens ────────────────────────────────────────────────────────────
+      // ── Agent listener ───────────────────────────────────────────────────────────────
+      // Figma gives a plugin no way to be reached from outside: the sandbox has no listening
+      // socket and there is no headless mode. So the transport is inverted — this iframe
+      // long-polls the local bridge (agent/bridge.mjs) and relays each request to the sandbox,
+      // which is the only place that decides whether it may actually run.
+      //
+      // `generation` retires loops: every settings change bumps it, and any poll or handshake
+      // still in flight from an older generation drops its result on the floor.
+      var AGENT = { generation: 0, ops: [], file: null }
+
+      function agentOptions() {
+        if (!OPTIONS) return null
+        if (!OPTIONS.agent) OPTIONS.agent = { endpoint: '', secret: '', read: false, write: false }
+        return OPTIONS.agent
+      }
+
+      function agentStatus(text, cls) {
+        var el = document.getElementById('agent-status')
+        if (el) { el.textContent = text; el.className = 'deliver-status' + (cls ? ' ' + cls : '') }
+        var line = document.getElementById('agent-state-text')
+        if (line) line.textContent = text
+        var dot = document.getElementById('agent-dot')
+        if (dot) dot.className = 'agent-dot' + (cls ? ' ' + cls : '')
+        agentRenderChannel()
+      }
+
+      function agentFetch(path, init) {
+        var cfg = agentOptions() || { endpoint: '', secret: '' }
+        var options = init || {}
+        var headers = options.headers || {}
+        headers['Content-Type'] = 'application/json'
+        headers['x-altery-secret'] = cfg.secret || ''
+        options.headers = headers
+        return fetch((cfg.endpoint || '').replace(/\/+$/, '') + path, options)
+      }
+
+      function agentApply() {
+        var cfg = agentOptions()
+        if (!cfg) return
+        AGENT.generation++
+        var wanted = !!(cfg.endpoint && (cfg.read || cfg.write))
+        // The sandbox holds the real gate — tell it on every change, including switching off.
+        parent.postMessage({ pluginMessage: {
+          type: 'AGENT_SET_GATES',
+          read: wanted && cfg.read === true,
+          write: wanted && cfg.write === true
+        } }, '*')
+        if (wanted) { agentStatus('connecting to ' + cfg.endpoint + '…', ''); return }
+        agentStatus(cfg.endpoint ? 'off' : 'bridge URL not set', '')
+        // Best-effort, so a CLI waiting on /call fails right away instead of on a timeout.
+        if (cfg.endpoint) {
+          agentFetch('/plugin/gates', { method: 'POST', body: JSON.stringify({ read: false, write: false }) })
+            .catch(function () { /* bridge already down — nothing to tell */ })
+        }
+      }
+
+      // The sandbox answers AGENT_SET_GATES with its op manifest; that manifest is exactly what
+      // the bridge serves to `altery-figma ops`, so registering it IS the handshake.
+      function agentHandshake(msg) {
+        AGENT.ops = msg.ops || []
+        AGENT.file = msg.file || null
+        agentRenderView()
+        if (!msg.read && !msg.write) return
+        var generation = AGENT.generation
+        agentFetch('/plugin/hello', {
+          method: 'POST',
+          body: JSON.stringify({ ops: AGENT.ops, gates: { read: msg.read, write: msg.write }, file: AGENT.file })
+        })
+          .then(function (response) {
+            if (response.status === 401) throw new Error('secret does not match the bridge')
+            if (!response.ok) throw new Error('HTTP ' + response.status)
+            if (generation !== AGENT.generation) return
+            agentStatus('listening · ' + AGENT.ops.length + ' ops · ' + (msg.write ? 'read + write' : 'read only'), 'ok')
+            agentPoll(generation)
+          })
+          .catch(function (err) {
+            if (generation !== AGENT.generation) return
+            agentStatus('bridge unreachable: ' + err.message + ' — retrying', 'err')
+            setTimeout(function () { if (generation === AGENT.generation) agentHandshake(msg) }, 4000)
+          })
+      }
+
+      function agentPoll(generation) {
+        if (generation !== AGENT.generation) return
+        agentFetch('/plugin/poll', { method: 'GET' })
+          .then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status)
+            return response.json()
+          })
+          .then(function (data) {
+            if (generation !== AGENT.generation) return
+            var requests = data.requests || []
+            for (var i = 0; i < requests.length; i++) {
+              parent.postMessage({ pluginMessage: {
+                type: 'AGENT_REQUEST', id: requests[i].id, op: requests[i].op, params: requests[i].params
+              } }, '*')
+            }
+            agentPoll(generation)
+          })
+          .catch(function (err) {
+            if (generation !== AGENT.generation) return
+            agentStatus('bridge unreachable: ' + err.message + ' — retrying', 'err')
+            setTimeout(function () { agentPoll(generation) }, 4000)
+          })
+      }
+
+      /* ---- Agent Listener view ------------------------------------------------------- */
+
+      function agentText(id, value) {
+        var el = document.getElementById(id)
+        if (el) el.textContent = value
+      }
+
+      // Pairing, rather than either side inventing a secret and the person ferrying it across.
+      // The bridge mints one per machine and hands it over through a window it only opens for
+      // five minutes after someone starts it by hand — so every designer ends up with a
+      // different secret, and none of them is in the build or in the repo.
+      function agentPair() {
+        var cfg = agentOptions()
+        if (!cfg || !cfg.endpoint) return
+        agentStatus('pairing…', '')
+        fetch(agentBase() + '/pair', { method: 'POST' })
+          .then(function (response) {
+            return response.json().then(function (body) {
+              if (!response.ok || !body.secret) throw new Error(body.error || 'HTTP ' + response.status)
+              return body.secret
+            })
+          })
+          .then(function (secret) {
+            cfg.secret = secret
+            setControl('set-agent-secret', 'value', secret)
+            syncDependentRows()
+            persistExportOptions()
+            agentRenderView()
+            agentStatus('paired — ready to listen', 'ok')
+          })
+          .catch(function (err) {
+            agentStatus('pairing failed: ' + err.message, 'err')
+          })
+      }
+
+      function agentBase() {
+        var cfg = agentOptions() || {}
+        return (cfg.endpoint || 'http://127.0.0.1:8788').replace(/\/+$/, '')
+      }
+
+      // The skill is written against curl rather than the bundled CLI on purpose: an agent
+      // always has curl, and never has this repo's path.
+      function agentSkillText() {
+        var base = agentBase()
+        var auth = ' -H "x-altery-secret: $(cat ~/.altery/agent-secret)"'
+        var rows = (AGENT.ops || []).map(function (op) {
+          var params = Object.keys(op.params || {}).map(function (name) {
+            return op.params[name].required ? name + '!' : name
+          }).join(', ')
+          return '| `' + op.name + '` | ' + op.summary + ' | ' + (params || '—') + ' |'
+        })
+        return [
+          '---',
+          'name: figma',
+          'description: Read the Figma file the designer has open right now — pages, frames, components, styles, variables and prototype flows — through the Altery plugin. Use whenever a task names a screen, frame or component, asks what is selected, or needs real design values instead of guesses.',
+          '---',
+          '',
+          '# Figma — the file that is open right now',
+          '',
+          "The designer's live Figma file is readable over a local bridge. One shell command per",
+          'question: no MCP server, no library, nothing to install.',
+          '',
+          '    curl -s ' + base + '/call' + auth + " -d '{\"op\":\"document.info\"}'",
+          '',
+          'Params go in `params`:',
+          '',
+          '    curl -s ' + base + '/call' + auth + " -d '{\"op\":\"node.find\",\"params\":{\"name\":\"Checkout\",\"types\":[\"FRAME\"]}}'",
+          '',
+          'The reply is `{"ok":true,"result":…}` — pipe through `jq .result` and read the JSON.',
+          'The secret is written by the bridge; there is nothing to configure. If that file does',
+          'not exist, the bridge has never run on this machine — say so instead of improvising.',
+          '',
+          '## Check the channel before relying on it',
+          '',
+          '    curl -s ' + base + '/status' + auth,
+          '',
+          '`"online": false` means the plugin is closed or the designer has the channel switched',
+          'off. Tell them, and ask them to turn it on — never substitute a guess about the design.',
+          '',
+          '## Ops',
+          '',
+          '| op | answers | params (`!` = required) |',
+          '|----|---------|-------------------------|',
+        ].concat(rows.length ? rows : ['| _(connect the plugin to list its ops)_ | | |']).concat([
+          '',
+          '## How to work with it',
+          '',
+          '- Start at `document.info` or `selection.get`. Never invent a node id.',
+          '- Search by name (`node.find`) before fetching by id — names are how designers talk',
+          '  about their work, ids are an implementation detail.',
+          '- `components.list` gives the exact variant property names and values. Use them',
+          '  verbatim when describing a component or generating code for it.',
+          '- `flow.map` shows how screens are already wired together. Read it before proposing',
+          '  navigation, so you extend the existing prototype instead of inventing a parallel one.',
+          '- Everything is read-only. If a task needs the file changed, describe the change',
+          '  precisely and let the designer make it — there is no write op.',
+          '',
+        ]).join('\n')
+      }
+
+      // One button, three roles: pair when there is no secret yet, then open and close the
+      // channel. Keeping it to one control means the screen always has exactly one next step.
+      function agentRenderChannel() {
+        var cfg = agentOptions() || {}
+        var btn = document.getElementById('agent-toggle')
+        if (!btn) return
+        var on = !!(cfg.endpoint && (cfg.read || cfg.write))
+        btn.disabled = !cfg.endpoint
+        if (!cfg.secret) {
+          btn.textContent = 'Pair with bridge'
+          btn.className = 'btn primary'
+          agentText('agent-note', cfg.endpoint
+            ? 'Run the bridge below first — pairing only works in the five minutes after it starts.'
+            : 'Set the bridge URL under Settings first.')
+          return
+        }
+        btn.textContent = on ? 'Stop listening' : 'Start listening'
+        btn.className = 'btn ' + (on ? 'ghost' : 'primary')
+        agentText('agent-note', on
+          ? 'The agent can read this file while this is on. Every call it makes shows up here as it happens.'
+          : "Off by default every time the plugin opens — and while it's off, nothing outside Figma can read this file.")
+      }
+
+      function agentRenderView() {
+        if (!OPTIONS || OPTIONS.target !== 'agent') return
+        agentText('agent-bridge-cmd', 'node agent/bridge.mjs')
+        agentText('agent-skill', agentSkillText())
+        agentRenderChannel()
+      }
+
+      // Grants reads only — turning writes on stays a deliberate trip to Settings, never
+      // something a single click can do by accident.
+      document.getElementById('agent-toggle').addEventListener('click', function () {
+        var cfg = agentOptions()
+        if (!cfg || !cfg.endpoint) return
+        if (!cfg.secret) { agentPair(); return }
+        var on = !!(cfg.read || cfg.write)
+        cfg.read = !on
+        if (on) cfg.write = false
+        setControl('set-agent-read', 'checked', cfg.read)
+        setControl('set-agent-write', 'checked', cfg.write)
+        syncDependentRows()
+        persistExportOptions()
+        agentApply()
+        agentRenderChannel()
+      })
+
+      function agentBindCopy(buttonId, getText) {
+        document.getElementById(buttonId).addEventListener('click', function () {
+          var btn = document.getElementById(buttonId)
+          var flash = function (cls) { btn.classList.add(cls); setTimeout(function () { btn.classList.remove(cls) }, 1200) }
+          var text = getText()
+          if (!text) { flash('copy-failed'); return }
+          if (dtCopyText(text)) { flash('copied'); return }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () { flash('copied') }, function () { flash('copy-failed') })
+          } else flash('copy-failed')
+        })
+      }
+      agentBindCopy('agent-copy-cmd', function () { return document.getElementById('agent-bridge-cmd').textContent })
+      agentBindCopy('agent-copy-skill', function () { return agentSkillText() })
+
+      function agentHandleMessage(msg) {
+        if (msg.type === 'AGENT_GATES') { agentHandshake(msg); return }
+        if (msg.type === 'AGENT_RESPONSE') {
+          agentFetch('/plugin/result', {
+            method: 'POST',
+            body: JSON.stringify({ id: msg.id, ok: msg.ok, result: msg.result, error: msg.error })
+          }).catch(function () { /* caller times out; the poll loop reports the outage */ })
+          return
+        }
+        if (msg.type === 'AGENT_ACTIVITY') {
+          // Every agent call surfaces here: a channel a designer can't watch isn't one they
+          // can meaningfully consent to.
+          agentStatus(msg.op + (msg.ok ? ' — ok' : ' — ' + msg.error) + ' · ' + msg.ms + 'ms', msg.ok ? 'ok' : 'err')
+        }
+      }
+      // ── end Agent listener ───────────────────────────────────────────────────────────
       onmessage = function (event) {
         var msg = event.data.pluginMessage
         if (!msg) return
+        if (msg.type === 'AGENT_GATES' || msg.type === 'AGENT_RESPONSE' || msg.type === 'AGENT_ACTIVITY') {
+          agentHandleMessage(msg)
+          return
+        }
         if (msg.type === 'FILES_READY') {
           // The plugin is done; the zip is built here in the UI. Stop the liveness ticker so it
           // doesn't fight JSZip's real "zipping — %" progress, and surface a zip failure instead

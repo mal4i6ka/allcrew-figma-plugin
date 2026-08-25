@@ -61,6 +61,7 @@ import { buildDjangoDesignMd, buildTokenAudit, type DjangoDesignMdInput } from '
 import { buildComponentsMd, COMPONENTS_FILE, type ComponentDoc, type ComponentProperty } from './targets/design-md/component-docs'
 import { buildTokenEntries } from './targets/design-md/model'
 import { deliverPackage } from './delivery'
+import { agentManifest, handleAgentRequest, setGates } from './agent/listener.ts'
 
 /* ------------------------------------------------------------------ types */
 
@@ -102,6 +103,9 @@ type PluginMessage =
   | { type: 'FIX_PALETTE'; settings: unknown; fix: unknown }
   | { type: 'APPLY_PALETTE'; settings: unknown; applyOptions?: Partial<PaletteApplyOptions> }
   | { type: 'SAVE_PALETTE_SETTINGS'; settings: unknown }
+  // Agent listener messages (see src/agent/, agent/README.md)
+  | { type: 'AGENT_SET_GATES'; read: boolean; write: boolean }
+  | { type: 'AGENT_REQUEST'; id: string; op: string; params?: unknown }
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -588,9 +592,13 @@ Promise.all([
   figma.clientStorage.getAsync('userPresets'),
   figma.clientStorage.getAsync('paletteSettings'),
 ]).then(([storedOptions, storedPresets, storedPalette]) => {
+  // The bridge URL and secret are setup and worth persisting; the gates are consent and are
+  // not. Every session starts with the agent locked out, whatever was stored last time.
+  const options = normalizeExportOptions(storedOptions)
+  options.agent = { ...options.agent, read: false, write: false }
   figma.ui.postMessage({
     type: 'EXPORT_OPTIONS',
-    options: normalizeExportOptions(storedOptions),
+    options,
     presets: EXPORT_PRESETS,
     userPresets: normalizeUserPresets(storedPresets),
   })
@@ -974,6 +982,18 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
           message: error instanceof Error ? error.message : String(error),
         })
       }
+      break
+    }
+    case 'AGENT_SET_GATES': {
+      const gates = setGates({ read: msg.read, write: msg.write })
+      figma.ui.postMessage({ type: 'AGENT_GATES', ...gates, ops: agentManifest(), file: figma.root.name })
+      break
+    }
+    case 'AGENT_REQUEST': {
+      // Never throws: a rejected or failed op comes back as `{ ok: false, error }` so the
+      // bridge can answer the waiting CLI instead of leaving it on a timeout.
+      const response = await handleAgentRequest({ id: msg.id, op: msg.op, params: msg.params })
+      figma.ui.postMessage({ type: 'AGENT_RESPONSE', ...response })
       break
     }
     case 'SAVE_EXPORT_OPTIONS': {

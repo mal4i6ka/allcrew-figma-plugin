@@ -1255,11 +1255,18 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
     };
   }
   var DEFAULT_DELIVERY = { endpoint: "", secret: "", onExport: false };
+  var DEFAULT_AGENT = {
+    endpoint: "http://127.0.0.1:8788",
+    secret: "",
+    read: false,
+    write: false
+  };
   var DEFAULT_LINT = { maxNestingDepth: 8 };
   var DEFAULT_DOCS = { componentDocs: true, componentPreviews: false, previewBudgetMb: 8 };
   var DEFAULT_EXPORT_OPTIONS = __spreadValues({
     scopeMode: "page",
     delivery: __spreadValues({}, DEFAULT_DELIVERY),
+    agent: __spreadValues({}, DEFAULT_AGENT),
     lint: __spreadValues({}, DEFAULT_LINT),
     docs: __spreadValues({}, DEFAULT_DOCS)
   }, clonePackage(DJANGO_BOOTSTRAP_VALUES));
@@ -1270,7 +1277,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
     return value === "page" || value === "selection" || value === "frame";
   }
   function isTargetId(value) {
-    return value === "design-tokens" || value === "django" || value === "ds-tools";
+    return value === "design-tokens" || value === "django" || value === "ds-tools" || value === "agent";
   }
   function normalizeModules(raw) {
     const defaults = DJANGO_BOOTSTRAP_VALUES.modules;
@@ -1327,6 +1334,15 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
       onExport: typeof raw.onExport === "boolean" ? raw.onExport : DEFAULT_DELIVERY.onExport
     };
   }
+  function normalizeAgent(raw) {
+    if (!isRecord2(raw)) return __spreadValues({}, DEFAULT_AGENT);
+    return {
+      endpoint: typeof raw.endpoint === "string" ? raw.endpoint.trim() : DEFAULT_AGENT.endpoint,
+      secret: typeof raw.secret === "string" ? raw.secret : DEFAULT_AGENT.secret,
+      read: raw.read === true,
+      write: raw.write === true
+    };
+  }
   function normalizeDocs(raw) {
     if (!isRecord2(raw)) return __spreadValues({}, DEFAULT_DOCS);
     return {
@@ -1352,6 +1368,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
       tokens: normalizeTokens(candidate.tokens),
       i18n: normalizeI18n(candidate.i18n),
       delivery: normalizeDelivery2(candidate.delivery),
+      agent: normalizeAgent(candidate.agent),
       lint: normalizeLint(candidate.lint),
       docs: normalizeDocs(candidate.docs)
     };
@@ -7967,6 +7984,9 @@ ${mediaCss}`;
   }
 
   // src/utils/tree.ts
+  async function loadAllPagesAsync() {
+    await Promise.all(figma.root.children.map((page) => page.loadAsync()));
+  }
   var YIELD_EVERY = 500;
   function yieldToHost() {
     return new Promise((resolve) => setTimeout(resolve, 0));
@@ -13667,6 +13687,438 @@ ${renderSections(sections)}
     }
   }
 
+  // src/agent/protocol.ts
+  function toManifest(ops) {
+    return ops.map((op) => ({
+      name: op.name,
+      summary: op.summary,
+      mutates: op.mutates,
+      params: __spreadValues({}, op.params)
+    }));
+  }
+  function authorize(op, gates2) {
+    if (!op) return { ok: false, error: "unknown op" };
+    if (op.mutates) {
+      if (!gates2.write) return { ok: false, error: 'writes are off \u2014 enable "Allow changes" in the plugin' };
+      return { ok: true };
+    }
+    if (!gates2.read) return { ok: false, error: 'reads are off \u2014 enable "Allow reads" in the plugin' };
+    return { ok: true };
+  }
+  var ParamError = class extends Error {
+  };
+  function validateParams(specs, raw) {
+    const input = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    for (const key of Object.keys(input)) {
+      if (!(key in specs)) {
+        throw new ParamError(`unknown param "${key}" \u2014 accepted: ${Object.keys(specs).join(", ") || "(none)"}`);
+      }
+    }
+    const out = {};
+    for (const [key, spec] of Object.entries(specs)) {
+      const value = input[key];
+      if (value === void 0 || value === null) {
+        if (spec.required) throw new ParamError(`missing required param "${key}" (${spec.type})`);
+        if (spec.default !== void 0) out[key] = spec.default;
+        continue;
+      }
+      out[key] = coerce(key, spec, value);
+    }
+    return out;
+  }
+  function coerce(key, spec, value) {
+    switch (spec.type) {
+      case "string": {
+        if (typeof value !== "string") throw new ParamError(`param "${key}" must be a string`);
+        if (spec.enum && !spec.enum.includes(value)) {
+          throw new ParamError(`param "${key}" must be one of: ${spec.enum.join(", ")}`);
+        }
+        return value;
+      }
+      case "number": {
+        const num = typeof value === "string" ? Number(value) : value;
+        if (typeof num !== "number" || !Number.isFinite(num)) {
+          throw new ParamError(`param "${key}" must be a number`);
+        }
+        if (spec.min !== void 0 && num < spec.min) throw new ParamError(`param "${key}" must be >= ${spec.min}`);
+        if (spec.max !== void 0 && num > spec.max) throw new ParamError(`param "${key}" must be <= ${spec.max}`);
+        return num;
+      }
+      case "boolean": {
+        if (typeof value === "boolean") return value;
+        if (value === "true") return true;
+        if (value === "false") return false;
+        throw new ParamError(`param "${key}" must be a boolean`);
+      }
+      case "string[]": {
+        if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+          throw new ParamError(`param "${key}" must be an array of strings`);
+        }
+        return value;
+      }
+    }
+  }
+
+  // src/agent/ops.ts
+  function round22(value) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) / 100 : void 0;
+  }
+  function summarizeReactions(raw) {
+    var _a, _b, _c;
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const reaction of raw) {
+      if (!reaction || typeof reaction !== "object") continue;
+      const entry = reaction;
+      const trigger = (_b = (_a = entry.trigger) == null ? void 0 : _a.type) != null ? _b : "UNKNOWN";
+      const actions = Array.isArray(entry.actions) ? entry.actions : entry.action ? [entry.action] : [];
+      for (const action of actions) {
+        if (!action || typeof action !== "object") continue;
+        out.push(__spreadValues(__spreadValues({
+          trigger,
+          action: (_c = action.type) != null ? _c : "UNKNOWN"
+        }, typeof action.destinationId === "string" ? { destinationId: action.destinationId } : {}), typeof action.navigation === "string" ? { navigation: action.navigation } : {}));
+      }
+    }
+    return out;
+  }
+  function summarizeComponentProperties(raw) {
+    if (!raw || typeof raw !== "object") return void 0;
+    const out = {};
+    for (const [key, entry] of Object.entries(raw)) {
+      out[key] = entry && typeof entry === "object" && "value" in entry ? entry.value : entry;
+    }
+    return Object.keys(out).length > 0 ? out : void 0;
+  }
+  var MAX_TEXT = 160;
+  function summarizeNode(node) {
+    var _a, _b, _c, _d;
+    const summary = { id: node.id, name: node.name, type: node.type };
+    if (node.visible === false) summary.visible = false;
+    const x = round22(node.x);
+    const y = round22(node.y);
+    const width = round22(node.width);
+    const height = round22(node.height);
+    if (x !== void 0) summary.x = x;
+    if (y !== void 0) summary.y = y;
+    if (width !== void 0) summary.width = width;
+    if (height !== void 0) summary.height = height;
+    if (typeof node.layoutMode === "string" && node.layoutMode !== "NONE") {
+      summary.layout = __spreadValues(__spreadValues(__spreadProps(__spreadValues({
+        mode: node.layoutMode
+      }, round22(node.itemSpacing) !== void 0 ? { itemSpacing: round22(node.itemSpacing) } : {}), {
+        padding: [
+          (_a = round22(node.paddingTop)) != null ? _a : 0,
+          (_b = round22(node.paddingRight)) != null ? _b : 0,
+          (_c = round22(node.paddingBottom)) != null ? _c : 0,
+          (_d = round22(node.paddingLeft)) != null ? _d : 0
+        ]
+      }), node.primaryAxisAlignItems ? { primaryAxisAlign: node.primaryAxisAlignItems } : {}), node.counterAxisAlignItems ? { counterAxisAlign: node.counterAxisAlignItems } : {});
+    }
+    if (node.type === "TEXT" && typeof node.characters === "string") {
+      summary.text = node.characters.length > MAX_TEXT ? node.characters.slice(0, MAX_TEXT) + "\u2026" : node.characters;
+    }
+    if (Array.isArray(node.children)) summary.childCount = node.children.length;
+    return summary;
+  }
+  async function describeNode(node, depth) {
+    var _a, _b;
+    const summary = summarizeNode(node);
+    if (typeof node.getReactionsAsync === "function" || Array.isArray(node.reactions)) {
+      const raw = typeof node.getReactionsAsync === "function" ? await node.getReactionsAsync() : node.reactions;
+      const reactions = summarizeReactions(raw);
+      if (reactions.length > 0) summary.reactions = reactions;
+    }
+    if (node.type === "INSTANCE") {
+      let main = null;
+      try {
+        main = typeof node.getMainComponentAsync === "function" ? await node.getMainComponentAsync() : null;
+      } catch (e) {
+      }
+      summary.instanceOf = __spreadValues({
+        id: (_a = main == null ? void 0 : main.id) != null ? _a : null,
+        name: (_b = main == null ? void 0 : main.name) != null ? _b : null
+      }, summarizeComponentProperties(node.componentProperties) ? { properties: summarizeComponentProperties(node.componentProperties) } : {});
+    }
+    if (depth > 0 && Array.isArray(node.children)) {
+      summary.children = [];
+      for (const child of node.children) summary.children.push(await describeNode(child, depth - 1));
+    }
+    return summary;
+  }
+  async function resolvePage(pageId) {
+    if (typeof pageId !== "string" || pageId === "") return figma.currentPage;
+    const page = await figma.getNodeByIdAsync(pageId);
+    if (!page || page.type !== "PAGE") throw new Error(`no page with id ${pageId}`);
+    await page.loadAsync();
+    return page;
+  }
+  async function resolveScope(scope) {
+    if (scope === "document") {
+      await loadAllPagesAsync();
+      return figma.root;
+    }
+    return figma.currentPage;
+  }
+  var READ_OPS = [
+    {
+      name: "document.info",
+      summary: "File name, editor type, current page and the list of pages.",
+      mutates: false,
+      params: {},
+      async run() {
+        return {
+          fileName: figma.root.name,
+          editorType: figma.editorType,
+          currentPage: { id: figma.currentPage.id, name: figma.currentPage.name },
+          pages: figma.root.children.map((page) => ({ id: page.id, name: page.name }))
+        };
+      }
+    },
+    {
+      name: "page.frames",
+      summary: "Top-level frames, sections and components on a page \u2014 the addressable surfaces.",
+      mutates: false,
+      params: {
+        pageId: { type: "string", description: "Page id. Defaults to the page the designer is on." }
+      },
+      async run(params) {
+        const page = await resolvePage(params.pageId);
+        return {
+          page: { id: page.id, name: page.name },
+          nodes: page.children.filter(
+            (node) => node.type === "FRAME" || node.type === "SECTION" || node.type === "COMPONENT" || node.type === "COMPONENT_SET"
+          ).map((node) => summarizeNode(node))
+        };
+      }
+    },
+    {
+      name: "node.get",
+      summary: "One node by id: geometry, auto-layout, text, instance bindings, children.",
+      mutates: false,
+      params: {
+        nodeId: { type: "string", description: 'Node id, e.g. "12:345".', required: true },
+        depth: {
+          type: "number",
+          description: "Levels of children to include (0 = the node alone).",
+          default: 1,
+          min: 0,
+          max: 5
+        }
+      },
+      async run(params) {
+        const node = await figma.getNodeByIdAsync(params.nodeId);
+        if (!node) throw new Error(`no node with id ${params.nodeId}`);
+        return describeNode(node, params.depth);
+      }
+    },
+    {
+      name: "node.find",
+      summary: "Search nodes by name substring and/or type within a page or the whole document.",
+      mutates: false,
+      params: {
+        name: { type: "string", description: "Case-insensitive substring of the node name." },
+        types: {
+          type: "string[]",
+          description: 'Node types to keep, e.g. ["FRAME","INSTANCE"]. Omit for any type.'
+        },
+        scope: {
+          type: "string",
+          description: "Where to search.",
+          enum: ["page", "document"],
+          default: "page"
+        },
+        limit: { type: "number", description: "Max matches returned.", default: 50, min: 1, max: 500 }
+      },
+      async run(params) {
+        var _a;
+        const needle = typeof params.name === "string" ? params.name.toLowerCase() : null;
+        const types = (_a = params.types) != null ? _a : null;
+        const root = await resolveScope(params.scope);
+        const matches = await findAllWithCriteria(root, (node) => {
+          if (types && !types.includes(node.type)) return false;
+          if (needle && !node.name.toLowerCase().includes(needle)) return false;
+          return true;
+        });
+        const limit = params.limit;
+        return {
+          total: matches.length,
+          truncated: matches.length > limit,
+          nodes: matches.slice(0, limit).map((node) => summarizeNode(node))
+        };
+      }
+    },
+    {
+      name: "selection.get",
+      summary: "What the designer has selected right now \u2014 the handoff point for 'this frame'.",
+      mutates: false,
+      params: {
+        depth: { type: "number", description: "Levels of children per selected node.", default: 0, min: 0, max: 5 }
+      },
+      async run(params) {
+        const depth = params.depth;
+        const nodes = [];
+        for (const node of figma.currentPage.selection) nodes.push(await describeNode(node, depth));
+        return { page: { id: figma.currentPage.id, name: figma.currentPage.name }, nodes };
+      }
+    },
+    {
+      name: "components.list",
+      summary: "Local components and component sets with their property/variant definitions.",
+      mutates: false,
+      params: {
+        scope: { type: "string", description: "Where to look.", enum: ["page", "document"], default: "document" },
+        name: { type: "string", description: "Case-insensitive substring of the component name." },
+        limit: { type: "number", description: "Max components returned.", default: 100, min: 1, max: 500 }
+      },
+      async run(params) {
+        const needle = typeof params.name === "string" ? params.name.toLowerCase() : null;
+        const root = await resolveScope(params.scope);
+        const found = await findAllWithCriteria(root, (node) => {
+          var _a;
+          if (node.type !== "COMPONENT" && node.type !== "COMPONENT_SET") return false;
+          if (needle && !node.name.toLowerCase().includes(needle)) return false;
+          return !(node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) === "COMPONENT_SET");
+        });
+        const limit = params.limit;
+        return {
+          total: found.length,
+          truncated: found.length > limit,
+          components: found.slice(0, limit).map((node) => {
+            var _a;
+            return {
+              id: node.id,
+              key: node.key,
+              name: node.name,
+              type: node.type,
+              description: node.description || void 0,
+              properties: (_a = node.componentPropertyDefinitions) != null ? _a : void 0,
+              variants: node.type === "COMPONENT_SET" ? node.children.map((child) => ({ id: child.id, name: child.name })) : void 0
+            };
+          })
+        };
+      }
+    },
+    {
+      name: "styles.list",
+      summary: "Local text, paint, effect and grid styles.",
+      mutates: false,
+      params: {},
+      async run() {
+        const [text2, paint, effect, grid] = await Promise.all([
+          figma.getLocalTextStylesAsync(),
+          figma.getLocalPaintStylesAsync(),
+          figma.getLocalEffectStylesAsync(),
+          figma.getLocalGridStylesAsync()
+        ]);
+        const base = (style) => ({
+          id: style.id,
+          key: style.key,
+          name: style.name,
+          description: style.description || void 0
+        });
+        return {
+          text: text2.map((style) => __spreadProps(__spreadValues({}, base(style)), {
+            fontFamily: style.fontName.family,
+            fontStyle: style.fontName.style,
+            fontSize: style.fontSize,
+            lineHeight: style.lineHeight
+          })),
+          paint: paint.map((style) => __spreadProps(__spreadValues({}, base(style)), { paints: style.paints.map((p) => p.type) })),
+          effect: effect.map((style) => __spreadProps(__spreadValues({}, base(style)), { effects: style.effects.map((e) => e.type) })),
+          grid: grid.map(base)
+        };
+      }
+    },
+    {
+      name: "variables.get",
+      summary: "Variable collections, modes and values \u2014 the same snapshot the token export reads.",
+      mutates: false,
+      params: {},
+      async run() {
+        return readAllVariables();
+      }
+    },
+    {
+      name: "flow.map",
+      summary: "Prototype graph of a page: starting points plus every reaction edge between frames.",
+      mutates: false,
+      params: {
+        pageId: { type: "string", description: "Page id. Defaults to the page the designer is on." }
+      },
+      async run(params) {
+        var _a;
+        const page = await resolvePage(params.pageId);
+        const named = /* @__PURE__ */ new Map();
+        for (const node of page.children) named.set(node.id, node.name);
+        const edges = [];
+        const withReactions = await findAllWithCriteria(
+          page,
+          (node) => "reactions" in node || "getReactionsAsync" in node
+        );
+        for (const node of withReactions) {
+          const anyNode = node;
+          const raw = typeof anyNode.getReactionsAsync === "function" ? await anyNode.getReactionsAsync() : anyNode.reactions;
+          for (const reaction of summarizeReactions(raw)) {
+            if (!reaction.destinationId) continue;
+            edges.push({
+              from: node.id,
+              fromName: node.name,
+              to: reaction.destinationId,
+              toName: (_a = named.get(reaction.destinationId)) != null ? _a : null,
+              trigger: reaction.trigger,
+              action: reaction.action
+            });
+          }
+        }
+        return {
+          page: { id: page.id, name: page.name },
+          // `flowStartingPoints` is the designer's own declaration of where a flow begins —
+          // better ground truth than guessing from in-degree.
+          startingPoints: page.flowStartingPoints.map((point) => ({
+            nodeId: point.nodeId,
+            name: point.name
+          })),
+          frames: page.children.filter((node) => node.type === "FRAME").map((node) => ({ id: node.id, name: node.name })),
+          edges
+        };
+      }
+    }
+  ];
+  var OPS_BY_NAME = new Map(READ_OPS.map((op) => [op.name, op]));
+
+  // src/agent/listener.ts
+  var gates = { read: false, write: false };
+  function setGates(next) {
+    gates = { read: next.read === true, write: next.write === true };
+    return gates;
+  }
+  function agentManifest() {
+    return toManifest(READ_OPS);
+  }
+  async function handleAgentRequest(request) {
+    const started = Date.now();
+    const op = OPS_BY_NAME.get(request.op);
+    const permitted = authorize(op, gates);
+    if (!permitted.ok) {
+      report(request.op, false, Date.now() - started, permitted.error);
+      return { id: request.id, ok: false, error: permitted.error };
+    }
+    try {
+      const params = validateParams(op.params, request.params);
+      const result = await op.run(params);
+      report(request.op, true, Date.now() - started);
+      return { id: request.id, ok: true, result };
+    } catch (err) {
+      const message = String((err == null ? void 0 : err.message) || err);
+      report(request.op, false, Date.now() - started, message);
+      return { id: request.id, ok: false, error: message };
+    }
+  }
+  function report(op, ok, ms, error) {
+    figma.ui.postMessage({ type: "AGENT_ACTIVITY", op, ok, ms, error });
+  }
+
   // src/code.ts
   function frameworkLinksFrom(options, tokensOn) {
     if (options.targetOptions.framework !== "bootstrap") return null;
@@ -14092,9 +14544,11 @@ ${renderSections(sections)}
     figma.clientStorage.getAsync("userPresets"),
     figma.clientStorage.getAsync("paletteSettings")
   ]).then(([storedOptions, storedPresets, storedPalette]) => {
+    const options = normalizeExportOptions(storedOptions);
+    options.agent = __spreadProps(__spreadValues({}, options.agent), { read: false, write: false });
     figma.ui.postMessage({
       type: "EXPORT_OPTIONS",
-      options: normalizeExportOptions(storedOptions),
+      options,
       presets: EXPORT_PRESETS,
       userPresets: normalizeUserPresets(storedPresets)
     });
@@ -14170,9 +14624,9 @@ ${renderSections(sections)}
       case "GENERATE_TYPOGRAPHY": {
         try {
           const stored = await figma.clientStorage.getAsync("exportOptions");
-          const report = await generateTypographyVariables(normalizeExportOptions(stored));
-          figma.notify(`Created ${report.created} variables \xB7 bound ${report.bound} field(s)` + (report.failed ? ` \xB7 ${report.failed} failed` : ""));
-          figma.ui.postMessage({ type: "TYPOGRAPHY_GENERATED", report });
+          const report2 = await generateTypographyVariables(normalizeExportOptions(stored));
+          figma.notify(`Created ${report2.created} variables \xB7 bound ${report2.bound} field(s)` + (report2.failed ? ` \xB7 ${report2.failed} failed` : ""));
+          figma.ui.postMessage({ type: "TYPOGRAPHY_GENERATED", report: report2 });
         } catch (err) {
           const message = String((err == null ? void 0 : err.message) || err);
           figma.notify("Generate failed: " + message);
@@ -14207,14 +14661,14 @@ ${renderSections(sections)}
         try {
           const settings = normalizePaletteSettings(msg.settings);
           const options = __spreadValues(__spreadValues({}, DEFAULT_APPLY_OPTIONS), (_c = msg.applyOptions) != null ? _c : {});
-          const report = await applyPalette(generatePalette(settings), options);
+          const report2 = await applyPalette(generatePalette(settings), options);
           await figma.clientStorage.setAsync("paletteSettings", settings);
           const parts = [];
-          if (options.variables) parts.push(`${report.created} new \xB7 ${report.updated} updated variables`);
-          if (report.themeRoles) parts.push(`${report.themeRoles} theme roles`);
-          if (report.swatches) parts.push(`${report.swatches} swatches`);
+          if (options.variables) parts.push(`${report2.created} new \xB7 ${report2.updated} updated variables`);
+          if (report2.themeRoles) parts.push(`${report2.themeRoles} theme roles`);
+          if (report2.swatches) parts.push(`${report2.swatches} swatches`);
           figma.notify(parts.join(" \xB7 ") || "Nothing selected to generate");
-          figma.ui.postMessage({ type: "PALETTE_APPLIED", report });
+          figma.ui.postMessage({ type: "PALETTE_APPLIED", report: report2 });
         } catch (err) {
           const message = String((err == null ? void 0 : err.message) || err);
           figma.notify("Palette failed: " + message);
@@ -14439,6 +14893,16 @@ ${renderSections(sections)}
         }
         break;
       }
+      case "AGENT_SET_GATES": {
+        const gates2 = setGates({ read: msg.read, write: msg.write });
+        figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name }));
+        break;
+      }
+      case "AGENT_REQUEST": {
+        const response = await handleAgentRequest({ id: msg.id, op: msg.op, params: msg.params });
+        figma.ui.postMessage(__spreadValues({ type: "AGENT_RESPONSE" }, response));
+        break;
+      }
       case "SAVE_EXPORT_OPTIONS": {
         const stored = await figma.clientStorage.getAsync("exportOptions");
         await figma.clientStorage.setAsync("exportOptions", mergeExportOptions(stored, msg.options));
@@ -14462,10 +14926,10 @@ ${renderSections(sections)}
         try {
           const snapshot = await readAllVariables();
           const colorVariables = snapshot.variables.filter((variable) => variable.resolvedType === "COLOR").map((variable) => ({ id: variable.id, name: variable.name }));
-          const report = await generateDesignKit(colorVariables);
-          figma.ui.postMessage({ type: "KIT_GENERATED", report });
+          const report2 = await generateDesignKit(colorVariables);
+          figma.ui.postMessage({ type: "KIT_GENERATED", report: report2 });
           figma.notify(
-            `Kit: ${report.components} components, ${report.variants} variants` + (report.slots > 0 ? `, ${report.slots} slots` : "") + (report.bound > 0 ? ` \u2014 ${report.bound} bound to tokens` : " \u2014 no matching tokens, using defaults")
+            `Kit: ${report2.components} components, ${report2.variants} variants` + (report2.slots > 0 ? `, ${report2.slots} slots` : "") + (report2.bound > 0 ? ` \u2014 ${report2.bound} bound to tokens` : " \u2014 no matching tokens, using defaults")
           );
         } catch (error) {
           figma.ui.postMessage({ type: "KIT_ERROR", message: error instanceof Error ? error.message : String(error) });
