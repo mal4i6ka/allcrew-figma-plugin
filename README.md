@@ -205,8 +205,9 @@ Plugin endpoint: `http://<tailscale-hostname>:8787`
 ```bash
 npm install -g pm2
 
-# create ecosystem file (do NOT commit — contains the secret)
-cat > ecosystem.config.js <<'EOF'
+# create ecosystem file — .cjs, since this repo is "type": "module"
+# (do NOT commit — contains the secret)
+cat > ecosystem.config.cjs <<'EOF'
 module.exports = {
   apps: [{
     name: "altery-receiver",
@@ -220,7 +221,7 @@ module.exports = {
 }
 EOF
 
-pm2 start ecosystem.config.js
+pm2 start ecosystem.config.cjs
 pm2 save && pm2 startup   # survive reboots
 ```
 

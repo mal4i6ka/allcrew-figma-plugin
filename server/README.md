@@ -68,7 +68,8 @@ Plugin endpoint: `http://<tailscale-hostname>:8787`
 ```bash
 npm install -g pm2
 
-cat > ecosystem.config.js <<'EOF'
+# .cjs, so the CommonJS config loads whether or not the deploy dir is "type": "module"
+cat > ecosystem.config.cjs <<'EOF'
 module.exports = {
   apps: [{
     name: "altery-receiver",
@@ -82,7 +83,7 @@ module.exports = {
 }
 EOF
 
-pm2 start ecosystem.config.js
+pm2 start ecosystem.config.cjs
 pm2 save && pm2 startup
 ```
 
