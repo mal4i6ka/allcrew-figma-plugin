@@ -2804,7 +2804,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function palRenderPreview() {
         var host = document.getElementById('pal-preview')
         host.innerHTML = ''
+        var applyButton = document.getElementById('pal-apply')
+        if (applyButton) applyButton.disabled = !PAL_PALETTE || PAL_PALETTE.spectra.length === 0
         if (!PAL_PALETTE) return
+
+        if (PAL_PALETTE.spectra.length === 0) {
+          var empty = document.createElement('div')
+          empty.className = 'pal-hint'
+          empty.textContent = 'No spectra — add a color above to see its ramp here.'
+          host.appendChild(empty)
+          return
+        }
 
         PAL_PALETTE.spectra.forEach(function (spectrum) {
           var block = document.createElement('div')

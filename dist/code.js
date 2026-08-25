@@ -13072,7 +13072,8 @@ ${scrollGuards}` : project.css;
   function normalizePaletteSettings(value) {
     const defaults = DEFAULT_PALETTE_SETTINGS;
     if (!isRecord3(value)) return __spreadProps(__spreadValues({}, defaults), { spectra: defaults.spectra.map((s) => __spreadValues({}, s)) });
-    const spectra = Array.isArray(value.spectra) ? value.spectra.map(normalizeSpectrum).filter((spec) => spec !== null) : [];
+    const rawSpectra = Array.isArray(value.spectra) ? value.spectra : null;
+    const spectra = rawSpectra ? rawSpectra.map(normalizeSpectrum).filter((spec) => spec !== null) : [];
     const lightnessMax = number(value.lightnessMax, defaults.lightnessMax, 0.5, 1);
     const lightnessMin = number(value.lightnessMin, defaults.lightnessMin, 0, 0.5);
     return {
@@ -13086,7 +13087,11 @@ ${scrollGuards}` : project.css;
       chromaCurve: number(value.chromaCurve, defaults.chromaCurve, 0, 1),
       hueTorsion: value.hueTorsion === "auto" ? "auto" : number(value.hueTorsion, 0, -60, 60),
       neutralChroma: number(value.neutralChroma, defaults.neutralChroma, 0, 1),
-      spectra: spectra.length > 0 ? spectra : defaults.spectra.map((s) => __spreadValues({}, s))
+      // An empty list is a choice: the operator cleared the board to build their own set, and
+      // quietly refilling it with the default three makes the preview show ramps that no
+      // longer exist. The defaults return only when the field is missing entirely or every
+      // entry is corrupt — settings from an older build, not a deliberate empty state.
+      spectra: rawSpectra === null || rawSpectra.length > 0 && spectra.length === 0 ? defaults.spectra.map((s) => __spreadValues({}, s)) : spectra
     };
   }
 
@@ -18044,6 +18049,9 @@ ${renderSections(sections)}
       case "APPLY_PALETTE": {
         try {
           const settings = normalizePaletteSettings(msg.settings);
+          if (settings.spectra.length === 0) {
+            throw new Error("the palette is empty \u2014 add at least one color before generating");
+          }
           const options = __spreadValues(__spreadValues({}, DEFAULT_APPLY_OPTIONS), (_c = msg.applyOptions) != null ? _c : {});
           const report = await applyPalette(generatePalette(settings), options);
           await figma.clientStorage.setAsync("paletteSettings", settings);

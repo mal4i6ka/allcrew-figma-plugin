@@ -936,6 +936,9 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     case 'APPLY_PALETTE': {
       try {
         const settings = normalizePaletteSettings(msg.settings)
+        if (settings.spectra.length === 0) {
+          throw new Error('the palette is empty — add at least one color before generating')
+        }
         const options: PaletteApplyOptions = { ...DEFAULT_APPLY_OPTIONS, ...(msg.applyOptions ?? {}) }
         const report = await applyPalette(generatePalette(settings), options)
         await figma.clientStorage.setAsync('paletteSettings', settings)
