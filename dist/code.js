@@ -7697,9 +7697,9 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
       return suffix === null ? null : [`gap-${suffix}`];
     }
     if (parts.length === 2) {
-      const [row, column] = parts.map(spacingSuffix);
-      if (row === null || column === null) return null;
-      return row === column ? [`gap-${row}`] : [`row-gap-${row}`, `column-gap-${column}`];
+      const [row, column2] = parts.map(spacingSuffix);
+      if (row === null || column2 === null) return null;
+      return row === column2 ? [`gap-${row}`] : [`row-gap-${row}`, `column-gap-${column2}`];
     }
     return null;
   }
@@ -11069,7 +11069,7 @@ ${mdTable(headers, rows)}${unscopedNote}${dropped}`;
       return [style.name, ...cells, prefix ? `\`--${prefix}-*\`` : "\u2014"];
     });
     const table2 = cappedTable(
-      ["Text style", ...TYPO_COLUMNS.map((column) => column.header), "Token prefix"],
+      ["Text style", ...TYPO_COLUMNS.map((column2) => column2.header), "Token prefix"],
       rows,
       "the complete set is in `tokens.css`"
     );
@@ -14010,6 +14010,11 @@ ${renderSections(sections)}
     node.clipsContent = false;
     return node;
   }
+  function column(node, width) {
+    node.counterAxisSizingMode = "FIXED";
+    node.resize(width, Math.max(1, node.height));
+    node.primaryAxisSizingMode = "AUTO";
+  }
   function pad(node, vertical, horizontal) {
     node.paddingTop = vertical;
     node.paddingBottom = vertical;
@@ -14144,12 +14149,11 @@ ${renderSections(sections)}
           for (const item of items.slice(start, start + columns)) {
             const itemSpec = obj(item);
             const cellFrame = frame2(str(itemSpec.label, "swatch"), "VERTICAL", 8);
-            cellFrame.resize(cell, 10);
-            cellFrame.counterAxisSizingMode = "FIXED";
+            column(cellFrame, cell);
             const { node: rect } = await chip(itemSpec, ctx, cell, num(spec.cellHeight, 64));
             cellFrame.appendChild(rect);
-            if (itemSpec.label) cellFrame.appendChild(text2(str(itemSpec.label), 12, "medium", chrome.ink));
-            if (itemSpec.sub) cellFrame.appendChild(text2(str(itemSpec.sub), 11, "regular", chrome.inkMuted));
+            if (itemSpec.label) cellFrame.appendChild(paragraph(str(itemSpec.label), 12, "medium", chrome.ink, cell));
+            if (itemSpec.sub) cellFrame.appendChild(paragraph(str(itemSpec.sub), 11, "regular", chrome.inkMuted, cell));
             row.appendChild(cellFrame);
           }
           node.appendChild(row);
@@ -14171,21 +14175,19 @@ ${renderSections(sections)}
           line.layoutAlign = "STRETCH";
           line.primaryAxisSizingMode = "FIXED";
           const label2 = frame2("label", "VERTICAL", 2);
-          label2.resize(labelWidth, 10);
-          label2.counterAxisSizingMode = "FIXED";
-          label2.appendChild(text2(str(row.label), 13, "medium", chrome.ink));
-          if (row.sub) label2.appendChild(text2(str(row.sub), 11, "regular", chrome.inkMuted));
+          column(label2, labelWidth);
+          label2.appendChild(paragraph(str(row.label), 13, "medium", chrome.ink, labelWidth));
+          if (row.sub) label2.appendChild(paragraph(str(row.sub), 11, "regular", chrome.inkMuted, labelWidth));
           line.appendChild(label2);
           for (const side of ["old", "new"]) {
             const value = row[side];
             const cell = frame2(side, "VERTICAL", 6);
-            cell.resize(96, 10);
-            cell.counterAxisSizingMode = "FIXED";
+            column(cell, 96);
             const spec2 = typeof value === "object" && value !== null ? obj(value) : { color: value };
             const { node: rect } = await chip(spec2, ctx, 96, 40);
             cell.appendChild(rect);
             const caption = typeof spec2.caption === "string" ? spec2.caption : str((_b = spec2.color) != null ? _b : spec2.variable, "\u2014");
-            cell.appendChild(text2(caption, 11, "regular", chrome.inkMuted));
+            cell.appendChild(paragraph(caption, 11, "regular", chrome.inkMuted, 96));
             line.appendChild(cell);
             if (side === "old") line.appendChild(text2("\u2192", 16, "regular", chrome.inkMuted));
           }
@@ -14340,9 +14342,7 @@ ${renderSections(sections)}
     board.fills = [solid3(chrome.bg)];
     pad(board, 64, 64);
     board.cornerRadius = 32;
-    board.counterAxisSizingMode = "FIXED";
-    board.resize(width, 100);
-    board.primaryAxisSizingMode = "AUTO";
+    column(board, width);
     board.strokes = [solid3(chrome.border)];
     board.strokeWeight = 1;
     page.appendChild(board);

@@ -120,6 +120,19 @@ function frame(name: string, direction: 'VERTICAL' | 'HORIZONTAL', gap: number):
   return node
 }
 
+/**
+ * A column of fixed width that grows to fit its content. `resize()` pins *both* axes, so an
+ * auto-layout frame sized this way keeps whatever stub height it was given and its children
+ * spill out of it — which is how a two-line label ends up struck through by the row below.
+ * Handing the primary axis back is the whole point, and forgetting it is invisible until
+ * something wraps.
+ */
+function column(node: FrameNode, width: number): void {
+  node.counterAxisSizingMode = 'FIXED'
+  node.resize(width, Math.max(1, node.height))
+  node.primaryAxisSizingMode = 'AUTO'
+}
+
 function pad(node: FrameNode, vertical: number, horizontal: number): void {
   node.paddingTop = vertical
   node.paddingBottom = vertical
@@ -282,12 +295,13 @@ async function renderBlock(raw: unknown, ctx: Ctx): Promise<SceneNode | null> {
         for (const item of items.slice(start, start + columns)) {
           const itemSpec = obj(item)
           const cellFrame = frame(str(itemSpec.label, 'swatch'), 'VERTICAL', 8)
-          cellFrame.resize(cell, 10)
-          cellFrame.counterAxisSizingMode = 'FIXED'
+          column(cellFrame, cell)
           const { node: rect } = await chip(itemSpec, ctx, cell, num(spec.cellHeight, 64))
           cellFrame.appendChild(rect)
-          if (itemSpec.label) cellFrame.appendChild(text(str(itemSpec.label), 12, 'medium', chrome.ink))
-          if (itemSpec.sub) cellFrame.appendChild(text(str(itemSpec.sub), 11, 'regular', chrome.inkMuted))
+          // paragraph, not text: a token name is longer than its swatch more often than not,
+          // and an unwrapped label overlaps the neighbouring column instead of growing down.
+          if (itemSpec.label) cellFrame.appendChild(paragraph(str(itemSpec.label), 12, 'medium', chrome.ink, cell))
+          if (itemSpec.sub) cellFrame.appendChild(paragraph(str(itemSpec.sub), 11, 'regular', chrome.inkMuted, cell))
           row.appendChild(cellFrame)
         }
         node.appendChild(row)
@@ -312,22 +326,20 @@ async function renderBlock(raw: unknown, ctx: Ctx): Promise<SceneNode | null> {
         line.primaryAxisSizingMode = 'FIXED'
 
         const label = frame('label', 'VERTICAL', 2)
-        label.resize(labelWidth, 10)
-        label.counterAxisSizingMode = 'FIXED'
-        label.appendChild(text(str(row.label), 13, 'medium', chrome.ink))
-        if (row.sub) label.appendChild(text(str(row.sub), 11, 'regular', chrome.inkMuted))
+        column(label, labelWidth)
+        label.appendChild(paragraph(str(row.label), 13, 'medium', chrome.ink, labelWidth))
+        if (row.sub) label.appendChild(paragraph(str(row.sub), 11, 'regular', chrome.inkMuted, labelWidth))
         line.appendChild(label)
 
         for (const side of ['old', 'new'] as const) {
           const value = row[side]
           const cell = frame(side, 'VERTICAL', 6)
-          cell.resize(96, 10)
-          cell.counterAxisSizingMode = 'FIXED'
+          column(cell, 96)
           const spec = typeof value === 'object' && value !== null ? obj(value) : { color: value }
           const { node: rect } = await chip(spec, ctx, 96, 40)
           cell.appendChild(rect)
           const caption = typeof spec.caption === 'string' ? spec.caption : str(spec.color ?? spec.variable, '—')
-          cell.appendChild(text(caption, 11, 'regular', chrome.inkMuted))
+          cell.appendChild(paragraph(caption, 11, 'regular', chrome.inkMuted, 96))
           line.appendChild(cell)
           if (side === 'old') line.appendChild(text('→', 16, 'regular', chrome.inkMuted))
         }
@@ -515,12 +527,7 @@ export async function renderBoard(spec: Record<string, unknown>, options: BoardO
   board.fills = [solid(chrome.bg)]
   pad(board, 64, 64)
   board.cornerRadius = 32
-  board.counterAxisSizingMode = 'FIXED'
-  board.resize(width, 100)
-  // resize() pins *both* axes, and the blocks are appended after this point — without handing
-  // the primary axis back to auto-layout the board keeps the stub height and every section
-  // spills outside its own background.
-  board.primaryAxisSizingMode = 'AUTO'
+  column(board, width)
   board.strokes = [solid(chrome.border)]
   board.strokeWeight = 1
 
