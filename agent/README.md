@@ -43,14 +43,18 @@ Pick **Agent Listener** in the plugin's header picker. That screen is the whole 
 button that opens and closes the channel, the bridge command, and the skill to hand your
 agent.
 
-**1. Run the bridge** (loopback only, no dependencies, no arguments):
+**1. Get the bridge and run it.** Press **Download bridge.mjs** on that screen — a designer
+who installed the plugin from Figma has no checkout of this repo, so the plugin carries the
+script itself (injected at build time from `agent/bridge.mjs`, so it can never be a different
+version). From a checkout, `node agent/bridge.mjs` is the same file.
 
 ```bash
-node agent/bridge.mjs
+node ~/Downloads/bridge.mjs
 ```
 
-First run mints a secret into `~/.altery/agent-secret` (0600) and opens a five-minute pairing
-window.
+Loopback only, no dependencies, no arguments; needs Node 18+, which the CLI agent you are
+wiring up already requires. First run mints a secret into `~/.altery/agent-secret` (0600) and
+opens a five-minute pairing window.
 
 **2. Press "Pair with bridge"** in the plugin. It collects the secret and stores it in that
 designer's own Figma client storage. The window closes behind the first pair.
@@ -68,7 +72,7 @@ Then, from anywhere:
 curl -s localhost:8788/call -H "x-altery-secret: $(cat ~/.altery/agent-secret)" -d '{"op":"document.info"}'
 ```
 
-or with the bundled CLI, which resolves the same secret file:
+or, from a checkout of this repo, with the bundled CLI — it resolves the same secret file:
 
 ```bash
 node agent/altery-figma.mjs status
@@ -81,7 +85,9 @@ node agent/altery-figma.mjs call document.info
 ## Secrets across machines
 
 Nothing is baked into the build and nothing is shared. Each machine's bridge mints its own
-secret on first run; each designer's plugin pairs with the bridge on their own machine. Ten
+secret on first run; each designer's plugin pairs with the bridge on their own machine. The
+delivery receiver (`server/receiver.mjs`) works the same way and is downloadable from
+Settings → Delivery. Ten
 designers means ten different secrets, none of which anyone had to distribute, and any one of
 them can be rotated by deleting `~/.altery/agent-secret` and restarting.
 

@@ -8,10 +8,17 @@
  * Run it on any host (your machine now, someone else's later — the plugin's endpoint
  * is configurable, so nothing is pinned to one person):
  *
- *     ALTERY_SECRET=your-shared-secret node server/receiver.mjs
+ *     node receiver.mjs
+ *
+ * Nobody types a secret for the common case. On a host with none configured this mints one
+ * into ~/.altery/receiver-secret (0600) and opens a five-minute pairing window; the plugin's
+ * "Pair" button in Delivery settings collects it. Every machine therefore has a different
+ * secret and none of them was ever distributed. For a shared or remote host, set
+ * ALTERY_SECRET yourself — that suppresses pairing entirely (loopback-only in any case).
  *
  * Environment:
- *   ALTERY_SECRET       (required) must equal the "Shared secret" in the plugin.
+ *   ALTERY_SECRET       manage the secret by hand; suppresses pairing (--pair forces a window)
+ *   ALTERY_SECRET_FILE  where a minted secret lives (default ~/.altery/receiver-secret)
  *   PORT                (default 8787)
  *   ALTERY_FOLDER_BASE  base dir for the "folder" target; route.path is resolved under it.
  *   ALTERY_WORK_DIR     scratch dir for git/pr/npm clones (default <tmp>/altery-tokens).
@@ -28,13 +35,40 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 const PORT = parseInt(process.env.PORT || "8787", 10);
-const SECRET = process.env.ALTERY_SECRET || "";
 const FOLDER_BASE = process.env.ALTERY_FOLDER_BASE || "";
 const WORK_DIR = process.env.ALTERY_WORK_DIR || path.join(os.tmpdir(), "altery-tokens");
+const SECRET_FILE =
+  process.env.ALTERY_SECRET_FILE || path.join(os.homedir(), ".altery", "receiver-secret");
 
-if (!SECRET) {
-  console.error("FATAL: set ALTERY_SECRET (must match the plugin's Shared secret).");
-  process.exit(1);
+/** env → file → mint. Minting writes 0600 under a 0700 directory: the secret ends up exactly
+ * as private as the account running the receiver, which is the whole trust boundary. */
+function resolveSecret() {
+  if (process.env.ALTERY_SECRET) return { secret: process.env.ALTERY_SECRET, source: "env" };
+  try {
+    const stored = fs.readFileSync(SECRET_FILE, "utf8").trim();
+    if (stored) return { secret: stored, source: "file" };
+  } catch {
+    /* not written yet — mint below */
+  }
+  const secret = crypto.randomBytes(16).toString("hex");
+  fs.mkdirSync(path.dirname(SECRET_FILE), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(SECRET_FILE, secret + "\n", { mode: 0o600 });
+  return { secret, source: "minted" };
+}
+
+const { secret: SECRET, source: SECRET_SOURCE } = resolveSecret();
+
+/** Pairing hands the secret to a plugin that asks, unauthenticated — bounded three ways:
+ * loopback only, five minutes from a start someone typed by hand, and closed by the first
+ * success. It grants nothing a local process could not get by reading SECRET_FILE itself. */
+const PAIR_WINDOW_MS = 5 * 60 * 1000;
+let pairOpenUntil =
+  SECRET_SOURCE !== "env" || process.argv.includes("--pair") ? Date.now() + PAIR_WINDOW_MS : 0;
+const pairingOpen = () => Date.now() < pairOpenUntil;
+
+function isLoopback(req) {
+  const address = req.socket.remoteAddress || "";
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }
 
 function safeEqual(a, b) {
@@ -142,8 +176,23 @@ const server = http.createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-altery-secret");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
-  if (req.method === "GET") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true, service: "altery-tokens-receiver" })); return; }
+  if (req.method === "GET") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true, service: "altery-tokens-receiver", pairing: pairingOpen() })); return; }
   if (req.method !== "POST") { res.writeHead(405); res.end(); return; }
+
+  // Ahead of the secret gate on purpose: this is how a plugin gets the secret at all. Matched
+  // by suffix, so a configured endpoint like https://host/altery-tokens pairs at .../pair and
+  // a reverse-proxy prefix does not break it.
+  const routePath = (req.url || "/").split("?")[0].replace(/\/+$/, "");
+  if (routePath.endsWith("/pair")) {
+    const reply = (code, obj) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
+    if (!isLoopback(req)) return reply(403, { ok: false, error: "pairing is loopback-only" });
+    if (!pairingOpen()) {
+      return reply(403, { ok: false, error: "pairing window is closed — restart the receiver (or run it with --pair) and pair within 5 minutes" });
+    }
+    pairOpenUntil = 0; // one-shot: the first plugin to ask closes the window behind itself
+    console.log(new Date().toISOString(), "paired — secret handed to the plugin, window closed");
+    return reply(200, { ok: true, secret: SECRET });
+  }
 
   let body = "", tooBig = false;
   req.on("data", (c) => { body += c; if (body.length > 10 * 1024 * 1024) { tooBig = true; req.destroy(); } });
@@ -169,6 +218,12 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log("altery-tokens-receiver listening on :" + PORT + "  (targets: folder, git, pr, npm)");
+  console.log("  secret:      " + (SECRET_SOURCE === "env"
+    ? "ALTERY_SECRET (yours to manage)"
+    : SECRET_FILE + " (" + (SECRET_SOURCE === "minted" ? "just created" : "existing") + ")"));
+  console.log("  pairing:     " + (pairingOpen()
+    ? "OPEN for " + PAIR_WINDOW_MS / 60000 + " min — press Pair in the plugin's Delivery settings"
+    : "closed (secret came from the environment) — restart with --pair to open it"));
   if (FOLDER_BASE) console.log("  folder base: " + FOLDER_BASE);
   console.log("  work dir:    " + WORK_DIR);
 });

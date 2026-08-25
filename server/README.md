@@ -13,17 +13,40 @@ they are never sent to or stored in the plugin.
 
 ## Quickstart
 
+You do not need this repo. The plugin ships the receiver: **Export Settings → Delivery →
+Download receiver.mjs**, then
+
 ```bash
-ALTERY_SECRET=your-shared-secret node receiver.mjs
-# → listening on :8787
+node receiver.mjs
+# → listening on :8787, secret minted into ~/.altery/receiver-secret, pairing open 5 min
 ```
 
-Health check:
+Press **Pair** in the plugin's Delivery settings and it fills in the endpoint and secret.
+
+Health check (also reports whether the pairing window is open):
 
 ```bash
 curl http://localhost:8787
-# {"ok":true,"service":"altery-tokens-receiver"}
+# {"ok":true,"service":"altery-tokens-receiver","pairing":true}
 ```
+
+---
+
+## Secrets
+
+Each host mints its own on first run — 0600 under a 0700 `~/.altery/`. Nothing is baked
+into the plugin build and nothing is distributed, so ten designers end up with ten
+different secrets. Rotate one by deleting the file and restarting.
+
+Pairing (`POST …/pair`, matched by suffix so a path or proxy prefix still works) is
+unauthenticated, bounded three ways: loopback only, five minutes from a hand-typed start,
+and closed by the first success. It grants nothing a local process could not get by reading
+the secret file directly.
+
+**Remote or shared hosts:** set `ALTERY_SECRET` yourself. The receiver uses it and opens no
+pairing window at all — pass `--pair` if you want one — and you type the same value into the
+plugin's Shared secret field. Never ship one secret to everyone: it cannot be rotated
+without a rebuild, and it is a key to every host running it.
 
 ---
 
@@ -31,7 +54,8 @@ curl http://localhost:8787
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ALTERY_SECRET` | **yes** | — | Must match the "Shared secret" field in the plugin |
+| `ALTERY_SECRET` | no | minted | Set it to manage the secret by hand; suppresses pairing |
+| `ALTERY_SECRET_FILE` | no | `~/.altery/receiver-secret` | Where a minted secret is stored |
 | `PORT` | no | `8787` | HTTP port |
 | `ALTERY_FOLDER_BASE` | for `folder` target | — | Absolute base dir; `route.path` resolves under it |
 | `ALTERY_WORK_DIR` | no | `<tmp>/altery-tokens` | Scratch dir for git clones |
@@ -58,6 +82,9 @@ ALTERY_SECRET=your-secret \
 ALTERY_FOLDER_BASE=/path/to/tokens \
 node receiver.mjs
 ```
+
+(Remote host, so the secret is set by hand — pairing is loopback-only and would be
+unreachable from the designer's machine anyway.)
 
 Plugin endpoint: `http://<tailscale-hostname>:8787`
 
@@ -185,7 +212,8 @@ jobs:
 
 | Symptom | Likely cause |
 |---------|-------------|
-| `401 bad or missing secret` | Secret in the plugin doesn't match `ALTERY_SECRET` |
+| `401 bad or missing secret` | The plugin paired with a different receiver, or `ALTERY_SECRET` was set after pairing — re-pair, or align the two |
+| `pairing window is closed` | More than five minutes since the receiver started — restart it, or run `node receiver.mjs --pair` |
 | `git push` fails | Host git auth not configured for that remote |
 | `gh pr create` fails | `gh auth login` not done on the receiver host |
 | `folder target needs ALTERY_FOLDER_BASE` | Env var not set |

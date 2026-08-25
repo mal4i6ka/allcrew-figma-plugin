@@ -13,9 +13,11 @@
  *        │                                            │ POST /plugin/result
  *        ◄──────────── answers the waiting call ──────┘
  *
- * Deliberately dependency-free, like server/receiver.js — Node built-ins only.
+ * Deliberately dependency-free, like server/receiver.mjs — Node built-ins only. The plugin
+ * carries a copy of this file and hands it over from its Agent Listener screen, so a designer
+ * who installed the plugin from Figma has it without ever seeing this repo:
  *
- *     node agent/bridge.mjs
+ *     node bridge.mjs
  *
  * The secret is per-machine and nobody types it. On first run the bridge mints one into
  * ~/.altery/agent-secret (0600) and opens a five-minute pairing window; the plugin's "Pair

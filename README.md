@@ -130,9 +130,13 @@ does the git/npm/folder work.
 
 **Plugin side** (Export Settings → *Delivery*):
 
+- **Download receiver.mjs** — the script ships inside the plugin, because a designer who
+  installed it from Figma has no checkout of this repo. It is injected at build time from
+  `server/receiver.mjs`, so the copy they get can never be a different version.
 - **Receiver endpoint** — where to POST (configurable; nothing is pinned to one host).
 - **Shared secret** — sent as `x-altery-secret`; must match the receiver. *(This is the
-  only secret in the plugin — git/npm credentials never leave the receiver.)*
+  only secret in the plugin — git/npm credentials never leave the receiver.)* **Pair** fills
+  both fields from a receiver running on this machine; see *Secrets* below.
 - **Target** — `folder` / `git` (commit + push) / `pr` (branch + `gh pr`) / `npm` (publish),
   plus the non-secret route (repo / branch / path / package).
 - **Triggers** — *Deliver now* (manual), *Auto-deliver on change* (re-scan every ~7s while
@@ -142,10 +146,26 @@ does the git/npm/folder work.
 host; it executes the target using the host's own git / `gh` / `npm` auth:
 
 ```bash
-ALTERY_SECRET=your-shared-secret \
 ALTERY_FOLDER_BASE=/abs/path/for/folder/target \
-node server/receiver.mjs          # listens on :8787 (override with PORT)
+node receiver.mjs                 # listens on :8787 (override with PORT)
 ```
+
+### Secrets
+
+Nothing is baked into the build and nothing is distributed. A receiver with no
+`ALTERY_SECRET` mints its own into `~/.altery/receiver-secret` (0600) and opens a
+five-minute pairing window; the plugin's **Pair** button collects it, and the first pair
+closes the window. Ten designers means ten different secrets, none of which anyone had to
+send anyone. Rotate by deleting the file and restarting.
+
+Pairing is unauthenticated by design, bounded three ways: loopback only, five minutes from
+a start someone typed by hand, and closed by the first success. It grants nothing a local
+process could not get by reading the same file.
+
+For a shared or remote host, set `ALTERY_SECRET` yourself — the receiver uses it and opens
+**no** pairing window (`--pair` forces one), and you type the same value into the plugin.
+Never bake one secret into the plugin for everyone: it is a key to every teammate's host
+that cannot be rotated without a rebuild.
 
 The plugin only ever HTTP-POSTs, so the receiver is portable: point the plugin's endpoint
 at wherever it runs (localhost, a Tailscale host, CI). The contract is one POST of
@@ -174,7 +194,8 @@ The receiver uses only Node.js built-ins — no `npm install`. The host needs:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ALTERY_SECRET` | **yes** | — | Shared secret; must match the plugin's "Shared secret" field |
+| `ALTERY_SECRET` | no | minted | Set it to manage the secret by hand; suppresses pairing |
+| `ALTERY_SECRET_FILE` | no | `~/.altery/receiver-secret` | Where a minted secret is stored |
 | `PORT` | no | `8787` | HTTP port |
 | `ALTERY_FOLDER_BASE` | for `folder` | — | Absolute base dir; `route.path` resolves under it |
 | `ALTERY_WORK_DIR` | no | `<tmp>/altery-tokens` | Scratch dir for git clones |

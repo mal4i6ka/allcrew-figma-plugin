@@ -474,6 +474,9 @@
   #view-agent .agent-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 3px rgba(255,255,255,0.05); transition: background .2s, box-shadow .2s; }
   #view-agent .agent-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(70,192,138,0.18); }
   #view-agent .agent-dot.err { background: var(--err); box-shadow: 0 0 0 3px rgba(255,122,110,0.18); }
+  #view-agent .btn.ghost { width: 100%; margin-bottom: 9px; }
+  #view-agent .btn.ghost:disabled { opacity: .42; cursor: not-allowed; }
+  #view-agent .agent-hint + .agent-hint { margin-top: 7px; }
   #view-agent .agent-hint { font-size: 10.5px; color: var(--faint); line-height: 1.55; margin: 10px 0 0; }
   #view-agent .agent-hint code { font-family: var(--mono); background: var(--bg-2); padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
   /* Code block and its copy button share one framed box; the button floats over the corner so
@@ -483,6 +486,13 @@
   #view-agent .agent-cmd .code { white-space: pre-wrap; word-break: break-word; padding: 11px 42px 11px 12px; max-height: none; }
   #view-agent .agent-cmd .code.agent-skill { white-space: pre; word-break: normal; max-height: 260px; font-size: 10.5px; line-height: 1.6; }
   #view-agent .agent-cmd .icon-btn { position: absolute; top: 7px; right: 7px; }
+
+  /* Download-a-script rows: the plugin ships through Figma, so the helper scripts it needs
+     are handed over from here rather than assumed to exist on disk. */
+  #view-settings .dl-field { display: flex; flex-direction: column; gap: 7px; padding: 10px 2px; }
+  #view-settings .dl-field .btn.ghost { width: 100%; }
+  #view-settings .dl-note { font-size: 10.5px; color: var(--faint); line-height: 1.55; margin: 0; }
+  #view-settings .dl-note code { font-family: var(--mono); background: var(--bg-2); padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
 
   /* ── Settings page — restored ds .set-section layout ──────────────────────── */
   #view-settings.page { padding: 0; }
@@ -802,13 +812,18 @@
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 17l6-5-6-5M12 19h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           1 &middot; Run the bridge
         </p>
+        <button class="btn ghost" id="agent-dl-bridge" type="button">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+          Download bridge.mjs
+        </button>
         <div class="agent-cmd">
           <pre class="code" id="agent-bridge-cmd" tabindex="0"></pre>
           <button class="icon-btn" id="agent-copy-cmd" type="button" title="Copy" aria-label="Copy the bridge command">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           </button>
         </div>
-        <p class="agent-hint">Once per machine, from the plugin repo. It mints a secret of its own into <code>~/.altery/agent-secret</code> and opens a five-minute pairing window &mdash; press <b>Pair with bridge</b> above and this plugin picks it up. Nothing to type, nothing shared between machines, nothing baked into the build.</p>
+        <p class="agent-hint">One Node script, nothing to install &mdash; it ships inside this plugin, so it always matches. Save it anywhere and run it; the command above assumes your browser's Downloads folder. Needs Node 18+, which the CLI agent you're wiring up already requires.</p>
+        <p class="agent-hint">It mints a secret of its own into <code>~/.altery/agent-secret</code> and opens a five-minute pairing window &mdash; press <b>Pair with bridge</b> above and this plugin picks it up. Nothing to type, nothing shared between machines, no secret in the plugin.</p>
       </section>
 
       <section class="card">
@@ -1041,6 +1056,14 @@
           <span>Delivery</span>
           <span class="sec-hint">git/npm creds live on the receiver</span>
         </div>
+        <div class="dl-field">
+          <button class="btn ghost" id="dlv-dl-receiver" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+            Download receiver.mjs
+          </button>
+          <p class="dl-note">The receiver ships inside this plugin, so it always matches. Save it, run <code>node ~/Downloads/receiver.mjs</code> (Node 18+), then press <b>Pair</b> &mdash; it mints its own secret and hands it over. Fill the fields below by hand instead if the receiver runs on another host.</p>
+          <button class="btn ghost" id="dlv-pair" type="button">Pair with receiver</button>
+        </div>
         <div class="set-field">
           <label>Receiver endpoint <code>POST</code></label>
           <input id="set-dlv-endpoint" type="text" spellcheck="false" autocomplete="off" placeholder="https://host.ts.net/altery-tokens" aria-label="Delivery endpoint" />
@@ -1065,7 +1088,7 @@
           <span class="sec-hint">local bridge &middot; off until you allow it</span>
         </div>
         <div class="set-field" data-needs-target="agent">
-          <label>Bridge URL <code>agent/bridge.mjs</code></label>
+          <label>Bridge URL <code>bridge.mjs</code></label>
           <input id="set-agent-endpoint" type="text" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:8788" aria-label="Agent bridge URL" />
         </div>
         <div class="set-field" data-needs-target="agent">
@@ -2987,12 +3010,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // ── Agent listener ───────────────────────────────────────────────────────────────
       // Figma gives a plugin no way to be reached from outside: the sandbox has no listening
       // socket and there is no headless mode. So the transport is inverted — this iframe
-      // long-polls the local bridge (agent/bridge.mjs) and relays each request to the sandbox,
-      // which is the only place that decides whether it may actually run.
+      // long-polls the local bridge (bridge.mjs, downloadable from this screen) and relays each
+      // request to the sandbox, which is the only place that decides whether it may actually run.
       //
       // `generation` retires loops: every settings change bumps it, and any poll or handshake
       // still in flight from an older generation drops its result on the floor.
       var AGENT = { generation: 0, ops: [], file: null }
+
+      // Replaced at build time with the real agent/bridge.mjs (see build.mjs). It stays a
+      // placeholder in the source tree so ui.html remains readable; an unbuilt ui.html simply
+      // disables the download rather than handing someone an empty file.
+      var AGENT_BRIDGE_SOURCE = '__ALTERY_BRIDGE_SOURCE__'
+      var AGENT_BRIDGE_EMBEDDED = AGENT_BRIDGE_SOURCE.indexOf('altery-agent-bridge') !== -1
+      var DELIVERY_RECEIVER_SOURCE = '__ALTERY_RECEIVER_SOURCE__'
+      var DELIVERY_RECEIVER_EMBEDDED = DELIVERY_RECEIVER_SOURCE.indexOf('altery-tokens-receiver') !== -1
 
       function agentOptions() {
         if (!OPTIONS) return null
@@ -3101,17 +3132,23 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // The bridge mints one per machine and hands it over through a window it only opens for
       // five minutes after someone starts it by hand — so every designer ends up with a
       // different secret, and none of them is in the build or in the repo.
-      function agentPair() {
-        var cfg = agentOptions()
-        if (!cfg || !cfg.endpoint) return
-        agentStatus('pairing…', '')
-        fetch(agentBase() + '/pair', { method: 'POST' })
+      // Shared by the agent bridge and the delivery receiver: both mint their own secret and
+      // hand it over through a loopback window they only open just after being started.
+      function pairWithLocalServer(base) {
+        return fetch(base.replace(/\/+$/, '') + '/pair', { method: 'POST' })
           .then(function (response) {
             return response.json().then(function (body) {
               if (!response.ok || !body.secret) throw new Error(body.error || 'HTTP ' + response.status)
               return body.secret
             })
           })
+      }
+
+      function agentPair() {
+        var cfg = agentOptions()
+        if (!cfg || !cfg.endpoint) return
+        agentStatus('pairing…', '')
+        pairWithLocalServer(agentBase())
           .then(function (secret) {
             cfg.secret = secret
             setControl('set-agent-secret', 'value', secret)
@@ -3215,7 +3252,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
       function agentRenderView() {
         if (!OPTIONS || OPTIONS.target !== 'agent') return
-        agentText('agent-bridge-cmd', 'node agent/bridge.mjs')
+        agentText('agent-bridge-cmd', 'node ~/Downloads/bridge.mjs')
+        var dl = document.getElementById('agent-dl-bridge')
+        if (dl) {
+          dl.disabled = !AGENT_BRIDGE_EMBEDDED
+          dl.title = AGENT_BRIDGE_EMBEDDED ? '' : 'Unbuilt ui.html — run npm run build'
+        }
         agentText('agent-skill', agentSkillText())
         agentRenderChannel()
       }
@@ -3249,6 +3291,42 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           } else flash('copy-failed')
         })
       }
+      document.getElementById('dlv-dl-receiver').addEventListener('click', function () {
+        if (!DELIVERY_RECEIVER_EMBEDDED) return
+        dtDownload('receiver.mjs', DELIVERY_RECEIVER_SOURCE, 'text/javascript')
+      })
+
+      // Unbuilt ui.html carries the marker, not the script — say so instead of handing over an
+      // empty file. (The bridge button gets the same treatment in agentRenderView.)
+      document.getElementById('dlv-dl-receiver').disabled = !DELIVERY_RECEIVER_EMBEDDED
+
+      document.getElementById('dlv-pair').addEventListener('click', function () {
+        if (!OPTIONS) return
+        var status = document.getElementById('deliver-status')
+        var say = function (text, cls) {
+          if (status) { status.textContent = text; status.className = 'deliver-status' + (cls ? ' ' + cls : '') }
+        }
+        // A receiver you can pair with is by definition on this machine, so an empty endpoint
+        // is not an error — it is the default worth filling in.
+        var base = OPTIONS.delivery.endpoint || 'http://127.0.0.1:8787'
+        say('Pairing…')
+        pairWithLocalServer(base)
+          .then(function (secret) {
+            OPTIONS.delivery.endpoint = base
+            OPTIONS.delivery.secret = secret
+            setControl('set-dlv-endpoint', 'value', base)
+            setControl('set-dlv-secret', 'value', secret)
+            syncDependentRows()
+            persistExportOptions()
+            say('Paired — ready to deliver', 'ok')
+          })
+          .catch(function (err) { say('Pairing failed: ' + err.message, 'err') })
+      })
+
+      document.getElementById('agent-dl-bridge').addEventListener('click', function () {
+        if (!AGENT_BRIDGE_EMBEDDED) return
+        dtDownload('bridge.mjs', AGENT_BRIDGE_SOURCE, 'text/javascript')
+      })
       agentBindCopy('agent-copy-cmd', function () { return document.getElementById('agent-bridge-cmd').textContent })
       agentBindCopy('agent-copy-skill', function () { return agentSkillText() })
 
