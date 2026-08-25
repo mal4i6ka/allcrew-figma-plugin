@@ -19,6 +19,7 @@ import { emitDjango } from '../targets/django/index.ts'
 import { pickBackend, type MotionTrigger } from '../targets/django/motion/backend.ts'
 import { readMotionData } from '../targets/django/motion/beta-adapter.ts'
 import { emitMotionExportArtifacts, type MotionExportNode } from '../targets/django/motion/export-assets.ts'
+import { buildPreviewDocument } from '../targets/django/motion/preview.ts'
 import type { MotionTrack } from '../targets/django/motion/types.ts'
 import { serializeNode, type IrNode } from '../targets/django/ir.ts'
 import { annotateVectorLeaves, type AssetSourceNode } from '../targets/django/export/assets.ts'
@@ -115,6 +116,21 @@ async function describeEasing(easing: MotionTrack['keyframes'][number]['easing']
   }
 }
 
+/** One node's own markup and CSS. `design.context` emits a whole subtree; the motion preview
+ * needs each animated layer on its own, because that is the unit `buildPreviewDocument` places. */
+async function emitOne(node: SceneNode, cssFile: string): Promise<{ html: string; css: string }> {
+  const [ir, sceneNodesById, snapshot] = await Promise.all([
+    serializeNode(node),
+    indexSceneNodes([node]),
+    readAllVariables(),
+  ])
+  if (!ir) throw new Error(`"${node.name}" (${node.type}) produced no exportable structure`)
+  const nodes: readonly IrNode[] = [ir]
+  const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
+  await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
+  return emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile })
+}
+
 async function screenshot(node: SceneNode, scale: number): Promise<Uint8Array> {
   return node.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: scale } })
 }
@@ -164,20 +180,8 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       })()
       if (page) await page.loadAsync()
 
-      const roots = [root]
-      const [ir, sceneNodesById, snapshot] = await Promise.all([
-        serializeNode(root),
-        indexSceneNodes(roots),
-        readAllVariables(),
-      ])
-      if (!ir) throw new Error(`"${root.name}" (${root.type}) produced no exportable structure`)
-
-      const nodes: readonly IrNode[] = [ir]
-      const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
-      await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
-
-      const cssFile = params.cssFile as string
-      const { html, css } = await emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile })
+      const sceneNodesById = await indexSceneNodes([root])
+      const { html, css } = await emitOne(root, params.cssFile as string)
 
       const slug = slugify(root.name)
       const files: unknown[] = [
@@ -196,6 +200,69 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       }
     },
   },
+  {
+    name: 'motion.preview',
+    summary: 'A standalone HTML page that actually plays the animation — open it and watch.',
+    mutates: false,
+    params: {
+      nodeId: { type: 'string', required: true, description: 'Root whose animated layers to preview.' },
+      trigger: {
+        type: 'string',
+        default: 'autoplay',
+        enum: ['autoplay', 'loop', 'hover', 'scrub', 'replay', 'click', 'other-interactive'],
+        description: 'How the timeline starts in the preview.',
+      },
+      backend: {
+        type: 'string',
+        default: 'auto',
+        enum: ['auto', 'css', 'gsap'],
+        description: 'Override the backend choice. `auto` lets pickBackend decide.',
+      },
+    },
+    async run(params) {
+      if (!hasMotionApi()) {
+        return { available: false, reason: 'this Figma build exposes no Motion API — the beta is not enabled' }
+      }
+      const root = await resolveSceneNode(params.nodeId)
+      const sceneNodesById = await indexSceneNodes([root])
+
+      const animated: Array<{ node: SceneNode; tracks: readonly MotionTrack[] }> = []
+      for (const node of sceneNodesById.values()) {
+        const snapshot = readMotionData(node)
+        if (snapshot && snapshot.tracks.length > 0) animated.push({ node, tracks: snapshot.tracks })
+      }
+      if (animated.length === 0) return { available: true, animated: 0, files: [] }
+
+      const nodes = []
+      for (const entry of animated) {
+        const { html } = await emitOne(entry.node, 'preview.css')
+        nodes.push({ nodeId: entry.node.id, tracks: entry.tracks, html })
+      }
+
+      const duration = Math.max(...animated.flatMap((entry) => entry.tracks.map((track) => track.timelineDuration)))
+      const backend = params.backend as string
+      const preview = buildPreviewDocument({
+        timelineId: root.id,
+        duration,
+        nodes,
+        trigger: params.trigger as MotionTrigger,
+        backendOverride: backend === 'auto' ? null : (backend as 'css' | 'gsap'),
+      })
+
+      return {
+        available: true,
+        animated: animated.length,
+        backend: preview.backend,
+        reason: preview.reason,
+        // A GSAP-backed preview needs the GSAP runtime inlined, and the plugin ships none —
+        // `networkAccess: none` means the page cannot fetch one either. Saying so is the
+        // difference between "the animation is wrong" and "nothing ran".
+        inert: preview.backend === 'gsap',
+        files: [textFile(`${slugify(root.name)}.preview.html`, 'text/html', preview.html)],
+      }
+    },
+  },
+
   {
     name: 'motion.context',
     summary: 'Keyframe tracks, the CSS/GSAP they compile to, and which backend fits — for a subtree.',

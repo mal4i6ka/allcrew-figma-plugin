@@ -19,6 +19,7 @@ import { findAllWithCriteria, loadAllPagesAsync } from '../utils/tree.ts'
 import { readAllVariables, readLocalVariables } from '../variables.ts'
 import type { OpDef } from './protocol.ts'
 import { CONTEXT_OPS } from './context-ops.ts'
+import { TRANSITION_OPS } from './transition-ops.ts'
 import { WRITE_OPS } from './write-ops.ts'
 
 /* ------------------------------------------------------------- serializers */
@@ -611,6 +612,6 @@ export const READ_OPS: readonly OpDef[] = [
   },
 ]
 
-export const ALL_OPS: readonly OpDef[] = [...READ_OPS, ...CONTEXT_OPS, ...WRITE_OPS]
+export const ALL_OPS: readonly OpDef[] = [...READ_OPS, ...CONTEXT_OPS, ...TRANSITION_OPS, ...WRITE_OPS]
 
 export const OPS_BY_NAME: ReadonlyMap<string, OpDef> = new Map(ALL_OPS.map((op) => [op.name, op]))

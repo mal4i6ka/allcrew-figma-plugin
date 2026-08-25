@@ -154,6 +154,8 @@ altery-figma ops --json       # the same, machine-readable
 | `node.screenshot` | renders a node to PNG — how an agent checks what it actually drew |
 | `design.context` | reference HTML + CSS + PNG for a node, plus the tokens it binds |
 | `motion.context` | keyframe tracks with easing, the CSS/GSAP they compile to, and which backend fits |
+| `motion.preview` | a standalone page that actually plays the animation |
+| `transition.context` | Smart Animate between variants → CSS transitions, a FLIP toggle or View Transitions |
 | `library.collections` | variable collections published by libraries enabled in this file |
 | `library.variables` | variables inside one library collection — read another file's palette |
 | `lint.colors` | layers painted with a raw colour instead of a variable |
@@ -204,6 +206,20 @@ rather than the verdict. Easings bound to a variable come back as the token name
 everywhere else here. When the Motion beta is not enabled for the account the op says so
 outright: "nothing animates here" and "I cannot see animation at all" are different answers,
 and an agent that cannot tell them apart will confidently ship a static page.
+
+`transition.context` covers the other half of motion, the half that is not keyframes at all:
+Smart Animate between a component set's variants. It matches layers across the two states,
+diffs what actually moved, maps the Figma trigger onto a mechanism a browser has — `:hover`, a
+toggled class, a timeout — and emits it three ways. Plain CSS transitions where properties
+tween; a FLIP toggle where layout changes and CSS cannot tween it; the native View Transitions
+API where the browser will do the work. `strategy: "all"` emits every one, because which is
+right depends on the target and the op is not in a position to know.
+
+`motion.preview` builds a page that *runs*. Not a description of the animation — the
+animation. It reports which backend it picked and why, and flags a GSAP-backed preview as
+inert: the plugin ships no GSAP runtime and `networkAccess: none` stops the page fetching one,
+so that preview will open and sit still. "The animation is wrong" and "nothing ran" are
+different bugs.
 
 `design.context` is deliberately not a second design-to-code tool. Figma's own is better at
 turning a screen into a component; this one is better at one thing, and it is the thing that

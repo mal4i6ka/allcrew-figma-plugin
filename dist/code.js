@@ -3745,8 +3745,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     el.fontName = node.bold ? ctx.fonts.bold : ctx.fonts.regular;
     el.characters = node.text;
     el.fontSize = node.fontSize;
-    const paints = resolveFill(node.color, ctx);
-    el.fills = paints.length ? paints : [solidPaint(COLOR.bodyText)];
+    const paints2 = resolveFill(node.color, ctx);
+    el.fills = paints2.length ? paints2 : [solidPaint(COLOR.bodyText)];
     el.textAlignHorizontal = ((_a = node.align) != null ? _a : "left").toUpperCase();
     el.textAutoResize = node.grow ? "HEIGHT" : "WIDTH_AND_HEIGHT";
     return el;
@@ -5037,9 +5037,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       characters: node.characters
     }), textAlign ? { textAlign } : {}), textAlignVertical ? { textAlignVertical } : {}), textTruncate(node)), node.textAutoResize === "WIDTH_AND_HEIGHT" ? { noWrap: true } : {}), node.textAutoResize && node.textAutoResize !== "NONE" ? { autoResize: true } : {}), paragraphSpacing ? { paragraphSpacing } : {}), paragraphIndent ? { paragraphIndent } : {}), listSpacing ? { listSpacing } : {}), node.leadingTrim === "CAP_HEIGHT" ? { leadingTrim: "CAP_HEIGHT" } : {}), node.hangingPunctuation ? { hangingPunctuation: true } : {}), node.hangingList ? { hangingList: true } : {});
   }
-  function firstSolidCss(paints) {
-    if (!Array.isArray(paints)) return void 0;
-    const solid4 = paints.find((p) => (p == null ? void 0 : p.type) === "SOLID" && p.visible !== false);
+  function firstSolidCss(paints2) {
+    if (!Array.isArray(paints2)) return void 0;
+    const solid4 = paints2.find((p) => (p == null ? void 0 : p.type) === "SOLID" && p.visible !== false);
     if (!(solid4 == null ? void 0 : solid4.color)) return void 0;
     return rgbaToCss(solid4.opacity != null && solid4.opacity < 1 ? __spreadProps(__spreadValues({}, solid4.color), { a: solid4.opacity }) : solid4.color);
   }
@@ -7046,6 +7046,9 @@ ${indent2}</div>`;
     return { files, warnings };
   }
 
+  // src/targets/django/smart-animate/types.ts
+  var MIXED = /* @__PURE__ */ Symbol("smart-animate-mixed");
+
   // src/targets/django/smart-animate/match-layers.ts
   function indexTree(root) {
     const map = /* @__PURE__ */ new Map();
@@ -7082,6 +7085,287 @@ ${indent2}</div>`;
       if (!baseIndex.has(path)) added.push({ path, node });
     }
     return { matched, removed, added };
+  }
+
+  // src/targets/django/smart-animate/diff-properties.ts
+  var EPS = 0.01;
+  function neq(a, b) {
+    return Math.abs(a - b) > EPS;
+  }
+  function cornerRadii(node) {
+    if (typeof node.cornerRadius === "number") {
+      return [node.cornerRadius, node.cornerRadius, node.cornerRadius, node.cornerRadius];
+    }
+    if (node.cornerRadius === MIXED && node.topLeftRadius !== void 0 && node.topRightRadius !== void 0 && node.bottomRightRadius !== void 0 && node.bottomLeftRadius !== void 0) {
+      return [node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius];
+    }
+    return null;
+  }
+  function diffProperties(a, b) {
+    var _a, _b;
+    const out = [];
+    if (neq(a.x, b.x)) out.push({ prop: "x", from: a.x, to: b.x });
+    if (neq(a.y, b.y)) out.push({ prop: "y", from: a.y, to: b.y });
+    if (neq(a.width, b.width)) out.push({ prop: "width", from: a.width, to: b.width });
+    if (neq(a.height, b.height)) out.push({ prop: "height", from: a.height, to: b.height });
+    if (a.rotation !== void 0 && b.rotation !== void 0 && neq(a.rotation, b.rotation)) {
+      out.push({ prop: "rotation", from: a.rotation, to: b.rotation });
+    }
+    if (a.opacity !== void 0 && b.opacity !== void 0 && neq(a.opacity, b.opacity)) {
+      out.push({ prop: "opacity", from: a.opacity, to: b.opacity });
+    }
+    if (a.fills !== void 0 && b.fills !== void 0 && a.fills !== MIXED && b.fills !== MIXED) {
+      const fa = a.fills;
+      const fb = b.fills;
+      if (fa.length === 1 && fb.length === 1 && fa[0].type === "SOLID" && fb[0].type === "SOLID" && fa[0].color && fb[0].color && JSON.stringify(fa[0]) !== JSON.stringify(fb[0])) {
+        out.push({
+          prop: "fillColor",
+          from: __spreadProps(__spreadValues({}, fa[0].color), { a: (_a = fa[0].opacity) != null ? _a : 1 }),
+          to: __spreadProps(__spreadValues({}, fb[0].color), { a: (_b = fb[0].opacity) != null ? _b : 1 })
+        });
+      }
+    }
+    const ra = cornerRadii(a);
+    const rb = cornerRadii(b);
+    if (ra && rb && ra.some((v, i) => neq(v, rb[i]))) {
+      const aUniform = ra.every((v) => v === ra[0]);
+      const bUniform = rb.every((v) => v === rb[0]);
+      out.push(
+        aUniform && bUniform ? { prop: "cornerRadius", from: ra[0], to: rb[0] } : { prop: "cornerRadii", from: ra, to: rb }
+      );
+    }
+    return out;
+  }
+  function diffStates(base, target) {
+    const { matched, removed, added } = matchLayers(base, target);
+    return {
+      pairs: matched.map(({ path, a, b }) => ({ path, changes: diffProperties(a, b) })).filter((pair) => pair.changes.length > 0),
+      fadeOut: removed.map((r) => r.path),
+      fadeIn: added.map((r) => r.path)
+    };
+  }
+
+  // src/targets/django/smart-animate/reactions.ts
+  function isSmartAnimateTransition(transition) {
+    if (!transition) return false;
+    if (transition.type === "SMART_ANIMATE") return true;
+    return "matchLayers" in transition && transition.matchLayers === true;
+  }
+  function collectFromNode(node) {
+    var _a, _b;
+    const reactionNode = node;
+    const out = [];
+    for (const reaction of (_a = reactionNode.reactions) != null ? _a : []) {
+      if (!reaction.trigger) continue;
+      for (const action of (_b = reaction.actions) != null ? _b : []) {
+        if (action.type !== "NODE" || !action.destinationId || !isSmartAnimateTransition(action.transition)) continue;
+        const destination = figma.getNodeById(action.destinationId);
+        if (!destination || !("type" in destination)) continue;
+        out.push({ trigger: reaction.trigger, from: node, to: destination, transition: action.transition });
+      }
+    }
+    return out;
+  }
+  function extractSmartAnimatePairs(componentSet) {
+    return componentSet.children.flatMap((variant2) => collectFromNode(variant2));
+  }
+
+  // src/targets/django/smart-animate/triggers.ts
+  function secondsToMs(seconds) {
+    return Math.round(seconds * 1e3);
+  }
+  function mapTriggerToMechanism(trigger) {
+    switch (trigger.type) {
+      case "ON_HOVER":
+        return { kind: "css-pseudo-class", pseudoClass: "hover" };
+      case "ON_PRESS":
+      case "MOUSE_DOWN":
+      case "MOUSE_UP":
+        return { kind: "css-pseudo-class", pseudoClass: "active" };
+      case "ON_CLICK":
+        return { kind: "toggle-class", event: "click" };
+      case "AFTER_TIMEOUT":
+        return { kind: "timeout", timeoutMs: secondsToMs(trigger.timeout) };
+      case "MOUSE_ENTER":
+      case "MOUSE_LEAVE":
+        return { kind: "js-listener", event: trigger.type === "MOUSE_ENTER" ? "mouseenter" : "mouseleave" };
+      case "ON_KEY_DOWN":
+        return { kind: "js-listener", event: "keydown" };
+      case "ON_DRAG":
+        return { kind: "js-listener", event: "pointerdown" };
+      case "ON_MEDIA_HIT":
+      case "ON_MEDIA_END":
+        return { kind: "js-listener", event: trigger.type.toLowerCase().replace(/_/g, "-") };
+    }
+  }
+
+  // src/targets/django/smart-animate/css-emitter.ts
+  function round4(value, decimals) {
+    const factor = 10 ** decimals;
+    return Math.round(value * factor) / factor;
+  }
+  function rgbaToCss2(color) {
+    const to255 = (channel) => Math.round(channel * 255);
+    return `rgba(${to255(color.r)}, ${to255(color.g)}, ${to255(color.b)}, ${round4(color.a, 4)})`;
+  }
+  function buildDeclarations(changes) {
+    const decls = [];
+    let dx = null;
+    let dy = null;
+    let sx = null;
+    let sy = null;
+    for (const change of changes) {
+      switch (change.prop) {
+        case "x":
+          dx = change.to - change.from;
+          break;
+        case "y":
+          dy = change.to - change.from;
+          break;
+        case "width":
+          sx = change.from !== 0 ? change.to / change.from : 1;
+          break;
+        case "height":
+          sy = change.from !== 0 ? change.to / change.from : 1;
+          break;
+        case "rotation":
+          decls.push({ cssProperty: "rotate", value: `${round4(change.to - change.from, 2)}deg` });
+          break;
+        case "opacity":
+          decls.push({ cssProperty: "opacity", value: `${round4(change.to, 4)}` });
+          break;
+        case "fillColor":
+          decls.push({ cssProperty: "background-color", value: rgbaToCss2(change.to) });
+          break;
+        case "cornerRadius":
+          decls.push({ cssProperty: "border-radius", value: `${round4(change.to, 2)}px` });
+          break;
+        case "cornerRadii":
+          decls.push({ cssProperty: "border-radius", value: change.to.map((v) => `${round4(v, 2)}px`).join(" ") });
+          break;
+      }
+    }
+    if (dx !== null || dy !== null) {
+      decls.unshift({ cssProperty: "translate", value: `${round4(dx != null ? dx : 0, 2)}px ${round4(dy != null ? dy : 0, 2)}px` });
+    }
+    if (sx !== null || sy !== null) {
+      decls.unshift({ cssProperty: "scale", value: `${round4(sx != null ? sx : 1, 4)} ${round4(sy != null ? sy : 1, 4)}` });
+    }
+    return decls;
+  }
+  function modifierSelector(baseSelector, mechanism, toggleClass) {
+    return mechanism.kind === "css-pseudo-class" ? `${baseSelector}:${mechanism.pseudoClass}` : `${baseSelector}.${toggleClass}`;
+  }
+  function mechanismJs(baseSelector, mechanism, toggleClass) {
+    const selectorJson = JSON.stringify(baseSelector);
+    const classJson = JSON.stringify(toggleClass);
+    switch (mechanism.kind) {
+      case "css-pseudo-class":
+        return void 0;
+      case "toggle-class":
+        return `document.querySelectorAll(${selectorJson}).forEach((el) => {
+  el.addEventListener('click', () => el.classList.toggle(${classJson}))
+})`;
+      case "timeout":
+        return `document.querySelectorAll(${selectorJson}).forEach((el) => {
+  setTimeout(() => el.classList.add(${classJson}), ${mechanism.timeoutMs})
+})`;
+      case "js-listener":
+        return `document.querySelectorAll(${selectorJson}).forEach((el) => {
+  el.addEventListener(${JSON.stringify(mechanism.event)}, () => el.classList.toggle(${classJson}))
+})`;
+    }
+  }
+  function emitTransitionCss(input) {
+    var _a;
+    const toggleClass = (_a = input.toggleClass) != null ? _a : "is-active";
+    const modifier = modifierSelector(input.baseSelector, input.mechanism, toggleClass);
+    const rules = [];
+    const transitionProps = /* @__PURE__ */ new Map();
+    const trackTransition = (path, cssProperty) => {
+      var _a2;
+      const selector = `${input.baseSelector}${input.pathToSelector(path)}`;
+      const props = (_a2 = transitionProps.get(selector)) != null ? _a2 : /* @__PURE__ */ new Set();
+      props.add(cssProperty);
+      transitionProps.set(selector, props);
+    };
+    for (const pair of input.diff.pairs) {
+      const decls = buildDeclarations(pair.changes);
+      if (decls.length === 0) continue;
+      decls.forEach((d) => trackTransition(pair.path, d.cssProperty));
+      const suffix = input.pathToSelector(pair.path);
+      rules.push(`${modifier}${suffix} {
+${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
+}`);
+    }
+    for (const path of input.diff.fadeIn) {
+      trackTransition(path, "opacity");
+      const suffix = input.pathToSelector(path);
+      rules.push(`${input.baseSelector}${suffix} { opacity: 0; }`);
+      rules.push(`${modifier}${suffix} { opacity: 1; }`);
+    }
+    for (const path of input.diff.fadeOut) {
+      trackTransition(path, "opacity");
+      rules.push(`${modifier}${input.pathToSelector(path)} { opacity: 0; }`);
+    }
+    const transitionRules = [...transitionProps.entries()].map(([selector, props]) => {
+      const transitionList = [...props].map((prop) => `${prop} ${input.durationMs}ms ${input.timingFunction}`);
+      return `${selector} {
+  transition:
+    ${transitionList.join(",\n    ")};
+}`;
+    });
+    return { css: [...transitionRules, ...rules].join("\n\n"), js: mechanismJs(input.baseSelector, input.mechanism, toggleClass) };
+  }
+
+  // src/targets/django/smart-animate/flip.ts
+  function emitFlipToggle(input) {
+    var _a;
+    const flipAttribute = (_a = input.flipAttribute) != null ? _a : "data-flip";
+    return `(function flipToggle(root, cls, dur, easing) {
+  if (!root) return
+  var kids = [root].concat(Array.prototype.slice.call(root.querySelectorAll('[${flipAttribute}]')))
+  var first = kids.map(function (k) { return k.getBoundingClientRect() })
+  root.classList.toggle(cls)
+  var last = kids.map(function (k) { return k.getBoundingClientRect() })
+  kids.forEach(function (k, i) {
+    var dx = first[i].left - last[i].left
+    var dy = first[i].top - last[i].top
+    var sx = last[i].width === 0 ? 1 : first[i].width / last[i].width
+    var sy = last[i].height === 0 ? 1 : first[i].height / last[i].height
+    k.animate(
+      [{ transform: 'translate(' + dx + 'px,' + dy + 'px) scale(' + sx + ',' + sy + ')' }, { transform: 'none' }],
+      { duration: dur, easing: easing, composite: 'replace' }
+    )
+  })
+})(document.querySelector(${JSON.stringify(input.rootSelector)}), ${JSON.stringify(input.toggleClass)}, ${input.durationMs}, ${JSON.stringify(input.timingFunction)})`;
+  }
+
+  // src/targets/django/smart-animate/view-transitions.ts
+  function pathToViewTransitionName(path) {
+    const sanitized = path.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return sanitized.length > 0 ? sanitized : "node";
+  }
+  function namesForPaths(paths) {
+    return paths.map((path) => ({ path, name: pathToViewTransitionName(path) }));
+  }
+  function emitViewTransition(input) {
+    const nameRules = input.names.map((entry) => `${input.pathToSelector(entry.path)} { view-transition-name: ${entry.name}; }`);
+    const groupRules = input.names.map(
+      (entry) => `::view-transition-group(${entry.name}) {
+  animation-duration: ${input.durationMs}ms;
+  animation-timing-function: ${input.timingFunction};
+}`
+    );
+    const css = [...nameRules, ...groupRules].join("\n\n");
+    const js = `document.querySelectorAll(${JSON.stringify(input.toggleSelector)}).forEach((el) => {
+  el.addEventListener('click', () => {
+    var applyState = function () { el.classList.toggle(${JSON.stringify(input.toggleClass)}) }
+    if (!document.startViewTransition) { applyState(); return }
+    document.startViewTransition(applyState)
+  })
+})`;
+    return { css, js };
   }
 
   // src/targets/django/breakpoint-frames.ts
@@ -9128,12 +9412,12 @@ ${mediaCss}`;
     if (styleId !== void 0 && styleId !== "") {
       return { status: "skipped", detail: `${prop} come from a paint style \u2014 already tokenized, re-scan the scope` };
     }
-    const paints = node[prop];
-    if (!Array.isArray(paints)) {
+    const paints2 = node[prop];
+    if (!Array.isArray(paints2)) {
       return { status: "failed", detail: `${prop} are unreadable on this node` };
     }
     const boundPaints = "boundVariables" in node ? (_a = node.boundVariables) == null ? void 0 : _a[prop] : void 0;
-    const next = paints.slice();
+    const next = paints2.slice();
     const boundNames = [];
     for (let i = 0; i < next.length; i++) {
       const paint = next[i];
@@ -9269,8 +9553,8 @@ ${mediaCss}`;
       detail: `${inferred.layoutMode.toLowerCase()} Auto Layout, spacing ${inferred.itemSpacing}px`
     };
   }
-  function anyVisible(paints) {
-    return Array.isArray(paints) && paints.some((p) => p.visible !== false);
+  function anyVisible(paints2) {
+    return Array.isArray(paints2) && paints2.some((p) => p.visible !== false);
   }
   function clippingHasEffect(node) {
     var _a;
@@ -9836,12 +10120,12 @@ ${mediaCss}`;
     ROTATION: { cssProperty: "rotate", unit: "deg" },
     OPACITY: { cssProperty: "opacity", unit: "" }
   };
-  function round4(value, decimals) {
+  function round5(value, decimals) {
     const factor = 10 ** decimals;
     return Math.round(value * factor) / factor;
   }
   function formatNumber(value) {
-    return String(round4(value, 4));
+    return String(round5(value, 4));
   }
   function formatTransformDeclaration(mapping, value) {
     const { cssProperty, axis, unit, identity } = mapping;
@@ -9905,7 +10189,7 @@ ${mediaCss}`;
     return frames;
   }
   function formatPercent(percent) {
-    return `${round4(percent, 3)}%`;
+    return `${round5(percent, 3)}%`;
   }
   function formatFrame(frame3) {
     const declarations = [`${frame3.declaration};`];
@@ -9925,7 +10209,7 @@ ${frames.map(formatFrame).join("\n")}
     return `${sanitizeIdentPart(selector)}-${track.field.toLowerCase().replace(/_/g, "-")}`;
   }
   function formatSeconds(duration) {
-    return `${round4(duration, 4)}s`;
+    return `${round5(duration, 4)}s`;
   }
   function emitNodeAnimationCss(input) {
     var _a;
@@ -9951,7 +10235,7 @@ ${frames.map(formatFrame).join("\n")}
   }
 
   // src/targets/django/motion/gsap-emitter.ts
-  function round5(value, decimals) {
+  function round6(value, decimals) {
     const factor = 10 ** decimals;
     return Math.round(value * factor) / factor;
   }
@@ -10033,7 +10317,7 @@ ${frames.map(formatFrame).join("\n")}
       return name;
     }
     sampledSpring(points) {
-      const rounded = points.map((point) => round5(point, 4));
+      const rounded = points.map((point) => round6(point, 4));
       const key = `spring:${rounded.join(",")}`;
       const existing = this.namesByKey.get(key);
       if (existing) return existing;
@@ -10057,7 +10341,7 @@ ${frames.map(formatFrame).join("\n")}
     if (easing.type === "GENTLE" || easing.type === "QUICK" || easing.type === "BOUNCY" || easing.type === "SLOW" || easing.type === "CUSTOM_SPRING") {
       const bounce = resolveSpringBounce(easing);
       if (bounce <= SPRING_BACK_BOUNCE_THRESHOLD) {
-        return `back.out(${round5(1 + 2.5 * bounce, 3)})`;
+        return `back.out(${round6(1 + 2.5 * bounce, 3)})`;
       }
       return registry.sampledSpring(sampleSpring(bounce).points);
     }
@@ -10065,7 +10349,7 @@ ${frames.map(formatFrame).join("\n")}
     return registry.bezier(BEZIER_PRESETS[easing.type]);
   }
   function formatPercentLabel(percent) {
-    return `${round5(percent, 3)}%`;
+    return `${round6(percent, 3)}%`;
   }
   function ensureTerminalKeyframe(keyframes, lastPercent, lastVars) {
     if (lastPercent < 100 - 1e-6) {
@@ -10140,7 +10424,7 @@ ${frames.map(formatFrame).join("\n")}
     plugins.add("DrawSVGPlugin");
     const startBase = startTrack ? requireFloat(startTrack.baseValue, "PATH_TRIM_START baseValue") : 0;
     const endBase = endTrack ? requireFloat(endTrack.baseValue, "PATH_TRIM_END baseValue") : 1;
-    const drawSvgLabel = (start, end) => `${round5(start * 100, 3)}% ${round5(end * 100, 3)}%`;
+    const drawSvgLabel = (start, end) => `${round6(start * 100, 3)}% ${round6(end * 100, 3)}%`;
     const positions = /* @__PURE__ */ new Set();
     for (const keyframe of (_a = startTrack == null ? void 0 : startTrack.keyframes) != null ? _a : []) positions.add(keyframe.timelinePosition);
     for (const keyframe of (_b = endTrack == null ? void 0 : endTrack.keyframes) != null ? _b : []) positions.add(keyframe.timelinePosition);
@@ -10164,7 +10448,7 @@ ${frames.map(formatFrame).join("\n")}
     return { fromVars, keyframes };
   }
   function renderTween(selector, duration, { fromVars, keyframes }) {
-    return `      tl.fromTo(q(${JSON.stringify(selector)}), ${JSON.stringify(fromVars)}, { duration: ${round5(duration, 4)}, keyframes: ${JSON.stringify(keyframes)} }, 0);`;
+    return `      tl.fromTo(q(${JSON.stringify(selector)}), ${JSON.stringify(fromVars)}, { duration: ${round6(duration, 4)}, keyframes: ${JSON.stringify(keyframes)} }, 0);`;
   }
   var LERP_EASE_HELPER = `    function __figmaLerpEase(points) {
       return function (p) {
@@ -13766,6 +14050,57 @@ ${renderSections(sections)}
     }
   }
 
+  // src/targets/django/motion/preview.ts
+  function nodeSelector3(nodeId) {
+    return `[${NODE_ID_ATTRIBUTE}="${nodeId}"]`;
+  }
+  function wrapHtmlDocument(timelineId, bodyHtml, headExtra) {
+    return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+${headExtra}</head>
+<body data-timeline="${timelineId}">
+${bodyHtml}
+</body>
+</html>
+`;
+  }
+  function buildCssDocument(input) {
+    const css = input.nodes.filter((node) => node.tracks.length > 0).map((node) => emitNodeAnimationCss({ selector: nodeSelector3(node.nodeId), tracks: node.tracks })).join("\n\n");
+    const bodyHtml = input.nodes.map((node) => node.html).join("\n");
+    return wrapHtmlDocument(input.timelineId, bodyHtml, `<style>
+${css}
+</style>
+`);
+  }
+  function buildGsapDocument(input) {
+    var _a;
+    const { js, usedPlugins } = emitGsapTimeline({
+      timelineId: input.timelineId,
+      duration: input.duration,
+      nodes: input.nodes.map((node) => ({ nodeId: node.nodeId, tracks: node.tracks }))
+    });
+    if (usedPlugins.length > 0 && !input.gsapRuntimeJs) {
+      throw new Error(`GSAP preview needs plugins [${usedPlugins.join(", ")}] but no gsapRuntimeJs was supplied`);
+    }
+    const bodyHtml = input.nodes.map((node) => node.html).join("\n");
+    const scripts = `<script>
+${(_a = input.gsapRuntimeJs) != null ? _a : ""}
+<\/script>
+<script>
+${js}
+<\/script>`;
+    return wrapHtmlDocument(input.timelineId, `${bodyHtml}
+${scripts}`, "");
+  }
+  function buildPreviewDocument(input) {
+    const allTracks = input.nodes.flatMap((node) => node.tracks);
+    const decision = pickBackend({ tracks: allTracks, nodeCount: input.nodes.length, trigger: input.trigger }, input.backendOverride);
+    const html = decision.backend === "css" ? buildCssDocument(input) : buildGsapDocument(input);
+    return { html, backend: decision.backend, reason: decision.reason };
+  }
+
   // src/agent/files.ts
   var FILE_ENVELOPE = "__alteryFile";
   function isSafeFileName(name) {
@@ -13849,6 +14184,18 @@ ${renderSections(sections)}
       return easing;
     }
   }
+  async function emitOne(node, cssFile) {
+    const [ir, sceneNodesById, snapshot] = await Promise.all([
+      serializeNode(node),
+      indexSceneNodes([node]),
+      readAllVariables()
+    ]);
+    if (!ir) throw new Error(`"${node.name}" (${node.type}) produced no exportable structure`);
+    const nodes = [ir];
+    const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]));
+    await annotateVectorLeaves(nodes, sceneNodesById);
+    return emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile });
+  }
   async function screenshot(node, scale) {
     return node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: scale } });
   }
@@ -13891,18 +14238,8 @@ ${renderSections(sections)}
           return parent;
         })();
         if (page) await page.loadAsync();
-        const roots = [root];
-        const [ir, sceneNodesById, snapshot] = await Promise.all([
-          serializeNode(root),
-          indexSceneNodes(roots),
-          readAllVariables()
-        ]);
-        if (!ir) throw new Error(`"${root.name}" (${root.type}) produced no exportable structure`);
-        const nodes = [ir];
-        const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]));
-        await annotateVectorLeaves(nodes, sceneNodesById);
-        const cssFile = params.cssFile;
-        const { html, css } = await emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile });
+        const sceneNodesById = await indexSceneNodes([root]);
+        const { html, css } = await emitOne(root, params.cssFile);
         const slug2 = slugify2(root.name);
         const files = [
           textFile(`${slug2}.html`, "text/html", html),
@@ -13916,6 +14253,64 @@ ${renderSections(sections)}
           layers: sceneNodesById.size,
           tokens: await tokenUsage(sceneNodesById.values()),
           files
+        };
+      }
+    },
+    {
+      name: "motion.preview",
+      summary: "A standalone HTML page that actually plays the animation \u2014 open it and watch.",
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "Root whose animated layers to preview." },
+        trigger: {
+          type: "string",
+          default: "autoplay",
+          enum: ["autoplay", "loop", "hover", "scrub", "replay", "click", "other-interactive"],
+          description: "How the timeline starts in the preview."
+        },
+        backend: {
+          type: "string",
+          default: "auto",
+          enum: ["auto", "css", "gsap"],
+          description: "Override the backend choice. `auto` lets pickBackend decide."
+        }
+      },
+      async run(params) {
+        if (!hasMotionApi2()) {
+          return { available: false, reason: "this Figma build exposes no Motion API \u2014 the beta is not enabled" };
+        }
+        const root = await resolveSceneNode(params.nodeId);
+        const sceneNodesById = await indexSceneNodes([root]);
+        const animated = [];
+        for (const node of sceneNodesById.values()) {
+          const snapshot = readMotionData(node);
+          if (snapshot && snapshot.tracks.length > 0) animated.push({ node, tracks: snapshot.tracks });
+        }
+        if (animated.length === 0) return { available: true, animated: 0, files: [] };
+        const nodes = [];
+        for (const entry of animated) {
+          const { html } = await emitOne(entry.node, "preview.css");
+          nodes.push({ nodeId: entry.node.id, tracks: entry.tracks, html });
+        }
+        const duration = Math.max(...animated.flatMap((entry) => entry.tracks.map((track) => track.timelineDuration)));
+        const backend = params.backend;
+        const preview = buildPreviewDocument({
+          timelineId: root.id,
+          duration,
+          nodes,
+          trigger: params.trigger,
+          backendOverride: backend === "auto" ? null : backend
+        });
+        return {
+          available: true,
+          animated: animated.length,
+          backend: preview.backend,
+          reason: preview.reason,
+          // A GSAP-backed preview needs the GSAP runtime inlined, and the plugin ships none —
+          // `networkAccess: none` means the page cannot fetch one either. Saying so is the
+          // difference between "the animation is wrong" and "nothing ran".
+          inert: preview.backend === "gsap",
+          files: [textFile(`${slugify2(root.name)}.preview.html`, "text/html", preview.html)]
         };
       }
     },
@@ -13992,6 +14387,162 @@ ${renderSections(sections)}
           gsapPlugins: animation.gsapPlugins,
           files
         };
+      }
+    }
+  ];
+
+  // src/agent/transition-ops.ts
+  function orMixed(value) {
+    return value === figma.mixed ? MIXED : value;
+  }
+  function paints(node) {
+    const fills = node.fills;
+    if (fills === void 0) return void 0;
+    if (fills === figma.mixed) return MIXED;
+    if (!Array.isArray(fills)) return void 0;
+    return fills.map((paint) => ({
+      type: paint.type,
+      color: paint.type === "SOLID" ? paint.color : void 0,
+      opacity: paint.opacity
+    }));
+  }
+  function toDiffable2(node) {
+    const any = node;
+    const children = node.children;
+    return {
+      id: node.id,
+      type: node.type,
+      name: node.name,
+      x: node.x,
+      y: node.y,
+      width: node.width,
+      height: node.height,
+      rotation: typeof any.rotation === "number" ? any.rotation : void 0,
+      opacity: typeof any.opacity === "number" ? any.opacity : void 0,
+      cornerRadius: any.cornerRadius === void 0 ? void 0 : orMixed(any.cornerRadius),
+      topLeftRadius: typeof any.topLeftRadius === "number" ? any.topLeftRadius : void 0,
+      topRightRadius: typeof any.topRightRadius === "number" ? any.topRightRadius : void 0,
+      bottomRightRadius: typeof any.bottomRightRadius === "number" ? any.bottomRightRadius : void 0,
+      bottomLeftRadius: typeof any.bottomLeftRadius === "number" ? any.bottomLeftRadius : void 0,
+      fills: paints(node),
+      children: children ? children.map(toDiffable2) : void 0
+    };
+  }
+  function describeDiff(diff) {
+    const properties = /* @__PURE__ */ new Set();
+    for (const pair of diff.pairs) for (const change of pair.changes) properties.add(change.prop);
+    return {
+      moved: diff.pairs.filter((pair) => pair.changes.length > 0).length,
+      fadeIn: diff.fadeIn.length,
+      fadeOut: diff.fadeOut.length,
+      properties: [...properties].sort()
+    };
+  }
+  function pathToSelector(path) {
+    if (path === "") return "";
+    return path.split("/").map((segment) => ` .${slugify2(segment.replace(/#\d+$/, ""), "layer")}`).join("");
+  }
+  var TRANSITION_OPS = [
+    {
+      name: "transition.context",
+      summary: "Smart Animate between variants, as CSS transitions, a FLIP toggle or View Transitions.",
+      mutates: false,
+      params: {
+        nodeId: {
+          type: "string",
+          required: true,
+          description: "A component set. Its variants carry the Smart Animate reactions to read."
+        },
+        strategy: {
+          type: "string",
+          default: "transition",
+          enum: ["transition", "flip", "view-transitions", "all"],
+          description: "How to express it. `transition` emits property transitions, `flip` a measure-and-animate toggle for layout that CSS cannot tween, `view-transitions` the native API. `all` emits every one."
+        },
+        toggleClass: { type: "string", default: "is-active", description: "Class the non-hover mechanisms toggle." }
+      },
+      async run(params) {
+        const ref = params.nodeId;
+        const node = await figma.getNodeByIdAsync(ref);
+        if (!node) throw new Error(`no node with id ${ref}`);
+        if (node.type !== "COMPONENT_SET") {
+          throw new Error(
+            `${ref} is a ${node.type} \u2014 Smart Animate lives on the reactions between a component set's variants`
+          );
+        }
+        const pairs = extractSmartAnimatePairs(node);
+        if (pairs.length === 0) {
+          return { componentSet: { id: node.id, name: node.name }, transitions: [], files: [] };
+        }
+        const strategy = params.strategy;
+        const toggleClass = params.toggleClass;
+        const wants = (kind) => strategy === "all" || strategy === kind;
+        const transitions = [];
+        const css = [];
+        const js = [];
+        for (const pair of pairs) {
+          const diff = diffStates(toDiffable2(pair.from), toDiffable2(pair.to));
+          const mechanism = mapTriggerToMechanism(pair.trigger);
+          const timing = transitionToCssTiming(pair.transition);
+          const baseSelector = `.${slugify2(pair.from.name, "variant")}`;
+          const emitted = [];
+          if (wants("transition")) {
+            const result = emitTransitionCss({
+              baseSelector,
+              diff,
+              pathToSelector,
+              durationMs: timing.durationMs,
+              timingFunction: timing.timingFunction,
+              mechanism,
+              toggleClass
+            });
+            if (result.css) {
+              css.push(result.css);
+              emitted.push("transition");
+            }
+            if (result.js) js.push(result.js);
+          }
+          if (wants("flip")) {
+            js.push(
+              emitFlipToggle({
+                rootSelector: baseSelector,
+                toggleClass,
+                durationMs: timing.durationMs,
+                timingFunction: timing.timingFunction
+              })
+            );
+            emitted.push("flip");
+          }
+          if (wants("view-transitions")) {
+            const paths = diff.pairs.filter((entry) => entry.changes.length > 0).map((entry) => entry.path);
+            const result = emitViewTransition({
+              pathToSelector,
+              names: namesForPaths(paths),
+              durationMs: timing.durationMs,
+              timingFunction: timing.timingFunction,
+              toggleSelector: baseSelector,
+              toggleClass
+            });
+            css.push(result.css);
+            js.push(result.js);
+            emitted.push("view-transitions");
+          }
+          transitions.push({
+            from: { id: pair.from.id, name: pair.from.name },
+            to: { id: pair.to.id, name: pair.to.name },
+            trigger: pair.trigger.type,
+            mechanism: mechanism.kind,
+            durationMs: timing.durationMs,
+            timingFunction: timing.timingFunction,
+            diff: describeDiff(diff),
+            emitted
+          });
+        }
+        const slug2 = slugify2(node.name, "transitions");
+        const files = [];
+        if (css.length > 0) files.push(textFile(`${slug2}.transitions.css`, "text/css", css.join("\n\n")));
+        if (js.length > 0) files.push(textFile(`${slug2}.transitions.js`, "text/javascript", js.join("\n\n")));
+        return { componentSet: { id: node.id, name: node.name }, transitions, files };
       }
     }
   ];
@@ -14661,9 +15212,9 @@ ${renderSections(sections)}
     if (typeof styleId === "string" && styleId !== "") {
       throw new Error(`${prop} come from a paint style \u2014 unlink it first, or the binding would break the style`);
     }
-    const paints = node[prop];
-    if (!Array.isArray(paints)) throw new Error(`${prop} are unreadable on this node`);
-    const next = paints.slice();
+    const paints2 = node[prop];
+    if (!Array.isArray(paints2)) throw new Error(`${prop} are unreadable on this node`);
+    const next = paints2.slice();
     const touched = [];
     for (let i = 0; i < next.length; i++) {
       if (paintIndex !== void 0 && i !== paintIndex) continue;
@@ -15483,7 +16034,7 @@ ${renderSections(sections)}
       }
     }
   ];
-  var ALL_OPS = [...READ_OPS, ...CONTEXT_OPS, ...WRITE_OPS];
+  var ALL_OPS = [...READ_OPS, ...CONTEXT_OPS, ...TRANSITION_OPS, ...WRITE_OPS];
   var OPS_BY_NAME = new Map(ALL_OPS.map((op) => [op.name, op]));
 
   // src/agent/listener.ts
