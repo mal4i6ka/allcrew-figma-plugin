@@ -13834,6 +13834,21 @@ ${renderSections(sections)}
     }
     return [...counts.entries()].map(([token2, uses]) => ({ token: token2, uses })).sort((a, b) => b.uses - a.uses || a.token.localeCompare(b.token));
   }
+  function hasMotionApi2() {
+    return Boolean(figma.motion);
+  }
+  async function describeEasing(easing) {
+    var _a;
+    if (easing.type !== "VARIABLE_ALIAS") return easing;
+    const id = easing.id;
+    if (typeof id !== "string") return easing;
+    try {
+      const variable = await figma.variables.getVariableByIdAsync(id);
+      return { type: "VARIABLE_ALIAS", token: (_a = variable == null ? void 0 : variable.name) != null ? _a : id };
+    } catch (e) {
+      return easing;
+    }
+  }
   async function screenshot(node, scale) {
     return node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: scale } });
   }
@@ -13900,6 +13915,81 @@ ${renderSections(sections)}
           node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
           layers: sceneNodesById.size,
           tokens: await tokenUsage(sceneNodesById.values()),
+          files
+        };
+      }
+    },
+    {
+      name: "motion.context",
+      summary: "Keyframe tracks, the CSS/GSAP they compile to, and which backend fits \u2014 for a subtree.",
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "Root to scan for animated layers." },
+        trigger: {
+          type: "string",
+          default: "autoplay",
+          enum: ["autoplay", "loop", "hover", "scrub", "replay", "click", "other-interactive"],
+          description: "How the timeline is meant to start. Changes which backend fits."
+        },
+        keyframes: { type: "boolean", default: true, description: "Include per-keyframe detail, not just counts." }
+      },
+      async run(params) {
+        var _a, _b;
+        if (!hasMotionApi2()) {
+          return {
+            available: false,
+            reason: "this Figma build exposes no Motion API \u2014 the beta is not enabled for this account",
+            animated: []
+          };
+        }
+        const root = await resolveSceneNode(params.nodeId);
+        const sceneNodesById = await indexSceneNodes([root]);
+        const motionNodes = [];
+        for (const node of sceneNodesById.values()) {
+          const snapshot = readMotionData(node);
+          if (snapshot && snapshot.tracks.length > 0) motionNodes.push({ nodeId: node.id, snapshot });
+        }
+        if (motionNodes.length === 0) {
+          return { available: true, scanned: sceneNodesById.size, animated: [], files: [] };
+        }
+        const trigger = params.trigger;
+        const wantKeyframes = params.keyframes !== false;
+        const animated = [];
+        for (const entry of motionNodes) {
+          const node = sceneNodesById.get(entry.nodeId);
+          const tracks = entry.snapshot.tracks;
+          const decision = pickBackend({ tracks, nodeCount: 1, trigger });
+          animated.push({
+            nodeId: entry.nodeId,
+            name: (_a = node == null ? void 0 : node.name) != null ? _a : entry.nodeId,
+            type: (_b = node == null ? void 0 : node.type) != null ? _b : null,
+            timelines: entry.snapshot.timelines.length,
+            backend: decision.backend,
+            reason: decision.reason,
+            tracks: await Promise.all(
+              tracks.map(async (track) => ({
+                field: track.field,
+                duration: track.timelineDuration,
+                keyframes: wantKeyframes ? await Promise.all(
+                  track.keyframes.map(async (frame3) => ({
+                    at: frame3.timelinePosition,
+                    easing: await describeEasing(frame3.easing),
+                    value: frame3.value
+                  }))
+                ) : track.keyframes.length
+              }))
+            )
+          });
+        }
+        const { animation } = emitMotionExportArtifacts(motionNodes);
+        const files = [];
+        if (animation.css) files.push(textFile("animations.css", "text/css", animation.css));
+        if (animation.js) files.push(textFile("animations.js", "text/javascript", animation.js));
+        return {
+          available: true,
+          scanned: sceneNodesById.size,
+          animated,
+          gsapPlugins: animation.gsapPlugins,
           files
         };
       }

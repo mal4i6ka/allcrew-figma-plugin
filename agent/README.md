@@ -153,6 +153,7 @@ altery-figma ops --json       # the same, machine-readable
 | `flow.map` | prototype graph of a page: starting points and every reaction edge |
 | `node.screenshot` | renders a node to PNG — how an agent checks what it actually drew |
 | `design.context` | reference HTML + CSS + PNG for a node, plus the tokens it binds |
+| `motion.context` | keyframe tracks with easing, the CSS/GSAP they compile to, and which backend fits |
 | `library.collections` | variable collections published by libraries enabled in this file |
 | `library.variables` | variables inside one library collection — read another file's palette |
 | `lint.colors` | layers painted with a raw colour instead of a variable |
@@ -194,6 +195,15 @@ Keeping base64 out of the answer is the point: a whole template and its screensh
 agent three paths of context instead of a megabyte of it. Files land under
 `ALTERY_AGENT_FILES` (default `~/.altery/agent-files`), one directory per call, and the oldest
 runs beyond the most recent 40 are swept so a debugging session does not leak disk.
+
+`motion.context` is the same trade one layer over. It reports every animated layer in a
+subtree, each track's keyframes and easing, and the `@keyframes` and GSAP timeline they
+compile to — and then it says **which backend fits and why**, because `pickBackend` already
+decides that for the export and an agent implementing the animation deserves the reasoning
+rather than the verdict. Easings bound to a variable come back as the token name, same rule as
+everywhere else here. When the Motion beta is not enabled for the account the op says so
+outright: "nothing animates here" and "I cannot see animation at all" are different answers,
+and an agent that cannot tell them apart will confidently ship a static page.
 
 `design.context` is deliberately not a second design-to-code tool. Figma's own is better at
 turning a screen into a component; this one is better at one thing, and it is the thing that

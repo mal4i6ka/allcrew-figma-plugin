@@ -16,6 +16,10 @@
  */
 
 import { emitDjango } from '../targets/django/index.ts'
+import { pickBackend, type MotionTrigger } from '../targets/django/motion/backend.ts'
+import { readMotionData } from '../targets/django/motion/beta-adapter.ts'
+import { emitMotionExportArtifacts, type MotionExportNode } from '../targets/django/motion/export-assets.ts'
+import type { MotionTrack } from '../targets/django/motion/types.ts'
 import { serializeNode, type IrNode } from '../targets/django/ir.ts'
 import { annotateVectorLeaves, type AssetSourceNode } from '../targets/django/export/assets.ts'
 import { findAllWithCriteria } from '../utils/tree.ts'
@@ -86,6 +90,29 @@ async function tokenUsage(nodes: Iterable<SceneNode>): Promise<Array<{ token: st
   return [...counts.entries()]
     .map(([token, uses]) => ({ token, uses }))
     .sort((a, b) => b.uses - a.uses || a.token.localeCompare(b.token))
+}
+
+/** Figma's Motion API is a beta that is simply absent for most accounts. Saying so beats
+ * answering "no animations" for a file full of them. */
+function hasMotionApi(): boolean {
+  return Boolean((figma as unknown as { motion?: unknown }).motion)
+}
+
+/**
+ * An easing reads back as a Figma object, and when it is bound to a variable it reads back as
+ * an alias with an id and nothing else. Resolving the name here keeps the op's promise: this
+ * channel reports the token, not the number it happened to resolve to.
+ */
+async function describeEasing(easing: MotionTrack['keyframes'][number]['easing']): Promise<unknown> {
+  if ((easing as { type?: string }).type !== 'VARIABLE_ALIAS') return easing
+  const id = (easing as unknown as { id?: unknown }).id
+  if (typeof id !== 'string') return easing
+  try {
+    const variable = await figma.variables.getVariableByIdAsync(id)
+    return { type: 'VARIABLE_ALIAS', token: variable?.name ?? id }
+  } catch {
+    return easing
+  }
 }
 
 async function screenshot(node: SceneNode, scale: number): Promise<Uint8Array> {
@@ -165,6 +192,94 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
         layers: sceneNodesById.size,
         tokens: await tokenUsage(sceneNodesById.values()),
+        files,
+      }
+    },
+  },
+  {
+    name: 'motion.context',
+    summary: 'Keyframe tracks, the CSS/GSAP they compile to, and which backend fits — for a subtree.',
+    mutates: false,
+    params: {
+      nodeId: { type: 'string', required: true, description: 'Root to scan for animated layers.' },
+      trigger: {
+        type: 'string',
+        default: 'autoplay',
+        enum: ['autoplay', 'loop', 'hover', 'scrub', 'replay', 'click', 'other-interactive'],
+        description: 'How the timeline is meant to start. Changes which backend fits.',
+      },
+      keyframes: { type: 'boolean', default: true, description: 'Include per-keyframe detail, not just counts.' },
+    },
+    async run(params) {
+      if (!hasMotionApi()) {
+        // Not an error: the file may be fine and the account simply lacks the beta. An agent
+        // needs to tell "nothing animates here" apart from "I cannot see animation at all".
+        return {
+          available: false,
+          reason: 'this Figma build exposes no Motion API — the beta is not enabled for this account',
+          animated: [],
+        }
+      }
+
+      const root = await resolveSceneNode(params.nodeId)
+      const sceneNodesById = await indexSceneNodes([root])
+
+      const motionNodes: MotionExportNode[] = []
+      for (const node of sceneNodesById.values()) {
+        const snapshot = readMotionData(node)
+        if (snapshot && snapshot.tracks.length > 0) motionNodes.push({ nodeId: node.id, snapshot })
+      }
+
+      if (motionNodes.length === 0) {
+        return { available: true, scanned: sceneNodesById.size, animated: [], files: [] }
+      }
+
+      const trigger = params.trigger as MotionTrigger
+      const wantKeyframes = params.keyframes !== false
+
+      const animated = []
+      for (const entry of motionNodes) {
+        const node = sceneNodesById.get(entry.nodeId)
+        const tracks = entry.snapshot.tracks
+        // Per node rather than per timeline: the same question ("CSS or GSAP, and why") is what
+        // the export asks, and answering it here means an agent sees the reasoning instead of
+        // just the output it produced.
+        const decision = pickBackend({ tracks, nodeCount: 1, trigger })
+        animated.push({
+          nodeId: entry.nodeId,
+          name: node?.name ?? entry.nodeId,
+          type: node?.type ?? null,
+          timelines: entry.snapshot.timelines.length,
+          backend: decision.backend,
+          reason: decision.reason,
+          tracks: await Promise.all(
+            tracks.map(async (track) => ({
+              field: track.field,
+              duration: track.timelineDuration,
+              keyframes: wantKeyframes
+                ? await Promise.all(
+                    track.keyframes.map(async (frame) => ({
+                      at: frame.timelinePosition,
+                      easing: await describeEasing(frame.easing),
+                      value: frame.value,
+                    }))
+                  )
+                : track.keyframes.length,
+            }))
+          ),
+        })
+      }
+
+      const { animation } = emitMotionExportArtifacts(motionNodes)
+      const files: unknown[] = []
+      if (animation.css) files.push(textFile('animations.css', 'text/css', animation.css))
+      if (animation.js) files.push(textFile('animations.js', 'text/javascript', animation.js))
+
+      return {
+        available: true,
+        scanned: sceneNodesById.size,
+        animated,
+        gsapPlugins: animation.gsapPlugins,
         files,
       }
     },
