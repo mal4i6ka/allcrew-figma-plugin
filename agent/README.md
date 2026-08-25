@@ -7,8 +7,8 @@ It is MCP-shaped without being MCP: there is no server to register, no client li
 nothing to keep in sync but the op names. If a tool can run a shell command, it can drive
 Figma.
 
-**Read-only today.** Every shipped op only looks. The write gate exists and is enforced, but
-no mutating op is registered yet.
+**Reads and writes, gated separately.** Most ops only look; four of them change the document
+and sit behind their own switch, which reads never imply.
 
 ---
 
@@ -110,6 +110,8 @@ value into Settings → Agent listener → Shared secret.
 | `ALTERY_AGENT_SECRET_FILE` | `~/.altery/agent-secret` | where the minted secret lives |
 | `ALTERY_AGENT_PORT` | `8788` | HTTP port |
 | `ALTERY_AGENT_HOST` | `127.0.0.1` | loopback on purpose |
+| `ALTERY_AGENT_CALL_TIMEOUT_MS` | `180000` | how long one call may take |
+| `ALTERY_AGENT_FILES` | `~/.altery/agent-files` | where ops that return files write them |
 
 ---
 
@@ -149,6 +151,21 @@ altery-figma ops --json       # the same, machine-readable
 | `styles.list` | local text, paint, effect and grid styles |
 | `variables.get` | collections, modes and values — the token export's own snapshot |
 | `flow.map` | prototype graph of a page: starting points and every reaction edge |
+| `node.screenshot` | renders a node to PNG — how an agent checks what it actually drew |
+| `design.context` | reference HTML + CSS + PNG for a node, plus the tokens it binds |
+| `library.collections` | variable collections published by libraries enabled in this file |
+| `library.variables` | variables inside one library collection — read another file's palette |
+| `lint.colors` | layers painted with a raw colour instead of a variable |
+| `sandbox.capabilities` | what this plugin runtime allows |
+
+Four more **change** the document, and `altery-figma ops` marks them with a leading `!`:
+
+| Op | Does |
+|----|------|
+| `variables.set` | sets variable values or aliases in batch — including an alias onto a *library* variable, which is how one library inherits another's tokens |
+| `variables.create` | creates variables in a collection |
+| `node.bind` | binds layer properties to variables — turns a lint finding into a fix |
+| `board.render` | draws a documentation board: headings, callouts, swatch grids, before/after rows |
 
 Params are a JSON argument, or `-` to read stdin:
 
@@ -160,6 +177,29 @@ echo '{"nodeId":"12:345","depth":2}' | altery-figma call node.get -
 
 Results go to **stdout** as JSON and nothing else does, so `$(altery-figma call …)` and
 `… | jq` are always clean. Human text goes to stderr. Exit code is non-zero on any failure.
+
+### Files instead of payloads
+
+`node.screenshot` and `design.context` answer with *paths*, not bytes. The sandbox has no
+filesystem and the agent has no way into the sandbox, so an op wraps a file in an envelope and
+the bridge — which does have a disk — writes it out and substitutes the path it wrote:
+
+```bash
+altery-figma call design.context '{"nodeId":"1:16"}'
+# → { node: {…}, layers: 412, tokens: [{token:"colors/neutral/100", uses:23}, …],
+#     files: [ {path:"~/.altery/agent-files/design.context-6f2a/board.html", bytes:18422}, … ] }
+```
+
+Keeping base64 out of the answer is the point: a whole template and its screenshot cost the
+agent three paths of context instead of a megabyte of it. Files land under
+`ALTERY_AGENT_FILES` (default `~/.altery/agent-files`), one directory per call, and the oldest
+runs beyond the most recent 40 are swept so a debugging session does not leak disk.
+
+`design.context` is deliberately not a second design-to-code tool. Figma's own is better at
+turning a screen into a component; this one is better at one thing, and it is the thing that
+matters when the code has to *match the design system*: it reports the token that produced a
+value rather than the value. `#F2F4F5` leaves an implementing agent guessing which variable to
+reach for; `colors/neutral/100` does not.
 
 ### What that buys an agent
 

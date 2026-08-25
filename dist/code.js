@@ -13766,6 +13766,146 @@ ${renderSections(sections)}
     }
   }
 
+  // src/agent/files.ts
+  var FILE_ENVELOPE = "__alteryFile";
+  function isSafeFileName(name) {
+    return name.length > 0 && name.length <= 128 && /^[A-Za-z0-9._-]+$/.test(name) && !name.startsWith(".");
+  }
+  function textFile(name, mime, text3) {
+    if (!isSafeFileName(name)) throw new Error(`unsafe file name "${name}"`);
+    return { [FILE_ENVELOPE]: { name, mime, encoding: "utf8", data: text3 } };
+  }
+  function binaryFile(name, mime, bytes) {
+    if (!isSafeFileName(name)) throw new Error(`unsafe file name "${name}"`);
+    return { [FILE_ENVELOPE]: { name, mime, encoding: "base64", data: figma.base64Encode(bytes) } };
+  }
+  function slugify2(name, fallback = "node") {
+    const slug2 = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+    return slug2 || fallback;
+  }
+
+  // src/agent/context-ops.ts
+  async function resolveSceneNode(ref) {
+    if (typeof ref !== "string" || ref === "") throw new Error("nodeId must be a non-empty string");
+    const node = await figma.getNodeByIdAsync(ref);
+    if (!node) throw new Error(`no node with id ${ref}`);
+    if (node.type === "PAGE" || node.type === "DOCUMENT") throw new Error(`${ref} is a ${node.type}, not a layer`);
+    return node;
+  }
+  async function indexSceneNodes(roots) {
+    const index = /* @__PURE__ */ new Map();
+    for (const root of roots) {
+      index.set(root.id, root);
+      for (const node of await findAllWithCriteria(root, (candidate) => true)) {
+        index.set(node.id, node);
+      }
+    }
+    return index;
+  }
+  async function tokenUsage(nodes) {
+    var _a;
+    const counts = /* @__PURE__ */ new Map();
+    const names = /* @__PURE__ */ new Map();
+    const nameFor = async (id) => {
+      var _a2, _b;
+      if (!names.has(id)) {
+        try {
+          const variable = await figma.variables.getVariableByIdAsync(id);
+          names.set(id, (_a2 = variable == null ? void 0 : variable.name) != null ? _a2 : null);
+        } catch (e) {
+          names.set(id, null);
+        }
+      }
+      return (_b = names.get(id)) != null ? _b : null;
+    };
+    for (const node of nodes) {
+      const bound = node.boundVariables;
+      if (!bound) continue;
+      for (const entry of Object.values(bound)) {
+        const aliases = Array.isArray(entry) ? entry : [entry];
+        for (const alias of aliases) {
+          const id = alias == null ? void 0 : alias.id;
+          if (typeof id !== "string") continue;
+          const name = await nameFor(id);
+          if (!name) continue;
+          counts.set(name, ((_a = counts.get(name)) != null ? _a : 0) + 1);
+        }
+      }
+    }
+    return [...counts.entries()].map(([token2, uses]) => ({ token: token2, uses })).sort((a, b) => b.uses - a.uses || a.token.localeCompare(b.token));
+  }
+  async function screenshot(node, scale) {
+    return node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: scale } });
+  }
+  var CONTEXT_OPS = [
+    {
+      name: "node.screenshot",
+      summary: "Render a node to PNG \u2014 the one way an agent can check what it actually drew.",
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "Layer to render." },
+        scale: { type: "number", default: 1, min: 0.1, max: 4, description: "Export scale. 2 for retina." }
+      },
+      async run(params) {
+        const node = await resolveSceneNode(params.nodeId);
+        const scale = params.scale;
+        const bytes = await screenshot(node, scale);
+        return {
+          node: { id: node.id, name: node.name, type: node.type, width: node.width, height: node.height },
+          scale,
+          bytes: bytes.length,
+          file: binaryFile(`${slugify2(node.name)}.png`, "image/png", bytes)
+        };
+      }
+    },
+    {
+      name: "design.context",
+      summary: "Reference HTML + CSS + PNG for a node, with the tokens it binds \u2014 implement from this.",
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "Frame or component to describe." },
+        cssFile: { type: "string", default: "design.css", description: "Name the emitted HTML links to." },
+        screenshot: { type: "boolean", default: true, description: "Also render a PNG reference." },
+        scale: { type: "number", default: 1, min: 0.1, max: 4, description: "Screenshot scale." }
+      },
+      async run(params) {
+        const root = await resolveSceneNode(params.nodeId);
+        const page = (() => {
+          let parent = root.parent;
+          while (parent && parent.type !== "PAGE") parent = parent.parent;
+          return parent;
+        })();
+        if (page) await page.loadAsync();
+        const roots = [root];
+        const [ir, sceneNodesById, snapshot] = await Promise.all([
+          serializeNode(root),
+          indexSceneNodes(roots),
+          readAllVariables()
+        ]);
+        if (!ir) throw new Error(`"${root.name}" (${root.type}) produced no exportable structure`);
+        const nodes = [ir];
+        const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]));
+        await annotateVectorLeaves(nodes, sceneNodesById);
+        const cssFile = params.cssFile;
+        const { html, css } = await emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile });
+        const slug2 = slugify2(root.name);
+        const files = [
+          textFile(`${slug2}.html`, "text/html", html),
+          textFile(`${slug2}.css`, "text/css", css)
+        ];
+        if (params.screenshot !== false) {
+          files.push(binaryFile(`${slug2}.png`, "image/png", await screenshot(root, params.scale)));
+        }
+        return {
+          node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
+          layers: sceneNodesById.size,
+          tokens: await tokenUsage(sceneNodesById.values()),
+          files
+        };
+      }
+    }
+  ];
+
   // src/agent/values.ts
   var clamp012 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
   function parseColor(input) {
@@ -15253,7 +15393,7 @@ ${renderSections(sections)}
       }
     }
   ];
-  var ALL_OPS = [...READ_OPS, ...WRITE_OPS];
+  var ALL_OPS = [...READ_OPS, ...CONTEXT_OPS, ...WRITE_OPS];
   var OPS_BY_NAME = new Map(ALL_OPS.map((op) => [op.name, op]));
 
   // src/agent/listener.ts
@@ -15312,7 +15452,7 @@ ${renderSections(sections)}
         return figma.currentPage.children;
     }
   }
-  async function indexSceneNodes(roots) {
+  async function indexSceneNodes2(roots) {
     const index = /* @__PURE__ */ new Map();
     for (const root of roots) {
       index.set(root.id, root);
@@ -15894,7 +16034,7 @@ ${renderSections(sections)}
         const roots = rootsForScope(msg.scope);
         const [irNodes, sceneNodesById, snapshot] = await Promise.all([
           Promise.all(roots.map((root) => serializeNode(root))),
-          indexSceneNodes(roots),
+          indexSceneNodes2(roots),
           readAllVariables()
         ]);
         const nodes = irNodes.filter((node) => node !== null);
@@ -15908,7 +16048,7 @@ ${renderSections(sections)}
         const roots = rootsForScope(msg.scope);
         const [irNodes, sceneNodesById, snapshot] = await Promise.all([
           Promise.all(roots.map((root) => serializeNode(root))),
-          indexSceneNodes(roots),
+          indexSceneNodes2(roots),
           readAllVariables()
         ]);
         const pageRoots = irNodes.filter((node) => node !== null && node.type === "container");
@@ -15960,7 +16100,7 @@ ${renderSections(sections)}
       }
       case "SCAN": {
         const roots = rootsForScope(msg.scope);
-        const index = await indexSceneNodes(roots);
+        const index = await indexSceneNodes2(roots);
         lastScanIndex = index;
         const frames = figma.currentPage.children.filter((node) => node.type === "FRAME").map((node) => ({ id: node.id, name: node.name }));
         const textNodes = [];
@@ -16108,7 +16248,7 @@ ${renderSections(sections)}
       case "IMPORT_TRANSLATIONS": {
         try {
           const roots = rootsForScope(msg.scope);
-          const index = await indexSceneNodes(roots);
+          const index = await indexSceneNodes2(roots);
           const textNodes = [];
           for (const node of index.values()) if (node.type === "TEXT") textNodes.push(node);
           const result = await importTranslations(msg.content, msg.format, textNodes);
@@ -16138,7 +16278,7 @@ ${renderSections(sections)}
           const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions"));
           const [irNodes, sceneNodesById, snapshot] = await Promise.all([
             Promise.all(roots.map((root) => serializeNode(root))),
-            indexSceneNodes(roots),
+            indexSceneNodes2(roots),
             readAllVariables()
           ]);
           const nodes = irNodes.filter((node) => node !== null);

@@ -59,6 +59,9 @@
  *   ALTERY_AGENT_PORT         (default 8788)
  *   ALTERY_AGENT_HOST         (default 127.0.0.1) — loopback on purpose. Anyone who can reach
  *                             this port and knows the secret can read every connected file.
+ *   ALTERY_AGENT_CALL_TIMEOUT_MS  how long one call may take (default 180000)
+ *   ALTERY_AGENT_FILES        where ops that return files write them
+ *                             (default ~/.altery/agent-files)
  */
 
 import http from 'node:http'
@@ -108,8 +111,11 @@ function isLoopback(req) {
  * proxy or browser idle timeout, long enough that the poll is effectively a socket. */
 const POLL_HOLD_MS = 25_000
 /** A call gives up if the plugin has not answered in this long. Ops walking a whole document
- * can genuinely take a few seconds, so this is generous. */
-const CALL_TIMEOUT_MS = 60_000
+ * can genuinely take a few seconds, so this is generous — but a batch of variable writes that
+ * each import from a library is network-bound and blows straight through a minute, and the
+ * only workaround from the agent's side is to split the batch, which costs one undo step per
+ * chunk. Raise it rather than shred the batch. */
+const CALL_TIMEOUT_MS = Math.max(5_000, Number(process.env.ALTERY_AGENT_CALL_TIMEOUT_MS) || 180_000)
 /** No poll renewed within this window → treat that plugin as gone. */
 const OFFLINE_AFTER_MS = 45_000
 
@@ -242,6 +248,60 @@ function failPending(plugin, reason) {
     pending.delete(id)
   }
   plugin.queue.length = 0
+}
+
+/* ------------------------------------------------------------------- files */
+
+const FILES_DIR = process.env.ALTERY_AGENT_FILES || path.join(os.homedir(), '.altery', 'agent-files')
+/** Directories kept before the oldest are swept. A screenshot is worth having until the next
+ * few; keeping every one forever turns a debugging session into a disk leak. */
+const KEEP_RUNS = 40
+
+/** Only ever a basename, only ever these characters — the sandbox proposes a name, this
+ * decides whether it may become a path. */
+function safeName(name) {
+  return typeof name === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(name) && !name.startsWith('.')
+}
+
+function sweepRuns() {
+  try {
+    const runs = fs
+      .readdirSync(FILES_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(FILES_DIR, entry.name))
+      .map((dir) => ({ dir, at: fs.statSync(dir).mtimeMs }))
+      .sort((a, b) => b.at - a.at)
+    for (const stale of runs.slice(KEEP_RUNS)) fs.rmSync(stale.dir, { recursive: true, force: true })
+  } catch {
+    /* sweeping is housekeeping — never fail a call over it */
+  }
+}
+
+/**
+ * Walks a result and turns every `{ __alteryFile: … }` into the path it was written to. The
+ * sandbox has no filesystem and the agent has no way into the sandbox, so this is the only
+ * place bytes can become a file — and doing it here is what keeps a base64 PNG out of the
+ * agent's context, which is the whole reason ops hand back files instead of payloads.
+ */
+function materialiseFiles(value, dir, written) {
+  if (Array.isArray(value)) return value.map((entry) => materialiseFiles(entry, dir, written))
+  if (typeof value !== 'object' || value === null) return value
+
+  const envelope = value.__alteryFile
+  if (envelope && typeof envelope === 'object' && typeof envelope.data === 'string') {
+    if (!safeName(envelope.name)) return { error: `refused unsafe file name ${JSON.stringify(envelope.name)}` }
+    if (written.length === 0) fs.mkdirSync(dir, { recursive: true })
+    const target = path.join(dir, envelope.name)
+    const bytes =
+      envelope.encoding === 'base64' ? Buffer.from(envelope.data, 'base64') : Buffer.from(envelope.data, 'utf8')
+    fs.writeFileSync(target, bytes)
+    written.push(target)
+    return { path: target, bytes: bytes.length, mime: envelope.mime || 'application/octet-stream' }
+  }
+
+  const out = {}
+  for (const [key, entry] of Object.entries(value)) out[key] = materialiseFiles(entry, dir, written)
+  return out
 }
 
 /**
@@ -442,7 +502,23 @@ const ROUTES = {
       `${plugin ? plugin.handle : '?'} · ${entry.op} — ${body.ok ? 'ok' : 'error: ' + body.error}`,
       `(${Date.now() - entry.startedAt}ms)`
     )
-    entry.resolve(body.ok === true ? { ok: true, result: body.result } : { ok: false, error: body.error || 'unknown error' })
+    if (body.ok !== true) {
+      entry.resolve({ ok: false, error: body.error || 'unknown error' })
+      return { code: 200, body: { ok: true } }
+    }
+    let result = body.result
+    try {
+      const written = []
+      result = materialiseFiles(result, path.join(FILES_DIR, `${entry.op.replace(/[^a-z0-9.]/gi, '-')}-${body.id.slice(0, 8)}`), written)
+      if (written.length > 0) {
+        console.log(new Date().toISOString(), `  wrote ${written.length} file${written.length === 1 ? '' : 's'} → ${path.dirname(written[0])}`)
+        sweepRuns()
+      }
+    } catch (err) {
+      entry.resolve({ ok: false, error: `could not write the files this op returned: ${err.message}` })
+      return { code: 200, body: { ok: true } }
+    }
+    entry.resolve({ ok: true, result })
     return { code: 200, body: { ok: true } }
   },
 
