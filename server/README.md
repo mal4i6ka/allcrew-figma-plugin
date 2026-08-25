@@ -14,7 +14,7 @@ they are never sent to or stored in the plugin.
 ## Quickstart
 
 ```bash
-ALTERY_SECRET=your-shared-secret node receiver.js
+ALTERY_SECRET=your-shared-secret node receiver.mjs
 # → listening on :8787
 ```
 
@@ -56,7 +56,7 @@ curl http://localhost:8787
 ```bash
 ALTERY_SECRET=your-secret \
 ALTERY_FOLDER_BASE=/path/to/tokens \
-node receiver.js
+node receiver.mjs
 ```
 
 Plugin endpoint: `http://<tailscale-hostname>:8787`
@@ -72,7 +72,7 @@ cat > ecosystem.config.js <<'EOF'
 module.exports = {
   apps: [{
     name: "altery-receiver",
-    script: "receiver.js",
+    script: "receiver.mjs",
     env: {
       ALTERY_SECRET: "your-secret-here",
       ALTERY_FOLDER_BASE: "/srv/tokens",
@@ -97,7 +97,7 @@ Description=Altery token receiver
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/node /opt/altery/receiver.js
+ExecStart=/usr/bin/node /opt/altery/receiver.mjs
 Restart=on-failure
 Environment=PORT=8787
 Environment=ALTERY_SECRET=your-secret-here
@@ -120,9 +120,9 @@ systemctl enable --now altery-receiver
 FROM node:20-alpine
 RUN apk add --no-cache git github-cli npm
 WORKDIR /app
-COPY receiver.js ./
+COPY receiver.mjs ./
 EXPOSE 8787
-CMD ["node", "receiver.js"]
+CMD ["node", "receiver.mjs"]
 ```
 
 ```bash

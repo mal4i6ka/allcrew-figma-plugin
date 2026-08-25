@@ -138,13 +138,13 @@ does the git/npm/folder work.
 - **Triggers** — *Deliver now* (manual), *Auto-deliver on change* (re-scan every ~7s while
   the plugin is open and push on real change), *Deliver on open*.
 
-**Receiver side** (`server/receiver.js`) — a dependency-free Node script you run on any
+**Receiver side** (`server/receiver.mjs`) — a dependency-free Node script you run on any
 host; it executes the target using the host's own git / `gh` / `npm` auth:
 
 ```bash
 ALTERY_SECRET=your-shared-secret \
 ALTERY_FOLDER_BASE=/abs/path/for/folder/target \
-node server/receiver.js          # listens on :8787 (override with PORT)
+node server/receiver.mjs          # listens on :8787 (override with PORT)
 ```
 
 The plugin only ever HTTP-POSTs, so the receiver is portable: point the plugin's endpoint
@@ -193,7 +193,7 @@ ALTERY_FOLDER_BASE=/Users/you/projects/design-tokens/src
 # run
 ALTERY_SECRET=some-random-string \
 ALTERY_FOLDER_BASE=/Users/you/projects/design-tokens/src \
-node server/receiver.js
+node server/receiver.mjs
 ```
 
 Plugin endpoint: `http://<tailscale-hostname>:8787`
@@ -210,7 +210,7 @@ cat > ecosystem.config.js <<'EOF'
 module.exports = {
   apps: [{
     name: "altery-receiver",
-    script: "server/receiver.js",
+    script: "server/receiver.mjs",
     env: {
       ALTERY_SECRET: "your-secret-here",
       ALTERY_FOLDER_BASE: "/srv/tokens",
@@ -235,7 +235,7 @@ Description=Altery token receiver
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/node /opt/altery/server/receiver.js
+ExecStart=/usr/bin/node /opt/altery/server/receiver.mjs
 Restart=on-failure
 Environment=PORT=8787
 Environment=ALTERY_SECRET=your-secret-here
@@ -258,9 +258,9 @@ systemctl enable --now altery-receiver
 FROM node:20-alpine
 RUN apk add --no-cache git github-cli npm
 WORKDIR /app
-COPY server/receiver.js ./
+COPY server/receiver.mjs ./
 EXPOSE 8787
-CMD ["node", "receiver.js"]
+CMD ["node", "receiver.mjs"]
 ```
 
 ```bash

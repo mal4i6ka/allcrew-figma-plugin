@@ -8,7 +8,7 @@
  * Run it on any host (your machine now, someone else's later — the plugin's endpoint
  * is configurable, so nothing is pinned to one person):
  *
- *     ALTERY_SECRET=your-shared-secret node server/receiver.js
+ *     ALTERY_SECRET=your-shared-secret node server/receiver.mjs
  *
  * Environment:
  *   ALTERY_SECRET       (required) must equal the "Shared secret" in the plugin.
@@ -20,13 +20,12 @@
  *   git/pr  → the host's git auth (SSH key or credential helper); PRs use the `gh` CLI.
  *   npm     → the host's `npm login` (~/.npmrc).
  */
-"use strict";
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
-const crypto = require("crypto");
-const { execFileSync } = require("child_process");
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 
 const PORT = parseInt(process.env.PORT || "8787", 10);
 const SECRET = process.env.ALTERY_SECRET || "";
