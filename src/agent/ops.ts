@@ -75,6 +75,9 @@ export interface NodeSummary {
       unit?: 'percent'
       /** The collection the token lives in — local or imported. */
       collection?: string
+      /** The published key, when the token has one. Identity across files: two variables with
+       * the same name in two libraries are two variables, and only the key says which. */
+      key?: string
       /** True when the token came from another file. A binding onto a remote variable is a
        * live dependency; onto a local one it is not. Reported because the two look identical
        * in Figma and behave completely differently when the upstream library changes. */
@@ -328,6 +331,7 @@ async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSu
       /* an unresolvable id is still worth reporting as a binding — just unnamed */
     }
     const record: NonNullable<NodeSummary['bindings']>[string] = { token: variable?.name ?? id }
+    if (variable?.key) record.key = variable.key
     if (variable?.remote) record.remote = true
 
     const rendered = renderedValue(node, field)
@@ -390,6 +394,7 @@ async function describePaintBinding(
     /* unnamed binding is still a binding */
   }
   const record: NonNullable<NodeSummary['bindings']>[string] = { token: variable?.name ?? id }
+  if (variable?.key) record.key = variable.key
   if (variable?.remote) record.remote = true
 
   const rendered = paintColor(paint)

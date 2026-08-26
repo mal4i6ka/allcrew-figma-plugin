@@ -15815,6 +15815,7 @@ ${scripts}`, "");
       } catch (e) {
       }
       const record2 = { token: (_a = variable == null ? void 0 : variable.name) != null ? _a : id };
+      if (variable == null ? void 0 : variable.key) record2.key = variable.key;
       if (variable == null ? void 0 : variable.remote) record2.remote = true;
       const rendered = renderedValue(node, field);
       if (variable && rendered !== void 0) {
@@ -15855,6 +15856,7 @@ ${scripts}`, "");
     } catch (e) {
     }
     const record2 = { token: (_a = variable == null ? void 0 : variable.name) != null ? _a : id };
+    if (variable == null ? void 0 : variable.key) record2.key = variable.key;
     if (variable == null ? void 0 : variable.remote) record2.remote = true;
     const rendered = paintColor(paint);
     if (!variable || !rendered) return record2;
