@@ -15731,6 +15731,10 @@ ${scripts}`, "");
     }
     return void 0;
   }
+  function differsOnlyByCase(a, b) {
+    const normalise = (value) => value.trim().replace(/\s+/g, " ").toLowerCase();
+    return a !== b && normalise(a) === normalise(b);
+  }
   var COMPARABLE = {
     topLeftRadius: "topLeftRadius",
     topRightRadius: "topRightRadius",
@@ -15791,7 +15795,8 @@ ${scripts}`, "");
             } else if (typeof resolved.value === "string" && typeof rendered === "string") {
               record2.value = resolved.value;
               record2.rendered = rendered;
-              if (resolved.value !== rendered) record2.mismatch = true;
+              if (differsOnlyByCase(resolved.value, rendered)) record2.caseOnly = true;
+              else if (resolved.value !== rendered) record2.mismatch = true;
             }
           } catch (e) {
           }
@@ -16702,22 +16707,27 @@ ${scripts}`, "");
     return { collection: plan.collectionName, created: plan.variables.length, bound, failed, failures, replaced };
   }
   figma.showUI(__html__, { width: 420, height: 660, themeColors: true });
-  var READ_GATES_KEY = "agentReadGates";
-  async function readGateFor(file) {
+  var GATES_KEY = "agentGates";
+  async function gatesFor(file) {
     try {
-      const stored = await figma.clientStorage.getAsync(READ_GATES_KEY);
-      return Boolean(stored && typeof stored === "object" && stored[file] === true);
+      const stored = await figma.clientStorage.getAsync(GATES_KEY);
+      const entry = stored && typeof stored === "object" ? stored[file] : null;
+      if (entry && typeof entry === "object") {
+        const record2 = entry;
+        return { read: record2.read === true, write: record2.write === true };
+      }
+      if (entry === true) return { read: true, write: false };
     } catch (e) {
-      return false;
     }
+    return { read: false, write: false };
   }
-  async function rememberReadGate(file, allowed) {
+  async function rememberGates(file, gates2) {
     try {
-      const stored = await figma.clientStorage.getAsync(READ_GATES_KEY);
-      const gates2 = stored && typeof stored === "object" ? __spreadValues({}, stored) : {};
-      if (allowed) gates2[file] = true;
-      else delete gates2[file];
-      await figma.clientStorage.setAsync(READ_GATES_KEY, gates2);
+      const stored = await figma.clientStorage.getAsync(GATES_KEY);
+      const all = stored && typeof stored === "object" ? __spreadValues({}, stored) : {};
+      if (gates2.read || gates2.write) all[file] = { read: gates2.read, write: gates2.write };
+      else delete all[file];
+      await figma.clientStorage.setAsync(GATES_KEY, all);
     } catch (e) {
     }
   }
@@ -16728,8 +16738,8 @@ ${scripts}`, "");
     figma.clientStorage.getAsync("paletteSettings")
   ]).then(async ([storedOptions, storedPresets, storedPalette]) => {
     const options = normalizeExportOptions(storedOptions);
-    const rememberedRead = await readGateFor(figma.root.name);
-    options.agent = __spreadProps(__spreadValues({}, options.agent), { read: rememberedRead, write: false });
+    const remembered = await gatesFor(figma.root.name);
+    options.agent = __spreadProps(__spreadValues({}, options.agent), { read: remembered.read, write: remembered.read && remembered.write });
     figma.ui.postMessage({
       type: "EXPORT_OPTIONS",
       options,
@@ -17079,7 +17089,7 @@ ${scripts}`, "");
       }
       case "AGENT_SET_GATES": {
         const gates2 = setGates({ read: msg.read, write: msg.write });
-        await rememberReadGate(figma.root.name, gates2.read);
+        await rememberGates(figma.root.name, gates2);
         figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name, fileKey: (_f = figma.fileKey) != null ? _f : null }));
         break;
       }

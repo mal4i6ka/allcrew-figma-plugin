@@ -117,21 +117,18 @@ value into Settings → Agent listener → Shared secret.
 
 ## The switches
 
-The bridge URL and secret persist — that's setup. The permission is consent, and the two halves
-of it get different answers.
+The bridge URL and secret persist — that's setup. So does the answer a designer has already
+given about this file: **both gates are remembered per file.** Re-asking on every open does not
+strengthen consent, it teaches the reflex to click through it, and the switches stay in the
+panel either way.
 
-- **Allow reads** — the agent may inspect the file. **Remembered per file.** Asking for the
-  same permission on every open does not strengthen consent; it teaches the reflex to click
-  through it. The switch stays in the panel and revoking is one click, which is what makes the
-  grant meaningful rather than the re-asking.
-- **Allow changes** — never implied by reads, and **never remembered**. This is the half that
-  changes the document and the half a mistake cannot be taken back from, so it is re-armed by
-  hand every time the plugin opens. Turning reads off still forces writes off: the more
-  dangerous half can't outlive the safer one.
+- **Allow reads** — the agent may inspect the file.
+- **Allow changes** — never *implied* by reads, and separately switched. Turning reads off still
+  forces writes off: the more dangerous half can't outlive the safer one, stored or not.
 
-Reads are remembered under the *file name*, because `figma.fileKey` is exposed only to private
-plugins on Organization plans — the same compromise the bridge makes for its handles. Two files
-sharing a name share the answer. That is a visible switch in the panel, not a silent grant.
+Remembered under the *file name*, because `figma.fileKey` is exposed only to private plugins on
+Organization plans — the same compromise the bridge makes for its handles. Two files sharing a
+name share the answer. That is a visible switch in the panel, not a silent grant.
 
 The sandbox holds the authoritative gate (`src/agent/listener.ts`). The bridge keeps a copy
 purely so a waiting CLI gets a useful error instead of a timeout — it cannot grant anything.

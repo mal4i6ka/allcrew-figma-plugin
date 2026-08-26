@@ -65,9 +65,8 @@ export interface ExportDeliveryOptions {
  * the file is a session choice, not part of the design package's identity.
  *
  * Neither gate is ever persisted as on by a preset: a shared preset must not carry someone
- * else's permission. The read gate is remembered per file in `clientStorage`, which is a
- * different thing — that is this designer's own answer about this file, not a setting that
- * travels. */
+ * else's permission. Remembering them per file in `clientStorage` is a different thing — that
+ * is this designer's own answer about this file, not a setting that travels. */
 export interface ExportAgentOptions {
   /** Bridge base URL, e.g. `http://127.0.0.1:8788`. Empty = listener unavailable. */
   endpoint: string
@@ -77,9 +76,8 @@ export interface ExportAgentOptions {
    * file: re-granting the same permission on every open teaches the reflex to click through
    * it, which is the opposite of consent. */
   read: boolean
-  /** Answer mutating ops (`variables.set`, `node.bind`, `board.render`, ...). Never remembered
-   * — this is the half a mistake cannot be taken back from, so it is re-armed by hand every
-   * time the plugin opens. */
+  /** Answer mutating ops (`variables.set`, `node.bind`, `board.render`, ...). Remembered per
+   * file like `read`, and never implied by it — reads off still forces writes off. */
   write: boolean
 }
 

@@ -61,7 +61,16 @@ export interface NodeSummary {
    * A paint field appears per index (`fills[0]`) when the node carries several. */
   bindings?: Record<
     string,
-    { token: string; value?: number | string; rendered?: number | string; mismatch?: boolean }
+    {
+      token: string
+      value?: number | string
+      rendered?: number | string
+      /** The layer renders something the token does not say. */
+      mismatch?: boolean
+      /** Same text, different capitalisation or spacing. Reported apart from `mismatch` so a
+       * systemic naming quirk cannot bury the handful of real defects. */
+      caseOnly?: boolean
+    }
   >
   /** TEXT only, truncated — an agent wants the gist, not the copy deck. */
   text?: string
@@ -228,6 +237,16 @@ export function renderedValue(node: any, field: string): number | string | undef
   return undefined
 }
 
+/**
+ * Two strings that differ only in capitalisation or spacing. Figma's font styles are canonical
+ * ("Semi Bold") while a token holding them is often written the way a designer types it
+ * ("semi bold"), and dozens of those would drown the one binding that is genuinely wrong.
+ */
+export function differsOnlyByCase(a: string, b: string): boolean {
+  const normalise = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase()
+  return a !== b && normalise(a) === normalise(b)
+}
+
 /** Scalar fields whose rendered value can be compared against the token bound to them. */
 const COMPARABLE: Readonly<Record<string, string>> = {
   topLeftRadius: 'topLeftRadius',
@@ -305,7 +324,8 @@ async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSu
           } else if (typeof resolved.value === 'string' && typeof rendered === 'string') {
             record.value = resolved.value
             record.rendered = rendered
-            if (resolved.value !== rendered) record.mismatch = true
+            if (differsOnlyByCase(resolved.value, rendered)) record.caseOnly = true
+            else if (resolved.value !== rendered) record.mismatch = true
           }
         } catch {
           /* a circular or unreadable alias is reported as a binding without a comparison */

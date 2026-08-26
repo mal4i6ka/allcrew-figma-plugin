@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 ;(globalThis as { figma?: unknown }).figma = { mixed: Symbol('figma.mixed') }
 const MIXED = (globalThis as unknown as { figma: { mixed: symbol } }).figma.mixed
 
-const { paintColor, sameColor, renderedValue } = await import('./ops.ts')
+const { paintColor, sameColor, renderedValue, differsOnlyByCase } = await import('./ops.ts')
 
 test("a solid paint's alpha comes from its opacity, not from color", () => {
   assert.deepEqual(paintColor({ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, opacity: 0.5 }), {
@@ -65,4 +65,20 @@ test('plain numbers and strings pass through, rounded where noisy', () => {
 test('an absent field yields no comparison rather than a zero', () => {
   assert.equal(renderedValue({}, 'itemSpacing'), undefined)
   assert.equal(renderedValue({ opacity: null }, 'opacity'), undefined)
+})
+
+test('capitalisation and spacing alone are not a mismatch', () => {
+  assert.equal(differsOnlyByCase('semi bold', 'Semi Bold'), true)
+  assert.equal(differsOnlyByCase('Regular', 'regular'), true)
+  assert.equal(differsOnlyByCase('semi  bold', 'Semi Bold'), true)
+  assert.equal(differsOnlyByCase(' Bold ', 'bold'), true)
+})
+
+test('identical strings differ in no way at all', () => {
+  assert.equal(differsOnlyByCase('Inter', 'Inter'), false)
+})
+
+test('a genuinely different style is not a capitalisation quirk', () => {
+  assert.equal(differsOnlyByCase('Semi Bold', 'Bold'), false)
+  assert.equal(differsOnlyByCase('Inter', 'Museo Sans'), false)
 })
