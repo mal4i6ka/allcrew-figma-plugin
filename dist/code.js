@@ -15761,6 +15761,10 @@ ${scripts}`, "");
     const normalise = (value) => value.trim().replace(/\s+/g, " ").toLowerCase();
     return a !== b && normalise(a) === normalise(b);
   }
+  var PERCENT_BOUND = /* @__PURE__ */ new Set(["opacity"]);
+  function comparableTokenValue(field, value) {
+    return PERCENT_BOUND.has(field) ? value / 100 : value;
+  }
   var COMPARABLE = {
     topLeftRadius: "topLeftRadius",
     topRightRadius: "topRightRadius",
@@ -15815,9 +15819,12 @@ ${scripts}`, "");
           try {
             const resolved = await resolveVariableValue(variable, modeId);
             if (typeof resolved.value === "number" && typeof rendered === "number") {
+              const percent = PERCENT_BOUND.has(field);
               record2.value = Math.round(resolved.value * 100) / 100;
               record2.rendered = rendered;
-              if (Math.abs(resolved.value - rendered) > 0.01) record2.mismatch = true;
+              if (percent) record2.unit = "percent";
+              const comparable = comparableTokenValue(field, resolved.value);
+              if (Math.abs(comparable - rendered) > 0.01) record2.mismatch = true;
             } else if (typeof resolved.value === "string" && typeof rendered === "string") {
               record2.value = resolved.value;
               record2.rendered = rendered;

@@ -284,6 +284,7 @@ never the synchronous getters.
 | `no secret found` (CLI) | the bridge has never run on this machine |
 | `cannot reach the bridge` | `agent/bridge.mjs` isn't running |
 | status shows `bridge unreachable — retrying` | plugin can see the URL but nothing is listening |
+| a call hangs, then times out, against a file that looks connected | a closed window whose farewell never arrived. The plugin says goodbye on unload, but if the frame is killed outright the session lingers until the bridge's own idle window closes it — pick another handle from `status` |
 | Works on desktop, not in the browser | browser Figma may block loopback (Private Network Access). Use the desktop app, or put the bridge behind HTTPS. |
 
 The bridge logs every call with its op and duration; the plugin's status line shows the same

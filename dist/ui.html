@@ -3097,11 +3097,41 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (wanted) { agentStatus('connecting to ' + cfg.endpoint + '…', ''); return }
         agentStatus(cfg.endpoint ? 'off' : 'bridge URL not set', '')
         // Best-effort, so a CLI waiting on /call fails right away instead of on a timeout.
-        if (cfg.endpoint) {
-          agentFetch('/plugin/gates', { method: 'POST', body: JSON.stringify({ session: AGENT.session, read: false, write: false }) })
-            .catch(function () { /* bridge already down — nothing to tell */ })
-        }
+        agentDisconnect(false)
       }
+
+      /**
+       * Tells the bridge this window is gone. Both gates off is already the bridge's disconnect
+       * path, so the farewell needs no new route — only to arrive.
+       *
+       * Without it a closed plugin leaves a session the bridge still believes in: it accepts a
+       * call, nothing answers, and the caller waits out the whole timeout. Three minutes of
+       * silence for a window that closed is a worse answer than an error.
+       *
+       * `keepalive` is the whole trick on unload — a normal fetch is cancelled as the frame
+       * tears down, and `sendBeacon`, which is built for exactly this, cannot carry the secret
+       * header the bridge requires.
+       */
+      function agentDisconnect(unloading) {
+        var cfg = agentOptions()
+        if (!cfg || !cfg.endpoint || !AGENT.session) return
+        try {
+          agentFetch('/plugin/gates', {
+            method: 'POST',
+            keepalive: true,
+            body: JSON.stringify({ session: AGENT.session, read: false, write: false })
+          }).catch(function () { /* bridge already down — nothing to tell */ })
+        } catch (err) {
+          /* a farewell that cannot be sent must never take the close down with it */
+        }
+        if (unloading) AGENT.session = null
+      }
+
+      // Figma tears the iframe down when the plugin closes. Both events are registered because
+      // which one fires is not guaranteed, and sending the farewell twice costs nothing — the
+      // bridge has already forgotten the session by the second one.
+      window.addEventListener('pagehide', function () { agentDisconnect(true) })
+      window.addEventListener('beforeunload', function () { agentDisconnect(true) })
 
       // The sandbox answers AGENT_SET_GATES with its op manifest; that manifest is exactly what
       // the bridge serves to `altery-figma ops`, so registering it IS the handshake.

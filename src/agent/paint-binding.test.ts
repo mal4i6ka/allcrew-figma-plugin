@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 ;(globalThis as { figma?: unknown }).figma = { mixed: Symbol('figma.mixed') }
 const MIXED = (globalThis as unknown as { figma: { mixed: symbol } }).figma.mixed
 
-const { paintColor, sameColor, renderedValue, differsOnlyByCase } = await import('./ops.ts')
+const { paintColor, sameColor, renderedValue, differsOnlyByCase, comparableTokenValue } = await import('./ops.ts')
 
 test("a solid paint's alpha comes from its opacity, not from color", () => {
   assert.deepEqual(paintColor({ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, opacity: 0.5 }), {
@@ -81,4 +81,17 @@ test('identical strings differ in no way at all', () => {
 test('a genuinely different style is not a capitalisation quirk', () => {
   assert.equal(differsOnlyByCase('Semi Bold', 'Bold'), false)
   assert.equal(differsOnlyByCase('Inter', 'Museo Sans'), false)
+})
+
+test('an opacity token is authored in percent, the property is a fraction', () => {
+  // 30 and 0.3 are the same answer; the naive comparison called this a defect and cost a
+  // wrong diagnosis plus a broken component set.
+  assert.equal(comparableTokenValue('opacity', 30), 0.3)
+  assert.equal(comparableTokenValue('opacity', 0.5), 0.005)
+})
+
+test('every other numeric field compares in its own units', () => {
+  assert.equal(comparableTokenValue('itemSpacing', 8), 8)
+  assert.equal(comparableTokenValue('topLeftRadius', 16), 16)
+  assert.equal(comparableTokenValue('fontSize', 15), 15)
 })

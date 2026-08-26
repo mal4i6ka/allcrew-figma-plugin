@@ -70,6 +70,9 @@ export interface NodeSummary {
       /** Same text, different capitalisation or spacing. Reported apart from `mismatch` so a
        * systemic naming quirk cannot bury the handful of real defects. */
       caseOnly?: boolean
+      /** Set when the token is authored in different units than the property it drives, so
+       * `value` and `rendered` can disagree numerically and still be the same thing. */
+      unit?: 'percent'
     }
   >
   /** TEXT only, truncated — an agent wants the gist, not the copy deck. */
@@ -247,6 +250,20 @@ export function differsOnlyByCase(a: string, b: string): boolean {
   return a !== b && normalise(a) === normalise(b)
 }
 
+/**
+ * Fields whose bound variable is authored in percent while the node property is a 0..1
+ * fraction. Figma binds `opacity` this way and says so nowhere: a variable of 30 renders as
+ * 0.3, which means a token written as 0.5 renders as half a percent and the layer vanishes.
+ * That asymmetry cost a wrong diagnosis and a broken component set to find, so it lives in a
+ * named table rather than in a comment somewhere.
+ */
+const PERCENT_BOUND: ReadonlySet<string> = new Set(['opacity'])
+
+/** The token's value in the property's own units, for comparison. */
+export function comparableTokenValue(field: string, value: number): number {
+  return PERCENT_BOUND.has(field) ? value / 100 : value
+}
+
 /** Scalar fields whose rendered value can be compared against the token bound to them. */
 const COMPARABLE: Readonly<Record<string, string>> = {
   topLeftRadius: 'topLeftRadius',
@@ -318,9 +335,15 @@ async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSu
           // a design system actually uses.
           const resolved = await resolveVariableValue(variable, modeId)
           if (typeof resolved.value === 'number' && typeof rendered === 'number') {
+            const percent = PERCENT_BOUND.has(field)
+            // `value` stays what the token actually holds — reporting a converted number would
+            // hide the very asymmetry the reader needs to know about. `unit` explains why 30
+            // and 0.3 are the same answer.
             record.value = Math.round(resolved.value * 100) / 100
             record.rendered = rendered
-            if (Math.abs(resolved.value - rendered) > 0.01) record.mismatch = true
+            if (percent) record.unit = 'percent'
+            const comparable = comparableTokenValue(field, resolved.value)
+            if (Math.abs(comparable - rendered) > 0.01) record.mismatch = true
           } else if (typeof resolved.value === 'string' && typeof rendered === 'string') {
             record.value = resolved.value
             record.rendered = rendered
