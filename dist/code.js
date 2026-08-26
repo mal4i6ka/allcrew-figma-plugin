@@ -14442,6 +14442,32 @@ ${scripts}`, "");
       }
     },
     {
+      name: "node.focus",
+      summary: 'Select a node and scroll the designer to it \u2014 how an agent says "this one, look".',
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "Node to reveal." },
+        select: { type: "boolean", default: true, description: "Also select it, not just scroll to it." }
+      },
+      async run(params) {
+        const node = await resolveSceneNode(params.nodeId);
+        let page = node.parent;
+        while (page && page.type !== "PAGE") page = page.parent;
+        if (!page) throw new Error(`"${node.name}" is not on a page \u2014 nothing to scroll to`);
+        await page.loadAsync();
+        await figma.setCurrentPageAsync(page);
+        if (params.select !== false) figma.currentPage.selection = [node];
+        figma.viewport.scrollAndZoomIntoView([node]);
+        return {
+          node: { id: node.id, name: node.name, type: node.type },
+          page: { id: page.id, name: page.name },
+          selected: params.select !== false,
+          /** Paste the file's own URL in front of this to make a link someone can send. */
+          deepLinkSuffix: `?node-id=${node.id.replace(":", "-")}`
+        };
+      }
+    },
+    {
       name: "design.context",
       summary: "Reference HTML + CSS + PNG for a node, with the tokens it binds \u2014 implement from this.",
       mutates: false,

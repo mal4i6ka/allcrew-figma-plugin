@@ -156,6 +156,7 @@ altery-figma ops --json       # the same, machine-readable
 | `styles.list` | local text, paint, effect and grid styles |
 | `variables.get` | collections, modes and values — the token export's own snapshot |
 | `flow.map` | prototype graph of a page: starting points and every reaction edge |
+| `node.focus` | selects a node and scrolls the designer to it — "this one, look" |
 | `node.screenshot` | renders a node to PNG — how an agent checks what it actually drew |
 | `design.context` | reference HTML + CSS + PNG for a node, plus the tokens it binds |
 | `motion.context` | keyframe tracks with easing, the CSS/GSAP they compile to, and which backend fits |
