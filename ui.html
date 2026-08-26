@@ -806,7 +806,7 @@
           <span id="agent-state-text">off</span>
         </div>
         <button class="btn primary" id="agent-toggle" type="button">Start listening</button>
-        <p class="agent-hint" id="agent-note">Off by default every time the plugin opens &mdash; and while it's off, nothing outside Figma can read this file.</p>
+        <p class="agent-hint" id="agent-note">While this is off, nothing outside Figma can read this file.</p>
       </section>
 
       <section class="card">
@@ -824,8 +824,9 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           </button>
         </div>
-        <p class="agent-hint">One Node script, nothing to install &mdash; it ships inside this plugin, so it always matches. Save it anywhere and run it; the command above assumes your browser's Downloads folder. Needs Node 18+, which the CLI agent you're wiring up already requires.</p>
-        <p class="agent-hint">It mints a secret of its own into <code>~/.altery/agent-secret</code> and opens a five-minute pairing window &mdash; press <b>Pair with bridge</b> above and this plugin picks it up. Nothing to type, nothing shared between machines, no secret in the plugin.</p>
+        <p class="agent-hint">One Node script, nothing to install &mdash; it ships inside this plugin, so it always matches. Needs Node 18+. The command above assumes your Downloads folder.</p>
+        <p class="agent-hint">It mints its own secret into <code>~/.altery/agent-secret</code> and opens a five-minute pairing window &mdash; press <b>Pair with bridge</b> above. <b>Everyone does this once on their own machine:</b> no secret travels with the plugin, so there is nothing to hand out and nothing to rotate for the team.</p>
+        <p class="agent-hint"><b>Desktop app only.</b> Figma in a browser blocks calls to your own machine, so the channel cannot reach the bridge there. After a plugin update, restart the bridge &mdash; this screen says so itself if the two fall out of step.</p>
       </section>
 
       <section class="card">
@@ -3349,7 +3350,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         btn.className = 'btn ' + (on ? 'ghost' : 'primary')
         agentText('agent-note', on
           ? 'The agent can read this file while this is on. Every call it makes shows up here as it happens.'
-          : "Off by default every time the plugin opens — and while it's off, nothing outside Figma can read this file.")
+          : "Off — nothing outside Figma can read this file. Your answer is remembered per file; writes are a separate switch under Settings.")
       }
 
       function agentRenderView() {
