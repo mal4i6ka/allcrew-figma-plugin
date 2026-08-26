@@ -474,6 +474,7 @@
   #view-agent .agent-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 3px rgba(255,255,255,0.05); transition: background .2s, box-shadow .2s; }
   #view-agent .agent-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(70,192,138,0.18); }
   #view-agent .agent-dot.err { background: var(--err); box-shadow: 0 0 0 3px rgba(255,122,110,0.18); }
+  #view-agent .agent-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(226,185,61,0.18); }
   #view-agent .btn.ghost { width: 100%; margin-bottom: 9px; }
   #view-agent .btn.ghost:disabled { opacity: .42; cursor: not-allowed; }
   #view-agent .agent-hint + .agent-hint { margin-top: 7px; }
@@ -533,6 +534,7 @@
   .deliver-status { font-family: var(--mono); font-size: 10.5px; color: var(--faint); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .deliver-status.ok { color: var(--ok); }
   .deliver-status.err { color: var(--err); }
+  .deliver-status.warn { color: var(--warn); }
   #view-settings .set-hint { color: var(--faint); font-size: 10.5px; line-height: 1.55; margin: 16px 2px 4px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.05); }
   #view-settings .set-hint code { font-family: var(--mono); background: var(--bg-2); padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
   #view-settings .file-pick { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--muted); font-size: 11px; padding: 9px 11px; background: var(--bg-2); border: 1px dashed var(--border-2); border-radius: var(--r-sm); }
@@ -3036,6 +3038,21 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // placeholder in the source tree so ui.html remains readable; an unbuilt ui.html simply
       // disables the download rather than handing someone an empty file.
       var AGENT_BRIDGE_SOURCE = '__ALTERY_BRIDGE_SOURCE__'
+
+      /* The bridge fingerprints its own file the same way; a mismatch means the running bridge
+       * is not the one this plugin was built against. That is the single likeliest cause of
+       * "the code is right and it still behaves oddly", and it is invisible unless something
+       * says so out loud. FNV-1a — this detects change, it defends against nobody. */
+      function agentFingerprint(source) {
+        var hash = 0x811c9dc5
+        for (var i = 0; i < source.length; i++) {
+          hash ^= source.charCodeAt(i)
+          hash = Math.imul(hash, 0x01000193) >>> 0
+        }
+        return ('0000000' + hash.toString(16)).slice(-8)
+      }
+
+      var AGENT_BRIDGE_FINGERPRINT = agentFingerprint(AGENT_BRIDGE_SOURCE)
       var AGENT_BRIDGE_EMBEDDED = AGENT_BRIDGE_SOURCE.indexOf('altery-agent-bridge') !== -1
       var DELIVERY_RECEIVER_SOURCE = '__ALTERY_RECEIVER_SOURCE__'
       var DELIVERY_RECEIVER_EMBEDDED = DELIVERY_RECEIVER_SOURCE.indexOf('altery-tokens-receiver') !== -1
@@ -3105,7 +3122,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             ops: AGENT.ops,
             gates: { read: msg.read, write: msg.write },
             file: AGENT.file,
-            fileKey: msg.fileKey || null
+            fileKey: msg.fileKey || null,
+            bridgeFingerprint: AGENT_BRIDGE_FINGERPRINT
           })
         })
           .then(function (response) {
@@ -3120,11 +3138,24 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             AGENT.session = hello.session || null
             AGENT.handle = hello.handle || null
             agentRenderView()
-            agentStatus(
-              'listening as "' + AGENT.handle + '" · ' + AGENT.ops.length + ' ops · ' +
-                (msg.write ? 'read + write' : 'read only'),
-              'ok'
-            )
+            var stale =
+              hello.bridgeFingerprint && hello.bridgeFingerprint !== AGENT_BRIDGE_FINGERPRINT
+            if (stale) {
+              // Deliberately not fatal: an older bridge still relays calls, and refusing to
+              // connect over it would be worse than saying what is wrong. But every surprising
+              // result from here on has one likely cause, and this is where to name it.
+              agentStatus(
+                'bridge is out of date — restart it with "Download bridge.mjs" from this screen, ' +
+                  'or from agent/bridge.mjs in a checkout. Connected as "' + AGENT.handle + '" anyway.',
+                'warn'
+              )
+            } else {
+              agentStatus(
+                'listening as "' + AGENT.handle + '" · ' + AGENT.ops.length + ' ops · ' +
+                  (msg.write ? 'read + write' : 'read only'),
+                'ok'
+              )
+            }
             agentPoll(generation)
           })
           .catch(function (err) {

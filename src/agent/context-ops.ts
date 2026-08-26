@@ -155,6 +155,29 @@ async function emitOne(
   return emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile })
 }
 
+/** Stage timings, so a slow op says *which* stage was slow. `design.context` once spent three
+ * minutes inside a variable read that looked like a one-liner; without this the only way to
+ * find that was to guess and rebuild. */
+class Stopwatch {
+  private readonly marks: Array<{ stage: string; ms: number }> = []
+  private last = Date.now()
+  mark(stage: string): void {
+    const now = Date.now()
+    this.marks.push({ stage, ms: now - this.last })
+    this.last = now
+  }
+  async time<T>(stage: string, work: () => Promise<T>): Promise<T> {
+    const result = await work()
+    this.mark(stage)
+    return result
+  }
+  report(): Record<string, number> {
+    const out: Record<string, number> = {}
+    for (const entry of this.marks) out[entry.stage] = (out[entry.stage] ?? 0) + entry.ms
+    return out
+  }
+}
+
 async function screenshot(node: SceneNode, scale: number): Promise<Uint8Array> {
   return node.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: scale } })
 }
@@ -204,9 +227,18 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       })()
       if (page) await page.loadAsync()
 
-      const sceneNodesById = await indexSceneNodes([root])
-      const tokens = await collectTokens(sceneNodesById.values())
-      const { html, css } = await emitOne(root, params.cssFile as string, sceneNodesById, tokens.names)
+      const clock = new Stopwatch()
+      const sceneNodesById = await clock.time('index', () => indexSceneNodes([root]))
+      const tokens = await clock.time('tokens', () => collectTokens(sceneNodesById.values()))
+      const ir = await clock.time('serialize', () => serializeNode(root))
+      if (!ir) throw new Error(`"${root.name}" (${root.type}) produced no exportable structure`)
+      const irNodes: readonly IrNode[] = [ir]
+      await clock.time('vectors', () =>
+        annotateVectorLeaves(irNodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
+      )
+      const { html, css } = await clock.time('emit', () =>
+        emitDjango(irNodes, sceneNodesById, tokens.names, { cssFile: params.cssFile as string })
+      )
 
       const slug = slugify(root.name)
       const files: unknown[] = [
@@ -214,13 +246,15 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         textFile(`${slug}.css`, 'text/css', css),
       ]
       if (params.screenshot !== false) {
-        files.push(binaryFile(`${slug}.png`, 'image/png', await screenshot(root, params.scale as number)))
+        const png = await clock.time('screenshot', () => screenshot(root, params.scale as number))
+        files.push(binaryFile(`${slug}.png`, 'image/png', png))
       }
 
       return {
         node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
         layers: sceneNodesById.size,
         tokens: tokens.usage,
+        ms: clock.report(),
         files,
       }
     },

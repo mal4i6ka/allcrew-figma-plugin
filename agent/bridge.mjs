@@ -69,6 +69,31 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/**
+ * A fingerprint of this file, so a stale bridge announces itself instead of behaving subtly
+ * differently. The plugin carries the exact source it was built against (build.mjs inlines
+ * `agent/bridge.mjs` into ui.html), so it can fingerprint that and compare — no version
+ * constant for anyone to forget to bump, and no false alarm from a whitespace-identical copy.
+ * FNV-1a rather than a real digest: this detects change, it does not defend against anyone.
+ */
+export function fingerprint(source) {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
+}
+
+const BRIDGE_FINGERPRINT = (() => {
+  try {
+    return fingerprint(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))
+  } catch {
+    return null
+  }
+})()
 
 const PORT = parseInt(process.env.ALTERY_AGENT_PORT || '8788', 10)
 const HOST = process.env.ALTERY_AGENT_HOST || '127.0.0.1'
@@ -169,6 +194,7 @@ function describe(plugin) {
     handle: plugin.handle,
     file: plugin.file,
     online: isOnline(plugin),
+    stale: isStale(plugin),
     gates: plugin.gates,
     lastSeen: plugin.lastSeen ? new Date(plugin.lastSeen).toISOString() : null,
     queued: plugin.queue.length,
@@ -336,6 +362,21 @@ function dispatch(plugin, op, params) {
   })
 }
 
+/** A plugin built against a different bridge is the likeliest cause of "it behaves oddly and
+ * the code looks right" — say it once per connection, on both sides. */
+function isStale(plugin) {
+  return Boolean(plugin.expects && BRIDGE_FINGERPRINT && plugin.expects !== BRIDGE_FINGERPRINT)
+}
+
+function warnIfStale(plugin) {
+  if (!isStale(plugin)) return
+  console.log(
+    new Date().toISOString(),
+    `! "${plugin.file}" (${plugin.handle}) expects bridge ${plugin.expects}, this one is ${BRIDGE_FINGERPRINT} —`,
+    `restart it from the plugin's own copy, or from agent/bridge.mjs in a checkout`
+  )
+}
+
 /** What one plugin's manifest says about an op — used to refuse a broadcast that would write. */
 function opIsMutating(plugin, op) {
   const entry = (plugin.ops || []).find((candidate) => candidate.name === op)
@@ -441,13 +482,18 @@ const ROUTES = {
       known.fileKey = typeof body.fileKey === 'string' ? body.fileKey : null
       known.ops = Array.isArray(body.ops) ? body.ops : []
       known.gates = { read: body.gates?.read === true, write: body.gates?.write === true }
+      known.expects = typeof body.bridgeFingerprint === 'string' ? body.bridgeFingerprint : null
       known.lastSeen = Date.now()
       console.log(
         new Date().toISOString(),
         `= "${known.file}" (${known.handle}) — reconnected ·`,
         `read=${known.gates.read} write=${known.gates.write} · ${roster().length} connected`
       )
-      return { code: 200, body: { ok: true, session, handle: known.handle, pollHoldMs: POLL_HOLD_MS } }
+      warnIfStale(known)
+      return {
+        code: 200,
+        body: { ok: true, session, handle: known.handle, pollHoldMs: POLL_HOLD_MS, bridgeFingerprint: BRIDGE_FINGERPRINT },
+      }
     }
 
     const plugin = {
@@ -457,6 +503,7 @@ const ROUTES = {
       fileKey: typeof body.fileKey === 'string' ? body.fileKey : null,
       ops: Array.isArray(body.ops) ? body.ops : [],
       gates: { read: body.gates?.read === true, write: body.gates?.write === true },
+      expects: typeof body.bridgeFingerprint === 'string' ? body.bridgeFingerprint : null,
       lastSeen: Date.now(),
       poller: null,
       queue: [],
@@ -467,7 +514,11 @@ const ROUTES = {
       `+ "${plugin.file}" (${plugin.handle}) — ${plugin.ops.length} ops ·`,
       `read=${plugin.gates.read} write=${plugin.gates.write} · ${roster().length} connected`
     )
-    return { code: 200, body: { ok: true, session, handle: plugin.handle, pollHoldMs: POLL_HOLD_MS } }
+    warnIfStale(plugin)
+    return {
+      code: 200,
+      body: { ok: true, session, handle: plugin.handle, pollHoldMs: POLL_HOLD_MS, bridgeFingerprint: BRIDGE_FINGERPRINT },
+    }
   },
 
   'GET /plugin/poll': async (req, res, url) => {

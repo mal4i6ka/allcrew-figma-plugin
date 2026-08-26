@@ -14199,6 +14199,28 @@ ${scripts}`, "");
     await annotateVectorLeaves(nodes, sceneNodesById);
     return emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile });
   }
+  var Stopwatch = class {
+    constructor() {
+      this.marks = [];
+      this.last = Date.now();
+    }
+    mark(stage) {
+      const now = Date.now();
+      this.marks.push({ stage, ms: now - this.last });
+      this.last = now;
+    }
+    async time(stage, work) {
+      const result = await work();
+      this.mark(stage);
+      return result;
+    }
+    report() {
+      var _a;
+      const out = {};
+      for (const entry of this.marks) out[entry.stage] = ((_a = out[entry.stage]) != null ? _a : 0) + entry.ms;
+      return out;
+    }
+  };
   async function screenshot(node, scale) {
     return node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: scale } });
   }
@@ -14241,21 +14263,34 @@ ${scripts}`, "");
           return parent;
         })();
         if (page) await page.loadAsync();
-        const sceneNodesById = await indexSceneNodes([root]);
-        const tokens = await collectTokens(sceneNodesById.values());
-        const { html, css } = await emitOne(root, params.cssFile, sceneNodesById, tokens.names);
+        const clock = new Stopwatch();
+        const sceneNodesById = await clock.time("index", () => indexSceneNodes([root]));
+        const tokens = await clock.time("tokens", () => collectTokens(sceneNodesById.values()));
+        const ir = await clock.time("serialize", () => serializeNode(root));
+        if (!ir) throw new Error(`"${root.name}" (${root.type}) produced no exportable structure`);
+        const irNodes = [ir];
+        await clock.time(
+          "vectors",
+          () => annotateVectorLeaves(irNodes, sceneNodesById)
+        );
+        const { html, css } = await clock.time(
+          "emit",
+          () => emitDjango(irNodes, sceneNodesById, tokens.names, { cssFile: params.cssFile })
+        );
         const slug2 = slugify2(root.name);
         const files = [
           textFile(`${slug2}.html`, "text/html", html),
           textFile(`${slug2}.css`, "text/css", css)
         ];
         if (params.screenshot !== false) {
-          files.push(binaryFile(`${slug2}.png`, "image/png", await screenshot(root, params.scale)));
+          const png = await clock.time("screenshot", () => screenshot(root, params.scale));
+          files.push(binaryFile(`${slug2}.png`, "image/png", png));
         }
         return {
           node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
           layers: sceneNodesById.size,
           tokens: tokens.usage,
+          ms: clock.report(),
           files
         };
       }

@@ -129,6 +129,14 @@ async function cmdStatus() {
   for (const entry of body.files) {
     process.stderr.write(`  ${entry.handle.padEnd(width)}  ${entry.file}  —  allows ${gateLabel(entry.gates)}\n`)
   }
+  // A bridge older than the plugin relays calls but not necessarily the same way. Say so here:
+  // this is the first thing anyone runs, and the alternative is debugging the wrong layer.
+  if (body.files.some((entry) => entry.stale)) {
+    process.stderr.write(
+      `\n! this bridge is older than the plugin connected to it — restart it from a current\n` +
+        `  agent/bridge.mjs, or re-download it from the plugin's Agent Listener screen.\n`
+    )
+  }
   if (body.count > 1) process.stderr.write(`\nPass -f <handle> to choose one, or -f '*' to ask them all.\n`)
 }
 
