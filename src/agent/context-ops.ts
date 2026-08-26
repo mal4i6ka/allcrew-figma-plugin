@@ -220,20 +220,25 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       while (page && page.type !== 'PAGE') page = page.parent
       if (!page) throw new Error(`"${node.name}" is not on a page — nothing to scroll to`)
 
-      // `figma.fileKey` is exposed only to private plugins on Organization plans, so an agent
-      // usually cannot build a deep link at all. Moving the viewport is the answer that works
-      // for everyone. It touches no part of the document, which is why it sits with the reads.
+      // Moving the viewport works on every plan and touches no part of the document, which is
+      // why this sits with the reads. The link is the better answer when it can be built — but
+      // `figma.fileKey` is given only to private plugins on Organization plans, so outside one
+      // there is nothing to build it from and the suffix is all an agent can hand over.
       await (page as PageNode).loadAsync()
       await figma.setCurrentPageAsync(page as PageNode)
       if (params.select !== false) figma.currentPage.selection = [node]
       figma.viewport.scrollAndZoomIntoView([node])
 
+      const anchor = `?node-id=${node.id.replace(':', '-')}`
+      const fileKey = figma.fileKey
       return {
         node: { id: node.id, name: node.name, type: node.type },
         page: { id: page.id, name: (page as PageNode).name },
         selected: params.select !== false,
-        /** Paste the file's own URL in front of this to make a link someone can send. */
-        deepLinkSuffix: `?node-id=${node.id.replace(':', '-')}`,
+        /** A link worth sending, when this plugin is private to an Organization. */
+        url: fileKey ? `https://www.figma.com/design/${fileKey}/${anchor}` : null,
+        /** Paste the file's own URL in front of this when there is no `url` above. */
+        deepLinkSuffix: anchor,
       }
     },
   },

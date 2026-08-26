@@ -14458,12 +14458,16 @@ ${scripts}`, "");
         await figma.setCurrentPageAsync(page);
         if (params.select !== false) figma.currentPage.selection = [node];
         figma.viewport.scrollAndZoomIntoView([node]);
+        const anchor = `?node-id=${node.id.replace(":", "-")}`;
+        const fileKey = figma.fileKey;
         return {
           node: { id: node.id, name: node.name, type: node.type },
           page: { id: page.id, name: page.name },
           selected: params.select !== false,
-          /** Paste the file's own URL in front of this to make a link someone can send. */
-          deepLinkSuffix: `?node-id=${node.id.replace(":", "-")}`
+          /** A link worth sending, when this plugin is private to an Organization. */
+          url: fileKey ? `https://www.figma.com/design/${fileKey}/${anchor}` : null,
+          /** Paste the file's own URL in front of this when there is no `url` above. */
+          deepLinkSuffix: anchor
         };
       }
     },
@@ -16741,25 +16745,39 @@ ${scripts}`, "");
   }
   figma.showUI(__html__, { width: 420, height: 660, themeColors: true });
   var GATES_KEY = "agentGates";
-  async function gatesFor(file) {
+  function gateKeys() {
+    const key = figma.fileKey;
+    return key ? [key, figma.root.name] : [figma.root.name];
+  }
+  function readStoredGates(entry) {
+    if (entry && typeof entry === "object") {
+      const record2 = entry;
+      return { read: record2.read === true, write: record2.write === true };
+    }
+    if (entry === true) return { read: true, write: false };
+    return null;
+  }
+  async function gatesFor() {
     try {
       const stored = await figma.clientStorage.getAsync(GATES_KEY);
-      const entry = stored && typeof stored === "object" ? stored[file] : null;
-      if (entry && typeof entry === "object") {
-        const record2 = entry;
-        return { read: record2.read === true, write: record2.write === true };
+      if (!stored || typeof stored !== "object") return { read: false, write: false };
+      const all = stored;
+      for (const key of gateKeys()) {
+        const gates2 = readStoredGates(all[key]);
+        if (gates2) return gates2;
       }
-      if (entry === true) return { read: true, write: false };
     } catch (e) {
     }
     return { read: false, write: false };
   }
-  async function rememberGates(file, gates2) {
+  async function rememberGates(gates2) {
     try {
       const stored = await figma.clientStorage.getAsync(GATES_KEY);
       const all = stored && typeof stored === "object" ? __spreadValues({}, stored) : {};
-      if (gates2.read || gates2.write) all[file] = { read: gates2.read, write: gates2.write };
-      else delete all[file];
+      const [primary, ...rest] = gateKeys();
+      if (gates2.read || gates2.write) all[primary] = { read: gates2.read, write: gates2.write };
+      else delete all[primary];
+      for (const stale of rest) delete all[stale];
       await figma.clientStorage.setAsync(GATES_KEY, all);
     } catch (e) {
     }
@@ -16771,7 +16789,7 @@ ${scripts}`, "");
     figma.clientStorage.getAsync("paletteSettings")
   ]).then(async ([storedOptions, storedPresets, storedPalette]) => {
     const options = normalizeExportOptions(storedOptions);
-    const remembered = await gatesFor(figma.root.name);
+    const remembered = await gatesFor();
     options.agent = __spreadProps(__spreadValues({}, options.agent), { read: remembered.read, write: remembered.read && remembered.write });
     figma.ui.postMessage({
       type: "EXPORT_OPTIONS",
@@ -17122,7 +17140,7 @@ ${scripts}`, "");
       }
       case "AGENT_SET_GATES": {
         const gates2 = setGates({ read: msg.read, write: msg.write });
-        await rememberGates(figma.root.name, gates2);
+        await rememberGates(gates2);
         figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name, fileKey: (_f = figma.fileKey) != null ? _f : null }));
         break;
       }

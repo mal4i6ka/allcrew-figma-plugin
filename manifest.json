@@ -8,8 +8,8 @@
   "capabilities": ["inspect"],
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["*"],
-    "reasoning": "Token extraction is fully client-side. The optional delivery step POSTs the generated package to a user-configured receiver endpoint (which may be any host — local, Tailscale, CI), so the domain can't be fixed ahead of time."
+    "allowedDomains": ["*", "http://localhost:*", "http://127.0.0.1:*"],
+    "reasoning": "Token extraction is fully client-side. Two optional features dial out: the delivery step POSTs the generated package to a user-configured receiver endpoint (which may be any host — local, Tailscale, CI), so the domain can't be fixed ahead of time; and the agent listener talks to a loopback bridge the designer runs themselves. Loopback is listed explicitly alongside the wildcard because a published plugin is judged by this field and the two local endpoints are the ones whose failure would be silent."
   },
   "permissions": ["currentuser", "teamlibrary"],
   "relaunchButtons": [{ "command": "reexport", "name": "Re-export", "multipleSelection": true }]

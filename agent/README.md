@@ -126,9 +126,11 @@ panel either way.
 - **Allow changes** — never *implied* by reads, and separately switched. Turning reads off still
   forces writes off: the more dangerous half can't outlive the safer one, stored or not.
 
-Remembered under the *file name*, because `figma.fileKey` is exposed only to private plugins on
-Organization plans — the same compromise the bridge makes for its handles. Two files sharing a
-name share the answer. That is a visible switch in the panel, not a silent grant.
+Remembered under `figma.fileKey` where there is one, and under the *file name* where there is
+not. Figma gives the key only to plugins published privately to an Organization, so outside one
+two files sharing a name share the answer — a visible switch in the panel, not a silent grant.
+Published privately, the collision disappears on its own and older name-keyed grants are still
+honoured.
 
 The sandbox holds the authoritative gate (`src/agent/listener.ts`). The bridge keeps a copy
 purely so a waiting CLI gets a useful error instead of a timeout — it cannot grant anything.
@@ -156,7 +158,7 @@ altery-figma ops --json       # the same, machine-readable
 | `styles.list` | local text, paint, effect and grid styles |
 | `variables.get` | collections, modes and values — the token export's own snapshot |
 | `flow.map` | prototype graph of a page: starting points and every reaction edge |
-| `node.focus` | selects a node and scrolls the designer to it — "this one, look" |
+| `node.focus` | selects a node and scrolls the designer to it — "this one, look", and a link when the plugin is Organization-private |
 | `node.screenshot` | renders a node to PNG — how an agent checks what it actually drew |
 | `design.context` | reference HTML + CSS + PNG for a node, plus the tokens it binds |
 | `motion.context` | keyframe tracks with easing, the CSS/GSAP they compile to, and which backend fits |

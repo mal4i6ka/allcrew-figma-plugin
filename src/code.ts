@@ -586,11 +586,11 @@ async function generateTypographyVariables(options: unknown): Promise<Typography
 figma.showUI(__html__, { width: 420, height: 660, themeColors: true })
 
 /**
- * Remembered gates, keyed by file. `figma.fileKey` is the natural key but Figma exposes it only
- * to private plugins on Organization plans, so the file *name* carries it — the same compromise
- * the bridge makes for its handles. Two files sharing a name share the answer; that is a visible
- * switch in the panel, not a silent grant, and the alternative is asking everyone on every open
- * forever.
+ * Remembered gates, keyed by file. `figma.fileKey` is the real identity and is what a private
+ * plugin on an Organization plan gets; everywhere else it reads null and the file *name* has to
+ * stand in, which means two files called the same thing share one answer. Preferring the key
+ * when it exists costs nothing and quietly removes that collision on publish — and the name is
+ * still read as a fallback so nobody's existing grant is forgotten in the move.
  *
  * Both halves are remembered. Writes were session-only at first, on the reasoning that the half
  * which changes the document deserves a deliberate arming — but re-arming it eight times in one
@@ -604,29 +604,48 @@ interface StoredGates {
   write: boolean
 }
 
-async function gatesFor(file: string): Promise<StoredGates> {
+/** The key first, the name second — see `gatesFor` for why both are read. */
+function gateKeys(): string[] {
+  const key = figma.fileKey
+  return key ? [key, figma.root.name] : [figma.root.name]
+}
+
+function readStoredGates(entry: unknown): StoredGates | null {
+  if (entry && typeof entry === 'object') {
+    const record = entry as Record<string, unknown>
+    return { read: record.read === true, write: record.write === true }
+  }
+  // The first shape stored a bare `true` for the read gate; honour it rather than silently
+  // locking out anyone who granted before this changed.
+  if (entry === true) return { read: true, write: false }
+  return null
+}
+
+async function gatesFor(): Promise<StoredGates> {
   try {
     const stored = await figma.clientStorage.getAsync(GATES_KEY)
-    const entry = stored && typeof stored === 'object' ? (stored as Record<string, unknown>)[file] : null
-    if (entry && typeof entry === 'object') {
-      const record = entry as Record<string, unknown>
-      return { read: record.read === true, write: record.write === true }
+    if (!stored || typeof stored !== 'object') return { read: false, write: false }
+    const all = stored as Record<string, unknown>
+    for (const key of gateKeys()) {
+      const gates = readStoredGates(all[key])
+      if (gates) return gates
     }
-    // The first shape stored a bare `true` for the read gate; honour it rather than silently
-    // locking out anyone who granted before this changed.
-    if (entry === true) return { read: true, write: false }
   } catch {
     /* fall through to closed */
   }
   return { read: false, write: false }
 }
 
-async function rememberGates(file: string, gates: StoredGates): Promise<void> {
+async function rememberGates(gates: StoredGates): Promise<void> {
   try {
     const stored = await figma.clientStorage.getAsync(GATES_KEY)
     const all: Record<string, unknown> = stored && typeof stored === 'object' ? { ...(stored as Record<string, unknown>) } : {}
-    if (gates.read || gates.write) all[file] = { read: gates.read, write: gates.write }
-    else delete all[file]
+    // Written under the best key available, and the weaker one is dropped so a rename cannot
+    // resurrect a grant the designer already revoked.
+    const [primary, ...rest] = gateKeys()
+    if (gates.read || gates.write) all[primary] = { read: gates.read, write: gates.write }
+    else delete all[primary]
+    for (const stale of rest) delete all[stale]
     await figma.clientStorage.setAsync(GATES_KEY, all)
   } catch {
     /* a listener that works but forgets is better than one that fails to open */
@@ -644,7 +663,7 @@ Promise.all([
   // already given about this file. Re-asking on every open does not strengthen consent — it
   // trains the reflex to click through it — and the switches stay in the panel either way.
   const options = normalizeExportOptions(storedOptions)
-  const remembered = await gatesFor(figma.root.name)
+  const remembered = await gatesFor()
   // Writes cannot outlive reads, the same rule the panel enforces, applied to what was stored
   // in case the two ever drift apart.
   options.agent = { ...options.agent, read: remembered.read, write: remembered.read && remembered.write }
@@ -1040,7 +1059,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       const gates = setGates({ read: msg.read, write: msg.write })
       // Remembered on the way through rather than on a separate save: the gates the sandbox
       // actually holds are the only ones worth persisting.
-      await rememberGates(figma.root.name, gates)
+      await rememberGates(gates)
       figma.ui.postMessage({ type: 'AGENT_GATES', ...gates, ops: agentManifest(), file: figma.root.name, fileKey: figma.fileKey ?? null })
       break
     }
