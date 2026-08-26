@@ -154,9 +154,9 @@ altery-figma ops --json       # the same, machine-readable
 | `node.get` | one node by id — geometry, auto-layout, text, instance bindings, children |
 | `node.find` | search by name substring and/or node type, per page or whole document |
 | `selection.get` | what the designer has selected right now |
-| `components.list` | local components and sets, with property/variant definitions |
+| `components.list` | local components and sets, with property/variant definitions, descriptions and documentation links |
 | `styles.list` | local text, paint, effect and grid styles |
-| `variables.get` | collections, modes and values — the token export's own snapshot |
+| `variables.get` | collections, modes and values, with each token's description, scopes and per-platform `codeSyntax` |
 | `flow.map` | prototype graph of a page: starting points and every reaction edge |
 | `node.focus` | selects a node and scrolls the designer to it — "this one, look", and a link when the plugin is Organization-private |
 | `node.screenshot` | renders a node to PNG — how an agent checks what it actually drew |

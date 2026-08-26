@@ -273,6 +273,19 @@ export function comparableTokenValue(field: string, value: number): number {
   return PERCENT_BOUND.has(field) ? value / 100 : value
 }
 
+/**
+ * `UNPUBLISHED` / `CURRENT` / `CHANGED` — what a consumer of this library can actually see.
+ * `CHANGED` is the interesting one: the thing exists downstream, but not as it is here, which
+ * is invisible in the file and the reason a fix can look applied and not be.
+ */
+async function publishStatusOf(node: { getPublishStatusAsync(): Promise<PublishStatus> }): Promise<string> {
+  try {
+    return await node.getPublishStatusAsync()
+  } catch (err) {
+    return `unknown (${String((err as Error)?.message || err)})`
+  }
+}
+
 /** Scalar fields whose rendered value can be compared against the token bound to them. */
 const COMPARABLE: Readonly<Record<string, string>> = {
   topLeftRadius: 'topLeftRadius',
@@ -594,6 +607,13 @@ export const READ_OPS: readonly OpDef[] = [
       scope: { type: 'string', description: 'Where to look.', enum: ['page', 'document'], default: 'document' },
       name: { type: 'string', description: 'Case-insensitive substring of the component name.' },
       limit: { type: 'number', description: 'Max components returned.', default: 100, min: 1, max: 500 },
+      publishStatus: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Also report UNPUBLISHED / CURRENT / CHANGED per component. One extra call each, so ' +
+          'off unless you are asking what consumers of this library can actually see.',
+      },
     },
     async run(params) {
       const needle = typeof params.name === 'string' ? params.name.toLowerCase() : null
@@ -605,22 +625,30 @@ export const READ_OPS: readonly OpDef[] = [
         return !(node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET')
       })
       const limit = params.limit as number
-      return {
-        total: found.length,
-        truncated: found.length > limit,
-        components: found.slice(0, limit).map((node) => ({
+      const wantStatus = params.publishStatus === true
+      const components = []
+      for (const node of found.slice(0, limit)) {
+        components.push({
           id: node.id,
           key: node.key,
           name: node.name,
           type: node.type,
           description: node.description || undefined,
+          // Where a team keeps the real documentation. An agent that has it stops guessing the
+          // intent from the layer names.
+          documentationLinks:
+            node.documentationLinks && node.documentationLinks.length > 0
+              ? node.documentationLinks.map((link) => link.uri)
+              : undefined,
           properties: node.componentPropertyDefinitions ?? undefined,
           variants:
             node.type === 'COMPONENT_SET'
               ? node.children.map((child) => ({ id: child.id, name: child.name }))
               : undefined,
-        })),
+          ...(wantStatus ? { publishStatus: await publishStatusOf(node) } : {}),
+        })
       }
+      return { total: found.length, truncated: found.length > limit, components }
     },
   },
 
@@ -675,6 +703,13 @@ export const READ_OPS: readonly OpDef[] = [
         description: 'Only this collection, by name or id. Omitted returns them all.',
       },
       limit: { type: 'number', default: 2000, min: 1, max: 20000, description: 'Cap on variables returned.' },
+      publishStatus: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Also report UNPUBLISHED / CURRENT / CHANGED per variable — whether a change made here ' +
+          'has reached the files that consume it. One extra call each, so off by default.',
+      },
     },
     async run(params) {
       const snapshot = params.library === true ? await readAllVariables() : await readLocalVariables()
@@ -692,12 +727,19 @@ export const READ_OPS: readonly OpDef[] = [
       const keep = new Set(collections.map((entry) => entry.id))
       const variables = snapshot.variables.filter((entry) => keep.has(entry.collectionId))
       const limit = params.limit as number
-      return {
-        collections,
-        total: variables.length,
-        truncated: variables.length > limit,
-        variables: variables.slice(0, limit),
+      const page = variables.slice(0, limit)
+      if (params.publishStatus !== true) {
+        return { collections, total: variables.length, truncated: variables.length > limit, variables: page }
       }
+      const withStatus = []
+      for (const entry of page) {
+        const variable = await figma.variables.getVariableByIdAsync(entry.id)
+        withStatus.push({
+          ...entry,
+          publishStatus: variable ? await publishStatusOf(variable) : 'unknown (variable not found)',
+        })
+      }
+      return { collections, total: variables.length, truncated: variables.length > limit, variables: withStatus }
     },
   },
 

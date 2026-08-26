@@ -108,7 +108,7 @@
     };
   }
   function toVariableEntry(variable) {
-    return {
+    return __spreadValues(__spreadValues({
       id: variable.id,
       key: variable.key,
       name: variable.name,
@@ -116,7 +116,7 @@
       scopes: variable.scopes,
       resolvedType: variable.resolvedType,
       valuesByMode: variable.valuesByMode
-    };
+    }, variable.description ? { description: variable.description } : {}), variable.codeSyntax && Object.keys(variable.codeSyntax).length > 0 ? { codeSyntax: variable.codeSyntax } : {});
   }
   async function readLocalVariables() {
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
@@ -15769,6 +15769,13 @@ ${scripts}`, "");
   function comparableTokenValue(field, value) {
     return PERCENT_BOUND.has(field) ? value / 100 : value;
   }
+  async function publishStatusOf(node) {
+    try {
+      return await node.getPublishStatusAsync();
+    } catch (err) {
+      return `unknown (${String((err == null ? void 0 : err.message) || err)})`;
+    }
+  }
   var COMPARABLE = {
     topLeftRadius: "topLeftRadius",
     topRightRadius: "topRightRadius",
@@ -16024,34 +16031,41 @@ ${scripts}`, "");
       params: {
         scope: { type: "string", description: "Where to look.", enum: ["page", "document"], default: "document" },
         name: { type: "string", description: "Case-insensitive substring of the component name." },
-        limit: { type: "number", description: "Max components returned.", default: 100, min: 1, max: 500 }
+        limit: { type: "number", description: "Max components returned.", default: 100, min: 1, max: 500 },
+        publishStatus: {
+          type: "boolean",
+          default: false,
+          description: "Also report UNPUBLISHED / CURRENT / CHANGED per component. One extra call each, so off unless you are asking what consumers of this library can actually see."
+        }
       },
       async run(params) {
+        var _a;
         const needle = typeof params.name === "string" ? params.name.toLowerCase() : null;
         const root = await resolveScope(params.scope);
         const found = await findAllWithCriteria(root, (node) => {
-          var _a;
+          var _a2;
           if (node.type !== "COMPONENT" && node.type !== "COMPONENT_SET") return false;
           if (needle && !node.name.toLowerCase().includes(needle)) return false;
-          return !(node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) === "COMPONENT_SET");
+          return !(node.type === "COMPONENT" && ((_a2 = node.parent) == null ? void 0 : _a2.type) === "COMPONENT_SET");
         });
         const limit = params.limit;
-        return {
-          total: found.length,
-          truncated: found.length > limit,
-          components: found.slice(0, limit).map((node) => {
-            var _a;
-            return {
-              id: node.id,
-              key: node.key,
-              name: node.name,
-              type: node.type,
-              description: node.description || void 0,
-              properties: (_a = node.componentPropertyDefinitions) != null ? _a : void 0,
-              variants: node.type === "COMPONENT_SET" ? node.children.map((child) => ({ id: child.id, name: child.name })) : void 0
-            };
-          })
-        };
+        const wantStatus = params.publishStatus === true;
+        const components = [];
+        for (const node of found.slice(0, limit)) {
+          components.push(__spreadValues({
+            id: node.id,
+            key: node.key,
+            name: node.name,
+            type: node.type,
+            description: node.description || void 0,
+            // Where a team keeps the real documentation. An agent that has it stops guessing the
+            // intent from the layer names.
+            documentationLinks: node.documentationLinks && node.documentationLinks.length > 0 ? node.documentationLinks.map((link) => link.uri) : void 0,
+            properties: (_a = node.componentPropertyDefinitions) != null ? _a : void 0,
+            variants: node.type === "COMPONENT_SET" ? node.children.map((child) => ({ id: child.id, name: child.name })) : void 0
+          }, wantStatus ? { publishStatus: await publishStatusOf(node) } : {}));
+        }
+        return { total: found.length, truncated: found.length > limit, components };
       }
     },
     {
@@ -16099,7 +16113,12 @@ ${scripts}`, "");
           type: "string",
           description: "Only this collection, by name or id. Omitted returns them all."
         },
-        limit: { type: "number", default: 2e3, min: 1, max: 2e4, description: "Cap on variables returned." }
+        limit: { type: "number", default: 2e3, min: 1, max: 2e4, description: "Cap on variables returned." },
+        publishStatus: {
+          type: "boolean",
+          default: false,
+          description: "Also report UNPUBLISHED / CURRENT / CHANGED per variable \u2014 whether a change made here has reached the files that consume it. One extra call each, so off by default."
+        }
       },
       async run(params) {
         const snapshot = params.library === true ? await readAllVariables() : await readLocalVariables();
@@ -16115,12 +16134,18 @@ ${scripts}`, "");
         const keep = new Set(collections.map((entry) => entry.id));
         const variables = snapshot.variables.filter((entry) => keep.has(entry.collectionId));
         const limit = params.limit;
-        return {
-          collections,
-          total: variables.length,
-          truncated: variables.length > limit,
-          variables: variables.slice(0, limit)
-        };
+        const page = variables.slice(0, limit);
+        if (params.publishStatus !== true) {
+          return { collections, total: variables.length, truncated: variables.length > limit, variables: page };
+        }
+        const withStatus = [];
+        for (const entry of page) {
+          const variable = await figma.variables.getVariableByIdAsync(entry.id);
+          withStatus.push(__spreadProps(__spreadValues({}, entry), {
+            publishStatus: variable ? await publishStatusOf(variable) : "unknown (variable not found)"
+          }));
+        }
+        return { collections, total: variables.length, truncated: variables.length > limit, variables: withStatus };
       }
     },
     {

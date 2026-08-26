@@ -20,6 +20,12 @@ export interface VariableEntry {
   scopes: VariableScope[]
   resolvedType: VariableResolvedDataType
   valuesByMode: { [modeId: string]: VariableValue }
+  /** What the designer wrote about this token. Empty for most, and the difference between a
+   * token an agent can use correctly and one it can only copy when it is not. */
+  description?: string
+  /** Per-platform names the design system has already committed to — `WEB`, `ANDROID`, `iOS`.
+   * A generator that reads this stops inventing its own. */
+  codeSyntax?: Variable['codeSyntax']
 }
 
 export interface VariableSnapshot {
@@ -45,6 +51,10 @@ function toVariableEntry(variable: Variable): VariableEntry {
     scopes: variable.scopes,
     resolvedType: variable.resolvedType,
     valuesByMode: variable.valuesByMode,
+    ...(variable.description ? { description: variable.description } : {}),
+    ...(variable.codeSyntax && Object.keys(variable.codeSyntax).length > 0
+      ? { codeSyntax: variable.codeSyntax }
+      : {}),
   }
 }
 
