@@ -15815,9 +15815,11 @@ ${scripts}`, "");
       } catch (e) {
       }
       const record2 = { token: (_a = variable == null ? void 0 : variable.name) != null ? _a : id };
+      if (variable == null ? void 0 : variable.remote) record2.remote = true;
       const rendered = renderedValue(node, field);
       if (variable && rendered !== void 0) {
         const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+        if (collection) record2.collection = collection.name;
         const modeId = collection == null ? void 0 : collection.defaultModeId;
         if (modeId) {
           try {
@@ -15853,10 +15855,12 @@ ${scripts}`, "");
     } catch (e) {
     }
     const record2 = { token: (_a = variable == null ? void 0 : variable.name) != null ? _a : id };
+    if (variable == null ? void 0 : variable.remote) record2.remote = true;
     const rendered = paintColor(paint);
     if (!variable || !rendered) return record2;
     const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
     if (!collection) return record2;
+    record2.collection = collection.name;
     try {
       const resolved = await resolveVariableValue(variable, collection.defaultModeId);
       const tokenColor = asColor(resolved.value);

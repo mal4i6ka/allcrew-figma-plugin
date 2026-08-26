@@ -73,6 +73,12 @@ export interface NodeSummary {
       /** Set when the token is authored in different units than the property it drives, so
        * `value` and `rendered` can disagree numerically and still be the same thing. */
       unit?: 'percent'
+      /** The collection the token lives in — local or imported. */
+      collection?: string
+      /** True when the token came from another file. A binding onto a remote variable is a
+       * live dependency; onto a local one it is not. Reported because the two look identical
+       * in Figma and behave completely differently when the upstream library changes. */
+      remote?: boolean
     }
   >
   /** TEXT only, truncated — an agent wants the gist, not the copy deck. */
@@ -322,10 +328,12 @@ async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSu
       /* an unresolvable id is still worth reporting as a binding — just unnamed */
     }
     const record: NonNullable<NodeSummary['bindings']>[string] = { token: variable?.name ?? id }
+    if (variable?.remote) record.remote = true
 
     const rendered = renderedValue(node, field)
     if (variable && rendered !== undefined) {
       const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId)
+      if (collection) record.collection = collection.name
       const modeId = collection?.defaultModeId
       if (modeId) {
         try {
@@ -382,11 +390,13 @@ async function describePaintBinding(
     /* unnamed binding is still a binding */
   }
   const record: NonNullable<NodeSummary['bindings']>[string] = { token: variable?.name ?? id }
+  if (variable?.remote) record.remote = true
 
   const rendered = paintColor(paint)
   if (!variable || !rendered) return record
   const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId)
   if (!collection) return record
+  record.collection = collection.name
   try {
     const resolved = await resolveVariableValue(variable, collection.defaultModeId)
     const tokenColor = asColor(resolved.value)
