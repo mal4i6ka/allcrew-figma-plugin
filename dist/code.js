@@ -6109,9 +6109,31 @@ ${body}
     }
     return { outline: `${px(weight)} solid ${color}`, "outline-offset": "0px" };
   }
+  function splitRadiusComponents(value) {
+    const parts = [];
+    let depth = 0;
+    let current = "";
+    for (const char of value) {
+      if (char === "(") depth++;
+      else if (char === ")") depth--;
+      if (depth === 0 && (/\s/.test(char) || char === "/")) {
+        if (current) parts.push(current);
+        current = "";
+        if (char === "/") parts.push("/");
+        continue;
+      }
+      current += char;
+    }
+    if (current) parts.push(current);
+    return parts;
+  }
   function scaleBorderRadius(value, smoothing) {
-    const factor = 1 + smoothing * 0.6;
-    return value.replace(/(-?\d*\.?\d+)px/g, (_match, n) => `${Math.round(parseFloat(n) * factor * 100) / 100}px`);
+    const factor = Math.round((1 + smoothing * 0.6) * 1e3) / 1e3;
+    return splitRadiusComponents(value).map((part) => {
+      if (part === "/") return "/";
+      if (part.includes("var(")) return `calc(${part} * ${factor})`;
+      return part.replace(/(-?\d*\.?\d+)px/g, (_match, n) => `${Math.round(parseFloat(n) * factor * 100) / 100}px`);
+    }).join(" ");
   }
   function formatStyleRefsComment(className, styleRefs) {
     if (!styleRefs) return void 0;
@@ -15648,15 +15670,82 @@ ${scripts}`, "");
         ]
       }), node.primaryAxisAlignItems ? { primaryAxisAlign: node.primaryAxisAlignItems } : {}), node.counterAxisAlignItems ? { counterAxisAlign: node.counterAxisAlignItems } : {});
     }
+    const corners = {};
+    const radius = round22(node.cornerRadius);
+    if (radius !== void 0) corners.radius = radius;
+    const perCorner = [
+      round22(node.topLeftRadius),
+      round22(node.topRightRadius),
+      round22(node.bottomRightRadius),
+      round22(node.bottomLeftRadius)
+    ];
+    if (perCorner.every((value) => value !== void 0) && new Set(perCorner).size > 1) {
+      corners.perCorner = perCorner;
+    }
+    const smoothing = round22(node.cornerSmoothing);
+    if (smoothing !== void 0 && smoothing > 0) corners.smoothing = smoothing;
+    if (Object.keys(corners).length > 0) summary.corners = corners;
     if (node.type === "TEXT" && typeof node.characters === "string") {
       summary.text = node.characters.length > MAX_TEXT ? node.characters.slice(0, MAX_TEXT) + "\u2026" : node.characters;
     }
     if (Array.isArray(node.children)) summary.childCount = node.children.length;
     return summary;
   }
+  var COMPARABLE = {
+    topLeftRadius: "topLeftRadius",
+    topRightRadius: "topRightRadius",
+    bottomRightRadius: "bottomRightRadius",
+    bottomLeftRadius: "bottomLeftRadius",
+    itemSpacing: "itemSpacing",
+    paddingLeft: "paddingLeft",
+    paddingRight: "paddingRight",
+    paddingTop: "paddingTop",
+    paddingBottom: "paddingBottom",
+    strokeWeight: "strokeWeight",
+    width: "width",
+    height: "height",
+    opacity: "opacity"
+  };
+  async function describeBindings(node, summary) {
+    var _a, _b;
+    const bound = node.boundVariables;
+    if (!bound || typeof bound !== "object") return void 0;
+    const out = {};
+    for (const [field, entry] of Object.entries(bound)) {
+      const alias = Array.isArray(entry) ? entry[0] : entry;
+      const id = alias == null ? void 0 : alias.id;
+      if (typeof id !== "string") continue;
+      let variable = null;
+      try {
+        variable = await figma.variables.getVariableByIdAsync(id);
+      } catch (e) {
+      }
+      const record2 = { token: (_a = variable == null ? void 0 : variable.name) != null ? _a : id };
+      const rendered = round22(node[(_b = COMPARABLE[field]) != null ? _b : field]);
+      if (variable && rendered !== void 0) {
+        const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+        const modeId = collection == null ? void 0 : collection.defaultModeId;
+        if (modeId) {
+          try {
+            const resolved = await resolveVariableValue(variable, modeId);
+            if (typeof resolved.value === "number") {
+              record2.value = Math.round(resolved.value * 100) / 100;
+              record2.rendered = rendered;
+              if (Math.abs(resolved.value - rendered) > 0.01) record2.mismatch = true;
+            }
+          } catch (e) {
+          }
+        }
+      }
+      out[field] = record2;
+    }
+    return Object.keys(out).length > 0 ? out : void 0;
+  }
   async function describeNode(node, depth) {
     var _a, _b;
     const summary = summarizeNode(node);
+    const bindings = await describeBindings(node, summary);
+    if (bindings) summary.bindings = bindings;
     if (typeof node.getReactionsAsync === "function" || Array.isArray(node.reactions)) {
       const raw = typeof node.getReactionsAsync === "function" ? await node.getReactionsAsync() : node.reactions;
       const reactions = summarizeReactions(raw);

@@ -16,7 +16,7 @@
 
 import { lintScopeAsync, type LintFinding } from '../targets/django/lint/index.ts'
 import { findAllWithCriteria, loadAllPagesAsync } from '../utils/tree.ts'
-import { readAllVariables, readLocalVariables } from '../variables.ts'
+import { readAllVariables, readLocalVariables, resolveVariableValue } from '../variables.ts'
 import type { OpDef } from './protocol.ts'
 import { CONTEXT_OPS } from './context-ops.ts'
 import { TRANSITION_OPS } from './transition-ops.ts'
@@ -47,6 +47,17 @@ export interface NodeSummary {
     primaryAxisAlign?: string
     counterAxisAlign?: string
   }
+  /** Corner radii, and Figma's squircle smoothing — which no CSS property expresses, so an
+   * implementation has to know it is there rather than discover the shape is subtly wrong. */
+  corners?: {
+    radius?: number
+    /** Top-left, top-right, bottom-right, bottom-left — present when the corners differ. */
+    perCorner?: [number, number, number, number]
+    /** 0..1. Above 0 the shape is a squircle and `border-radius` alone cannot reproduce it. */
+    smoothing?: number
+  }
+  /** Field → the token bound to it. `mismatch` is set when the layer renders something else. */
+  bindings?: Record<string, { token: string; value?: number | string; rendered?: number; mismatch?: boolean }>
   /** TEXT only, truncated — an agent wants the gist, not the copy deck. */
   text?: string
   /** INSTANCE only. */
@@ -125,6 +136,24 @@ export function summarizeNode(node: any): NodeSummary {
     }
   }
 
+  const corners: NonNullable<NodeSummary['corners']> = {}
+  const radius = round2(node.cornerRadius)
+  if (radius !== undefined) corners.radius = radius
+  const perCorner: Array<number | undefined> = [
+    round2(node.topLeftRadius),
+    round2(node.topRightRadius),
+    round2(node.bottomRightRadius),
+    round2(node.bottomLeftRadius),
+  ]
+  // `cornerRadius` reads as `figma.mixed` when the four differ, and a summary that reported
+  // only that would hide the whole shape. List them whenever they are not all equal.
+  if (perCorner.every((value) => value !== undefined) && new Set(perCorner).size > 1) {
+    corners.perCorner = perCorner as [number, number, number, number]
+  }
+  const smoothing = round2(node.cornerSmoothing)
+  if (smoothing !== undefined && smoothing > 0) corners.smoothing = smoothing
+  if (Object.keys(corners).length > 0) summary.corners = corners
+
   if (node.type === 'TEXT' && typeof node.characters === 'string') {
     summary.text =
       node.characters.length > MAX_TEXT ? node.characters.slice(0, MAX_TEXT) + '…' : node.characters
@@ -135,10 +164,83 @@ export function summarizeNode(node: any): NodeSummary {
   return summary
 }
 
+/** Scalar fields whose rendered value can be compared against the token bound to them. */
+const COMPARABLE: Readonly<Record<string, string>> = {
+  topLeftRadius: 'topLeftRadius',
+  topRightRadius: 'topRightRadius',
+  bottomRightRadius: 'bottomRightRadius',
+  bottomLeftRadius: 'bottomLeftRadius',
+  itemSpacing: 'itemSpacing',
+  paddingLeft: 'paddingLeft',
+  paddingRight: 'paddingRight',
+  paddingTop: 'paddingTop',
+  paddingBottom: 'paddingBottom',
+  strokeWeight: 'strokeWeight',
+  width: 'width',
+  height: 'height',
+  opacity: 'opacity',
+}
+
+/**
+ * What this node binds, by token name — and, for numeric fields, whether the layer actually
+ * renders what the token says. A binding that disagrees with its own token is invisible in
+ * Figma and lethal in generated code: the emitter writes `var(--radius-x-large, 21.76px)` and
+ * whoever reads it cannot tell whether the design means 21.76 or the token's own value. Both
+ * numbers are reported so the answer is not a guess.
+ */
+async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSummary['bindings']> {
+  const bound = node.boundVariables
+  if (!bound || typeof bound !== 'object') return undefined
+
+  const out: NonNullable<NodeSummary['bindings']> = {}
+  for (const [field, entry] of Object.entries(bound as Record<string, any>)) {
+    const alias = Array.isArray(entry) ? entry[0] : entry
+    const id = alias?.id
+    if (typeof id !== 'string') continue
+
+    let variable: Variable | null = null
+    try {
+      variable = await figma.variables.getVariableByIdAsync(id)
+    } catch {
+      /* an unresolvable id is still worth reporting as a binding — just unnamed */
+    }
+    const record: NonNullable<NodeSummary['bindings']>[string] = { token: variable?.name ?? id }
+
+    const rendered = round2(node[COMPARABLE[field] ?? field])
+    if (variable && rendered !== undefined) {
+      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId)
+      const modeId = collection?.defaultModeId
+      if (modeId) {
+        try {
+          // Most semantic tokens are aliases onto a primitive — `radius/x-large` points at
+          // `scale/16` — so reading `valuesByMode` alone yields an alias object and no
+          // comparison at all. Chasing the chain is what makes the check apply to the tokens
+          // a design system actually uses.
+          const resolved = await resolveVariableValue(variable, modeId)
+          if (typeof resolved.value === 'number') {
+            record.value = Math.round(resolved.value * 100) / 100
+            record.rendered = rendered
+            if (Math.abs(resolved.value - rendered) > 0.01) record.mismatch = true
+          }
+        } catch {
+          /* a circular or unreadable alias is reported as a binding without a comparison */
+        }
+      }
+    }
+    out[field] = record
+  }
+  // Radii repeat per corner; a mismatch on any of them is the interesting bit, and the corner
+  // summary already says what the shape is.
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 /** Full description of one node: `summarizeNode` plus the awaited bits, recursing `depth`
  * levels of children. Depth is capped by the op's param spec, so the payload stays bounded. */
 async function describeNode(node: any, depth: number): Promise<NodeSummary> {
   const summary = summarizeNode(node)
+
+  const bindings = await describeBindings(node, summary)
+  if (bindings) summary.bindings = bindings
 
   if (typeof node.getReactionsAsync === 'function' || Array.isArray(node.reactions)) {
     const raw =

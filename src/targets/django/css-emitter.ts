@@ -758,9 +758,41 @@ function strokeDeclarations(source: DjangoNodeSource): Record<string, string> {
 /** Exported for the theme collector (REFORM phase 14 C): kit-master radii must go through the
  * SAME squircle approximation the instance CSS gets, or every smoothed instance would show a
  * spurious radius delta against its master. */
+/** Splits a `border-radius` value into the components CSS reads, respecting parentheses —
+ * `var(--r, 16px)` contains a space of its own, so splitting on whitespace alone tears it. */
+function splitRadiusComponents(value: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let current = ''
+  for (const char of value) {
+    if (char === '(') depth++
+    else if (char === ')') depth--
+    if (depth === 0 && (/\s/.test(char) || char === '/')) {
+      if (current) parts.push(current)
+      current = ''
+      if (char === '/') parts.push('/')
+      continue
+    }
+    current += char
+  }
+  if (current) parts.push(current)
+  return parts
+}
+
 export function scaleBorderRadius(value: string, smoothing: number): string {
-  const factor = 1 + smoothing * 0.6
-  return value.replace(/(-?\d*\.?\d+)px/g, (_match, n: string) => `${Math.round(parseFloat(n) * factor * 100) / 100}px`)
+  const factor = Math.round((1 + smoothing * 0.6) * 1000) / 1000
+  return splitRadiusComponents(value)
+    .map((part) => {
+      if (part === '/') return '/'
+      // A component that reads a variable has to keep reading it: scaling the *fallback*
+      // inside `var(--r, 16px)` only takes effect when the token is missing, which is exactly
+      // the case where the shape does not matter. Where the design system is wired up — the
+      // whole point — the browser would take the token's own value and drop the squircle
+      // compensation silently. `calc()` composes with the custom property instead.
+      if (part.includes('var(')) return `calc(${part} * ${factor})`
+      return part.replace(/(-?\d*\.?\d+)px/g, (_match, n: string) => `${Math.round(parseFloat(n) * factor * 100) / 100}px`)
+    })
+    .join(' ')
 }
 
 /** Effect types with no CSS equivalent (M8 DoD) — never emitted as (broken) CSS, only warned +
