@@ -1099,12 +1099,12 @@
         </div>
         <label class="set-row" data-needs-target="agent" data-needs-agent-endpoint for="set-agent-read">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.6" stroke="currentColor" stroke-width="1.6"/></svg>
-          <span class="set-text"><b>Allow reads</b><i>An agent may inspect pages, frames, components, styles, variables and prototype flows</i></span>
+          <span class="set-text"><b>Allow reads</b><i>An agent may inspect pages, frames, components, styles, variables and prototype flows &middot; remembered for this file until you switch it off</i></span>
           <span class="switch"><input type="checkbox" id="set-agent-read" /><span class="track"></span></span>
         </label>
         <label class="set-row" data-needs-target="agent" data-needs-agent-read for="set-agent-write">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 20h4L19.5 8.5a2.12 2.12 0 0 0-3-3L5 17v3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 6.5 17.5 10" stroke="currentColor" stroke-width="1.6"/></svg>
-          <span class="set-text"><b>Allow changes</b><i>No write op ships yet &middot; the gate is here so one can never arrive switched on</i></span>
+          <span class="set-text"><b>Allow changes</b><i>An agent may set variables, bind layers and draw boards &middot; never remembered, re-arm it each time the plugin opens</i></span>
           <span class="switch"><input type="checkbox" id="set-agent-write" /><span class="track"></span></span>
         </label>
         <div class="deliver-bar" data-needs-target="agent">

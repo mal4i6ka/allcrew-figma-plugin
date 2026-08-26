@@ -585,17 +585,56 @@ async function generateTypographyVariables(options: unknown): Promise<Typography
 
 figma.showUI(__html__, { width: 420, height: 660, themeColors: true })
 
+/**
+ * Remembered read gates, keyed by file. `figma.fileKey` is the natural key but Figma exposes it
+ * only to private plugins on Organization plans, so the file *name* carries it — the same
+ * compromise the bridge makes for its handles. Two files sharing a name share the answer; that
+ * is a visible switch in the panel, not a silent grant, and the alternative is asking everyone
+ * on every open forever.
+ */
+const READ_GATES_KEY = 'agentReadGates'
+
+async function readGateFor(file: string): Promise<boolean> {
+  try {
+    const stored = await figma.clientStorage.getAsync(READ_GATES_KEY)
+    return Boolean(stored && typeof stored === 'object' && (stored as Record<string, unknown>)[file] === true)
+  } catch {
+    return false
+  }
+}
+
+async function rememberReadGate(file: string, allowed: boolean): Promise<void> {
+  try {
+    const stored = await figma.clientStorage.getAsync(READ_GATES_KEY)
+    const gates: Record<string, boolean> = stored && typeof stored === 'object' ? { ...(stored as Record<string, boolean>) } : {}
+    if (allowed) gates[file] = true
+    else delete gates[file]
+    await figma.clientStorage.setAsync(READ_GATES_KEY, gates)
+  } catch {
+    /* a listener that works but forgets is better than one that fails to open */
+  }
+}
+
 const isRelaunch = figma.command === 'reexport'
 
 Promise.all([
   figma.clientStorage.getAsync('exportOptions'),
   figma.clientStorage.getAsync('userPresets'),
   figma.clientStorage.getAsync('paletteSettings'),
-]).then(([storedOptions, storedPresets, storedPalette]) => {
-  // The bridge URL and secret are setup and worth persisting; the gates are consent and are
-  // not. Every session starts with the agent locked out, whatever was stored last time.
+]).then(async ([storedOptions, storedPresets, storedPalette]) => {
+  // The bridge URL and secret are setup and worth persisting. The gates are consent — but the
+  // two halves do not deserve the same answer. Asking for *reads* on every open meant the same
+  // person on the same machine re-granted the same permission eight times in one working
+  // session, which does not strengthen consent, it trains the reflex to click through it. Reads
+  // are remembered per file, visibly, with the switch right there to revoke.
+  //
+  // Writes are not. That is the half that changes the document, it is the half a mistake cannot
+  // be taken back from, and re-arming it deliberately is the whole point. The dependency still
+  // holds in the other direction: reads off forces writes off, so the dangerous half can never
+  // outlive the safer one.
   const options = normalizeExportOptions(storedOptions)
-  options.agent = { ...options.agent, read: false, write: false }
+  const rememberedRead = await readGateFor(figma.root.name)
+  options.agent = { ...options.agent, read: rememberedRead, write: false }
   figma.ui.postMessage({
     type: 'EXPORT_OPTIONS',
     options,
@@ -986,6 +1025,9 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     }
     case 'AGENT_SET_GATES': {
       const gates = setGates({ read: msg.read, write: msg.write })
+      // Remembered on the way through rather than on a separate save: the gate the sandbox
+      // actually holds is the only one worth persisting.
+      await rememberReadGate(figma.root.name, gates.read)
       figma.ui.postMessage({ type: 'AGENT_GATES', ...gates, ops: agentManifest(), file: figma.root.name, fileKey: figma.fileKey ?? null })
       break
     }

@@ -16702,14 +16702,34 @@ ${scripts}`, "");
     return { collection: plan.collectionName, created: plan.variables.length, bound, failed, failures, replaced };
   }
   figma.showUI(__html__, { width: 420, height: 660, themeColors: true });
+  var READ_GATES_KEY = "agentReadGates";
+  async function readGateFor(file) {
+    try {
+      const stored = await figma.clientStorage.getAsync(READ_GATES_KEY);
+      return Boolean(stored && typeof stored === "object" && stored[file] === true);
+    } catch (e) {
+      return false;
+    }
+  }
+  async function rememberReadGate(file, allowed) {
+    try {
+      const stored = await figma.clientStorage.getAsync(READ_GATES_KEY);
+      const gates2 = stored && typeof stored === "object" ? __spreadValues({}, stored) : {};
+      if (allowed) gates2[file] = true;
+      else delete gates2[file];
+      await figma.clientStorage.setAsync(READ_GATES_KEY, gates2);
+    } catch (e) {
+    }
+  }
   var isRelaunch = figma.command === "reexport";
   Promise.all([
     figma.clientStorage.getAsync("exportOptions"),
     figma.clientStorage.getAsync("userPresets"),
     figma.clientStorage.getAsync("paletteSettings")
-  ]).then(([storedOptions, storedPresets, storedPalette]) => {
+  ]).then(async ([storedOptions, storedPresets, storedPalette]) => {
     const options = normalizeExportOptions(storedOptions);
-    options.agent = __spreadProps(__spreadValues({}, options.agent), { read: false, write: false });
+    const rememberedRead = await readGateFor(figma.root.name);
+    options.agent = __spreadProps(__spreadValues({}, options.agent), { read: rememberedRead, write: false });
     figma.ui.postMessage({
       type: "EXPORT_OPTIONS",
       options,
@@ -17059,6 +17079,7 @@ ${scripts}`, "");
       }
       case "AGENT_SET_GATES": {
         const gates2 = setGates({ read: msg.read, write: msg.write });
+        await rememberReadGate(figma.root.name, gates2.read);
         figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name, fileKey: (_f = figma.fileKey) != null ? _f : null }));
         break;
       }

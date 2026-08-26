@@ -64,17 +64,22 @@ export interface ExportDeliveryOptions {
  * Like `delivery`, NOT package-forming: whether a designer is currently letting an agent read
  * the file is a session choice, not part of the design package's identity.
  *
- * Both gates default OFF and are never persisted as on by a preset: nothing reaches the
- * document until the designer flips a switch in Settings for this file. */
+ * Neither gate is ever persisted as on by a preset: a shared preset must not carry someone
+ * else's permission. The read gate is remembered per file in `clientStorage`, which is a
+ * different thing — that is this designer's own answer about this file, not a setting that
+ * travels. */
 export interface ExportAgentOptions {
   /** Bridge base URL, e.g. `http://127.0.0.1:8788`. Empty = listener unavailable. */
   endpoint: string
   /** Shared secret, must match the bridge's `ALTERY_AGENT_SECRET`. */
   secret: string
-  /** Answer read-only ops (`document.info`, `page.frames`, `node.get`, ...). */
+  /** Answer read-only ops (`document.info`, `page.frames`, `node.get`, ...). Remembered per
+   * file: re-granting the same permission on every open teaches the reflex to click through
+   * it, which is the opposite of consent. */
   read: boolean
-  /** Answer mutating ops. No mutating op ships yet — the gate exists so the dispatcher
-   * can refuse them by default the moment one does. */
+  /** Answer mutating ops (`variables.set`, `node.bind`, `board.render`, ...). Never remembered
+   * — this is the half a mistake cannot be taken back from, so it is re-armed by hand every
+   * time the plugin opens. */
   write: boolean
 }
 
