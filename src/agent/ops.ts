@@ -199,6 +199,35 @@ export function sameColor(a: Rgba, b: Rgba): boolean {
   return (['r', 'g', 'b', 'a'] as const).every((channel) => Math.abs(a[channel] - b[channel]) < 0.002)
 }
 
+/**
+ * What a bound field actually renders, in a form comparable with the token's own value. Figma
+ * hands the same idea back in three shapes: a plain number, a `{ value, unit }` pair for
+ * line-height and letter-spacing, and a `fontName` object whose halves are bound separately.
+ * Anything it cannot state exactly — mixed formatting, `AUTO` line-height, a percentage where
+ * the token is in pixels — returns undefined, because a wrong comparison is worse than none.
+ */
+export function renderedValue(node: any, field: string): number | string | undefined {
+  if (field === 'fontFamily' || field === 'fontStyle') {
+    const font = node.fontName
+    if (!font || font === figma.mixed || typeof font !== 'object') return undefined
+    const value = field === 'fontFamily' ? font.family : font.style
+    return typeof value === 'string' ? value : undefined
+  }
+
+  const raw = node[COMPARABLE[field] ?? field]
+  if (raw === undefined || raw === null || raw === figma.mixed) return undefined
+  if (typeof raw === 'string') return raw
+  if (typeof raw === 'number') return round2(raw)
+  if (typeof raw === 'object' && 'unit' in raw) {
+    const entry = raw as { value?: unknown; unit?: unknown }
+    // A PERCENT line-height against a pixel token is not a mismatch, it is a different kind of
+    // number; AUTO has none at all. Both are reported as uncomparable rather than as drift.
+    if (entry.unit === 'PIXELS' && typeof entry.value === 'number') return round2(entry.value)
+    return undefined
+  }
+  return undefined
+}
+
 /** Scalar fields whose rendered value can be compared against the token bound to them. */
 const COMPARABLE: Readonly<Record<string, string>> = {
   topLeftRadius: 'topLeftRadius',
@@ -211,6 +240,13 @@ const COMPARABLE: Readonly<Record<string, string>> = {
   paddingTop: 'paddingTop',
   paddingBottom: 'paddingBottom',
   strokeWeight: 'strokeWeight',
+  fontSize: 'fontSize',
+  fontWeight: 'fontWeight',
+  lineHeight: 'lineHeight',
+  letterSpacing: 'letterSpacing',
+  paragraphSpacing: 'paragraphSpacing',
+  paragraphIndent: 'paragraphIndent',
+  characters: 'characters',
   width: 'width',
   height: 'height',
   opacity: 'opacity',
@@ -251,7 +287,7 @@ async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSu
     }
     const record: NonNullable<NodeSummary['bindings']>[string] = { token: variable?.name ?? id }
 
-    const rendered = round2(node[COMPARABLE[field] ?? field])
+    const rendered = renderedValue(node, field)
     if (variable && rendered !== undefined) {
       const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId)
       const modeId = collection?.defaultModeId
@@ -262,10 +298,14 @@ async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSu
           // comparison at all. Chasing the chain is what makes the check apply to the tokens
           // a design system actually uses.
           const resolved = await resolveVariableValue(variable, modeId)
-          if (typeof resolved.value === 'number') {
+          if (typeof resolved.value === 'number' && typeof rendered === 'number') {
             record.value = Math.round(resolved.value * 100) / 100
             record.rendered = rendered
             if (Math.abs(resolved.value - rendered) > 0.01) record.mismatch = true
+          } else if (typeof resolved.value === 'string' && typeof rendered === 'string') {
+            record.value = resolved.value
+            record.rendered = rendered
+            if (resolved.value !== rendered) record.mismatch = true
           }
         } catch {
           /* a circular or unreadable alias is reported as a binding without a comparison */

@@ -15712,6 +15712,25 @@ ${scripts}`, "");
   function sameColor(a, b) {
     return ["r", "g", "b", "a"].every((channel) => Math.abs(a[channel] - b[channel]) < 2e-3);
   }
+  function renderedValue(node, field) {
+    var _a;
+    if (field === "fontFamily" || field === "fontStyle") {
+      const font = node.fontName;
+      if (!font || font === figma.mixed || typeof font !== "object") return void 0;
+      const value = field === "fontFamily" ? font.family : font.style;
+      return typeof value === "string" ? value : void 0;
+    }
+    const raw = node[(_a = COMPARABLE[field]) != null ? _a : field];
+    if (raw === void 0 || raw === null || raw === figma.mixed) return void 0;
+    if (typeof raw === "string") return raw;
+    if (typeof raw === "number") return round22(raw);
+    if (typeof raw === "object" && "unit" in raw) {
+      const entry = raw;
+      if (entry.unit === "PIXELS" && typeof entry.value === "number") return round22(entry.value);
+      return void 0;
+    }
+    return void 0;
+  }
   var COMPARABLE = {
     topLeftRadius: "topLeftRadius",
     topRightRadius: "topRightRadius",
@@ -15723,12 +15742,19 @@ ${scripts}`, "");
     paddingTop: "paddingTop",
     paddingBottom: "paddingBottom",
     strokeWeight: "strokeWeight",
+    fontSize: "fontSize",
+    fontWeight: "fontWeight",
+    lineHeight: "lineHeight",
+    letterSpacing: "letterSpacing",
+    paragraphSpacing: "paragraphSpacing",
+    paragraphIndent: "paragraphIndent",
+    characters: "characters",
     width: "width",
     height: "height",
     opacity: "opacity"
   };
   async function describeBindings(node, summary) {
-    var _a, _b;
+    var _a;
     const bound = node.boundVariables;
     if (!bound || typeof bound !== "object") return void 0;
     const out = {};
@@ -15751,17 +15777,21 @@ ${scripts}`, "");
       } catch (e) {
       }
       const record2 = { token: (_a = variable == null ? void 0 : variable.name) != null ? _a : id };
-      const rendered = round22(node[(_b = COMPARABLE[field]) != null ? _b : field]);
+      const rendered = renderedValue(node, field);
       if (variable && rendered !== void 0) {
         const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
         const modeId = collection == null ? void 0 : collection.defaultModeId;
         if (modeId) {
           try {
             const resolved = await resolveVariableValue(variable, modeId);
-            if (typeof resolved.value === "number") {
+            if (typeof resolved.value === "number" && typeof rendered === "number") {
               record2.value = Math.round(resolved.value * 100) / 100;
               record2.rendered = rendered;
               if (Math.abs(resolved.value - rendered) > 0.01) record2.mismatch = true;
+            } else if (typeof resolved.value === "string" && typeof rendered === "string") {
+              record2.value = resolved.value;
+              record2.rendered = rendered;
+              if (resolved.value !== rendered) record2.mismatch = true;
             }
           } catch (e) {
           }
