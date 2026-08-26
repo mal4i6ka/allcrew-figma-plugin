@@ -91,9 +91,29 @@ and an integration that depends on a token is an integration half the team canno
 
 What that costs is a real boundary rather than a gap to work around. **Comments, version history
 and the audit log of who changed what do not exist in the Figma plugin API.** No op here can
-reach them, and no future one will; they live only in the REST API, and the audit log needs an
-Enterprise admin token at that. The agent already has network access of its own — if those are
-needed, they belong on its side of the bridge, not tunnelled through the sandbox.
+reach them, and no future one will.
+
+They live in the REST API, so they sit on the *agent's* side of the bridge rather than being
+tunnelled through the sandbox — the agent already has a network, and routing a REST call through
+a plugin would make the plugin channel depend on a credential it currently does not need:
+
+```bash
+altery-figma comments -k https://figma.com/design/<key>/…   # threads, replies grouped
+altery-figma versions -k <key or URL>                       # named versions vs autosaves
+altery-figma activity --since 2026-08-01                    # Enterprise, org-admin token
+```
+
+`$FIGMA_TOKEN`, else `~/.altery/figma-token` — the same resolution order as the bridge secret,
+so a machine that has one needs no setup for the other. Nothing writes that file for you: a
+token is the designer's own credential and this tool never asks for it, prompts for it, or
+puts it anywhere but where they chose.
+
+| | plugin channel | REST commands |
+|---|---|---|
+| credential | none | personal access token |
+| works when an admin disables tokens | yes | no |
+| variables, bindings, geometry, screenshots | yes | no |
+| comments, versions, audit log | no | yes |
 
 ## Secrets across machines
 
