@@ -14072,6 +14072,180 @@ ${renderSections(sections)}
     }
   }
 
+  // src/agent/values.ts
+  var clamp012 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
+  function parseColor(input) {
+    if (typeof input === "object" && input !== null) {
+      const raw = input;
+      if (["r", "g", "b"].every((key) => typeof raw[key] === "number")) {
+        return {
+          r: clamp012(raw.r),
+          g: clamp012(raw.g),
+          b: clamp012(raw.b),
+          a: typeof raw.a === "number" ? clamp012(raw.a) : 1
+        };
+      }
+      return null;
+    }
+    if (typeof input !== "string") return null;
+    const text3 = input.trim();
+    const withPercent = /^(#?[0-9a-fA-F]{3,8})\s*[@/]?\s*([0-9.]+)\s*%$/.exec(text3);
+    if (withPercent) {
+      const rgb2 = parseHex(withPercent[1]);
+      if (!rgb2) return null;
+      return __spreadProps(__spreadValues({}, rgb2), { a: clamp012(Number(withPercent[2]) / 100) });
+    }
+    const hex = text3.replace(/^#/, "");
+    if (/^[0-9a-fA-F]{8}$/.test(hex)) {
+      const rgb2 = parseHex(hex.slice(0, 6));
+      if (!rgb2) return null;
+      return __spreadProps(__spreadValues({}, rgb2), { a: parseInt(hex.slice(6, 8), 16) / 255 });
+    }
+    const rgb = parseHex(text3);
+    return rgb ? __spreadProps(__spreadValues({}, rgb), { a: 1 }) : null;
+  }
+  function describeColor(color) {
+    const hex = formatHex(color);
+    return color.a >= 0.999 ? hex : `${hex} ${Math.round(color.a * 100)}%`;
+  }
+  var VARIABLE_ID = /^VariableID:/;
+  var COLLECTION_ID = /^VariableCollectionId:/;
+  async function resolveCollection(ref) {
+    if (typeof ref !== "string" || ref === "") throw new Error("collection reference must be a non-empty string");
+    if (COLLECTION_ID.test(ref)) {
+      const collection = await figma.variables.getVariableCollectionByIdAsync(ref);
+      if (!collection) throw new Error(`no variable collection with id ${ref}`);
+      return collection;
+    }
+    const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    const matches = collections.filter((collection) => collection.name.toLowerCase() === ref.toLowerCase());
+    if (matches.length === 0) {
+      throw new Error(`no local collection named "${ref}" \u2014 have: ${collections.map((c) => c.name).join(", ")}`);
+    }
+    if (matches.length > 1) throw new Error(`"${ref}" names ${matches.length} collections \u2014 use the id`);
+    return matches[0];
+  }
+  var LIBRARY_KEY = /^[0-9a-f]{20,}$/i;
+  var isLibraryKey = (ref) => typeof ref === "string" && LIBRARY_KEY.test(ref);
+  async function resolveVariableRef(ref) {
+    if (isLibraryKey(ref)) {
+      try {
+        return await figma.variables.importVariableByKeyAsync(ref);
+      } catch (err) {
+        throw new Error(
+          `no library variable with key ${ref} \u2014 is that library enabled in this file? (${String((err == null ? void 0 : err.message) || err)})`
+        );
+      }
+    }
+    return resolveVariable(ref);
+  }
+  async function resolveVariable(ref) {
+    if (typeof ref !== "string" || ref === "") throw new Error("variable reference must be a non-empty string");
+    if (VARIABLE_ID.test(ref)) {
+      const variable = await figma.variables.getVariableByIdAsync(ref);
+      if (!variable) throw new Error(`no variable with id ${ref}`);
+      return variable;
+    }
+    const variables = await figma.variables.getLocalVariablesAsync();
+    const exact = variables.filter((variable) => variable.name === ref);
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) {
+      const owners = await collectionNames(exact);
+      throw new Error(`"${ref}" exists in ${owners.join(", ")} \u2014 qualify it as "Collection/${ref}"`);
+    }
+    const slash = ref.indexOf("/");
+    if (slash > 0) {
+      const collectionName = ref.slice(0, slash).toLowerCase();
+      const variableName = ref.slice(slash + 1);
+      const collections = await figma.variables.getLocalVariableCollectionsAsync();
+      const collection = collections.find((entry) => entry.name.toLowerCase() === collectionName);
+      if (collection) {
+        const match = variables.find(
+          (variable) => variable.variableCollectionId === collection.id && variable.name === variableName
+        );
+        if (match) return match;
+      }
+    }
+    throw new Error(`no variable named "${ref}"`);
+  }
+  async function collectionNames(variables) {
+    var _a;
+    const names = [];
+    for (const variable of variables) {
+      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+      names.push((_a = collection == null ? void 0 : collection.name) != null ? _a : variable.variableCollectionId);
+    }
+    return names;
+  }
+  function resolveModes(collection, ref) {
+    var _a;
+    if (ref === void 0 || ref === null || ref === "") {
+      const fallback = (_a = collection.modes.find((mode) => mode.modeId === collection.defaultModeId)) != null ? _a : collection.modes[0];
+      return [{ modeId: fallback.modeId, name: fallback.name }];
+    }
+    if (ref === "*") return collection.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name }));
+    if (typeof ref !== "string") throw new Error("mode must be a string");
+    const byId = collection.modes.find((mode) => mode.modeId === ref);
+    if (byId) return [{ modeId: byId.modeId, name: byId.name }];
+    const byName = collection.modes.filter((mode) => mode.name.toLowerCase() === ref.toLowerCase());
+    if (byName.length === 1) return [{ modeId: byName[0].modeId, name: byName[0].name }];
+    throw new Error(
+      `collection "${collection.name}" has no mode "${ref}" \u2014 have: ${collection.modes.map((m) => m.name).join(", ")}`
+    );
+  }
+  function isAlias(value) {
+    return typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
+  }
+  async function describeValue(value) {
+    if (value === void 0) return "(unset)";
+    if (isAlias(value)) {
+      const target = await figma.variables.getVariableByIdAsync(value.id);
+      if (!target) return `\u2192 ${value.id}`;
+      return target.remote ? `\u2192 ${target.name} (library)` : `\u2192 ${target.name}`;
+    }
+    if (typeof value === "object" && value !== null && "r" in value) {
+      const color = value;
+      return describeColor({ r: color.r, g: color.g, b: color.b, a: "a" in color ? color.a : 1 });
+    }
+    return String(value);
+  }
+  async function coerceVariableValue(variable, raw) {
+    if (typeof raw === "object" && raw !== null && "alias" in raw) {
+      const target = await resolveVariableRef(raw.alias);
+      if (target.id === variable.id) throw new Error(`"${variable.name}" cannot alias itself`);
+      if (target.resolvedType !== variable.resolvedType) {
+        throw new Error(
+          `"${variable.name}" is ${variable.resolvedType} but "${target.name}" is ${target.resolvedType}`
+        );
+      }
+      return figma.variables.createVariableAlias(target);
+    }
+    switch (variable.resolvedType) {
+      case "COLOR": {
+        const color = parseColor(raw);
+        if (!color) throw new Error(`"${variable.name}" needs a colour \u2014 got ${JSON.stringify(raw)}`);
+        return { r: color.r, g: color.g, b: color.b, a: color.a };
+      }
+      case "FLOAT": {
+        const num2 = typeof raw === "string" ? Number(raw) : raw;
+        if (typeof num2 !== "number" || !Number.isFinite(num2)) {
+          throw new Error(`"${variable.name}" needs a number \u2014 got ${JSON.stringify(raw)}`);
+        }
+        return num2;
+      }
+      case "BOOLEAN": {
+        if (typeof raw === "boolean") return raw;
+        if (raw === "true") return true;
+        if (raw === "false") return false;
+        throw new Error(`"${variable.name}" needs a boolean \u2014 got ${JSON.stringify(raw)}`);
+      }
+      case "STRING": {
+        if (typeof raw !== "string") throw new Error(`"${variable.name}" needs a string \u2014 got ${JSON.stringify(raw)}`);
+        return raw;
+      }
+    }
+  }
+
   // src/targets/django/motion/preview.ts
   function nodeSelector3(nodeId) {
     return `[${NODE_ID_ATTRIBUTE}="${nodeId}"]`;
@@ -14608,180 +14782,6 @@ ${scripts}`, "");
       }
     }
   ];
-
-  // src/agent/values.ts
-  var clamp012 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
-  function parseColor(input) {
-    if (typeof input === "object" && input !== null) {
-      const raw = input;
-      if (["r", "g", "b"].every((key) => typeof raw[key] === "number")) {
-        return {
-          r: clamp012(raw.r),
-          g: clamp012(raw.g),
-          b: clamp012(raw.b),
-          a: typeof raw.a === "number" ? clamp012(raw.a) : 1
-        };
-      }
-      return null;
-    }
-    if (typeof input !== "string") return null;
-    const text3 = input.trim();
-    const withPercent = /^(#?[0-9a-fA-F]{3,8})\s*[@/]?\s*([0-9.]+)\s*%$/.exec(text3);
-    if (withPercent) {
-      const rgb2 = parseHex(withPercent[1]);
-      if (!rgb2) return null;
-      return __spreadProps(__spreadValues({}, rgb2), { a: clamp012(Number(withPercent[2]) / 100) });
-    }
-    const hex = text3.replace(/^#/, "");
-    if (/^[0-9a-fA-F]{8}$/.test(hex)) {
-      const rgb2 = parseHex(hex.slice(0, 6));
-      if (!rgb2) return null;
-      return __spreadProps(__spreadValues({}, rgb2), { a: parseInt(hex.slice(6, 8), 16) / 255 });
-    }
-    const rgb = parseHex(text3);
-    return rgb ? __spreadProps(__spreadValues({}, rgb), { a: 1 }) : null;
-  }
-  function describeColor(color) {
-    const hex = formatHex(color);
-    return color.a >= 0.999 ? hex : `${hex} ${Math.round(color.a * 100)}%`;
-  }
-  var VARIABLE_ID = /^VariableID:/;
-  var COLLECTION_ID = /^VariableCollectionId:/;
-  async function resolveCollection(ref) {
-    if (typeof ref !== "string" || ref === "") throw new Error("collection reference must be a non-empty string");
-    if (COLLECTION_ID.test(ref)) {
-      const collection = await figma.variables.getVariableCollectionByIdAsync(ref);
-      if (!collection) throw new Error(`no variable collection with id ${ref}`);
-      return collection;
-    }
-    const collections = await figma.variables.getLocalVariableCollectionsAsync();
-    const matches = collections.filter((collection) => collection.name.toLowerCase() === ref.toLowerCase());
-    if (matches.length === 0) {
-      throw new Error(`no local collection named "${ref}" \u2014 have: ${collections.map((c) => c.name).join(", ")}`);
-    }
-    if (matches.length > 1) throw new Error(`"${ref}" names ${matches.length} collections \u2014 use the id`);
-    return matches[0];
-  }
-  var LIBRARY_KEY = /^[0-9a-f]{20,}$/i;
-  var isLibraryKey = (ref) => typeof ref === "string" && LIBRARY_KEY.test(ref);
-  async function resolveVariableRef(ref) {
-    if (isLibraryKey(ref)) {
-      try {
-        return await figma.variables.importVariableByKeyAsync(ref);
-      } catch (err) {
-        throw new Error(
-          `no library variable with key ${ref} \u2014 is that library enabled in this file? (${String((err == null ? void 0 : err.message) || err)})`
-        );
-      }
-    }
-    return resolveVariable(ref);
-  }
-  async function resolveVariable(ref) {
-    if (typeof ref !== "string" || ref === "") throw new Error("variable reference must be a non-empty string");
-    if (VARIABLE_ID.test(ref)) {
-      const variable = await figma.variables.getVariableByIdAsync(ref);
-      if (!variable) throw new Error(`no variable with id ${ref}`);
-      return variable;
-    }
-    const variables = await figma.variables.getLocalVariablesAsync();
-    const exact = variables.filter((variable) => variable.name === ref);
-    if (exact.length === 1) return exact[0];
-    if (exact.length > 1) {
-      const owners = await collectionNames(exact);
-      throw new Error(`"${ref}" exists in ${owners.join(", ")} \u2014 qualify it as "Collection/${ref}"`);
-    }
-    const slash = ref.indexOf("/");
-    if (slash > 0) {
-      const collectionName = ref.slice(0, slash).toLowerCase();
-      const variableName = ref.slice(slash + 1);
-      const collections = await figma.variables.getLocalVariableCollectionsAsync();
-      const collection = collections.find((entry) => entry.name.toLowerCase() === collectionName);
-      if (collection) {
-        const match = variables.find(
-          (variable) => variable.variableCollectionId === collection.id && variable.name === variableName
-        );
-        if (match) return match;
-      }
-    }
-    throw new Error(`no variable named "${ref}"`);
-  }
-  async function collectionNames(variables) {
-    var _a;
-    const names = [];
-    for (const variable of variables) {
-      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
-      names.push((_a = collection == null ? void 0 : collection.name) != null ? _a : variable.variableCollectionId);
-    }
-    return names;
-  }
-  function resolveModes(collection, ref) {
-    var _a;
-    if (ref === void 0 || ref === null || ref === "") {
-      const fallback = (_a = collection.modes.find((mode) => mode.modeId === collection.defaultModeId)) != null ? _a : collection.modes[0];
-      return [{ modeId: fallback.modeId, name: fallback.name }];
-    }
-    if (ref === "*") return collection.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name }));
-    if (typeof ref !== "string") throw new Error("mode must be a string");
-    const byId = collection.modes.find((mode) => mode.modeId === ref);
-    if (byId) return [{ modeId: byId.modeId, name: byId.name }];
-    const byName = collection.modes.filter((mode) => mode.name.toLowerCase() === ref.toLowerCase());
-    if (byName.length === 1) return [{ modeId: byName[0].modeId, name: byName[0].name }];
-    throw new Error(
-      `collection "${collection.name}" has no mode "${ref}" \u2014 have: ${collection.modes.map((m) => m.name).join(", ")}`
-    );
-  }
-  function isAlias(value) {
-    return typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
-  }
-  async function describeValue(value) {
-    if (value === void 0) return "(unset)";
-    if (isAlias(value)) {
-      const target = await figma.variables.getVariableByIdAsync(value.id);
-      if (!target) return `\u2192 ${value.id}`;
-      return target.remote ? `\u2192 ${target.name} (library)` : `\u2192 ${target.name}`;
-    }
-    if (typeof value === "object" && value !== null && "r" in value) {
-      const color = value;
-      return describeColor({ r: color.r, g: color.g, b: color.b, a: "a" in color ? color.a : 1 });
-    }
-    return String(value);
-  }
-  async function coerceVariableValue(variable, raw) {
-    if (typeof raw === "object" && raw !== null && "alias" in raw) {
-      const target = await resolveVariableRef(raw.alias);
-      if (target.id === variable.id) throw new Error(`"${variable.name}" cannot alias itself`);
-      if (target.resolvedType !== variable.resolvedType) {
-        throw new Error(
-          `"${variable.name}" is ${variable.resolvedType} but "${target.name}" is ${target.resolvedType}`
-        );
-      }
-      return figma.variables.createVariableAlias(target);
-    }
-    switch (variable.resolvedType) {
-      case "COLOR": {
-        const color = parseColor(raw);
-        if (!color) throw new Error(`"${variable.name}" needs a colour \u2014 got ${JSON.stringify(raw)}`);
-        return { r: color.r, g: color.g, b: color.b, a: color.a };
-      }
-      case "FLOAT": {
-        const num2 = typeof raw === "string" ? Number(raw) : raw;
-        if (typeof num2 !== "number" || !Number.isFinite(num2)) {
-          throw new Error(`"${variable.name}" needs a number \u2014 got ${JSON.stringify(raw)}`);
-        }
-        return num2;
-      }
-      case "BOOLEAN": {
-        if (typeof raw === "boolean") return raw;
-        if (raw === "true") return true;
-        if (raw === "false") return false;
-        throw new Error(`"${variable.name}" needs a boolean \u2014 got ${JSON.stringify(raw)}`);
-      }
-      case "STRING": {
-        if (typeof raw !== "string") throw new Error(`"${variable.name}" needs a string \u2014 got ${JSON.stringify(raw)}`);
-        return raw;
-      }
-    }
-  }
 
   // src/agent/board.ts
   var CHROME = {
@@ -15691,6 +15691,27 @@ ${scripts}`, "");
     if (Array.isArray(node.children)) summary.childCount = node.children.length;
     return summary;
   }
+  var PAINT_FIELDS2 = { fills: "fills", strokes: "strokes" };
+  function paintColor(paint) {
+    const entry = paint;
+    if (!entry || entry.type !== "SOLID" || !entry.color) return null;
+    return {
+      r: entry.color.r,
+      g: entry.color.g,
+      b: entry.color.b,
+      a: typeof entry.opacity === "number" ? entry.opacity : 1
+    };
+  }
+  function asColor(value) {
+    const entry = value;
+    if (!entry || typeof entry.r !== "number" || typeof entry.g !== "number" || typeof entry.b !== "number") {
+      return null;
+    }
+    return { r: entry.r, g: entry.g, b: entry.b, a: typeof entry.a === "number" ? entry.a : 1 };
+  }
+  function sameColor(a, b) {
+    return ["r", "g", "b", "a"].every((channel) => Math.abs(a[channel] - b[channel]) < 2e-3);
+  }
   var COMPARABLE = {
     topLeftRadius: "topLeftRadius",
     topRightRadius: "topRightRadius",
@@ -15712,6 +15733,15 @@ ${scripts}`, "");
     if (!bound || typeof bound !== "object") return void 0;
     const out = {};
     for (const [field, entry] of Object.entries(bound)) {
+      if (field in PAINT_FIELDS2) {
+        const aliases = Array.isArray(entry) ? entry : [entry];
+        const paints2 = node[field];
+        for (const [index, alias2] of aliases.entries()) {
+          const record3 = await describePaintBinding(alias2, Array.isArray(paints2) ? paints2[index] : void 0);
+          if (record3) out[aliases.length > 1 ? `${field}[${index}]` : field] = record3;
+        }
+        continue;
+      }
       const alias = Array.isArray(entry) ? entry[0] : entry;
       const id = alias == null ? void 0 : alias.id;
       if (typeof id !== "string") continue;
@@ -15740,6 +15770,31 @@ ${scripts}`, "");
       out[field] = record2;
     }
     return Object.keys(out).length > 0 ? out : void 0;
+  }
+  async function describePaintBinding(alias, paint) {
+    var _a;
+    const id = alias == null ? void 0 : alias.id;
+    if (typeof id !== "string") return null;
+    let variable = null;
+    try {
+      variable = await figma.variables.getVariableByIdAsync(id);
+    } catch (e) {
+    }
+    const record2 = { token: (_a = variable == null ? void 0 : variable.name) != null ? _a : id };
+    const rendered = paintColor(paint);
+    if (!variable || !rendered) return record2;
+    const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+    if (!collection) return record2;
+    try {
+      const resolved = await resolveVariableValue(variable, collection.defaultModeId);
+      const tokenColor = asColor(resolved.value);
+      if (!tokenColor) return record2;
+      record2.value = describeColor(tokenColor);
+      record2.rendered = describeColor(rendered);
+      if (!sameColor(tokenColor, rendered)) record2.mismatch = true;
+    } catch (e) {
+    }
+    return record2;
   }
   async function describeNode(node, depth) {
     var _a, _b;

@@ -17,6 +17,7 @@
 import { lintScopeAsync, type LintFinding } from '../targets/django/lint/index.ts'
 import { findAllWithCriteria, loadAllPagesAsync } from '../utils/tree.ts'
 import { readAllVariables, readLocalVariables, resolveVariableValue } from '../variables.ts'
+import { describeColor, type Rgba } from './values.ts'
 import type { OpDef } from './protocol.ts'
 import { CONTEXT_OPS } from './context-ops.ts'
 import { TRANSITION_OPS } from './transition-ops.ts'
@@ -56,8 +57,12 @@ export interface NodeSummary {
     /** 0..1. Above 0 the shape is a squircle and `border-radius` alone cannot reproduce it. */
     smoothing?: number
   }
-  /** Field → the token bound to it. `mismatch` is set when the layer renders something else. */
-  bindings?: Record<string, { token: string; value?: number | string; rendered?: number; mismatch?: boolean }>
+  /** Field → the token bound to it. `mismatch` is set when the layer renders something else.
+   * A paint field appears per index (`fills[0]`) when the node carries several. */
+  bindings?: Record<
+    string,
+    { token: string; value?: number | string; rendered?: number | string; mismatch?: boolean }
+  >
   /** TEXT only, truncated — an agent wants the gist, not the copy deck. */
   text?: string
   /** INSTANCE only. */
@@ -164,6 +169,36 @@ export function summarizeNode(node: any): NodeSummary {
   return summary
 }
 
+/** Paint fields: the binding is per paint, so the array index is part of the field name. */
+const PAINT_FIELDS: Readonly<Record<string, 'fills' | 'strokes'>> = { fills: 'fills', strokes: 'strokes' }
+
+/** A solid paint's effective colour. Figma keeps the alpha in the paint's `opacity`, not in
+ * `color`, so a comparison that read `color` alone would call every translucent token a match. */
+export function paintColor(paint: unknown): Rgba | null {
+  const entry = paint as { type?: string; color?: { r: number; g: number; b: number }; opacity?: number } | null
+  if (!entry || entry.type !== 'SOLID' || !entry.color) return null
+  return {
+    r: entry.color.r,
+    g: entry.color.g,
+    b: entry.color.b,
+    a: typeof entry.opacity === 'number' ? entry.opacity : 1,
+  }
+}
+
+function asColor(value: unknown): Rgba | null {
+  const entry = value as { r?: unknown; g?: unknown; b?: unknown; a?: unknown } | null
+  if (!entry || typeof entry.r !== 'number' || typeof entry.g !== 'number' || typeof entry.b !== 'number') {
+    return null
+  }
+  return { r: entry.r, g: entry.g, b: entry.b, a: typeof entry.a === 'number' ? entry.a : 1 }
+}
+
+/** Half a byte per channel — below what 8-bit colour can even represent, so float noise from
+ * Figma never reads as a real difference. */
+export function sameColor(a: Rgba, b: Rgba): boolean {
+  return (['r', 'g', 'b', 'a'] as const).every((channel) => Math.abs(a[channel] - b[channel]) < 0.002)
+}
+
 /** Scalar fields whose rendered value can be compared against the token bound to them. */
 const COMPARABLE: Readonly<Record<string, string>> = {
   topLeftRadius: 'topLeftRadius',
@@ -194,6 +229,16 @@ async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSu
 
   const out: NonNullable<NodeSummary['bindings']> = {}
   for (const [field, entry] of Object.entries(bound as Record<string, any>)) {
+    if (field in PAINT_FIELDS) {
+      const aliases = Array.isArray(entry) ? entry : [entry]
+      const paints = node[field]
+      for (const [index, alias] of aliases.entries()) {
+        const record = await describePaintBinding(alias, Array.isArray(paints) ? paints[index] : undefined)
+        if (record) out[aliases.length > 1 ? `${field}[${index}]` : field] = record
+      }
+      continue
+    }
+
     const alias = Array.isArray(entry) ? entry[0] : entry
     const id = alias?.id
     if (typeof id !== 'string') continue
@@ -232,6 +277,44 @@ async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSu
   // Radii repeat per corner; a mismatch on any of them is the interesting bit, and the corner
   // summary already says what the shape is.
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+/**
+ * One paint binding: the token, the colour it resolves to, and the colour the layer actually
+ * paints. A colour that has drifted from its token is the failure this whole plugin exists to
+ * catch, and it is the one a screenshot will never show — two greys a byte apart look
+ * identical and behave differently the moment the token moves.
+ */
+async function describePaintBinding(
+  alias: unknown,
+  paint: unknown
+): Promise<NonNullable<NodeSummary['bindings']>[string] | null> {
+  const id = (alias as { id?: unknown } | null)?.id
+  if (typeof id !== 'string') return null
+
+  let variable: Variable | null = null
+  try {
+    variable = await figma.variables.getVariableByIdAsync(id)
+  } catch {
+    /* unnamed binding is still a binding */
+  }
+  const record: NonNullable<NodeSummary['bindings']>[string] = { token: variable?.name ?? id }
+
+  const rendered = paintColor(paint)
+  if (!variable || !rendered) return record
+  const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId)
+  if (!collection) return record
+  try {
+    const resolved = await resolveVariableValue(variable, collection.defaultModeId)
+    const tokenColor = asColor(resolved.value)
+    if (!tokenColor) return record
+    record.value = describeColor(tokenColor)
+    record.rendered = describeColor(rendered)
+    if (!sameColor(tokenColor, rendered)) record.mismatch = true
+  } catch {
+    /* circular or unreadable alias — report the binding without a comparison */
+  }
+  return record
 }
 
 /** Full description of one node: `summarizeNode` plus the awaited bits, recursing `depth`
