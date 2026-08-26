@@ -827,6 +827,7 @@
         <p class="agent-hint">One Node script, nothing to install &mdash; it ships inside this plugin, so it always matches. Needs Node 18+. The command above assumes your Downloads folder.</p>
         <p class="agent-hint">It mints its own secret into <code>~/.altery/agent-secret</code> and opens a five-minute pairing window &mdash; press <b>Pair with bridge</b> above. <b>Everyone does this once on their own machine:</b> no secret travels with the plugin, so there is nothing to hand out and nothing to rotate for the team.</p>
         <p class="agent-hint"><b>Desktop app only.</b> Figma in a browser blocks calls to your own machine, so the channel cannot reach the bridge there. After a plugin update, restart the bridge &mdash; this screen says so itself if the two fall out of step.</p>
+        <p class="agent-hint"><b>No Figma API token anywhere.</b> The channel goes through this plugin, so nobody needs a personal access token &mdash; which matters because an org admin can forbid creating one. Comments, version history and the audit log are the exception: they exist only in Figma's REST API, are out of reach from here, and do need a token.</p>
       </section>
 
       <section class="card">
@@ -3363,6 +3364,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           '  that is how one library inherits another\'s tokens.',
           '- `node.focus` selects a node and scrolls the designer to it. Use it instead of',
           '  describing where something is.',
+          '',
+          '## No Figma API token is involved',
+          '',
+          'Everything above runs through the plugin the designer already has open. There is no',
+          'personal access token anywhere in this channel, and that is not only convenience: on',
+          'an Organization plan an admin can forbid members from creating one at all, so telling',
+          'someone to "generate a Figma token" is advice that simply fails for part of the team.',
+          '',
+          'Some things genuinely are outside this channel — **comments, version history, and the',
+          'audit log of who changed what** do not exist in the Figma plugin API at all. They live',
+          'only in the REST API, which does need a token (and the audit log needs an Enterprise',
+          'admin one). If a task needs those, say so plainly and ask the designer whether they',
+          'can create a token — do not assume they can, and do not substitute a guess about who',
+          'changed something or what a comment said.',
           '',
           '## When the file disagrees with you',
           '',

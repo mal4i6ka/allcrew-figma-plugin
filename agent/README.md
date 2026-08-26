@@ -82,6 +82,19 @@ node agent/altery-figma.mjs call document.info
 
 ---
 
+## No Figma API token
+
+Nothing in this channel uses one. The plugin already has the file open and the Plugin API needs
+no credential, so there is no personal access token to create, store or rotate — which matters
+more than convenience: on an Organization plan an admin can forbid members from creating one,
+and an integration that depends on a token is an integration half the team cannot run.
+
+What that costs is a real boundary rather than a gap to work around. **Comments, version history
+and the audit log of who changed what do not exist in the Figma plugin API.** No op here can
+reach them, and no future one will; they live only in the REST API, and the audit log needs an
+Enterprise admin token at that. The agent already has network access of its own — if those are
+needed, they belong on its side of the bridge, not tunnelled through the sandbox.
+
 ## Secrets across machines
 
 Nothing is baked into the build and nothing is shared. Each machine's bridge mints its own
