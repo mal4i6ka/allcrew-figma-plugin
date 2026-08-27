@@ -841,7 +841,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           </button>
         </div>
-        <p class="agent-hint">Save as <code>.claude/skills/figma/SKILL.md</code> in the project your agent works in &mdash; Claude Code picks it up from then on, no re-explaining. Any other CLI: paste it wherever that tool reads standing instructions. It regenerates from the live op list, so re-copy after a plugin update.</p>
+        <p class="agent-hint">Save as <code>.claude/skills/altery-figma-listener/SKILL.md</code> in the project your agent works in &mdash; Claude Code picks it up from then on, no re-explaining. Any other CLI: paste it wherever that tool reads standing instructions. It regenerates from the live op list &mdash; and if you start the bridge with <code>--install-skill</code>, it keeps <code>~/.claude/skills/altery-figma-listener/SKILL.md</code> current by itself, so this paste happens zero times instead of once. Agents can also refresh their copy from <code>GET /skill</code>.</p>
       </section>
     </div>
 
@@ -3152,6 +3152,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           body: JSON.stringify({
             clientId: AGENT.clientId,
             ops: AGENT.ops,
+            // The rendered paste-once skill rides along so the bridge can serve it (GET /skill)
+            // and — when started with --install-skill — keep the agent's copy current without
+            // anyone pasting anything ever again.
+            skill: agentSkillText(),
             gates: { read: msg.read, write: msg.write },
             file: AGENT.file,
             fileKey: msg.fileKey || null,
@@ -3307,7 +3311,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         return [
           '---',
-          'name: figma',
+          'name: altery-figma-listener',
           'description: Read and change the Figma file the designer has open right now — pages, frames, components, styles, variables, prototype flows, and the tokens every layer is bound to — through the Altery plugin. Use whenever a task names a screen, frame or component, asks what is selected, needs real design values instead of guesses, or asks for a change to the design system itself.',
           '---',
           '',
@@ -3332,6 +3336,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           '',
           '`"online": false` means the plugin is closed or the designer has the channel switched',
           'off. Tell them, and ask them to turn it on — never substitute a guess about the design.',
+          '',
+          'This document itself is served at `GET /skill` — after a plugin update, refresh your',
+          'copy from there instead of asking anyone to re-paste it.',
           '',
           '## Ops',
           '',

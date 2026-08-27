@@ -62,6 +62,8 @@
  *   ALTERY_AGENT_CALL_TIMEOUT_MS  how long one call may take (default 180000)
  *   ALTERY_AGENT_FILES        where ops that return files write them
  *                             (default ~/.altery/agent-files)
+ *   ALTERY_AGENT_SKILL_FILE   with --install-skill: where the paste-once skill is written
+ *                             (default ~/.claude/skills/altery-figma-listener/SKILL.md)
  */
 
 import http from 'node:http'
@@ -125,6 +127,42 @@ const PAIR_WINDOW_MS = 5 * 60 * 1000
 let pairOpenUntil =
   SECRET_SOURCE !== 'env' || process.argv.includes('--pair') ? Date.now() + PAIR_WINDOW_MS : 0
 const pairingOpen = () => Date.now() < pairOpenUntil
+
+/**
+ * Opt-in auto-install of the paste-once skill. The plugin sends its rendered skill text with
+ * every hello; with this enabled the bridge keeps a copy on disk, so "teach the agent" happens
+ * zero times instead of once and never goes stale. Opt-in on purpose: this file becomes
+ * standing instructions for whatever agent reads it, and silently (re)writing those is a trust
+ * decision the person at the keyboard should make, not a default they discover.
+ */
+const SKILL_INSTALL = (() => {
+  const flag = process.argv.find((arg) => arg === '--install-skill' || arg.startsWith('--install-skill='))
+  const env = process.env.ALTERY_AGENT_SKILL_FILE
+  if (!flag && !env) return null
+  const fromFlag = flag && flag.includes('=') ? flag.slice(flag.indexOf('=') + 1) : null
+  return fromFlag || env || path.join(os.homedir(), '.claude', 'skills', 'altery-figma-listener', 'SKILL.md')
+})()
+
+function installSkill(plugin) {
+  if (!SKILL_INSTALL || typeof plugin.skill !== 'string' || plugin.skill === '') return
+  try {
+    let current = null
+    try {
+      current = fs.readFileSync(SKILL_INSTALL, 'utf8')
+    } catch {
+      /* not installed yet */
+    }
+    if (current === plugin.skill) return
+    fs.mkdirSync(path.dirname(SKILL_INSTALL), { recursive: true })
+    fs.writeFileSync(SKILL_INSTALL, plugin.skill)
+    console.log(
+      new Date().toISOString(),
+      `~ skill → ${SKILL_INSTALL} (${plugin.skill.length} bytes, from "${plugin.file}")`
+    )
+  } catch (err) {
+    console.log(new Date().toISOString(), `! skill install failed: ${String(err?.message || err)}`)
+  }
+}
 
 /** Pairing is only ever offered to something on this machine. */
 function isLoopback(req) {
@@ -512,6 +550,27 @@ const ROUTES = {
     return { code: 200, body: { online: files.length > 0, count: files.length, files } }
   },
 
+  'GET /skill': async (req, res, url) => {
+    /* The paste-once document, as the connected plugin rendered it — markdown, not JSON, so
+     * `curl …/skill > SKILL.md` is the whole update procedure an agent needs. */
+    const target = url.searchParams.get('target')
+    const online = roster().filter((plugin) => plugin.skill)
+    let plugin = null
+    if (target) {
+      const found = resolveTarget(target)
+      if (found.error) return { code: 404, body: { ok: false, error: found.error, files: found.candidates || [] } }
+      plugin = found.plugin
+    } else {
+      plugin = online[0] || null
+    }
+    if (!plugin || !plugin.skill) {
+      return { code: 503, body: { ok: false, error: 'no connected plugin has sent a skill yet — open the plugin and switch the listener on' } }
+    }
+    res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' })
+    res.end(plugin.skill)
+    return null
+  },
+
   'POST /call': async (req) => {
     const body = await readBody(req)
     const op = typeof body.op === 'string' ? body.op : ''
@@ -607,6 +666,7 @@ const ROUTES = {
       known.file = file
       known.fileKey = typeof body.fileKey === 'string' ? body.fileKey : null
       known.ops = Array.isArray(body.ops) ? body.ops : []
+      known.skill = typeof body.skill === 'string' ? body.skill : known.skill ?? null
       known.gates = { read: body.gates?.read === true, write: body.gates?.write === true }
       known.expects = typeof body.bridgeFingerprint === 'string' ? body.bridgeFingerprint : null
       known.lastSeen = Date.now()
@@ -616,6 +676,7 @@ const ROUTES = {
         `read=${known.gates.read} write=${known.gates.write} · ${roster().length} connected`
       )
       warnIfStale(known)
+      installSkill(known)
       return {
         code: 200,
         body: { ok: true, session, handle: known.handle, pollHoldMs: POLL_HOLD_MS, bridgeFingerprint: BRIDGE_FINGERPRINT },
@@ -628,6 +689,7 @@ const ROUTES = {
       file,
       fileKey: typeof body.fileKey === 'string' ? body.fileKey : null,
       ops: Array.isArray(body.ops) ? body.ops : [],
+      skill: typeof body.skill === 'string' ? body.skill : null,
       gates: { read: body.gates?.read === true, write: body.gates?.write === true },
       expects: typeof body.bridgeFingerprint === 'string' ? body.bridgeFingerprint : null,
       lastSeen: Date.now(),
@@ -641,6 +703,7 @@ const ROUTES = {
       `read=${plugin.gates.read} write=${plugin.gates.write} · ${roster().length} connected`
     )
     warnIfStale(plugin)
+    installSkill(plugin)
     return {
       code: 200,
       body: { ok: true, session, handle: plugin.handle, pollHoldMs: POLL_HOLD_MS, bridgeFingerprint: BRIDGE_FINGERPRINT },
