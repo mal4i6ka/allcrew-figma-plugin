@@ -463,14 +463,14 @@
   /* Taller than the panel strictly needs: a filter above the list is only worth its row if
      the list it filters did not shrink by the same amount. */
   .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: 520px; overflow-y: auto; overflow-x: hidden; }
-  .rmp-filter { display: flex; align-items: center; gap: 6px; }
-  .rmp-search-wrap { position: relative; display: flex; flex: 1; min-width: 0; }
-  .rmp-filter input { flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 6px 24px 6px 8px; font-family: var(--mono); font-size: 11px; }
+  .rmp-filter { display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box; }
+  .rmp-search-wrap { position: relative; display: flex; flex: 1 1 auto; min-width: 0; width: 100%; }
+  .rmp-filter input { flex: 1 1 auto; width: 100%; min-width: 0; box-sizing: border-box; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 6px 24px 6px 8px; font-family: var(--mono); font-size: 11px; }
   .rmp-filter input:focus { outline: none; border-color: var(--accent); }
   /* Inside the field, where a clear belongs — it clears that field and nothing else. */
   .rmp-search-clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--faint); font-size: 13px; line-height: 1; cursor: pointer; }
   .rmp-search-clear:hover { color: var(--muted); }
-  .rmp-filter span { color: var(--faint); font-size: 10px; font-family: var(--mono); flex: none; }
+  .rmp-filter > span:last-child { color: var(--faint); font-size: 10px; font-family: var(--mono); flex: none; white-space: nowrap; }
   .rmp-group { color: var(--faint); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; margin: 9px 0 3px; display: flex; align-items: center; gap: 6px; }
   .rmp-group b { color: var(--text); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0; text-transform: none; }
   .rmp-head { display: grid; grid-template-columns: 14px 14px 1fr auto; align-items: center; gap: 7px; padding: 0 5px 4px; color: var(--faint); font-size: 9px; letter-spacing: .05em; text-transform: uppercase; position: sticky; top: 0; background: var(--surface); z-index: 1; }
