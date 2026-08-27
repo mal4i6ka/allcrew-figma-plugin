@@ -7,7 +7,7 @@
  * so this is the one place that translates nested → flat before handing off to the engine.
  */
 
-import { buildPackage, extractBreakpointTokens, type TokenGraph, type TokenPackage } from '../tokens/engine.ts'
+import { buildPackage, extractBreakpointTokens, type RenameMap, type TokenGraph, type TokenPackage } from '../tokens/engine.ts'
 import { normalizeExportOptions, resolveThemeAttribute } from '../settings.ts'
 import { buildTokenAudit } from './design-md/audit.ts'
 import { buildTokensDesignMd } from './design-md/tokens-target.ts'
@@ -26,7 +26,9 @@ export function buildDesignTokens(
   graph: TokenGraph,
   options: unknown,
   generatedAt?: string,
-  componentDocs: readonly ComponentDoc[] = []
+  componentDocs: readonly ComponentDoc[] = [],
+  /** Names a colour remap rewrote, so the export can keep the old keys resolving. */
+  renames?: RenameMap
 ): TargetArtifacts {
   const opts = normalizeExportOptions(options)
   const engineOptions = {
@@ -40,7 +42,7 @@ export function buildDesignTokens(
     typoShorthand: opts.tokens.typoShorthand,
     typoNaming: opts.tokens.typoNaming,
   }
-  const pkg: TokenPackage = buildPackage(graph, engineOptions)
+  const pkg: TokenPackage = buildPackage(graph, engineOptions, renames)
   const collectionRoles = parseCollectionRoles(opts.tokens.collectionRoles)
   // Icons drown the component docs at library scale (1600+ glyphs, search-tag descriptions):
   // they ship as a compact ICONS.md table, and COMPONENTS.md keeps only real components.

@@ -93,8 +93,9 @@ export function normalizePaletteSettings(value: unknown): PaletteSettings {
   const defaults = DEFAULT_PALETTE_SETTINGS
   if (!isRecord(value)) return { ...defaults, spectra: defaults.spectra.map((s) => ({ ...s })) }
 
-  const spectra = Array.isArray(value.spectra)
-    ? value.spectra.map(normalizeSpectrum).filter((spec): spec is SpectrumSpec => spec !== null)
+  const rawSpectra = Array.isArray(value.spectra) ? value.spectra : null
+  const spectra = rawSpectra
+    ? rawSpectra.map(normalizeSpectrum).filter((spec): spec is SpectrumSpec => spec !== null)
     : []
 
   const lightnessMax = number(value.lightnessMax, defaults.lightnessMax, 0.5, 1)
@@ -111,6 +112,13 @@ export function normalizePaletteSettings(value: unknown): PaletteSettings {
     chromaCurve: number(value.chromaCurve, defaults.chromaCurve, 0, 1),
     hueTorsion: value.hueTorsion === 'auto' ? 'auto' : number(value.hueTorsion, 0, -60, 60),
     neutralChroma: number(value.neutralChroma, defaults.neutralChroma, 0, 1),
-    spectra: spectra.length > 0 ? spectra : defaults.spectra.map((s) => ({ ...s })),
+    // An empty list is a choice: the operator cleared the board to build their own set, and
+    // quietly refilling it with the default three makes the preview show ramps that no
+    // longer exist. The defaults return only when the field is missing entirely or every
+    // entry is corrupt — settings from an older build, not a deliberate empty state.
+    spectra:
+      rawSpectra === null || (rawSpectra.length > 0 && spectra.length === 0)
+        ? defaults.spectra.map((s) => ({ ...s }))
+        : spectra,
   }
 }

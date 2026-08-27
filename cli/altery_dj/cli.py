@@ -13,6 +13,12 @@ EXAMPLES = {
   altery-dj apply export.zip                    # unpack into the current directory (must be a Django app)
   altery-dj apply export.zip --app myapp/       # unpack into a specific app dir
   altery-dj apply export.zip --dry-run          # list what would be written, write nothing""",
+    "remap": """\
+  altery-dj remap --map mapping.json                    # dry run over the current directory
+  altery-dj remap --map mapping.json src/ --write       # apply, refuses on a dirty worktree
+  altery-dj remap --map mapping.json --mode Light       # pick a theme when the mapping has several
+  altery-dj remap --map mapping.json --snap 0           # exact colours only, no near matches
+  altery-dj remap --map mapping.json --by-name          # also rewrite values by their token name""",
     "po": """\
   django-admin makemessages -l ru               # 1. Django owns django.po
   altery-dj po merge --locale ru                # 2. merge the plugin's figma.po into it
@@ -89,6 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
     tokens_parser.add_argument("--theme-attr", default="data-bs-theme", help="theme attribute for CSS selectors")
     tokens_parser.add_argument("--no-inline", action="store_true", help="keep aliases as var() references in tokens.css")
     tokens_parser.add_argument("--flatten-all", action="store_true", help="resolve EVERY alias to a literal in tokens.css")
+
+    from . import remap
+
+    remap.add_parser(subparsers)
 
     bootstrap_parser = subparsers.add_parser("bootstrap", help="Bootstrap framework helpers")
     bootstrap_sub = bootstrap_parser.add_subparsers(dest="bootstrap_command", required=True)
@@ -171,6 +181,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "tokens":
         from . import tokens
         return tokens.run(args)
+    if args.command == "remap":
+        from . import remap
+
+        return remap.run(args)
+
     if args.command == "bootstrap":
         from . import vendor
         return vendor.run(args)

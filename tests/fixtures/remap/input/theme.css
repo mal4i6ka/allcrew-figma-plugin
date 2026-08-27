@@ -1,0 +1,18 @@
+/* Brand colours. The blue below is the one everybody copied by hand. */
+:root {
+  --color-primary: #3B82F6;
+  --color-primary-strong: #2563EB;
+  --color-surface: white;
+  --color-shadow: rgba(15, 23, 42, 0.12);
+  --colors-blue-500: #3F86FA;
+}
+
+.button {
+  background: rgb(59, 130, 246);
+  border: 1px solid #2563eb;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+  color: hsl(0, 0%, 100%);
+}
+
+/* the tan leather sample is prose, not a colour */
+.badge { background: #3B82F680; }

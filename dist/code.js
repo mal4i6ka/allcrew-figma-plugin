@@ -839,7 +839,34 @@ ${themeDeclarations(allLeaves, theme).join("\n")}
   function cssAttrValue(value) {
     return String(value).replace(/[\\"]/g, "\\$&");
   }
-  function toTokensCss(tree, ordered, defaultTheme, attr) {
+  var RENAMES_EXTENSION = "altery";
+  var segmentsOf = (name) => name.split("/").filter((segment) => segment.trim() !== "");
+  function legacyAliasPairs(tree, renames) {
+    if (!renames) return [];
+    const emitted = new Set(leaves(tree).map((entry) => varName(entry.path)));
+    const pairs = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const key of Object.keys(renames)) {
+      const from = varName(segmentsOf(key));
+      const to = varName(segmentsOf(renames[key]));
+      if (from === "" || to === "" || from === to) continue;
+      if (!emitted.has(to) || emitted.has(from) || seen.has(from)) continue;
+      seen.add(from);
+      pairs.push({ from, to });
+    }
+    return pairs.sort((a, b) => a.from < b.from ? -1 : a.from > b.from ? 1 : 0);
+  }
+  var LEGACY_COMMENT = "/* Renamed by a color remap \u2014 the old names keep resolving */";
+  function toLegacyAliasCss(pairs, selector = ":root") {
+    if (pairs.length === 0) return "";
+    const lines = pairs.map((pair2) => `  --${pair2.from}: var(--${pair2.to});`);
+    return `${LEGACY_COMMENT}
+${selector} {
+${lines.join("\n")}
+}
+`;
+  }
+  function toTokensCss(tree, ordered, defaultTheme, attr, renames) {
     const a = attr || "data-theme-name";
     const allLeaves = leaves(tree);
     if (allLeaves.length === 0) return "";
@@ -849,9 +876,10 @@ ${themeDeclarations(allLeaves, theme).join("\n")}
 ${themeSel}` : themeSel;
       return themeBlock(allLeaves, theme, selector);
     });
-    return blocks.join("\n\n") + "\n";
+    const legacy = toLegacyAliasCss(legacyAliasPairs(tree, renames));
+    return blocks.join("\n\n") + "\n" + (legacy === "" ? "" : "\n" + legacy);
   }
-  function toThemeModuleCssFiles(tree, ordered, defaultTheme, attr, useGlobal) {
+  function toThemeModuleCssFiles(tree, ordered, defaultTheme, attr, useGlobal, renames) {
     const a = attr || "data-theme-name";
     const wrap = useGlobal ? (sel) => `:global(${sel})` : (sel) => sel;
     const allLeaves = leaves(tree);
@@ -867,7 +895,8 @@ ${themeSel}` : themeSel;
       let n = 2;
       while (used.has(name)) name = `${base}-${n++}`;
       used.add(name);
-      files[`${name}.module.css`] = themeBlock(allLeaves, theme, selector) + "\n";
+      const legacy = theme === defaultTheme ? toLegacyAliasCss(legacyAliasPairs(tree, renames), wrap(":root")) : "";
+      files[`${name}.module.css`] = themeBlock(allLeaves, theme, selector) + "\n" + (legacy === "" ? "" : "\n" + legacy);
     }
     return files;
   }
@@ -907,8 +936,9 @@ export const themes = ${JSON.stringify(themes)} as const;
 export type Theme = (typeof themes)[number];
 `;
   }
-  function toTokensJson(tree) {
-    return JSON.stringify(tree, null, 2) + "\n";
+  function toTokensJson(tree, renames) {
+    const payload = renames && Object.keys(renames).length > 0 ? __spreadProps(__spreadValues({}, tree), { $extensions: { [RENAMES_EXTENSION]: { renames } } }) : tree;
+    return JSON.stringify(payload, null, 2) + "\n";
   }
   function extractBreakpointTokens(graph) {
     const out = {};
@@ -1019,7 +1049,7 @@ ${lines.join("\n")}
 }
 \`\`\``;
   }
-  function buildReadme(summary, options, tree) {
+  function buildReadme(summary, options, tree, renames) {
     const attr = options.themeAttr;
     const themeList = summary.themes.map((t) => `\`${t}\``).join(", ");
     const moduleList = summary.themes.map((t) => `\`${varName([t])}.module.css\``).join(", ");
@@ -1052,6 +1082,19 @@ Switch theme by setting the attribute on any ancestor (e.g. \`<html>\`):
       options.emitModuleFiles ? `\`:global()\` \`${options.cssModulesGlobal ? "on" : "off"}\`` : null
     ].filter(Boolean).join(" \xB7 ");
     const typoNote = options.typoExtract && summary.textStyleCount ? options.typoScaleOnly ? "\n\nText-style values are factored into a shared typography scale (`--font-size-\u2026`, `--font-weight-\u2026`, \u2026). Only the scale is emitted \u2014 compose each text style in your own CSS by referencing the primitives directly (e.g. `font-size: var(--font-size-md)`)." : "\n\nText-style values are factored into a shared typography scale (`--font-size-\u2026`, `--font-weight-\u2026`, \u2026); each style references the scale with `var(--\u2026)`" + (options.typoShorthand ? ", plus a CSS `font` shorthand token per style (`--<style>-font`)" : "") + "." : "";
+    const aliasPairs = tree ? legacyAliasPairs(tree, renames) : [];
+    const aliasSection = aliasPairs.length ? `
+
+## Renamed tokens
+
+${aliasPairs.length} custom propert${aliasPairs.length === 1 ? "y was" : "ies were"} renamed in Figma by a color remap. The old names are still declared at the bottom of \`tokens.css\`, pointing at the new ones, so nothing that already imported them breaks:
+
+\`\`\`css
+${aliasPairs.slice(0, 6).map((pair2) => `--${pair2.from}: var(--${pair2.to});`).join("\n")}${aliasPairs.length > 6 ? `
+/* \u2026and ${aliasPairs.length - 6} more */` : ""}
+\`\`\`
+
+They are aliases, not a second source of truth \u2014 migrate to the new names when convenient. \`tokens.ts\` only carries the current names.` : "";
     const moduleSection = options.emitModuleFiles ? `
 
 ## Per-theme CSS Modules
@@ -1099,7 +1142,7 @@ Import the stylesheet once:
 The default theme (\`${defaultTheme}\`) is applied on \`:root\`, so it works with no attribute set.${switchExample}
 
 Each \`[${attr}="\u2026"]\` block re-declares **every** variable for that theme, so toggling
-the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
+the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleSection}
 `;
   }
   var DEFAULT_OPTIONS = {
@@ -1160,7 +1203,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
       delivery: normalizeDelivery(obj2.delivery)
     };
   }
-  function buildPackage(graph, options) {
+  function buildPackage(graph, options, renames) {
     const opts = normalizeOptions(options);
     const rawTree = variablesToW3CMultiMode(graph);
     const generated = (graph.collections || []).some((c) => c == null ? void 0 : c.generated);
@@ -1177,14 +1220,14 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
       const defaultMode = primaryDefaultMode(graph);
       const { defaultTheme, ordered } = orderedThemes(leaves(sourceTree), defaultMode);
       const cssTree = opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree, opts.flattenAliases) : sourceTree;
-      files["tokens.css"] = toTokensCss(cssTree, ordered, defaultTheme, opts.themeAttr);
+      files["tokens.css"] = toTokensCss(cssTree, ordered, defaultTheme, opts.themeAttr, renames);
       if (opts.emitModuleFiles) {
-        const themeFiles = toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal);
+        const themeFiles = toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal, renames);
         for (const name of Object.keys(themeFiles)) files[name] = themeFiles[name];
       }
-      files["tokens.json"] = toTokensJson(sourceTree);
+      files["tokens.json"] = toTokensJson(sourceTree, renames);
       files["tokens.ts"] = toTokensTs(cssTree, ordered);
-      files["README.md"] = buildReadme(summary, opts, cssTree);
+      files["README.md"] = buildReadme(summary, opts, cssTree, renames);
       emitted.tree = cssTree;
       emitted.themes = ordered;
       emitted.defaultTheme = defaultTheme;
@@ -1379,8 +1422,8 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
     return normalizeExportOptions(__spreadValues(__spreadValues({}, base), patch));
   }
   var BUILT_IN_IDS = /* @__PURE__ */ new Set([...EXPORT_PRESETS.map((preset) => preset.id), "custom"]);
-  function presetIdForLabel(label2) {
-    return "user-" + label2.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  function presetIdForLabel(label3) {
+    return "user-" + label3.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   }
   function normalizePackageForming(raw) {
     if (!isRecord2(raw)) return clonePackage(DJANGO_BOOTSTRAP_VALUES);
@@ -1398,19 +1441,19 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
     const out = [];
     for (const entry of raw) {
       if (!isRecord2(entry)) continue;
-      const label2 = typeof entry.label === "string" ? entry.label.trim() : "";
-      if (!label2) continue;
-      const id = presetIdForLabel(label2);
+      const label3 = typeof entry.label === "string" ? entry.label.trim() : "";
+      if (!label3) continue;
+      const id = presetIdForLabel(label3);
       if (BUILT_IN_IDS.has(id) || seen.has(id)) continue;
       seen.add(id);
-      out.push({ id, label: label2, values: normalizePackageForming(entry.values) });
+      out.push({ id, label: label3, values: normalizePackageForming(entry.values) });
     }
     return out;
   }
-  function upsertUserPreset(presets, label2, values) {
-    const id = presetIdForLabel(label2);
+  function upsertUserPreset(presets, label3, values) {
+    const id = presetIdForLabel(label3);
     const filtered = presets.filter((p) => p.id !== id);
-    return [...filtered, { id, label: label2, values: normalizePackageForming(values) }];
+    return [...filtered, { id, label: label3, values: normalizePackageForming(values) }];
   }
   function resolveThemeAttribute(options) {
     if (options.tokens.themeAttribute) return options.tokens.themeAttribute;
@@ -1419,11 +1462,12 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
   }
 
   // src/tokens/index.ts
-  function tokenEmitOptionsFrom(options) {
+  function tokenEmitOptionsFrom(options, renames) {
     return {
       inlinePrimitives: options.tokens.inlinePrimitives,
       flattenAliases: options.tokens.flattenAliases,
-      themeAttribute: resolveThemeAttribute(options)
+      themeAttribute: resolveThemeAttribute(options),
+      renames
     };
   }
   function emitTokenArtifacts(snapshot, options) {
@@ -1431,8 +1475,8 @@ the attribute swaps the whole set.${readmeExample(tree)}${moduleSection}
     const { ordered, defaultTheme } = orderedThemes(leaves(source));
     const cssTree = options.inlinePrimitives ? inlinePrimitivesTree(source, options.flattenAliases) : source;
     return {
-      css: toTokensCss(cssTree, ordered, defaultTheme, options.themeAttribute),
-      json: toTokensJson(source),
+      css: toTokensCss(cssTree, ordered, defaultTheme, options.themeAttribute, options.renames),
+      json: toTokensJson(source, options.renames),
       themes: ordered,
       defaultTheme,
       source,
@@ -3117,7 +3161,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const state = ((_a = v.State) != null ? _a : "Default").trim().toLowerCase();
     const active = state === "active";
     const disabled = state === "disabled";
-    const label2 = state === "prev" ? "\xAB" : state === "next" ? "\xBB" : state === "ellipsis" ? "\u2026" : "1";
+    const label3 = state === "prev" ? "\xAB" : state === "next" ? "\xBB" : state === "ellipsis" ? "\u2026" : "1";
     return frame("PageItem", {
       direction: "horizontal",
       width: "hug",
@@ -3130,7 +3174,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
           fill: active ? token("Primary") : solid(COLOR.surface),
           stroke: { color: COLOR.border, weight: 1 },
           opacity: disabled ? 0.65 : 1,
-          children: [txt("PageText", label2, { color: active ? solid(roleTextColor("Primary")) : solid(roleColor("primary")) })]
+          children: [txt("PageText", label3, { color: active ? solid(roleTextColor("Primary")) : solid(roleColor("primary")) })]
         })
       ]
     });
@@ -5039,9 +5083,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   }
   function firstSolidCss(paints2) {
     if (!Array.isArray(paints2)) return void 0;
-    const solid4 = paints2.find((p) => (p == null ? void 0 : p.type) === "SOLID" && p.visible !== false);
-    if (!(solid4 == null ? void 0 : solid4.color)) return void 0;
-    return rgbaToCss(solid4.opacity != null && solid4.opacity < 1 ? __spreadProps(__spreadValues({}, solid4.color), { a: solid4.opacity }) : solid4.color);
+    const solid5 = paints2.find((p) => (p == null ? void 0 : p.type) === "SOLID" && p.visible !== false);
+    if (!(solid5 == null ? void 0 : solid5.color)) return void 0;
+    return rgbaToCss(solid5.opacity != null && solid5.opacity < 1 ? __spreadProps(__spreadValues({}, solid5.color), { a: solid5.opacity }) : solid5.color);
   }
   function arcStrokeAttrs(node) {
     const stroke = firstSolidCss(node.strokes);
@@ -5720,8 +5764,8 @@ ${rules.join("\n\n")}
     "-webkit-box-orient"
   ]);
   function sanitizeTransform(value) {
-    const kept = value.match(/(?:rotate|skew|scale|matrix)[a-zA-Z]*\([^)]*\)/g);
-    return kept ? kept.join(" ") : void 0;
+    const kept2 = value.match(/(?:rotate|skew|scale|matrix)[a-zA-Z]*\([^)]*\)/g);
+    return kept2 ? kept2.join(" ") : void 0;
   }
   function splitTopLevelCommas(value) {
     const parts = [];
@@ -6063,9 +6107,9 @@ ${body}
     "color"
   ]);
   function solidStrokeColor(strokes) {
-    const solid4 = strokes == null ? void 0 : strokes.find((paint) => paint.type === "SOLID" && paint.visible !== false);
-    if (!(solid4 == null ? void 0 : solid4.color)) return void 0;
-    return rgbaToCss(solid4.opacity != null && solid4.opacity < 1 ? __spreadProps(__spreadValues({}, solid4.color), { a: solid4.opacity }) : solid4.color);
+    const solid5 = strokes == null ? void 0 : strokes.find((paint) => paint.type === "SOLID" && paint.visible !== false);
+    if (!(solid5 == null ? void 0 : solid5.color)) return void 0;
+    return rgbaToCss(solid5.opacity != null && solid5.opacity < 1 ? __spreadProps(__spreadValues({}, solid5.color), { a: solid5.opacity }) : solid5.color);
   }
   var STROKE_OWNED_CSS = /* @__PURE__ */ new Set([
     "border",
@@ -6657,8 +6701,8 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
       });
       return;
     }
-    const scopeRoots = spec.scope ? findScopeNodes(root, spec.scope) : [root];
-    for (const scopeRoot of scopeRoots) {
+    const scopeRoots2 = spec.scope ? findScopeNodes(root, spec.scope) : [root];
+    for (const scopeRoot of scopeRoots2) {
       const toggle = findPartNode(scopeRoot, spec.toggle, spec.scope);
       const target = findPartNode(scopeRoot, spec.target, spec.scope);
       if (!toggle || !target) continue;
@@ -7161,7 +7205,7 @@ ${indent2}</div>`;
   function diffStates(base, target) {
     const { matched, removed, added } = matchLayers(base, target);
     return {
-      pairs: matched.map(({ path, a, b }) => ({ path, changes: diffProperties(a, b) })).filter((pair) => pair.changes.length > 0),
+      pairs: matched.map(({ path, a, b }) => ({ path, changes: diffProperties(a, b) })).filter((pair2) => pair2.changes.length > 0),
       fadeOut: removed.map((r) => r.path),
       fadeIn: added.map((r) => r.path)
     };
@@ -7311,11 +7355,11 @@ ${indent2}</div>`;
       props.add(cssProperty);
       transitionProps.set(selector, props);
     };
-    for (const pair of input.diff.pairs) {
-      const decls = buildDeclarations(pair.changes);
+    for (const pair2 of input.diff.pairs) {
+      const decls = buildDeclarations(pair2.changes);
       if (decls.length === 0) continue;
-      decls.forEach((d) => trackTransition(pair.path, d.cssProperty));
-      const suffix = input.pathToSelector(pair.path);
+      decls.forEach((d) => trackTransition(pair2.path, d.cssProperty));
+      const suffix = input.pathToSelector(pair2.path);
       rules.push(`${modifier}${suffix} {
 ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
 }`);
@@ -7484,8 +7528,8 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
       children: "children" in node ? node.children.map(toDiffable) : void 0
     };
   }
-  function indent(block) {
-    return block.replace(/^/gm, "  ");
+  function indent(block2) {
+    return block2.replace(/^/gm, "  ");
   }
   async function emitBreakpointCss(group, sceneNodesById, variableNamesById = /* @__PURE__ */ new Map()) {
     const [widest, ...narrower] = group.frames;
@@ -7496,8 +7540,8 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
       const nextWiderWidth = index === 0 ? widest.width : narrower[index - 1].width;
       const result = matchLayers(widestDiffable, toDiffable(frame3.node));
       const idAliases = /* @__PURE__ */ new Map([[frame3.node.id, widest.node.id]]);
-      for (const pair of result.matched) {
-        if (pair.a.id && pair.b.id) idAliases.set(pair.b.id, pair.a.id);
+      for (const pair2 of result.matched) {
+        if (pair2.a.id && pair2.b.id) idAliases.set(pair2.b.id, pair2.a.id);
       }
       const overrides = await emitCss([frame3.node], sceneNodesById, variableNamesById, {
         idAliases,
@@ -8106,13 +8150,13 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
     }
   }
   function scanProtections(css, protectedFamilies, topLevelSimpleToo) {
-    for (const block of scanTopLevelBlocks(css)) {
-      if (block.selector.startsWith("@")) {
-        for (const inner of scanTopLevelBlocks(block.body)) collectProtections(inner.selector, inner.body, protectedFamilies);
+    for (const block2 of scanTopLevelBlocks(css)) {
+      if (block2.selector.startsWith("@")) {
+        for (const inner of scanTopLevelBlocks(block2.body)) collectProtections(inner.selector, inner.body, protectedFamilies);
         continue;
       }
-      if (topLevelSimpleToo || !/^\.[A-Za-z0-9_-]+$/.test(block.selector)) {
-        collectProtections(block.selector, block.body, protectedFamilies);
+      if (topLevelSimpleToo || !/^\.[A-Za-z0-9_-]+$/.test(block2.selector)) {
+        collectProtections(block2.selector, block2.body, protectedFamilies);
       }
     }
   }
@@ -8138,13 +8182,13 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
     const stats = { extractedDeclarations: 0, keptDeclarations: 0 };
     const pieces = [];
     let position = 0;
-    for (const block of scanTopLevelBlocks(input.css)) {
-      const simple = /^\.([A-Za-z0-9_-]+)$/.exec(block.selector);
-      if (!simple || block.selector.startsWith("@")) continue;
+    for (const block2 of scanTopLevelBlocks(input.css)) {
+      const simple = /^\.([A-Za-z0-9_-]+)$/.exec(block2.selector);
+      if (!simple || block2.selector.startsWith("@")) continue;
       const className = simple[1];
       const families = protectedFamilies.get(className);
       const keptFamilies = /* @__PURE__ */ new Set();
-      for (const line of block.body.split("\n")) {
+      for (const line of block2.body.split("\n")) {
         const declaration = DECLARATION_LINE.exec(line);
         if (!declaration) continue;
         const [, property, value] = declaration;
@@ -8153,7 +8197,7 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
       }
       const keptLines = [];
       const extracted = [];
-      for (const line of block.body.split("\n")) {
+      for (const line of block2.body.split("\n")) {
         if (line.trim() === "") continue;
         const declaration = DECLARATION_LINE.exec(line);
         if (!declaration) {
@@ -8173,11 +8217,11 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
       if (extracted.length === 0) continue;
       const existing = (_a = utilities.get(className)) != null ? _a : [];
       utilities.set(className, [...existing, ...extracted.filter((utility) => !existing.includes(utility))]);
-      pieces.push(input.css.slice(position, block.start));
-      pieces.push(keptLines.length > 0 ? `${block.selector} {
+      pieces.push(input.css.slice(position, block2.start));
+      pieces.push(keptLines.length > 0 ? `${block2.selector} {
 ${keptLines.join("\n")}
 }` : "");
-      position = block.end;
+      position = block2.end;
     }
     pieces.push(input.css.slice(position));
     const css = pieces.join("").replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "");
@@ -8601,8 +8645,8 @@ ${mediaCss}`;
     const match = line.match(/"((?:[^"\\]|\\.)*)"/);
     return match ? unescapePoString(match[1]) : "";
   }
-  function parsePoBlock(block) {
-    const lines = block.split("\n");
+  function parsePoBlock(block2) {
+    const lines = block2.split("\n");
     let msgctxt = "";
     let msgid = "";
     let msgstr = "";
@@ -8821,8 +8865,8 @@ ${mediaCss}`;
         if (!aliasId) continue;
         const variable = await figma.variables.getVariableByIdAsync(aliasId);
         if (!variable) continue;
-        const solid4 = paint;
-        const hex = `#${channel(solid4.color.r)}${channel(solid4.color.g)}${channel(solid4.color.b)}`.toLowerCase();
+        const solid5 = paint;
+        const hex = `#${channel(solid5.color.r)}${channel(solid5.color.g)}${channel(solid5.color.b)}`.toLowerCase();
         const known = byColor.get(hex);
         byColor.set(hex, known === void 0 ? variable.name : known === variable.name ? known : null);
       }
@@ -9223,8 +9267,8 @@ ${mediaCss}`;
     return { kind: "library" };
   }
   function colorsMatch(a, b, epsilon = 1e-3) {
-    const alphaOf = (c) => "a" in c ? c.a : 1;
-    return Math.abs(a.r - b.r) <= epsilon && Math.abs(a.g - b.g) <= epsilon && Math.abs(a.b - b.b) <= epsilon && Math.abs(alphaOf(a) - alphaOf(b)) <= epsilon;
+    const alphaOf2 = (c) => "a" in c ? c.a : 1;
+    return Math.abs(a.r - b.r) <= epsilon && Math.abs(a.g - b.g) <= epsilon && Math.abs(a.b - b.b) <= epsilon && Math.abs(alphaOf2(a) - alphaOf2(b)) <= epsilon;
   }
   function srgbToLab({ r, g, b }) {
     const linear = (c) => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
@@ -10964,11 +11008,11 @@ ${tweenStatements.join("\n")}
   function parseCollectionRoles(raw) {
     const out = {};
     if (!raw) return out;
-    for (const pair of raw.split(/[,;\n]+/)) {
-      const separator = pair.indexOf(pair.indexOf(":") !== -1 ? ":" : "=");
+    for (const pair2 of raw.split(/[,;\n]+/)) {
+      const separator = pair2.indexOf(pair2.indexOf(":") !== -1 ? ":" : "=");
       if (separator === -1) continue;
-      const collection = pair.slice(0, separator).trim().toLowerCase();
-      const role = pair.slice(separator + 1).trim().toLowerCase();
+      const collection = pair2.slice(0, separator).trim().toLowerCase();
+      const role = pair2.slice(separator + 1).trim().toLowerCase();
       if (!collection || !role) continue;
       if (Object.prototype.hasOwnProperty.call(ROLE_INFO, role)) out[collection] = role;
     }
@@ -11218,19 +11262,19 @@ ${tweenStatements.join("\n")}
       }
       const prefix = entry.path.slice(0, index + 1);
       const key = prefix.join("/");
-      let block = blocks.get(key);
-      if (!block) {
-        block = { name: titleCase(prefix[prefix.length - 1]), prefix, variants: [], entryCount: 0 };
-        blocks.set(key, block);
+      let block2 = blocks.get(key);
+      if (!block2) {
+        block2 = { name: titleCase(prefix[prefix.length - 1]), prefix, variants: [], entryCount: 0 };
+        blocks.set(key, block2);
       }
       const variantName2 = entry.path.slice(index + 1, -1).map(titleCase).join(" \xB7 ") || BASE_VARIANT;
-      let variant2 = block.variants.find((candidate) => candidate.name === variantName2);
+      let variant2 = block2.variants.find((candidate) => candidate.name === variantName2);
       if (!variant2) {
         variant2 = { name: variantName2, entries: [] };
-        block.variants.push(variant2);
+        block2.variants.push(variant2);
       }
       variant2.entries.push(entry);
-      block.entryCount++;
+      block2.entryCount++;
     }
     const byPrefix = /* @__PURE__ */ new Map();
     for (const entry of leftovers) {
@@ -11251,8 +11295,8 @@ ${tweenStatements.join("\n")}
         entryCount: bucket.length
       });
     }
-    for (const block of blocks.values()) {
-      block.variants.sort((a, b) => a.name === BASE_VARIANT ? -1 : b.name === BASE_VARIANT ? 1 : a.name.localeCompare(b.name));
+    for (const block2 of blocks.values()) {
+      block2.variants.sort((a, b) => a.name === BASE_VARIANT ? -1 : b.name === BASE_VARIANT ? 1 : a.name.localeCompare(b.name));
     }
     return [...blocks.values()].sort(
       (a, b) => b.entryCount - a.entryCount || a.prefix.join("/").localeCompare(b.prefix.join("/"))
@@ -11381,29 +11425,29 @@ _+${rest.length} more of this role \u2014 values in ${more}:_ ${names}`;
     if (entries.length === 0) return "\u2014";
     return entries.map((entry) => `${entry.state} \`${entry.cssRef}\``).join(", ");
   }
-  function componentMatrix(block) {
+  function componentMatrix(block2) {
     const rolesPresent = ROLE_ORDER.filter(
-      (role) => block.variants.some((variant2) => variant2.entries.some((entry) => entry.role === role && !entry.state))
+      (role) => block2.variants.some((variant2) => variant2.entries.some((entry) => entry.role === role && !entry.state))
     );
     const roles = rolesPresent.slice(0, MAX_ROLE_COLUMNS);
-    const hasStates = block.variants.some((variant2) => variant2.entries.some((entry) => entry.state));
+    const hasStates = block2.variants.some((variant2) => variant2.entries.some((entry) => entry.state));
     const headers = ["Variant", ...roles.map((role) => ROLE_INFO[role].label), ...hasStates ? ["States"] : []];
-    const rows = block.variants.map((variant2) => [
+    const rows = block2.variants.map((variant2) => [
       variant2.name,
       ...roles.map((role) => variantCell(variant2.entries.filter((entry) => entry.role === role && !entry.state))),
       ...hasStates ? [stateCell(variant2.entries.filter((entry) => entry.state))] : []
     ]);
     const applyLine = roles.map((role) => `${ROLE_INFO[role].label} \u2192 \`${ROLE_INFO[role].css}\``).join(" \xB7 ");
-    const unscoped = block.variants.some(
+    const unscoped = block2.variants.some(
       (variant2) => variant2.entries.some((entry) => entry.role === "color" && entry.roleSource === "name")
     );
     const unscopedNote = unscoped ? "\n\n_These tokens carry no role in their name and no Figma scope: they are this component's own colors \u2014 apply each one where the component uses it, and do not reuse them elsewhere._" : "";
     const dropped = rolesPresent.length > roles.length ? `
 
 _${rolesPresent.length - roles.length} further role(s) on this component are listed in the token reference._` : "";
-    return `### ${block.name}
+    return `### ${block2.name}
 
-Figma group \`${block.prefix.join("/")}\` \xB7 ${block.entryCount} token(s)` + (applyLine ? `
+Figma group \`${block2.prefix.join("/")}\` \xB7 ${block2.entryCount} token(s)` + (applyLine ? `
 
 Apply: ${applyLine}` : "") + `
 
@@ -11422,11 +11466,11 @@ ${mdTable(headers, rows)}${unscopedNote}${dropped}`;
 
 ` + mdTable(
           ["Component", "Figma group", "Tokens", "Variants"],
-          rest.map((block) => [
-            block.name,
-            `\`${block.prefix.join("/")}\``,
-            String(block.entryCount),
-            block.variants.map((variant2) => variant2.name).slice(0, 8).join(", ")
+          rest.map((block2) => [
+            block2.name,
+            `\`${block2.prefix.join("/")}\``,
+            String(block2.entryCount),
+            block2.variants.map((variant2) => variant2.name).slice(0, 8).join(", ")
           ])
         )
       );
@@ -12106,7 +12150,7 @@ ${body}
   }
 
   // src/targets/design-tokens.ts
-  function buildDesignTokens(graph, options, generatedAt, componentDocs = []) {
+  function buildDesignTokens(graph, options, generatedAt, componentDocs = [], renames) {
     const opts = normalizeExportOptions(options);
     const engineOptions = {
       inlinePrimitives: opts.tokens.inlinePrimitives,
@@ -12119,7 +12163,7 @@ ${body}
       typoShorthand: opts.tokens.typoShorthand,
       typoNaming: opts.tokens.typoNaming
     };
-    const pkg = buildPackage(graph, engineOptions);
+    const pkg = buildPackage(graph, engineOptions, renames);
     const collectionRoles = parseCollectionRoles(opts.tokens.collectionRoles);
     const iconDocs = componentDocs.filter((doc) => isIconDoc(doc));
     const realComponentDocs = componentDocs.filter((doc) => !isIconDoc(doc));
@@ -12303,8 +12347,8 @@ ${body}
         let blockCtx = ctx;
         if (withMatch) {
           const bound = new Map(ctx);
-          for (const pair of splitParams(withMatch[1])) {
-            const [name, raw] = pair.split("\0");
+          for (const pair2 of splitParams(withMatch[1])) {
+            const [name, raw] = pair2.split("\0");
             const value = parseParamValue(raw, ctx);
             if (value !== void 0) bound.set(name, value);
           }
@@ -12350,8 +12394,8 @@ ${body}
     let childCtx;
     if (withClause) {
       const params = new Map(only ? [] : ctx);
-      for (const pair of splitParams(withClause)) {
-        const [name, raw] = pair.split("\0");
+      for (const pair2 of splitParams(withClause)) {
+        const [name, raw] = pair2.split("\0");
         const value = parseParamValue(raw, ctx);
         if (value !== void 0) params.set(name, value);
       }
@@ -13049,21 +13093,21 @@ ${scrollGuards}` : project.css;
     const bell = 1 - Math.pow(Math.abs(2 * t - 1), 1.6);
     return 1 - curve + curve * bell;
   }
-  var sanitizeLabel = (label2) => label2.trim().replace(/[/]/g, "-") || "Color";
+  var sanitizeLabel = (label3) => label3.trim().replace(/[/]/g, "-") || "Color";
   function derivePrefixes(labels) {
     const used = /* @__PURE__ */ new Set();
     return labels.map((raw) => {
-      const label2 = sanitizeLabel(raw).replace(/[^A-Za-z0-9]/g, "");
-      for (let width = 1; width <= Math.max(1, label2.length); width++) {
-        const candidate2 = (label2.slice(0, width) || "C").toUpperCase();
+      const label3 = sanitizeLabel(raw).replace(/[^A-Za-z0-9]/g, "");
+      for (let width = 1; width <= Math.max(1, label3.length); width++) {
+        const candidate2 = (label3.slice(0, width) || "C").toUpperCase();
         if (!used.has(candidate2)) {
           used.add(candidate2);
           return candidate2;
         }
       }
       let n = 2;
-      let candidate = `${(label2.slice(0, 1) || "C").toUpperCase()}${n}`;
-      while (used.has(candidate)) candidate = `${(label2.slice(0, 1) || "C").toUpperCase()}${++n}`;
+      let candidate = `${(label3.slice(0, 1) || "C").toUpperCase()}${n}`;
+      while (used.has(candidate)) candidate = `${(label3.slice(0, 1) || "C").toUpperCase()}${++n}`;
       used.add(candidate);
       return candidate;
     });
@@ -13201,7 +13245,7 @@ ${scrollGuards}` : project.css;
     const spectra = settings.spectra.map((spec, i) => generateSpectrum(spec, settings, prefixes[i]));
     const warnings = [];
     const labels = spectra.map((s) => s.label.toLowerCase());
-    const duplicates = labels.filter((label2, i) => labels.indexOf(label2) !== i);
+    const duplicates = labels.filter((label3, i) => labels.indexOf(label3) !== i);
     if (duplicates.length > 0) {
       warnings.push({
         message: `Duplicate spectrum names (${Array.from(new Set(duplicates)).join(", ")}) will merge into one group.`,
@@ -13304,12 +13348,12 @@ ${scrollGuards}` : project.css;
     const fitted = Math.min(chroma, maxChroma(lightness, hue) * 0.95);
     const keyHex = oklchToHex({ l: lightness, c: fitted, h: hue });
     const base = hueName(hue);
-    let label2 = base;
+    let label3 = base;
     let suffix = 2;
-    while (takenLabels.has(label2.toLowerCase())) label2 = `${base} ${suffix++}`;
+    while (takenLabels.has(label3.toLowerCase())) label3 = `${base} ${suffix++}`;
     return {
       id: `spectrum-${Math.round(hue)}-${settings.spectra.length}`,
-      label: label2,
+      label: label3,
       keyHex,
       anchorStep
     };
@@ -13394,13 +13438,13 @@ ${scrollGuards}` : project.css;
   }
   function normalizeSpectrum(value, index) {
     if (!isRecord3(value)) return null;
-    const label2 = text(value.label, "");
-    if (label2 === "") return null;
+    const label3 = text(value.label, "");
+    if (label3 === "") return null;
     const neutral = flag(value.neutral, false);
     const steps = value.steps === void 0 ? void 0 : parseSteps(value.steps, []);
     const spec = {
       id: text(value.id, `spectrum-${index}`),
-      label: label2,
+      label: label3,
       prefix: text(value.prefix, "").toUpperCase() || void 0,
       keyHex: text(value.keyHex, "#808080"),
       anchorStep: number(value.anchorStep, neutral ? 500 : 500, 0, 1e5),
@@ -13429,7 +13473,8 @@ ${scrollGuards}` : project.css;
   function normalizePaletteSettings(value) {
     const defaults = DEFAULT_PALETTE_SETTINGS;
     if (!isRecord3(value)) return __spreadProps(__spreadValues({}, defaults), { spectra: defaults.spectra.map((s) => __spreadValues({}, s)) });
-    const spectra = Array.isArray(value.spectra) ? value.spectra.map(normalizeSpectrum).filter((spec) => spec !== null) : [];
+    const rawSpectra = Array.isArray(value.spectra) ? value.spectra : null;
+    const spectra = rawSpectra ? rawSpectra.map(normalizeSpectrum).filter((spec) => spec !== null) : [];
     const lightnessMax = number(value.lightnessMax, defaults.lightnessMax, 0.5, 1);
     const lightnessMin = number(value.lightnessMin, defaults.lightnessMin, 0, 0.5);
     return {
@@ -13443,7 +13488,11 @@ ${scrollGuards}` : project.css;
       chromaCurve: number(value.chromaCurve, defaults.chromaCurve, 0, 1),
       hueTorsion: value.hueTorsion === "auto" ? "auto" : number(value.hueTorsion, 0, -60, 60),
       neutralChroma: number(value.neutralChroma, defaults.neutralChroma, 0, 1),
-      spectra: spectra.length > 0 ? spectra : defaults.spectra.map((s) => __spreadValues({}, s))
+      // An empty list is a choice: the operator cleared the board to build their own set, and
+      // quietly refilling it with the default three makes the preview show ramps that no
+      // longer exist. The defaults return only when the field is missing entirely or every
+      // entry is corrupt — settings from an older build, not a deliberate empty state.
+      spectra: rawSpectra === null || rawSpectra.length > 0 && spectra.length === 0 ? defaults.spectra.map((s) => __spreadValues({}, s)) : spectra
     };
   }
 
@@ -13657,11 +13706,11 @@ ${scrollGuards}` : project.css;
     component.fills = [];
     component.clipsContent = false;
     component.resize(SWATCH_WIDTH, SWATCH_COLOR_HEIGHT + LABEL_HEIGHT + MARK_HEIGHT);
-    const block = figma.createRectangle();
-    block.name = PART.color;
-    block.resize(SWATCH_WIDTH, SWATCH_COLOR_HEIGHT);
-    block.fills = [solid2("#CCCCCC")];
-    component.appendChild(block);
+    const block2 = figma.createRectangle();
+    block2.name = PART.color;
+    block2.resize(SWATCH_WIDTH, SWATCH_COLOR_HEIGHT);
+    block2.fills = [solid2("#CCCCCC")];
+    component.appendChild(block2);
     const labelRow = autoLayout("label", "HORIZONTAL", 10);
     labelRow.primaryAxisSizingMode = "FIXED";
     labelRow.counterAxisSizingMode = "FIXED";
@@ -13694,11 +13743,11 @@ ${scrollGuards}` : project.css;
     const markName = swatch.isMain ? "Main" : swatch.isLight ? "Light" : swatch.isDark ? "Dark" : null;
     const instance = master.createInstance();
     instance.name = `${swatch.name}${markName ? ` \xB7 ${markName}` : ""}`;
-    const block = findPart(instance, PART.color);
-    if (block && "fills" in block) {
+    const block2 = findPart(instance, PART.color);
+    if (block2 && "fills" in block2) {
       let paint = solid2(swatch.hex);
       if (variable) paint = figma.variables.setBoundVariableForPaint(paint, "color", variable);
-      block.fills = [paint];
+      block2.fills = [paint];
     }
     const step = findPart(instance, PART.step);
     if (step && step.type === "TEXT") step.characters = String(swatch.step);
@@ -13851,6 +13900,3680 @@ ${scrollGuards}` : project.css;
       sectionName,
       warnings
     };
+  }
+
+  // src/targets/ds-tools/remap-inventory.ts
+  var MAX_ADJACENT_PAIRS = 2e4;
+  var MAX_LOOSE_COLORS = 400;
+  var MAX_NODES = 2e5;
+  var siteId = (variableId, modeId) => `${variableId}|${modeId}`;
+  var styleSiteId = (styleId, property, index, stop) => `style:${styleId}#${property}:${index}${stop === void 0 ? "" : `.${stop}`}`;
+  var looseSiteId = (hex, alpha) => `loose:${hex}:${alpha.toFixed(3)}`;
+  var isLooseSite = (id) => id.slice(0, 6) === "loose:";
+  var isAlias = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
+  var isRgb = (value) => typeof value === "object" && value !== null && "r" in value && "g" in value && "b" in value;
+  var withAlpha = (color) => ({
+    r: color.r,
+    g: color.g,
+    b: color.b,
+    a: "a" in color ? color.a : 1
+  });
+  var hexOf = (color) => "#" + [color.r, color.g, color.b].map(
+    (channel) => Math.round(Math.min(1, Math.max(0, channel)) * 255).toString(16).toUpperCase().padStart(2, "0")
+  ).join("");
+  var GRADIENTS = ["GRADIENT_LINEAR", "GRADIENT_RADIAL", "GRADIENT_ANGULAR", "GRADIENT_DIAMOND"];
+  var isGradient = (paint) => GRADIENTS.indexOf(paint.type) !== -1;
+  var isShadow = (effect) => effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW";
+  var boundIdsOf = (value) => {
+    if (!value) return [];
+    const list2 = Array.isArray(value) ? value : [value];
+    return list2.map((entry) => entry && typeof entry === "object" ? entry.id : null).filter((id) => typeof id === "string");
+  };
+  var paintsOf = (node, property) => {
+    const value = node[property];
+    return Array.isArray(value) ? value : [];
+  };
+  var styleIdOf2 = (node, property) => {
+    const key = property === "fills" ? "fillStyleId" : property === "strokes" ? "strokeStyleId" : "effectStyleId";
+    const value = node[key];
+    return typeof value === "string" ? value : "";
+  };
+  var nodeLevelBindings = (node, property) => {
+    const bound = "boundVariables" in node ? node.boundVariables : void 0;
+    return Array.isArray(bound == null ? void 0 : bound[property]) ? bound[property] : [];
+  };
+  function noteLoose(walk, color) {
+    const hex = hexOf(color);
+    const id = looseSiteId(hex, color.a);
+    const existing = walk.loose.get(id);
+    if (existing) existing.count++;
+    else if (walk.loose.size < MAX_LOOSE_COLORS) walk.loose.set(id, { hex, alpha: color.a, rgba: color, count: 1 });
+    else walk.looseDropped++;
+    walk.loosePlaces++;
+    return id;
+  }
+  var pairKey = (a, b, text3) => (a < b ? `${a} ${b}` : `${b} ${a}`) + (text3 ? " t" : " n");
+  var EMPTY = [];
+  async function walkDocument(localIds, depth, progress2) {
+    var _a;
+    const walk = {
+      usage: /* @__PURE__ */ new Map(),
+      styleUsage: /* @__PURE__ */ new Map(),
+      foreign: /* @__PURE__ */ new Set(),
+      loose: /* @__PURE__ */ new Map(),
+      neighbours: /* @__PURE__ */ new Map(),
+      nodes: 0,
+      loosePlaces: 0,
+      looseDropped: 0,
+      instances: 0,
+      truncated: false
+    };
+    if (depth === "tokens") return walk;
+    const noteVariable = (id) => {
+      var _a2;
+      walk.usage.set(id, ((_a2 = walk.usage.get(id)) != null ? _a2 : 0) + 1);
+      if (!localIds.has(id)) walk.foreign.add(id);
+    };
+    const notePair = (a, b, text3) => {
+      if (walk.neighbours.size >= MAX_ADJACENT_PAIRS) return;
+      const key = pairKey(a, b, text3);
+      if (!walk.neighbours.has(key)) walk.neighbours.set(key, { a, b, text: text3 });
+    };
+    const noteStyle = (styleId) => {
+      var _a2;
+      if (styleId !== "") walk.styleUsage.set(styleId, ((_a2 = walk.styleUsage.get(styleId)) != null ? _a2 : 0) + 1);
+    };
+    const refsOf = (paints2, nodeLevel, boundOnly) => {
+      var _a2, _b;
+      const refs = [];
+      for (let index = 0; index < paints2.length; index++) {
+        const paint = paints2[index];
+        if (paint.visible === false) continue;
+        const bound = [
+          ...boundIdsOf((_a2 = paint.boundVariables) == null ? void 0 : _a2.color),
+          ...boundIdsOf(nodeLevel[index])
+        ];
+        if (bound.length > 0) {
+          refs.push(...bound);
+          continue;
+        }
+        if (boundOnly) continue;
+        if (paint.type === "SOLID") {
+          refs.push(noteLoose(walk, __spreadProps(__spreadValues({}, paint.color), { a: (_b = paint.opacity) != null ? _b : 1 })));
+          continue;
+        }
+        if (isGradient(paint)) for (const stop of paint.gradientStops) noteLoose(walk, withAlpha(stop.color));
+      }
+      return refs;
+    };
+    const pages = depth === "page" ? [figma.currentPage] : figma.root.children;
+    figma.skipInvisibleInstanceChildren = true;
+    try {
+      for (const page of pages) {
+        progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026`);
+        const stack = [];
+        const roots = page.children;
+        for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], behind: EMPTY });
+        while (stack.length > 0) {
+          if (walk.nodes >= MAX_NODES) {
+            walk.truncated = true;
+            break;
+          }
+          const pending = stack.pop();
+          const node = pending.node;
+          walk.nodes++;
+          const type = node.type;
+          const record2 = node;
+          const fillStyle = record2.fillStyleId;
+          const strokeStyle = record2.strokeStyleId;
+          const effectStyle = record2.effectStyleId;
+          const fillPaints = record2.fills;
+          const strokePaints = record2.strokes;
+          const effects = record2.effects;
+          const bound = record2.boundVariables;
+          const children = "children" in node ? node.children : null;
+          noteStyle(typeof fillStyle === "string" ? fillStyle : "");
+          noteStyle(typeof strokeStyle === "string" ? strokeStyle : "");
+          noteStyle(typeof effectStyle === "string" ? effectStyle : "");
+          const isInstance = type === "INSTANCE";
+          if (isInstance) walk.instances++;
+          const fills = typeof fillStyle === "string" && fillStyle !== "" ? EMPTY : Array.isArray(fillPaints) ? refsOf(fillPaints, Array.isArray(bound == null ? void 0 : bound.fills) ? bound.fills : [], isInstance) : EMPTY;
+          const strokes = typeof strokeStyle === "string" && strokeStyle !== "" ? EMPTY : Array.isArray(strokePaints) ? refsOf(
+            strokePaints,
+            Array.isArray(bound == null ? void 0 : bound.strokes) ? bound.strokes : [],
+            isInstance
+          ) : EMPTY;
+          if ((typeof effectStyle !== "string" || effectStyle === "") && Array.isArray(effects)) {
+            for (const effect of effects) {
+              if (!isShadow(effect) || effect.visible === false) continue;
+              const boundEffect = boundIdsOf((_a = effect.boundVariables) == null ? void 0 : _a.color);
+              if (boundEffect.length > 0) {
+                for (const id of boundEffect) noteVariable(id);
+                continue;
+              }
+              if (!isInstance) noteLoose(walk, withAlpha(effect.color));
+            }
+          }
+          for (const ref of fills) if (!isLooseSite(ref)) noteVariable(ref);
+          for (const ref of strokes) if (!isLooseSite(ref)) noteVariable(ref);
+          if (isInstance) {
+            if (walk.nodes % 500 === 0) {
+              progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk.nodes} nodes`);
+              await yieldToHost();
+            }
+            continue;
+          }
+          for (const fill of fills) for (const stroke of strokes) if (fill !== stroke) notePair(fill, stroke, false);
+          const behind = pending.behind;
+          if (behind.length > 0) {
+            const isText = type === "TEXT";
+            const own = isText ? fills : strokes.length === 0 ? fills : [...fills, ...strokes];
+            for (const ref of own) for (const parent of behind) if (ref !== parent) notePair(ref, parent, isText);
+          }
+          if (children !== null && children.length > 0) {
+            const passes = fills.length > 0 ? fills : behind;
+            for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], behind: passes });
+          }
+          if (walk.nodes % 500 === 0) {
+            progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk.nodes} nodes`);
+            await yieldToHost();
+          }
+        }
+      }
+    } finally {
+      figma.skipInvisibleInstanceChildren = false;
+    }
+    return walk;
+  }
+  async function readStyles(walk, sites) {
+    var _a, _b, _c;
+    let paintStyles = 0;
+    let effectStyles = 0;
+    try {
+      for (const style of await figma.getLocalPaintStylesAsync()) {
+        paintStyles++;
+        const usage = (_a = walk.styleUsage.get(style.id)) != null ? _a : 0;
+        for (const [index, paint] of style.paints.entries()) {
+          if (paint.visible === false) continue;
+          if (paint.type === "SOLID") {
+            sites.push({
+              id: styleSiteId(style.id, "paints", index),
+              groupId: style.id,
+              kind: "style",
+              name: style.name,
+              modeId: null,
+              modeName: null,
+              rgba: __spreadProps(__spreadValues({}, paint.color), { a: (_b = paint.opacity) != null ? _b : 1 }),
+              usage,
+              editable: !style.remote,
+              primitive: false
+            });
+            continue;
+          }
+          if (!isGradient(paint)) continue;
+          for (const [stopIndex, stop] of paint.gradientStops.entries()) {
+            sites.push({
+              id: styleSiteId(style.id, "paints", index, stopIndex),
+              groupId: style.id,
+              kind: "gradient-stop",
+              name: `${style.name} \xB7 stop ${stopIndex + 1}`,
+              modeId: null,
+              modeName: null,
+              rgba: withAlpha(stop.color),
+              usage,
+              editable: !style.remote,
+              primitive: false
+            });
+          }
+        }
+      }
+    } catch (e) {
+    }
+    try {
+      for (const style of await figma.getLocalEffectStylesAsync()) {
+        effectStyles++;
+        const usage = (_c = walk.styleUsage.get(style.id)) != null ? _c : 0;
+        for (const [index, effect] of style.effects.entries()) {
+          if (!isShadow(effect) || effect.visible === false) continue;
+          sites.push({
+            id: styleSiteId(style.id, "effects", index),
+            groupId: style.id,
+            kind: "effect",
+            name: `${style.name} \xB7 ${effect.type === "DROP_SHADOW" ? "shadow" : "inner shadow"} ${index + 1}`,
+            modeId: null,
+            modeName: null,
+            rgba: withAlpha(effect.color),
+            usage,
+            editable: !style.remote,
+            primitive: false
+          });
+        }
+      }
+    } catch (e) {
+    }
+    return { paints: paintStyles, effects: effectStyles };
+  }
+  async function readRemapInventory(progress2, depth = "document") {
+    var _a, _b, _c, _d;
+    const warnings = [];
+    progress2 == null ? void 0 : progress2("reading variables\u2026");
+    const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    const variables = await figma.variables.getLocalVariablesAsync("COLOR");
+    const collectionById = new Map(collections.map((collection) => [collection.id, collection]));
+    const localIds = new Set(variables.map((variable) => variable.id));
+    const modes = [];
+    for (const collection of collections) {
+      for (const mode of collection.modes) {
+        modes.push({ id: mode.modeId, name: mode.name, collection: collection.name, collectionId: collection.id });
+      }
+    }
+    if (depth === "document") {
+      try {
+        await loadAllPagesAsync();
+      } catch (e) {
+        warnings.push("some pages could not be loaded \u2014 their colors are missing from this reading");
+      }
+    }
+    const walk = await walkDocument(localIds, depth, progress2);
+    progress2 == null ? void 0 : progress2("building the inventory\u2026");
+    const sites = [];
+    const modesByVariable = /* @__PURE__ */ new Map();
+    for (const variable of variables) {
+      const collection = collectionById.get(variable.variableCollectionId);
+      if (!collection) continue;
+      const values = Object.entries(variable.valuesByMode);
+      const themed = collection.modes.length >= 2 || values.some(([, value]) => isAlias(value));
+      const usage = (_a = walk.usage.get(variable.id)) != null ? _a : 0;
+      const owned = [];
+      for (const mode of collection.modes) {
+        const value = variable.valuesByMode[mode.modeId];
+        if (value === void 0 || isAlias(value) || !isRgb(value)) continue;
+        sites.push({
+          id: siteId(variable.id, mode.modeId),
+          groupId: variable.id,
+          kind: "variable",
+          name: variable.name,
+          modeId: mode.modeId,
+          modeName: mode.name,
+          rgba: withAlpha(value),
+          usage,
+          editable: true,
+          primitive: !themed
+        });
+        owned.push(mode.modeId);
+      }
+      if (owned.length > 0) modesByVariable.set(variable.id, owned);
+    }
+    let libraryVariables = 0;
+    for (const id of walk.foreign) {
+      const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
+      if (!variable || variable.resolvedType !== "COLOR") continue;
+      libraryVariables++;
+      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId).catch(() => null);
+      const owned = [];
+      for (const mode of (_b = collection == null ? void 0 : collection.modes) != null ? _b : []) {
+        const value = variable.valuesByMode[mode.modeId];
+        if (value === void 0 || isAlias(value) || !isRgb(value)) continue;
+        sites.push({
+          id: siteId(variable.id, mode.modeId),
+          groupId: variable.id,
+          kind: "variable",
+          name: variable.name,
+          modeId: mode.modeId,
+          modeName: mode.name,
+          rgba: withAlpha(value),
+          usage: (_c = walk.usage.get(id)) != null ? _c : 0,
+          editable: false,
+          primitive: false
+        });
+        owned.push(mode.modeId);
+      }
+      if (owned.length > 0) modesByVariable.set(variable.id, owned);
+    }
+    const styles = await readStyles(walk, sites);
+    for (const [id, color] of walk.loose) {
+      sites.push({
+        id,
+        groupId: id,
+        kind: "detached",
+        name: color.hex + (color.alpha < 0.999 ? ` ${Math.round(color.alpha * 100)}%` : ""),
+        modeId: null,
+        modeName: null,
+        rgba: color.rgba,
+        usage: color.count,
+        editable: true,
+        primitive: false
+      });
+    }
+    const adjacency = [];
+    const expand = (ref) => {
+      var _a2;
+      return isLooseSite(ref) ? [ref] : ((_a2 = modesByVariable.get(ref)) != null ? _a2 : []).map((mode) => siteId(ref, mode));
+    };
+    const modeOf = (site) => isLooseSite(site) ? null : site.slice(site.lastIndexOf("|") + 1);
+    for (const pair2 of walk.neighbours.values()) {
+      for (const a of expand(pair2.a)) {
+        for (const b of expand(pair2.b)) {
+          const modeA = modeOf(a);
+          const modeB = modeOf(b);
+          if (modeA !== null && modeB !== null && modeA !== modeB) continue;
+          adjacency.push({ a, b, text: pair2.text });
+        }
+      }
+    }
+    const primaryCollection = collections.map((collection) => ({
+      collection,
+      count: variables.filter((variable) => variable.variableCollectionId === collection.id).length
+    })).sort((a, b) => b.count - a.count)[0];
+    if (sites.length === 0) warnings.push("this file holds no colors this tool can remap");
+    if (depth === "tokens") {
+      warnings.push(
+        "read variables and styles only \u2014 loose colors on layers are not in this mapping, and the name that wins a collision is decided without usage counts"
+      );
+    } else if (depth === "page") {
+      warnings.push(`read this page only \u2014 loose colors on other pages are not in this mapping`);
+    }
+    if (walk.looseDropped > 0) {
+      warnings.push(
+        `${walk.looseDropped} rarely used loose color(s) beyond the first ${MAX_LOOSE_COLORS} were left out of this reading \u2014 they stay as they are`
+      );
+    }
+    if (walk.instances > 0) {
+      warnings.push(
+        `${walk.instances} instance(s) were skipped \u2014 their colors belong to a main component, which is read and written on its own; a color overridden by hand on one instance stays as it is`
+      );
+    }
+    if (walk.truncated) {
+      warnings.push(
+        `this file is larger than one pass can read (stopped at ${MAX_NODES} nodes) \u2014 variables and styles are complete, but loose colors on layers beyond that point are missing`
+      );
+    }
+    if (walk.neighbours.size >= MAX_ADJACENT_PAIRS) {
+      warnings.push(
+        `this file has more touching colour pairs than one pass can hold \u2014 duplicate separation and the contrast audit ran on the first ${MAX_ADJACENT_PAIRS}`
+      );
+    }
+    return {
+      sites,
+      adjacency,
+      modes,
+      primaryModeId: (_d = primaryCollection == null ? void 0 : primaryCollection.collection.defaultModeId) != null ? _d : null,
+      stats: {
+        variables: variables.length,
+        libraryVariables,
+        collections: collections.length,
+        paintStyles: styles.paints,
+        effectStyles: styles.effects,
+        looseColors: walk.loose.size,
+        loosePlaces: walk.loosePlaces,
+        nodes: walk.nodes,
+        instances: walk.instances
+      },
+      warnings
+    };
+  }
+
+  // src/tokens/remap/token-name.ts
+  var STEP_RE = /^([A-Za-z][A-Za-z\s-]*?)?[\s._-]*(\d{1,4})$/;
+  var SEGMENT_RE = /[/.]+/;
+  var clean = (segment) => segment.trim();
+  function parseTokenName(name) {
+    var _a;
+    const path = String(name != null ? name : "").split(SEGMENT_RE).map(clean).filter((segment) => segment !== "");
+    const leaf = path.length > 0 ? path[path.length - 1] : "";
+    const group = path.length > 1 ? path[path.length - 2] : null;
+    const groupPath = path.length > 1 ? path.slice(0, -1).join("/") : null;
+    const match = STEP_RE.exec(leaf);
+    if (!match) return { path, leaf, group, groupPath, family: group, step: null };
+    const prefix = ((_a = match[1]) != null ? _a : "").replace(/[\s_-]+$/, "").trim();
+    const family = group != null ? group : prefix !== "" ? prefix : null;
+    return { path, leaf, group, groupPath, family, step: Number(match[2]) };
+  }
+  var familyKey = (family) => family.toLowerCase().replace(/[\s._-]+/g, "").trim();
+  function renameFamily(name, newFamily, newStep) {
+    var _a, _b, _c;
+    const parsed = parseTokenName(name);
+    if (parsed.path.length === 0) return name;
+    const path = [...parsed.path];
+    const leafIndex = path.length - 1;
+    const step = newStep != null ? newStep : parsed.step;
+    if (parsed.group !== null) path[leafIndex - 1] = newFamily;
+    const match = STEP_RE.exec(parsed.leaf);
+    if (match) {
+      const prefix = ((_a = match[1]) != null ? _a : "").replace(/[\s_-]+$/, "").trim();
+      const separator = (_c = (_b = /[\s._-]/.exec(parsed.leaf.slice(prefix.length))) == null ? void 0 : _b[0]) != null ? _c : "";
+      const newPrefix = prefix === "" ? "" : abbreviate(prefix, newFamily);
+      path[leafIndex] = `${newPrefix}${separator}${step != null ? step : match[2]}`;
+    }
+    return path.join("/");
+  }
+  function abbreviate(oldPrefix, newFamily) {
+    const compact = newFamily.replace(/[\s._-]+/g, "");
+    if (oldPrefix.length >= compact.length) return matchCase(oldPrefix, compact);
+    return matchCase(oldPrefix, compact.slice(0, oldPrefix.length));
+  }
+  function matchCase(sample, text3) {
+    if (sample === sample.toUpperCase()) return text3.toUpperCase();
+    if (sample === sample.toLowerCase()) return text3.toLowerCase();
+    return text3.charAt(0).toUpperCase() + text3.slice(1).toLowerCase();
+  }
+
+  // src/tokens/remap/spectrum.ts
+  var OPAQUE = 0.999;
+  var NEUTRAL_SATURATION = 0.5;
+  var HUE_GAP = 12;
+  var CROWDED_SPREAD = 25;
+  var NAMED_HUE_SPREAD = 45;
+  var HUE_SECTORS = [
+    { from: 0, label: "Pink" },
+    { from: 5, label: "Rose" },
+    { from: 21, label: "Red" },
+    { from: 37, label: "Orange" },
+    { from: 59, label: "Amber" },
+    { from: 78, label: "Yellow" },
+    { from: 109, label: "Lime" },
+    { from: 141, label: "Green" },
+    { from: 156, label: "Emerald" },
+    { from: 173, label: "Teal" },
+    { from: 199, label: "Cyan" },
+    { from: 226, label: "Sky" },
+    { from: 249, label: "Blue" },
+    { from: 269, label: "Indigo" },
+    { from: 285, label: "Violet" },
+    { from: 299, label: "Purple" },
+    { from: 313, label: "Fuchsia" },
+    { from: 338, label: "Pink" }
+  ];
+  function hueName2(hue) {
+    const h = (hue % 360 + 360) % 360;
+    let label3 = HUE_SECTORS[HUE_SECTORS.length - 1].label;
+    for (const sector of HUE_SECTORS) if (h >= sector.from) label3 = sector.label;
+    return label3;
+  }
+  var toStop = (member) => {
+    const { l, c, h } = rgbToOklch(member.rgba);
+    const ceiling = maxChroma(l, h);
+    return __spreadProps(__spreadValues({}, member), { l, c, h, saturation: ceiling > 1e-6 ? Math.min(1, c / ceiling) : 0 });
+  };
+  function hueDistance2(a, b) {
+    const diff = Math.abs((a - b) % 360 + 360) % 360;
+    return diff > 180 ? 360 - diff : diff;
+  }
+  var isNeutral = (stop) => stop.saturation < NEUTRAL_SATURATION;
+  var isOpaque = (stop) => stop.rgba.a >= OPAQUE;
+  function meanHue(stops) {
+    let x = 0;
+    let y = 0;
+    for (const stop of stops) {
+      const radians = stop.h * Math.PI / 180;
+      x += Math.cos(radians) * stop.c;
+      y += Math.sin(radians) * stop.c;
+    }
+    if (Math.abs(x) < 1e-9 && Math.abs(y) < 1e-9) return 0;
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+  function hueRange(stops) {
+    const colored = stops.filter((stop) => !isNeutral(stop));
+    let widest = 0;
+    for (let i = 0; i < colored.length; i++) {
+      for (let j = i + 1; j < colored.length; j++) {
+        widest = Math.max(widest, hueDistance2(colored[i].h, colored[j].h));
+      }
+    }
+    return widest;
+  }
+  var byLightness = (a, b) => b.l - a.l;
+  function looksLikeRamp(stops) {
+    if (stops.length < 2) return false;
+    const withStep = stops.filter((stop) => stop.step !== null).length;
+    if (withStep >= 2) return true;
+    if (stops.every(isNeutral)) return true;
+    return hueRange(stops) <= NAMED_HUE_SPREAD;
+  }
+  function clusterByHue(stops) {
+    if (stops.length === 0) return [];
+    const sorted = [...stops].sort((a, b) => a.h - b.h);
+    if (sorted.length === 1) return [sorted];
+    let widestAt = 0;
+    let widest = 360 - sorted[sorted.length - 1].h + sorted[0].h;
+    for (let i = 1; i < sorted.length; i++) {
+      const gap = sorted[i].h - sorted[i - 1].h;
+      if (gap > widest) {
+        widest = gap;
+        widestAt = i;
+      }
+    }
+    const rotated = [...sorted.slice(widestAt), ...sorted.slice(0, widestAt)];
+    const clusters = [[rotated[0]]];
+    for (let i = 1; i < rotated.length; i++) {
+      const gap = hueDistance2(rotated[i].h, rotated[i - 1].h);
+      if (gap > HUE_GAP) clusters.push([rotated[i]]);
+      else clusters[clusters.length - 1].push(rotated[i]);
+    }
+    return clusters;
+  }
+  function makeSpectrum(stops, source, label3, family, usedKeys) {
+    const sorted = [...stops].sort(byLightness);
+    const neutral = sorted.every(isNeutral);
+    const translucent = !sorted.some(isOpaque);
+    const range2 = hueRange(sorted);
+    let key = familyKey(label3);
+    let suffix = 2;
+    while (usedKeys.has(key)) key = `${familyKey(label3)}-${suffix++}`;
+    usedKeys.add(key);
+    return {
+      key,
+      label: label3,
+      family,
+      source,
+      neutral,
+      translucent,
+      hue: neutral ? 0 : meanHue(sorted),
+      hueRange: range2,
+      crowded: source === "clustered" && !neutral && range2 > CROWDED_SPREAD,
+      stops: sorted
+    };
+  }
+  function inferSpectra(members) {
+    var _a, _b;
+    const stops = members.map(toStop);
+    const usedKeys = /* @__PURE__ */ new Set();
+    const spectra = [];
+    const unnamed = [];
+    const loose = [];
+    const named = /* @__PURE__ */ new Map();
+    for (const stop of stops) {
+      if (!isOpaque(stop)) {
+        loose.push(stop);
+        continue;
+      }
+      if (stop.family === null || stop.family.trim() === "") {
+        unnamed.push(stop);
+        continue;
+      }
+      const where = (_a = stop.group) != null ? _a : stop.family;
+      const key = familyKey(where);
+      const entry = (_b = named.get(key)) != null ? _b : { label: where, family: stop.family, stops: [] };
+      entry.stops.push(stop);
+      named.set(key, entry);
+    }
+    for (const { label: label3, family, stops: group } of named.values()) {
+      if (looksLikeRamp(group)) spectra.push(makeSpectrum(group, "named", label3, family, usedKeys));
+      else unnamed.push(...group);
+    }
+    const grays = unnamed.filter(isNeutral);
+    const colored = unnamed.filter((stop) => !isNeutral(stop));
+    if (grays.length >= 2) spectra.push(makeSpectrum(grays, "clustered", "Neutral", "Neutral", usedKeys));
+    else loose.push(...grays);
+    for (const cluster of clusterByHue(colored)) {
+      if (cluster.length < 2) {
+        loose.push(...cluster);
+        continue;
+      }
+      const label3 = hueName2(meanHue(cluster));
+      spectra.push(makeSpectrum(cluster, "clustered", label3, label3, usedKeys));
+    }
+    spectra.sort((a, b) => Number(a.neutral) - Number(b.neutral) || a.hue - b.hue);
+    const warnings = spectra.filter((spectrum) => spectrum.crowded).map(
+      (spectrum) => `"${spectrum.label}" was grouped from color alone and spans ${Math.round(spectrum.hueRange)}\xB0 \u2014 it may be two families; split it in the table if so`
+    );
+    return { spectra, loose: loose.sort(byLightness), warnings };
+  }
+
+  // src/tokens/remap/match.ts
+  function deltaE(a, b) {
+    const first = rgbToOklch(a);
+    const second = rgbToOklch(b);
+    const ax = first.c * Math.cos(first.h * Math.PI / 180);
+    const ay = first.c * Math.sin(first.h * Math.PI / 180);
+    const bx = second.c * Math.cos(second.h * Math.PI / 180);
+    const by = second.c * Math.sin(second.h * Math.PI / 180);
+    const dl = first.l - second.l;
+    return 100 * Math.sqrt(dl * dl + (ax - bx) ** 2 + (ay - by) ** 2);
+  }
+  function nearestByColor(candidates, color) {
+    let best = null;
+    let bestDistance = Infinity;
+    for (const candidate of candidates) {
+      const distance = deltaE(candidate.rgba, color);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = candidate;
+      }
+    }
+    return best;
+  }
+  var WEIGHT_STOP_COUNT = 0.15;
+  var NEUTRAL_MISMATCH = 2;
+  var EXACT_NAME_BONUS = 0.5;
+  var PARTIAL_NAME_BONUS = 0.2;
+  var sameFamilyName = (from, to) => familyKey(from.family) === familyKey(to.family);
+  function familyCost(from, to) {
+    const named = sameFamilyName(from, to);
+    let cost;
+    if (from.neutral && to.neutral) cost = 0;
+    else if (from.neutral !== to.neutral) cost = named ? 0 : NEUTRAL_MISMATCH;
+    else cost = hueDistance2(from.hue, to.hue) / 180;
+    const fromCount = from.stops.length;
+    const toCount = to.stops.length;
+    cost += Math.abs(fromCount - toCount) / Math.max(fromCount, toCount) * WEIGHT_STOP_COUNT;
+    const toKey = familyKey(to.family);
+    const fromKey = familyKey(from.family);
+    if (named) cost -= EXACT_NAME_BONUS;
+    else if (fromKey.includes(toKey) || toKey.includes(fromKey)) cost -= PARTIAL_NAME_BONUS;
+    return cost;
+  }
+  function hungarian(cost) {
+    const rows = cost.length;
+    if (rows === 0) return [];
+    const cols = cost[0].length;
+    if (cols < rows) throw new Error("hungarian: rows must not exceed cols");
+    const u = new Array(rows + 1).fill(0);
+    const v = new Array(cols + 1).fill(0);
+    const match = new Array(cols + 1).fill(0);
+    const way = new Array(cols + 1).fill(0);
+    for (let row = 1; row <= rows; row++) {
+      match[0] = row;
+      let col = 0;
+      const minimum = new Array(cols + 1).fill(Infinity);
+      const used = new Array(cols + 1).fill(false);
+      do {
+        used[col] = true;
+        const currentRow = match[col];
+        let delta = Infinity;
+        let nextCol = 0;
+        for (let j = 1; j <= cols; j++) {
+          if (used[j]) continue;
+          const value = cost[currentRow - 1][j - 1] - u[currentRow] - v[j];
+          if (value < minimum[j]) {
+            minimum[j] = value;
+            way[j] = col;
+          }
+          if (minimum[j] < delta) {
+            delta = minimum[j];
+            nextCol = j;
+          }
+        }
+        for (let j = 0; j <= cols; j++) {
+          if (used[j]) {
+            u[match[j]] += delta;
+            v[j] -= delta;
+          } else {
+            minimum[j] -= delta;
+          }
+        }
+        col = nextCol;
+      } while (match[col] !== 0);
+      do {
+        const previous = way[col];
+        match[col] = match[previous];
+        col = previous;
+      } while (col !== 0);
+    }
+    const assignment = new Array(rows).fill(-1);
+    for (let j = 1; j <= cols; j++) if (match[j] > 0) assignment[match[j] - 1] = j - 1;
+    return assignment;
+  }
+  var compatible = (from, to) => from.neutral === to.neutral || sameFamilyName(from, to);
+  function assignFamilies(from, to) {
+    var _a, _b;
+    if (from.length === 0 || to.length === 0) return { assignments: [], unused: [...to] };
+    const matrix = from.map((source) => to.map((target) => familyCost(source, target)));
+    const assignments = [];
+    const placed = /* @__PURE__ */ new Set();
+    const take = (row, column2, overflow) => {
+      if (!compatible(from[row], to[column2])) return;
+      placed.add(row);
+      assignments.push({ from: from[row], to: to[column2], cost: matrix[row][column2], shared: false, overflow });
+    };
+    if (from.length <= to.length) {
+      for (const [index, column2] of hungarian(matrix).entries()) if (column2 >= 0) take(index, column2, false);
+    } else {
+      const transposed = to.map((_, column2) => from.map((_source, row) => matrix[row][column2]));
+      for (const [column2, row] of hungarian(transposed).entries()) if (row >= 0) take(row, column2, false);
+    }
+    for (const [index, source] of from.entries()) {
+      if (placed.has(index)) continue;
+      let best = -1;
+      for (let column2 = 0; column2 < to.length; column2++) {
+        if (!compatible(source, to[column2])) continue;
+        if (best < 0 || matrix[index][column2] < matrix[index][best]) best = column2;
+      }
+      if (best >= 0) take(index, best, true);
+    }
+    const perTarget = /* @__PURE__ */ new Map();
+    for (const assignment of assignments) {
+      perTarget.set(assignment.to.key, ((_a = perTarget.get(assignment.to.key)) != null ? _a : 0) + 1);
+    }
+    for (const assignment of assignments) {
+      if (((_b = perTarget.get(assignment.to.key)) != null ? _b : 0) > 1) assignment.shared = true;
+    }
+    const used = new Set(assignments.map((assignment) => assignment.to.key));
+    const order = new Map(from.map((spectrum, index) => [spectrum.key, index]));
+    assignments.sort((a, b) => {
+      var _a2, _b2;
+      return ((_a2 = order.get(a.from.key)) != null ? _a2 : 0) - ((_b2 = order.get(b.from.key)) != null ? _b2 : 0);
+    });
+    return { assignments, unused: to.filter((spectrum) => !used.has(spectrum.key)) };
+  }
+  function nearestByLightness(stops, l) {
+    let best = null;
+    let bestDistance = Infinity;
+    for (const stop of stops) {
+      const distance = Math.abs(stop.l - l);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = stop;
+      }
+    }
+    return best;
+  }
+  var LADDER_BREAK = 0.15;
+  function ladderOutliers(spectrum) {
+    const ladder = spectrum.stops.filter((stop) => stop.step !== null).sort((a, b) => a.step - b.step);
+    const outliers = /* @__PURE__ */ new Set();
+    if (ladder.length < 4) return outliers;
+    let up = 0;
+    let down = 0;
+    for (let i = 1; i < ladder.length; i++) {
+      const delta = ladder[i].l - ladder[i - 1].l;
+      if (delta > 0.01) up++;
+      else if (delta < -0.01) down++;
+    }
+    const direction = down > up ? -1 : up > down ? 1 : 0;
+    if (direction === 0) return outliers;
+    const follows = (earlier, later) => direction < 0 ? earlier >= later - LADDER_BREAK : earlier <= later + LADDER_BREAK;
+    for (let i = 0; i < ladder.length; i++) {
+      const previous = ladder[i - 1];
+      const next = ladder[i + 1];
+      const breaksBefore = previous !== void 0 && !follows(previous.l, ladder[i].l);
+      const breaksAfter = next !== void 0 && !follows(ladder[i].l, next.l);
+      const isEnd = previous === void 0 || next === void 0;
+      if (isEnd ? breaksBefore || breaksAfter : breaksBefore && breaksAfter) outliers.add(ladder[i].step);
+    }
+    return outliers;
+  }
+  function fitLadder(source, target, anchorOf, allowProportional) {
+    const assigned = /* @__PURE__ */ new Map();
+    const span = source.length - 1;
+    const reach = target.length - 1;
+    const indexOf = new Map(target.map((stop, index2) => [stop, index2]));
+    const at = (stop) => {
+      var _a;
+      return stop === null ? -1 : (_a = indexOf.get(stop)) != null ? _a : -1;
+    };
+    const anchors = source.map((stop) => at(anchorOf(stop)));
+    if (source.length > target.length && !anchors.some((index2) => index2 >= 0)) {
+      if (!allowProportional) return assigned;
+      for (const [index2, stop] of source.entries()) {
+        assigned.set(stop, target[span === 0 ? 0 : Math.round(index2 * reach / span)]);
+      }
+      return assigned;
+    }
+    let floor = -1;
+    let index = 0;
+    while (index < source.length) {
+      if (anchors[index] >= 0) {
+        assigned.set(source[index], target[anchors[index]]);
+        floor = Math.max(floor, anchors[index]);
+        index++;
+        continue;
+      }
+      let end = index;
+      while (end < source.length && anchors[end] < 0) end++;
+      const nextAnchor = end < source.length ? anchors[end] : -1;
+      const positions = [];
+      if (floor >= 0) positions.push(floor);
+      const upper = nextAnchor >= 0 ? nextAnchor - 1 : reach;
+      for (let position = floor + 1; position <= upper; position++) positions.push(position);
+      if (nextAnchor >= 0) positions.push(nextAnchor);
+      if (positions.length === 0) positions.push(Math.max(0, Math.min(floor, reach)));
+      const run = source.slice(index, end);
+      const width = positions.length;
+      let previous = new Array(width).fill(0);
+      const picks = [];
+      for (const stop of run) {
+        const current = new Array(width).fill(Infinity);
+        const pick = new Array(width).fill(-1);
+        let bestBefore = Infinity;
+        let bestAt = -1;
+        for (let p = 0; p < width; p++) {
+          if (previous[p] < bestBefore) {
+            bestBefore = previous[p];
+            bestAt = p;
+          }
+          current[p] = bestBefore + Math.abs(target[positions[p]].l - stop.l);
+          pick[p] = bestAt;
+        }
+        picks.push(pick);
+        previous = current;
+      }
+      let at2 = 0;
+      for (let p = 1; p < width; p++) if (previous[p] < previous[at2]) at2 = p;
+      const chosen = new Array(run.length);
+      for (let i = run.length - 1; i >= 0; i--) {
+        chosen[i] = at2;
+        at2 = picks[i][at2];
+      }
+      for (const [i, stop] of run.entries()) {
+        const position = positions[chosen[i]];
+        assigned.set(stop, target[position]);
+        floor = Math.max(floor, position);
+      }
+      index = end;
+    }
+    return assigned;
+  }
+  var byStepAscending = (a, b) => {
+    var _a, _b;
+    return ((_a = a.step) != null ? _a : 0) - ((_b = b.step) != null ? _b : 0);
+  };
+  function matchStops(from, to) {
+    const untrusted = ladderOutliers(to);
+    const byStep = /* @__PURE__ */ new Map();
+    for (const stop of to.stops) {
+      if (stop.step === null || untrusted.has(stop.step) || byStep.has(stop.step)) continue;
+      byStep.set(stop.step, stop);
+    }
+    const preferred = (stop) => {
+      const byNumber = stop.step === null ? void 0 : byStep.get(stop.step);
+      const byLight = nearestByLightness(to.stops, stop.l);
+      if (!byNumber) return byLight;
+      if (byLight && Math.abs(byNumber.l - stop.l) > LADDER_BREAK && Math.abs(byLight.l - stop.l) < Math.abs(byNumber.l - stop.l)) {
+        return byLight;
+      }
+      return byNumber;
+    };
+    const anchorOf = (stop) => {
+      var _a;
+      return (_a = stop.step === null ? void 0 : byStep.get(stop.step)) != null ? _a : null;
+    };
+    const sourceLadder = from.stops.filter((stop) => stop.step !== null);
+    const targetLadder = to.stops.filter((stop) => stop.step !== null && !untrusted.has(stop.step));
+    const fitted = sourceLadder.length >= 3 && targetLadder.length >= 2 ? fitLadder(
+      [...sourceLadder].sort(byStepAscending),
+      [...targetLadder].sort(byStepAscending),
+      anchorOf,
+      !from.neutral && !to.neutral
+    ) : /* @__PURE__ */ new Map();
+    const matches = [];
+    for (const stop of from.stops) {
+      const placed = fitted.get(stop);
+      const target = placed != null ? placed : preferred(stop);
+      if (!target) continue;
+      const kept2 = stop.step !== null && target.step === stop.step;
+      matches.push({
+        from: stop,
+        to: target,
+        via: kept2 ? "step" : placed ? "stretched" : "lightness",
+        lightnessShift: Math.abs(target.l - stop.l)
+      });
+    }
+    return matches;
+  }
+
+  // src/targets/ds-tools/remap-apply.ts
+  var DEFAULT_REMAP_APPLY_OPTIONS = {
+    values: true,
+    rename: true,
+    styles: true,
+    canvas: true,
+    bind: true,
+    scope: "document"
+  };
+  var SNAPSHOT_KEY = "altery-remap-snapshot";
+  var SNAPSHOT_COUNT_KEY = "altery-remap-snapshot-chunks";
+  var RENAME_KEY = "altery-remap-renames";
+  var CHUNK_BYTES = 8e4;
+  var MAX_CHUNKS = 32;
+  var channelKey = (channels) => channels.join(",");
+  function packSnapshot(snapshot) {
+    const paints2 = {};
+    for (const place of snapshot.paints) {
+      const key = channelKey([place[4], place[5], place[6], place[7]]);
+      const packed = place[8] === 1 ? [place[0], place[1], place[2], place[3], 1] : [place[0], place[1], place[2], place[3]];
+      const group = paints2[key];
+      if (group) group.push(packed);
+      else paints2[key] = [packed];
+    }
+    return { version: 3, values: snapshot.values, names: snapshot.names, styles: snapshot.styles, paints: paints2 };
+  }
+  function unpackSnapshot(parsed) {
+    var _a;
+    const raw = parsed;
+    if (raw.version === 2) return parsed;
+    if (raw.version !== 3) throw new Error(`the undo snapshot has version ${String(raw.version)}, which this build cannot read`);
+    const packed = parsed;
+    const paints2 = [];
+    for (const [key, group] of Object.entries(packed.paints)) {
+      const channels = key.split(",").map(Number);
+      for (const place of group) {
+        paints2.push([place[0], place[1], place[2], place[3], channels[0], channels[1], channels[2], channels[3], (_a = place[4]) != null ? _a : 0]);
+      }
+    }
+    return { version: 2, values: packed.values, names: packed.names, styles: packed.styles, paints: paints2 };
+  }
+  function writeChunked(text3) {
+    const chunks = [];
+    for (let i = 0; i < text3.length; i += CHUNK_BYTES) chunks.push(text3.slice(i, i + CHUNK_BYTES));
+    if (chunks.length > MAX_CHUNKS) {
+      throw new Error(`the undo snapshot needs ${chunks.length} slots, more than the ${MAX_CHUNKS} available`);
+    }
+    const previous = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
+    for (const [index, chunk] of chunks.entries()) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index}`, chunk);
+    for (let index = chunks.length; index < previous; index++) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index}`, "");
+    figma.root.setPluginData(SNAPSHOT_COUNT_KEY, String(chunks.length));
+    return text3.length;
+  }
+  function readChunked() {
+    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
+    let text3 = "";
+    for (let index = 0; index < count; index++) text3 += figma.root.getPluginData(`${SNAPSHOT_KEY}-${index}`);
+    return text3;
+  }
+  function clearSnapshot() {
+    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
+    for (let index = 0; index < count; index++) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index}`, "");
+    figma.root.setPluginData(SNAPSHOT_COUNT_KEY, "0");
+  }
+  function hasRemapSnapshot() {
+    return Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0") > 0;
+  }
+  function readRenameMap() {
+    const raw = figma.root.getPluginData(RENAME_KEY);
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return typeof parsed === "object" && parsed !== null ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+  function foldRenames(existing, applied) {
+    const next = __spreadValues({}, existing);
+    for (const { from, to } of applied) {
+      for (const [key, value] of Object.entries(next)) if (value === from) next[key] = to;
+      if (from !== to) next[from] = to;
+    }
+    for (const [key, value] of Object.entries(next)) if (key === value) delete next[key];
+    return next;
+  }
+  function writeRenameMap(map) {
+    figma.root.setPluginData(RENAME_KEY, Object.keys(map).length === 0 ? "" : JSON.stringify(map));
+  }
+  function splitSiteId(id) {
+    const separator = id.lastIndexOf("|");
+    if (separator <= 0) return null;
+    return { variableId: id.slice(0, separator), modeId: id.slice(separator + 1) };
+  }
+  function parseStyleSiteId(id) {
+    if (id.slice(0, 6) !== "style:") return null;
+    const hash = id.indexOf("#");
+    if (hash < 0) return null;
+    const styleId = id.slice(6, hash);
+    const [property, rest] = id.slice(hash + 1).split(":");
+    if (property !== "paints" && property !== "effects") return null;
+    const [indexText, stopText] = rest.split(".");
+    const index = Number(indexText);
+    if (!Number.isFinite(index)) return null;
+    const stop = stopText === void 0 ? null : Number(stopText);
+    return { styleId, property, index, stop: stop === null || !Number.isFinite(stop) ? null : stop };
+  }
+  var round42 = (value) => Math.round(value * 1e4) / 1e4;
+  var channelsOf = (color) => {
+    var _a;
+    return [
+      round42(color.r),
+      round42(color.g),
+      round42(color.b),
+      round42((_a = color.a) != null ? _a : 1)
+    ];
+  };
+  var colorOf = (channels) => ({ r: channels[0], g: channels[1], b: channels[2], a: channels[3] });
+  var kept = (entry) => !entry.flags.includes("excluded");
+  var writableVariable = (entry) => kept(entry) && entry.site.kind === "variable" && entry.site.editable && !entry.flags.includes("library") && !entry.flags.includes("unchanged");
+  var writableStyle = (entry) => kept(entry) && (entry.site.kind === "style" || entry.site.kind === "gradient-stop" || entry.site.kind === "effect") && entry.site.editable && !entry.flags.includes("unchanged");
+  var writableLoose = (entry) => kept(entry) && entry.site.kind === "detached" && !entry.flags.includes("unchanged");
+  function makeLoader() {
+    const cache = /* @__PURE__ */ new Map();
+    return {
+      async variable(id) {
+        var _a;
+        if (cache.has(id)) return (_a = cache.get(id)) != null ? _a : null;
+        const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
+        cache.set(id, variable);
+        return variable;
+      }
+    };
+  }
+  var SNAP_DELTA_E2 = 2;
+  function bindingCandidates(plan) {
+    const byColor = /* @__PURE__ */ new Map();
+    const entries = plan.entries.filter(writableVariable);
+    for (const entry of entries) {
+      const address = splitSiteId(entry.site.id);
+      if (!address) continue;
+      const key = looseSiteId(hexOf(entry.from), entry.from.a);
+      if (!byColor.has(key)) byColor.set(key, address.variableId);
+    }
+    return byColor;
+  }
+  function nearestVariableFor(entry, plan) {
+    let bestId = null;
+    let bestDistance = SNAP_DELTA_E2;
+    for (const candidate of plan.entries) {
+      if (!writableVariable(candidate)) continue;
+      if (Math.abs(candidate.from.a - entry.from.a) > 0.01) continue;
+      const distance = deltaE(candidate.from, entry.from);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        const address = splitSiteId(candidate.site.id);
+        if (address) bestId = address.variableId;
+      }
+    }
+    return bestId;
+  }
+  async function applyStyles(plan, snapshot, report2) {
+    var _a;
+    const byStyle = /* @__PURE__ */ new Map();
+    for (const entry of plan.entries) {
+      if (!writableStyle(entry)) continue;
+      const address = parseStyleSiteId(entry.site.id);
+      if (!address) continue;
+      const group = byStyle.get(address.styleId);
+      if (group) group.push({ entry, address });
+      else byStyle.set(address.styleId, [{ entry, address }]);
+    }
+    for (const [styleId, group] of byStyle) {
+      const style = await figma.getStyleByIdAsync(styleId).catch(() => null);
+      if (!style) {
+        report2.failed += group.length;
+        continue;
+      }
+      const before = report2.paints;
+      try {
+        if (style.type === "PAINT") {
+          const paints2 = style.paints.map((paint) => __spreadValues({}, paint));
+          for (const { entry, address } of group) {
+            const paint = paints2[address.index];
+            if (!paint) continue;
+            if (address.stop === null && paint.type === "SOLID") {
+              snapshot.styles.push({ s: styleId, p: "paints", i: address.index, j: -1, c: channelsOf(__spreadProps(__spreadValues({}, paint.color), { a: (_a = paint.opacity) != null ? _a : 1 })) });
+              paints2[address.index] = __spreadProps(__spreadValues({}, paint), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b }, opacity: entry.to.a });
+              report2.paints++;
+            } else if (address.stop !== null && isGradient(paint)) {
+              const stops = paint.gradientStops.map((stop2) => __spreadValues({}, stop2));
+              const stop = stops[address.stop];
+              if (!stop) continue;
+              snapshot.styles.push({ s: styleId, p: "paints", i: address.index, j: address.stop, c: channelsOf(withAlpha(stop.color)) });
+              stops[address.stop] = __spreadProps(__spreadValues({}, stop), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
+              paints2[address.index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+              report2.paints++;
+            }
+          }
+          ;
+          style.paints = paints2;
+        } else if (style.type === "EFFECT") {
+          const effects = style.effects.map((effect) => __spreadValues({}, effect));
+          for (const { entry, address } of group) {
+            const effect = effects[address.index];
+            if (!effect || !isShadow(effect)) continue;
+            snapshot.styles.push({ s: styleId, p: "effects", i: address.index, j: -1, c: channelsOf(withAlpha(effect.color)) });
+            effects[address.index] = __spreadProps(__spreadValues({}, effect), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
+            report2.paints++;
+          }
+          ;
+          style.effects = effects;
+        } else {
+          continue;
+        }
+        if (report2.paints > before) report2.styles++;
+      } catch (error) {
+        report2.failed += group.length;
+        report2.warnings.push(`${style.name}: ${String(error.message)}`);
+      }
+    }
+  }
+  async function scopeRoots(scope) {
+    if (scope === "selection") return figma.currentPage.selection;
+    if (scope === "page") return figma.currentPage.children;
+    const roots = [];
+    for (const page of figma.root.children) roots.push(...page.children);
+    return roots;
+  }
+  var COLOR_FIELDS = ["fills", "strokes", "effects"];
+  function colorOverrideCount(instance) {
+    try {
+      return instance.overrides.filter(
+        (override) => override.overriddenFields.some((field) => COLOR_FIELDS.indexOf(field) !== -1)
+      ).length;
+    } catch (e) {
+      return 0;
+    }
+  }
+  function rewritePaints(node, property, context) {
+    var _a, _b;
+    if (styleIdOf2(node, property) !== "") return false;
+    const paints2 = paintsOf(node, property);
+    if (paints2.length === 0) return false;
+    const nodeLevel = nodeLevelBindings(node, property);
+    const next = paints2.map((paint) => __spreadValues({}, paint));
+    const code = property === "fills" ? 0 : 1;
+    let touched = false;
+    for (const [index, paint] of paints2.entries()) {
+      if (paint.visible === false) continue;
+      const paintBound2 = (_a = paint.boundVariables) == null ? void 0 : _a.color;
+      if (paintBound2 || nodeLevel[index]) continue;
+      if (paint.type === "SOLID") {
+        const alpha = (_b = paint.opacity) != null ? _b : 1;
+        const entry = context.targets.get(looseSiteId(hexOf(paint.color), alpha));
+        if (!entry) continue;
+        if (context.dry) {
+          context.report.paints++;
+          continue;
+        }
+        const variable = context.bindTo.get(entry.site.id);
+        let replacement = __spreadProps(__spreadValues({}, paint), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b }, opacity: entry.to.a });
+        if (variable) {
+          replacement = figma.variables.setBoundVariableForPaint(replacement, "color", variable);
+          context.report.bound++;
+        }
+        next[index] = replacement;
+        context.snapshot.paints.push([node.id, code, index, -1, ...channelsOf(__spreadProps(__spreadValues({}, paint.color), { a: alpha })), variable ? 1 : 0]);
+        context.report.paints++;
+        touched = true;
+        continue;
+      }
+      if (!isGradient(paint)) continue;
+      const stops = paint.gradientStops.map((stop) => __spreadValues({}, stop));
+      let stopTouched = false;
+      for (const [stopIndex, stop] of paint.gradientStops.entries()) {
+        const color = withAlpha(stop.color);
+        const entry = context.targets.get(looseSiteId(hexOf(color), color.a));
+        if (!entry) continue;
+        if (context.dry) {
+          context.report.paints++;
+          continue;
+        }
+        stops[stopIndex] = __spreadProps(__spreadValues({}, stop), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
+        context.snapshot.paints.push([node.id, code, index, stopIndex, ...channelsOf(color), 0]);
+        context.report.paints++;
+        stopTouched = true;
+      }
+      if (stopTouched) {
+        next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+        touched = true;
+      }
+    }
+    if (!touched) return false;
+    node[property] = next;
+    return true;
+  }
+  function rewriteEffects(node, context) {
+    var _a;
+    if (styleIdOf2(node, "effects") !== "") return false;
+    if (!("effects" in node) || !Array.isArray(node.effects) || node.effects.length === 0) return false;
+    const next = node.effects.map((effect) => __spreadValues({}, effect));
+    let touched = false;
+    for (const [index, effect] of node.effects.entries()) {
+      if (!isShadow(effect) || effect.visible === false) continue;
+      if ((_a = effect.boundVariables) == null ? void 0 : _a.color) continue;
+      const color = withAlpha(effect.color);
+      const entry = context.targets.get(looseSiteId(hexOf(color), color.a));
+      if (!entry) continue;
+      if (context.dry) {
+        context.report.paints++;
+        continue;
+      }
+      next[index] = __spreadProps(__spreadValues({}, effect), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
+      context.snapshot.paints.push([node.id, 2, index, -1, ...channelsOf(color), 0]);
+      context.report.paints++;
+      touched = true;
+    }
+    if (!touched) return false;
+    node.effects = next;
+    return true;
+  }
+  async function applyCanvas(plan, options, snapshot, report2, loader, progress2, dry = false) {
+    var _a;
+    const targets = /* @__PURE__ */ new Map();
+    for (const entry of plan.entries) if (writableLoose(entry)) targets.set(entry.site.id, entry);
+    if (targets.size === 0) return;
+    const bindTo = /* @__PURE__ */ new Map();
+    if (!dry && options.bind && options.values) {
+      const exact = bindingCandidates(plan);
+      for (const entry of targets.values()) {
+        const variableId = (_a = exact.get(entry.site.id)) != null ? _a : nearestVariableFor(entry, plan);
+        if (!variableId) continue;
+        const variable = await loader.variable(variableId);
+        if (variable) bindTo.set(entry.site.id, variable);
+      }
+    }
+    const context = { targets, bindTo, snapshot, report: report2, loader, dry };
+    const roots = await scopeRoots(options.scope);
+    figma.skipInvisibleInstanceChildren = true;
+    try {
+      const stack = [...roots];
+      let visited = 0;
+      while (stack.length > 0) {
+        const node = stack.pop();
+        visited++;
+        if (node.type === "INSTANCE") {
+          report2.instanceOverrides += colorOverrideCount(node);
+          continue;
+        }
+        rewritePaints(node, "fills", context);
+        rewritePaints(node, "strokes", context);
+        rewriteEffects(node, context);
+        if ("children" in node) for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
+        if (visited % 200 === 0) {
+          progress2 == null ? void 0 : progress2(dry ? `sizing the undo\u2026 ${report2.paints} places` : `repainting\u2026 ${report2.paints} places`);
+          await yieldToHost();
+        }
+      }
+    } finally {
+      figma.skipInvisibleInstanceChildren = false;
+    }
+    if (report2.instanceOverrides > 0) {
+      report2.warnings.push(
+        `${report2.instanceOverrides} hand-made color override${report2.instanceOverrides === 1 ? "" : "s"} on instances kept the old color \u2014 an override belongs to that one instance, not to the system, so it is left for a human`
+      );
+    }
+  }
+  var BYTES = { value: 90, name: 70, style: 70, paint: 28 };
+  function estimateSnapshotBytes(plan, options) {
+    const values = options.values ? plan.entries.filter(writableVariable).length : 0;
+    const names = options.rename ? plan.renames.length : 0;
+    const styles = options.styles ? plan.entries.filter(writableStyle).length : 0;
+    const paints2 = options.canvas ? plan.entries.filter(writableLoose).reduce((total, entry) => total + Math.max(1, entry.site.usage), 0) : 0;
+    return values * BYTES.value + names * BYTES.name + styles * BYTES.style + paints2 * BYTES.paint;
+  }
+  var SNAPSHOT_BUDGET_BYTES = CHUNK_BYTES * MAX_CHUNKS;
+  async function applyRemap(plan, options = DEFAULT_REMAP_APPLY_OPTIONS, progress2) {
+    const warnings = [];
+    const report2 = {
+      values: 0,
+      renamed: 0,
+      legacy: 0,
+      styles: 0,
+      paints: 0,
+      bound: 0,
+      instanceOverrides: 0,
+      skippedLibrary: plan.entries.filter((entry) => entry.flags.includes("library")).length,
+      unchanged: plan.entries.filter((entry) => entry.flags.includes("unchanged")).length,
+      failed: 0,
+      snapshotBytes: 0,
+      warnings
+    };
+    const valueTargets = options.values ? plan.entries.filter(writableVariable) : [];
+    const renames = options.rename && options.values ? plan.renames : [];
+    const hasStyles = options.styles && plan.entries.some(writableStyle);
+    const hasCanvas = options.canvas && plan.entries.some(writableLoose);
+    if (valueTargets.length === 0 && renames.length === 0 && !hasStyles && !hasCanvas) {
+      warnings.push("nothing to write");
+      return report2;
+    }
+    let estimate = estimateSnapshotBytes(plan, options);
+    if (estimate > SNAPSHOT_BUDGET_BYTES && options.canvas) {
+      progress2 == null ? void 0 : progress2("sizing the undo for this scope\u2026");
+      const dryReport = __spreadProps(__spreadValues({}, report2), { paints: 0, instanceOverrides: 0, warnings: [] });
+      const drySnapshot = { version: 2, values: [], names: [], styles: [], paints: [] };
+      await applyCanvas(plan, options, drySnapshot, dryReport, makeLoader(), progress2, true);
+      estimate = estimateSnapshotBytes(plan, __spreadProps(__spreadValues({}, options), { canvas: false })) + dryReport.paints * BYTES.paint;
+    }
+    if (estimate > SNAPSHOT_BUDGET_BYTES) {
+      throw new Error(
+        `This remap would need about ${Math.round(estimate / 1024)} kB of undo data, more than the ${Math.round(SNAPSHOT_BUDGET_BYTES / 1024)} kB a Figma file can hold for a plugin. Nothing was written \u2014 narrow the scope, or turn off repainting loose layers and run that pass on its own.`
+      );
+    }
+    progress2 == null ? void 0 : progress2("loading variables\u2026");
+    const loader = makeLoader();
+    const snapshot = { version: 2, values: [], names: [], styles: [], paints: [] };
+    for (const entry of valueTargets) {
+      const address = splitSiteId(entry.site.id);
+      if (!address) continue;
+      const variable = await loader.variable(address.variableId);
+      if (!variable) continue;
+      const current = variable.valuesByMode[address.modeId];
+      if (current === void 0 || typeof current !== "object" || !("r" in current)) continue;
+      snapshot.values.push({ v: address.variableId, m: address.modeId, c: channelsOf(current) });
+    }
+    for (const rename of renames) {
+      const address = splitSiteId(rename.siteId);
+      if (!address) continue;
+      const variable = await loader.variable(address.variableId);
+      if (variable) snapshot.names.push({ v: address.variableId, n: variable.name });
+    }
+    if (hasStyles) {
+      progress2 == null ? void 0 : progress2("writing styles\u2026");
+      await applyStyles(plan, snapshot, report2);
+    }
+    if (hasCanvas) {
+      progress2 == null ? void 0 : progress2("repainting layers\u2026");
+      await applyCanvas(plan, options, snapshot, report2, loader, progress2);
+    }
+    progress2 == null ? void 0 : progress2("storing the snapshot\u2026");
+    try {
+      report2.snapshotBytes = writeChunked(JSON.stringify(packSnapshot(snapshot)));
+    } catch (error) {
+      clearSnapshot();
+      warnings.push(
+        `${String(error.message)}. ${report2.paints} painted places changed before this was known and cannot be reverted from here \u2014 use Figma version history if you need them back.`
+      );
+    }
+    let written = 0;
+    for (const entry of valueTargets) {
+      const address = splitSiteId(entry.site.id);
+      const variable = address ? await loader.variable(address.variableId) : null;
+      if (!address || !variable) {
+        report2.failed++;
+        continue;
+      }
+      try {
+        variable.setValueForMode(address.modeId, { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a });
+        report2.values++;
+      } catch (error) {
+        report2.failed++;
+        warnings.push(`${entry.site.name}: ${String(error.message)}`);
+      }
+      if (++written % 100 === 0) {
+        progress2 == null ? void 0 : progress2(`writing values\u2026 ${written}/${valueTargets.length}`);
+        await yieldToHost();
+      }
+    }
+    if (renames.length > 0) {
+      progress2 == null ? void 0 : progress2("renaming\u2026");
+      const applied = [];
+      const staged = [];
+      for (const [index, rename] of renames.entries()) {
+        const address = splitSiteId(rename.siteId);
+        const variable = address ? await loader.variable(address.variableId) : null;
+        if (!variable) {
+          report2.failed++;
+          continue;
+        }
+        const from = variable.name;
+        try {
+          variable.name = `__altery-remap-${index}`;
+          staged.push({ variable, to: rename.to, from, legacy: rename.legacy });
+        } catch (error) {
+          report2.failed++;
+          warnings.push(`${from}: ${String(error.message)}`);
+        }
+      }
+      for (const item of staged) {
+        try {
+          item.variable.name = item.to;
+          applied.push({ from: item.from, to: item.to });
+          report2.renamed++;
+          if (item.legacy) report2.legacy++;
+        } catch (error) {
+          item.variable.name = item.from;
+          report2.failed++;
+          warnings.push(`${item.from} \u2192 ${item.to}: ${String(error.message)}`);
+        }
+      }
+      writeRenameMap(foldRenames(readRenameMap(), applied));
+    }
+    return report2;
+  }
+  async function unparkLegacyNames(legacyGroup = "legacy") {
+    const map = readRenameMap();
+    const parked = Object.entries(map).filter(([, to]) => to.startsWith(`${legacyGroup}/`));
+    if (parked.length === 0) return { restored: 0, blocked: [], warnings: ["this plugin has parked no names in this file"] };
+    const variables = await figma.variables.getLocalVariablesAsync("COLOR");
+    const byName = /* @__PURE__ */ new Map();
+    for (const variable of variables) byName.set(variable.name, variable);
+    const report2 = { restored: 0, blocked: [], warnings: [] };
+    const remaining = __spreadValues({}, map);
+    for (const [original, current] of parked) {
+      const variable = byName.get(current);
+      if (!variable) {
+        report2.blocked.push(`${current} is not in this file any more`);
+        continue;
+      }
+      if (byName.has(original)) {
+        report2.blocked.push(`${original} is taken \u2014 ${current} stays where it is`);
+        continue;
+      }
+      try {
+        variable.name = original;
+        byName.delete(current);
+        byName.set(original, variable);
+        delete remaining[original];
+        report2.restored++;
+      } catch (error) {
+        report2.blocked.push(`${current}: ${String(error.message)}`);
+      }
+    }
+    writeRenameMap(remaining);
+    return report2;
+  }
+  async function revertStyles(snapshot, warnings) {
+    const byStyle = /* @__PURE__ */ new Map();
+    for (const entry of snapshot.styles) {
+      const group = byStyle.get(entry.s);
+      if (group) group.push(entry);
+      else byStyle.set(entry.s, [entry]);
+    }
+    let restored = 0;
+    for (const [styleId, group] of byStyle) {
+      const style = await figma.getStyleByIdAsync(styleId).catch(() => null);
+      if (!style) continue;
+      try {
+        if (style.type === "PAINT") {
+          const paints2 = style.paints.map((paint) => __spreadValues({}, paint));
+          for (const entry of group) {
+            const paint = paints2[entry.i];
+            if (!paint) continue;
+            const color = colorOf(entry.c);
+            if (entry.j < 0 && paint.type === "SOLID") {
+              paints2[entry.i] = __spreadProps(__spreadValues({}, paint), { color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
+            } else if (entry.j >= 0 && isGradient(paint)) {
+              const stops = paint.gradientStops.map((stop) => __spreadValues({}, stop));
+              if (!stops[entry.j]) continue;
+              stops[entry.j] = __spreadProps(__spreadValues({}, stops[entry.j]), { color });
+              paints2[entry.i] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+            }
+            restored++;
+          }
+          ;
+          style.paints = paints2;
+        } else if (style.type === "EFFECT") {
+          const effects = style.effects.map((effect) => __spreadValues({}, effect));
+          for (const entry of group) {
+            const effect = effects[entry.i];
+            if (!effect || !isShadow(effect)) continue;
+            effects[entry.i] = __spreadProps(__spreadValues({}, effect), { color: colorOf(entry.c) });
+            restored++;
+          }
+          ;
+          style.effects = effects;
+        }
+      } catch (error) {
+        warnings.push(`${style.name}: ${String(error.message)}`);
+      }
+    }
+    return restored;
+  }
+  async function revertPaints(snapshot, warnings, progress2) {
+    const byNode = /* @__PURE__ */ new Map();
+    for (const entry of snapshot.paints) {
+      const group = byNode.get(entry[0]);
+      if (group) group.push(entry);
+      else byNode.set(entry[0], [entry]);
+    }
+    let restored = 0;
+    let handled = 0;
+    for (const [nodeId, group] of byNode) {
+      const node = await figma.getNodeByIdAsync(nodeId).catch(() => null);
+      if (!node || node.type === "DOCUMENT" || node.type === "PAGE") continue;
+      const scene = node;
+      try {
+        for (const property of ["fills", "strokes"]) {
+          const code = property === "fills" ? 0 : 1;
+          const mine = group.filter((entry) => entry[1] === code);
+          if (mine.length === 0) continue;
+          const paints2 = paintsOf(scene, property).map((paint) => __spreadValues({}, paint));
+          for (const entry of mine) {
+            const paint = paints2[entry[2]];
+            if (!paint) continue;
+            const color = colorOf([entry[4], entry[5], entry[6], entry[7]]);
+            if (entry[3] < 0 && paint.type === "SOLID") {
+              let restoredPaint = __spreadProps(__spreadValues({}, paint), { color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
+              if (entry[8] === 1) restoredPaint = figma.variables.setBoundVariableForPaint(restoredPaint, "color", null);
+              paints2[entry[2]] = restoredPaint;
+            } else if (entry[3] >= 0 && isGradient(paint)) {
+              const stops = paint.gradientStops.map((stop) => __spreadValues({}, stop));
+              if (!stops[entry[3]]) continue;
+              stops[entry[3]] = __spreadProps(__spreadValues({}, stops[entry[3]]), { color });
+              paints2[entry[2]] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+            }
+            restored++;
+          }
+          ;
+          scene[property] = paints2;
+        }
+        const shadows = group.filter((entry) => entry[1] === 2);
+        if (shadows.length > 0 && "effects" in scene && Array.isArray(scene.effects)) {
+          const effects = scene.effects.map((effect) => __spreadValues({}, effect));
+          for (const entry of shadows) {
+            const effect = effects[entry[2]];
+            if (!effect || !isShadow(effect)) continue;
+            effects[entry[2]] = __spreadProps(__spreadValues({}, effect), { color: colorOf([entry[4], entry[5], entry[6], entry[7]]) });
+            restored++;
+          }
+          ;
+          scene.effects = effects;
+        }
+      } catch (error) {
+        warnings.push(`${scene.name}: ${String(error.message)}`);
+      }
+      if (++handled % 100 === 0) {
+        progress2 == null ? void 0 : progress2(`restoring layers\u2026 ${handled}/${byNode.size}`);
+        await yieldToHost();
+      }
+    }
+    return restored;
+  }
+  async function revertRemap(progress2) {
+    var _a, _b, _c;
+    const warnings = [];
+    const empty = { values: 0, names: 0, styles: 0, paints: 0 };
+    const raw = readChunked();
+    if (raw === "") return __spreadProps(__spreadValues({}, empty), { warnings: ["there is nothing to revert"] });
+    let snapshot;
+    try {
+      snapshot = unpackSnapshot(JSON.parse(raw));
+    } catch (e) {
+      clearSnapshot();
+      return __spreadProps(__spreadValues({}, empty), { warnings: ["the stored snapshot is unreadable and has been discarded"] });
+    }
+    const loader = makeLoader();
+    let names = 0;
+    const staged = [];
+    for (const [index, entry] of ((_a = snapshot.names) != null ? _a : []).entries()) {
+      const variable = await loader.variable(entry.v);
+      if (!variable) continue;
+      try {
+        variable.name = `__altery-revert-${index}`;
+        staged.push({ variable, to: entry.n });
+      } catch (error) {
+        warnings.push(`${entry.n}: ${String(error.message)}`);
+      }
+    }
+    for (const item of staged) {
+      try {
+        item.variable.name = item.to;
+        names++;
+      } catch (error) {
+        warnings.push(`${item.to}: ${String(error.message)}`);
+      }
+    }
+    let values = 0;
+    for (const [index, entry] of ((_b = snapshot.values) != null ? _b : []).entries()) {
+      const variable = await loader.variable(entry.v);
+      if (!variable) continue;
+      try {
+        variable.setValueForMode(entry.m, colorOf(entry.c));
+        values++;
+      } catch (error) {
+        warnings.push(`${variable.name}: ${String(error.message)}`);
+      }
+      if ((index + 1) % 100 === 0) {
+        progress2 == null ? void 0 : progress2(`restoring values\u2026 ${index + 1}/${snapshot.values.length}`);
+        await yieldToHost();
+      }
+    }
+    const styles = snapshot.styles ? await revertStyles(snapshot, warnings) : 0;
+    const paints2 = snapshot.paints ? await revertPaints(snapshot, warnings, progress2) : 0;
+    clearSnapshot();
+    const restored = new Set(((_c = snapshot.names) != null ? _c : []).map((entry) => entry.n));
+    const map = readRenameMap();
+    for (const key of Object.keys(map)) if (restored.has(key)) delete map[key];
+    writeRenameMap(map);
+    return { values, names, styles, paints: paints2, warnings };
+  }
+
+  // src/tokens/remap/color-literal.ts
+  var clamp012 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
+  function hslToRgb(h, s, l) {
+    const hue = (h % 360 + 360) % 360 / 60;
+    const chroma = (1 - Math.abs(2 * l - 1)) * clamp012(s);
+    const second = chroma * (1 - Math.abs(hue % 2 - 1));
+    const [r, g, b] = hue < 1 ? [chroma, second, 0] : hue < 2 ? [second, chroma, 0] : hue < 3 ? [0, chroma, second] : hue < 4 ? [0, second, chroma] : hue < 5 ? [second, 0, chroma] : [chroma, 0, second];
+    const match = clamp012(l) - chroma / 2;
+    return { r: r + match, g: g + match, b: b + match };
+  }
+  function rgbToHsl(rgb) {
+    const r = clamp012(rgb.r);
+    const g = clamp012(rgb.g);
+    const b = clamp012(rgb.b);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    const delta = max - min;
+    if (delta < 1e-9) return { h: 0, s: 0, l };
+    const s = delta / (1 - Math.abs(2 * l - 1));
+    const h = max === r ? 60 * ((g - b) / delta % 6) : max === g ? 60 * ((b - r) / delta + 2) : 60 * ((r - g) / delta + 4);
+    return { h: (h % 360 + 360) % 360, s, l };
+  }
+  function hwbToRgb(h, w, b) {
+    const total = w + b;
+    if (total >= 1) {
+      const gray = w / total;
+      return { r: gray, g: gray, b: gray };
+    }
+    const base = hslToRgb(h, 1, 0.5);
+    const apply = (channel) => channel * (1 - w - b) + w;
+    return { r: apply(base.r), g: apply(base.g), b: apply(base.b) };
+  }
+  function rgbToHwb(rgb) {
+    const { h } = rgbToHsl(rgb);
+    return { h, w: Math.min(rgb.r, rgb.g, rgb.b), b: 1 - Math.max(rgb.r, rgb.g, rgb.b) };
+  }
+  var NAMED_COLORS = {
+    aliceblue: "F0F8FF",
+    antiquewhite: "FAEBD7",
+    aqua: "00FFFF",
+    aquamarine: "7FFFD4",
+    azure: "F0FFFF",
+    beige: "F5F5DC",
+    bisque: "FFE4C4",
+    black: "000000",
+    blanchedalmond: "FFEBCD",
+    blue: "0000FF",
+    blueviolet: "8A2BE2",
+    brown: "A52A2A",
+    burlywood: "DEB887",
+    cadetblue: "5F9EA0",
+    chartreuse: "7FFF00",
+    chocolate: "D2691E",
+    coral: "FF7F50",
+    cornflowerblue: "6495ED",
+    cornsilk: "FFF8DC",
+    crimson: "DC143C",
+    cyan: "00FFFF",
+    darkblue: "00008B",
+    darkcyan: "008B8B",
+    darkgoldenrod: "B8860B",
+    darkgray: "A9A9A9",
+    darkgreen: "006400",
+    darkgrey: "A9A9A9",
+    darkkhaki: "BDB76B",
+    darkmagenta: "8B008B",
+    darkolivegreen: "556B2F",
+    darkorange: "FF8C00",
+    darkorchid: "9932CC",
+    darkred: "8B0000",
+    darksalmon: "E9967A",
+    darkseagreen: "8FBC8F",
+    darkslateblue: "483D8B",
+    darkslategray: "2F4F4F",
+    darkslategrey: "2F4F4F",
+    darkturquoise: "00CED1",
+    darkviolet: "9400D3",
+    deeppink: "FF1493",
+    deepskyblue: "00BFFF",
+    dimgray: "696969",
+    dimgrey: "696969",
+    dodgerblue: "1E90FF",
+    firebrick: "B22222",
+    floralwhite: "FFFAF0",
+    forestgreen: "228B22",
+    fuchsia: "FF00FF",
+    gainsboro: "DCDCDC",
+    ghostwhite: "F8F8FF",
+    gold: "FFD700",
+    goldenrod: "DAA520",
+    gray: "808080",
+    green: "008000",
+    greenyellow: "ADFF2F",
+    grey: "808080",
+    honeydew: "F0FFF0",
+    hotpink: "FF69B4",
+    indianred: "CD5C5C",
+    indigo: "4B0082",
+    ivory: "FFFFF0",
+    khaki: "F0E68C",
+    lavender: "E6E6FA",
+    lavenderblush: "FFF0F5",
+    lawngreen: "7CFC00",
+    lemonchiffon: "FFFACD",
+    lightblue: "ADD8E6",
+    lightcoral: "F08080",
+    lightcyan: "E0FFFF",
+    lightgoldenrodyellow: "FAFAD2",
+    lightgray: "D3D3D3",
+    lightgreen: "90EE90",
+    lightgrey: "D3D3D3",
+    lightpink: "FFB6C1",
+    lightsalmon: "FFA07A",
+    lightseagreen: "20B2AA",
+    lightskyblue: "87CEFA",
+    lightslategray: "778899",
+    lightslategrey: "778899",
+    lightsteelblue: "B0C4DE",
+    lightyellow: "FFFFE0",
+    lime: "00FF00",
+    limegreen: "32CD32",
+    linen: "FAF0E6",
+    magenta: "FF00FF",
+    maroon: "800000",
+    mediumaquamarine: "66CDAA",
+    mediumblue: "0000CD",
+    mediumorchid: "BA55D3",
+    mediumpurple: "9370DB",
+    mediumseagreen: "3CB371",
+    mediumslateblue: "7B68EE",
+    mediumspringgreen: "00FA9A",
+    mediumturquoise: "48D1CC",
+    mediumvioletred: "C71585",
+    midnightblue: "191970",
+    mintcream: "F5FFFA",
+    mistyrose: "FFE4E1",
+    moccasin: "FFE4B5",
+    navajowhite: "FFDEAD",
+    navy: "000080",
+    oldlace: "FDF5E6",
+    olive: "808000",
+    olivedrab: "6B8E23",
+    orange: "FFA500",
+    orangered: "FF4500",
+    orchid: "DA70D6",
+    palegoldenrod: "EEE8AA",
+    palegreen: "98FB98",
+    paleturquoise: "AFEEEE",
+    palevioletred: "DB7093",
+    papayawhip: "FFEFD5",
+    peachpuff: "FFDAB9",
+    peru: "CD853F",
+    pink: "FFC0CB",
+    plum: "DDA0DD",
+    powderblue: "B0E0E6",
+    purple: "800080",
+    rebeccapurple: "663399",
+    red: "FF0000",
+    rosybrown: "BC8F8F",
+    royalblue: "4169E1",
+    saddlebrown: "8B4513",
+    salmon: "FA8072",
+    sandybrown: "F4A460",
+    seagreen: "2E8B57",
+    seashell: "FFF5EE",
+    sienna: "A0522D",
+    silver: "C0C0C0",
+    skyblue: "87CEEB",
+    slateblue: "6A5ACD",
+    slategray: "708090",
+    slategrey: "708090",
+    snow: "FFFAFA",
+    springgreen: "00FF7F",
+    steelblue: "4682B4",
+    tan: "D2B48C",
+    teal: "008080",
+    thistle: "D8BFD8",
+    tomato: "FF6347",
+    turquoise: "40E0D0",
+    violet: "EE82EE",
+    wheat: "F5DEB3",
+    white: "FFFFFF",
+    whitesmoke: "F5F5F5",
+    yellow: "FFFF00",
+    yellowgreen: "9ACD32"
+  };
+  var NAMED_BY_HEX = /* @__PURE__ */ new Map();
+  for (const name of Object.keys(NAMED_COLORS)) {
+    if (!NAMED_BY_HEX.has(NAMED_COLORS[name])) NAMED_BY_HEX.set(NAMED_COLORS[name], name);
+  }
+  var namedColorFor = (rgb) => {
+    var _a;
+    return (_a = NAMED_BY_HEX.get(formatHex(rgb).slice(1))) != null ? _a : null;
+  };
+  var HEX_RE = /#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\b/g;
+  var FUNC_RE = /\b(rgba?|hsla?|hwb|oklch|oklab)\(\s*([^()]*)\)/gi;
+  var NAMED_RE = new RegExp("(?<![\\w-])([a-zA-Z]{3,20})(?![\\w-])", "g");
+  function inValuePosition(text3, start, end) {
+    const before = text3[start - 1];
+    const after = text3[end];
+    const quotedTight = (before === '"' || before === "'") && after === before;
+    let probe = quotedTight ? end + 1 : end;
+    while (probe < text3.length && (text3[probe] === " " || text3[probe] === "	")) probe++;
+    if (text3[probe] === ":") return false;
+    if (quotedTight) return true;
+    let lineStart = start;
+    while (lineStart > 0 && text3[lineStart - 1] !== "\n") lineStart--;
+    const head = text3.slice(lineStart, start);
+    if (head.indexOf("//") !== -1 || head.trim().startsWith("*")) return false;
+    let single = 0;
+    let double = 0;
+    for (const character of head) {
+      if (character === "'") single++;
+      else if (character === '"') double++;
+    }
+    if (single % 2 === 1 || double % 2 === 1) return false;
+    for (let i = start - 1; i >= lineStart; i--) {
+      const character = text3[i];
+      if (character === ":") return true;
+      if (character === ";" || character === "{" || character === "}") return false;
+    }
+    return false;
+  }
+  function parseComponent(raw) {
+    const text3 = raw.trim();
+    if (text3 === "") return null;
+    const percent = text3.endsWith("%");
+    const value = Number(percent ? text3.slice(0, -1) : text3);
+    return Number.isFinite(value) ? { value, percent } : null;
+  }
+  function splitArguments(body) {
+    const slash = body.split("/");
+    const head = slash[0].trim().split(/[\s,]+/).filter(Boolean);
+    const tail = slash.length > 1 ? [slash.slice(1).join("/").trim()] : [];
+    return [...head, ...tail];
+  }
+  function parseFunctional(fn, body) {
+    const parts = splitArguments(body).map(parseComponent);
+    if (parts.length < 3 || parts.slice(0, 3).some((part) => part === null)) return null;
+    const [first, second, third, fourth] = parts;
+    const alpha = fourth ? clamp012(fourth.percent ? fourth.value / 100 : fourth.value) : 1;
+    if (fn === "rgb") {
+      const channel = (part) => clamp012(part.percent ? part.value / 100 : part.value / 255);
+      return { r: channel(first), g: channel(second), b: channel(third), a: alpha };
+    }
+    const ratio = (part, full) => part.percent ? part.value / 100 : part.value / full;
+    if (fn === "hsl") {
+      return __spreadProps(__spreadValues({}, hslToRgb(first.value, ratio(second, 1), ratio(third, 1))), { a: alpha });
+    }
+    if (fn === "hwb") {
+      return __spreadProps(__spreadValues({}, hwbToRgb(first.value, ratio(second, 1), ratio(third, 1))), { a: alpha });
+    }
+    if (fn === "oklch") {
+      return __spreadProps(__spreadValues({}, oklchToRgb({ l: ratio(first, 1), c: second.percent ? second.value / 100 * 0.4 : second.value, h: third.value })), { a: alpha });
+    }
+    const a = second.percent ? second.value / 100 * 0.4 : second.value;
+    const b = third.percent ? third.value / 100 * 0.4 : third.value;
+    const chroma = Math.sqrt(a * a + b * b);
+    const hue = chroma < 1e-9 ? 0 : (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
+    return __spreadProps(__spreadValues({}, oklchToRgb({ l: ratio(first, 1), c: chroma, h: hue })), { a: alpha });
+  }
+  function parseHexLiteral(digits) {
+    const expand = (hex) => hex.split("").map((char) => char + char).join("");
+    if (digits.length === 3 || digits.length === 6) {
+      const rgb2 = parseHex(digits);
+      return rgb2 ? { rgba: __spreadProps(__spreadValues({}, rgb2), { a: 1 }), notation: digits.length === 3 ? "hex3" : "hex6" } : null;
+    }
+    const short = digits.length === 4;
+    if (!short && digits.length !== 8) return null;
+    const full = short ? expand(digits) : digits;
+    const rgb = parseHex(full.slice(0, 6));
+    if (!rgb) return null;
+    return {
+      rgba: __spreadProps(__spreadValues({}, rgb), { a: parseInt(full.slice(6, 8), 16) / 255 }),
+      notation: short ? "hex4" : "hex8"
+    };
+  }
+  function commentSpans(text3) {
+    const spans = [];
+    for (const match of text3.matchAll(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->/g)) {
+      spans.push([match.index, match.index + match[0].length]);
+    }
+    return spans;
+  }
+  function findColorLiterals(text3) {
+    const found = [];
+    const comments = commentSpans(text3);
+    const commented = (start) => comments.some(([from, to]) => start >= from && start < to);
+    for (const match of text3.matchAll(HEX_RE)) {
+      const parsed = parseHexLiteral(match[1]);
+      if (!parsed) continue;
+      found.push({
+        rgba: parsed.rgba,
+        notation: parsed.notation,
+        source: match[0],
+        start: match.index,
+        end: match.index + match[0].length
+      });
+    }
+    for (const match of text3.matchAll(FUNC_RE)) {
+      const fn = match[1].toLowerCase();
+      const kind = fn.startsWith("rgb") ? "rgb" : fn.startsWith("hsl") ? "hsl" : fn;
+      const rgba = parseFunctional(kind, match[2]);
+      if (!rgba) continue;
+      found.push({
+        rgba,
+        notation: kind,
+        source: match[0],
+        start: match.index,
+        end: match.index + match[0].length
+      });
+    }
+    for (const match of text3.matchAll(NAMED_RE)) {
+      const hex = NAMED_COLORS[match[1].toLowerCase()];
+      if (hex === void 0) continue;
+      if (!inValuePosition(text3, match.index, match.index + match[0].length)) continue;
+      const rgb = parseHex(hex);
+      if (!rgb) continue;
+      found.push({
+        rgba: __spreadProps(__spreadValues({}, rgb), { a: 1 }),
+        notation: "named",
+        source: match[0],
+        start: match.index,
+        end: match.index + match[0].length
+      });
+    }
+    return found.filter((literal) => !commented(literal.start)).sort((a, b) => a.start - b.start);
+  }
+  function parseColorLiteral(text3) {
+    const found = findColorLiterals(text3);
+    return found.length === 1 ? found[0] : null;
+  }
+  var round7 = (value, places = 4) => {
+    const factor = Math.pow(10, places);
+    return Math.round(value * factor) / factor;
+  };
+  var hexPair = (value) => Math.round(clamp012(value) * 255).toString(16).toUpperCase().padStart(2, "0");
+  function formatColorLiteral(rgba, notation) {
+    const opaque = rgba.a >= 1 - 1e-6;
+    switch (notation) {
+      case "hex3":
+      case "hex6":
+        return opaque ? formatHex(rgba) : formatHex(rgba) + hexPair(rgba.a);
+      case "hex4":
+      case "hex8":
+        return formatHex(rgba) + hexPair(rgba.a);
+      case "rgb": {
+        const channel = (value) => Math.round(clamp012(value) * 255);
+        const parts = [channel(rgba.r), channel(rgba.g), channel(rgba.b)];
+        return opaque ? `rgb(${parts.join(", ")})` : `rgba(${parts.join(", ")}, ${round7(rgba.a)})`;
+      }
+      case "hsl": {
+        const { h, s, l } = rgbToHsl(rgba);
+        const parts = [`${round7(h, 2)}`, `${round7(s * 100, 2)}%`, `${round7(l * 100, 2)}%`];
+        return opaque ? `hsl(${parts.join(", ")})` : `hsla(${parts.join(", ")}, ${round7(rgba.a)})`;
+      }
+      case "hwb": {
+        const { h, w, b } = rgbToHwb(rgba);
+        const body = `${round7(h, 2)} ${round7(w * 100, 2)}% ${round7(b * 100, 2)}%`;
+        return opaque ? `hwb(${body})` : `hwb(${body} / ${round7(rgba.a)})`;
+      }
+      case "oklch": {
+        const { l, c, h } = rgbToOklch(rgba);
+        const body = `${round7(l, 4)} ${round7(c, 4)} ${round7(h, 2)}`;
+        return opaque ? `oklch(${body})` : `oklch(${body} / ${round7(rgba.a)})`;
+      }
+      case "oklab": {
+        const { l, c, h } = rgbToOklch(rgba);
+        const radians = h * Math.PI / 180;
+        const body = `${round7(l, 4)} ${round7(c * Math.cos(radians), 4)} ${round7(c * Math.sin(radians), 4)}`;
+        return opaque ? `oklab(${body})` : `oklab(${body} / ${round7(rgba.a)})`;
+      }
+      case "named": {
+        const name = opaque ? namedColorFor(rgba) : null;
+        if (name) return name;
+        return opaque ? formatHex(rgba) : formatHex(rgba) + hexPair(rgba.a);
+      }
+    }
+  }
+  var toHex = (rgba) => formatHex(rgba);
+
+  // src/targets/ds-tools/remap-board.ts
+  var SECTION_KEY = "altery-remap-board";
+  var SECTION_NAME = "Color remap";
+  var SWATCH_WIDTH2 = 96;
+  var SWATCH_HEIGHT = 46;
+  var CAPTION_SIZE2 = 9;
+  var LABEL_SIZE2 = 11;
+  var ROW_GAP2 = 22;
+  var PADDING = 48;
+  async function loadFonts2() {
+    var _a;
+    const candidates = [
+      { family: "Inter", style: "Regular" },
+      { family: "Roboto", style: "Regular" },
+      { family: "Helvetica", style: "Regular" }
+    ];
+    for (const font of candidates) {
+      try {
+        await figma.loadFontAsync(font);
+        return { body: font };
+      } catch (e) {
+      }
+    }
+    const available = await figma.listAvailableFontsAsync();
+    const first = (_a = available[0]) == null ? void 0 : _a.fontName;
+    if (!first) throw new Error("No fonts are available to label the board.");
+    await figma.loadFontAsync(first);
+    return { body: first };
+  }
+  var rgbOf2 = (hex) => {
+    const rgb = parseHex(hex);
+    return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b } : { r: 0.5, g: 0.5, b: 0.5 };
+  };
+  var solid3 = (hex) => ({ type: "SOLID", color: rgbOf2(hex) });
+  function label2(text3, fonts, size, hex) {
+    const node = figma.createText();
+    node.fontName = fonts.body;
+    node.fontSize = size;
+    node.characters = text3;
+    node.fills = [solid3(hex)];
+    return node;
+  }
+  function autoLayout2(name, direction, gap) {
+    const frame3 = figma.createFrame();
+    frame3.name = name;
+    frame3.layoutMode = direction;
+    frame3.itemSpacing = gap;
+    frame3.primaryAxisSizingMode = "AUTO";
+    frame3.counterAxisSizingMode = "AUTO";
+    frame3.fills = [];
+    frame3.clipsContent = false;
+    return frame3;
+  }
+  var inkOn = (color) => contrastRatio(color, { r: 0, g: 0, b: 0 }) >= contrastRatio(color, { r: 1, g: 1, b: 1 }) ? "#000000" : "#FFFFFF";
+  function block(color, caption, fonts, variable, mode) {
+    const frame3 = autoLayout2("swatch", "VERTICAL", 0);
+    frame3.primaryAxisSizingMode = "FIXED";
+    frame3.counterAxisSizingMode = "FIXED";
+    frame3.resize(SWATCH_WIDTH2, SWATCH_HEIGHT);
+    const paint = { type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a };
+    frame3.fills = [variable ? figma.variables.setBoundVariableForPaint(paint, "color", variable) : paint];
+    if (variable && mode) {
+      try {
+        frame3.setExplicitVariableModeForCollection(mode.collection, mode.modeId);
+      } catch (e) {
+      }
+    }
+    frame3.paddingLeft = 8;
+    frame3.paddingTop = 7;
+    frame3.primaryAxisAlignItems = "MIN";
+    const hex = toHex(color);
+    frame3.appendChild(label2(hex, fonts, CAPTION_SIZE2, inkOn(color)));
+    if (caption !== "") frame3.appendChild(label2(caption, fonts, CAPTION_SIZE2, inkOn(color)));
+    return frame3;
+  }
+  function gutter(fonts) {
+    const column2 = autoLayout2("legend", "VERTICAL", 3);
+    for (const text3 of ["old", "new"]) {
+      const cell = autoLayout2(text3, "VERTICAL", 0);
+      cell.primaryAxisSizingMode = "FIXED";
+      cell.counterAxisSizingMode = "FIXED";
+      cell.resize(34, SWATCH_HEIGHT);
+      cell.primaryAxisAlignItems = "CENTER";
+      cell.counterAxisAlignItems = "MAX";
+      cell.paddingRight = 8;
+      cell.appendChild(label2(text3, fonts, CAPTION_SIZE2, "#8A8A8A"));
+      column2.appendChild(cell);
+    }
+    return column2;
+  }
+  function pair(entry, fonts, bindings, repeats = 1) {
+    const column2 = autoLayout2(entry.site.name, "VERTICAL", 3);
+    const oldVariable = entry.site.kind === "variable" ? bindings.old.get(variableIdOf(entry.site.id)) : void 0;
+    const newVariable = entry.toVariableKey === null ? void 0 : bindings.imported.get(entry.toVariableKey);
+    const oldCollection = oldVariable ? bindings.collections.get(oldVariable.variableCollectionId) : void 0;
+    const oldMode = oldVariable && oldCollection && entry.site.modeId !== null ? { collection: oldCollection, modeId: entry.site.modeId } : null;
+    column2.appendChild(block(entry.from, entry.fromStep === null ? "" : String(entry.fromStep), fonts, oldVariable, oldMode));
+    column2.appendChild(block(entry.to, entry.toStep === null ? "" : String(entry.toStep), fonts, newVariable));
+    const name = entry.site.name.length > 22 ? "\u2026" + entry.site.name.slice(-21) : entry.site.name;
+    column2.appendChild(label2(repeats > 1 ? `${name}  \xB7  \xD7${repeats}` : name, fonts, CAPTION_SIZE2, "#8A8A8A"));
+    return column2;
+  }
+  function inReadingOrder(entries) {
+    const lightness = new Map(entries.map((entry) => [entry, rgbToOklch(entry.from).l]));
+    return [...entries].sort((a, b) => {
+      var _a, _b;
+      const rungA = a.fromStep !== null;
+      const rungB = b.fromStep !== null;
+      if (rungA !== rungB) return rungA ? -1 : 1;
+      return ((_a = lightness.get(b)) != null ? _a : 0) - ((_b = lightness.get(a)) != null ? _b : 0);
+    });
+  }
+  function foldRepeats(entries) {
+    const order = [];
+    const seen = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      const key = `${toHex(entry.from)}|${entry.from.a}|${toHex(entry.to)}|${entry.to.a}`;
+      const found = seen.get(key);
+      if (found) found.count++;
+      else {
+        seen.set(key, { entry, count: 1 });
+        order.push(key);
+      }
+    }
+    const folded = order.map((key) => seen.get(key));
+    return { entries: folded.map((item) => item.entry), counts: folded.map((item) => item.count) };
+  }
+  function groupEntries(plan) {
+    var _a;
+    const moving = plan.entries.filter(
+      (entry) => !entry.flags.includes("unchanged") && !entry.flags.includes("excluded")
+    );
+    const targetByFamily = new Map(plan.families.map((family) => [family.fromLabel, family.toLabel]));
+    const order = [];
+    const grouped = /* @__PURE__ */ new Map();
+    for (const entry of moving) {
+      const key = (_a = entry.fromFamily) != null ? _a : "Ungrouped";
+      const group = grouped.get(key);
+      if (group) group.push(entry);
+      else {
+        grouped.set(key, [entry]);
+        order.push(key);
+      }
+    }
+    return order.map((key) => {
+      const target = targetByFamily.get(key);
+      const folded = foldRepeats(inReadingOrder(grouped.get(key)));
+      return {
+        title: target ? `${key}  \u2192  ${target}` : key,
+        entries: folded.entries,
+        counts: folded.counts
+      };
+    });
+  }
+  var variableIdOf = (siteId2) => {
+    const separator = siteId2.lastIndexOf("|");
+    return separator <= 0 ? siteId2 : siteId2.slice(0, separator);
+  };
+  async function collectBindings(entries) {
+    const oldIds = /* @__PURE__ */ new Set();
+    const keys = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      if (entry.site.kind === "variable") oldIds.add(variableIdOf(entry.site.id));
+      if (entry.toVariableKey !== null) keys.add(entry.toVariableKey);
+    }
+    const old = /* @__PURE__ */ new Map();
+    let fetched = 0;
+    for (const id of oldIds) {
+      if (++fetched % 25 === 0) await yieldToHost();
+      const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
+      if (variable) old.set(id, variable);
+    }
+    const imported = /* @__PURE__ */ new Map();
+    for (const key of keys) {
+      if (++fetched % 25 === 0) await yieldToHost();
+      const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null);
+      if (variable) imported.set(key, variable);
+    }
+    const collections = /* @__PURE__ */ new Map();
+    for (const variable of old.values()) {
+      const id = variable.variableCollectionId;
+      if (collections.has(id)) continue;
+      const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null);
+      if (collection) collections.set(id, collection);
+    }
+    return { old, imported, collections };
+  }
+  async function drawRemapBoard(plan) {
+    var _a;
+    const fonts = await loadFonts2();
+    const groups = groupEntries(plan);
+    const bindings = await collectBindings(groups.flatMap((group) => group.entries));
+    const previous = figma.currentPage.findAllWithCriteria({ types: ["SECTION"] }).find((node) => node.getPluginData(SECTION_KEY) === "1");
+    const previousBox = (_a = previous == null ? void 0 : previous.absoluteBoundingBox) != null ? _a : null;
+    const spot = previousBox ? { x: previousBox.x, y: previousBox.y } : placementFor2(groups);
+    if (previous) previous.remove();
+    const content = autoLayout2(SECTION_NAME, "VERTICAL", ROW_GAP2);
+    content.x = spot.x + PADDING;
+    content.y = spot.y + PADDING;
+    const moving = groups.reduce((total, group) => total + group.entries.length, 0);
+    const heading = autoLayout2("heading", "VERTICAL", 4);
+    heading.appendChild(label2(SECTION_NAME, fonts, LABEL_SIZE2 + 3, "#1A1A1A"));
+    heading.appendChild(
+      label2(
+        // An empty board is a result too: it says the file already holds this palette. Drawing
+        // it — rather than leaving the previous one standing — is the difference between "no
+        // change" and "the button did nothing".
+        moving === 0 ? `nothing moves \xB7 all ${plan.entries.length} colors already match this palette` : `old above, new below \xB7 ${moving} of ${plan.entries.length} colors move`,
+        fonts,
+        CAPTION_SIZE2 + 1,
+        "#8A8A8A"
+      )
+    );
+    content.appendChild(heading);
+    let rows = 0;
+    let omitted = 0;
+    for (const group of groups) {
+      const row = autoLayout2(group.title, "VERTICAL", 8);
+      row.appendChild(label2(group.title, fonts, LABEL_SIZE2, "#1A1A1A"));
+      const strip = autoLayout2("strip", "HORIZONTAL", 6);
+      strip.appendChild(gutter(fonts));
+      for (const [index, entry] of group.entries.entries()) {
+        strip.appendChild(pair(entry, fonts, bindings, group.counts[index]));
+        omitted += group.counts[index] - 1;
+      }
+      row.appendChild(strip);
+      rows += group.entries.length;
+      content.appendChild(row);
+    }
+    const section = figma.createSection();
+    section.name = SECTION_NAME;
+    section.fills = [solid3("#FFFFFF")];
+    section.setPluginData(SECTION_KEY, "1");
+    figma.currentPage.appendChild(section);
+    section.x = spot.x;
+    section.y = spot.y;
+    section.resizeWithoutConstraints(content.width + PADDING * 2, content.height + PADDING * 2);
+    section.appendChild(content);
+    const sectionBox = section.absoluteBoundingBox;
+    const contentBox = content.absoluteBoundingBox;
+    if (sectionBox && contentBox) {
+      content.x += sectionBox.x + PADDING - contentBox.x;
+      content.y += sectionBox.y + PADDING - contentBox.y;
+    }
+    return { section: SECTION_NAME, rows, families: groups.length, omitted };
+  }
+  function placementFor2(groups) {
+    const widest = groups.reduce((most, group) => Math.max(most, group.entries.length), 0);
+    const width = widest * (SWATCH_WIDTH2 + 6) + PADDING * 2;
+    const nodes = figma.currentPage.children;
+    if (nodes.length === 0) {
+      const { x, y } = figma.viewport.center;
+      return { x: x - width / 2, y: y - 200 };
+    }
+    let right = -Infinity;
+    let top = Infinity;
+    for (const node of nodes) {
+      right = Math.max(right, node.x + node.width);
+      top = Math.min(top, node.y);
+    }
+    return { x: right + 200, y: top };
+  }
+
+  // src/tokens/remap/rebind.ts
+  var variableIdOf2 = (siteId2) => {
+    const separator = siteId2.lastIndexOf("|");
+    return separator <= 0 ? null : siteId2.slice(0, separator);
+  };
+  function rebindTargets(plan) {
+    var _a, _b, _c, _d;
+    const keys = /* @__PURE__ */ new Map();
+    for (const entry of plan.entries) {
+      if (entry.site.kind !== "variable") continue;
+      if (entry.flags.includes("excluded")) continue;
+      const variableId = (_a = variableIdOf2(entry.site.id)) != null ? _a : entry.site.id;
+      const perMode = (_b = keys.get(variableId)) != null ? _b : /* @__PURE__ */ new Map();
+      perMode.set((_c = entry.site.modeId) != null ? _c : "", entry.toVariableKey);
+      keys.set(variableId, perMode);
+    }
+    const byVariable = /* @__PURE__ */ new Map();
+    const divergent = [];
+    const names = new Map(
+      plan.entries.filter((entry) => entry.toVariableKey !== null).map((entry) => [entry.toVariableKey, entry.toName])
+    );
+    for (const [variableId, perMode] of keys) {
+      const votes = [...perMode.values()];
+      const distinct = new Set(votes);
+      const abstained = distinct.delete(null);
+      if (distinct.size === 0) continue;
+      if (distinct.size > 1 || abstained) {
+        divergent.push(variableId);
+        continue;
+      }
+      const key = [...distinct][0];
+      byVariable.set(variableId, { key, toName: (_d = names.get(key)) != null ? _d : null });
+    }
+    return { byVariable, divergent };
+  }
+  function sameRgba(a, b) {
+    const close = (x, y) => Math.abs(x - y) < 1 / 512;
+    return close(a.r, b.r) && close(a.g, b.g) && close(a.b, b.b) && close(a.a, b.a);
+  }
+  var emptyCounts = () => ({
+    aliases: 0,
+    literalsBound: 0,
+    nodes: 0,
+    instanceOverrides: 0,
+    styles: 0,
+    thirdParty: 0,
+    skipped: { alphaMismatch: 0, noTarget: 0, divergent: 0, already: 0 }
+  });
+  function describeRebind(counts) {
+    const parts = [
+      `${counts.aliases + counts.literalsBound} variable(s)`,
+      `${counts.styles} style color(s)`,
+      `${counts.nodes} canvas binding(s)` + (counts.instanceOverrides > 0 ? ` (${counts.instanceOverrides} in instances)` : "")
+    ];
+    if (counts.thirdParty > 0) parts.push(`${counts.thirdParty} from other libraries`);
+    const skips = counts.skipped.alphaMismatch + counts.skipped.noTarget + counts.skipped.divergent;
+    return parts.join(" \xB7 ") + (skips > 0 ? ` \xB7 ${skips} left as-is` : "");
+  }
+
+  // src/targets/ds-tools/remap-rebind.ts
+  var DEFAULT_REBIND_OPTIONS = { scope: "document" };
+  var SNAPSHOT_KEY2 = "altery-rebind-snapshot";
+  var SNAPSHOT_COUNT_KEY2 = "altery-rebind-snapshot-chunks";
+  var CHUNK_BYTES2 = 8e4;
+  var MAX_CHUNKS2 = 12;
+  var REBIND_BUDGET_BYTES = CHUNK_BYTES2 * MAX_CHUNKS2;
+  function writeChunked2(text3) {
+    const chunks = [];
+    for (let i = 0; i < text3.length; i += CHUNK_BYTES2) chunks.push(text3.slice(i, i + CHUNK_BYTES2));
+    if (chunks.length > MAX_CHUNKS2) {
+      throw new Error(`the rebind snapshot needs ${chunks.length} slots, more than the ${MAX_CHUNKS2} available`);
+    }
+    const previous = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    for (const [index, chunk] of chunks.entries()) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, chunk);
+    for (let index = chunks.length; index < previous; index++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, "");
+    figma.root.setPluginData(SNAPSHOT_COUNT_KEY2, String(chunks.length));
+  }
+  function readChunked2() {
+    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    let text3 = "";
+    for (let index = 0; index < count; index++) text3 += figma.root.getPluginData(`${SNAPSHOT_KEY2}-${index}`);
+    return text3;
+  }
+  function clearChunked() {
+    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    for (let index = 0; index < count; index++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, "");
+    figma.root.setPluginData(SNAPSHOT_COUNT_KEY2, "0");
+  }
+  var hasRebindSnapshot = () => Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0") > 0;
+  var isAliasValue2 = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
+  var isRgbValue = (value) => typeof value === "object" && value !== null && "r" in value;
+  var alphaOf = (value) => "a" in value ? value.a : 1;
+  var boundColorId = (holder) => {
+    var _a;
+    const alias = (_a = holder == null ? void 0 : holder.boundVariables) == null ? void 0 : _a.color;
+    return alias && alias.type === "VARIABLE_ALIAS" ? alias.id : null;
+  };
+  async function scanRebind(plan, options = DEFAULT_REBIND_OPTIONS, progress2) {
+    const { byVariable, divergent } = rebindTargets(plan);
+    const counts = emptyCounts();
+    counts.skipped.divergent = divergent.length;
+    const warnings = [];
+    const ops = [];
+    if (byVariable.size === 0) {
+      return { ops, counts, warnings: ["the plan carries no library keys \u2014 read the new palette from a library"] };
+    }
+    const importedByKey = /* @__PURE__ */ new Map();
+    const importedIds = /* @__PURE__ */ new Set();
+    const keys = new Set([...byVariable.values()].map((target) => target.key));
+    let fetched = 0;
+    for (const key of keys) {
+      if (++fetched % 25 === 0) {
+        progress2 == null ? void 0 : progress2(`importing library tokens\u2026 ${fetched}/${keys.size}`);
+        await yieldToHost();
+      }
+      const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null);
+      if (variable) {
+        importedByKey.set(key, variable);
+        importedIds.add(variable.id);
+      }
+    }
+    if (importedByKey.size < keys.size) {
+      warnings.push(`${keys.size - importedByKey.size} library token(s) could not be imported and keep their bindings`);
+    }
+    const valueOfKey = async (key) => {
+      var _a;
+      const variable = importedByKey.get(key);
+      if (!variable) return null;
+      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId).catch(() => null);
+      const mode = (_a = collection == null ? void 0 : collection.defaultModeId) != null ? _a : Object.keys(variable.valuesByMode)[0];
+      const value = mode === void 0 ? void 0 : variable.valuesByMode[mode];
+      if (!isRgbValue(value)) return null;
+      return { rgba: { r: value.r, g: value.g, b: value.b, a: alphaOf(value) }, id: variable.id };
+    };
+    const foreignIds = /* @__PURE__ */ new Set();
+    const divergentIds = new Set(divergent);
+    const rebindOf = (oldId) => {
+      if (importedIds.has(oldId)) return "already";
+      const target = byVariable.get(oldId);
+      if (!target || !importedByKey.has(target.key)) return "no-target";
+      return { key: target.key, foreign: foreignIds.has(oldId) };
+    };
+    progress2 == null ? void 0 : progress2("reading local variables\u2026");
+    const locals = await figma.variables.getLocalVariablesAsync("COLOR");
+    const localIds = new Set(locals.map((variable) => variable.id));
+    for (const id of byVariable.keys()) if (!localIds.has(id)) foreignIds.add(id);
+    const wholeFile = options.scope === "document";
+    if (!wholeFile) {
+      warnings.push("variables and styles are file-global \u2014 they move only on a whole-document rebind");
+    }
+    const planBySite = new Map(plan.entries.map((entry) => [entry.site.id, entry]));
+    for (const [index, variable] of wholeFile ? locals.entries() : []) {
+      if (index % 50 === 0) await yieldToHost();
+      for (const [modeId, value] of Object.entries(variable.valuesByMode)) {
+        if (isAliasValue2(value)) {
+          const decision = rebindOf(value.id);
+          if (decision === "already") {
+            counts.skipped.already++;
+            continue;
+          }
+          if (decision === "no-target") {
+            counts.skipped.noTarget++;
+            continue;
+          }
+          ops.push({ kind: "variable", variableId: variable.id, modeId, old: value.id, key: decision.key });
+          counts.aliases++;
+          if (decision.foreign) counts.thirdParty++;
+          continue;
+        }
+        if (!isRgbValue(value)) continue;
+        if (divergentIds.has(variable.id)) continue;
+        const entry = planBySite.get(`${variable.id}|${modeId}`);
+        if (!entry || entry.toVariableKey === null || entry.flags.includes("excluded")) continue;
+        const landing = await valueOfKey(entry.toVariableKey);
+        if (!landing) continue;
+        const current = { r: value.r, g: value.g, b: value.b, a: alphaOf(value) };
+        const target = __spreadValues({}, entry.to);
+        if (!sameRgba(target, landing.rgba)) {
+          if (sameRgba(__spreadProps(__spreadValues({}, target), { a: landing.rgba.a }), landing.rgba)) counts.skipped.alphaMismatch++;
+          continue;
+        }
+        if (!sameRgba(current, landing.rgba)) continue;
+        ops.push({
+          kind: "variable",
+          variableId: variable.id,
+          modeId,
+          old: [current.r, current.g, current.b, current.a],
+          key: entry.toVariableKey
+        });
+        counts.literalsBound++;
+      }
+    }
+    progress2 == null ? void 0 : progress2("reading styles\u2026");
+    const paintStyles = wholeFile ? await figma.getLocalPaintStylesAsync() : [];
+    for (const style of paintStyles) {
+      for (const [index, paint] of style.paints.entries()) {
+        if (paint.type === "SOLID") {
+          const oldId = boundColorId(paint);
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({ kind: "style", styleId: style.id, property: "paints", index, stop: -1, old: oldId, key: decision.key });
+            counts.styles++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+          continue;
+        }
+        if (!isGradient(paint)) continue;
+        for (const [stopIndex, stop] of paint.gradientStops.entries()) {
+          const oldId = boundColorId(stop);
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({
+              kind: "style",
+              styleId: style.id,
+              property: "paints",
+              index,
+              stop: stopIndex,
+              old: oldId,
+              key: decision.key
+            });
+            counts.styles++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+        }
+      }
+    }
+    const effectStyles = wholeFile ? await figma.getLocalEffectStylesAsync() : [];
+    for (const style of effectStyles) {
+      for (const [index, effect] of style.effects.entries()) {
+        const oldId = boundColorId(effect);
+        if (!oldId) continue;
+        const decision = rebindOf(oldId);
+        if (decision === "already") counts.skipped.already++;
+        else if (decision === "no-target") counts.skipped.noTarget++;
+        else {
+          ops.push({ kind: "style", styleId: style.id, property: "effects", index, stop: -1, old: oldId, key: decision.key });
+          counts.styles++;
+          if (decision.foreign) counts.thirdParty++;
+        }
+      }
+    }
+    if (wholeFile) await loadAllPagesAsync();
+    const overridden = /* @__PURE__ */ new Map();
+    const noteOverrides = (instance) => {
+      var _a;
+      let overrides;
+      try {
+        overrides = instance.overrides;
+      } catch (e) {
+        return;
+      }
+      for (const override of overrides) {
+        const fields = (_a = overridden.get(override.id)) != null ? _a : /* @__PURE__ */ new Set();
+        for (const field of override.overriddenFields) fields.add(field);
+        overridden.set(override.id, fields);
+      }
+    };
+    const collectPaintOps = (node, property, inInstance) => {
+      var _a, _b, _c, _d;
+      const styleId = node[property === "fills" ? "fillStyleId" : "strokeStyleId"];
+      if (typeof styleId === "string" && styleId !== "") return;
+      const paints2 = node[property];
+      if (!Array.isArray(paints2)) return;
+      if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has(property))) return;
+      const nodeLevel = (_b = node.boundVariables) == null ? void 0 : _b[property];
+      const nodeLevelIds = Array.isArray(nodeLevel) ? nodeLevel.map(
+        (alias) => alias && alias.type === "VARIABLE_ALIAS" ? alias.id : null
+      ) : [];
+      for (const [index, paint] of paints2.entries()) {
+        if (paint.type === "SOLID") {
+          const oldId = (_d = (_c = boundColorId(paint)) != null ? _c : nodeLevelIds[index]) != null ? _d : null;
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({ kind: "node", nodeId: node.id, property, index, stop: -1, old: oldId, key: decision.key, instance: inInstance });
+            counts.nodes++;
+            if (inInstance) counts.instanceOverrides++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+          continue;
+        }
+        if (!isGradient(paint)) continue;
+        for (const [stopIndex, stop] of paint.gradientStops.entries()) {
+          const oldId = boundColorId(stop);
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({ kind: "node", nodeId: node.id, property, index, stop: stopIndex, old: oldId, key: decision.key, instance: inInstance });
+            counts.nodes++;
+            if (inInstance) counts.instanceOverrides++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+        }
+      }
+    };
+    const collectEffectOps = (node, inInstance) => {
+      var _a;
+      const effectStyleId = node.effectStyleId;
+      if (typeof effectStyleId === "string" && effectStyleId !== "") return;
+      const effects = node.effects;
+      if (!Array.isArray(effects)) return;
+      if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has("effects"))) return;
+      for (const [index, effect] of effects.entries()) {
+        const oldId = boundColorId(effect);
+        if (!oldId) continue;
+        const decision = rebindOf(oldId);
+        if (decision === "already") counts.skipped.already++;
+        else if (decision === "no-target") counts.skipped.noTarget++;
+        else {
+          ops.push({ kind: "node", nodeId: node.id, property: "effects", index, stop: -1, old: oldId, key: decision.key, instance: inInstance });
+          counts.nodes++;
+          if (inInstance) counts.instanceOverrides++;
+          if (decision.foreign) counts.thirdParty++;
+        }
+      }
+    };
+    figma.skipInvisibleInstanceChildren = true;
+    try {
+      let visited = 0;
+      const rootSets = wholeFile ? figma.root.children.map((page) => ({ label: page.name, roots: page.children })) : [{ label: options.scope, roots: await scopeRoots(options.scope) }];
+      for (const { label: label3, roots } of rootSets) {
+        progress2 == null ? void 0 : progress2(`scanning ${label3}\u2026`);
+        const stack = [];
+        for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], inInstance: false });
+        while (stack.length > 0) {
+          const { node, inInstance } = stack.pop();
+          if (++visited % 400 === 0) await yieldToHost();
+          const isInstance = node.type === "INSTANCE";
+          if (isInstance) noteOverrides(node);
+          const gated = inInstance || isInstance;
+          collectPaintOps(node, "fills", gated);
+          collectPaintOps(node, "strokes", gated);
+          collectEffectOps(node, gated);
+          if ("children" in node) {
+            const inside = inInstance || isInstance;
+            const children = node.children;
+            for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], inInstance: inside });
+          }
+        }
+      }
+    } finally {
+      figma.skipInvisibleInstanceChildren = false;
+    }
+    return { ops, counts, warnings };
+  }
+  var aliasTo = (variable) => ({ type: "VARIABLE_ALIAS", id: variable.id });
+  async function writePaintBinding(holder, property, index, stop, variable, restoreId) {
+    const record2 = holder;
+    const paints2 = record2[property];
+    if (!Array.isArray(paints2) || !paints2[index]) return false;
+    const next = [...paints2];
+    const paint = next[index];
+    const target = variable != null ? variable : restoreId ? await figma.variables.getVariableByIdAsync(restoreId).catch(() => null) : null;
+    if (!target) return false;
+    if (stop < 0) {
+      if (paint.type !== "SOLID") return false;
+      next[index] = figma.variables.setBoundVariableForPaint(paint, "color", target);
+    } else {
+      if (!isGradient(paint)) return false;
+      const stops = paint.gradientStops.map((gradientStop) => __spreadValues({}, gradientStop));
+      if (!stops[stop]) return false;
+      stops[stop] = __spreadProps(__spreadValues({}, stops[stop]), { boundVariables: { color: aliasTo(target) } });
+      next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+    }
+    record2[property] = next;
+    return true;
+  }
+  async function writeEffectBinding(holder, index, variable) {
+    const record2 = holder;
+    const effects = record2.effects;
+    if (!Array.isArray(effects) || !effects[index]) return false;
+    const next = [...effects];
+    next[index] = figma.variables.setBoundVariableForEffect(next[index], "color", variable);
+    record2.effects = next;
+    return true;
+  }
+  async function executeOps(ops, undo, progress2) {
+    const counts = emptyCounts();
+    const importedByKey = /* @__PURE__ */ new Map();
+    const importOf = async (key) => {
+      var _a;
+      if (!importedByKey.has(key)) {
+        importedByKey.set(key, await figma.variables.importVariableByKeyAsync(key).catch(() => null));
+      }
+      return (_a = importedByKey.get(key)) != null ? _a : null;
+    };
+    for (const [index, op] of ops.entries()) {
+      if (index % 25 === 0) {
+        progress2 == null ? void 0 : progress2(`${undo ? "restoring" : "rebinding"}\u2026 ${index}/${ops.length}`);
+        await yieldToHost();
+      }
+      if (op.kind === "variable") {
+        const variable = await figma.variables.getVariableByIdAsync(op.variableId).catch(() => null);
+        if (!variable) continue;
+        if (undo) {
+          if (typeof op.old === "string") {
+            const previous = await figma.variables.getVariableByIdAsync(op.old).catch(() => null);
+            if (previous) variable.setValueForMode(op.modeId, aliasTo(previous));
+          } else {
+            const [r, g, b, a] = op.old;
+            variable.setValueForMode(op.modeId, { r, g, b, a });
+          }
+          counts.aliases++;
+          continue;
+        }
+        const target2 = await importOf(op.key);
+        if (!target2) continue;
+        variable.setValueForMode(op.modeId, aliasTo(target2));
+        if (typeof op.old === "string") counts.aliases++;
+        else counts.literalsBound++;
+        continue;
+      }
+      const target = undo ? null : await importOf(op.key);
+      if (!undo && !target) continue;
+      if (op.kind === "style") {
+        const style = await figma.getStyleByIdAsync(op.styleId).catch(() => null);
+        if (!style) continue;
+        if (op.property === "paints" && style.type === "PAINT") {
+          const done = await writePaintBinding(style, "paints", op.index, op.stop, target, undo ? op.old : void 0);
+          if (done) counts.styles++;
+        } else if (op.property === "effects" && style.type === "EFFECT") {
+          const restore = undo ? await figma.variables.getVariableByIdAsync(op.old).catch(() => null) : target;
+          if (restore && await writeEffectBinding(style, op.index, restore)) counts.styles++;
+        }
+        continue;
+      }
+      const node = await figma.getNodeByIdAsync(op.nodeId).catch(() => null);
+      if (!node) continue;
+      if (op.property === "effects") {
+        const restore = undo ? await figma.variables.getVariableByIdAsync(op.old).catch(() => null) : target;
+        if (restore && await writeEffectBinding(node, op.index, restore)) {
+          counts.nodes++;
+          if (op.instance) counts.instanceOverrides++;
+        }
+      } else {
+        const done = await writePaintBinding(node, op.property, op.index, op.stop, target, undo ? op.old : void 0);
+        if (done) {
+          counts.nodes++;
+          if (op.instance) counts.instanceOverrides++;
+        }
+      }
+    }
+    return counts;
+  }
+  async function previewRebind(plan, options = DEFAULT_REBIND_OPTIONS, progress2) {
+    const scan = await scanRebind(plan, options, progress2);
+    return { counts: scan.counts, summary: describeRebind(scan.counts), warnings: scan.warnings };
+  }
+  async function applyRebind(plan, options = DEFAULT_REBIND_OPTIONS, progress2) {
+    const scan = await scanRebind(plan, options, progress2);
+    const snapshot = { version: 1, ops: scan.ops };
+    const serialized = JSON.stringify(snapshot);
+    if (serialized.length > REBIND_BUDGET_BYTES) {
+      throw new Error(
+        `this rebind would touch ${scan.ops.length} places \u2014 more than one undo snapshot can hold. Run it scope by scope, or shrink the mapping.`
+      );
+    }
+    writeChunked2(serialized);
+    await executeOps(scan.ops, false, progress2);
+    return { counts: scan.counts, summary: describeRebind(scan.counts), warnings: scan.warnings };
+  }
+  async function revertRebind(progress2) {
+    const raw = readChunked2();
+    if (raw === "") throw new Error("no rebind snapshot to revert");
+    const snapshot = JSON.parse(raw);
+    if (snapshot.version !== 1 || !Array.isArray(snapshot.ops)) throw new Error("the rebind snapshot is unreadable");
+    const counts = await executeOps(snapshot.ops, true, progress2);
+    clearChunked();
+    return { counts, summary: describeRebind(counts), warnings: [] };
+  }
+
+  // src/tokens/remap/audit.ts
+  var TEXT_CONTRAST_MIN = 4.5;
+  var NON_TEXT_CONTRAST_MIN = 3;
+  var round8 = (value) => Math.round(value * 100) / 100;
+  var MEANINGFUL_DROP = 0.1;
+  function auditContrast(plan, pairs) {
+    var _a;
+    const byId = new Map(plan.entries.map((entry) => [entry.site.id, entry]));
+    const findings = [];
+    const seen = /* @__PURE__ */ new Set();
+    let checked = 0;
+    let improved = 0;
+    for (const pair2 of pairs) {
+      const a = byId.get(pair2.a);
+      const b = byId.get(pair2.b);
+      if (!a || !b) continue;
+      const key = pair2.a < pair2.b ? `${pair2.a}|${pair2.b}` : `${pair2.b}|${pair2.a}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      checked++;
+      const before = contrastRatio(a.from, b.from);
+      const after = contrastRatio(a.to, b.to);
+      if (after > before + MEANINGFUL_DROP) {
+        improved++;
+        continue;
+      }
+      if (before - after < MEANINGFUL_DROP) continue;
+      const threshold = pair2.text ? TEXT_CONTRAST_MIN : NON_TEXT_CONTRAST_MIN;
+      if (after >= threshold) continue;
+      findings.push({
+        aName: a.site.name,
+        bName: b.site.name,
+        mode: (_a = a.site.modeName) != null ? _a : b.site.modeName,
+        before: round8(before),
+        after: round8(after),
+        text: pair2.text,
+        verdict: before >= threshold ? "broken" : "weakened"
+      });
+    }
+    findings.sort(
+      (first, second) => Number(second.verdict === "broken") - Number(first.verdict === "broken") || first.after - second.after || second.before - first.before
+    );
+    return { findings, checked, improved };
+  }
+  function describeContrast(finding) {
+    const kind = finding.text ? "text" : "boundary";
+    const verb = finding.verdict === "broken" ? "fell below" : "dropped further below";
+    const threshold = finding.text ? TEXT_CONTRAST_MIN : NON_TEXT_CONTRAST_MIN;
+    return `${finding.aName} on ${finding.bName}` + (finding.mode ? ` (${finding.mode})` : "") + `: ${kind} contrast ${finding.before} \u2192 ${finding.after}, ${verb} ${threshold}`;
+  }
+
+  // src/tokens/remap/input.ts
+  var NAME_KEYS = ["name", "token", "key", "id", "label", "title"];
+  var VALUE_KEYS = ["$value", "value", "hex", "color", "colour", "rgb", "fill"];
+  var isRecord4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+  function swatchFrom(text3, name) {
+    const literals = findColorLiterals(text3);
+    if (literals.length !== 1) return null;
+    const { rgba } = literals[0];
+    const parsed = parseTokenName(name);
+    return {
+      hex: toHex(rgba),
+      alpha: rgba.a,
+      rgba,
+      name: name.trim(),
+      family: parsed.family,
+      step: parsed.step
+    };
+  }
+  var joinName = (prefix, key) => prefix === "" ? key : `${prefix}/${key}`;
+  function readJsonNode(node, prefix, out, warnings) {
+    if (typeof node === "string") {
+      const swatch = swatchFrom(node, prefix);
+      if (swatch) out.push(swatch);
+      else if (prefix !== "") warnings.push(`${prefix}: "${node}" is not a color`);
+      return;
+    }
+    if (Array.isArray(node)) {
+      const family = prefix === "" ? null : parseTokenName(prefix).leaf;
+      for (const entry of node) {
+        if (typeof entry !== "string") {
+          readJsonNode(entry, prefix, out, warnings);
+          continue;
+        }
+        const swatch = swatchFrom(entry, prefix);
+        if (swatch) out.push(__spreadProps(__spreadValues({}, swatch), { family: family != null ? family : swatch.family }));
+        else if (entry.trim() !== "") warnings.push(`${prefix || "entry"}: "${entry}" is not a color`);
+      }
+      return;
+    }
+    if (!isRecord4(node)) return;
+    const valueKey = VALUE_KEYS.find((key) => typeof node[key] === "string");
+    if (valueKey) {
+      const nameKey2 = NAME_KEYS.find((key) => typeof node[key] === "string");
+      const name = nameKey2 ? String(node[nameKey2]) : prefix;
+      const swatch = swatchFrom(String(node[valueKey]), name);
+      if (swatch) {
+        const family = typeof node.family === "string" ? node.family : typeof node.group === "string" ? node.group : null;
+        const step = typeof node.step === "number" ? node.step : null;
+        out.push(__spreadProps(__spreadValues({}, swatch), { family: family != null ? family : swatch.family, step: step != null ? step : swatch.step }));
+      } else {
+        warnings.push(`${name || "entry"}: "${node[valueKey]}" is not a color`);
+      }
+      return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key.startsWith("$") && key !== "$value") continue;
+      readJsonNode(value, joinName(prefix, key), out, warnings);
+    }
+  }
+  function cleanName(text3) {
+    return text3.replace(/["'`]/g, " ").replace(/[,;\t|]+/g, " ").replace(/[:=]+/g, " ").replace(/^\s*[-*•]\s*/, "").replace(/\s+/g, " ").trim();
+  }
+  function readTextLine(line, index, out, warnings) {
+    const literals = findColorLiterals(line);
+    if (literals.length === 0) {
+      if (line.trim() !== "") warnings.push(`line ${index + 1}: no color found \u2014 "${line.trim().slice(0, 40)}"`);
+      return;
+    }
+    if (literals.length === 1) {
+      const literal = literals[0];
+      const name = cleanName(line.slice(0, literal.start) + " " + line.slice(literal.end));
+      const swatch = swatchFrom(literal.source, name);
+      if (swatch) out.push(swatch);
+      return;
+    }
+    warnings.push(`line ${index + 1}: ${literals.length} colors on one line \u2014 names ignored`);
+    for (const literal of literals) {
+      const swatch = swatchFrom(literal.source, "");
+      if (swatch) out.push(swatch);
+    }
+  }
+  function dedupe(swatches, warnings) {
+    const seen = /* @__PURE__ */ new Set();
+    const kept2 = [];
+    let dropped = 0;
+    for (const swatch of swatches) {
+      const key = `${swatch.hex}|${swatch.alpha.toFixed(4)}|${swatch.name.toLowerCase()}`;
+      if (seen.has(key)) {
+        dropped++;
+        continue;
+      }
+      seen.add(key);
+      kept2.push(swatch);
+    }
+    if (dropped > 0) warnings.push(`${dropped} duplicate ${dropped === 1 ? "row" : "rows"} dropped`);
+    return kept2;
+  }
+  function parsePaletteInput(raw) {
+    const text3 = String(raw != null ? raw : "");
+    const warnings = [];
+    const swatches = [];
+    const trimmed = text3.trim();
+    if (trimmed === "") return { swatches: [], warnings: [], format: "text" };
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        readJsonNode(JSON.parse(trimmed), "", swatches, warnings);
+        return { swatches: dedupe(swatches, warnings), warnings, format: "json" };
+      } catch (e) {
+        warnings.push("looks like JSON but does not parse \u2014 read line by line instead");
+      }
+    }
+    for (const [index, line] of text3.split(/\r?\n/).entries()) readTextLine(line, index, swatches, warnings);
+    return { swatches: dedupe(swatches, warnings), warnings, format: "text" };
+  }
+
+  // src/tokens/remap/plan.ts
+  var DEFAULT_REMAP_OPTIONS = {
+    rename: true,
+    separateAdjacent: true,
+    legacyGroup: "legacy"
+  };
+  var NO_MODE = "\0no-mode";
+  var siteMember = (site) => {
+    const parsed = parseTokenName(site.name);
+    return {
+      ref: site.id,
+      name: site.name,
+      rgba: site.rgba,
+      family: parsed.family,
+      group: parsed.groupPath,
+      step: parsed.step
+    };
+  };
+  var swatchMember = (swatch, index) => {
+    var _a;
+    return {
+      ref: `new:${index}`,
+      name: swatch.name,
+      rgba: swatch.rgba,
+      family: swatch.family,
+      group: parseTokenName(swatch.name).groupPath,
+      step: swatch.step,
+      variableKey: (_a = swatch.variableKey) != null ? _a : null
+    };
+  };
+  var land = (site, target) => ({ r: target.r, g: target.g, b: target.b, a: site.rgba.a });
+  var sameColor = (a, b) => Math.abs(a.r - b.r) < 1 / 512 && Math.abs(a.g - b.g) < 1 / 512 && Math.abs(a.b - b.b) < 1 / 512;
+  var colorKey = (color) => [color.r, color.g, color.b].map((channel) => Math.round(channel * 255)).join(",");
+  function groupByMode(sites) {
+    var _a;
+    const groups = /* @__PURE__ */ new Map();
+    for (const site of sites) {
+      const key = (_a = site.modeId) != null ? _a : NO_MODE;
+      const group = groups.get(key);
+      if (group) group.push(site);
+      else groups.set(key, [site]);
+    }
+    return groups;
+  }
+  function readPalette(palette) {
+    const { spectra, loose, warnings } = inferSpectra(palette.map(swatchMember));
+    const candidates = [
+      // The *family name*, not the label: this value ends up in `toFamily`, and `toFamily` is
+      // what renames are built from — a group path there would be written into a name segment.
+      ...spectra.flatMap((spectrum) => spectrum.stops.map((stop) => __spreadProps(__spreadValues({}, stop), { familyLabel: spectrum.family }))),
+      ...loose.map((stop) => __spreadProps(__spreadValues({}, stop), { familyLabel: null }))
+    ];
+    return { spectra, candidates, warnings };
+  }
+  function entryFor(site, target, via, toFamily, flags, fromFamily) {
+    var _a;
+    const parsed = parseTokenName(site.name);
+    const to = land(site, target.rgba);
+    const all = [...flags];
+    if (!site.editable) all.push("library");
+    if (sameColor(site.rgba, to)) all.push("unchanged");
+    return {
+      site,
+      from: site.rgba,
+      to,
+      toName: target.name === "" ? null : target.name,
+      toVariableKey: (_a = target.variableKey) != null ? _a : null,
+      // The spectrum's label when the site came through a family match — `colour/neutral` and
+      // `colors/neutral` are different rows of the story, not one family told twice.
+      fromFamily: fromFamily !== void 0 ? fromFamily : parsed.family,
+      toFamily,
+      fromStep: parsed.step,
+      toStep: target.step,
+      via,
+      deltaE: deltaE(site.rgba, to),
+      flags: all
+    };
+  }
+  function planMode(sites, palette, modeId) {
+    const byId = new Map(sites.map((site) => [site.id, site]));
+    const { spectra } = inferSpectra(sites.map(siteMember));
+    const { assignments } = assignFamilies(spectra, palette.spectra);
+    const entries = [];
+    const families = [];
+    const identical = /* @__PURE__ */ new Map();
+    for (const candidate of palette.candidates) {
+      const key = colorKey(candidate.rgba);
+      const held = identical.get(key);
+      if (!held || held.familyLabel === null && candidate.familyLabel !== null) identical.set(key, candidate);
+    }
+    const identityOf = (color) => {
+      const channels = [color.r, color.g, color.b].map((channel) => channel * 255);
+      const options = channels.map((value) => {
+        const rounded = Math.round(value);
+        const keys = [rounded];
+        if (Math.abs(value - rounded + 0.5) < 0.51) keys.push(rounded - 1);
+        if (Math.abs(rounded + 0.5 - value) < 0.51) keys.push(rounded + 1);
+        return keys;
+      });
+      for (const r of options[0]) {
+        for (const g of options[1]) {
+          for (const b of options[2]) {
+            const candidate = identical.get(`${r},${g},${b}`);
+            if (candidate && sameColor(candidate.rgba, color)) return candidate;
+          }
+        }
+      }
+      return null;
+    };
+    for (const site of sites) {
+      const candidate = identityOf(site.rgba);
+      if (!candidate) continue;
+      entries.push(entryFor(site, candidate, "exact", candidate.familyLabel, []));
+      byId.delete(site.id);
+    }
+    for (const assignment of assignments) {
+      families.push({
+        fromKey: assignment.from.key,
+        fromLabel: assignment.from.label,
+        toLabel: assignment.to.label,
+        modeId,
+        shared: assignment.shared,
+        cost: assignment.cost,
+        stops: assignment.from.stops.length
+      });
+      for (const match of matchStops(assignment.from, assignment.to)) {
+        const site = byId.get(match.from.ref);
+        if (!site) continue;
+        entries.push(
+          entryFor(
+            site,
+            match.to,
+            match.via,
+            assignment.to.family,
+            assignment.shared ? ["shared-family"] : [],
+            assignment.from.label
+          )
+        );
+      }
+    }
+    const matched = new Set(entries.map((entry) => entry.site.id));
+    for (const site of sites) {
+      if (matched.has(site.id)) continue;
+      const target = nearestByColor(palette.candidates, site.rgba);
+      if (!target) continue;
+      entries.push(entryFor(site, target, "nearest", target.familyLabel, ["orphan"]));
+    }
+    return { entries, families, assignments };
+  }
+  function separateAdjacent(entries, palette, adjacency, warnings) {
+    var _a;
+    if (adjacency.length === 0) return;
+    const byId = new Map(entries.map((entry) => [entry.site.id, entry]));
+    const stopsByFamily = new Map(palette.spectra.map((spectrum) => [spectrum.family, spectrum.stops]));
+    for (const [left, right] of adjacency) {
+      const a = byId.get(left);
+      const b = byId.get(right);
+      if (!a || !b || a === b) continue;
+      if (!sameColor(a.to, b.to)) continue;
+      if (sameColor(a.from, b.from)) continue;
+      const aFixed = a.via === "exact";
+      const bFixed = b.via === "exact";
+      if (aFixed && bFixed) continue;
+      const mover = aFixed ? b : bFixed ? a : a.site.usage <= b.site.usage ? a : b;
+      const anchor = mover === a ? b : a;
+      const stops = mover.toFamily === null ? void 0 : stopsByFamily.get(mover.toFamily);
+      if (!stops || stops.length < 2) {
+        warnings.push(`${mover.site.name} and ${anchor.site.name} land on the same color and touch on canvas`);
+        continue;
+      }
+      const index = stops.findIndex((stop) => sameColor(__spreadProps(__spreadValues({}, stop.rgba), { a: mover.to.a }), mover.to));
+      const neighbours = index < 0 ? [] : [stops[index - 1], stops[index + 1]].filter(Boolean);
+      if (neighbours.length === 0) {
+        warnings.push(`${mover.site.name} and ${anchor.site.name} land on the same color and touch on canvas`);
+        continue;
+      }
+      let best = neighbours[0];
+      let bestContrast = -1;
+      for (const candidate of neighbours) {
+        const contrast = contrastRatio(candidate.rgba, anchor.to);
+        if (contrast > bestContrast) {
+          bestContrast = contrast;
+          best = candidate;
+        }
+      }
+      mover.to = land(mover.site, best.rgba);
+      mover.toStep = best.step;
+      mover.toName = best.name === "" ? null : best.name;
+      mover.toVariableKey = (_a = best.variableKey) != null ? _a : null;
+      mover.via = "lightness";
+      mover.deltaE = deltaE(mover.from, mover.to);
+      mover.flags = mover.flags.filter((flag2) => flag2 !== "unchanged");
+      mover.flags.push("separated");
+    }
+  }
+  function flagDuplicates(entries) {
+    var _a;
+    const byMode = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      const key = `${(_a = entry.site.modeId) != null ? _a : NO_MODE}|${colorKey(entry.to)}`;
+      const group = byMode.get(key);
+      if (group) group.push(entry);
+      else byMode.set(key, [entry]);
+    }
+    for (const group of byMode.values()) {
+      if (group.length < 2) continue;
+      const distinct = new Set(group.map((entry) => colorKey(entry.from)));
+      if (distinct.size < 2) continue;
+      for (const entry of group) entry.flags.push("duplicate");
+    }
+  }
+  function flagModeDivergence(entries, warnings) {
+    const byVariable = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      if (entry.site.kind !== "variable" || entry.site.modeId === null) continue;
+      const key = entry.site.name;
+      const group = byVariable.get(key);
+      if (group) group.push(entry);
+      else byVariable.set(key, [entry]);
+    }
+    for (const [name, group] of byVariable) {
+      const families = new Set(group.map((entry) => {
+        var _a;
+        return (_a = entry.toFamily) != null ? _a : "\u2014";
+      }));
+      if (families.size < 2) continue;
+      for (const entry of group) entry.flags.push("mode-divergence");
+      warnings.push(`${name} lands in different families per mode: ${[...families].join(" / ")}`);
+    }
+  }
+  function flagColorForks(entries, warnings) {
+    var _a;
+    const byColor = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      if (entry.from.a < 0.999 || entry.flags.includes("excluded")) continue;
+      const key = `${(_a = entry.site.modeId) != null ? _a : NO_MODE}|${colorKey(entry.from)}`;
+      const group = byColor.get(key);
+      if (group) group.push(entry);
+      else byColor.set(key, [entry]);
+    }
+    for (const group of byColor.values()) {
+      const landings = new Set(group.map((entry) => colorKey(entry.to)));
+      if (landings.size < 2) continue;
+      const tell = (entry) => {
+        var _a2;
+        return `${entry.site.name} \u2192 ${(_a2 = entry.toName) != null ? _a2 : "nearest"}`;
+      };
+      const shown = group.slice(0, 4).map(tell).join(", ");
+      const more = group.length > 4 ? ` and ${group.length - 4} more` : "";
+      warnings.push(`one color, two directions: ${shown}${more}`);
+    }
+  }
+  function planRenames(entries, primaryModeId, taken, options, warnings) {
+    var _a, _b, _c, _d;
+    if (!options.rename) return [];
+    const eligible = entries.filter(
+      (entry) => entry.site.kind === "variable" && entry.site.primitive && entry.site.editable && // A pair struck out of the run is struck out of everything the run writes. Renaming a
+      // variable is writing to it — and worse, the phantom rename claims the target name in
+      // collision resolution, so a variable the human kept can end up parked in legacy/ by
+      // one the human excluded.
+      !entry.flags.includes("excluded") && entry.toFamily !== null && // A translucent token is matched as a colour, not as a rung of a ladder, so the family it
+      // happened to land near is not a family it belongs to. Renaming `colors/black/50` into
+      // `colors/neutral/50` only collides with the neutral that is already there.
+      entry.from.a >= 0.999
+    );
+    const perEntity = /* @__PURE__ */ new Map();
+    for (const entry of eligible) {
+      const key = (_a = entry.site.groupId) != null ? _a : entry.site.id;
+      const chosen = perEntity.get(key);
+      if (!chosen) {
+        perEntity.set(key, entry);
+        continue;
+      }
+      if (primaryModeId && entry.site.modeId === primaryModeId && chosen.site.modeId !== primaryModeId) {
+        perEntity.set(key, entry);
+      }
+    }
+    const candidates = [...perEntity.values()];
+    const proposals = candidates.map((entry) => ({
+      entry,
+      // The family changes; the number does not. A step number describes a rung of *this*
+      // file's ladder, and that rung is still where it was — renumbering it to the target's
+      // step is what turns a palette move into a rename avalanche, with half the ramp parked
+      // in legacy/ because it collided with the rung that already had that number.
+      to: renameFamily(entry.site.name, entry.toFamily)
+    })).filter((proposal) => proposal.to !== proposal.entry.site.name).sort((a, b) => b.entry.site.usage - a.entry.site.usage || a.entry.site.name.localeCompare(b.entry.site.name));
+    const claimed = /* @__PURE__ */ new Set();
+    const renaming = new Set(proposals.map((proposal) => proposal.entry.site.name));
+    const collides = (to) => claimed.has(to) || taken.has(to) && !renaming.has(to);
+    const perFamily = /* @__PURE__ */ new Map();
+    for (const proposal of proposals) {
+      const family = (_b = proposal.entry.fromFamily) != null ? _b : proposal.entry.site.name;
+      if (taken.has(proposal.to) && !renaming.has(proposal.to)) {
+        perFamily.set(family, ((_c = perFamily.get(family)) != null ? _c : 0) + 1);
+      }
+    }
+    const blockedFamilies = /* @__PURE__ */ new Set();
+    for (const [family, count] of perFamily) if (count >= 2) blockedFamilies.add(family);
+    const renames = [];
+    for (const proposal of proposals) {
+      const family = (_d = proposal.entry.fromFamily) != null ? _d : proposal.entry.site.name;
+      if (blockedFamilies.has(family)) continue;
+      if (!collides(proposal.to)) {
+        claimed.add(proposal.to);
+        renames.push({ siteId: proposal.entry.site.id, from: proposal.entry.site.name, to: proposal.to, legacy: false });
+        continue;
+      }
+      const parked = `${options.legacyGroup}/${proposal.entry.site.name}`;
+      claimed.add(parked);
+      renames.push({ siteId: proposal.entry.site.id, from: proposal.entry.site.name, to: parked, legacy: true });
+      warnings.push(`${proposal.entry.site.name}: ${proposal.to} is taken, parked as ${parked}`);
+    }
+    for (const family of blockedFamilies) {
+      warnings.push(`${family} keeps its names \u2014 the family it moves to already uses them`);
+    }
+    return renames;
+  }
+  function buildRemapPlan(request) {
+    var _a, _b;
+    const options = __spreadValues(__spreadValues({}, DEFAULT_REMAP_OPTIONS), request.options);
+    const warnings = [];
+    const palette = readPalette(request.palette);
+    warnings.push(...palette.warnings);
+    if (palette.candidates.length === 0) {
+      return { entries: [], renames: [], families: [], unusedFamilies: [], warnings: ["the new palette is empty"] };
+    }
+    const entries = [];
+    const families = [];
+    const landedOn = /* @__PURE__ */ new Set();
+    for (const [modeKey, group] of groupByMode(request.sites)) {
+      const modeId = modeKey === NO_MODE ? null : modeKey;
+      const planned = planMode(group, palette, modeId);
+      entries.push(...planned.entries);
+      families.push(...planned.families);
+      for (const assignment of planned.assignments) landedOn.add(assignment.to.key);
+    }
+    const excluded = new Set((_a = request.excluded) != null ? _a : []);
+    if (excluded.size > 0) {
+      for (const entry of entries) if (excluded.has(entry.site.id)) entry.flags.push("excluded");
+    }
+    if (options.separateAdjacent) separateAdjacent(entries, palette, (_b = request.adjacency) != null ? _b : [], warnings);
+    flagDuplicates(entries);
+    flagColorForks(entries, warnings);
+    flagModeDivergence(entries, warnings);
+    const taken = new Set(request.sites.filter((site) => site.kind === "variable").map((site) => site.name));
+    const renames = planRenames(entries, request.primaryModeId, taken, options, warnings);
+    const skipped = entries.filter((entry) => entry.flags.includes("library"));
+    if (skipped.length > 0) {
+      const names = new Set(skipped.map((entry) => entry.site.name));
+      warnings.push(
+        `${names.size} ${names.size === 1 ? "token comes" : "tokens come"} from a library and cannot be written from this file \u2014 run the remap in the library\u2019s source file`
+      );
+    }
+    return {
+      entries,
+      renames,
+      families,
+      unusedFamilies: palette.spectra.filter((spectrum) => !landedOn.has(spectrum.key)).map((spectrum) => spectrum.label),
+      warnings
+    };
+  }
+
+  // src/tokens/remap/contract.ts
+  var MAPPING_FORMAT = "altery-color-remap";
+  var MAPPING_VERSION = 1;
+  var round9 = (value, places = 3) => {
+    const factor = Math.pow(10, places);
+    return Math.round(value * factor) / factor;
+  };
+  function buildMappingFile(plan, meta = {}) {
+    var _a, _b, _c;
+    const renamedById = new Map(plan.renames.map((rename) => [rename.siteId, rename.to]));
+    return {
+      format: MAPPING_FORMAT,
+      version: MAPPING_VERSION,
+      generatedAt: (_a = meta.generatedAt) != null ? _a : null,
+      source: { file: (_b = meta.file) != null ? _b : null, palette: (_c = meta.palette) != null ? _c : null },
+      families: plan.families.map((family) => ({
+        from: family.fromLabel,
+        to: family.toLabel,
+        mode: family.modeId,
+        shared: family.shared
+      })),
+      renames: plan.renames.map((rename) => ({ from: rename.from, to: rename.to, legacy: rename.legacy })),
+      records: plan.entries.map((entry) => {
+        var _a2;
+        return {
+          kind: entry.site.kind,
+          id: entry.site.id,
+          name: entry.site.name,
+          newName: (_a2 = renamedById.get(entry.site.id)) != null ? _a2 : null,
+          mode: entry.site.modeName,
+          from: toHex(entry.from),
+          fromAlpha: round9(entry.from.a),
+          to: toHex(entry.to),
+          toAlpha: round9(entry.to.a),
+          fromFamily: entry.fromFamily,
+          fromStep: entry.fromStep,
+          toFamily: entry.toFamily,
+          toStep: entry.toStep,
+          toVariable: entry.toVariableKey,
+          via: entry.via,
+          deltaE: round9(entry.deltaE, 2),
+          flags: entry.flags
+        };
+      }),
+      warnings: plan.warnings
+    };
+  }
+  var csvCell = (value) => {
+    const text3 = value === null || value === void 0 ? "" : String(value);
+    return /[",\n]/.test(text3) ? `"${text3.replace(/"/g, '""')}"` : text3;
+  };
+  var CSV_COLUMNS = [
+    "kind",
+    "name",
+    "newName",
+    "mode",
+    "from",
+    "fromAlpha",
+    "to",
+    "toAlpha",
+    "fromFamily",
+    "fromStep",
+    "toFamily",
+    "toStep",
+    "via",
+    "deltaE",
+    "flags"
+  ];
+  function toCsv(mapping) {
+    const rows = mapping.records.map(
+      (record2) => CSV_COLUMNS.map((column2) => csvCell(column2 === "flags" ? record2.flags.join(" ") : record2[column2])).join(",")
+    );
+    return [CSV_COLUMNS.join(","), ...rows].join("\n") + "\n";
+  }
+
+  // src/tokens/remap/rewrite.ts
+  var DEFAULT_REWRITE_OPTIONS = { snap: 2, mode: null, byName: false };
+  var rgbaOf = (hex, alpha) => {
+    const rgb = parseHex(hex);
+    return rgb ? __spreadProps(__spreadValues({}, rgb), { a: alpha }) : null;
+  };
+  var nameKey = (name) => varName(name.split(/[/.]/));
+  function buildLookup(mapping, options) {
+    const byHex = /* @__PURE__ */ new Map();
+    const byName = /* @__PURE__ */ new Map();
+    const settled = /* @__PURE__ */ new Set();
+    const all = [];
+    const conflicting = /* @__PURE__ */ new Set();
+    const warnings = [];
+    const records = mapping.records.filter(
+      (record2) => options.mode == null || record2.mode === null || record2.mode === options.mode
+    );
+    for (const record2 of records) {
+      const to = rgbaOf(record2.to, 1);
+      if (!to) continue;
+      const target = { rgb: to, hex: record2.to };
+      for (const name of [record2.name, record2.newName]) {
+        if (name) byName.set(nameKey(name), target);
+      }
+      settled.add(record2.to);
+      if (record2.from === record2.to) continue;
+      const existing = byHex.get(record2.from);
+      if (existing && existing.hex !== record2.to) {
+        conflicting.add(record2.from);
+        continue;
+      }
+      byHex.set(record2.from, target);
+    }
+    for (const hex of conflicting) {
+      byHex.delete(hex);
+      warnings.push(
+        `${hex} maps to more than one new color in this file \u2014 pass --mode to say which theme this repository is`
+      );
+    }
+    for (const [hex, target] of byHex) {
+      const from = rgbaOf(hex, 1);
+      if (from) all.push({ from, target });
+    }
+    return { byHex, settled, all, byName, warnings };
+  }
+  function matchLiteral(literal, lookup, snap) {
+    const hex = toHex(literal.rgba);
+    if (lookup.settled.has(hex)) return null;
+    const exact = lookup.byHex.get(hex);
+    if (exact) return { target: exact, snapped: false };
+    if (snap <= 0) return null;
+    let best = null;
+    let bestDistance = snap;
+    for (const candidate of lookup.all) {
+      const distance = deltaE(candidate.from, literal.rgba);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = candidate.target;
+      }
+    }
+    return best ? { target: best, snapped: true } : null;
+  }
+  function positionOf(text3, offset) {
+    let line = 1;
+    let lineStart = 0;
+    for (let i = 0; i < offset; i++) {
+      if (text3[i] === "\n") {
+        line++;
+        lineStart = i + 1;
+      }
+    }
+    return { line, column: offset - lineStart + 1 };
+  }
+  function applyEdits(text3, edits) {
+    const ordered = [...edits].sort((a, b) => a.start - b.start);
+    const kept2 = [];
+    let reach = -1;
+    for (const edit of ordered) {
+      if (edit.start < reach) continue;
+      kept2.push(edit);
+      reach = edit.end;
+    }
+    const replacements = kept2.map((edit) => __spreadProps(__spreadValues({}, positionOf(text3, edit.start)), {
+      from: edit.from,
+      to: edit.to,
+      via: edit.via,
+      snapped: edit.snapped
+    }));
+    let out = text3;
+    for (let i = kept2.length - 1; i >= 0; i--) {
+      const edit = kept2[i];
+      out = out.slice(0, edit.start) + edit.to + out.slice(edit.end);
+    }
+    return { text: out, replacements };
+  }
+  var CSS_DECLARATION_RE = /(--[\w-]+)(\s*:\s*)([^;{}\n]+)/g;
+  var JSON_DECLARATION_RE = /("([^"\\]+)"\s*:\s*")([^"\\]*)(")/g;
+  function nameEdits(text3, lookup) {
+    const edits = [];
+    const claim = (name, valueStart, value) => {
+      const target = lookup.byName.get(nameKey(name));
+      if (!target) return;
+      const literals = findColorLiterals(value);
+      if (literals.length !== 1 || literals[0].source.trim() !== value.trim()) return;
+      const literal = literals[0];
+      const to = formatColorLiteral(__spreadProps(__spreadValues({}, target.rgb), { a: literal.rgba.a }), literal.notation);
+      if (to === literal.source) return;
+      edits.push({
+        start: valueStart + literal.start,
+        end: valueStart + literal.end,
+        from: literal.source,
+        to,
+        via: "name",
+        snapped: false
+      });
+    };
+    for (const match of text3.matchAll(CSS_DECLARATION_RE)) {
+      claim(match[1].slice(2), match.index + match[1].length + match[2].length, match[3]);
+    }
+    for (const match of text3.matchAll(JSON_DECLARATION_RE)) {
+      claim(match[2], match.index + match[1].length, match[3]);
+    }
+    return edits;
+  }
+  function rewriteColors(text3, mapping, options = {}) {
+    const settings = __spreadValues(__spreadValues({}, DEFAULT_REWRITE_OPTIONS), options);
+    const lookup = buildLookup(mapping, settings);
+    const edits = settings.byName ? nameEdits(text3, lookup) : [];
+    let untouched = 0;
+    for (const literal of findColorLiterals(text3)) {
+      const matched = matchLiteral(literal, lookup, settings.snap);
+      if (!matched) {
+        untouched++;
+        continue;
+      }
+      const to = formatColorLiteral(__spreadProps(__spreadValues({}, matched.target.rgb), { a: literal.rgba.a }), literal.notation);
+      if (to === literal.source) continue;
+      edits.push({
+        start: literal.start,
+        end: literal.end,
+        from: literal.source,
+        to,
+        via: "literal",
+        snapped: matched.snapped
+      });
+    }
+    const applied = applyEdits(text3, edits);
+    return __spreadProps(__spreadValues({}, applied), { untouched, warnings: lookup.warnings });
+  }
+
+  // src/tokens/remap/sources.ts
+  function swatchOf(hex, name, family, step) {
+    const rgb = parseHex(hex);
+    if (!rgb) return null;
+    return { hex: hex.toUpperCase(), alpha: 1, rgba: __spreadProps(__spreadValues({}, rgb), { a: 1 }), name, family, step };
+  }
+  function swatchesFromPalette(palette) {
+    const swatches = [];
+    for (const spectrum of palette.spectra) {
+      for (const swatch of spectrum.swatches) {
+        const parsed = swatchOf(swatch.hex, `${spectrum.label}/${swatch.step}`, spectrum.label, swatch.step);
+        if (parsed) swatches.push(parsed);
+      }
+    }
+    return swatches;
+  }
+  var describes = (family, step) => family !== null && step !== null ? 2 : family !== null ? 1 : 0;
+  function swatchesFromNamedColors(entries) {
+    var _a, _b, _c, _d;
+    const at = /* @__PURE__ */ new Map();
+    const swatches = [];
+    let duplicates = 0;
+    for (const entry of entries) {
+      const rgb = parseHex(entry.hex);
+      if (!rgb) continue;
+      const alpha = (_a = entry.alpha) != null ? _a : 1;
+      const key = `${entry.hex.toUpperCase()}|${alpha.toFixed(3)}`;
+      const parsed = parseTokenName(entry.name);
+      const existing = at.get(key);
+      if (existing !== void 0) {
+        duplicates++;
+        const held = swatches[existing];
+        if (describes(parsed.family, parsed.step) > describes(held.family, held.step)) {
+          swatches[existing] = __spreadProps(__spreadValues({}, held), {
+            name: entry.name,
+            family: parsed.family,
+            step: parsed.step,
+            variableKey: (_c = (_b = entry.key) != null ? _b : held.variableKey) != null ? _c : null
+          });
+        }
+        continue;
+      }
+      at.set(key, swatches.length);
+      swatches.push({
+        hex: entry.hex.toUpperCase(),
+        alpha,
+        rgba: __spreadProps(__spreadValues({}, rgb), { a: alpha }),
+        name: entry.name,
+        family: parsed.family,
+        step: parsed.step,
+        variableKey: (_d = entry.key) != null ? _d : null
+      });
+    }
+    return { swatches, duplicates };
+  }
+
+  // src/targets/ds-tools/remap-sources.ts
+  async function swatchesFromSelection() {
+    const selection = figma.currentPage.selection;
+    if (selection.length === 0) {
+      return { swatches: [], warnings: ["nothing is selected \u2014 select the swatches, a frame, or a whole board"] };
+    }
+    const entries = [];
+    const collect = (node) => {
+      var _a;
+      for (const property of ["fills", "strokes"]) {
+        for (const paint of paintsOf(node, property)) {
+          if (paint.visible === false) continue;
+          if (paint.type === "SOLID") {
+            entries.push({ hex: hexOf(paint.color), alpha: (_a = paint.opacity) != null ? _a : 1, name: node.name });
+            continue;
+          }
+          if (!isGradient(paint)) continue;
+          for (const [index, stop] of paint.gradientStops.entries()) {
+            const color = withAlpha(stop.color);
+            entries.push({ hex: hexOf(color), alpha: color.a, name: `${node.name}/${index + 1}` });
+          }
+        }
+      }
+    };
+    for (const root of selection) {
+      collect(root);
+      for (const node of await findAllWithCriteria(root, (node2) => true)) collect(node);
+    }
+    const { swatches, duplicates } = swatchesFromNamedColors(entries);
+    const warnings = [];
+    if (swatches.length === 0) warnings.push("the selection holds no solid fills");
+    if (duplicates > 0) warnings.push(`${duplicates} repeated color(s) in the selection were read once`);
+    return { swatches, warnings };
+  }
+  async function listLibraryCollections() {
+    try {
+      const available = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+      return {
+        collections: available.map((collection) => ({
+          key: collection.key,
+          name: collection.name,
+          library: collection.libraryName
+        })),
+        warnings: available.length === 0 ? ["no libraries are enabled for this file"] : []
+      };
+    } catch (error) {
+      return { collections: [], warnings: [`libraries are unreadable here: ${String(error.message)}`] };
+    }
+  }
+  var isAlias2 = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
+  var isRgb2 = (value) => typeof value === "object" && value !== null && "r" in value && "g" in value && "b" in value;
+  var IMPORT_CHUNK = 50;
+  var ALIAS_DEPTH = 6;
+  async function resolveColor(variable, modeId) {
+    var _a, _b, _c;
+    let current = variable;
+    let mode = modeId;
+    for (let depth = 0; depth < ALIAS_DEPTH; depth++) {
+      const value = (_a = current.valuesByMode[mode]) != null ? _a : await defaultValueOf(current);
+      if (value === void 0) return null;
+      if (isRgb2(value)) return value;
+      if (!isAlias2(value)) return null;
+      const next = await figma.variables.getVariableByIdAsync(value.id).catch(() => null);
+      if (!next) return null;
+      current = next;
+      if (!(mode in current.valuesByMode)) {
+        const collection = await figma.variables.getVariableCollectionByIdAsync(current.variableCollectionId).catch(() => null);
+        mode = (_c = (_b = collection == null ? void 0 : collection.defaultModeId) != null ? _b : Object.keys(current.valuesByMode)[0]) != null ? _c : mode;
+      }
+    }
+    return null;
+  }
+  var defaultValueOf = async (variable) => {
+    var _a;
+    const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId).catch(() => null);
+    const mode = (_a = collection == null ? void 0 : collection.defaultModeId) != null ? _a : Object.keys(variable.valuesByMode)[0];
+    return mode === void 0 ? void 0 : variable.valuesByMode[mode];
+  };
+  async function swatchesFromLibrary(key, modeName, progress2) {
+    var _a, _b;
+    const warnings = [];
+    let published;
+    try {
+      published = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(key);
+    } catch (error) {
+      return { swatches: [], warnings: [`that collection could not be read: ${String(error.message)}`] };
+    }
+    const colors = published.filter((variable) => variable.resolvedType === "COLOR");
+    if (colors.length === 0) return { swatches: [], warnings: ["that collection holds no color variables"] };
+    const entries = [];
+    let modeId = null;
+    let chosenMode = null;
+    let unresolved = 0;
+    for (const [index, candidate] of colors.entries()) {
+      if (index % IMPORT_CHUNK === 0) {
+        progress2 == null ? void 0 : progress2(`importing library colors\u2026 ${index}/${colors.length}`);
+        await yieldToHost();
+      }
+      const variable = await figma.variables.importVariableByKeyAsync(candidate.key).catch(() => null);
+      if (!variable) continue;
+      if (modeId === null) {
+        const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId).catch(() => null);
+        const modes = (_a = collection == null ? void 0 : collection.modes) != null ? _a : [];
+        const wanted = modeName ? modes.find((mode2) => mode2.name === modeName) : void 0;
+        const fallback = (_b = modes.find((mode2) => mode2.modeId === (collection == null ? void 0 : collection.defaultModeId))) != null ? _b : modes[0];
+        const mode = wanted != null ? wanted : fallback;
+        if (!mode) continue;
+        modeId = mode.modeId;
+        chosenMode = mode.name;
+        if (modeName && !wanted) warnings.push(`that library has no "${modeName}" mode \u2014 read "${mode.name}" instead`);
+      }
+      const value = await resolveColor(variable, modeId);
+      if (value === null) {
+        unresolved++;
+        continue;
+      }
+      const color = withAlpha(value);
+      entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name, key: variable.key });
+    }
+    const { swatches, duplicates } = swatchesFromNamedColors(entries);
+    if (chosenMode) warnings.unshift(`read the "${chosenMode}" mode of that collection`);
+    if (unresolved > 0) warnings.push(`${unresolved} token(s) could not be resolved to a color and were left out`);
+    if (duplicates > 0) warnings.push(`${duplicates} repeated color(s) were read once`);
+    return { swatches, warnings };
   }
 
   // src/targets/design-md/django-target.ts
@@ -14152,16 +17875,16 @@ ${renderSections(sections)}
   }
 
   // src/agent/values.ts
-  var clamp012 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
+  var clamp013 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
   function parseColor(input) {
     if (typeof input === "object" && input !== null) {
       const raw = input;
       if (["r", "g", "b"].every((key) => typeof raw[key] === "number")) {
         return {
-          r: clamp012(raw.r),
-          g: clamp012(raw.g),
-          b: clamp012(raw.b),
-          a: typeof raw.a === "number" ? clamp012(raw.a) : 1
+          r: clamp013(raw.r),
+          g: clamp013(raw.g),
+          b: clamp013(raw.b),
+          a: typeof raw.a === "number" ? clamp013(raw.a) : 1
         };
       }
       return null;
@@ -14172,7 +17895,7 @@ ${renderSections(sections)}
     if (withPercent) {
       const rgb2 = parseHex(withPercent[1]);
       if (!rgb2) return null;
-      return __spreadProps(__spreadValues({}, rgb2), { a: clamp012(Number(withPercent[2]) / 100) });
+      return __spreadProps(__spreadValues({}, rgb2), { a: clamp013(Number(withPercent[2]) / 100) });
     }
     const hex = text3.replace(/^#/, "");
     if (/^[0-9a-fA-F]{8}$/.test(hex)) {
@@ -14272,12 +17995,12 @@ ${renderSections(sections)}
       `collection "${collection.name}" has no mode "${ref}" \u2014 have: ${collection.modes.map((m) => m.name).join(", ")}`
     );
   }
-  function isAlias(value) {
+  function isAlias3(value) {
     return typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
   }
   async function describeValue(value) {
     if (value === void 0) return "(unset)";
-    if (isAlias(value)) {
+    if (isAlias3(value)) {
       const target = await figma.variables.getVariableByIdAsync(value.id);
       if (!target) return `\u2192 ${value.id}`;
       return target.remote ? `\u2192 ${target.name} (library)` : `\u2192 ${target.name}`;
@@ -14777,9 +18500,9 @@ ${scripts}`, "");
   }
   function describeDiff(diff) {
     const properties = /* @__PURE__ */ new Set();
-    for (const pair of diff.pairs) for (const change of pair.changes) properties.add(change.prop);
+    for (const pair2 of diff.pairs) for (const change of pair2.changes) properties.add(change.prop);
     return {
-      moved: diff.pairs.filter((pair) => pair.changes.length > 0).length,
+      moved: diff.pairs.filter((pair2) => pair2.changes.length > 0).length,
       fadeIn: diff.fadeIn.length,
       fadeOut: diff.fadeOut.length,
       properties: [...properties].sort()
@@ -14827,11 +18550,11 @@ ${scripts}`, "");
         const transitions = [];
         const css = [];
         const js = [];
-        for (const pair of pairs) {
-          const diff = diffStates(toDiffable2(pair.from), toDiffable2(pair.to));
-          const mechanism = mapTriggerToMechanism(pair.trigger);
-          const timing = transitionToCssTiming(pair.transition);
-          const baseSelector = `.${slugify2(pair.from.name, "variant")}`;
+        for (const pair2 of pairs) {
+          const diff = diffStates(toDiffable2(pair2.from), toDiffable2(pair2.to));
+          const mechanism = mapTriggerToMechanism(pair2.trigger);
+          const timing = transitionToCssTiming(pair2.transition);
+          const baseSelector = `.${slugify2(pair2.from.name, "variant")}`;
           const emitted = [];
           if (wants("transition")) {
             const result = emitTransitionCss({
@@ -14875,9 +18598,9 @@ ${scripts}`, "");
             emitted.push("view-transitions");
           }
           transitions.push({
-            from: { id: pair.from.id, name: pair.from.name },
-            to: { id: pair.to.id, name: pair.to.name },
-            trigger: pair.trigger.type,
+            from: { id: pair2.from.id, name: pair2.from.name },
+            to: { id: pair2.to.id, name: pair2.to.name },
+            trigger: pair2.trigger.type,
             mechanism: mechanism.kind,
             durationMs: timing.durationMs,
             timingFunction: timing.timingFunction,
@@ -14921,7 +18644,7 @@ ${scripts}`, "");
     medium: { family: "Inter", style: "Medium" },
     bold: { family: "Inter", style: "Semi Bold" }
   };
-  async function loadFonts2() {
+  async function loadFonts3() {
     const candidates = [
       FONTS,
       { regular: { family: "Roboto", style: "Regular" }, medium: { family: "Roboto", style: "Medium" }, bold: { family: "Roboto", style: "Bold" } }
@@ -14936,7 +18659,7 @@ ${scripts}`, "");
     }
     throw new Error("no usable font \u2014 install Inter or Roboto");
   }
-  function solid3(hex, fallback = "#000000") {
+  function solid4(hex, fallback = "#000000") {
     var _a, _b;
     const color = (_b = (_a = parseColor(hex)) != null ? _a : parseColor(fallback)) != null ? _b : { r: 0, g: 0, b: 0, a: 1 };
     return { type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a };
@@ -14981,7 +18704,7 @@ ${scripts}`, "");
     node.characters = chars;
     node.fontSize = size;
     node.lineHeight = { unit: "PERCENT", value: 140 };
-    node.fills = [solid3(color)];
+    node.fills = [solid4(color)];
     return node;
   }
   function paragraph(chars, size, weight, color, width) {
@@ -14994,7 +18717,7 @@ ${scripts}`, "");
     const rect = figma.createRectangle();
     rect.resize(width, height);
     rect.cornerRadius = Math.min(14, Math.round(height / 3));
-    rect.strokes = [solid3(ctx.chrome.border)];
+    rect.strokes = [solid4(ctx.chrome.border)];
     rect.strokeWeight = 1;
     rect.name = str(spec.label) || str(spec.color) || str(spec.variable) || "swatch";
     const ref = spec.variable;
@@ -15016,7 +18739,7 @@ ${scripts}`, "");
       rect.dashPattern = [4, 4];
       return { node: rect, label: str(spec.sub) };
     }
-    rect.fills = [solid3(String(spec.color))];
+    rect.fills = [solid4(String(spec.color))];
     return { node: rect, label: str(spec.sub) };
   }
   var variableCache = /* @__PURE__ */ new Map();
@@ -15046,14 +18769,14 @@ ${scripts}`, "");
     variableCache.set(ref, found);
     return found;
   }
-  function pill(label2, tone, chrome) {
+  function pill(label3, tone, chrome) {
     var _a;
-    const node = frame2(`status/${label2}`, "HORIZONTAL", 0);
+    const node = frame2(`status/${label3}`, "HORIZONTAL", 0);
     pad(node, 4, 10);
     node.cornerRadius = 999;
     const hex = (_a = TONES[tone]) != null ? _a : TONES.neutral;
-    node.fills = [__spreadProps(__spreadValues({}, solid3(hex)), { opacity: 0.12 })];
-    node.appendChild(text2(label2, 11, "medium", hex));
+    node.fills = [__spreadProps(__spreadValues({}, solid4(hex)), { opacity: 0.12 })];
+    node.appendChild(text2(label3, 11, "medium", hex));
     return node;
   }
   async function renderBlock(raw, ctx) {
@@ -15085,8 +18808,8 @@ ${scripts}`, "");
         const node = frame2(`callout/${tone}`, "VERTICAL", 6);
         pad(node, 16, 20);
         node.cornerRadius = 16;
-        node.fills = [__spreadProps(__spreadValues({}, solid3(hex)), { opacity: 0.08 })];
-        node.strokes = [__spreadProps(__spreadValues({}, solid3(hex)), { opacity: 0.24 })];
+        node.fills = [__spreadProps(__spreadValues({}, solid4(hex)), { opacity: 0.08 })];
+        node.strokes = [__spreadProps(__spreadValues({}, solid4(hex)), { opacity: 0.24 })];
         node.strokeWeight = 1;
         if (spec.title) node.appendChild(text2(str(spec.title), 14, "bold", hex));
         if (spec.text) node.appendChild(paragraph(str(spec.text), 13, "regular", chrome.ink, ctx.width - 200));
@@ -15125,14 +18848,14 @@ ${scripts}`, "");
           line.counterAxisAlignItems = "CENTER";
           pad(line, 10, 14);
           line.cornerRadius = 14;
-          line.fills = [solid3(chrome.panel)];
+          line.fills = [solid4(chrome.panel)];
           line.layoutAlign = "STRETCH";
           line.primaryAxisSizingMode = "FIXED";
-          const label2 = frame2("label", "VERTICAL", 2);
-          column(label2, labelWidth);
-          label2.appendChild(paragraph(str(row.label), 13, "medium", chrome.ink, labelWidth));
-          if (row.sub) label2.appendChild(paragraph(str(row.sub), 11, "regular", chrome.inkMuted, labelWidth));
-          line.appendChild(label2);
+          const label3 = frame2("label", "VERTICAL", 2);
+          column(label3, labelWidth);
+          label3.appendChild(paragraph(str(row.label), 13, "medium", chrome.ink, labelWidth));
+          if (row.sub) label3.appendChild(paragraph(str(row.sub), 11, "regular", chrome.inkMuted, labelWidth));
+          line.appendChild(label3);
           for (const side of ["old", "new"]) {
             const value = row[side];
             const cell = frame2(side, "VERTICAL", 6);
@@ -15182,7 +18905,7 @@ ${scripts}`, "");
           line.counterAxisAlignItems = "CENTER";
           pad(line, 10, 14);
           line.cornerRadius = 10;
-          if (rowIndex % 2 === 0) line.fills = [solid3(chrome.panel)];
+          if (rowIndex % 2 === 0) line.fills = [solid4(chrome.panel)];
           cells.forEach((value, index) => {
             const cell = paragraph(str(value), 12, index === 0 ? "medium" : "regular", index === 0 ? chrome.ink : chrome.inkMuted, columnWidth(index));
             line.appendChild(cell);
@@ -15197,7 +18920,7 @@ ${scripts}`, "");
         if (spec.padding !== void 0 || spec.background) {
           pad(node, num(spec.padding, 24), num(spec.padding, 24));
           node.cornerRadius = num(spec.radius, 20);
-          node.fills = [solid3(str(spec.background) || chrome.panel)];
+          node.fills = [solid4(str(spec.background) || chrome.panel)];
         }
         if (spec.title && direction === "VERTICAL") node.appendChild(text2(str(spec.title), 18, "bold", chrome.ink));
         await applyModes(node, obj(spec.modes), ctx);
@@ -15275,7 +18998,7 @@ ${scripts}`, "");
     return first ? { x: 0, y: 0 } : { x: right + 240, y: top };
   }
   async function renderBoard(spec, options) {
-    await loadFonts2();
+    await loadFonts3();
     variableCache.clear();
     const themeName = str(spec.theme, "light") === "dark" ? "dark" : "light";
     const chrome = CHROME[themeName];
@@ -15293,11 +19016,11 @@ ${scripts}`, "");
     }
     const ctx = { chrome, width, warnings: [] };
     const board = frame2(name, "VERTICAL", num(spec.gap, 36));
-    board.fills = [solid3(chrome.bg)];
+    board.fills = [solid4(chrome.bg)];
     pad(board, 64, 64);
     board.cornerRadius = 32;
     column(board, width);
-    board.strokes = [solid3(chrome.border)];
+    board.strokes = [solid4(chrome.border)];
     board.strokeWeight = 1;
     page.appendChild(board);
     for (const raw of list(spec.blocks)) {
@@ -15597,10 +19320,10 @@ ${scripts}`, "");
         if (!dryRun) figma.commitUndo();
         const results = [];
         for (const [index, raw] of updates.entries()) {
-          let label2 = `#${index}`;
+          let label3 = `#${index}`;
           try {
             const entry = record(raw, `updates[${index}]`);
-            label2 = String((_a = entry.variable) != null ? _a : label2);
+            label3 = String((_a = entry.variable) != null ? _a : label3);
             const variable = await resolveVariable(entry.variable);
             const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
             if (!collection) throw new Error(`"${variable.name}" has no readable collection`);
@@ -15622,8 +19345,8 @@ ${scripts}`, "");
             }
           } catch (err) {
             results.push({
-              variable: label2,
-              name: label2,
+              variable: label3,
+              name: label3,
               mode: "\u2014",
               before: "\u2014",
               after: "\u2014",
@@ -15969,9 +19692,9 @@ ${scripts}`, "");
         };
         const results = [];
         for (const [index, raw] of rows.entries()) {
-          const label2 = `bindings[${index}]`;
+          const label3 = `bindings[${index}]`;
           try {
-            const entry = record(raw, label2);
+            const entry = record(raw, label3);
             if (!Object.prototype.hasOwnProperty.call(entry, "variable")) {
               throw new Error('missing "variable" \u2014 pass null explicitly to unbind');
             }
@@ -16033,7 +19756,7 @@ ${scripts}`, "");
               error: "the runtime accepted the write but the binding did not persist \u2014 gradient-stop binding is not part of the documented Plugin API"
             }));
           } catch (err) {
-            results.push({ style: String((_n = raw == null ? void 0 : raw.style) != null ? _n : label2), ok: false, verified: false, error: String((err == null ? void 0 : err.message) || err) });
+            results.push({ style: String((_n = raw == null ? void 0 : raw.style) != null ? _n : label3), ok: false, verified: false, error: String((err == null ? void 0 : err.message) || err) });
           }
         }
         const bound = results.filter((row) => row.ok);
@@ -16080,10 +19803,10 @@ ${scripts}`, "");
         };
         const results = [];
         for (const [index, raw] of rows.entries()) {
-          const label2 = `assignments[${index}]`;
-          let nodeId = label2;
+          const label3 = `assignments[${index}]`;
+          let nodeId = label3;
           try {
-            const entry = record(raw, label2);
+            const entry = record(raw, label3);
             nodeId = String((_a = entry.node) != null ? _a : "");
             if (!nodeId) throw new Error('missing "node"');
             const fieldName = String((_b = entry.field) != null ? _b : "");
@@ -16307,7 +20030,7 @@ ${scripts}`, "");
           roots = figma.root.children.slice();
           labels = roots.map((one) => one.name);
         }
-        const aliasTo = (to) => ({ type: "VARIABLE_ALIAS", id: to.id });
+        const aliasTo2 = (to) => ({ type: "VARIABLE_ALIAS", id: to.id });
         const textJobs = [];
         const textFillJobs = [];
         const styled = (value) => value !== void 0 && value !== "";
@@ -16400,20 +20123,20 @@ ${scripts}`, "");
               }
               const at = pairByFromId.get((_e2 = value == null ? void 0 : value.id) != null ? _e2 : "");
               if (at === void 0) continue;
-              const pair = pairs[at];
-              pair.matched += 1;
+              const pair2 = pairs[at];
+              pair2.matched += 1;
               if (dryRun) continue;
               try {
                 ;
                 node.setBoundVariable(
                   field,
-                  pair.to
+                  pair2.to
                 );
-                pair.rebound += 1;
+                pair2.rebound += 1;
               } catch (err) {
-                pair.failed += 1;
+                pair2.failed += 1;
                 const message = `${field}: ${String((err == null ? void 0 : err.message) || err)}`;
-                if (pair.errors.length < 3 && !pair.errors.includes(message)) pair.errors.push(message);
+                if (pair2.errors.length < 3 && !pair2.errors.includes(message)) pair2.errors.push(message);
               }
             }
           }
@@ -16448,7 +20171,7 @@ ${scripts}`, "");
                   newStops[stopIndex] = {
                     position: stop.position,
                     color: stop.color,
-                    boundVariables: { color: aliasTo(pairs[stopAt].to) }
+                    boundVariables: { color: aliasTo2(pairs[stopAt].to) }
                   };
                   pairs[stopAt].rebound += 1;
                 });
@@ -16733,7 +20456,7 @@ ${scripts}`, "");
                   newStops[stopIndex] = {
                     position: stop.position,
                     color: stop.color,
-                    boundVariables: { color: aliasTo(pairs[stopAt].to) }
+                    boundVariables: { color: aliasTo2(pairs[stopAt].to) }
                   };
                   pairs[stopAt].rebound += 1;
                 });
@@ -16757,19 +20480,19 @@ ${scripts}`, "");
           dryRun,
           walked: { pages: labels, nodes: visited, styles: stylesScanned },
           ms: { walk: walkMs },
-          pairs: pairs.map((pair) => __spreadValues(__spreadValues(__spreadValues({
-            from: pair.from.name,
-            to: pair.to.name,
-            type: pair.from.resolvedType,
-            matched: pair.matched,
-            rebound: pair.rebound,
-            failed: pair.failed
-          }, pair.overrides > 0 ? { overrides: pair.overrides } : {}), pair.inherited > 0 ? { inherited: pair.inherited } : {}), pair.errors.length > 0 ? { errors: pair.errors } : {})),
-          totalMatched: pairs.reduce((sum, pair) => sum + pair.matched, 0),
-          totalRebound: pairs.reduce((sum, pair) => sum + pair.rebound, 0)
+          pairs: pairs.map((pair2) => __spreadValues(__spreadValues(__spreadValues({
+            from: pair2.from.name,
+            to: pair2.to.name,
+            type: pair2.from.resolvedType,
+            matched: pair2.matched,
+            rebound: pair2.rebound,
+            failed: pair2.failed
+          }, pair2.overrides > 0 ? { overrides: pair2.overrides } : {}), pair2.inherited > 0 ? { inherited: pair2.inherited } : {}), pair2.errors.length > 0 ? { errors: pair2.errors } : {})),
+          totalMatched: pairs.reduce((sum, pair2) => sum + pair2.matched, 0),
+          totalRebound: pairs.reduce((sum, pair2) => sum + pair2.rebound, 0)
         }, wantOverrides ? {
-          totalOverrides: pairs.reduce((sum, pair) => sum + pair.overrides, 0),
-          totalInherited: pairs.reduce((sum, pair) => sum + pair.inherited, 0)
+          totalOverrides: pairs.reduce((sum, pair2) => sum + pair2.overrides, 0),
+          totalInherited: pairs.reduce((sum, pair2) => sum + pair2.inherited, 0)
         } : {}), writeErrors.length > 0 ? { writeErrors } : {});
       }
     },
@@ -17142,8 +20865,8 @@ ${scripts}`, "");
             results.push({ node: id, ok: false, error: String((err == null ? void 0 : err.message) || err) });
           }
         }
-        const clean = results.filter((row) => row.ok);
-        return { dryRun, total: results.length, cleaned: clean.filter((r) => r.changed).length, stillDirty: results.length - clean.length, results };
+        const clean2 = results.filter((row) => row.ok);
+        return { dryRun, total: results.length, cleaned: clean2.filter((r) => r.changed).length, stillDirty: results.length - clean2.length, results };
       }
     },
     {
@@ -17351,7 +21074,7 @@ ${scripts}`, "");
     }
     return { r: entry.r, g: entry.g, b: entry.b, a: typeof entry.a === "number" ? entry.a : 1 };
   }
-  function sameColor(a, b) {
+  function sameColor2(a, b) {
     return ["r", "g", "b", "a"].every((channel) => Math.abs(a[channel] - b[channel]) < 2e-3);
   }
   function renderedValue(node, field) {
@@ -17488,7 +21211,7 @@ ${scripts}`, "");
       if (!tokenColor) return record2;
       record2.value = describeColor(tokenColor);
       record2.rendered = describeColor(rendered);
-      if (!sameColor(tokenColor, rendered)) record2.mismatch = true;
+      if (!sameColor2(tokenColor, rendered)) record2.mismatch = true;
     } catch (e) {
     }
     return record2;
@@ -18308,29 +22031,29 @@ ${scripts}`, "");
             }
           }
         }
-        const scanPaints = (paints2, where, label2) => {
+        const scanPaints = (paints2, where, label3) => {
           if (!Array.isArray(paints2)) return;
           paints2.forEach((paint, index) => {
             var _a2, _b2;
             const direct = (_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id;
-            if (direct) note(direct, where, label2(`paint[${index}]`));
+            if (direct) note(direct, where, label3(`paint[${index}]`));
             if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
               paint.gradientStops.forEach((stop) => {
                 var _a3, _b3;
                 const id = (_b3 = (_a3 = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b3.id;
-                if (id) note(id, where, label2(`paint[${index}] stop p${Math.round(stop.position * 100)}`));
+                if (id) note(id, where, label3(`paint[${index}] stop p${Math.round(stop.position * 100)}`));
               });
             }
           });
         };
-        const scanBoundMap = (bound, where, label2) => {
+        const scanBoundMap = (bound, where, label3) => {
           if (!bound || typeof bound !== "object") return;
           for (const [field, value] of Object.entries(bound)) {
             if (field === "fills" || field === "strokes") continue;
             if (Array.isArray(value)) {
-              value.forEach((alias, index) => note(alias == null ? void 0 : alias.id, where, label2(`${field}[${index}]`)));
+              value.forEach((alias, index) => note(alias == null ? void 0 : alias.id, where, label3(`${field}[${index}]`)));
             } else {
-              note(value == null ? void 0 : value.id, where, label2(field));
+              note(value == null ? void 0 : value.id, where, label3(field));
             }
           }
         };
@@ -18345,17 +22068,17 @@ ${scripts}`, "");
             root,
             (node) => {
               const holder = node;
-              const label2 = (detail) => ({ id: node.id, name: node.name, type: node.type, field: detail });
-              scanBoundMap(holder.boundVariables, "layers", label2);
-              scanPaints(holder.fills, "layers", label2);
-              scanPaints(holder.strokes, "layers", label2);
+              const label3 = (detail) => ({ id: node.id, name: node.name, type: node.type, field: detail });
+              scanBoundMap(holder.boundVariables, "layers", label3);
+              scanPaints(holder.fills, "layers", label3);
+              scanPaints(holder.strokes, "layers", label3);
               const mixedBound = holder.boundVariables;
               if (mixedBound) {
                 for (const prop of ["fills", "strokes"]) {
                   if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
                     ;
                     mixedBound[prop].forEach(
-                      (entry, index) => note(entry == null ? void 0 : entry.id, "layers", label2(`${prop}[${index}] (segment)`))
+                      (entry, index) => note(entry == null ? void 0 : entry.id, "layers", label3(`${prop}[${index}] (segment)`))
                     );
                   }
                 }
@@ -18377,14 +22100,14 @@ ${scripts}`, "");
           ]);
           styleCount = text3.length + paint.length + effect.length + grid.length;
           for (const style of paint) {
-            const label2 = (detail) => ({ style: style.name, type: "PAINT", field: detail });
-            scanPaints(style.paints, "styles", label2);
-            scanBoundMap(style.boundVariables, "styles", label2);
+            const label3 = (detail) => ({ style: style.name, type: "PAINT", field: detail });
+            scanPaints(style.paints, "styles", label3);
+            scanBoundMap(style.boundVariables, "styles", label3);
           }
           for (const style of [...text3, ...effect, ...grid]) {
-            const label2 = (detail) => ({ style: style.name, type: style.type, field: detail });
-            scanBoundMap(style.boundVariables, "styles", label2);
-            scanPaints(style.effects, "styles", label2);
+            const label3 = (detail) => ({ style: style.name, type: style.type, field: detail });
+            scanBoundMap(style.boundVariables, "styles", label3);
+            scanPaints(style.effects, "styles", label3);
           }
         }
         const results = [...byId.values()].map((bucket) => {
@@ -18473,7 +22196,7 @@ ${scripts}`, "");
           }
         }
         const distance = (a, b) => Math.sqrt(((a.r - b.r) * 255) ** 2 + ((a.g - b.g) * 255) ** 2 + ((a.b - b.b) * 255) ** 2);
-        const withAlpha = (value) => {
+        const withAlpha2 = (value) => {
           const raw = value.trim().replace(/^#/, "");
           const rgb = parseHex(raw.length === 8 ? raw.slice(0, 6) : raw);
           if (!rgb) return null;
@@ -18482,7 +22205,7 @@ ${scripts}`, "");
         };
         const sameAlpha = (a, b) => Math.abs(a - b) < 4e-3;
         const results = wanted.map((input) => {
-          const parsed = withAlpha(input);
+          const parsed = withAlpha2(input);
           if (!parsed) return { color: input, error: "not a hex colour" };
           const { rgb, alpha } = parsed;
           const hex = formatHex(rgb);
@@ -18717,11 +22440,11 @@ ${scripts}`, "");
       params: {},
       async run() {
         var _a;
-        const probe = (label2, run) => {
+        const probe = (label3, run) => {
           try {
-            return { [label2]: run() === 2 };
+            return { [label3]: run() === 2 };
           } catch (err) {
-            return { [label2]: String((err == null ? void 0 : err.message) || err) };
+            return { [label3]: String((err == null ? void 0 : err.message) || err) };
           }
         };
         return __spreadValues(__spreadValues({
@@ -18769,6 +22492,123 @@ ${scripts}`, "");
   }
 
   // src/code.ts
+  var remapInventory = null;
+  var remapDepth = "document";
+  function applyRemapOverrides(plan, overrides) {
+    if (!overrides) return plan;
+    for (const entry of plan.entries) {
+      const forced = overrides[entry.site.id];
+      if (!forced) continue;
+      const literal = parseColorLiteral(forced);
+      if (!literal) continue;
+      entry.to = { r: literal.rgba.r, g: literal.rgba.g, b: literal.rgba.b, a: entry.from.a };
+      entry.deltaE = deltaE(entry.from, entry.to);
+      entry.toName = null;
+      entry.via = "nearest";
+      entry.flags = entry.flags.filter((flag2) => flag2 !== "unchanged");
+      if (!entry.flags.includes("manual")) entry.flags.push("manual");
+    }
+    return plan;
+  }
+  var remapPalette = null;
+  async function resolveRemapSource(source) {
+    if (source.kind === "selection") return readRemapSource(source);
+    const key = JSON.stringify(source);
+    if (remapPalette && remapPalette.key === key) return remapPalette.palette;
+    const palette = await readRemapSource(source);
+    remapPalette = { key, palette };
+    return palette;
+  }
+  async function readRemapSource(source) {
+    var _a;
+    switch (source.kind) {
+      case "generator": {
+        const settings = normalizePaletteSettings(source.settings);
+        return { swatches: swatchesFromPalette(generatePalette(settings)), warnings: [] };
+      }
+      case "selection": {
+        figma.ui.postMessage({ type: "REMAP_PROGRESS", label: "reading the selection\u2026" });
+        const result = await swatchesFromSelection();
+        return { swatches: result.swatches, warnings: result.warnings };
+      }
+      case "library": {
+        const result = await swatchesFromLibrary(
+          source.key,
+          (_a = source.mode) != null ? _a : null,
+          (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 })
+        );
+        return { swatches: result.swatches, warnings: result.warnings };
+      }
+      default: {
+        const parsed = parsePaletteInput(source.text);
+        return { swatches: parsed.swatches, warnings: parsed.warnings };
+      }
+    }
+  }
+  async function planRemap(source, options, overrides, excluded) {
+    if (!remapInventory) {
+      remapInventory = await readRemapInventory(
+        (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }),
+        remapDepth
+      );
+    }
+    const resolved = await resolveRemapSource(source);
+    figma.ui.postMessage({ type: "REMAP_PROGRESS", label: `matching ${resolved.swatches.length} new colors\u2026` });
+    const plan = buildRemapPlan({
+      sites: remapInventory.sites,
+      palette: resolved.swatches,
+      primaryModeId: remapInventory.primaryModeId,
+      // The plan only needs the pair; the text/boundary distinction belongs to the audit.
+      adjacency: remapInventory.adjacency.map((pair2) => [pair2.a, pair2.b]),
+      excluded,
+      options
+    });
+    plan.warnings.push(...resolved.warnings);
+    return { plan: applyRemapOverrides(plan, overrides), palette: resolved.swatches };
+  }
+  function remapPlanView(plan) {
+    const renamedById = new Map(plan.renames.map((rename) => [rename.siteId, rename]));
+    const rank = (entry) => entry.site.kind === "detached" ? 1 : 0;
+    const ranked = [...plan.entries].sort((a, b) => {
+      const kind = rank(a) - rank(b);
+      if (kind !== 0) return kind;
+      const moved = Number(a.flags.includes("unchanged")) - Number(b.flags.includes("unchanged"));
+      return moved !== 0 ? moved : b.site.usage - a.site.usage;
+    });
+    return {
+      total: plan.entries.length,
+      withheld: 0,
+      rows: ranked.map((entry) => {
+        var _a, _b;
+        return {
+          id: entry.site.id,
+          kind: entry.site.kind,
+          name: entry.site.name,
+          newName: (_b = (_a = renamedById.get(entry.site.id)) == null ? void 0 : _a.to) != null ? _b : null,
+          mode: entry.site.modeName,
+          usage: entry.site.usage,
+          from: toHex(entry.from),
+          fromAlpha: entry.from.a,
+          to: toHex(entry.to),
+          toAlpha: entry.to.a,
+          fromFamily: entry.fromFamily,
+          fromStep: entry.fromStep,
+          // The panel sorts each family the way the board draws it, and needs the same lightness
+          // to do it — the UI has no colour maths of its own.
+          fromL: Math.round(rgbToOklch(entry.from).l * 1e3),
+          toFamily: entry.toFamily,
+          toStep: entry.toStep,
+          via: entry.via,
+          deltaE: Math.round(entry.deltaE * 10) / 10,
+          flags: entry.flags
+        };
+      }),
+      families: plan.families,
+      renames: plan.renames,
+      unusedFamilies: plan.unusedFamilies,
+      warnings: plan.warnings
+    };
+  }
   function frameworkLinksFrom(options, tokensOn) {
     if (options.targetOptions.framework !== "bootstrap") return null;
     return {
@@ -18833,8 +22673,8 @@ ${scripts}`, "");
           const css = await child.getCSSAsync();
           const smoothing = (_b = child.cornerSmoothing) != null ? _b : 0;
           if (smoothing > 0 && css["border-radius"]) css["border-radius"] = scaleBorderRadius(css["border-radius"], smoothing);
-          const label2 = child.findOne((descendant) => descendant.type === "TEXT");
-          const labelCss = label2 ? await label2.getCSSAsync() : null;
+          const label3 = child.findOne((descendant) => descendant.type === "TEXT");
+          const labelCss = label3 ? await label3.getCSSAsync() : null;
           variants.push({ name: child.name, css, labelCss });
         }
         if (variants.length > 0) sets.push({ kind, setName: set.name, variants });
@@ -19266,7 +23106,7 @@ ${scripts}`, "");
   }
   figma.on("selectionchange", postSelectionToUi);
   figma.ui.onmessage = async (msg) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
@@ -19276,7 +23116,7 @@ ${scripts}`, "");
           const options = normalizeExportOptions(stored);
           const docsOptions = __spreadValues(__spreadValues({}, options.docs), (_a = msg.docs) != null ? _a : {});
           const componentDocs = docsOptions.componentDocs ? await collectComponentDocs(docsOptions.componentPreviews, docsOptions.previewBudgetMb) : { docs: [], files: {} };
-          const artifacts = buildDesignTokens(graph, options, void 0, componentDocs.docs);
+          const artifacts = buildDesignTokens(graph, options, void 0, componentDocs.docs, readRenameMap());
           for (const path of Object.keys(componentDocs.files)) artifacts.files[path] = componentDocs.files[path];
           artifacts.summary.componentCount = componentDocs.docs.length;
           artifacts.summary.previewCount = Object.keys(componentDocs.files).length;
@@ -19348,6 +23188,9 @@ ${scripts}`, "");
       case "APPLY_PALETTE": {
         try {
           const settings = normalizePaletteSettings(msg.settings);
+          if (settings.spectra.length === 0) {
+            throw new Error("the palette is empty \u2014 add at least one color before generating");
+          }
           const options = __spreadValues(__spreadValues({}, DEFAULT_APPLY_OPTIONS), (_c = msg.applyOptions) != null ? _c : {});
           const report2 = await applyPalette(generatePalette(settings), options);
           await figma.clientStorage.setAsync("paletteSettings", settings);
@@ -19364,6 +23207,206 @@ ${scripts}`, "");
         }
         break;
       }
+      /* ---- DS Tools: color token remapping ---- */
+      case "REMAP_SCAN": {
+        try {
+          remapInventory = await readRemapInventory(
+            (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }),
+            (_d = msg.depth) != null ? _d : "document"
+          );
+          remapDepth = (_e = msg.depth) != null ? _e : "document";
+          figma.ui.postMessage({
+            type: "REMAP_INVENTORY",
+            stats: remapInventory.stats,
+            modes: remapInventory.modes,
+            sites: remapInventory.sites.length,
+            adjacency: remapInventory.adjacency.length,
+            warnings: remapInventory.warnings,
+            canRevert: hasRemapSnapshot(),
+            canRevertRebind: hasRebindSnapshot()
+          });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_LIST_LIBRARIES": {
+        const result = await listLibraryCollections();
+        figma.ui.postMessage({ type: "REMAP_LIBRARIES", collections: result.collections, warnings: result.warnings });
+        break;
+      }
+      case "REMAP_PREVIEW": {
+        try {
+          const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
+          figma.ui.postMessage(__spreadProps(__spreadValues({ type: "REMAP_PLAN" }, remapPlanView(plan)), { paletteSize: palette.length }));
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_APPLY": {
+        try {
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
+          const options = __spreadValues(__spreadValues({}, DEFAULT_REMAP_APPLY_OPTIONS), (_f = msg.applyOptions) != null ? _f : {});
+          const audit = remapInventory ? auditContrast(plan, remapInventory.adjacency) : { findings: [], checked: 0, improved: 0 };
+          const report2 = await applyRemap(
+            plan,
+            options,
+            (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 })
+          );
+          remapInventory = null;
+          figma.notify(
+            [
+              report2.values ? `${report2.values} values` : "",
+              report2.renamed ? `${report2.renamed} renamed` : "",
+              report2.legacy ? `${report2.legacy} parked in legacy/` : ""
+            ].filter(Boolean).join(" \xB7 ") || "Nothing to write"
+          );
+          figma.ui.postMessage({
+            type: "REMAP_APPLIED",
+            report: report2,
+            audit: {
+              checked: audit.checked,
+              improved: audit.improved,
+              findings: audit.findings.slice(0, 30).map(describeContrast),
+              total: audit.findings.length
+            },
+            canRevert: hasRemapSnapshot()
+          });
+        } catch (err) {
+          const message = String((err == null ? void 0 : err.message) || err);
+          figma.notify("Remap failed: " + message, { error: true });
+          figma.ui.postMessage({ type: "REMAP_ERROR", message });
+        }
+        break;
+      }
+      case "REMAP_REVERT": {
+        try {
+          const report2 = await revertRemap((label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }));
+          remapInventory = null;
+          figma.notify(`Reverted ${report2.values} values` + (report2.names ? ` and ${report2.names} names` : ""));
+          figma.ui.postMessage({ type: "REMAP_REVERTED", report: report2, canRevert: hasRemapSnapshot() });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_REBIND_PREVIEW":
+      case "REMAP_REBIND_APPLY": {
+        try {
+          if (msg.source.kind !== "library") {
+            throw new Error("rebinding needs the new palette read from a library \u2014 its variable keys are the destination");
+          }
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
+          const progress2 = (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 });
+          const rebindOptions = { scope: (_g = msg.scope) != null ? _g : "document" };
+          const report2 = msg.type === "REMAP_REBIND_APPLY" ? await applyRebind(plan, rebindOptions, progress2) : await previewRebind(plan, rebindOptions, progress2);
+          if (msg.type === "REMAP_REBIND_APPLY") {
+            remapInventory = null;
+            figma.notify(`Rebound: ${report2.summary}`);
+          }
+          figma.ui.postMessage({
+            type: msg.type === "REMAP_REBIND_APPLY" ? "REMAP_REBOUND" : "REMAP_REBIND_PLAN",
+            counts: report2.counts,
+            summary: report2.summary,
+            warnings: report2.warnings,
+            canRevertRebind: hasRebindSnapshot()
+          });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_REBIND_REVERT": {
+        try {
+          const report2 = await revertRebind((label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }));
+          remapInventory = null;
+          figma.notify(`Rebind reverted: ${report2.summary}`);
+          figma.ui.postMessage({
+            type: "REMAP_REBIND_REVERTED",
+            counts: report2.counts,
+            summary: report2.summary,
+            warnings: report2.warnings,
+            canRevertRebind: hasRebindSnapshot()
+          });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_BOARD": {
+        try {
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
+          figma.ui.postMessage({ type: "REMAP_PROGRESS", label: "drawing the board\u2026" });
+          const report2 = await drawRemapBoard(plan);
+          figma.notify(report2.rows ? `Board: ${report2.rows} pairs on this page` : "Board: nothing moves");
+          figma.ui.postMessage({ type: "REMAP_BOARD_DRAWN", report: report2 });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_UNPARK": {
+        try {
+          const report2 = await unparkLegacyNames();
+          remapInventory = null;
+          figma.notify(
+            report2.restored ? `Restored ${report2.restored} name(s) from legacy/` : "Nothing of this plugin\u2019s to restore"
+          );
+          figma.ui.postMessage({ type: "REMAP_UNPARKED", report: report2 });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_EXPORT_MAPPING": {
+        try {
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
+          const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind });
+          figma.ui.postMessage({
+            type: "REMAP_MAPPING",
+            format: msg.format,
+            name: msg.format === "csv" ? "mapping.csv" : "mapping.json",
+            content: msg.format === "csv" ? toCsv(mapping) : JSON.stringify(mapping, null, 2)
+          });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_REWRITE_FILES": {
+        try {
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
+          const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind });
+          const settings = { snap: (_h = msg.snap) != null ? _h : 2, byName: (_i = msg.byName) != null ? _i : false, mode: (_j = msg.mode) != null ? _j : null };
+          let replaced = 0;
+          let untouched = 0;
+          const warnings = /* @__PURE__ */ new Set();
+          const files = msg.files.map((file) => {
+            const result = rewriteColors(file.text, mapping, settings);
+            replaced += result.replacements.length;
+            untouched += result.untouched;
+            for (const warning of result.warnings) warnings.add(warning);
+            return {
+              name: file.name,
+              text: result.text,
+              changed: result.replacements.length,
+              // Enough for a report a human reads, not the whole edit list for a big file.
+              lines: result.replacements.slice(0, 40).map((entry) => `${file.name}:${entry.line}:${entry.column}  ${entry.from} \u2192 ${entry.to}` + (entry.snapped ? "  [snapped]" : "") + (entry.via === "name" ? "  [by name]" : ""))
+            };
+          });
+          figma.ui.postMessage({
+            type: "REMAP_REWRITTEN",
+            files,
+            replaced,
+            untouched,
+            warnings: [...warnings]
+          });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
       /* ---- shared ---- */
       case "READ_VARIABLES": {
         const data = await readAllVariables();
@@ -19375,7 +23418,7 @@ ${scripts}`, "");
           readAllVariables(),
           figma.clientStorage.getAsync("exportOptions")
         ]);
-        const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored))).css;
+        const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored), readRenameMap())).css;
         figma.ui.postMessage({ type: "TOKENS_CSS", css });
         break;
       }
@@ -19456,12 +23499,12 @@ ${scripts}`, "");
             { nodeId: fileNodeIds[path], content }
           ])
         );
-        const existingFiles = new Map(Object.entries((_d = msg.existingFiles) != null ? _d : {}));
+        const existingFiles = new Map(Object.entries((_k = msg.existingFiles) != null ? _k : {}));
         const plan = planRegeneration(existingFiles, freshFiles);
         let tokensCss;
         let bootstrapTokensCss;
         if (tokensOn) {
-          const tokenEmitOptions = tokenEmitOptionsFrom(previewOptions);
+          const tokenEmitOptions = tokenEmitOptionsFrom(previewOptions, readRenameMap());
           const tokenArtifacts = emitTokenArtifacts(snapshot, tokenEmitOptions);
           tokensCss = tokenArtifacts.css;
           if (previewOptions.targetOptions.framework === "bootstrap") {
@@ -19514,7 +23557,7 @@ ${scripts}`, "");
         break;
       }
       case "SCROLL_INTO_VIEW": {
-        const node = (_e = lastScanIndex.get(msg.nodeId)) != null ? _e : await figma.getNodeByIdAsync(msg.nodeId);
+        const node = (_l = lastScanIndex.get(msg.nodeId)) != null ? _l : await figma.getNodeByIdAsync(msg.nodeId);
         if (node && "visible" in node) {
           const target = node;
           figma.viewport.scrollAndZoomIntoView([target]);
@@ -19529,7 +23572,7 @@ ${scripts}`, "");
         figma.commitUndo();
         const total = msg.findings.length;
         const results = [];
-        const progress2 = (label2) => figma.ui.postMessage({ type: "LINT_FIX_PROGRESS", done: results.length, total, label: label2 });
+        const progress2 = (label3) => figma.ui.postMessage({ type: "LINT_FIX_PROGRESS", done: results.length, total, label: label3 });
         const ctx = await buildFixContext(progress2);
         try {
           for (const request of msg.findings) {
@@ -19584,7 +23627,7 @@ ${scripts}`, "");
       case "AGENT_SET_GATES": {
         const gates2 = setGates({ read: msg.read, write: msg.write });
         await rememberGates(gates2);
-        figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name, fileKey: (_f = figma.fileKey) != null ? _f : null }));
+        figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name, fileKey: (_m = figma.fileKey) != null ? _m : null }));
         break;
       }
       case "AGENT_REQUEST": {
@@ -19706,7 +23749,7 @@ ${scripts}`, "");
           let tokenArtifacts;
           let bootstrapArtifacts;
           if (modules.tokens) {
-            tokenArtifacts = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions));
+            tokenArtifacts = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions, readRenameMap()));
             files["static/css/tokens.css"] = tokenArtifacts.css;
             if (exportOptions.tokens.emitJson) files["tokens.json"] = tokenArtifacts.json;
             if (exportOptions.targetOptions.framework === "bootstrap") {
@@ -19727,10 +23770,10 @@ ${scripts}`, "");
           if (exportOptions.targetOptions.platform === "tauri" && project) {
             let startPageId;
             try {
-              startPageId = (_g = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _g.nodeId;
+              startPageId = (_n = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _n.nodeId;
             } catch (e) {
             }
-            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_h = pageRoots[0]) == null ? void 0 : _h.id;
+            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_o = pageRoots[0]) == null ? void 0 : _o.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -19763,9 +23806,9 @@ ${scripts}`, "");
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_i = sceneNodesById.get(nodeId)) != null ? _i : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (_p = sceneNodesById.get(nodeId)) != null ? _p : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_j = node.parent) == null ? void 0 : _j.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((_q = node.parent) == null ? void 0 : _q.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -19788,7 +23831,7 @@ ${scripts}`, "");
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((_k = counts[finding.rule]) != null ? _k : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_r = counts[finding.rule]) != null ? _r : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -19838,7 +23881,7 @@ ${scripts}`, "");
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (_m = (_l = figma.currentUser) == null ? void 0 : _l.name) != null ? _m : "unknown";
+            exportedBy = (_t = (_s = figma.currentUser) == null ? void 0 : _s.name) != null ? _t : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }
