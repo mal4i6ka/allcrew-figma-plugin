@@ -134,9 +134,9 @@ type PluginMessage =
       applyOptions?: Partial<RemapApplyOptions>
       overrides?: Record<string, string>
       excluded?: string[]
-      board?: boolean
     }
   | { type: 'REMAP_REVERT' }
+  | { type: 'REMAP_BOARD'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[] }
   | { type: 'REMAP_UNPARK' }
   | { type: 'REMAP_EXPORT_MAPPING'; source: RemapSource; options?: Partial<RemapOptions>; format: 'json' | 'csv'; overrides?: Record<string, string>; excluded?: string[] }
   | {
@@ -1083,14 +1083,6 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         const report = await applyRemap(plan, options, (label) =>
           figma.ui.postMessage({ type: 'REMAP_PROGRESS', label })
         )
-        let board: Awaited<ReturnType<typeof drawRemapBoard>> | null = null
-        if (msg.board) {
-          try {
-            board = await drawRemapBoard(plan)
-          } catch (err) {
-            report.warnings.push('the canvas board could not be drawn: ' + String((err as Error)?.message || err))
-          }
-        }
         // The document moved under the cached reading: usage counts and adjacency still hold,
         // but every value did not, so the next preview must scan again. A palette read off the
         // canvas is stale for the same reason; one read from a library or a paste is not.
@@ -1107,7 +1099,6 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         figma.ui.postMessage({
           type: 'REMAP_APPLIED',
           report,
-          board,
           audit: {
             checked: audit.checked,
             improved: audit.improved,
@@ -1129,6 +1120,18 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         remapInventory = null
         figma.notify(`Reverted ${report.values} values` + (report.names ? ` and ${report.names} names` : ''))
         figma.ui.postMessage({ type: 'REMAP_REVERTED', report, canRevert: hasRemapSnapshot() })
+      } catch (err) {
+        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'REMAP_BOARD': {
+      try {
+        const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
+        figma.ui.postMessage({ type: 'REMAP_PROGRESS', label: 'drawing the board…' })
+        const report = await drawRemapBoard(plan)
+        figma.notify(report.rows ? `Board: ${report.rows} pairs on this page` : 'Board: nothing moves')
+        figma.ui.postMessage({ type: 'REMAP_BOARD_DRAWN', report })
       } catch (err) {
         figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
