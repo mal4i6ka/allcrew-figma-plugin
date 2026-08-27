@@ -431,3 +431,30 @@ test('a rung with nowhere to go shares the neighbour nearer its own lightness', 
     assert.equal(landing(step), step, `neutral/${step} keeps its number`)
   }
 })
+
+test('a run of unanchored rungs is placed jointly — no slot is stranded by a reservation', () => {
+  // Refuted by the adversarial pass: placing rungs one at a time with reserved slots let a
+  // rung two hundredths from a near-white slot take the far anchor instead, and the slot went
+  // to nobody. The joint assignment minimizes total lightness shift, so the near-white tint
+  // keeps a near-white home.
+  const from = rungs('gray', [[100, '#F1F1F1'], [300, '#B8B8B8'], [500, '#7F7F7F'], [700, '#575757'], [900, '#333333']])
+  const to = rungs('gray', [[50, '#F7F7F7'], [500, '#7F7F7F'], [960, '#1A1A1A']])
+  const matches = matchStops(from, to)
+  const landing = (step: number): number => matches.find((match) => match.from.step === step)!.to.step
+
+  assert.equal(landing(100), 50, 'the light tint takes the light slot, not the mid-gray anchor')
+  assert.equal(landing(500), 500, 'the shared number holds')
+  const lightness = matches.map((match) => match.to.l)
+  for (let i = 1; i < lightness.length; i++) assert.ok(lightness[i] <= lightness[i - 1], 'order holds')
+})
+
+test('a crowded tail collapses onto its nearest rung instead of being forced backwards', () => {
+  const from = rungs('gray', [
+    [10, '#FAFAFA'], [50, '#F1F1F1'], [100, '#F7F7F7'], [200, '#999999'], [300, '#808080'], [400, '#4D4D4D'],
+  ])
+  const to = rungs('gray', [[100, '#F7F7F7'], [500, '#999999'], [900, '#404040']])
+  const matches = matchStops(from, to)
+  const landing = (step: number): number => matches.find((match) => match.from.step === step)!.to.step
+  assert.equal(landing(100), 100, 'the anchor holds')
+  assert.equal(landing(200), 500, 'the mid-gray goes to the mid-gray, not backwards to near-white')
+})
