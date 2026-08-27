@@ -15,9 +15,10 @@
  */
 
 import { lintScopeAsync, type LintFinding } from '../targets/django/lint/index.ts'
-import { findAllWithCriteria, loadAllPagesAsync } from '../utils/tree.ts'
+import { findAllWithCriteria, loadAllPagesAsync, walkSceneNodes } from '../utils/tree.ts'
 import { readAllVariables, readLocalVariables, resolveVariableValue } from '../variables.ts'
 import { describeColor, type Rgba } from './values.ts'
+import { formatHex, parseHex, type Rgb } from '../tokens/color.ts'
 import type { OpDef } from './protocol.ts'
 import { CONTEXT_OPS } from './context-ops.ts'
 import { TRANSITION_OPS } from './transition-ops.ts'
@@ -30,6 +31,36 @@ export interface ReactionSummary {
   action: string
   destinationId?: string
   navigation?: string
+}
+
+/** One paint in a stack, described so it can be acted on: what it renders, whether it is
+ * bound, and its index — the same index `node.bind` and `lint.colors` use. */
+export interface PaintSummary {
+  /** SOLID, GRADIENT_LINEAR, IMAGE, … — a non-solid paint has no single colour to report. */
+  type: string
+  index: number
+  /** `#RRGGBB`. Solid paints only; a gradient carries its colours per stop. */
+  color?: string
+  /** Only when the paint is not fully opaque — an absent `alpha` means 1. */
+  alpha?: number
+  /** Present only when the paint is hidden — an invisible paint is not a lint finding. */
+  visible?: boolean
+  /** The token on this paint, or null when it is raw. Paint-level bindings are what an
+   * instance sublayer inherits from its main component, so this is not the same question as
+   * the node-level `bindings` map. Always null on a gradient: a gradient binds per stop. */
+  bound?: string | null
+  /** Gradients only. A gradient's tokens live on its stops, so a paint reported without them
+   * says almost nothing — and `bound` above is null for a gradient however well tokenised it
+   * is, which reads as "raw" and is not. */
+  stops?: PaintStopSummary[]
+}
+
+export interface PaintStopSummary {
+  /** Percent along the gradient — the unit a `pNN` token name is written in. */
+  position: number
+  color: string
+  alpha?: number
+  bound: string | null
 }
 
 export interface NodeSummary {
@@ -56,6 +87,21 @@ export interface NodeSummary {
     perCorner?: [number, number, number, number]
     /** 0..1. Above 0 the shape is a squircle and `border-radius` alone cannot reproduce it. */
     smoothing?: number
+  }
+  /** The paints as they actually are, opt-in via `paints: true`. `bindings` answers "which
+   * token is on this field" and says nothing at all about a field with no token — so a layer
+   * flagged by `lint.colors` reads back as bare geometry, and the colour that has to be
+   * replaced is unobtainable from the very op meant to inspect it. Off by default because most
+   * callers want the token, not the pixel. */
+  paints?: {
+    fills?: PaintSummary[]
+    /** The style the fills come from, or null when the layer carries its own. A detached
+     * gradient and a styled one look identical stop for stop, so without this there is no way
+     * to tell a layer that follows the design system from one that merely resembles it — and
+     * the layer's *name* is no guide: a swatch can keep the name of a style it no longer uses. */
+    fillStyle?: string | null
+    strokes?: PaintSummary[]
+    strokeStyle?: string | null
   }
   /** Field → the token bound to it. `mismatch` is set when the layer renders something else.
    * A paint field appears per index (`fills[0]`) when the node carries several. */
@@ -430,11 +476,90 @@ async function describePaintBinding(
 
 /** Full description of one node: `summarizeNode` plus the awaited bits, recursing `depth`
  * levels of children. Depth is capped by the op's param spec, so the payload stays bounded. */
-async function describeNode(node: any, depth: number): Promise<NodeSummary> {
+const paintChannel = (value: number) => Math.round(value * 255).toString(16).toUpperCase().padStart(2, '0')
+const paintHex = (color: { r: number; g: number; b: number }) =>
+  `#${paintChannel(color.r)}${paintChannel(color.g)}${paintChannel(color.b)}`
+
+async function boundTokenName(holder: unknown): Promise<string | null> {
+  const id = (holder as { boundVariables?: { color?: { id?: string } } })?.boundVariables?.color?.id
+  if (!id) return null
+  const variable = await figma.variables.getVariableByIdAsync(id)
+  return variable ? variable.name : id
+}
+
+/**
+ * The one description of a paint, shared by `node.get` and `styles.list`.
+ *
+ * It is one function on purpose. These two ops answered the same question differently for a
+ * while — the style op reported gradient stops and the node op did not — and the gap was
+ * invisible until a gradient had to be told apart from another gradient and neither answer
+ * could do it. Two descriptions of one thing drift; one cannot.
+ */
+export async function describePaint(paint: any, index: number): Promise<PaintSummary> {
+  const out: PaintSummary = { type: String(paint?.type ?? 'UNKNOWN'), index }
+  if (paint?.visible === false) out.visible = false
+
+  if (paint?.type === 'SOLID' && paint.color) {
+    out.color = paintHex(paint.color)
+    if (typeof paint.opacity === 'number' && paint.opacity < 1) out.alpha = paint.opacity
+    out.bound = await boundTokenName(paint)
+    return out
+  }
+
+  if (Array.isArray(paint?.gradientStops)) {
+    out.bound = null
+    out.stops = []
+    for (const stop of paint.gradientStops) {
+      const described: PaintStopSummary = {
+        position: Math.round(stop.position * 100),
+        color: paintHex(stop.color),
+        bound: await boundTokenName(stop),
+      }
+      if (typeof stop.color?.a === 'number' && stop.color.a < 1) described.alpha = stop.color.a
+      out.stops.push(described)
+    }
+    return out
+  }
+
+  out.bound = await boundTokenName(paint)
+  return out
+}
+
+/** The style behind a paint field, by name. `figma.mixed` means several styles across a text
+ * range — reported as such rather than flattened to one of them. */
+async function paintStyleName(node: any, field: 'fillStyleId' | 'strokeStyleId'): Promise<string | null> {
+  const id = node[field]
+  if (id === figma.mixed) return 'mixed'
+  if (typeof id !== 'string' || id === '') return null
+  const style = await figma.getStyleByIdAsync(id)
+  return style ? style.name : id
+}
+
+async function describePaints(node: any): Promise<NodeSummary['paints'] | null> {
+  const out: NonNullable<NodeSummary['paints']> = {}
+  if (Array.isArray(node.fills)) {
+    out.fills = []
+    for (const [index, paint] of node.fills.entries()) out.fills.push(await describePaint(paint, index))
+    out.fillStyle = await paintStyleName(node, 'fillStyleId')
+  }
+  if (Array.isArray(node.strokes)) {
+    out.strokes = []
+    for (const [index, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index))
+    out.strokeStyle = await paintStyleName(node, 'strokeStyleId')
+  }
+  return out.fills || out.strokes ? out : null
+}
+
+async function describeNode(node: any, depth: number, paints = false): Promise<NodeSummary> {
   const summary = summarizeNode(node)
 
   const bindings = await describeBindings(node, summary)
   if (bindings) summary.bindings = bindings
+
+  if (paints) {
+    const described = await describePaints(node)
+    if (described) summary.paints = described
+  }
 
   if (typeof node.getReactionsAsync === 'function' || Array.isArray(node.reactions)) {
     const raw =
@@ -461,13 +586,41 @@ async function describeNode(node: any, depth: number): Promise<NodeSummary> {
 
   if (depth > 0 && Array.isArray(node.children)) {
     summary.children = []
-    for (const child of node.children) summary.children.push(await describeNode(child, depth - 1))
+    for (const child of node.children) summary.children.push(await describeNode(child, depth - 1, paints))
   }
 
   return summary
 }
 
 /* ---------------------------------------------------------------- scoping */
+
+/**
+ * What a scan should walk: one subtree, one page, or the whole document. `nodeId` is the
+ * sharding escape hatch — a page too big for one bridge call (this file's "-- Main" is 22k
+ * nodes) cannot be split by `pageId`, but it can be split by its top-level frames, and the
+ * per-shard answers sum exactly like the per-page ones do.
+ */
+async function resolveWalkRoots(params: Record<string, unknown>): Promise<{ roots: BaseNode[]; labels: string[] }> {
+  if (typeof params.nodeId === 'string' && params.nodeId !== '') {
+    const found = await figma.getNodeByIdAsync(params.nodeId)
+    if (!found || found.type === 'DOCUMENT') throw new Error(`no node with id ${params.nodeId}`)
+    if (found.type === 'PAGE') {
+      await (found as PageNode).loadAsync()
+      return { roots: [found], labels: [found.name] }
+    }
+    let page: BaseNode | null = found.parent
+    while (page && page.type !== 'PAGE') page = page.parent
+    if (page) await (page as PageNode).loadAsync()
+    return { roots: [found], labels: [`${found.name} (subtree)`] }
+  }
+  if (params.scope === 'page') {
+    const page = await resolvePage(params.pageId)
+    return { roots: [page], labels: [page.name] }
+  }
+  await loadAllPagesAsync()
+  const pages = figma.root.children.slice()
+  return { roots: pages, labels: pages.map((one) => one.name) }
+}
 
 async function resolvePage(pageId?: unknown): Promise<PageNode> {
   if (typeof pageId !== 'string' || pageId === '') return figma.currentPage
@@ -540,11 +693,19 @@ export const READ_OPS: readonly OpDef[] = [
         min: 0,
         max: 5,
       },
+      paints: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Also report the raw fills and strokes — colour, index and whether each paint is bound. ' +
+          'What `bindings` cannot answer: a field with no token is simply absent from it, so an ' +
+          'unbound layer reads back as bare geometry. Needed to act on a `lint.colors` finding.',
+      },
     },
     async run(params) {
       const node = await figma.getNodeByIdAsync(params.nodeId as string)
       if (!node) throw new Error(`no node with id ${params.nodeId}`)
-      return describeNode(node, params.depth as number)
+      return describeNode(node, params.depth as number, params.paints === true)
     },
   },
 
@@ -656,8 +817,27 @@ export const READ_OPS: readonly OpDef[] = [
     name: 'styles.list',
     summary: 'Local text, paint, effect and grid styles.',
     mutates: false,
-    params: {},
-    async run() {
+    params: {
+      paints: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Describe each paint of every paint style — colour, and the token it is bound to. For a ' +
+          'gradient, every stop with its position. Without this a style reports only its paint ' +
+          'types, so "the styles use our tokens" is a guess: a style named after a token can just ' +
+          'as easily hold hardcoded hex, and nothing in the answer would say so.',
+      },
+      consumers: {
+        type: 'boolean',
+        default: false,
+        description:
+          'List the layers actually using each style. Answers the question a style inventory ' +
+          'otherwise cannot: whether a style is applied anywhere at all. A tidied style nobody ' +
+          'consumes and a style the whole product depends on look the same in every other field. ' +
+          'One extra document walk per style, so off by default.',
+      },
+    },
+    async run(params) {
       const [text, paint, effect, grid] = await Promise.all([
         figma.getLocalTextStylesAsync(),
         figma.getLocalPaintStylesAsync(),
@@ -670,6 +850,36 @@ export const READ_OPS: readonly OpDef[] = [
         name: style.name,
         description: style.description || undefined,
       })
+
+      /* The same describer `node.get` uses — see describePaint. A style's paints and a layer's
+       * paints are the same shape of question, so they get the same answer. */
+      const paintDetail = new Map<string, unknown[]>()
+      if (params.paints === true) {
+        for (const style of paint) {
+          const described = []
+          for (const [index, one] of style.paints.entries()) described.push(await describePaint(one, index))
+          paintDetail.set(style.id, described)
+        }
+      }
+
+      const consumerDetail = new Map<string, unknown>()
+      if (params.consumers === true) {
+        for (const style of [...text, ...paint, ...effect, ...grid]) {
+          try {
+            const users = await style.getStyleConsumersAsync()
+            consumerDetail.set(style.id, {
+              count: users.length,
+              nodes: users.map((user) => ({ id: user.node.id, name: user.node.name, fields: user.fields })),
+            })
+          } catch (err) {
+            consumerDetail.set(style.id, { error: String((err as Error)?.message || err) })
+          }
+        }
+      }
+
+      const withConsumers = <T extends { id: string }>(style: BaseStyle, row: T) =>
+        consumerDetail.has(style.id) ? { ...row, consumers: consumerDetail.get(style.id) } : row
+
       return {
         text: text.map((style) => ({
           ...base(style),
@@ -678,7 +888,12 @@ export const READ_OPS: readonly OpDef[] = [
           fontSize: style.fontSize,
           lineHeight: style.lineHeight,
         })),
-        paint: paint.map((style) => ({ ...base(style), paints: style.paints.map((p) => p.type) })),
+        paint: paint.map((style) =>
+          withConsumers(style, {
+            ...base(style),
+            paints: paintDetail.get(style.id) ?? style.paints.map((one) => one.type),
+          })
+        ),
         effect: effect.map((style) => ({ ...base(style), effects: style.effects.map((e) => e.type) })),
         grid: grid.map(base),
       }
@@ -710,6 +925,14 @@ export const READ_OPS: readonly OpDef[] = [
           'Also report UNPUBLISHED / CURRENT / CHANGED per variable — whether a change made here ' +
           'has reached the files that consume it. One extra call each, so off by default.',
       },
+      resolve: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Follow alias chains and add `resolved` per mode — the value the variable actually ' +
+          'renders. Semantic collections are mostly aliases onto a primitive ramp, so without ' +
+          'this a caller matching a colour to a token has to walk the chains itself.',
+      },
     },
     async run(params) {
       const snapshot = params.library === true ? await readAllVariables() : await readLocalVariables()
@@ -728,18 +951,759 @@ export const READ_OPS: readonly OpDef[] = [
       const variables = snapshot.variables.filter((entry) => keep.has(entry.collectionId))
       const limit = params.limit as number
       const page = variables.slice(0, limit)
-      if (params.publishStatus !== true) {
+      const wantStatus = params.publishStatus === true
+      const wantResolved = params.resolve === true
+      if (!wantStatus && !wantResolved) {
         return { collections, total: variables.length, truncated: variables.length > limit, variables: page }
       }
-      const withStatus = []
+      const modesOf = new Map(collections.map((entry) => [entry.id, entry.modes]))
+      const enriched = []
       for (const entry of page) {
         const variable = await figma.variables.getVariableByIdAsync(entry.id)
-        withStatus.push({
-          ...entry,
-          publishStatus: variable ? await publishStatusOf(variable) : 'unknown (variable not found)',
+        const extra: Record<string, unknown> = {}
+        if (wantStatus) {
+          extra.publishStatus = variable ? await publishStatusOf(variable) : 'unknown (variable not found)'
+        }
+        if (wantResolved && variable) {
+          /* Per mode, because that is the unit a value has: a semantic token is one alias with a
+           * different destination in Light and Dark, and collapsing that to one number would be
+           * the wrong answer in exactly the case the caller is asking about. A broken or
+           * circular chain is reported on the mode it belongs to rather than failing the batch. */
+          const resolved: Record<string, unknown> = {}
+          for (const mode of modesOf.get(entry.collectionId) ?? []) {
+            try {
+              resolved[mode.modeId] = await resolveVariableValue(variable, mode.modeId)
+            } catch (err) {
+              resolved[mode.modeId] = { error: String((err as Error)?.message || err) }
+            }
+          }
+          extra.resolved = resolved
+        }
+        enriched.push({ ...entry, ...extra })
+      }
+      return { collections, total: variables.length, truncated: variables.length > limit, variables: enriched }
+    },
+  },
+
+  {
+    name: 'instances.external',
+    summary: 'Which foreign components are instantiated here, and how many external bindings each drags in.',
+    mutates: false,
+    params: {
+      scope: { type: 'string', default: 'document', enum: ['page', 'document'], description: 'Where to look.' },
+      pageId: { type: 'string', description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+      nodeId: { type: 'string', description: 'Walk just this subtree. Overrides scope and pageId.' },
+      limit: { type: 'number', default: 5, min: 0, max: 100, description: 'Sample instances listed per component; counts are complete.' },
+    },
+    async run(params) {
+      /* The other half of the dependency story. `variables.external` counts bindings but cannot
+       * say which ones are fixable by a rebind: a binding inside an instance of a FOREIGN
+       * component has no local main to fix — the dependency is the component itself, and the
+       * only cures are swapping it or detaching it. This op produces that decision table. */
+      const tLoad = Date.now()
+      const { roots, labels } = await resolveWalkRoots(params)
+      const loadMs = Date.now() - tLoad
+
+      const tWalk = Date.now()
+      const tops: InstanceNode[] = []
+      let visited = 0
+      for (const root of roots) {
+        const walked = await walkSceneNodes(root, (node, insideInstance) => {
+          if (!insideInstance && node.type === 'INSTANCE') tops.push(node as InstanceNode)
+        })
+        visited += walked.visited
+      }
+
+      const groups = new Map<
+        string,
+        { main: string | null; key: string | null; instances: Array<{ id: string; name: string }>; idCounts: Map<string, number> }
+      >()
+      for (const instance of tops) {
+        let main: ComponentNode | null = null
+        try {
+          main = await instance.getMainComponentAsync()
+        } catch {
+          main = null
+        }
+        /* A local main means every binding below is class A — fixed at the main by a rebind.
+         * Only foreign (and unresolvable) mains belong in this table. */
+        if (main && !main.remote) continue
+        const groupKey = main ? main.key : `unresolved:${instance.name}`
+        let group = groups.get(groupKey)
+        if (!group) {
+          group = { main: main?.name ?? null, key: main?.key ?? null, instances: [], idCounts: new Map() }
+          groups.set(groupKey, group)
+        }
+        group.instances.push({ id: instance.id, name: instance.name })
+        await walkSceneNodes(instance, (node) => {
+          const holder = node as unknown as Record<string, unknown>
+          const push = (id: unknown) => {
+            if (typeof id === 'string') group.idCounts.set(id, (group.idCounts.get(id) ?? 0) + 1)
+          }
+          const bound = holder.boundVariables as Record<string, unknown> | undefined
+          if (bound) {
+            for (const [field, value] of Object.entries(bound)) {
+              if (field === 'fills' || field === 'strokes') continue // the paints loop below owns these
+              if (Array.isArray(value)) value.forEach((entry) => push((entry as { id?: string })?.id))
+              else push((value as { id?: string })?.id)
+            }
+          }
+          for (const prop of ['fills', 'strokes'] as const) {
+            const paints = holder[prop]
+            if (!Array.isArray(paints)) continue
+            for (const paint of paints as any[]) {
+              push(paint?.boundVariables?.color?.id)
+              if (Array.isArray(paint?.gradientStops)) {
+                for (const stop of paint.gradientStops) push(stop?.boundVariables?.color?.id)
+              }
+            }
+          }
         })
       }
-      return { collections, total: variables.length, truncated: variables.length > limit, variables: withStatus }
+      const walkMs = Date.now() - tWalk
+
+      const tResolve = Date.now()
+      const distinct = new Set<string>()
+      for (const group of groups.values()) for (const id of group.idCounts.keys()) distinct.add(id)
+      const remoteCollection = new Map<string, string>()
+      const collectionNames = new Map<string, string>()
+      for (const id of distinct) {
+        const variable = await figma.variables.getVariableByIdAsync(id)
+        if (!variable || !variable.remote) continue
+        if (!collectionNames.has(variable.variableCollectionId)) {
+          const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId)
+          collectionNames.set(variable.variableCollectionId, collection ? collection.name : variable.variableCollectionId)
+        }
+        remoteCollection.set(id, collectionNames.get(variable.variableCollectionId) as string)
+      }
+      const resolveMs = Date.now() - tResolve
+
+      const out = [...groups.values()]
+        .map((group) => {
+          let bindings = 0
+          const collections = new Set<string>()
+          for (const [id, count] of group.idCounts) {
+            const collection = remoteCollection.get(id)
+            if (collection) {
+              bindings += count
+              collections.add(collection)
+            }
+          }
+          return {
+            main: group.main,
+            key: group.key,
+            instances: group.instances.length,
+            externalBindings: bindings,
+            collections: [...collections].sort(),
+            sample: group.instances.slice(0, params.limit as number),
+          }
+        })
+        .sort((a, b) => b.externalBindings - a.externalBindings)
+
+      return {
+        walked: { pages: labels, nodes: visited },
+        ms: { load: loadMs, walk: walkMs, resolve: resolveMs },
+        foreignComponents: out.length,
+        foreignInstances: out.reduce((sum, group) => sum + group.instances, 0),
+        groups: out,
+      }
+    },
+  },
+
+  {
+    name: 'variables.external',
+    summary: 'Which variables this file binds to that it does not own — the dependency a library inherits.',
+    mutates: false,
+    params: {
+      scope: {
+        type: 'string',
+        default: 'document',
+        enum: ['page', 'document'],
+        description: 'Where to walk. A page-scoped answer cannot say "this file is self-contained".',
+      },
+      pageId: { type: 'string', description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+      nodeId: {
+        type: 'string',
+        description:
+          'Walk just this subtree. The sharding escape hatch: a page too big for one call splits ' +
+          'by its top-level frames, and the shard answers sum exactly like per-page answers do. ' +
+          'Overrides scope and pageId.',
+      },
+      instances: {
+        type: 'string',
+        default: 'deep',
+        enum: ['deep', 'shallow'],
+        description:
+          'shallow does not descend into instances. Their sublayers mirror the main component, ' +
+          'which a document walk counts where it lives — but an override that adds a NEW binding ' +
+          'on a sublayer is missed, so shallow is the fast answer, not the exhaustive one. ' +
+          'walked.insideInstances from a deep walk says exactly how much shallow would save.',
+      },
+
+      styles: { type: 'boolean', default: true, description: 'Also check local styles for external bindings.' },
+      limit: { type: 'number', default: 10, min: 0, max: 200, description: 'Sites listed per variable; counts are complete.' },
+    },
+    async run(params) {
+      /* The question this answers is not "which libraries are enabled" — that is
+       * `library.collections`, and it can be empty while the file is still full of external
+       * references. A binding to a remote variable survives the library being switched off: it
+       * keeps resolving, it just stops being updatable from here. For a file about to become the
+       * one everything else depends on, that is the difference between a root and a link in a
+       * chain — and nothing in the UI adds it up. */
+      /* Two passes on purpose. The first version awaited a variable lookup for every binding of
+       * every node; on a 22k-node page that is hundreds of thousands of awaits and it took the
+       * plugin's connection down with it. Collecting ids is pure synchronous work, and the number
+       * of DISTINCT ids is small — a few dozen — so the resolution that actually costs anything
+       * happens once per variable instead of once per reference. */
+      const seen = new Map<string, { count: number; sites: unknown[] }>()
+      const cap = params.limit as number
+
+      const consider = (id: unknown, site: () => unknown) => {
+        if (typeof id !== 'string') return
+        let bucket = seen.get(id)
+        if (!bucket) {
+          bucket = { count: 0, sites: [] }
+          seen.set(id, bucket)
+        }
+        bucket.count += 1
+        if (bucket.sites.length < cap) bucket.sites.push(site())
+      }
+
+      const scanBoundMap = (bound: unknown, site: (detail: string) => unknown) => {
+        if (!bound || typeof bound !== 'object') return
+        for (const [field, value] of Object.entries(bound as Record<string, unknown>)) {
+          if (field === 'fills' || field === 'strokes') continue // scanPaints owns paints — counting both doubles every paint site
+          if (Array.isArray(value)) {
+            value.forEach((alias, index) => consider((alias as { id?: string })?.id, () => site(`${field}[${index}]`)))
+          } else {
+            consider((value as { id?: string })?.id, () => site(field))
+          }
+        }
+      }
+
+      const scanPaints = (paints: unknown, site: (detail: string) => unknown) => {
+        if (!Array.isArray(paints)) return
+        ;(paints as any[]).forEach((paint, index) => {
+          consider(paint?.boundVariables?.color?.id, () => site(`paint[${index}]`))
+          if (Array.isArray(paint?.gradientStops)) {
+            for (const stop of paint.gradientStops) {
+              consider(stop?.boundVariables?.color?.id, () => site(`paint[${index}] stop p${Math.round(stop.position * 100)}`))
+            }
+          }
+        })
+      }
+
+      const tLoad = Date.now()
+      const { roots, labels } = await resolveWalkRoots(params)
+      const loadMs = Date.now() - tLoad
+
+      const tWalk = Date.now()
+      let visited = 0
+      let insideInstances = 0
+      for (const root of roots) {
+        const walked = await walkSceneNodes(
+          root,
+          (node) => {
+            const holder = node as unknown as Record<string, unknown>
+            const site = (detail: string) => ({ id: node.id, name: node.name, type: node.type, field: detail })
+            scanBoundMap(holder.boundVariables, site)
+            scanPaints(holder.fills, site)
+            scanPaints(holder.strokes, site)
+            /* Mixed-fill TEXT: paints are the mixed sentinel, invisible to scanPaints — the
+             * segment aliases in boundVariables are the only view of those bindings. */
+            const mixedBound = holder.boundVariables as Record<string, unknown> | undefined
+            if (mixedBound) {
+              for (const prop of ['fills', 'strokes'] as const) {
+                if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
+                  ;(mixedBound[prop] as unknown[]).forEach((entry, index) =>
+                    consider((entry as { id?: string })?.id, () => site(`${prop}[${index}] (segment)`))
+                  )
+                }
+              }
+            }
+          },
+          { skipInstanceChildren: params.instances === 'shallow' }
+        )
+        visited += walked.visited
+        insideInstances += walked.insideInstances
+      }
+      const walkMs = Date.now() - tWalk
+
+      if (params.styles !== false) {
+        const [text, paint, effect, grid] = await Promise.all([
+          figma.getLocalTextStylesAsync(),
+          figma.getLocalPaintStylesAsync(),
+          figma.getLocalEffectStylesAsync(),
+          figma.getLocalGridStylesAsync(),
+        ])
+        for (const style of paint) {
+          const site = (detail: string) => ({ style: style.name, type: 'PAINT', field: detail })
+          scanPaints(style.paints, site)
+          scanBoundMap((style as unknown as Record<string, unknown>).boundVariables, site)
+        }
+        for (const style of [...text, ...effect, ...grid]) {
+          const site = (detail: string) => ({ style: style.name, type: style.type, field: detail })
+          scanBoundMap((style as unknown as Record<string, unknown>).boundVariables, site)
+        }
+      }
+
+      /* Local aliases pointing OUT are the quietest dependency of the lot: a semantic token of
+       * this file whose value is someone else's variable. Nothing on the canvas shows it, and it
+       * travels with every component that uses the token. */
+      const snapshot = await readLocalVariables()
+      for (const entry of snapshot.variables) {
+        for (const [modeId, value] of Object.entries(entry.valuesByMode ?? {})) {
+          const alias = value as { type?: string; id?: string }
+          if (alias?.type === 'VARIABLE_ALIAS' && alias.id) {
+            consider(alias.id, () => ({ alias: entry.name, mode: modeId }))
+          }
+        }
+      }
+
+      /* Pass two: one lookup per distinct id. */
+      const tResolve = Date.now()
+      const collectionNames = new Map<string, string>()
+      const collectionModes = new Map<string, ReadonlyArray<{ modeId: string; name: string }>>()
+      const found = new Map<
+        string,
+        { variable: Variable; collection: string; count: number; sites: unknown[]; values: Record<string, unknown> }
+      >()
+      for (const [id, bucket] of seen) {
+        const variable = await figma.variables.getVariableByIdAsync(id)
+        if (!variable || !variable.remote) continue
+        if (!collectionNames.has(variable.variableCollectionId)) {
+          const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId)
+          collectionNames.set(
+            variable.variableCollectionId,
+            collection ? collection.name : variable.variableCollectionId
+          )
+          collectionModes.set(variable.variableCollectionId, collection ? collection.modes : [])
+        }
+        /* Resolved per mode of ITS collection — this is what makes the report a migration input
+         * rather than a list of names: a local replacement has to be created with these exact
+         * values, or the rebind that follows repaints the file. */
+        const values: Record<string, unknown> = {}
+        for (const mode of collectionModes.get(variable.variableCollectionId) ?? []) {
+          try {
+            values[mode.name] = (await resolveVariableValue(variable, mode.modeId)).value
+          } catch (err) {
+            values[mode.name] = { error: String((err as Error)?.message || err) }
+          }
+        }
+        found.set(id, {
+          variable,
+          collection: collectionNames.get(variable.variableCollectionId) as string,
+          count: bucket.count,
+          sites: bucket.sites,
+          values,
+        })
+      }
+
+      const byCollection = new Map<string, { collection: string; variables: unknown[]; bindings: number }>()
+      for (const bucket of found.values()) {
+        let group = byCollection.get(bucket.collection)
+        if (!group) {
+          group = { collection: bucket.collection, variables: [], bindings: 0 }
+          byCollection.set(bucket.collection, group)
+        }
+        group.bindings += bucket.count
+        group.variables.push({
+          token: bucket.variable.name,
+          key: bucket.variable.key,
+          id: bucket.variable.id,
+          type: bucket.variable.resolvedType,
+          values: bucket.values,
+          bindings: bucket.count,
+          sites: bucket.sites,
+        })
+      }
+
+      const enabled = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync().catch(() => [])
+      const groups = [...byCollection.values()].sort((a, b) => b.bindings - a.bindings)
+      const resolveMs = Date.now() - tResolve
+
+      return {
+        scope: params.scope ?? 'document',
+        walked: { pages: labels, nodes: visited, insideInstances },
+        ms: { load: loadMs, walk: walkMs, resolve: resolveMs },
+        selfContained: groups.length === 0,
+        distinctVariablesSeen: seen.size,
+        externalCollections: groups.length,
+        externalVariables: found.size,
+        externalBindings: groups.reduce((sum, group) => sum + group.bindings, 0),
+        /* Both halves, because their disagreement is the finding. A collection listed here but
+         * absent from `enabledLibraryCollections` is a dependency with no live subscription: the
+         * values still resolve and can never be updated from this file again. */
+        enabledLibraryCollections: enabled.map((one) => one.name),
+        results: groups,
+      }
+    },
+  },
+
+  {
+    name: 'variables.usage',
+    summary: 'How many things actually use each token — layers, styles and gradient stops, counted.',
+    mutates: false,
+    params: {
+      variables: {
+        type: 'string[]',
+        description: 'Only these tokens, by id, key or name. Omitted counts every local variable.',
+      },
+      collection: { type: 'string', description: 'Only tokens from this collection, by name or id.' },
+      pageId: {
+        type: 'string',
+        description:
+          'With `scope: "page"`, which page to walk. Defaults to the one the designer is on. ' +
+          'The way to cover a document too big for one call: walk it page by page and add the ' +
+          'counts up, which is exactly as correct and finishes.',
+      },
+      nodeId: {
+        type: 'string',
+        description:
+          'Walk just this subtree. The sharding escape hatch: a page too big for one call splits ' +
+          'by its top-level frames, and the shard answers sum exactly like per-page answers do. ' +
+          'Overrides scope and pageId.',
+      },
+      instances: {
+        type: 'string',
+        default: 'deep',
+        enum: ['deep', 'shallow'],
+        description:
+          'shallow does not descend into instances. Their sublayers mirror the main component, ' +
+          'which a document walk counts where it lives — but an override that adds a NEW binding ' +
+          'on a sublayer is missed, so shallow is the fast answer, not the exhaustive one. ' +
+          'walked.insideInstances from a deep walk says exactly how much shallow would save.',
+      },
+
+      scope: {
+        type: 'string',
+        default: 'document',
+        enum: ['page', 'document'],
+        description:
+          'Where to walk. Unlike `lint.colors` this defaults to `document`, because a page-scoped ' +
+          'usage count answers a question nobody asked: "unused on this page" reads as "unused" and ' +
+          'is the one wrong conclusion that gets a token deleted. Beware the cost: a whole document ' +
+          'can outrun the bridge call timeout — raise ALTERY_AGENT_CALL_TIMEOUT_MS, or pass pageId ' +
+          'and sum the pages.',
+      },
+      styles: {
+        type: 'boolean',
+        default: true,
+        description:
+          'Count styles as consumers, not just layers. On by default and it matters: a token bound ' +
+          'into a paint style has no layer consumers at all, so a layers-only walk reports it ' +
+          'unused while the whole library depends on it.',
+      },
+      limit: { type: 'number', default: 20, min: 0, max: 500, description: 'Consumers listed per token; counts are always complete.' },
+    },
+    async run(params) {
+      const snapshot = await readLocalVariables()
+      const wantedCollection = typeof params.collection === 'string' ? params.collection.toLowerCase() : null
+      const collections = wantedCollection
+        ? snapshot.collections.filter(
+            (entry) => entry.id === params.collection || entry.name.toLowerCase() === wantedCollection
+          )
+        : snapshot.collections
+      const keepCollection = new Set(collections.map((entry) => entry.id))
+
+      const asked = (Array.isArray(params.variables) ? (params.variables as unknown[]) : []).filter(
+        (entry): entry is string => typeof entry === 'string' && entry !== ''
+      )
+      const askedLower = new Set(asked.map((entry) => entry.toLowerCase()))
+      const tracked = snapshot.variables.filter(
+        (entry) =>
+          keepCollection.has(entry.collectionId) &&
+          (askedLower.size === 0 ||
+            askedLower.has(entry.id.toLowerCase()) ||
+            askedLower.has(entry.key.toLowerCase()) ||
+            askedLower.has(entry.name.toLowerCase()))
+      )
+      if (asked.length > 0 && tracked.length === 0) throw new Error(`no local variable matched: ${asked.join(', ')}`)
+
+      const byId = new Map(
+        tracked.map((entry) => [
+          entry.id,
+          {
+            entry,
+            layers: [] as unknown[],
+            styles: [] as unknown[],
+            aliases: [] as unknown[],
+            layerCount: 0,
+            styleCount: 0,
+            aliasCount: 0,
+          },
+        ])
+      )
+      const note = (id: unknown, where: 'layers' | 'styles' | 'aliases', what: unknown) => {
+        if (typeof id !== 'string') return
+        const bucket = byId.get(id)
+        if (!bucket) return
+        if (where === 'layers') bucket.layerCount += 1
+        else if (where === 'styles') bucket.styleCount += 1
+        else bucket.aliasCount += 1
+        const list = bucket[where]
+        if (list.length < (params.limit as number)) list.push(what)
+      }
+
+      /* A primitive is usually referenced by no layer at all: the semantic token aliases it and
+       * the layer binds the semantic one. Counting only layers and styles therefore reports a
+       * whole palette ramp as dead — and "unused" is the word that gets a token deleted. So an
+       * alias counts as a use, and is counted separately, because it is a different kind of use:
+       * a rung nothing aliases and nothing paints is genuinely free, one that a live semantic
+       * token points at is load-bearing however few layers name it. */
+      for (const entry of snapshot.variables) {
+        for (const value of Object.values(entry.valuesByMode ?? {})) {
+          const alias = value as { type?: string; id?: string }
+          if (alias?.type === 'VARIABLE_ALIAS' && alias.id) {
+            note(alias.id, 'aliases', { token: entry.name, collection: entry.collectionId })
+          }
+        }
+      }
+
+      /** Every place a colour binding can hide on one paint: the paint itself, and — for a
+       * gradient — each stop separately. A gradient's tokens are never on the paint, which is why
+       * a walk that only reads paint-level bindings sees a fully tokenised gradient as raw. */
+      const scanPaints = (paints: unknown, where: 'layers' | 'styles', label: (detail: string) => unknown) => {
+        if (!Array.isArray(paints)) return
+        paints.forEach((paint: any, index: number) => {
+          const direct = paint?.boundVariables?.color?.id
+          if (direct) note(direct, where, label(`paint[${index}]`))
+          if (Array.isArray(paint?.gradientStops)) {
+            paint.gradientStops.forEach((stop: any) => {
+              const id = stop?.boundVariables?.color?.id
+              if (id) note(id, where, label(`paint[${index}] stop p${Math.round(stop.position * 100)}`))
+            })
+          }
+        })
+      }
+
+      /** The node-level map: `{ width: alias }` for scalars, `{ fills: [alias, …] }` for paints. */
+      const scanBoundMap = (bound: unknown, where: 'layers' | 'styles', label: (detail: string) => unknown) => {
+        if (!bound || typeof bound !== 'object') return
+        for (const [field, value] of Object.entries(bound as Record<string, unknown>)) {
+          /* One binding, two mirrors: a bound paint shows up BOTH as boundVariables.fills[i] and
+           * as paint.boundVariables.color. Counting both doubled every paint site this op ever
+           * reported. scanPaints owns paints — including the instance-sublayer case where the
+           * node-level map is empty and the paint view is the only one. */
+          if (field === 'fills' || field === 'strokes') continue
+          if (Array.isArray(value)) {
+            value.forEach((alias: any, index: number) => note(alias?.id, where, label(`${field}[${index}]`)))
+          } else {
+            note((value as { id?: string })?.id, where, label(field))
+          }
+        }
+      }
+
+      const tLoad = Date.now()
+      const { roots, labels } = await resolveWalkRoots(params)
+      const loadMs = Date.now() - tLoad
+
+      const tWalk = Date.now()
+      let visited = 0
+      let insideInstances = 0
+      for (const root of roots) {
+        const walked = await walkSceneNodes(
+          root,
+          (node) => {
+            const holder = node as unknown as Record<string, unknown>
+            const label = (detail: string) => ({ id: node.id, name: node.name, type: node.type, field: detail })
+            scanBoundMap(holder.boundVariables, 'layers', label)
+            /* Paint-level and stop-level bindings sit outside `boundVariables`, so they have to be
+             * read separately — and on an instance sublayer they are the ONLY place the inherited
+             * binding shows up. */
+            scanPaints(holder.fills, 'layers', label)
+            scanPaints(holder.strokes, 'layers', label)
+            /* Mixed-fill TEXT is the one case the paint pass cannot see (node.fills is the mixed
+             * sentinel, not an array) — there the per-segment aliases in boundVariables are the
+             * only view, and skipping them wholesale blinded the audit to bound text colours. */
+            const mixedBound = holder.boundVariables as Record<string, unknown> | undefined
+            if (mixedBound) {
+              for (const prop of ['fills', 'strokes'] as const) {
+                if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
+                  ;(mixedBound[prop] as unknown[]).forEach((entry, index) =>
+                    note((entry as { id?: string })?.id, 'layers', label(`${prop}[${index}] (segment)`))
+                  )
+                }
+              }
+            }
+          },
+          { skipInstanceChildren: params.instances === 'shallow' }
+        )
+        visited += walked.visited
+        insideInstances += walked.insideInstances
+      }
+      const walkMs = Date.now() - tWalk
+
+      let styleCount = 0
+      if (params.styles !== false) {
+        const [text, paint, effect, grid] = await Promise.all([
+          figma.getLocalTextStylesAsync(),
+          figma.getLocalPaintStylesAsync(),
+          figma.getLocalEffectStylesAsync(),
+          figma.getLocalGridStylesAsync(),
+        ])
+        styleCount = text.length + paint.length + effect.length + grid.length
+        for (const style of paint) {
+          const label = (detail: string) => ({ style: style.name, type: 'PAINT', field: detail })
+          scanPaints(style.paints, 'styles', label)
+          scanBoundMap((style as unknown as Record<string, unknown>).boundVariables, 'styles', label)
+        }
+        for (const style of [...text, ...effect, ...grid]) {
+          const label = (detail: string) => ({ style: style.name, type: style.type, field: detail })
+          scanBoundMap((style as unknown as Record<string, unknown>).boundVariables, 'styles', label)
+          scanPaints((style as unknown as Record<string, unknown>).effects, 'styles', label)
+        }
+      }
+
+      const results = [...byId.values()]
+        .map((bucket) => ({
+          token: bucket.entry.name,
+          collection: collections.find((one) => one.id === bucket.entry.collectionId)?.name ?? bucket.entry.collectionId,
+          key: bucket.entry.key,
+          /* Deliberately NOT layers + styles + aliases. A layer wearing a style carries that
+           * style's bindings, so it is counted as a layer AND the style is counted — the two are
+           * one reference seen twice, and adding them up would inflate every styled token. What
+           * the caller almost always wants is the yes/no below. */
+          used: bucket.layerCount + bucket.styleCount + bucket.aliasCount > 0,
+          /** Rendered occurrences. A component and each of its instances count separately, which
+           * is the honest answer to "how much of the file would change" and the wrong one for
+           * "how many places would I have to edit". */
+          layers: bucket.layerCount,
+          styles: bucket.styleCount,
+          /** Other variables pointing at this one. */
+          aliases: bucket.aliasCount,
+          ...(bucket.layers.length > 0 ? { usedByLayers: bucket.layers } : {}),
+          ...(bucket.styles.length > 0 ? { usedByStyles: bucket.styles } : {}),
+          ...(bucket.aliases.length > 0 ? { aliasedBy: bucket.aliases } : {}),
+        }))
+        .sort(
+          (a, b) =>
+            b.layers + b.styles + b.aliases - (a.layers + a.styles + a.aliases) || a.token.localeCompare(b.token)
+        )
+
+      return {
+        scope: params.scope ?? 'document',
+        // Named, so a page-by-page sweep can be added up without the caller having to remember
+        // which slice each answer covered.
+        walked: { pages: labels, nodes: visited, insideInstances, styles: styleCount },
+        ms: { load: loadMs, walk: walkMs },
+        tokens: results.length,
+        unused: results.filter((row) => !row.used).length,
+        /* Said out loud because the number invites the wrong conclusion. Zero here means "nothing
+         * in THIS file", and no Plugin API call can widen that: variables have no consumer
+         * enumeration at all, and even styles' `getStyleConsumersAsync` stops at the file edge. A
+         * published token read as unused is the deletion nobody meant to make. */
+        caveat: 'counts cover this file only — a token consumed by another file reports zero here',
+        results,
+      }
+    },
+  },
+
+  {
+    name: 'variables.match',
+    summary: 'Which token is this colour — exactly, or nearest, and whether the answer is ambiguous.',
+    mutates: false,
+    params: {
+      colors: {
+        type: 'string[]',
+        required: true,
+        description: 'Hex colours to look up, e.g. ["#191919", "#FB5B0A"]. Alpha is ignored.',
+      },
+      collection: { type: 'string', description: 'Only match against this collection. Omitted searches them all.' },
+      nearest: {
+        type: 'number',
+        default: 3,
+        min: 0,
+        max: 20,
+        description: 'How many near misses to return per colour when there is no exact match. 0 for none.',
+      },
+    },
+    async run(params) {
+      const wanted = (Array.isArray(params.colors) ? (params.colors as unknown[]) : [])
+        .filter((entry): entry is string => typeof entry === 'string')
+      if (wanted.length === 0) throw new Error('"colors" must be a non-empty array of hex strings')
+
+      const snapshot = await readLocalVariables()
+      const filter = typeof params.collection === 'string' ? params.collection.toLowerCase() : null
+      const collections = filter
+        ? snapshot.collections.filter((entry) => entry.id === params.collection || entry.name.toLowerCase() === filter)
+        : snapshot.collections
+      const modesOf = new Map(collections.map((entry) => [entry.id, entry]))
+
+      /* Every token, resolved per mode, flattened to one list. A semantic token is an alias with
+       * a different destination in each mode, so it belongs here once per mode — the same colour
+       * can be `content/primary` in Light and something unrelated in Dark. */
+      const rungs: Array<{ token: string; collection: string; mode: string; hex: string; rgb: Rgb; alpha: number }> = []
+      for (const entry of snapshot.variables) {
+        if (entry.resolvedType !== 'COLOR') continue
+        const owner = modesOf.get(entry.collectionId)
+        if (!owner) continue
+        const variable = await figma.variables.getVariableByIdAsync(entry.id)
+        if (!variable) continue
+        for (const mode of owner.modes) {
+          try {
+            const resolved = await resolveVariableValue(variable, mode.modeId)
+            const value = resolved.value as { r?: number; g?: number; b?: number; a?: number } | undefined
+            if (!value || typeof value.r !== 'number') continue
+            const rgb = { r: value.r, g: value.g!, b: value.b! }
+            const alpha = typeof value.a === 'number' ? value.a : 1
+            rungs.push({ token: entry.name, collection: owner.name, mode: mode.name, hex: formatHex(rgb), rgb, alpha })
+          } catch {
+            /* a broken or circular chain is not a match — skip the mode, keep the sweep */
+          }
+        }
+      }
+
+      const distance = (a: Rgb, b: Rgb) =>
+        Math.sqrt(((a.r - b.r) * 255) ** 2 + ((a.g - b.g) * 255) ** 2 + ((a.b - b.b) * 255) ** 2)
+
+      /* Alpha is part of the identity, not a detail. An alpha ramp — `alpha/orange/10 … /72`, or
+       * the tail of a gradient fading `#FB5B0A` to nothing — is one RGB triple at a dozen
+       * opacities, so matching on RGB alone reports every rung as an exact hit and buries the one
+       * that is actually the layer's colour. Input alpha may be given as a trailing byte
+       * (`#FB5B0A40`); omitted means opaque. */
+      const withAlpha = (value: string) => {
+        const raw = value.trim().replace(/^#/, '')
+        const rgb = parseHex(raw.length === 8 ? raw.slice(0, 6) : raw)
+        if (!rgb) return null
+        const alpha = raw.length === 8 ? parseInt(raw.slice(6, 8), 16) / 255 : 1
+        return { rgb, alpha }
+      }
+      const sameAlpha = (a: number, b: number) => Math.abs(a - b) < 0.004
+
+      const results = wanted.map((input) => {
+        const parsed = withAlpha(input)
+        if (!parsed) return { color: input, error: 'not a hex colour' }
+        const { rgb, alpha } = parsed
+        const hex = formatHex(rgb)
+        const exact = rungs.filter((rung) => rung.hex === hex && sameAlpha(rung.alpha, alpha))
+        const seen = new Set(exact.map((rung) => rung.token))
+        const near = rungs
+          .filter((rung) => !(rung.hex === hex && sameAlpha(rung.alpha, alpha)))
+          .map((rung) => ({ ...rung, delta: distance(rgb, rung.rgb) }))
+          .sort((a, b) => a.delta - b.delta)
+          .slice(0, params.nearest as number)
+        const show = ({ token, collection, mode, alpha: at }: { token: string; collection: string; mode: string; alpha: number }) => ({
+          token,
+          collection,
+          mode,
+          ...(at < 0.999 ? { alpha: Math.round(at * 1000) / 1000 } : {}),
+        })
+        return {
+          color: alpha < 0.999 ? `${hex} ${Math.round(alpha * 100)}%` : hex,
+          exact: exact.map(show),
+          /* The flag that stops a caller automating this. A colour does not determine a token:
+           * one hex is routinely `accent/primary` AND `action/primary/background`, and picking
+           * between them is a decision about meaning that no distance can make. Say so, rather
+           * than returning the first and letting it look settled. */
+          ambiguous: seen.size > 1,
+          ...(exact.length === 0
+            ? { nearest: near.map((rung) => ({ ...show(rung), hex: rung.hex, delta: Math.round(rung.delta * 100) / 100 })) }
+            : {}),
+        }
+      })
+
+      return { searched: rungs.length, collections: collections.map((entry) => entry.name), results }
     },
   },
 
@@ -881,8 +1845,24 @@ export const READ_OPS: readonly OpDef[] = [
         description: 'Where to look. `document` walks every page and is slow on a big file.',
       },
       limit: { type: 'number', default: 300, min: 1, max: 5000, description: 'Cap on findings returned.' },
+      ignore: {
+        type: 'string[]',
+        description:
+          'Colours to leave alone, as hex. For values that are deliberately outside the design ' +
+          'system — payment-scheme brand colours, a partner logo — which cannot be tokenised and ' +
+          'should not be counted as debt. Without this the totals stay permanently non-zero and ' +
+          'stop working as a health number. Case-insensitive; alpha is ignored.',
+      },
     },
     async run(params) {
+      /* Compared on the six hex digits only. A brand colour is that colour whether or not the
+       * layer carrying it happens to sit at 40% — matching alpha too would let one stray opacity
+       * put the finding back, which is exactly the noise this is here to remove. */
+      const ignored = new Set(
+        (Array.isArray(params.ignore) ? (params.ignore as unknown[]) : [])
+          .filter((entry): entry is string => typeof entry === 'string')
+          .map((entry) => entry.trim().replace(/^#/, '').slice(0, 6).toLowerCase())
+      )
       const pages: PageNode[] =
         params.scope === 'document'
           ? (await loadAllPagesAsync(), figma.root.children.slice())
@@ -893,6 +1873,13 @@ export const READ_OPS: readonly OpDef[] = [
         const roots = page.children.filter((node): node is SceneNode => 'visible' in node)
         for (const finding of await lintScopeAsync(roots)) {
           if (finding.rule !== 'unbound-fill' && finding.rule !== 'unbound-stroke') continue
+          if (
+            ignored.size > 0 &&
+            typeof finding.value === 'string' &&
+            ignored.has(finding.value.replace(/^#/, '').slice(0, 6).toLowerCase())
+          ) {
+            continue
+          }
           findings.push({ ...finding, page: page.name })
         }
       }
@@ -904,7 +1891,51 @@ export const READ_OPS: readonly OpDef[] = [
         pages: pages.map((page) => page.name),
         total: findings.length,
         byRule,
+        // Named back, so a total that dropped is explained by the answer itself rather than by
+        // remembering what was passed in. A filter nobody can see is a filter that misleads.
+        ...(ignored.size > 0 ? { ignored: [...ignored].map((hex) => `#${hex}`) } : {}),
         findings: findings.slice(0, params.limit as number),
+      }
+    },
+  },
+
+  {
+    name: 'text.segments',
+    summary: 'The styled runs of one TEXT node — ranges, characters, and per-run variable bindings.',
+    mutates: false,
+    params: {
+      nodeId: { type: 'string', required: true, description: 'A TEXT node id.' },
+    },
+    async run(params) {
+      const found = await figma.getNodeByIdAsync(params.nodeId as string)
+      if (!found || found.type !== 'TEXT') throw new Error(`${found ? found.type : 'nothing'} — need a TEXT node`)
+      const text = found as TextNode
+      /* Exists because three write strategies in a row "succeeded" against one invisible run and
+       * the re-read said otherwise — guessing at run structure from outside cost more than one
+       * read op. Newlines are escaped so a paragraph mark is visible instead of being one. */
+      const segments = (text.getStyledTextSegments(['boundVariables', 'fills']) as unknown as Array<{
+        start: number
+        end: number
+        characters: string
+        boundVariables?: Record<string, unknown>
+        fills?: Paint[]
+      }>).map((segment) => ({
+        start: segment.start,
+        end: segment.end,
+        characters: segment.characters.replace(/\n/g, '\\n'),
+        boundVariables: segment.boundVariables ?? {},
+        fills: (segment.fills ?? []).map((paint) => ({
+          type: paint.type,
+          bound:
+            (paint as { boundVariables?: { color?: { id?: string } } }).boundVariables?.color?.id ?? null,
+        })),
+      }))
+      return {
+        node: { id: text.id, name: text.name },
+        length: text.characters.length,
+        characters: text.characters.replace(/\n/g, '\\n'),
+        nodeBound: (text as unknown as { boundVariables?: Record<string, unknown> }).boundVariables ?? {},
+        segments,
       }
     },
   },

@@ -45,6 +45,48 @@ test('lintScope flags a solid fill with no bound variable', () => {
   assert.equal(findingsFor(findings, 'unbound-fill').length, 1)
 })
 
+test('lintScope reports the colour of the offending fill, not just that it is unbound', () => {
+  const node = frame({ fills: [{ type: 'SOLID', color: { r: 1, g: 0.357, b: 0.039 } }] })
+  const [finding] = findingsFor(lintScope([node]), 'unbound-fill')
+  // The whole point of carrying it: a fixer can pick a token from this without re-reading the
+  // node, which `node.get` would not answer anyway — it reports bindings, not raw paints.
+  assert.equal(finding.value, '#ff5b0a')
+  assert.equal(finding.paintIndex, 0)
+  assert.equal(finding.alpha, undefined)
+})
+
+test('lintScope names which paint in the stack is unbound', () => {
+  // First paint is bound, second is not: the index has to point at the second, because that is
+  // the argument `node.bind` takes to narrow the fix to one paint.
+  const node = frame({
+    fills: [
+      { type: 'SOLID', color: { r: 0, g: 0, b: 0 } },
+      { type: 'SOLID', color: { r: 1, g: 1, b: 1 } },
+    ],
+    boundVariables: { fills: [{ type: 'VARIABLE_ALIAS', id: 'VariableID:1' }] },
+  })
+  const [finding] = findingsFor(lintScope([node]), 'unbound-fill')
+  assert.equal(finding.paintIndex, 1)
+  assert.equal(finding.value, '#ffffff')
+})
+
+test('lintScope carries paint alpha only when it is not opaque', () => {
+  const node = frame({ fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 }, opacity: 0.5 }] })
+  const [finding] = findingsFor(lintScope([node]), 'unbound-fill')
+  assert.equal(finding.alpha, 0.5)
+  assert.equal(finding.value, '#000000')
+})
+
+test('lintScope reports the colour of an unbound stroke too', () => {
+  const node = frame({
+    layoutMode: 'HORIZONTAL',
+    strokes: [{ type: 'SOLID', color: { r: 0.098, g: 0.098, b: 0.098 } }],
+  })
+  const [finding] = findingsFor(lintScope([node]), 'unbound-stroke')
+  assert.equal(finding.value, '#191919')
+  assert.equal(finding.paintIndex, 0)
+})
+
 test('lintScope does not flag a solid fill bound to a variable', () => {
   const node = frame({
     fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 } }],

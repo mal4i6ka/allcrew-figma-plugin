@@ -8319,6 +8319,31 @@ ${mediaCss}`;
       figma.skipInvisibleInstanceChildren = false;
     }
   }
+  async function walkSceneNodes(root, visit, opts) {
+    figma.skipInvisibleInstanceChildren = true;
+    try {
+      let visited = 0;
+      let insideInstances = 0;
+      let steps = 0;
+      const stack = [[root, false]];
+      while (stack.length > 0) {
+        const [node, inInstance] = stack.pop();
+        if (isSceneNode(node) && (node !== root || (opts == null ? void 0 : opts.includeRoot) !== false)) {
+          visited += 1;
+          if (inInstance) insideInstances += 1;
+          visit(node, inInstance);
+        }
+        if (hasChildren(node) && !((opts == null ? void 0 : opts.skipInstanceChildren) && node.type === "INSTANCE")) {
+          const below = inInstance || node.type === "INSTANCE";
+          for (let i = node.children.length - 1; i >= 0; i--) stack.push([node.children[i], below]);
+        }
+        if (++steps % YIELD_EVERY === 0) await yieldToHost();
+      }
+      return { visited, insideInstances };
+    } finally {
+      figma.skipInvisibleInstanceChildren = false;
+    }
+  }
   function hasChildren(node) {
     return "children" in node;
   }
@@ -8767,6 +8792,32 @@ ${mediaCss}`;
     nodes.forEach(visit);
     return { leaves: leaves2, fills, videoFills, masks };
   }
+  async function tokeniseInlineSvg(svg, source) {
+    var _a, _b;
+    const byColor = /* @__PURE__ */ new Map();
+    const channel = (value) => Math.round(value * 255).toString(16).padStart(2, "0");
+    for (const prop of ["fills", "strokes"]) {
+      const paints2 = source[prop];
+      if (!Array.isArray(paints2)) continue;
+      for (const paint of paints2) {
+        if (paint.type !== "SOLID" || paint.visible === false) continue;
+        const aliasId = (_b = (_a = paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
+        if (!aliasId) continue;
+        const variable = await figma.variables.getVariableByIdAsync(aliasId);
+        if (!variable) continue;
+        const solid4 = paint;
+        const hex = `#${channel(solid4.color.r)}${channel(solid4.color.g)}${channel(solid4.color.b)}`.toLowerCase();
+        const known = byColor.get(hex);
+        byColor.set(hex, known === void 0 ? variable.name : known === variable.name ? known : null);
+      }
+    }
+    if (byColor.size === 0) return svg;
+    return svg.replace(/\b(fill|stroke)="(#[0-9a-fA-F]{6})"/g, (whole, attribute, hex) => {
+      const token2 = byColor.get(hex.toLowerCase());
+      if (!token2) return whole;
+      return `${attribute}="var(${toCssVarName(token2)}, ${hex})"`;
+    });
+  }
   async function annotateVectorLeaves(nodes, sceneNodesById, inlineThresholdBytes = DEFAULT_VECTOR_INLINE_THRESHOLD_BYTES) {
     const visit = async (node) => {
       if (node.type === "container" || node.type === "instance-ref") {
@@ -8778,7 +8829,7 @@ ${mediaCss}`;
       if (!source) return;
       try {
         const asset = await exportVectorAsset(source, inlineThresholdBytes);
-        if (asset.kind === "inline") node.inlineSvg = asset.svg;
+        if (asset.kind === "inline") node.inlineSvg = await tokeniseInlineSvg(asset.svg, source);
         else node.assetSrc = `img/${asset.filename}`;
       } catch (error) {
         console.warn(
@@ -8981,6 +9032,17 @@ ${mediaCss}`;
     var _a;
     return Boolean((_a = paint.boundVariables) == null ? void 0 : _a.color);
   }
+  function channelToHex2(channel) {
+    return Math.round(channel * 255).toString(16).padStart(2, "0");
+  }
+  function paintDetail(paint, index) {
+    const detail = {
+      value: `#${channelToHex2(paint.color.r)}${channelToHex2(paint.color.g)}${channelToHex2(paint.color.b)}`,
+      paintIndex: index
+    };
+    if (typeof paint.opacity === "number" && paint.opacity < 1) detail.alpha = paint.opacity;
+    return detail;
+  }
   function hasChildren2(node) {
     return "children" in node;
   }
@@ -9007,30 +9069,30 @@ ${mediaCss}`;
     }
     if ("fills" in node && Array.isArray(node.fills) && !paintStyleSet(node.fillStyleId)) {
       const boundFills = "boundVariables" in node ? (_a = node.boundVariables) == null ? void 0 : _a.fills : void 0;
-      const hasUnboundSolidFill = node.fills.some(
+      const unboundFill = node.fills.findIndex(
         (fill, index) => fill.type === "SOLID" && fill.visible !== false && !paintBound(fill) && !(boundFills == null ? void 0 : boundFills[index])
       );
-      if (hasUnboundSolidFill) {
-        findings.push({
+      if (unboundFill !== -1) {
+        findings.push(__spreadValues({
           nodeId: node.id,
           nodeName: node.name,
           rule: "unbound-fill",
           message: "Solid fill is not bound to a color variable"
-        });
+        }, paintDetail(node.fills[unboundFill], unboundFill)));
       }
     }
     if ("strokes" in node && Array.isArray(node.strokes) && !paintStyleSet(node.strokeStyleId)) {
       const boundStrokes = "boundVariables" in node ? (_b = node.boundVariables) == null ? void 0 : _b.strokes : void 0;
-      const hasUnboundSolidStroke = node.strokes.some(
+      const unboundStroke = node.strokes.findIndex(
         (stroke, index) => stroke.type === "SOLID" && stroke.visible !== false && !paintBound(stroke) && !(boundStrokes == null ? void 0 : boundStrokes[index])
       );
-      if (hasUnboundSolidStroke) {
-        findings.push({
+      if (unboundStroke !== -1) {
+        findings.push(__spreadValues({
           nodeId: node.id,
           nodeName: node.name,
           rule: "unbound-stroke",
           message: "Solid stroke is not bound to a color variable"
-        });
+        }, paintDetail(node.strokes[unboundStroke], unboundStroke)));
       }
     }
     if (node.type === "TEXT" && node.textStyleId === "") {
@@ -9165,14 +9227,14 @@ ${mediaCss}`;
   }
   var SNAP_DELTA_E = 2;
   var SNAP_ALPHA_EPSILON = 0.01;
-  function channelToHex2(channel) {
+  function channelToHex3(channel) {
     return Math.round(channel * 255).toString(16).padStart(2, "0");
   }
   function cssHex(color) {
-    return `#${channelToHex2(color.r)}${channelToHex2(color.g)}${channelToHex2(color.b)}`;
+    return `#${channelToHex3(color.r)}${channelToHex3(color.g)}${channelToHex3(color.b)}`;
   }
   function autoVariableName(color) {
-    const hex = `${channelToHex2(color.r)}${channelToHex2(color.g)}${channelToHex2(color.b)}`;
+    const hex = `${channelToHex3(color.r)}${channelToHex3(color.g)}${channelToHex3(color.b)}`;
     return color.a >= 1 ? `auto/${hex}` : `auto/${hex}-a${Math.round(color.a * 100)}`;
   }
   function sortedIndices(rects, axis) {
@@ -12804,12 +12866,12 @@ ${scrollGuards}` : project.css;
     }
     return null;
   }
-  var channelToHex3 = (value) => {
+  var channelToHex4 = (value) => {
     const byte = Math.round(clamp01(value) * 255);
     return byte.toString(16).toUpperCase().padStart(2, "0");
   };
   function formatHex(rgb) {
-    return `#${channelToHex3(rgb.r)}${channelToHex3(rgb.g)}${channelToHex3(rgb.b)}`;
+    return `#${channelToHex4(rgb.r)}${channelToHex4(rgb.g)}${channelToHex4(rgb.b)}`;
   }
   function srgbToLinear(value) {
     return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
@@ -15299,6 +15361,17 @@ ${scripts}`, "");
     const fonts = text3.characters.length > 0 ? text3.getRangeAllFontNames(0, text3.characters.length) : text3.fontName === figma.mixed ? [] : [text3.fontName];
     await Promise.all(fonts.map((font) => figma.loadFontAsync(font)));
   }
+  async function describePriorPaint(paint) {
+    var _a, _b;
+    const aliasId = (_b = (_a = paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
+    if (aliasId) {
+      const known = await figma.variables.getVariableByIdAsync(aliasId);
+      return known ? known.name : aliasId;
+    }
+    const channel = (value) => Math.round(value * 255).toString(16).padStart(2, "0");
+    const hex = `#${channel(paint.color.r)}${channel(paint.color.g)}${channel(paint.color.b)}`;
+    return paint.opacity !== void 0 && paint.opacity < 1 ? `${hex} ${Math.round(paint.opacity * 100)}%` : hex;
+  }
   async function bindPaints(node, prop, variable, paintIndex, dryRun) {
     const styleId = node[prop === "fills" ? "fillStyleId" : "strokeStyleId"];
     if (typeof styleId === "string" && styleId !== "") {
@@ -15308,9 +15381,11 @@ ${scripts}`, "");
     if (!Array.isArray(paints2)) throw new Error(`${prop} are unreadable on this node`);
     const next = paints2.slice();
     const touched = [];
+    const was = [];
     for (let i = 0; i < next.length; i++) {
       if (paintIndex !== void 0 && i !== paintIndex) continue;
       if (next[i].type !== "SOLID") continue;
+      was.push(`${prop}[${i}]=${await describePriorPaint(next[i])}`);
       next[i] = figma.variables.setBoundVariableForPaint(next[i], "color", variable);
       touched.push(i);
     }
@@ -15318,7 +15393,10 @@ ${scripts}`, "");
       throw new Error(paintIndex === void 0 ? `no solid paint in ${prop}` : `${prop}[${paintIndex}] is not a solid paint`);
     }
     if (!dryRun) node[prop] = next;
-    return touched.length === next.length ? prop : `${prop}[${touched.join(",")}]`;
+    return {
+      detail: touched.length === next.length ? prop : `${prop}[${touched.join(",")}]`,
+      before: was.join(" ")
+    };
   }
   var WRITE_OPS = [
     {
@@ -15414,6 +15492,10 @@ ${scripts}`, "");
           default: false,
           description: "Create the collection when no local one matches."
         },
+        modes: {
+          type: "string[]",
+          description: 'Mode names the collection must offer before values are written, e.g. ["Light", "Dark"]. A missing mode is added (a freshly created collection has one default mode, which is renamed to the first name given rather than left as "Mode 1"). Existing modes are never removed or reordered. Mode count is plan-limited \u2014 the runtime error names the limit.'
+        },
         updateExisting: {
           type: "boolean",
           default: false,
@@ -15437,6 +15519,19 @@ ${scripts}`, "");
           }
         }
         if (!collection) throw new Error(`collection "${params.collection}" does not exist yet \u2014 dry run cannot create it`);
+        if (Array.isArray(params.modes)) {
+          const wanted = params.modes.filter(
+            (entry) => typeof entry === "string" && entry !== ""
+          );
+          const have = () => collection.modes.map((mode) => mode.name.toLowerCase());
+          for (const name of wanted) {
+            if (have().includes(name.toLowerCase())) continue;
+            if (dryRun) continue;
+            const fossil = collection.modes.length === 1 && !wanted.some((w) => w.toLowerCase() === collection.modes[0].name.toLowerCase()) ? collection.modes[0] : null;
+            if (fossil) collection.renameMode(fossil.modeId, name);
+            else collection.addMode(name);
+          }
+        }
         const existing = (await figma.variables.getLocalVariablesAsync()).filter(
           (variable) => variable.variableCollectionId === collection.id
         );
@@ -15536,7 +15631,7 @@ ${scripts}`, "");
         }
       },
       async run(params) {
-        var _a;
+        var _a, _b, _c, _d, _e;
         const bindings = asArray(params.bindings, "bindings");
         const dryRun = params.dryRun === true;
         if (!dryRun) figma.commitUndo();
@@ -15564,7 +15659,10 @@ ${scripts}`, "");
             }
             const node = found;
             nodeName = node.name;
-            const variable = entry.variable === null || entry.variable === void 0 ? null : await resolveVariableRef(entry.variable);
+            if (!Object.prototype.hasOwnProperty.call(entry, "variable")) {
+              throw new Error('missing "variable" \u2014 pass null explicitly to unbind');
+            }
+            const variable = entry.variable === null ? null : await resolveVariableRef(entry.variable);
             const paintIndex = entry.paintIndex === void 0 ? void 0 : Number(entry.paintIndex);
             if (paintIndex !== void 0 && !Number.isInteger(paintIndex)) {
               throw new Error('"paintIndex" must be a whole number');
@@ -15579,15 +15677,20 @@ ${scripts}`, "");
                   throw new Error(`"${one}" takes a ${wants} variable, but "${variable.name}" is ${variable.resolvedType}`);
                 }
                 let detail;
+                let before;
                 if (one in PAINT_FIELDS) {
                   const applyTo = target.kind === "library" ? node : target.node;
-                  detail = await bindPaints(applyTo, PAINT_FIELDS[one], variable, paintIndex, dryRun);
+                  const done = await bindPaints(applyTo, PAINT_FIELDS[one], variable, paintIndex, dryRun);
+                  detail = done.detail;
+                  before = done.before;
                 } else {
                   if (target.kind === "library") {
                     throw new Error(`inside a library instance \u2014 "${one}" cannot be overridden on a sublayer`);
                   }
                   const applyTo = target.node;
                   if (!(one in applyTo)) throw new Error(`a ${applyTo.type} has no "${one}"`);
+                  const priorAlias = (_c = (_b = applyTo.boundVariables) == null ? void 0 : _b[one]) == null ? void 0 : _c.id;
+                  before = priorAlias ? (_e = (_d = await figma.variables.getVariableByIdAsync(priorAlias)) == null ? void 0 : _d.name) != null ? _e : priorAlias : "unbound";
                   if (one === "characters" && applyTo.type === "TEXT") await loadTextFonts(applyTo);
                   if (!dryRun) {
                     ;
@@ -15605,7 +15708,8 @@ ${scripts}`, "");
                   variable: variable ? variable.name : null,
                   ok: true,
                   target: where,
-                  detail
+                  detail,
+                  before
                 });
               } catch (err) {
                 results.push({
@@ -15640,6 +15744,938 @@ ${scripts}`, "");
           failed: results.length - bound.length,
           results
         };
+      }
+    },
+    {
+      name: "style.bind",
+      summary: "Bind a paint style \u2014 solid paint, or one gradient stop \u2014 to a variable, and verify it stuck.",
+      mutates: true,
+      params: {
+        bindings: {
+          type: "json",
+          required: true,
+          description: 'Array of { style, paint?, stop?, variable }. `style` is a style id, key or name from `styles.list`. `paint` is the index in the style (default 0). `stop` is a gradient stop POSITION IN PERCENT \u2014 the same number a `pNN` token name carries \u2014 omitted for a solid paint. `variable` is an id, a name ("Colors/orange/500") or a library key; null unbinds.'
+        },
+        dryRun: { type: "boolean", default: false, description: "Report what would change without writing anything." }
+      },
+      async run(params) {
+        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
+        const rows = params.bindings;
+        if (!Array.isArray(rows)) throw new Error('"bindings" must be an array');
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const local = await figma.getLocalPaintStylesAsync();
+        const findStyle = async (ref) => {
+          if (typeof ref !== "string" || ref === "") throw new Error('missing "style"');
+          const byId = local.find((style) => style.id === ref || style.key === ref);
+          if (byId) return byId;
+          const named = local.filter((style) => style.name.toLowerCase() === ref.toLowerCase());
+          if (named.length === 1) return named[0];
+          if (named.length > 1) throw new Error(`"${ref}" names ${named.length} styles \u2014 pass an id instead`);
+          throw new Error(`no local paint style "${ref}"`);
+        };
+        const stopOf = (paint, percent) => {
+          const hits = paint.gradientStops.map((stop, index) => ({ index, at: Math.round(stop.position * 100) })).filter((candidate) => candidate.at === percent);
+          if (hits.length === 0) {
+            throw new Error(
+              `no stop at ${percent}% \u2014 this paint has ${paint.gradientStops.map((stop) => `p${Math.round(stop.position * 100)}`).join(", ")}`
+            );
+          }
+          if (hits.length > 1) throw new Error(`${hits.length} stops sit at ${percent}% \u2014 cannot say which`);
+          return hits[0].index;
+        };
+        const nameOf = async (id) => {
+          var _a2, _b2;
+          return id ? (_b2 = (_a2 = await figma.variables.getVariableByIdAsync(id)) == null ? void 0 : _a2.name) != null ? _b2 : id : null;
+        };
+        const results = [];
+        for (const [index, raw] of rows.entries()) {
+          const label2 = `bindings[${index}]`;
+          try {
+            const entry = record(raw, label2);
+            if (!Object.prototype.hasOwnProperty.call(entry, "variable")) {
+              throw new Error('missing "variable" \u2014 pass null explicitly to unbind');
+            }
+            const style = await findStyle(entry.style);
+            const paintIndex = entry.paint === void 0 ? 0 : Number(entry.paint);
+            if (!Number.isInteger(paintIndex)) throw new Error('"paint" must be a whole number');
+            const paints2 = style.paints.slice();
+            const target = paints2[paintIndex];
+            if (!target) throw new Error(`this style has ${paints2.length} paint(s), no index ${paintIndex}`);
+            const variable = entry.variable === null ? null : await resolveVariableRef(entry.variable);
+            if (variable && variable.resolvedType !== "COLOR") {
+              throw new Error(`"${variable.name}" is ${variable.resolvedType}, not COLOR`);
+            }
+            const alias = variable ? { type: "VARIABLE_ALIAS", id: variable.id } : void 0;
+            let before;
+            if (target.type === "SOLID") {
+              if (entry.stop !== void 0) throw new Error(`paint ${paintIndex} is solid \u2014 drop "stop"`);
+              before = await nameOf(
+                (_b = (_a = target.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id
+              );
+              paints2[paintIndex] = figma.variables.setBoundVariableForPaint(target, "color", variable);
+            } else {
+              const gradient = target;
+              if (!Array.isArray(gradient.gradientStops)) throw new Error(`paint ${paintIndex} has no gradient stops`);
+              if (entry.stop === void 0) throw new Error(`paint ${paintIndex} is a gradient \u2014 pass "stop" as a percent`);
+              const at = stopOf(gradient, Number(entry.stop));
+              before = await nameOf((_d = (_c = gradient.gradientStops[at].boundVariables) == null ? void 0 : _c.color) == null ? void 0 : _d.id);
+              const stops = gradient.gradientStops.map(
+                (stop, at2) => at2 !== at ? stop : __spreadValues({ position: stop.position, color: stop.color }, alias ? { boundVariables: { color: alias } } : {})
+              );
+              paints2[paintIndex] = __spreadProps(__spreadValues({}, gradient), { gradientStops: stops });
+            }
+            if (dryRun) {
+              results.push(__spreadProps(__spreadValues({
+                style: style.name,
+                paint: paintIndex
+              }, entry.stop === void 0 ? {} : { stop: Number(entry.stop) }), {
+                before,
+                variable: variable ? variable.name : null,
+                ok: true,
+                verified: null
+              }));
+              continue;
+            }
+            style.paints = paints2;
+            const written = await figma.getStyleByIdAsync(style.id);
+            const check = (_e = written == null ? void 0 : written.paints) == null ? void 0 : _e[paintIndex];
+            const landed = (check == null ? void 0 : check.type) === "SOLID" ? (_h = (_g = (_f = check.boundVariables) == null ? void 0 : _f.color) == null ? void 0 : _g.id) != null ? _h : null : (_m = (_l = (_k = (_j = (_i = check == null ? void 0 : check.gradientStops) == null ? void 0 : _i[stopOf(check, Number(entry.stop))]) == null ? void 0 : _j.boundVariables) == null ? void 0 : _k.color) == null ? void 0 : _l.id) != null ? _m : null;
+            const verified = variable ? landed === variable.id : landed === null;
+            results.push(__spreadValues(__spreadProps(__spreadValues({
+              style: style.name,
+              paint: paintIndex
+            }, entry.stop === void 0 ? {} : { stop: Number(entry.stop) }), {
+              before,
+              variable: variable ? variable.name : null,
+              ok: verified,
+              verified
+            }), verified ? {} : {
+              error: "the runtime accepted the write but the binding did not persist \u2014 gradient-stop binding is not part of the documented Plugin API"
+            }));
+          } catch (err) {
+            results.push({ style: String((_n = raw == null ? void 0 : raw.style) != null ? _n : label2), ok: false, verified: false, error: String((err == null ? void 0 : err.message) || err) });
+          }
+        }
+        const bound = results.filter((row) => row.ok);
+        return { dryRun, total: results.length, bound: bound.length, failed: results.length - bound.length, results };
+      }
+    },
+    {
+      name: "node.style",
+      summary: "Apply a style to layers \u2014 or detach them \u2014 and verify it took. Re-attaches what drifted.",
+      mutates: true,
+      params: {
+        assignments: {
+          type: "json",
+          required: true,
+          description: 'Array of { node, field, style }. `field` is "fill", "stroke", "text", "effect" or "grid". `style` is a style id, key or name from `styles.list`; null detaches, leaving the layer with whatever it currently renders.'
+        },
+        dryRun: { type: "boolean", default: false, description: "Report what would change without writing anything." }
+      },
+      async run(params) {
+        var _a, _b;
+        const rows = params.assignments;
+        if (!Array.isArray(rows)) throw new Error('"assignments" must be an array');
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const FIELDS = {
+          fill: { prop: "fillStyleId", setter: "setFillStyleIdAsync", kind: "PAINT" },
+          stroke: { prop: "strokeStyleId", setter: "setStrokeStyleIdAsync", kind: "PAINT" },
+          text: { prop: "textStyleId", setter: "setTextStyleIdAsync", kind: "TEXT" },
+          effect: { prop: "effectStyleId", setter: "setEffectStyleIdAsync", kind: "EFFECT" },
+          grid: { prop: "gridStyleId", setter: "setGridStyleIdAsync", kind: "GRID" }
+        };
+        const localOf = async (kind) => {
+          if (kind === "PAINT") return figma.getLocalPaintStylesAsync();
+          if (kind === "TEXT") return figma.getLocalTextStylesAsync();
+          if (kind === "EFFECT") return figma.getLocalEffectStylesAsync();
+          return figma.getLocalGridStylesAsync();
+        };
+        const nameOfStyle = async (id) => {
+          if (id === figma.mixed) return "mixed";
+          if (typeof id !== "string" || id === "") return null;
+          const style = await figma.getStyleByIdAsync(id);
+          return style ? style.name : id;
+        };
+        const results = [];
+        for (const [index, raw] of rows.entries()) {
+          const label2 = `assignments[${index}]`;
+          let nodeId = label2;
+          try {
+            const entry = record(raw, label2);
+            nodeId = String((_a = entry.node) != null ? _a : "");
+            if (!nodeId) throw new Error('missing "node"');
+            const fieldName = String((_b = entry.field) != null ? _b : "");
+            const field = FIELDS[fieldName];
+            if (!field) throw new Error(`"${fieldName}" is not a style field \u2014 try: ${Object.keys(FIELDS).join(", ")}`);
+            if (!Object.prototype.hasOwnProperty.call(entry, "style")) {
+              throw new Error('missing "style" \u2014 pass null explicitly to detach');
+            }
+            const found = await figma.getNodeByIdAsync(nodeId);
+            if (!found || found.type === "PAGE" || found.type === "DOCUMENT") {
+              throw new Error(`no layer with id ${nodeId}`);
+            }
+            const node = found;
+            const holder = node;
+            if (!(field.prop in holder)) throw new Error(`a ${node.type} has no "${fieldName}" style`);
+            let styleId = "";
+            let styleName = null;
+            if (entry.style !== null) {
+              const ref = entry.style;
+              if (typeof ref !== "string" || ref === "") throw new Error('"style" must be a non-empty string, or null');
+              const pool = await localOf(field.kind);
+              const direct = pool.find((one) => one.id === ref || one.key === ref);
+              const named = direct ? [direct] : pool.filter((one) => one.name.toLowerCase() === ref.toLowerCase());
+              if (named.length === 0) throw new Error(`no local ${field.kind.toLowerCase()} style "${ref}"`);
+              if (named.length > 1) throw new Error(`"${ref}" names ${named.length} styles \u2014 pass an id instead`);
+              styleId = named[0].id;
+              styleName = named[0].name;
+            }
+            const before = await nameOfStyle(holder[field.prop]);
+            const displaced = Array.isArray(holder.fills) ? `${holder.fills.length} local paint(s)` : void 0;
+            if (dryRun) {
+              results.push(__spreadProps(__spreadValues({
+                node: nodeId,
+                name: node.name,
+                field: fieldName,
+                before: before != null ? before : "detached",
+                style: styleName
+              }, before === null && displaced ? { displaced } : {}), {
+                ok: true,
+                verified: null
+              }));
+              continue;
+            }
+            await holder[field.setter].call(node, styleId);
+            const after = await nameOfStyle(node[field.prop]);
+            const verified = styleName === null ? after === null : after === styleName;
+            results.push(__spreadValues(__spreadProps(__spreadValues({
+              node: nodeId,
+              name: node.name,
+              field: fieldName,
+              before: before != null ? before : "detached",
+              style: styleName
+            }, before === null && displaced ? { displaced } : {}), {
+              ok: verified,
+              verified
+            }), verified ? {} : { error: `the write was accepted but the field now reads "${after}"` }));
+          } catch (err) {
+            results.push({ node: nodeId, ok: false, verified: false, error: String((err == null ? void 0 : err.message) || err) });
+          }
+        }
+        const done = results.filter((row) => row.ok);
+        return { dryRun, total: results.length, applied: done.length, failed: results.length - done.length, results };
+      }
+    },
+    {
+      name: "style.remove",
+      summary: "Delete styles nothing uses. Refuses while a consumer exists; reports publish status first.",
+      mutates: true,
+      params: {
+        styles: {
+          type: "string[]",
+          required: true,
+          description: "Styles to delete, each an id, a key or an exact name from `styles.list`."
+        },
+        dryRun: {
+          type: "boolean",
+          default: false,
+          description: "Report what would be deleted, with consumer count and publish status, and touch nothing. Worth running first here more than anywhere else: this is the one op whose result no later call can undo."
+        },
+        force: {
+          type: "boolean",
+          default: false,
+          description: "Delete even when the style still has consumers in THIS file. Off by default and rarely right: those layers keep the paints they render and quietly stop following anything."
+        }
+      },
+      async run(params) {
+        const refs = (Array.isArray(params.styles) ? params.styles : []).filter(
+          (entry) => typeof entry === "string" && entry !== ""
+        );
+        if (refs.length === 0) throw new Error('"styles" must be a non-empty array of ids, keys or names');
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const pools = await Promise.all([
+          figma.getLocalPaintStylesAsync(),
+          figma.getLocalTextStylesAsync(),
+          figma.getLocalEffectStylesAsync(),
+          figma.getLocalGridStylesAsync()
+        ]);
+        const all = pools.flat();
+        const results = [];
+        for (const ref of refs) {
+          try {
+            const direct = all.find((one) => one.id === ref || one.key === ref);
+            const named = direct ? [direct] : all.filter((one) => one.name === ref);
+            if (named.length === 0) throw new Error(`no local style "${ref}"`);
+            if (named.length > 1) throw new Error(`"${ref}" names ${named.length} styles \u2014 pass an id instead`);
+            const style = named[0];
+            const consumers = await style.getStyleConsumersAsync();
+            const published = await style.getPublishStatusAsync();
+            const row = {
+              style: style.name,
+              key: style.key,
+              type: style.type,
+              consumers: consumers.length,
+              publishStatus: published
+            };
+            if (consumers.length > 0 && params.force !== true) {
+              results.push(__spreadProps(__spreadValues({}, row), {
+                ok: false,
+                error: `still used by ${consumers.length} layer(s) \u2014 reattach them first, or pass force`,
+                nodes: consumers.slice(0, 5).map((one) => ({ id: one.node.id, name: one.node.name }))
+              }));
+              continue;
+            }
+            if (dryRun) {
+              results.push(__spreadProps(__spreadValues({}, row), { ok: true, deleted: false }));
+              continue;
+            }
+            const id = style.id;
+            style.remove();
+            const stillThere = await figma.getStyleByIdAsync(id);
+            results.push(__spreadValues(__spreadProps(__spreadValues({}, row), {
+              ok: stillThere === null,
+              deleted: stillThere === null
+            }), stillThere === null ? {} : { error: "remove() returned but the style is still resolvable by id" }));
+          } catch (err) {
+            results.push({ style: ref, ok: false, deleted: false, error: String((err == null ? void 0 : err.message) || err) });
+          }
+        }
+        const gone = results.filter((row) => row.ok);
+        return {
+          dryRun,
+          total: results.length,
+          deleted: dryRun ? 0 : gone.length,
+          refused: results.length - gone.length,
+          results
+        };
+      }
+    },
+    {
+      name: "variables.rebind",
+      summary: "Repoint every binding of one variable onto another, document-wide \u2014 the migration op.",
+      mutates: true,
+      params: {
+        map: {
+          type: "json",
+          required: true,
+          description: 'Array of { from, to }. `from` is the variable being migrated away from \u2014 its id ("VariableID:\u2026") or 40-char key, both reported by `variables.external`; a bare name resolves against LOCAL variables only. `to` is the local replacement \u2014 name or id. Types must match: a COLOR cannot take over a FLOAT binding.'
+        },
+        scope: { type: "string", default: "document", enum: ["page", "document"], description: "Where to walk." },
+        pageId: { type: "string", description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+        nodeId: { type: "string", description: "Walk just this subtree. Overrides scope and pageId." },
+        styles: { type: "boolean", default: true, description: "Also migrate bindings inside local paint styles." },
+        dryRun: { type: "boolean", default: false, description: "Count and report every match without writing anything." }
+      },
+      async run(params) {
+        var _a, _b, _c, _d, _e, _f, _g;
+        const rows = asArray(params.map, "map");
+        const dryRun = params.dryRun === true;
+        const pairs = [];
+        const pairByFromId = /* @__PURE__ */ new Map();
+        for (const [index, raw] of rows.entries()) {
+          const entry = record(raw, `map[${index}]`);
+          const from = await resolveVariableRef(entry.from);
+          const to = await resolveVariableRef(entry.to);
+          if (from.resolvedType !== to.resolvedType) {
+            throw new Error(`map[${index}]: "${from.name}" is ${from.resolvedType} but "${to.name}" is ${to.resolvedType}`);
+          }
+          if (from.id === to.id) throw new Error(`map[${index}]: "${from.name}" maps to itself`);
+          if (pairByFromId.has(from.id)) throw new Error(`map[${index}]: "${from.name}" appears twice as a source`);
+          pairByFromId.set(from.id, pairs.length);
+          pairs.push({ from, to, matched: 0, rebound: 0, failed: 0, errors: [] });
+        }
+        if (!dryRun) figma.commitUndo();
+        let roots;
+        let labels;
+        if (typeof params.nodeId === "string" && params.nodeId !== "") {
+          const found = await figma.getNodeByIdAsync(params.nodeId);
+          if (!found || found.type === "DOCUMENT") throw new Error(`no node with id ${params.nodeId}`);
+          if (found.type === "PAGE") {
+            await found.loadAsync();
+          } else {
+            let page = found.parent;
+            while (page && page.type !== "PAGE") page = page.parent;
+            if (page) await page.loadAsync();
+          }
+          roots = [found];
+          labels = [found.type === "PAGE" ? found.name : `${found.name} (subtree)`];
+        } else if (params.scope === "page") {
+          let page;
+          if (typeof params.pageId === "string" && params.pageId !== "") {
+            const found = await figma.getNodeByIdAsync(params.pageId);
+            if (!found || found.type !== "PAGE") throw new Error(`no page with id ${params.pageId}`);
+            page = found;
+          } else {
+            page = figma.currentPage;
+          }
+          await page.loadAsync();
+          roots = [page];
+          labels = [page.name];
+        } else {
+          await loadAllPagesAsync();
+          roots = figma.root.children.slice();
+          labels = roots.map((one) => one.name);
+        }
+        const aliasTo = (to) => ({ type: "VARIABLE_ALIAS", id: to.id });
+        const textJobs = [];
+        const textFillJobs = [];
+        const styled = (value) => value !== void 0 && value !== "";
+        const writeErrors = [];
+        const migrateNode = (node) => {
+          var _a2, _b2, _c2, _d2, _e2;
+          const holder = node;
+          const bound = holder.boundVariables;
+          if (bound) {
+            for (const [field, value] of Object.entries(bound)) {
+              if (field === "fills" || field === "strokes") {
+                if (node.type === "TEXT" && Array.isArray(value)) {
+                  let hits = 0;
+                  for (const entry of value) {
+                    const at2 = pairByFromId.get((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
+                    if (at2 !== void 0) {
+                      pairs[at2].matched += 1;
+                      hits += 1;
+                    }
+                  }
+                  if (hits > 0 && !dryRun) textFillJobs.push(node);
+                }
+                continue;
+              }
+              if (field === "layoutGrids") continue;
+              if (Array.isArray(value)) {
+                let hits = 0;
+                for (const entry of value) {
+                  const at2 = pairByFromId.get((_b2 = entry == null ? void 0 : entry.id) != null ? _b2 : "");
+                  if (at2 !== void 0) {
+                    pairs[at2].matched += 1;
+                    hits += 1;
+                  }
+                }
+                if (hits === 0) continue;
+                if (dryRun) continue;
+                if (node.type === "TEXT") {
+                  textJobs.push({ node, field });
+                } else {
+                  const at2 = pairByFromId.get((_d2 = (_c2 = value[0]) == null ? void 0 : _c2.id) != null ? _d2 : "");
+                  try {
+                    ;
+                    node.setBoundVariable(
+                      field,
+                      pairs[at2].to
+                    );
+                    pairs[at2].rebound += hits;
+                  } catch (err) {
+                    pairs[at2].failed += hits;
+                    const message = `${field}: ${String((err == null ? void 0 : err.message) || err)}`;
+                    if (pairs[at2].errors.length < 3 && !pairs[at2].errors.includes(message)) pairs[at2].errors.push(message);
+                  }
+                }
+                continue;
+              }
+              const at = pairByFromId.get((_e2 = value == null ? void 0 : value.id) != null ? _e2 : "");
+              if (at === void 0) continue;
+              const pair = pairs[at];
+              pair.matched += 1;
+              if (dryRun) continue;
+              try {
+                ;
+                node.setBoundVariable(
+                  field,
+                  pair.to
+                );
+                pair.rebound += 1;
+              } catch (err) {
+                pair.failed += 1;
+                const message = `${field}: ${String((err == null ? void 0 : err.message) || err)}`;
+                if (pair.errors.length < 3 && !pair.errors.includes(message)) pair.errors.push(message);
+              }
+            }
+          }
+          for (const prop of ["fills", "strokes"]) {
+            if (styled(holder[prop === "fills" ? "fillStyleId" : "strokeStyleId"])) continue;
+            const paints2 = holder[prop];
+            if (!Array.isArray(paints2)) continue;
+            let next = null;
+            paints2.forEach((paint, index) => {
+              var _a3, _b3, _c3;
+              const paintAt = pairByFromId.get(
+                (_c3 = (_b3 = (_a3 = paint.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b3.id) != null ? _c3 : ""
+              );
+              if (paintAt !== void 0 && paint.type === "SOLID") {
+                pairs[paintAt].matched += 1;
+                if (!dryRun) {
+                  next = next != null ? next : paints2.slice();
+                  next[index] = figma.variables.setBoundVariableForPaint(next[index], "color", pairs[paintAt].to);
+                  pairs[paintAt].rebound += 1;
+                }
+              }
+              const stops = paint.gradientStops;
+              if (Array.isArray(stops)) {
+                let newStops = null;
+                stops.forEach((stop, stopIndex) => {
+                  var _a4, _b4, _c4;
+                  const stopAt = pairByFromId.get((_c4 = (_b4 = (_a4 = stop.boundVariables) == null ? void 0 : _a4.color) == null ? void 0 : _b4.id) != null ? _c4 : "");
+                  if (stopAt === void 0) return;
+                  pairs[stopAt].matched += 1;
+                  if (dryRun) return;
+                  newStops = newStops != null ? newStops : stops.slice();
+                  newStops[stopIndex] = {
+                    position: stop.position,
+                    color: stop.color,
+                    boundVariables: { color: aliasTo(pairs[stopAt].to) }
+                  };
+                  pairs[stopAt].rebound += 1;
+                });
+                if (newStops) {
+                  next = next != null ? next : paints2.slice();
+                  next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: newStops });
+                }
+              }
+            });
+            if (next && !dryRun) {
+              try {
+                ;
+                holder[prop] = next;
+              } catch (err) {
+                const message = `${node.name} (${node.id}) ${prop}: ${String((err == null ? void 0 : err.message) || err)}`;
+                if (writeErrors.length < 5) writeErrors.push(message);
+              }
+            }
+          }
+          if (Array.isArray(holder.layoutGrids)) {
+            const grids = holder.layoutGrids;
+            let nextGrids = null;
+            grids.forEach((grid, index) => {
+              var _a3;
+              const gridBound = grid.boundVariables;
+              if (!gridBound) return;
+              for (const [gridField, alias] of Object.entries(gridBound)) {
+                const at = pairByFromId.get((_a3 = alias == null ? void 0 : alias.id) != null ? _a3 : "");
+                if (at === void 0) continue;
+                pairs[at].matched += 1;
+                if (dryRun) continue;
+                try {
+                  nextGrids = nextGrids != null ? nextGrids : grids.slice();
+                  nextGrids[index] = figma.variables.setBoundVariableForLayoutGrid(
+                    nextGrids[index],
+                    gridField,
+                    pairs[at].to
+                  );
+                  pairs[at].rebound += 1;
+                } catch (err) {
+                  pairs[at].failed += 1;
+                  const message = `layoutGrids.${gridField}: ${String((err == null ? void 0 : err.message) || err)}`;
+                  if (pairs[at].errors.length < 3 && !pairs[at].errors.includes(message)) pairs[at].errors.push(message);
+                }
+              }
+            });
+            if (nextGrids && !dryRun) {
+              try {
+                ;
+                holder.layoutGrids = nextGrids;
+              } catch (err) {
+                const message = `${node.name} (${node.id}) layoutGrids: ${String((err == null ? void 0 : err.message) || err)}`;
+                if (writeErrors.length < 5) writeErrors.push(message);
+              }
+            }
+          }
+        };
+        const tWalk = Date.now();
+        let visited = 0;
+        for (const root of roots) {
+          const walked = await walkSceneNodes(root, migrateNode, { skipInstanceChildren: true });
+          visited += walked.visited;
+        }
+        const walkMs = Date.now() - tWalk;
+        for (const job of textJobs) {
+          try {
+            const text3 = job.node;
+            await loadTextFonts(text3);
+            const segments = text3.getStyledTextSegments(["boundVariables"]);
+            for (const segment of segments) {
+              const at = pairByFromId.get((_c = (_b = (_a = segment.boundVariables) == null ? void 0 : _a[job.field]) == null ? void 0 : _b.id) != null ? _c : "");
+              if (at === void 0) continue;
+              text3.setRangeBoundVariable(segment.start, segment.end, job.field, pairs[at].to);
+              pairs[at].rebound += 1;
+            }
+            const after = (_d = text3.boundVariables) == null ? void 0 : _d[job.field];
+            const leftover = Array.isArray(after) ? after.filter((entry) => {
+              var _a2;
+              return pairByFromId.has((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
+            }).length : pairByFromId.has((_e = after == null ? void 0 : after.id) != null ? _e : "") ? 1 : 0;
+            if (leftover > 0) {
+              const entries = Array.isArray(after) ? after : [];
+              const targets = new Set(
+                entries.map((entry) => {
+                  var _a2;
+                  const at = pairByFromId.get((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
+                  return at !== void 0 ? pairs[at].to.id : entry == null ? void 0 : entry.id;
+                })
+              );
+              const uniform = targets.size === 1;
+              let cleared = false;
+              if (uniform) {
+                const at = entries.map((entry) => {
+                  var _a2;
+                  return pairByFromId.get((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
+                }).find((found) => found !== void 0);
+                if (at !== void 0) {
+                  const target = pairs[at].to;
+                  for (const attempt of ["range", "node"]) {
+                    if (attempt === "range") {
+                      text3.setRangeBoundVariable(0, text3.characters.length, job.field, target);
+                    } else {
+                      ;
+                      text3.setBoundVariable(
+                        job.field,
+                        target
+                      );
+                    }
+                    const recheck = (_f = text3.boundVariables) == null ? void 0 : _f[job.field];
+                    const still = Array.isArray(recheck) ? recheck.filter((entry) => {
+                      var _a2;
+                      return pairByFromId.has((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
+                    }).length : pairByFromId.has((_g = recheck == null ? void 0 : recheck.id) != null ? _g : "") ? 1 : 0;
+                    if (still === 0) {
+                      pairs[at].rebound += leftover;
+                      cleared = true;
+                      break;
+                    }
+                  }
+                }
+              }
+              if (!cleared && writeErrors.length < 5) {
+                writeErrors.push(`${text3.name} (${text3.id}) ${job.field}: ${leftover} segment(s) still on the old variable`);
+              }
+            }
+          } catch (err) {
+            if (writeErrors.length < 5) {
+              writeErrors.push(`${job.node.name} (${job.node.id}) ${job.field}: ${String((err == null ? void 0 : err.message) || err)}`);
+            }
+          }
+        }
+        for (const node of textFillJobs) {
+          try {
+            const text3 = node;
+            await loadTextFonts(text3);
+            const segments = text3.getStyledTextSegments(["fills"]);
+            for (const segment of segments) {
+              let next = null;
+              segment.fills.forEach((paint, index) => {
+                var _a2, _b2, _c2;
+                const at = pairByFromId.get(
+                  (_c2 = (_b2 = (_a2 = paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id) != null ? _c2 : ""
+                );
+                if (at !== void 0 && paint.type === "SOLID") {
+                  next = next != null ? next : segment.fills.slice();
+                  next[index] = figma.variables.setBoundVariableForPaint(next[index], "color", pairs[at].to);
+                  pairs[at].rebound += 1;
+                }
+              });
+              if (next) text3.setRangeFills(segment.start, segment.end, next);
+            }
+          } catch (err) {
+            if (writeErrors.length < 5) {
+              writeErrors.push(`${node.name} (${node.id}) segment fills: ${String((err == null ? void 0 : err.message) || err)}`);
+            }
+          }
+        }
+        let stylesScanned = 0;
+        if (params.styles !== false) {
+          const paintStyles = await figma.getLocalPaintStylesAsync();
+          stylesScanned = paintStyles.length;
+          for (const style of paintStyles) {
+            const paints2 = style.paints;
+            let next = null;
+            paints2.forEach((paint, index) => {
+              var _a2, _b2, _c2;
+              const paintAt = pairByFromId.get(
+                (_c2 = (_b2 = (_a2 = paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id) != null ? _c2 : ""
+              );
+              if (paintAt !== void 0 && paint.type === "SOLID") {
+                pairs[paintAt].matched += 1;
+                if (!dryRun) {
+                  next = next != null ? next : paints2.slice();
+                  next[index] = figma.variables.setBoundVariableForPaint(next[index], "color", pairs[paintAt].to);
+                  pairs[paintAt].rebound += 1;
+                }
+              }
+              const stops = paint.gradientStops;
+              if (Array.isArray(stops)) {
+                let newStops = null;
+                stops.forEach((stop, stopIndex) => {
+                  var _a3, _b3, _c3;
+                  const stopAt = pairByFromId.get((_c3 = (_b3 = (_a3 = stop.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b3.id) != null ? _c3 : "");
+                  if (stopAt === void 0) return;
+                  pairs[stopAt].matched += 1;
+                  if (dryRun) return;
+                  newStops = newStops != null ? newStops : stops.slice();
+                  newStops[stopIndex] = {
+                    position: stop.position,
+                    color: stop.color,
+                    boundVariables: { color: aliasTo(pairs[stopAt].to) }
+                  };
+                  pairs[stopAt].rebound += 1;
+                });
+                if (newStops) {
+                  next = next != null ? next : paints2.slice();
+                  next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: newStops });
+                }
+              }
+            });
+            if (next && !dryRun) {
+              try {
+                style.paints = next;
+              } catch (err) {
+                const message = `style "${style.name}": ${String((err == null ? void 0 : err.message) || err)}`;
+                if (writeErrors.length < 5) writeErrors.push(message);
+              }
+            }
+          }
+        }
+        return __spreadValues({
+          dryRun,
+          walked: { pages: labels, nodes: visited, styles: stylesScanned },
+          ms: { walk: walkMs },
+          pairs: pairs.map((pair) => __spreadValues({
+            from: pair.from.name,
+            to: pair.to.name,
+            type: pair.from.resolvedType,
+            matched: pair.matched,
+            rebound: pair.rebound,
+            failed: pair.failed
+          }, pair.errors.length > 0 ? { errors: pair.errors } : {})),
+          totalMatched: pairs.reduce((sum, pair) => sum + pair.matched, 0),
+          totalRebound: pairs.reduce((sum, pair) => sum + pair.rebound, 0)
+        }, writeErrors.length > 0 ? { writeErrors } : {});
+      }
+    },
+    {
+      name: "instance.detach",
+      summary: "Detach instances from their main components. Bindings stay \u2014 plan a rebind after.",
+      mutates: true,
+      params: {
+        nodes: { type: "string[]", required: true, description: "Instance node ids to detach." },
+        dryRun: { type: "boolean", default: false, description: "Report what would be detached without touching anything." }
+      },
+      async run(params) {
+        var _a, _b;
+        const ids = (Array.isArray(params.nodes) ? params.nodes : []).filter(
+          (entry) => typeof entry === "string" && entry !== ""
+        );
+        if (ids.length === 0) throw new Error('"nodes" must be a non-empty array of instance ids');
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const results = [];
+        for (const id of ids) {
+          try {
+            const node = await figma.getNodeByIdAsync(id);
+            if (!node) throw new Error(`no node with id ${id}`);
+            if (node.type !== "INSTANCE") throw new Error(`${node.type} \u2014 only an INSTANCE can be detached`);
+            let main = null;
+            try {
+              main = (_b = (_a = await node.getMainComponentAsync()) == null ? void 0 : _a.name) != null ? _b : null;
+            } catch (e) {
+              main = null;
+            }
+            if (dryRun) {
+              results.push({ node: id, name: node.name, main, ok: true, detached: false });
+              continue;
+            }
+            const frame3 = node.detachInstance();
+            results.push({
+              node: id,
+              name: frame3.name,
+              main,
+              newId: frame3.id,
+              ok: frame3.type === "FRAME",
+              detached: frame3.type === "FRAME",
+              note: "bindings kept \u2014 run variables.rebind to migrate them"
+            });
+          } catch (err) {
+            results.push({ node: id, ok: false, detached: false, error: String((err == null ? void 0 : err.message) || err) });
+          }
+        }
+        const done = results.filter((row) => row.ok);
+        return {
+          dryRun,
+          total: results.length,
+          detached: dryRun ? 0 : done.filter((row) => row.detached).length,
+          failed: results.length - done.length,
+          results
+        };
+      }
+    },
+    {
+      name: "variables.remove",
+      summary: "Delete variables nothing references. Refuses while a binding or alias still points at one.",
+      mutates: true,
+      params: {
+        variables: {
+          type: "string[]",
+          required: true,
+          description: 'Variables to delete \u2014 ids ("VariableID:\u2026") or exact names. Names resolve against local variables only.'
+        },
+        dryRun: { type: "boolean", default: false, description: "Report reference counts and touch nothing." },
+        force: {
+          type: "boolean",
+          default: false,
+          description: "Delete even when references exist in THIS file. Rarely right: every such binding keeps rendering its last value and quietly stops following anything."
+        }
+      },
+      async run(params) {
+        var _a, _b;
+        const refs = (Array.isArray(params.variables) ? params.variables : []).filter(
+          (entry) => typeof entry === "string" && entry !== ""
+        );
+        if (refs.length === 0) throw new Error('"variables" must be a non-empty array of ids or names');
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const targets = /* @__PURE__ */ new Map();
+        for (const ref of refs) {
+          const variable = await resolveVariableRef(ref);
+          if (variable.remote) throw new Error(`"${variable.name}" is a library variable \u2014 it cannot be deleted from here`);
+          targets.set(variable.id, variable);
+        }
+        const used = /* @__PURE__ */ new Map();
+        const note = (id) => {
+          var _a2;
+          if (typeof id === "string" && targets.has(id)) used.set(id, ((_a2 = used.get(id)) != null ? _a2 : 0) + 1);
+        };
+        const scanPaints = (paints2) => {
+          var _a2, _b2, _c, _d;
+          if (!Array.isArray(paints2)) return;
+          for (const paint of paints2) {
+            note((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id);
+            if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) for (const stop of paint.gradientStops) note((_d = (_c = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c.color) == null ? void 0 : _d.id);
+          }
+        };
+        await loadAllPagesAsync();
+        for (const page of figma.root.children) {
+          await walkSceneNodes(page, (node) => {
+            const holder = node;
+            const bound = holder.boundVariables;
+            if (bound) {
+              for (const [field, value] of Object.entries(bound)) {
+                if (field === "fills" || field === "strokes") continue;
+                if (Array.isArray(value)) value.forEach((entry) => note(entry == null ? void 0 : entry.id));
+                else note(value == null ? void 0 : value.id);
+              }
+            }
+            scanPaints(holder.fills);
+            scanPaints(holder.strokes);
+          });
+        }
+        for (const style of await figma.getLocalPaintStylesAsync()) scanPaints(style.paints);
+        for (const variable of await figma.variables.getLocalVariablesAsync()) {
+          for (const value of Object.values((_a = variable.valuesByMode) != null ? _a : {})) {
+            const alias = value;
+            if ((alias == null ? void 0 : alias.type) === "VARIABLE_ALIAS") note(alias.id);
+          }
+        }
+        const results = [];
+        for (const variable of targets.values()) {
+          const references = (_b = used.get(variable.id)) != null ? _b : 0;
+          if (references > 0 && params.force !== true) {
+            results.push({ variable: variable.name, references, ok: false, deleted: false, error: "still referenced \u2014 rebind first, or pass force" });
+            continue;
+          }
+          if (dryRun) {
+            results.push({ variable: variable.name, references, ok: true, deleted: false });
+            continue;
+          }
+          const id = variable.id;
+          variable.remove();
+          const roster = await figma.variables.getLocalVariablesAsync();
+          const gone2 = !roster.some((candidate) => candidate.id === id);
+          results.push(__spreadValues({
+            variable: variable.name,
+            references,
+            ok: gone2,
+            deleted: gone2
+          }, gone2 ? {} : { error: "remove() returned but the variable is still listed" }));
+        }
+        const gone = results.filter((row) => row.ok);
+        return { dryRun, total: results.length, deleted: dryRun ? 0 : gone.filter((r) => r.deleted).length, refused: results.length - gone.length, results };
+      }
+    },
+    {
+      name: "text.normalize",
+      summary: "Rewrite the invisible end-of-text run so orphan variable references die \u2014 surgery, verified.",
+      mutates: true,
+      params: {
+        nodes: { type: "string[]", required: true, description: "TEXT node ids to normalize." },
+        dryRun: { type: "boolean", default: false, description: "Count orphan references per node and touch nothing." }
+      },
+      async run(params) {
+        const ids = (Array.isArray(params.nodes) ? params.nodes : []).filter(
+          (entry) => typeof entry === "string" && entry !== ""
+        );
+        if (ids.length === 0) throw new Error('"nodes" must be a non-empty array of TEXT ids');
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const orphanCount = (text3) => {
+          var _a, _b, _c, _d, _e;
+          const owned = /* @__PURE__ */ new Set();
+          const segments = text3.getStyledTextSegments(["boundVariables", "fills"]);
+          for (const segment of segments) {
+            for (const value of Object.values((_a = segment.boundVariables) != null ? _a : {})) {
+              const entries = Array.isArray(value) ? value : [value];
+              for (const entry of entries) {
+                const id = entry == null ? void 0 : entry.id;
+                if (id) owned.add(id);
+              }
+            }
+            for (const paint of (_b = segment.fills) != null ? _b : []) {
+              const id = (_d = (_c = paint.boundVariables) == null ? void 0 : _c.color) == null ? void 0 : _d.id;
+              if (id) owned.add(id);
+            }
+          }
+          let orphans = 0;
+          for (const value of Object.values(
+            (_e = text3.boundVariables) != null ? _e : {}
+          )) {
+            const entries = Array.isArray(value) ? value : [value];
+            for (const entry of entries) {
+              const id = entry == null ? void 0 : entry.id;
+              if (id && !owned.has(id)) orphans += 1;
+            }
+          }
+          return orphans;
+        };
+        const results = [];
+        for (const id of ids) {
+          try {
+            const found = await figma.getNodeByIdAsync(id);
+            if (!found || found.type !== "TEXT") throw new Error(`${found ? found.type : "nothing"} \u2014 need a TEXT node`);
+            const text3 = found;
+            const before = orphanCount(text3);
+            if (dryRun || before === 0) {
+              results.push({ node: id, name: text3.name, orphansBefore: before, orphansAfter: before, ok: true, changed: false });
+              continue;
+            }
+            await loadTextFonts(text3);
+            const length = text3.characters.length;
+            text3.insertCharacters(length, "\u200B", "BEFORE");
+            text3.deleteCharacters(length, length + 1);
+            const after = orphanCount(text3);
+            results.push(__spreadValues({
+              node: id,
+              name: text3.name,
+              orphansBefore: before,
+              orphansAfter: after,
+              ok: after === 0,
+              changed: after !== before
+            }, after === 0 ? {} : { error: "the ghost run survived the rewrite" }));
+          } catch (err) {
+            results.push({ node: id, ok: false, error: String((err == null ? void 0 : err.message) || err) });
+          }
+        }
+        const clean = results.filter((row) => row.ok);
+        return { dryRun, total: results.length, cleaned: clean.filter((r) => r.changed).length, stillDirty: results.length - clean.length, results };
       }
     }
   ];
@@ -15881,11 +16917,72 @@ ${scripts}`, "");
     }
     return record2;
   }
-  async function describeNode(node, depth) {
+  var paintChannel = (value) => Math.round(value * 255).toString(16).toUpperCase().padStart(2, "0");
+  var paintHex = (color) => `#${paintChannel(color.r)}${paintChannel(color.g)}${paintChannel(color.b)}`;
+  async function boundTokenName(holder) {
+    var _a, _b;
+    const id = (_b = (_a = holder == null ? void 0 : holder.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
+    if (!id) return null;
+    const variable = await figma.variables.getVariableByIdAsync(id);
+    return variable ? variable.name : id;
+  }
+  async function describePaint(paint, index) {
+    var _a, _b;
+    const out = { type: String((_a = paint == null ? void 0 : paint.type) != null ? _a : "UNKNOWN"), index };
+    if ((paint == null ? void 0 : paint.visible) === false) out.visible = false;
+    if ((paint == null ? void 0 : paint.type) === "SOLID" && paint.color) {
+      out.color = paintHex(paint.color);
+      if (typeof paint.opacity === "number" && paint.opacity < 1) out.alpha = paint.opacity;
+      out.bound = await boundTokenName(paint);
+      return out;
+    }
+    if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
+      out.bound = null;
+      out.stops = [];
+      for (const stop of paint.gradientStops) {
+        const described = {
+          position: Math.round(stop.position * 100),
+          color: paintHex(stop.color),
+          bound: await boundTokenName(stop)
+        };
+        if (typeof ((_b = stop.color) == null ? void 0 : _b.a) === "number" && stop.color.a < 1) described.alpha = stop.color.a;
+        out.stops.push(described);
+      }
+      return out;
+    }
+    out.bound = await boundTokenName(paint);
+    return out;
+  }
+  async function paintStyleName(node, field) {
+    const id = node[field];
+    if (id === figma.mixed) return "mixed";
+    if (typeof id !== "string" || id === "") return null;
+    const style = await figma.getStyleByIdAsync(id);
+    return style ? style.name : id;
+  }
+  async function describePaints(node) {
+    const out = {};
+    if (Array.isArray(node.fills)) {
+      out.fills = [];
+      for (const [index, paint] of node.fills.entries()) out.fills.push(await describePaint(paint, index));
+      out.fillStyle = await paintStyleName(node, "fillStyleId");
+    }
+    if (Array.isArray(node.strokes)) {
+      out.strokes = [];
+      for (const [index, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index));
+      out.strokeStyle = await paintStyleName(node, "strokeStyleId");
+    }
+    return out.fills || out.strokes ? out : null;
+  }
+  async function describeNode(node, depth, paints2 = false) {
     var _a, _b;
     const summary = summarizeNode(node);
     const bindings = await describeBindings(node, summary);
     if (bindings) summary.bindings = bindings;
+    if (paints2) {
+      const described = await describePaints(node);
+      if (described) summary.paints = described;
+    }
     if (typeof node.getReactionsAsync === "function" || Array.isArray(node.reactions)) {
       const raw = typeof node.getReactionsAsync === "function" ? await node.getReactionsAsync() : node.reactions;
       const reactions = summarizeReactions(raw);
@@ -15904,9 +17001,30 @@ ${scripts}`, "");
     }
     if (depth > 0 && Array.isArray(node.children)) {
       summary.children = [];
-      for (const child of node.children) summary.children.push(await describeNode(child, depth - 1));
+      for (const child of node.children) summary.children.push(await describeNode(child, depth - 1, paints2));
     }
     return summary;
+  }
+  async function resolveWalkRoots(params) {
+    if (typeof params.nodeId === "string" && params.nodeId !== "") {
+      const found = await figma.getNodeByIdAsync(params.nodeId);
+      if (!found || found.type === "DOCUMENT") throw new Error(`no node with id ${params.nodeId}`);
+      if (found.type === "PAGE") {
+        await found.loadAsync();
+        return { roots: [found], labels: [found.name] };
+      }
+      let page = found.parent;
+      while (page && page.type !== "PAGE") page = page.parent;
+      if (page) await page.loadAsync();
+      return { roots: [found], labels: [`${found.name} (subtree)`] };
+    }
+    if (params.scope === "page") {
+      const page = await resolvePage(params.pageId);
+      return { roots: [page], labels: [page.name] };
+    }
+    await loadAllPagesAsync();
+    const pages = figma.root.children.slice();
+    return { roots: pages, labels: pages.map((one) => one.name) };
   }
   async function resolvePage(pageId) {
     if (typeof pageId !== "string" || pageId === "") return figma.currentPage;
@@ -15966,12 +17084,17 @@ ${scripts}`, "");
           default: 1,
           min: 0,
           max: 5
+        },
+        paints: {
+          type: "boolean",
+          default: false,
+          description: "Also report the raw fills and strokes \u2014 colour, index and whether each paint is bound. What `bindings` cannot answer: a field with no token is simply absent from it, so an unbound layer reads back as bare geometry. Needed to act on a `lint.colors` finding."
         }
       },
       async run(params) {
         const node = await figma.getNodeByIdAsync(params.nodeId);
         if (!node) throw new Error(`no node with id ${params.nodeId}`);
-        return describeNode(node, params.depth);
+        return describeNode(node, params.depth, params.paints === true);
       }
     },
     {
@@ -16072,8 +17195,19 @@ ${scripts}`, "");
       name: "styles.list",
       summary: "Local text, paint, effect and grid styles.",
       mutates: false,
-      params: {},
-      async run() {
+      params: {
+        paints: {
+          type: "boolean",
+          default: false,
+          description: 'Describe each paint of every paint style \u2014 colour, and the token it is bound to. For a gradient, every stop with its position. Without this a style reports only its paint types, so "the styles use our tokens" is a guess: a style named after a token can just as easily hold hardcoded hex, and nothing in the answer would say so.'
+        },
+        consumers: {
+          type: "boolean",
+          default: false,
+          description: "List the layers actually using each style. Answers the question a style inventory otherwise cannot: whether a style is applied anywhere at all. A tidied style nobody consumes and a style the whole product depends on look the same in every other field. One extra document walk per style, so off by default."
+        }
+      },
+      async run(params) {
         const [text3, paint, effect, grid] = await Promise.all([
           figma.getLocalTextStylesAsync(),
           figma.getLocalPaintStylesAsync(),
@@ -16086,6 +17220,29 @@ ${scripts}`, "");
           name: style.name,
           description: style.description || void 0
         });
+        const paintDetail2 = /* @__PURE__ */ new Map();
+        if (params.paints === true) {
+          for (const style of paint) {
+            const described = [];
+            for (const [index, one] of style.paints.entries()) described.push(await describePaint(one, index));
+            paintDetail2.set(style.id, described);
+          }
+        }
+        const consumerDetail = /* @__PURE__ */ new Map();
+        if (params.consumers === true) {
+          for (const style of [...text3, ...paint, ...effect, ...grid]) {
+            try {
+              const users = await style.getStyleConsumersAsync();
+              consumerDetail.set(style.id, {
+                count: users.length,
+                nodes: users.map((user) => ({ id: user.node.id, name: user.node.name, fields: user.fields }))
+              });
+            } catch (err) {
+              consumerDetail.set(style.id, { error: String((err == null ? void 0 : err.message) || err) });
+            }
+          }
+        }
+        const withConsumers = (style, row) => consumerDetail.has(style.id) ? __spreadProps(__spreadValues({}, row), { consumers: consumerDetail.get(style.id) }) : row;
         return {
           text: text3.map((style) => __spreadProps(__spreadValues({}, base(style)), {
             fontFamily: style.fontName.family,
@@ -16093,7 +17250,14 @@ ${scripts}`, "");
             fontSize: style.fontSize,
             lineHeight: style.lineHeight
           })),
-          paint: paint.map((style) => __spreadProps(__spreadValues({}, base(style)), { paints: style.paints.map((p) => p.type) })),
+          paint: paint.map(
+            (style) => {
+              var _a;
+              return withConsumers(style, __spreadProps(__spreadValues({}, base(style)), {
+                paints: (_a = paintDetail2.get(style.id)) != null ? _a : style.paints.map((one) => one.type)
+              }));
+            }
+          ),
           effect: effect.map((style) => __spreadProps(__spreadValues({}, base(style)), { effects: style.effects.map((e) => e.type) })),
           grid: grid.map(base)
         };
@@ -16118,9 +17282,15 @@ ${scripts}`, "");
           type: "boolean",
           default: false,
           description: "Also report UNPUBLISHED / CURRENT / CHANGED per variable \u2014 whether a change made here has reached the files that consume it. One extra call each, so off by default."
+        },
+        resolve: {
+          type: "boolean",
+          default: false,
+          description: "Follow alias chains and add `resolved` per mode \u2014 the value the variable actually renders. Semantic collections are mostly aliases onto a primitive ramp, so without this a caller matching a colour to a token has to walk the chains itself."
         }
       },
       async run(params) {
+        var _a;
         const snapshot = params.library === true ? await readAllVariables() : await readLocalVariables();
         const wanted = typeof params.collection === "string" ? params.collection.toLowerCase() : null;
         const collections = wanted ? snapshot.collections.filter(
@@ -16135,17 +17305,617 @@ ${scripts}`, "");
         const variables = snapshot.variables.filter((entry) => keep.has(entry.collectionId));
         const limit = params.limit;
         const page = variables.slice(0, limit);
-        if (params.publishStatus !== true) {
+        const wantStatus = params.publishStatus === true;
+        const wantResolved = params.resolve === true;
+        if (!wantStatus && !wantResolved) {
           return { collections, total: variables.length, truncated: variables.length > limit, variables: page };
         }
-        const withStatus = [];
+        const modesOf2 = new Map(collections.map((entry) => [entry.id, entry.modes]));
+        const enriched = [];
         for (const entry of page) {
           const variable = await figma.variables.getVariableByIdAsync(entry.id);
-          withStatus.push(__spreadProps(__spreadValues({}, entry), {
-            publishStatus: variable ? await publishStatusOf(variable) : "unknown (variable not found)"
-          }));
+          const extra = {};
+          if (wantStatus) {
+            extra.publishStatus = variable ? await publishStatusOf(variable) : "unknown (variable not found)";
+          }
+          if (wantResolved && variable) {
+            const resolved = {};
+            for (const mode of (_a = modesOf2.get(entry.collectionId)) != null ? _a : []) {
+              try {
+                resolved[mode.modeId] = await resolveVariableValue(variable, mode.modeId);
+              } catch (err) {
+                resolved[mode.modeId] = { error: String((err == null ? void 0 : err.message) || err) };
+              }
+            }
+            extra.resolved = resolved;
+          }
+          enriched.push(__spreadValues(__spreadValues({}, entry), extra));
         }
-        return { collections, total: variables.length, truncated: variables.length > limit, variables: withStatus };
+        return { collections, total: variables.length, truncated: variables.length > limit, variables: enriched };
+      }
+    },
+    {
+      name: "instances.external",
+      summary: "Which foreign components are instantiated here, and how many external bindings each drags in.",
+      mutates: false,
+      params: {
+        scope: { type: "string", default: "document", enum: ["page", "document"], description: "Where to look." },
+        pageId: { type: "string", description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+        nodeId: { type: "string", description: "Walk just this subtree. Overrides scope and pageId." },
+        limit: { type: "number", default: 5, min: 0, max: 100, description: "Sample instances listed per component; counts are complete." }
+      },
+      async run(params) {
+        var _a, _b;
+        const tLoad = Date.now();
+        const { roots, labels } = await resolveWalkRoots(params);
+        const loadMs = Date.now() - tLoad;
+        const tWalk = Date.now();
+        const tops = [];
+        let visited = 0;
+        for (const root of roots) {
+          const walked = await walkSceneNodes(root, (node, insideInstance) => {
+            if (!insideInstance && node.type === "INSTANCE") tops.push(node);
+          });
+          visited += walked.visited;
+        }
+        const groups = /* @__PURE__ */ new Map();
+        for (const instance of tops) {
+          let main = null;
+          try {
+            main = await instance.getMainComponentAsync();
+          } catch (e) {
+            main = null;
+          }
+          if (main && !main.remote) continue;
+          const groupKey = main ? main.key : `unresolved:${instance.name}`;
+          let group = groups.get(groupKey);
+          if (!group) {
+            group = { main: (_a = main == null ? void 0 : main.name) != null ? _a : null, key: (_b = main == null ? void 0 : main.key) != null ? _b : null, instances: [], idCounts: /* @__PURE__ */ new Map() };
+            groups.set(groupKey, group);
+          }
+          group.instances.push({ id: instance.id, name: instance.name });
+          await walkSceneNodes(instance, (node) => {
+            var _a2, _b2, _c, _d;
+            const holder = node;
+            const push = (id) => {
+              var _a3;
+              if (typeof id === "string") group.idCounts.set(id, ((_a3 = group.idCounts.get(id)) != null ? _a3 : 0) + 1);
+            };
+            const bound = holder.boundVariables;
+            if (bound) {
+              for (const [field, value] of Object.entries(bound)) {
+                if (field === "fills" || field === "strokes") continue;
+                if (Array.isArray(value)) value.forEach((entry) => push(entry == null ? void 0 : entry.id));
+                else push(value == null ? void 0 : value.id);
+              }
+            }
+            for (const prop of ["fills", "strokes"]) {
+              const paints2 = holder[prop];
+              if (!Array.isArray(paints2)) continue;
+              for (const paint of paints2) {
+                push((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id);
+                if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
+                  for (const stop of paint.gradientStops) push((_d = (_c = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c.color) == null ? void 0 : _d.id);
+                }
+              }
+            }
+          });
+        }
+        const walkMs = Date.now() - tWalk;
+        const tResolve = Date.now();
+        const distinct = /* @__PURE__ */ new Set();
+        for (const group of groups.values()) for (const id of group.idCounts.keys()) distinct.add(id);
+        const remoteCollection = /* @__PURE__ */ new Map();
+        const collectionNames2 = /* @__PURE__ */ new Map();
+        for (const id of distinct) {
+          const variable = await figma.variables.getVariableByIdAsync(id);
+          if (!variable || !variable.remote) continue;
+          if (!collectionNames2.has(variable.variableCollectionId)) {
+            const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+            collectionNames2.set(variable.variableCollectionId, collection ? collection.name : variable.variableCollectionId);
+          }
+          remoteCollection.set(id, collectionNames2.get(variable.variableCollectionId));
+        }
+        const resolveMs = Date.now() - tResolve;
+        const out = [...groups.values()].map((group) => {
+          let bindings = 0;
+          const collections = /* @__PURE__ */ new Set();
+          for (const [id, count] of group.idCounts) {
+            const collection = remoteCollection.get(id);
+            if (collection) {
+              bindings += count;
+              collections.add(collection);
+            }
+          }
+          return {
+            main: group.main,
+            key: group.key,
+            instances: group.instances.length,
+            externalBindings: bindings,
+            collections: [...collections].sort(),
+            sample: group.instances.slice(0, params.limit)
+          };
+        }).sort((a, b) => b.externalBindings - a.externalBindings);
+        return {
+          walked: { pages: labels, nodes: visited },
+          ms: { load: loadMs, walk: walkMs, resolve: resolveMs },
+          foreignComponents: out.length,
+          foreignInstances: out.reduce((sum, group) => sum + group.instances, 0),
+          groups: out
+        };
+      }
+    },
+    {
+      name: "variables.external",
+      summary: "Which variables this file binds to that it does not own \u2014 the dependency a library inherits.",
+      mutates: false,
+      params: {
+        scope: {
+          type: "string",
+          default: "document",
+          enum: ["page", "document"],
+          description: 'Where to walk. A page-scoped answer cannot say "this file is self-contained".'
+        },
+        pageId: { type: "string", description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+        nodeId: {
+          type: "string",
+          description: "Walk just this subtree. The sharding escape hatch: a page too big for one call splits by its top-level frames, and the shard answers sum exactly like per-page answers do. Overrides scope and pageId."
+        },
+        instances: {
+          type: "string",
+          default: "deep",
+          enum: ["deep", "shallow"],
+          description: "shallow does not descend into instances. Their sublayers mirror the main component, which a document walk counts where it lives \u2014 but an override that adds a NEW binding on a sublayer is missed, so shallow is the fast answer, not the exhaustive one. walked.insideInstances from a deep walk says exactly how much shallow would save."
+        },
+        styles: { type: "boolean", default: true, description: "Also check local styles for external bindings." },
+        limit: { type: "number", default: 10, min: 0, max: 200, description: "Sites listed per variable; counts are complete." }
+      },
+      async run(params) {
+        var _a, _b, _c;
+        const seen = /* @__PURE__ */ new Map();
+        const cap = params.limit;
+        const consider = (id, site) => {
+          if (typeof id !== "string") return;
+          let bucket = seen.get(id);
+          if (!bucket) {
+            bucket = { count: 0, sites: [] };
+            seen.set(id, bucket);
+          }
+          bucket.count += 1;
+          if (bucket.sites.length < cap) bucket.sites.push(site());
+        };
+        const scanBoundMap = (bound, site) => {
+          if (!bound || typeof bound !== "object") return;
+          for (const [field, value] of Object.entries(bound)) {
+            if (field === "fills" || field === "strokes") continue;
+            if (Array.isArray(value)) {
+              value.forEach((alias, index) => consider(alias == null ? void 0 : alias.id, () => site(`${field}[${index}]`)));
+            } else {
+              consider(value == null ? void 0 : value.id, () => site(field));
+            }
+          }
+        };
+        const scanPaints = (paints2, site) => {
+          if (!Array.isArray(paints2)) return;
+          paints2.forEach((paint, index) => {
+            var _a2, _b2, _c2, _d;
+            consider((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id, () => site(`paint[${index}]`));
+            if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
+              for (const stop of paint.gradientStops) {
+                consider((_d = (_c2 = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c2.color) == null ? void 0 : _d.id, () => site(`paint[${index}] stop p${Math.round(stop.position * 100)}`));
+              }
+            }
+          });
+        };
+        const tLoad = Date.now();
+        const { roots, labels } = await resolveWalkRoots(params);
+        const loadMs = Date.now() - tLoad;
+        const tWalk = Date.now();
+        let visited = 0;
+        let insideInstances = 0;
+        for (const root of roots) {
+          const walked = await walkSceneNodes(
+            root,
+            (node) => {
+              const holder = node;
+              const site = (detail) => ({ id: node.id, name: node.name, type: node.type, field: detail });
+              scanBoundMap(holder.boundVariables, site);
+              scanPaints(holder.fills, site);
+              scanPaints(holder.strokes, site);
+              const mixedBound = holder.boundVariables;
+              if (mixedBound) {
+                for (const prop of ["fills", "strokes"]) {
+                  if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
+                    ;
+                    mixedBound[prop].forEach(
+                      (entry, index) => consider(entry == null ? void 0 : entry.id, () => site(`${prop}[${index}] (segment)`))
+                    );
+                  }
+                }
+              }
+            },
+            { skipInstanceChildren: params.instances === "shallow" }
+          );
+          visited += walked.visited;
+          insideInstances += walked.insideInstances;
+        }
+        const walkMs = Date.now() - tWalk;
+        if (params.styles !== false) {
+          const [text3, paint, effect, grid] = await Promise.all([
+            figma.getLocalTextStylesAsync(),
+            figma.getLocalPaintStylesAsync(),
+            figma.getLocalEffectStylesAsync(),
+            figma.getLocalGridStylesAsync()
+          ]);
+          for (const style of paint) {
+            const site = (detail) => ({ style: style.name, type: "PAINT", field: detail });
+            scanPaints(style.paints, site);
+            scanBoundMap(style.boundVariables, site);
+          }
+          for (const style of [...text3, ...effect, ...grid]) {
+            const site = (detail) => ({ style: style.name, type: style.type, field: detail });
+            scanBoundMap(style.boundVariables, site);
+          }
+        }
+        const snapshot = await readLocalVariables();
+        for (const entry of snapshot.variables) {
+          for (const [modeId, value] of Object.entries((_a = entry.valuesByMode) != null ? _a : {})) {
+            const alias = value;
+            if ((alias == null ? void 0 : alias.type) === "VARIABLE_ALIAS" && alias.id) {
+              consider(alias.id, () => ({ alias: entry.name, mode: modeId }));
+            }
+          }
+        }
+        const tResolve = Date.now();
+        const collectionNames2 = /* @__PURE__ */ new Map();
+        const collectionModes = /* @__PURE__ */ new Map();
+        const found = /* @__PURE__ */ new Map();
+        for (const [id, bucket] of seen) {
+          const variable = await figma.variables.getVariableByIdAsync(id);
+          if (!variable || !variable.remote) continue;
+          if (!collectionNames2.has(variable.variableCollectionId)) {
+            const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+            collectionNames2.set(
+              variable.variableCollectionId,
+              collection ? collection.name : variable.variableCollectionId
+            );
+            collectionModes.set(variable.variableCollectionId, collection ? collection.modes : []);
+          }
+          const values = {};
+          for (const mode of (_b = collectionModes.get(variable.variableCollectionId)) != null ? _b : []) {
+            try {
+              values[mode.name] = (await resolveVariableValue(variable, mode.modeId)).value;
+            } catch (err) {
+              values[mode.name] = { error: String((err == null ? void 0 : err.message) || err) };
+            }
+          }
+          found.set(id, {
+            variable,
+            collection: collectionNames2.get(variable.variableCollectionId),
+            count: bucket.count,
+            sites: bucket.sites,
+            values
+          });
+        }
+        const byCollection = /* @__PURE__ */ new Map();
+        for (const bucket of found.values()) {
+          let group = byCollection.get(bucket.collection);
+          if (!group) {
+            group = { collection: bucket.collection, variables: [], bindings: 0 };
+            byCollection.set(bucket.collection, group);
+          }
+          group.bindings += bucket.count;
+          group.variables.push({
+            token: bucket.variable.name,
+            key: bucket.variable.key,
+            id: bucket.variable.id,
+            type: bucket.variable.resolvedType,
+            values: bucket.values,
+            bindings: bucket.count,
+            sites: bucket.sites
+          });
+        }
+        const enabled = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync().catch(() => []);
+        const groups = [...byCollection.values()].sort((a, b) => b.bindings - a.bindings);
+        const resolveMs = Date.now() - tResolve;
+        return {
+          scope: (_c = params.scope) != null ? _c : "document",
+          walked: { pages: labels, nodes: visited, insideInstances },
+          ms: { load: loadMs, walk: walkMs, resolve: resolveMs },
+          selfContained: groups.length === 0,
+          distinctVariablesSeen: seen.size,
+          externalCollections: groups.length,
+          externalVariables: found.size,
+          externalBindings: groups.reduce((sum, group) => sum + group.bindings, 0),
+          /* Both halves, because their disagreement is the finding. A collection listed here but
+           * absent from `enabledLibraryCollections` is a dependency with no live subscription: the
+           * values still resolve and can never be updated from this file again. */
+          enabledLibraryCollections: enabled.map((one) => one.name),
+          results: groups
+        };
+      }
+    },
+    {
+      name: "variables.usage",
+      summary: "How many things actually use each token \u2014 layers, styles and gradient stops, counted.",
+      mutates: false,
+      params: {
+        variables: {
+          type: "string[]",
+          description: "Only these tokens, by id, key or name. Omitted counts every local variable."
+        },
+        collection: { type: "string", description: "Only tokens from this collection, by name or id." },
+        pageId: {
+          type: "string",
+          description: 'With `scope: "page"`, which page to walk. Defaults to the one the designer is on. The way to cover a document too big for one call: walk it page by page and add the counts up, which is exactly as correct and finishes.'
+        },
+        nodeId: {
+          type: "string",
+          description: "Walk just this subtree. The sharding escape hatch: a page too big for one call splits by its top-level frames, and the shard answers sum exactly like per-page answers do. Overrides scope and pageId."
+        },
+        instances: {
+          type: "string",
+          default: "deep",
+          enum: ["deep", "shallow"],
+          description: "shallow does not descend into instances. Their sublayers mirror the main component, which a document walk counts where it lives \u2014 but an override that adds a NEW binding on a sublayer is missed, so shallow is the fast answer, not the exhaustive one. walked.insideInstances from a deep walk says exactly how much shallow would save."
+        },
+        scope: {
+          type: "string",
+          default: "document",
+          enum: ["page", "document"],
+          description: 'Where to walk. Unlike `lint.colors` this defaults to `document`, because a page-scoped usage count answers a question nobody asked: "unused on this page" reads as "unused" and is the one wrong conclusion that gets a token deleted. Beware the cost: a whole document can outrun the bridge call timeout \u2014 raise ALTERY_AGENT_CALL_TIMEOUT_MS, or pass pageId and sum the pages.'
+        },
+        styles: {
+          type: "boolean",
+          default: true,
+          description: "Count styles as consumers, not just layers. On by default and it matters: a token bound into a paint style has no layer consumers at all, so a layers-only walk reports it unused while the whole library depends on it."
+        },
+        limit: { type: "number", default: 20, min: 0, max: 500, description: "Consumers listed per token; counts are always complete." }
+      },
+      async run(params) {
+        var _a, _b;
+        const snapshot = await readLocalVariables();
+        const wantedCollection = typeof params.collection === "string" ? params.collection.toLowerCase() : null;
+        const collections = wantedCollection ? snapshot.collections.filter(
+          (entry) => entry.id === params.collection || entry.name.toLowerCase() === wantedCollection
+        ) : snapshot.collections;
+        const keepCollection = new Set(collections.map((entry) => entry.id));
+        const asked = (Array.isArray(params.variables) ? params.variables : []).filter(
+          (entry) => typeof entry === "string" && entry !== ""
+        );
+        const askedLower = new Set(asked.map((entry) => entry.toLowerCase()));
+        const tracked = snapshot.variables.filter(
+          (entry) => keepCollection.has(entry.collectionId) && (askedLower.size === 0 || askedLower.has(entry.id.toLowerCase()) || askedLower.has(entry.key.toLowerCase()) || askedLower.has(entry.name.toLowerCase()))
+        );
+        if (asked.length > 0 && tracked.length === 0) throw new Error(`no local variable matched: ${asked.join(", ")}`);
+        const byId = new Map(
+          tracked.map((entry) => [
+            entry.id,
+            {
+              entry,
+              layers: [],
+              styles: [],
+              aliases: [],
+              layerCount: 0,
+              styleCount: 0,
+              aliasCount: 0
+            }
+          ])
+        );
+        const note = (id, where, what) => {
+          if (typeof id !== "string") return;
+          const bucket = byId.get(id);
+          if (!bucket) return;
+          if (where === "layers") bucket.layerCount += 1;
+          else if (where === "styles") bucket.styleCount += 1;
+          else bucket.aliasCount += 1;
+          const list2 = bucket[where];
+          if (list2.length < params.limit) list2.push(what);
+        };
+        for (const entry of snapshot.variables) {
+          for (const value of Object.values((_a = entry.valuesByMode) != null ? _a : {})) {
+            const alias = value;
+            if ((alias == null ? void 0 : alias.type) === "VARIABLE_ALIAS" && alias.id) {
+              note(alias.id, "aliases", { token: entry.name, collection: entry.collectionId });
+            }
+          }
+        }
+        const scanPaints = (paints2, where, label2) => {
+          if (!Array.isArray(paints2)) return;
+          paints2.forEach((paint, index) => {
+            var _a2, _b2;
+            const direct = (_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id;
+            if (direct) note(direct, where, label2(`paint[${index}]`));
+            if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
+              paint.gradientStops.forEach((stop) => {
+                var _a3, _b3;
+                const id = (_b3 = (_a3 = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b3.id;
+                if (id) note(id, where, label2(`paint[${index}] stop p${Math.round(stop.position * 100)}`));
+              });
+            }
+          });
+        };
+        const scanBoundMap = (bound, where, label2) => {
+          if (!bound || typeof bound !== "object") return;
+          for (const [field, value] of Object.entries(bound)) {
+            if (field === "fills" || field === "strokes") continue;
+            if (Array.isArray(value)) {
+              value.forEach((alias, index) => note(alias == null ? void 0 : alias.id, where, label2(`${field}[${index}]`)));
+            } else {
+              note(value == null ? void 0 : value.id, where, label2(field));
+            }
+          }
+        };
+        const tLoad = Date.now();
+        const { roots, labels } = await resolveWalkRoots(params);
+        const loadMs = Date.now() - tLoad;
+        const tWalk = Date.now();
+        let visited = 0;
+        let insideInstances = 0;
+        for (const root of roots) {
+          const walked = await walkSceneNodes(
+            root,
+            (node) => {
+              const holder = node;
+              const label2 = (detail) => ({ id: node.id, name: node.name, type: node.type, field: detail });
+              scanBoundMap(holder.boundVariables, "layers", label2);
+              scanPaints(holder.fills, "layers", label2);
+              scanPaints(holder.strokes, "layers", label2);
+              const mixedBound = holder.boundVariables;
+              if (mixedBound) {
+                for (const prop of ["fills", "strokes"]) {
+                  if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
+                    ;
+                    mixedBound[prop].forEach(
+                      (entry, index) => note(entry == null ? void 0 : entry.id, "layers", label2(`${prop}[${index}] (segment)`))
+                    );
+                  }
+                }
+              }
+            },
+            { skipInstanceChildren: params.instances === "shallow" }
+          );
+          visited += walked.visited;
+          insideInstances += walked.insideInstances;
+        }
+        const walkMs = Date.now() - tWalk;
+        let styleCount = 0;
+        if (params.styles !== false) {
+          const [text3, paint, effect, grid] = await Promise.all([
+            figma.getLocalTextStylesAsync(),
+            figma.getLocalPaintStylesAsync(),
+            figma.getLocalEffectStylesAsync(),
+            figma.getLocalGridStylesAsync()
+          ]);
+          styleCount = text3.length + paint.length + effect.length + grid.length;
+          for (const style of paint) {
+            const label2 = (detail) => ({ style: style.name, type: "PAINT", field: detail });
+            scanPaints(style.paints, "styles", label2);
+            scanBoundMap(style.boundVariables, "styles", label2);
+          }
+          for (const style of [...text3, ...effect, ...grid]) {
+            const label2 = (detail) => ({ style: style.name, type: style.type, field: detail });
+            scanBoundMap(style.boundVariables, "styles", label2);
+            scanPaints(style.effects, "styles", label2);
+          }
+        }
+        const results = [...byId.values()].map((bucket) => {
+          var _a2, _b2;
+          return __spreadValues(__spreadValues(__spreadValues({
+            token: bucket.entry.name,
+            collection: (_b2 = (_a2 = collections.find((one) => one.id === bucket.entry.collectionId)) == null ? void 0 : _a2.name) != null ? _b2 : bucket.entry.collectionId,
+            key: bucket.entry.key,
+            /* Deliberately NOT layers + styles + aliases. A layer wearing a style carries that
+             * style's bindings, so it is counted as a layer AND the style is counted — the two are
+             * one reference seen twice, and adding them up would inflate every styled token. What
+             * the caller almost always wants is the yes/no below. */
+            used: bucket.layerCount + bucket.styleCount + bucket.aliasCount > 0,
+            /** Rendered occurrences. A component and each of its instances count separately, which
+             * is the honest answer to "how much of the file would change" and the wrong one for
+             * "how many places would I have to edit". */
+            layers: bucket.layerCount,
+            styles: bucket.styleCount,
+            /** Other variables pointing at this one. */
+            aliases: bucket.aliasCount
+          }, bucket.layers.length > 0 ? { usedByLayers: bucket.layers } : {}), bucket.styles.length > 0 ? { usedByStyles: bucket.styles } : {}), bucket.aliases.length > 0 ? { aliasedBy: bucket.aliases } : {});
+        }).sort(
+          (a, b) => b.layers + b.styles + b.aliases - (a.layers + a.styles + a.aliases) || a.token.localeCompare(b.token)
+        );
+        return {
+          scope: (_b = params.scope) != null ? _b : "document",
+          // Named, so a page-by-page sweep can be added up without the caller having to remember
+          // which slice each answer covered.
+          walked: { pages: labels, nodes: visited, insideInstances, styles: styleCount },
+          ms: { load: loadMs, walk: walkMs },
+          tokens: results.length,
+          unused: results.filter((row) => !row.used).length,
+          /* Said out loud because the number invites the wrong conclusion. Zero here means "nothing
+           * in THIS file", and no Plugin API call can widen that: variables have no consumer
+           * enumeration at all, and even styles' `getStyleConsumersAsync` stops at the file edge. A
+           * published token read as unused is the deletion nobody meant to make. */
+          caveat: "counts cover this file only \u2014 a token consumed by another file reports zero here",
+          results
+        };
+      }
+    },
+    {
+      name: "variables.match",
+      summary: "Which token is this colour \u2014 exactly, or nearest, and whether the answer is ambiguous.",
+      mutates: false,
+      params: {
+        colors: {
+          type: "string[]",
+          required: true,
+          description: 'Hex colours to look up, e.g. ["#191919", "#FB5B0A"]. Alpha is ignored.'
+        },
+        collection: { type: "string", description: "Only match against this collection. Omitted searches them all." },
+        nearest: {
+          type: "number",
+          default: 3,
+          min: 0,
+          max: 20,
+          description: "How many near misses to return per colour when there is no exact match. 0 for none."
+        }
+      },
+      async run(params) {
+        const wanted = (Array.isArray(params.colors) ? params.colors : []).filter((entry) => typeof entry === "string");
+        if (wanted.length === 0) throw new Error('"colors" must be a non-empty array of hex strings');
+        const snapshot = await readLocalVariables();
+        const filter = typeof params.collection === "string" ? params.collection.toLowerCase() : null;
+        const collections = filter ? snapshot.collections.filter((entry) => entry.id === params.collection || entry.name.toLowerCase() === filter) : snapshot.collections;
+        const modesOf2 = new Map(collections.map((entry) => [entry.id, entry]));
+        const rungs = [];
+        for (const entry of snapshot.variables) {
+          if (entry.resolvedType !== "COLOR") continue;
+          const owner = modesOf2.get(entry.collectionId);
+          if (!owner) continue;
+          const variable = await figma.variables.getVariableByIdAsync(entry.id);
+          if (!variable) continue;
+          for (const mode of owner.modes) {
+            try {
+              const resolved = await resolveVariableValue(variable, mode.modeId);
+              const value = resolved.value;
+              if (!value || typeof value.r !== "number") continue;
+              const rgb = { r: value.r, g: value.g, b: value.b };
+              const alpha = typeof value.a === "number" ? value.a : 1;
+              rungs.push({ token: entry.name, collection: owner.name, mode: mode.name, hex: formatHex(rgb), rgb, alpha });
+            } catch (e) {
+            }
+          }
+        }
+        const distance = (a, b) => Math.sqrt(((a.r - b.r) * 255) ** 2 + ((a.g - b.g) * 255) ** 2 + ((a.b - b.b) * 255) ** 2);
+        const withAlpha = (value) => {
+          const raw = value.trim().replace(/^#/, "");
+          const rgb = parseHex(raw.length === 8 ? raw.slice(0, 6) : raw);
+          if (!rgb) return null;
+          const alpha = raw.length === 8 ? parseInt(raw.slice(6, 8), 16) / 255 : 1;
+          return { rgb, alpha };
+        };
+        const sameAlpha = (a, b) => Math.abs(a - b) < 4e-3;
+        const results = wanted.map((input) => {
+          const parsed = withAlpha(input);
+          if (!parsed) return { color: input, error: "not a hex colour" };
+          const { rgb, alpha } = parsed;
+          const hex = formatHex(rgb);
+          const exact = rungs.filter((rung) => rung.hex === hex && sameAlpha(rung.alpha, alpha));
+          const seen = new Set(exact.map((rung) => rung.token));
+          const near = rungs.filter((rung) => !(rung.hex === hex && sameAlpha(rung.alpha, alpha))).map((rung) => __spreadProps(__spreadValues({}, rung), { delta: distance(rgb, rung.rgb) })).sort((a, b) => a.delta - b.delta).slice(0, params.nearest);
+          const show = ({ token: token2, collection, mode, alpha: at }) => __spreadValues({
+            token: token2,
+            collection,
+            mode
+          }, at < 0.999 ? { alpha: Math.round(at * 1e3) / 1e3 } : {});
+          return __spreadValues({
+            color: alpha < 0.999 ? `${hex} ${Math.round(alpha * 100)}%` : hex,
+            exact: exact.map(show),
+            /* The flag that stops a caller automating this. A colour does not determine a token:
+             * one hex is routinely `accent/primary` AND `action/primary/background`, and picking
+             * between them is a decision about meaning that no distance can make. Say so, rather
+             * than returning the first and letting it look settled. */
+            ambiguous: seen.size > 1
+          }, exact.length === 0 ? { nearest: near.map((rung) => __spreadProps(__spreadValues({}, show(rung)), { hex: rung.hex, delta: Math.round(rung.delta * 100) / 100 })) } : {});
+        });
+        return { searched: rungs.length, collections: collections.map((entry) => entry.name), results };
       }
     },
     {
@@ -16274,27 +18044,75 @@ ${scripts}`, "");
           enum: ["page", "document"],
           description: "Where to look. `document` walks every page and is slow on a big file."
         },
-        limit: { type: "number", default: 300, min: 1, max: 5e3, description: "Cap on findings returned." }
+        limit: { type: "number", default: 300, min: 1, max: 5e3, description: "Cap on findings returned." },
+        ignore: {
+          type: "string[]",
+          description: "Colours to leave alone, as hex. For values that are deliberately outside the design system \u2014 payment-scheme brand colours, a partner logo \u2014 which cannot be tokenised and should not be counted as debt. Without this the totals stay permanently non-zero and stop working as a health number. Case-insensitive; alpha is ignored."
+        }
       },
       async run(params) {
         var _a;
+        const ignored = new Set(
+          (Array.isArray(params.ignore) ? params.ignore : []).filter((entry) => typeof entry === "string").map((entry) => entry.trim().replace(/^#/, "").slice(0, 6).toLowerCase())
+        );
         const pages = params.scope === "document" ? (await loadAllPagesAsync(), figma.root.children.slice()) : [await resolvePage(params.pageId)];
         const findings = [];
         for (const page of pages) {
           const roots = page.children.filter((node) => "visible" in node);
           for (const finding of await lintScopeAsync(roots)) {
             if (finding.rule !== "unbound-fill" && finding.rule !== "unbound-stroke") continue;
+            if (ignored.size > 0 && typeof finding.value === "string" && ignored.has(finding.value.replace(/^#/, "").slice(0, 6).toLowerCase())) {
+              continue;
+            }
             findings.push(__spreadProps(__spreadValues({}, finding), { page: page.name }));
           }
         }
         const byRule = {};
         for (const finding of findings) byRule[finding.rule] = ((_a = byRule[finding.rule]) != null ? _a : 0) + 1;
-        return {
+        return __spreadProps(__spreadValues({
           scope: params.scope,
           pages: pages.map((page) => page.name),
           total: findings.length,
-          byRule,
+          byRule
+        }, ignored.size > 0 ? { ignored: [...ignored].map((hex) => `#${hex}`) } : {}), {
           findings: findings.slice(0, params.limit)
+        });
+      }
+    },
+    {
+      name: "text.segments",
+      summary: "The styled runs of one TEXT node \u2014 ranges, characters, and per-run variable bindings.",
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "A TEXT node id." }
+      },
+      async run(params) {
+        var _a;
+        const found = await figma.getNodeByIdAsync(params.nodeId);
+        if (!found || found.type !== "TEXT") throw new Error(`${found ? found.type : "nothing"} \u2014 need a TEXT node`);
+        const text3 = found;
+        const segments = text3.getStyledTextSegments(["boundVariables", "fills"]).map((segment) => {
+          var _a2, _b;
+          return {
+            start: segment.start,
+            end: segment.end,
+            characters: segment.characters.replace(/\n/g, "\\n"),
+            boundVariables: (_a2 = segment.boundVariables) != null ? _a2 : {},
+            fills: ((_b = segment.fills) != null ? _b : []).map((paint) => {
+              var _a3, _b2, _c;
+              return {
+                type: paint.type,
+                bound: (_c = (_b2 = (_a3 = paint.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b2.id) != null ? _c : null
+              };
+            })
+          };
+        });
+        return {
+          node: { id: text3.id, name: text3.name },
+          length: text3.characters.length,
+          characters: text3.characters.replace(/\n/g, "\\n"),
+          nodeBound: (_a = text3.boundVariables) != null ? _a : {},
+          segments
         };
       }
     },

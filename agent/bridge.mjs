@@ -383,6 +383,111 @@ function opIsMutating(plugin, op) {
   return entry ? entry.mutates === true : false
 }
 
+function opEntry(plugin, op) {
+  return (plugin.ops || []).find((candidate) => candidate.name === op) || null
+}
+
+/* ------------------------------------------------------------- param checks */
+
+/**
+ * The plugin publishes a schema for every op it exposes, so this process can refuse a
+ * malformed call rather than relay it. That is worth more than it sounds. An op ignores a key
+ * it does not recognise and still answers `ok: true`, so a misspelled parameter reads as a
+ * *successful* no-op — the one failure an agent cannot see in the response, and the one it
+ * will therefore report as done. `node.bind` with `token` instead of `variable` answered
+ * `bound: 150, failed: 0` and wrote nothing. Refusing here turns that into an error at the
+ * only boundary that holds both the schema and the call.
+ *
+ * Silence is the compatibility rule throughout: a plugin that publishes no schema for an op is
+ * relayed exactly as before, because a bridge that rejected what it merely fails to understand
+ * would be worse than one that never checked.
+ */
+function typeOk(type, value) {
+  switch (type) {
+    case 'string': return typeof value === 'string'
+    case 'number': return typeof value === 'number' && Number.isFinite(value)
+    case 'boolean': return typeof value === 'boolean'
+    /* `json` is the schema's way of saying "structured, shape documented in prose" — an array
+     * of bindings, a batch of updates. Anything but undefined passes; the row check below is
+     * what actually looks inside. */
+    case 'json': return value !== undefined
+    default: return true
+  }
+}
+
+/**
+ * Array-item shapes the op descriptions state in prose but the schema cannot yet express.
+ * Kept deliberately small and named per op: this is the layer where the damage happened, and
+ * a table of four keys is cheaper than relaying a call that will lie about its outcome. It
+ * comes out the moment the plugin publishes an item schema of its own.
+ */
+const ROW_SHAPES = {
+  'node.bind': { list: 'bindings', keys: ['node', 'field', 'variable', 'paintIndex'], required: ['node', 'field'] },
+}
+
+function checkParams(entry, params) {
+  const spec = entry && entry.params
+  if (!spec || typeof spec !== 'object' || Object.keys(spec).length === 0) return []
+  const given = params && typeof params === 'object' ? params : {}
+  const problems = []
+  const accepted = Object.keys(spec)
+
+  for (const key of Object.keys(given)) {
+    if (!Object.hasOwn(spec, key)) {
+      problems.push(`unknown parameter "${key}" — "${entry.name}" accepts: ${accepted.join(', ')}`)
+    }
+  }
+
+  for (const [key, rule] of Object.entries(spec)) {
+    const value = given[key]
+    if (value === undefined || value === null) {
+      if (rule.required) problems.push(`missing required parameter "${key}"`)
+      continue
+    }
+    if (rule.type && !typeOk(rule.type, value)) {
+      problems.push(`"${key}" must be ${rule.type}, got ${Array.isArray(value) ? 'array' : typeof value}`)
+      continue
+    }
+    if (Array.isArray(rule.enum) && !rule.enum.includes(value)) {
+      problems.push(`"${key}" must be one of: ${rule.enum.join(', ')}`)
+    }
+    if (typeof value === 'number') {
+      if (typeof rule.min === 'number' && value < rule.min) problems.push(`"${key}" must be >= ${rule.min}`)
+      if (typeof rule.max === 'number' && value > rule.max) problems.push(`"${key}" must be <= ${rule.max}`)
+    }
+  }
+
+  const shape = ROW_SHAPES[entry.name]
+  if (shape) {
+    const rows = given[shape.list]
+    if (rows !== undefined && !Array.isArray(rows)) {
+      problems.push(`"${shape.list}" must be an array`)
+    } else if (Array.isArray(rows)) {
+      /* Report the first few and say how many more. A batch of ninety-nine rows with the same
+       * typo should read as one mistake, not ninety-nine. */
+      const rowProblems = []
+      rows.forEach((row, index) => {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) {
+          rowProblems.push(`${shape.list}[${index}] must be an object`)
+          return
+        }
+        for (const key of Object.keys(row)) {
+          if (!shape.keys.includes(key)) {
+            rowProblems.push(`${shape.list}[${index}]: unknown key "${key}" — accepted: ${shape.keys.join(', ')}`)
+          }
+        }
+        for (const key of shape.required || []) {
+          if (row[key] === undefined) rowProblems.push(`${shape.list}[${index}]: missing "${key}"`)
+        }
+      })
+      problems.push(...rowProblems.slice(0, 5))
+      if (rowProblems.length > 5) problems.push(`… and ${rowProblems.length - 5} more like it`)
+    }
+  }
+
+  return problems
+}
+
 /* ------------------------------------------------------------------ routes */
 
 const ROUTES = {
@@ -430,6 +535,15 @@ const ROUTES = {
           },
         }
       }
+      /* One schema check against the first plugin that publishes one: a broadcast is the same
+       * call to every file, so a bad parameter is bad everywhere, and finding that out once is
+       * better than finding it out per file. */
+      const spec = online.map((plugin) => opEntry(plugin, op)).find((found) => found && found.params)
+      const wrong = checkParams(spec, body.params)
+      if (wrong.length > 0) {
+        return { code: 400, body: { ok: false, op, error: wrong.join('; '), problems: wrong } }
+      }
+
       const answers = await Promise.all(
         online.map(async (plugin) => ({
           file: plugin.file,
@@ -449,6 +563,18 @@ const ROUTES = {
     }
 
     const plugin = found.plugin
+
+    /* Checked against the schema of the plugin that will actually run it, not a shared idea of
+     * the op: two connected files can be running different builds, and the one being addressed
+     * is the only one whose contract matters here. */
+    const wrong = checkParams(opEntry(plugin, op), body.params)
+    if (wrong.length > 0) {
+      return {
+        code: 400,
+        body: { ok: false, op, file: plugin.file, handle: plugin.handle, error: wrong.join('; '), problems: wrong },
+      }
+    }
+
     const answer = await dispatch(plugin, op, body.params)
     /* The answer always names the file it came from. An agent that cannot see which document
      * replied cannot tell a right answer from a right-looking one. */

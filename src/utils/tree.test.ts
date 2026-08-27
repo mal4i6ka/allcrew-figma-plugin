@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { loadAllPagesAsync, findAllWithCriteria } from './tree.ts'
+import { loadAllPagesAsync, findAllWithCriteria, walkSceneNodes } from './tree.ts'
 
 function setFigma(mock: any) {
   ;(globalThis as any).figma = mock
@@ -97,4 +97,53 @@ test('findAllWithCriteria includeRoot tests the root node itself when it is a Sc
     withRoot.map((n: any) => n.id),
     ['root']
   )
+})
+
+test('walkSceneNodes visits every scene node once, and knows which sat inside instances', async () => {
+  setFigma({ skipInvisibleInstanceChildren: false })
+
+  const inInstance = makeNode({ id: 'inner', type: 'RECTANGLE' })
+  const instance = makeNode({ id: 'inst', type: 'INSTANCE', children: [inInstance] })
+  const plain = makeNode({ id: 'rect', type: 'RECTANGLE' })
+  const root = makeNode({ id: 'root', type: 'PAGE', children: [plain, instance] })
+
+  const seen: Array<[string, boolean]> = []
+  const stats = await walkSceneNodes(root, (node: any, inside) => seen.push([node.id, inside]))
+
+  assert.deepEqual(seen, [
+    ['rect', false],
+    ['inst', false],
+    ['inner', true],
+  ])
+  assert.deepEqual(stats, { visited: 3, insideInstances: 1 })
+})
+
+test('walkSceneNodes with skipInstanceChildren visits the instance but not its mirror', async () => {
+  setFigma({ skipInvisibleInstanceChildren: false })
+
+  const inInstance = makeNode({ id: 'inner', type: 'RECTANGLE' })
+  const instance = makeNode({ id: 'inst', type: 'INSTANCE', children: [inInstance] })
+  const root = makeNode({ id: 'root', type: 'PAGE', children: [instance] })
+
+  const seen: string[] = []
+  const stats = await walkSceneNodes(root, (node: any) => seen.push(node.id), { skipInstanceChildren: true })
+
+  // The instance itself still carries its own overrides, so it is visited; what is skipped is
+  // the subtree that mirrors the main component, which a document-scope walk counts at the main.
+  assert.deepEqual(seen, ['inst'])
+  assert.deepEqual(stats, { visited: 1, insideInstances: 0 })
+})
+
+test('walkSceneNodes restores the skip flag even when the visitor throws', async () => {
+  const figmaMock = { skipInvisibleInstanceChildren: false }
+  setFigma(figmaMock)
+
+  const root = makeNode({ id: 'root', type: 'PAGE', children: [makeNode({ id: 'rect', type: 'RECTANGLE' })] })
+
+  await assert.rejects(
+    walkSceneNodes(root, () => {
+      throw new Error('boom')
+    })
+  )
+  assert.equal(figmaMock.skipInvisibleInstanceChildren, false)
 })

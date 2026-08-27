@@ -33,6 +33,16 @@ export interface LintFinding {
    * instance) — the UI hides the Fix button and excludes it from "Fix all". Set by the scan
    * post-pass in code.ts, not by the pure lint walk. */
   fixable?: boolean
+  /** Paint rules only: what the offending paint actually renders, and which paint in the stack
+   * it is. A finding that says only "not bound" can be reported and not acted on — picking a
+   * token needs the colour, and `paintIndex` is the very argument `node.bind` takes to narrow a
+   * fix to one paint. The walk holds both already; withholding them only sends the caller back
+   * to read the node again, and `node.get` reports bindings rather than raw paints, so that
+   * second read does not answer it either. */
+  value?: string
+  paintIndex?: number
+  /** Only when the paint is not fully opaque — an absent `alpha` means 1. */
+  alpha?: number
 }
 
 /** A non-empty (or mixed, for text) paint-style id: the paints come from a style, which is as
@@ -47,6 +57,22 @@ function paintStyleSet(styleId: unknown): boolean {
  * correctly finds nothing to bind, so the finding can never be cleared). */
 function paintBound(paint: { boundVariables?: { color?: unknown } }): boolean {
   return Boolean(paint.boundVariables?.color)
+}
+
+function channelToHex(channel: number): string {
+  return Math.round(channel * 255).toString(16).padStart(2, '0')
+}
+
+/** The offending paint, described well enough to act on: `#rrggbb`, its index in the stack, and
+ * alpha when it is not 1. Mirrors `cssHex` in ./fix.ts — kept local rather than imported so the
+ * pure walk keeps having no dependency on the fixer. */
+function paintDetail(paint: SolidPaint, index: number): Pick<LintFinding, 'value' | 'paintIndex' | 'alpha'> {
+  const detail: Pick<LintFinding, 'value' | 'paintIndex' | 'alpha'> = {
+    value: `#${channelToHex(paint.color.r)}${channelToHex(paint.color.g)}${channelToHex(paint.color.b)}`,
+    paintIndex: index,
+  }
+  if (typeof paint.opacity === 'number' && paint.opacity < 1) detail.alpha = paint.opacity
+  return detail
 }
 
 function hasChildren(node: SceneNode): node is SceneNode & ChildrenMixin {
@@ -81,30 +107,32 @@ function checkNodeShallow(node: SceneNode, depth: number, findings: LintFinding[
 
   if ('fills' in node && Array.isArray(node.fills) && !paintStyleSet((node as { fillStyleId?: unknown }).fillStyleId)) {
     const boundFills = 'boundVariables' in node ? node.boundVariables?.fills : undefined
-    const hasUnboundSolidFill = node.fills.some(
+    const unboundFill = node.fills.findIndex(
       (fill, index) => fill.type === 'SOLID' && fill.visible !== false && !paintBound(fill) && !boundFills?.[index]
     )
-    if (hasUnboundSolidFill) {
+    if (unboundFill !== -1) {
       findings.push({
         nodeId: node.id,
         nodeName: node.name,
         rule: 'unbound-fill',
         message: 'Solid fill is not bound to a color variable',
+        ...paintDetail(node.fills[unboundFill] as SolidPaint, unboundFill),
       })
     }
   }
 
   if ('strokes' in node && Array.isArray(node.strokes) && !paintStyleSet((node as { strokeStyleId?: unknown }).strokeStyleId)) {
     const boundStrokes = 'boundVariables' in node ? node.boundVariables?.strokes : undefined
-    const hasUnboundSolidStroke = node.strokes.some(
+    const unboundStroke = node.strokes.findIndex(
       (stroke, index) => stroke.type === 'SOLID' && stroke.visible !== false && !paintBound(stroke) && !boundStrokes?.[index]
     )
-    if (hasUnboundSolidStroke) {
+    if (unboundStroke !== -1) {
       findings.push({
         nodeId: node.id,
         nodeName: node.name,
         rule: 'unbound-stroke',
         message: 'Solid stroke is not bound to a color variable',
+        ...paintDetail(node.strokes[unboundStroke] as SolidPaint, unboundStroke),
       })
     }
   }

@@ -16,6 +16,7 @@ import {
   type DesignerExportSetting,
 } from '../assets.ts'
 import { resolveExportSettings } from '../../../utils/graphics.ts'
+import { toCssVarName } from '../tokens.ts'
 
 /** Structural shape of a live Figma node this module needs — matches `SceneNode`'s `ExportMixin`.
  * `type`/`getMainComponentAsync`/`mainComponent` feed the master-settings lookup for instances of
@@ -155,6 +156,50 @@ function collectAssetTargets(nodes: readonly IrNode[]): { leaves: AssetLeafRef[]
  * Mutates the IR in place. Nodes without a live source, or whose export throws, keep the
  * placeholder-div behavior.
  */
+/**
+ * Puts the token back into an inlined SVG. Figma renders vector paints as literal `fill="#rrggbb"`
+ * attributes, so a bound icon comes out of `exportAsync` carrying the hex — the very hex the rest
+ * of this pipeline is careful never to emit, since the CSS path writes `var(--token, #fallback)`.
+ *
+ * The substitution is driven by *this node's own bindings*, never by looking a colour up in the
+ * palette. A hex does not identify a token: the same value is routinely two different semantic
+ * tokens, and choosing between them is a decision about meaning. Here there is nothing to choose
+ * — the paint says which variable it carries. A colour that two of this node's own bound paints
+ * share is skipped for the same reason: at that point the node itself is ambiguous.
+ */
+export async function tokeniseInlineSvg(svg: string, source: AssetSourceNode): Promise<string> {
+  const byColor = new Map<string, string | null>()
+  const channel = (value: number) => Math.round(value * 255).toString(16).padStart(2, '0')
+
+  for (const prop of ['fills', 'strokes'] as const) {
+    const paints = (source as unknown as Record<string, unknown>)[prop]
+    if (!Array.isArray(paints)) continue
+    for (const paint of paints as Paint[]) {
+      if (paint.type !== 'SOLID' || paint.visible === false) continue
+      const aliasId = (paint as { boundVariables?: { color?: { id?: string } } }).boundVariables?.color?.id
+      if (!aliasId) continue
+      // `documentAccess: "dynamic-page"` forbids the sync lookup — it throws rather than
+      // returning null, and this call sits inside the caller's try/catch, so the sync form
+      // would have quietly turned every bound icon into a placeholder.
+      const variable = await figma.variables.getVariableByIdAsync(aliasId)
+      if (!variable) continue
+      const solid = paint as SolidPaint
+      const hex = `#${channel(solid.color.r)}${channel(solid.color.g)}${channel(solid.color.b)}`.toLowerCase()
+      const known = byColor.get(hex)
+      // Second, different token on the same colour → this node cannot say which one a given
+      // attribute meant. Mark it poisoned rather than pick.
+      byColor.set(hex, known === undefined ? variable.name : known === variable.name ? known : null)
+    }
+  }
+  if (byColor.size === 0) return svg
+
+  return svg.replace(/\b(fill|stroke)="(#[0-9a-fA-F]{6})"/g, (whole, attribute: string, hex: string) => {
+    const token = byColor.get(hex.toLowerCase())
+    if (!token) return whole
+    return `${attribute}="var(${toCssVarName(token)}, ${hex})"`
+  })
+}
+
 export async function annotateVectorLeaves(
   nodes: readonly IrNode[],
   sceneNodesById: ReadonlyMap<string, AssetSourceNode>,
@@ -171,7 +216,7 @@ export async function annotateVectorLeaves(
     if (!source) return
     try {
       const asset = await exportVectorAsset(source, inlineThresholdBytes)
-      if (asset.kind === 'inline') node.inlineSvg = asset.svg
+      if (asset.kind === 'inline') node.inlineSvg = await tokeniseInlineSvg(asset.svg, source)
       else node.assetSrc = `img/${asset.filename}`
     } catch (error) {
       console.warn(
