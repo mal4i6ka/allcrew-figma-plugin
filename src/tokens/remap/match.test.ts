@@ -371,3 +371,63 @@ test('a rung the new ladder cannot name still sits above the one it can', () => 
   assert.equal(matches[0].to.step, 0, 'the unnamed rung takes the one above the first anchor')
   assert.equal(matches[1].to.step, 50, 'and the anchor keeps its own number')
 })
+
+/* ------------------------------------------------------------------ real files */
+
+/** Both sides of a real migration, trimmed to the ramps that got it wrong. */
+const MUTED_TEAL: Array<[number, string]> = [
+  [10, '#F3F8F9'], [50, '#E1EDEF'], [100, '#D0E2E4'], [200, '#BFD6D9'], [300, '#B1CBCF'], [400, '#A1BCC0'],
+  [500, '#93AEB2'], [600, '#799498'], [700, '#60797D'], [800, '#485E61'], [900, '#314245'], [950, '#1A2527'],
+]
+const VIVID_TEAL: Array<[number, string]> = [
+  [50, '#F3F8F9'], [100, '#E7F0F2'], [200, '#BFD6D9'], [300, '#87B7BD'], [400, '#5598A1'],
+  [500, '#2F7882'], [600, '#1C5F69'], [700, '#124850'], [800, '#0B343A'], [900, '#062329'],
+]
+const PURE_GRAY: Array<[number, string]> = [
+  [0, '#FFFFFF'], [10, '#F4F4F4'], [50, '#E4E4E4'], [100, '#D4D4D4'], [200, '#C4C4C4'], [300, '#B3B3B3'],
+  [400, '#A3A3A3'], [500, '#939393'], [600, '#7C7C7C'], [700, '#646464'], [800, '#4C4C4C'], [900, '#353535'],
+  [950, '#1D1D1D'], [1000, '#000000'],
+]
+const TINTED_GRAY: Array<[number, string]> = [
+  [0, '#FFFFFF'], [50, '#F7F8F8'], [100, '#F2F4F5'], [150, '#F2F2F2'], [200, '#D9DCDE'], [300, '#B8BBBD'],
+  [400, '#8C8C8C'], [500, '#797979'], [600, '#616161'], [700, '#333434'], [800, '#262829'], [850, '#202020'],
+  [900, '#191B1C'], [925, '#11141A'], [950, '#0F1011'], [1000, '#000000'],
+]
+
+test('a muted ramp keeps its own family rather than falling into the grays', () => {
+  // Measured on a real file: this teal never rises above 0.36 of the chroma sRGB allows at its
+  // own lightness, so every neutrality test in the tool reads it as gray — while holding a
+  // 207° hue at every one of its twelve steps. Both palettes call it teal, and that outranks a
+  // threshold it happens to sit under: routed into the neutrals, a whole ramp comes out looking
+  // normalised rather than remapped.
+  const muted = rungs('teal', MUTED_TEAL)
+  assert.equal(muted.neutral, true, 'the fixture is only interesting while the arithmetic calls it gray')
+
+  const { assignments } = assignFamilies(
+    [muted, rungs('neutral', PURE_GRAY)],
+    [rungs('teal', VIVID_TEAL), rungs('neutral', TINTED_GRAY)]
+  )
+  assert.deepEqual(
+    assignments.map((assignment) => `${assignment.from.label}->${assignment.to.label}`),
+    ['teal->teal', 'neutral->neutral']
+  )
+})
+
+test('a gray ramp still never takes a colored family that is not its own name', () => {
+  const { assignments } = assignFamilies([rungs('neutral', PURE_GRAY)], [rungs('teal', VIVID_TEAL)])
+  assert.deepEqual(assignments, [], 'nothing colored is compatible, so the family matches color by color')
+})
+
+test('a rung with nowhere to go shares the neighbour nearer its own lightness', () => {
+  // The old `10` (#F4F4F4) is wedged between a new `0` and a new `50` that both belong to
+  // rungs of their own. Handing it the `0` turns a pale gray into pure white — the loudest
+  // possible wrong answer on a background token.
+  const matches = matchStops(rungs('neutral', PURE_GRAY), rungs('neutral', TINTED_GRAY))
+  const landing = (step: number): number | null => matches.find((match) => match.from.step === step)!.to.step
+
+  assert.equal(landing(0), 0)
+  assert.equal(landing(10), 50)
+  for (const step of [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950, 1000]) {
+    assert.equal(landing(step), step, `neutral/${step} keeps its number`)
+  }
+})
