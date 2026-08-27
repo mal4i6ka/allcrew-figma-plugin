@@ -339,5 +339,9 @@ of it. rsync exiting 0 is not evidence that both arrived; the script compares md
 sides and retries until they agree, then clears the `._*` stubs a dying network mount leaves
 behind.
 
-Then reopen the plugin and confirm with one call to something the new build introduced —
-`"unknown op"` means the deploy did not land, whatever the terminal said.
+Then confirm with one call to something the new build introduced — `"unknown op"` means the
+deploy did not land, whatever the terminal said. Reopening the plugin is not part of the
+routine: Figma re-reads the plugin code on its own, and three consecutive deploys went live
+without a restart on 2026-08-27. Ask for one only when that call says `"unknown op"` while
+md5 already matches on both sides — then the files arrived and the runtime is holding an
+older copy.
