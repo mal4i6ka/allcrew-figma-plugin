@@ -421,3 +421,13 @@ A real Apply on one page refused with "about 7140 kB of undo data". Two causes, 
 
 The refusal message survives for the honest case: a scope that genuinely holds more places
 than any snapshot can carry now fails with the *measured* number, not a guess.
+
+## Rebind gains a scope (2026-08-20, from the selector test)
+
+The operator repainted one selector and expected its Б-variable bindings to become
+A-variable bindings — which is the rebind stage's job, deliberately separate from Apply. But
+the rebind only ran document-wide, useless for trying the migration on one component first.
+It now takes the same three scopes as the repaint: whole document (variables, styles and
+canvas), this page, or selection — the narrow scopes move canvas bindings only, because
+variables and styles are file-global (a selection does not own its semantic tokens), and the
+report says so.
