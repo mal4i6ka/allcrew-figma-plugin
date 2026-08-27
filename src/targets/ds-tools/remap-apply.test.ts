@@ -108,3 +108,34 @@ test('turning off a write pass takes its undo cost with it', () => {
   const without = estimateSnapshotBytes(plan, { ...DEFAULT_REMAP_APPLY_OPTIONS, canvas: false })
   assert.equal(without, 0)
 })
+
+test('the packed snapshot unfolds to exactly what was collected', () => {
+  const collected = {
+    version: 2 as const,
+    values: [{ v: 'V:1', m: 'M:1', c: [0.9569, 0.9569, 0.9569, 1] as [number, number, number, number] }],
+    names: [{ v: 'V:1', n: 'colors/old' }],
+    styles: [{ s: 'S:1', p: 'paints' as const, i: 0, j: -1, c: [0.1, 0.2, 0.3, 1] as [number, number, number, number] }],
+    paints: [
+      ['1:2', 0, 0, -1, 0.9569, 0.9569, 0.9569, 1, 0],
+      ['1:3', 0, 0, -1, 0.9569, 0.9569, 0.9569, 1, 1],
+      ['1:4', 1, 2, 3, 0.5, 0.25, 0.125, 0.5, 0],
+    ] as Array<[string, number, number, number, number, number, number, number, number]>,
+  }
+  const { packSnapshot, unpackSnapshot } = require('./remap-apply.ts') as typeof import('./remap-apply.ts')
+  const restored = unpackSnapshot(JSON.parse(JSON.stringify(packSnapshot(collected))))
+  assert.deepEqual(
+    [...restored.paints].sort((a, b) => a[0].localeCompare(b[0])),
+    collected.paints,
+    'every place comes back with its exact channels and bind flag'
+  )
+  assert.deepEqual(restored.values, collected.values)
+  assert.deepEqual(restored.styles, collected.styles)
+
+  // The packed form is meaningfully smaller — that is its whole reason to exist.
+  const before = JSON.stringify(collected).length
+  const after = JSON.stringify(packSnapshot(collected)).length
+  assert.ok(after < before, `packed ${after} < unpacked ${before}`)
+
+  // A version this build does not know is refused, not misread.
+  assert.throws(() => unpackSnapshot({ version: 9 }), /version 9/)
+})
