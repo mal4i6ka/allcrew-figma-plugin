@@ -803,6 +803,15 @@ export const READ_OPS: readonly OpDef[] = [
           name: node.name,
           type: node.type,
           description: node.description || undefined,
+          /* Only when it differs from the plain projection: `descriptionMarkdown` normally holds
+           * the same words, so echoing both would double every component in the payload for
+           * nothing. When they DO differ, the difference is the formatting — which is the half
+           * `component.describe` writes and the plain field cannot show. */
+          descriptionMarkdown:
+            typeof (node as { descriptionMarkdown?: string }).descriptionMarkdown === 'string' &&
+            (node as { descriptionMarkdown?: string }).descriptionMarkdown !== node.description
+              ? (node as { descriptionMarkdown?: string }).descriptionMarkdown || undefined
+              : undefined,
           // Where a team keeps the real documentation. An agent that has it stops guessing the
           // intent from the layer names.
           documentationLinks:

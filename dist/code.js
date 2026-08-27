@@ -15323,6 +15323,92 @@ ${scripts}`, "");
     };
   }
 
+  // src/agent/remove-ops.ts
+  function asIds(value, param) {
+    const list2 = Array.isArray(value) ? value : [];
+    const ids = list2.filter((entry) => typeof entry === "string" && entry !== "");
+    if (ids.length === 0) throw new Error(`"${param}" must be a non-empty array of node ids`);
+    return ids;
+  }
+  function screenRemoval(node, force) {
+    var _a;
+    if (node.type === "PAGE" || node.type === "DOCUMENT") {
+      throw new Error(`${node.type} cannot be deleted through this channel`);
+    }
+    if ((node.type === "COMPONENT" || node.type === "COMPONENT_SET") && !force) {
+      throw new Error(
+        `${(_a = node.name) != null ? _a : node.type} is a ${node.type} \u2014 its instances elsewhere would break; pass force: true if that is intended`
+      );
+    }
+  }
+  var pageOf = (node) => {
+    let walk = node.parent;
+    while (walk && walk.type !== "PAGE") walk = walk.parent;
+    return walk ? walk.name : null;
+  };
+  var REMOVE_OPS = [
+    {
+      name: "node.remove",
+      summary: "Delete nodes. Refuses a main component, and reports what each deletion actually was.",
+      agent: "The one write whose mistake cannot be read back \u2014 there is no `before` on a node that no longer exists, so read the nodes first (node.get) and delete by id, never by a name you assumed. A COMPONENT or COMPONENT_SET is refused without force: true, because its instances live elsewhere in the file and would break where nobody is looking. Deleting a page is never allowed. One call is one undo step.",
+      mutates: true,
+      params: {
+        nodes: { type: "string[]", required: true, description: "Node ids to delete." },
+        force: {
+          type: "boolean",
+          default: false,
+          description: "Allow deleting a COMPONENT or COMPONENT_SET. Off by default: instances of it may sit on pages this call never looked at, and they break silently."
+        },
+        dryRun: {
+          type: "boolean",
+          default: false,
+          description: "Report exactly what would be deleted \u2014 name, type and page \u2014 without deleting anything."
+        }
+      },
+      async run(params) {
+        const ids = asIds(params.nodes, "nodes");
+        const dryRun = params.dryRun === true;
+        const force = params.force === true;
+        const planned = [];
+        const results = [];
+        for (const id of ids) {
+          try {
+            const found = await figma.getNodeByIdAsync(id);
+            if (!found) throw new Error(`no node with id ${id}`);
+            screenRemoval(found, force);
+            const scene = found;
+            planned.push({
+              node: scene,
+              row: { node: id, name: scene.name, type: scene.type, page: pageOf(scene) }
+            });
+          } catch (err) {
+            results.push({ node: id, ok: false, removed: false, error: String((err == null ? void 0 : err.message) || err) });
+          }
+        }
+        if (dryRun) {
+          for (const entry of planned) results.push(__spreadProps(__spreadValues({}, entry.row), { ok: true, removed: false }));
+          return { dryRun, total: ids.length, removed: 0, failed: results.filter((row) => !row.ok).length, results };
+        }
+        if (planned.length > 0) figma.commitUndo();
+        for (const entry of planned) {
+          try {
+            entry.node.remove();
+            results.push(__spreadProps(__spreadValues({}, entry.row), { ok: entry.node.removed === true, removed: entry.node.removed === true }));
+          } catch (err) {
+            results.push(__spreadProps(__spreadValues({}, entry.row), { ok: false, removed: false, error: String((err == null ? void 0 : err.message) || err) }));
+          }
+        }
+        return {
+          dryRun,
+          total: ids.length,
+          removed: results.filter((row) => row.removed === true).length,
+          failed: results.filter((row) => !row.ok).length,
+          results
+        };
+      }
+    }
+  ];
+
   // src/agent/write-ops.ts
   function asArray(value, param) {
     if (!Array.isArray(value)) throw new Error(`param "${param}" must be an array`);
@@ -15416,6 +15502,71 @@ ${scripts}`, "");
       detail: touched.length === next.length ? prop : `${prop}[${touched.join(",")}]`,
       before: was.join(" ")
     };
+  }
+  var MARKDOWN_SUPPORTED = [
+    "paragraphs (blank line)",
+    "unordered list (- or *)",
+    "ordered list (1.)",
+    "heading (## only \u2014 # is demoted to ##)",
+    "bold (** or __)",
+    "italic (* or _)",
+    "strikethrough (~~)",
+    "link ([text](url))",
+    "inline code (`code`)",
+    "code block (``` \u2014 no formatting inside, leading spaces stripped)"
+  ];
+  var MARKDOWN_UNSUPPORTED = ["tables", "images", "first-level headings"];
+  function markdownWarnings(md) {
+    var _a;
+    const warnings = [];
+    const fences = ((_a = md.match(/^\s*```/gm)) != null ? _a : []).length;
+    if (fences >= 2) {
+      const closed = md.slice(md.lastIndexOf("```") + 3);
+      if (closed.trim() !== "") {
+        warnings.push("text after a code block is absorbed into it \u2014 put code blocks last");
+      }
+    }
+    if (/^\s*\|.*\|\s*$/m.test(md)) warnings.push("tables are not supported \u2014 this renders as literal characters");
+    if (/!\[[^\]]*\]\(/.test(md)) warnings.push("images are not supported \u2014 this renders as literal characters");
+    if (/^#[^#]/m.test(md)) warnings.push("a first-level heading is demoted to ##");
+    return warnings;
+  }
+  function planDescribe(entry, where) {
+    const text3 = (value, key) => {
+      if (value === null) return "";
+      if (typeof value !== "string") throw new Error(`${where}.${key} must be a string (null or "" clears it)`);
+      return value;
+    };
+    const hasDescription = entry.description !== void 0;
+    const hasMarkdown = entry.markdown !== void 0;
+    if (hasDescription && hasMarkdown) {
+      throw new Error(`${where}: "description" and "markdown" write the same field \u2014 send one of them`);
+    }
+    let links;
+    if (entry.documentationLinks !== void 0) {
+      const raw = entry.documentationLinks;
+      if (raw === null) links = [];
+      else if (typeof raw === "string") links = raw === "" ? [] : [raw];
+      else if (Array.isArray(raw)) {
+        links = raw.map((uri, index) => {
+          if (typeof uri !== "string" || uri === "") {
+            throw new Error(`${where}.documentationLinks[${index}] must be a non-empty URL string`);
+          }
+          return uri;
+        });
+      } else throw new Error(`${where}.documentationLinks must be a URL, an array of URLs, or null`);
+      if (links.length > 1) {
+        throw new Error(
+          `${where}.documentationLinks: Figma stores at most one link, and refuses a longer list \u2014 got ${links.length}`
+        );
+      }
+    }
+    if (!hasDescription && !hasMarkdown && links === void 0) {
+      throw new Error(`${where}: nothing to write \u2014 send "description", "markdown" or "documentationLinks"`);
+    }
+    return __spreadProps(__spreadValues(__spreadValues(__spreadValues({}, hasDescription ? { description: text3(entry.description, "description") } : {}), hasMarkdown ? { markdown: text3(entry.markdown, "markdown") } : {}), links === void 0 ? {} : { links }), {
+      variant: entry.variant === true
+    });
   }
   var WRITE_OPS = [
     {
@@ -16514,7 +16665,7 @@ ${scripts}`, "");
           page.name = ref;
           return page;
         };
-        const pageOf = (node) => {
+        const pageOf2 = (node) => {
           let walk = node.parent;
           while (walk && walk.type !== "PAGE") walk = walk.parent;
           return walk != null ? walk : null;
@@ -16529,7 +16680,7 @@ ${scripts}`, "");
             if (!source) throw new Error(`no node with id ${id}`);
             if (source.type === "PAGE" || source.type === "DOCUMENT") throw new Error(`${source.type} cannot be copied`);
             const scene = source;
-            const home = pageOf(scene);
+            const home = pageOf2(scene);
             if (home) await home.loadAsync();
             const wantAs = typeof entry.as === "string" ? entry.as : null;
             if (wantAs !== null && wantAs !== "instance" && wantAs !== "clone") {
@@ -16852,7 +17003,115 @@ ${scripts}`, "");
         const clean = results.filter((row) => row.ok);
         return { dryRun, total: results.length, cleaned: clean.filter((r) => r.changed).length, stillDirty: results.length - clean.length, results };
       }
-    }
+    },
+    {
+      name: "component.describe",
+      summary: "Write component descriptions and their documentation link \u2014 the field COMPONENTS.md reads.",
+      agent: `Rich text goes in "markdown", plain text in "description" \u2014 one field, two views, so a row sends one of them. Figma renders only ## headings (# is demoted), bold, italic, strikethrough, lists, links, inline code and code blocks; tables and images are not supported and survive as literal characters. A dry run returns the normalized text \u2014 the canonical form Figma stores \u2014 plus that support list and a per-row warning for every trap it found. Normalization does NOT strip what Figma cannot render: a table reaches the panel as literal pipes, and prose written after a code block is swallowed by the block, so put code samples last. documentationLinks takes one URL \u2014 a longer list is refused before anything is written, not truncated. Addressing a variant is refused: the UI shows the SET's description, so a write to a variant lands where nobody looks.`,
+      mutates: true,
+      params: {
+        components: {
+          type: "json",
+          required: true,
+          description: "Array of { node, description | markdown, documentationLinks, variant }. `node` is a COMPONENT or COMPONENT_SET id \u2014 required. `description` is plain text, `markdown` is rich text; send one, not both, and null or \"\" clears the field. `documentationLinks` is a URL, a one-element array or null to clear \u2014 Figma refuses a longer list. `variant: true` writes a variant's own description even though the UI shows its set's."
+        },
+        dryRun: {
+          type: "boolean",
+          default: false,
+          description: "Report the normalized text and what each row would replace, without touching anything."
+        }
+      },
+      async run(params) {
+        var _a;
+        const rows = asArray(params.components, "components");
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const util = figma.util;
+        const normalizeMarkdown = (md) => {
+          if (md === "" || typeof (util == null ? void 0 : util.normalizeMarkdown) !== "function") return md;
+          try {
+            return util.normalizeMarkdown(md);
+          } catch (e) {
+            return md;
+          }
+        };
+        const readDoc = (node) => {
+          var _a2, _b;
+          const holder = node;
+          return __spreadProps(__spreadValues({
+            description: (_a2 = node.description) != null ? _a2 : ""
+          }, typeof holder.descriptionMarkdown === "string" ? { markdown: holder.descriptionMarkdown } : {}), {
+            links: ((_b = node.documentationLinks) != null ? _b : []).map((link) => link.uri)
+          });
+        };
+        const results = [];
+        for (const [index, raw] of rows.entries()) {
+          const entry = record(raw, `components[${index}]`);
+          const id = typeof entry.node === "string" ? entry.node : "";
+          try {
+            if (id === "") throw new Error('"node" must be a component or component-set id');
+            const plan = planDescribe(entry, `components[${index}]`);
+            const found = await figma.getNodeByIdAsync(id);
+            if (!found) throw new Error(`no node with id ${id}`);
+            if (found.type !== "COMPONENT" && found.type !== "COMPONENT_SET") {
+              throw new Error(`${found.type} has no description \u2014 only a COMPONENT or COMPONENT_SET does`);
+            }
+            const node = found;
+            const set = node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? node.parent : null;
+            if (set && !plan.variant) {
+              throw new Error(
+                `"${node.name}" is a variant of "${set.name}" (${set.id}) \u2014 Figma shows the SET's description; address the set, or pass variant: true to write this one anyway`
+              );
+            }
+            const before = readDoc(node);
+            const markdown = plan.markdown === void 0 ? void 0 : normalizeMarkdown(plan.markdown);
+            const supportsMarkdown = before.markdown !== void 0;
+            if (markdown !== void 0 && !supportsMarkdown) {
+              throw new Error('this Figma build has no descriptionMarkdown \u2014 send "description" as plain text');
+            }
+            const row = __spreadValues(__spreadValues(__spreadValues({
+              node: id,
+              name: node.name,
+              type: node.type,
+              before
+            }, set ? { variantOf: set.name } : {}), markdown !== void 0 && markdown !== plan.markdown ? { normalizedFrom: plan.markdown } : {}), plan.markdown === void 0 || markdownWarnings(plan.markdown).length === 0 ? {} : { warnings: markdownWarnings(plan.markdown) });
+            if (dryRun) {
+              results.push(__spreadProps(__spreadValues({}, row), {
+                intended: __spreadValues(__spreadValues(__spreadValues({}, plan.description === void 0 ? {} : { description: plan.description }), markdown === void 0 ? {} : { markdown }), plan.links === void 0 ? {} : { links: plan.links }),
+                ok: true,
+                written: false
+              }));
+              continue;
+            }
+            if (markdown !== void 0) node.descriptionMarkdown = markdown;
+            if (plan.description !== void 0) node.description = plan.description;
+            if (plan.links !== void 0) node.documentationLinks = plan.links.map((uri) => ({ uri }));
+            const after = readDoc(node);
+            const wantMarkdown = markdown === void 0 || after.markdown === markdown;
+            const wantDescription = plan.description === void 0 || after.description === plan.description;
+            const wantLinks = plan.links === void 0 || after.links.join("\n") === plan.links.join("\n");
+            results.push(__spreadValues(__spreadProps(__spreadValues({}, row), {
+              after,
+              ok: wantMarkdown && wantDescription && wantLinks,
+              written: true,
+              changed: after.description !== before.description || after.markdown !== before.markdown || after.links.join("\n") !== before.links.join("\n")
+            }), wantMarkdown && wantDescription ? {} : { error: "the field read back different from what was written" }));
+          } catch (err) {
+            results.push({ node: id, ok: false, written: false, error: String((err == null ? void 0 : err.message) || err) });
+          }
+        }
+        const good = results.filter((row) => row.ok);
+        return __spreadProps(__spreadValues({
+          dryRun,
+          total: results.length,
+          written: results.filter((row) => row.written && row.ok).length,
+          failed: results.length - good.length
+        }, dryRun ? { markdown: { supported: MARKDOWN_SUPPORTED, unsupported: MARKDOWN_UNSUPPORTED } } : {}), {
+          results
+        });
+      }
+    },
+    ...REMOVE_OPS
   ];
 
   // src/agent/ops.ts
@@ -17358,6 +17617,11 @@ ${scripts}`, "");
             name: node.name,
             type: node.type,
             description: node.description || void 0,
+            /* Only when it differs from the plain projection: `descriptionMarkdown` normally holds
+             * the same words, so echoing both would double every component in the payload for
+             * nothing. When they DO differ, the difference is the formatting — which is the half
+             * `component.describe` writes and the plain field cannot show. */
+            descriptionMarkdown: typeof node.descriptionMarkdown === "string" && node.descriptionMarkdown !== node.description ? node.descriptionMarkdown || void 0 : void 0,
             // Where a team keeps the real documentation. An agent that has it stops guessing the
             // intent from the layer names.
             documentationLinks: node.documentationLinks && node.documentationLinks.length > 0 ? node.documentationLinks.map((link) => link.uri) : void 0,
@@ -18640,7 +18904,7 @@ ${scripts}`, "");
       targets = figma.root.findAllWithCriteria({ types: ["COMPONENT_SET", "COMPONENT"] }).filter(isDocumentableComponent);
     }
     const pageNameById = /* @__PURE__ */ new Map();
-    const pageOf = (node) => {
+    const pageOf2 = (node) => {
       let current = node;
       while (current && current.type !== "PAGE") current = current.parent;
       if (!current) return void 0;
@@ -18661,7 +18925,7 @@ ${scripts}`, "");
       const doc = {
         id: node.id,
         name: node.name,
-        page: pageOf(node),
+        page: pageOf2(node),
         description,
         links,
         properties: componentPropertiesOf(node),

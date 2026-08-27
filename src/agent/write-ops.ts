@@ -191,6 +191,125 @@ async function bindPaints(
   }
 }
 
+/* -------------------------------------------------------------- component docs */
+
+/** What Figma's rich-text fields actually render, taken from the Plugin API's own table rather
+ * than from what a Markdown parser would accept. Anything outside this list survives as literal
+ * characters, so a description written in full CommonMark quietly ships its own syntax as text.
+ *
+ * The demotion of `#` is the trap worth knowing: a description authored as a document with one
+ * title comes back a level flatter than it went in, and `##` is therefore the only heading
+ * there is. `figma.util.normalizeMarkdown` is the authority — Figma applies it on assignment
+ * anyway, and this op runs it first so the report can show what will render before it does. */
+export const MARKDOWN_SUPPORTED: readonly string[] = [
+  'paragraphs (blank line)',
+  'unordered list (- or *)',
+  'ordered list (1.)',
+  'heading (## only — # is demoted to ##)',
+  'bold (** or __)',
+  'italic (* or _)',
+  'strikethrough (~~)',
+  'link ([text](url))',
+  'inline code (`code`)',
+  'code block (``` — no formatting inside, leading spaces stripped)',
+]
+
+export const MARKDOWN_UNSUPPORTED: readonly string[] = ['tables', 'images', 'first-level headings']
+
+/**
+ * Traps that survive `normalizeMarkdown` — it canonicalizes (`_i_` becomes `*i*`), it does not
+ * strip what Figma cannot render, so unsupported syntax reaches the panel as literal characters.
+ *
+ * The code-block one is not cosmetic and was found by running the normalizer, not by reading the
+ * docs: text placed after a closing fence is glued onto the fence line and a stray fence is
+ * appended, so the prose after a code sample is swallowed by the sample. Warned about rather
+ * than rewritten — this op writes what the caller wrote.
+ */
+export function markdownWarnings(md: string): string[] {
+  const warnings: string[] = []
+  const fences = (md.match(/^\s*```/gm) ?? []).length
+  if (fences >= 2) {
+    const closed = md.slice(md.lastIndexOf('```') + 3)
+    if (closed.trim() !== '') {
+      warnings.push('text after a code block is absorbed into it — put code blocks last')
+    }
+  }
+  if (/^\s*\|.*\|\s*$/m.test(md)) warnings.push('tables are not supported — this renders as literal characters')
+  if (/!\[[^\]]*\]\(/.test(md)) warnings.push('images are not supported — this renders as literal characters')
+  if (/^#[^#]/m.test(md)) warnings.push('a first-level heading is demoted to ##')
+  return warnings
+}
+
+/** One row of `component.describe`, checked before anything is touched. */
+export interface DescribePlan {
+  /** Plain text to write, `''` to clear. Mutually exclusive with `markdown`. */
+  description?: string
+  /** Rich text to write, `''` to clear. */
+  markdown?: string
+  /** Documentation links to write; `[]` clears. Figma keeps ONE — the report says what stuck. */
+  links?: string[]
+  /** Write a variant's own (UI-invisible) description on purpose. */
+  variant: boolean
+}
+
+/**
+ * Turns one request row into a plan, or explains why it is not one.
+ *
+ * `description` and `markdown` are refused together rather than merged: they are two views of a
+ * single field, so a row carrying both is a row whose author expects two outcomes and will get
+ * one of them silently.
+ */
+export function planDescribe(entry: Record<string, unknown>, where: string): DescribePlan {
+  const text = (value: unknown, key: string): string => {
+    if (value === null) return ''
+    if (typeof value !== 'string') throw new Error(`${where}.${key} must be a string (null or "" clears it)`)
+    return value
+  }
+
+  const hasDescription = entry.description !== undefined
+  const hasMarkdown = entry.markdown !== undefined
+  if (hasDescription && hasMarkdown) {
+    throw new Error(`${where}: "description" and "markdown" write the same field — send one of them`)
+  }
+
+  let links: string[] | undefined
+  if (entry.documentationLinks !== undefined) {
+    const raw = entry.documentationLinks
+    if (raw === null) links = []
+    else if (typeof raw === 'string') links = raw === '' ? [] : [raw]
+    else if (Array.isArray(raw)) {
+      links = raw.map((uri, index) => {
+        if (typeof uri !== 'string' || uri === '') {
+          throw new Error(`${where}.documentationLinks[${index}] must be a non-empty URL string`)
+        }
+        return uri
+      })
+    } else throw new Error(`${where}.documentationLinks must be a URL, an array of URLs, or null`)
+    /* Checked BEFORE anything is written, because the API throws on a longer list rather than
+     * keeping the first — observed against a live file. Left to the write, the throw lands
+     * AFTER the description has already been assigned, and the row reports a failure over a
+     * document that did change. A refusal here is the only way the batch stays all-or-nothing
+     * per row. */
+    if (links.length > 1) {
+      throw new Error(
+        `${where}.documentationLinks: Figma stores at most one link, and refuses a longer list — ` +
+          `got ${links.length}`
+      )
+    }
+  }
+
+  if (!hasDescription && !hasMarkdown && links === undefined) {
+    throw new Error(`${where}: nothing to write — send "description", "markdown" or "documentationLinks"`)
+  }
+
+  return {
+    ...(hasDescription ? { description: text(entry.description, 'description') } : {}),
+    ...(hasMarkdown ? { markdown: text(entry.markdown, 'markdown') } : {}),
+    ...(links === undefined ? {} : { links }),
+    variant: entry.variant === true,
+  }
+}
+
 /* --------------------------------------------------------------------- ops */
 
 export const WRITE_OPS: readonly OpDef[] = [
@@ -1888,6 +2007,167 @@ export const WRITE_OPS: readonly OpDef[] = [
       }
       const clean = results.filter((row) => row.ok)
       return { dryRun, total: results.length, cleaned: clean.filter((r) => (r as { changed?: boolean }).changed).length, stillDirty: results.length - clean.length, results }
+    },
+  },
+
+  {
+    name: 'component.describe',
+    summary: 'Write component descriptions and their documentation link — the field COMPONENTS.md reads.',
+    agent:
+      'Rich text goes in "markdown", plain text in "description" — one field, two views, so a row sends one of them. Figma renders only ## headings (# is demoted), bold, italic, strikethrough, lists, links, inline code and code blocks; tables and images are not supported and survive as literal characters. A dry run returns the normalized text — the canonical form Figma stores — plus that support list and a per-row warning for every trap it found. Normalization does NOT strip what Figma cannot render: a table reaches the panel as literal pipes, and prose written after a code block is swallowed by the block, so put code samples last. documentationLinks takes one URL — a longer list is refused before anything is written, not truncated. Addressing a variant is refused: the UI shows the SET\'s description, so a write to a variant lands where nobody looks.',
+    mutates: true,
+    params: {
+      components: {
+        type: 'json',
+        required: true,
+        description:
+          'Array of { node, description | markdown, documentationLinks, variant }. `node` is a ' +
+          'COMPONENT or COMPONENT_SET id — required. `description` is plain text, `markdown` is ' +
+          'rich text; send one, not both, and null or "" clears the field. `documentationLinks` ' +
+          'is a URL, a one-element array or null to clear — Figma refuses a longer list. ' +
+          '`variant: true` ' +
+          "writes a variant's own description even though the UI shows its set's.",
+      },
+      dryRun: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Report the normalized text and what each row would replace, without touching anything.',
+      },
+    },
+    async run(params) {
+      const rows = asArray(params.components, 'components')
+      const dryRun = params.dryRun === true
+      if (!dryRun) figma.commitUndo()
+
+      /* Figma normalizes on assignment regardless; running it here first is what lets the report
+       * show the rendered form BEFORE the write, and lets a dry run answer "what will this look
+       * like" without a round trip through the document. Older runtimes lack `figma.util`, so a
+       * missing helper degrades to the input rather than failing the batch. */
+      const util = (figma as unknown as { util?: { normalizeMarkdown?: (md: string) => string } }).util
+      const normalizeMarkdown = (md: string): string => {
+        if (md === '' || typeof util?.normalizeMarkdown !== 'function') return md
+        try {
+          return util.normalizeMarkdown(md)
+        } catch {
+          return md
+        }
+      }
+
+      type Doc = { description: string; markdown?: string; links: string[] }
+      const readDoc = (node: ComponentNode | ComponentSetNode): Doc => {
+        const holder = node as unknown as { descriptionMarkdown?: string }
+        return {
+          description: node.description ?? '',
+          ...(typeof holder.descriptionMarkdown === 'string' ? { markdown: holder.descriptionMarkdown } : {}),
+          links: (node.documentationLinks ?? []).map((link) => link.uri),
+        }
+      }
+
+      const results = []
+      for (const [index, raw] of rows.entries()) {
+        const entry = record(raw, `components[${index}]`)
+        const id = typeof entry.node === 'string' ? entry.node : ''
+        try {
+          if (id === '') throw new Error('"node" must be a component or component-set id')
+          const plan = planDescribe(entry, `components[${index}]`)
+          const found = await figma.getNodeByIdAsync(id)
+          if (!found) throw new Error(`no node with id ${id}`)
+          if (found.type !== 'COMPONENT' && found.type !== 'COMPONENT_SET') {
+            throw new Error(`${found.type} has no description — only a COMPONENT or COMPONENT_SET does`)
+          }
+          const node = found as ComponentNode | ComponentSetNode
+          /* A variant carries a description field of its own, and Figma shows the SET's in the
+           * component panel and in Assets. Writing one addressed by variant id therefore looks
+           * like it worked and is visible to nobody — so it takes an explicit opt-in. */
+          const set = node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET' ? node.parent : null
+          if (set && !plan.variant) {
+            throw new Error(
+              `"${node.name}" is a variant of "${set.name}" (${set.id}) — Figma shows the SET's ` +
+                'description; address the set, or pass variant: true to write this one anyway'
+            )
+          }
+
+          const before = readDoc(node)
+          const markdown = plan.markdown === undefined ? undefined : normalizeMarkdown(plan.markdown)
+          const supportsMarkdown = before.markdown !== undefined
+          if (markdown !== undefined && !supportsMarkdown) {
+            throw new Error('this Figma build has no descriptionMarkdown — send "description" as plain text')
+          }
+
+          const row: Record<string, unknown> = {
+            node: id,
+            name: node.name,
+            type: node.type,
+            before,
+            ...(set ? { variantOf: set.name } : {}),
+            /* The normalized text IS what `intended`/`after` carry, so the ORIGINAL is the half
+             * that would otherwise be unrecoverable from the report — without it a rewrite is
+             * invisible unless the caller still has what it sent. */
+            ...(markdown !== undefined && markdown !== plan.markdown ? { normalizedFrom: plan.markdown } : {}),
+            /* Warned about what the CALLER wrote, not about the normalized form: normalization
+             * is where the code-block trap springs — it glues the following prose onto the
+             * fence — so by then the evidence of the mistake is gone. */
+            ...(plan.markdown === undefined || markdownWarnings(plan.markdown).length === 0
+              ? {}
+              : { warnings: markdownWarnings(plan.markdown) }),
+          }
+
+          if (dryRun) {
+            results.push({
+              ...row,
+              intended: {
+                ...(plan.description === undefined ? {} : { description: plan.description }),
+                ...(markdown === undefined ? {} : { markdown }),
+                ...(plan.links === undefined ? {} : { links: plan.links }),
+              },
+              ok: true,
+              written: false,
+            })
+            continue
+          }
+
+          if (markdown !== undefined) (node as unknown as { descriptionMarkdown: string }).descriptionMarkdown = markdown
+          if (plan.description !== undefined) node.description = plan.description
+          if (plan.links !== undefined) node.documentationLinks = plan.links.map((uri) => ({ uri }))
+
+          /* Read back rather than trust the assignment. `documentationLinks` is the reason this
+           * is not ceremony: the API keeps ONE link however many are handed to it, and drops the
+           * rest without a word. The report says what the node holds now, never what was sent. */
+          const after = readDoc(node)
+          const wantMarkdown = markdown === undefined || after.markdown === markdown
+          const wantDescription = plan.description === undefined || after.description === plan.description
+          const wantLinks = plan.links === undefined || after.links.join('\n') === plan.links.join('\n')
+
+          results.push({
+            ...row,
+            after,
+            ok: wantMarkdown && wantDescription && wantLinks,
+            written: true,
+            changed:
+              after.description !== before.description ||
+              after.markdown !== before.markdown ||
+              after.links.join('\n') !== before.links.join('\n'),
+            ...(wantMarkdown && wantDescription
+              ? {}
+              : { error: 'the field read back different from what was written' }),
+          })
+        } catch (err) {
+          results.push({ node: id, ok: false, written: false, error: String((err as Error)?.message || err) })
+        }
+      }
+
+      const good = results.filter((row) => row.ok)
+      return {
+        dryRun,
+        total: results.length,
+        written: results.filter((row) => (row as { written?: boolean }).written && row.ok).length,
+        failed: results.length - good.length,
+        /* The one place an agent reliably looks before writing prose is the preview it asked
+         * for, so the support list rides along with it instead of living only in the skill. */
+        ...(dryRun ? { markdown: { supported: MARKDOWN_SUPPORTED, unsupported: MARKDOWN_UNSUPPORTED } } : {}),
+        results,
+      }
     },
   },
   ...REMOVE_OPS,
