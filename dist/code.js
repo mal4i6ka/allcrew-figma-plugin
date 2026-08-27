@@ -16323,6 +16323,7 @@ ${scripts}`, "");
                 continue;
               }
               if (field === "layoutGrids") continue;
+              if (field === "effects") continue;
               if (Array.isArray(value)) {
                 let hits = 0;
                 for (const entry of value) {
@@ -16456,6 +16457,43 @@ ${scripts}`, "");
                 holder.layoutGrids = nextGrids;
               } catch (err) {
                 const message = `${node.name} (${node.id}) layoutGrids: ${String((err == null ? void 0 : err.message) || err)}`;
+                if (writeErrors.length < 5) writeErrors.push(message);
+              }
+            }
+          }
+          if (Array.isArray(holder.effects)) {
+            const effects = holder.effects;
+            let nextEffects = null;
+            effects.forEach((effect, index) => {
+              var _a3;
+              const effectBound = effect.boundVariables;
+              if (!effectBound) return;
+              for (const [effectField, alias] of Object.entries(effectBound)) {
+                const at = pairByFromId.get((_a3 = alias == null ? void 0 : alias.id) != null ? _a3 : "");
+                if (at === void 0) continue;
+                pairs[at].matched += 1;
+                if (dryRun) continue;
+                try {
+                  nextEffects = nextEffects != null ? nextEffects : effects.slice();
+                  nextEffects[index] = figma.variables.setBoundVariableForEffect(
+                    nextEffects[index],
+                    effectField,
+                    pairs[at].to
+                  );
+                  pairs[at].rebound += 1;
+                } catch (err) {
+                  pairs[at].failed += 1;
+                  const message = `effects.${effectField}: ${String((err == null ? void 0 : err.message) || err)}`;
+                  if (pairs[at].errors.length < 3 && !pairs[at].errors.includes(message)) pairs[at].errors.push(message);
+                }
+              }
+            });
+            if (nextEffects && !dryRun) {
+              try {
+                ;
+                holder.effects = nextEffects;
+              } catch (err) {
+                const message = `${node.name} (${node.id}) effects: ${String((err == null ? void 0 : err.message) || err)}`;
                 if (writeErrors.length < 5) writeErrors.push(message);
               }
             }

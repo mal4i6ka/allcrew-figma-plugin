@@ -1245,6 +1245,7 @@ export const WRITE_OPS: readonly OpDef[] = [
               continue
             }
             if (field === 'layoutGrids') continue // grids carry their own per-field aliases — handled below
+            if (field === 'effects') continue // so do effects — handled below, for the same reason
             if (Array.isArray(value)) {
               /* Typography arrives as one alias per styled segment — an array even when the whole
                * text uses a single variable. History of this branch: skipping arrays exempted
@@ -1382,6 +1383,48 @@ export const WRITE_OPS: readonly OpDef[] = [
               ;(holder as Record<string, unknown>).layoutGrids = nextGrids
             } catch (err) {
               const message = `${node.name} (${node.id}) layoutGrids: ${String((err as Error)?.message || err)}`
+              if (writeErrors.length < 5) writeErrors.push(message)
+            }
+          }
+        }
+
+        /* Effects bind per effect FIELD (color, radius, spread, offsetX, offsetY) on the effect
+         * object, exactly like grids — and `setBoundVariable('effects', …)` is rejected outright
+         * by the API, so the node-level pass could only ever count these, never move them. That
+         * is how 59 shadow-colour bindings across two component pages survived a migration whose
+         * report said zero failures on every other page: the walk saw them, the write could not
+         * reach them, and the count of matched-but-not-rebound was the only trace. */
+        if (Array.isArray(holder.effects)) {
+          const effects = holder.effects as Effect[]
+          let nextEffects: Effect[] | null = null
+          effects.forEach((effect, index) => {
+            const effectBound = (effect as { boundVariables?: Record<string, { id?: string }> }).boundVariables
+            if (!effectBound) return
+            for (const [effectField, alias] of Object.entries(effectBound)) {
+              const at = pairByFromId.get(alias?.id ?? '')
+              if (at === undefined) continue
+              pairs[at].matched += 1
+              if (dryRun) continue
+              try {
+                nextEffects = nextEffects ?? effects.slice()
+                nextEffects[index] = figma.variables.setBoundVariableForEffect(
+                  nextEffects[index],
+                  effectField as VariableBindableEffectField,
+                  pairs[at].to
+                )
+                pairs[at].rebound += 1
+              } catch (err) {
+                pairs[at].failed += 1
+                const message = `effects.${effectField}: ${String((err as Error)?.message || err)}`
+                if (pairs[at].errors.length < 3 && !pairs[at].errors.includes(message)) pairs[at].errors.push(message)
+              }
+            }
+          })
+          if (nextEffects && !dryRun) {
+            try {
+              ;(holder as Record<string, unknown>).effects = nextEffects
+            } catch (err) {
+              const message = `${node.name} (${node.id}) effects: ${String((err as Error)?.message || err)}`
               if (writeErrors.length < 5) writeErrors.push(message)
             }
           }
