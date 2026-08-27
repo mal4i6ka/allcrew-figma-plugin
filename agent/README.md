@@ -341,7 +341,16 @@ behind.
 
 Then confirm with one call to something the new build introduced — `"unknown op"` means the
 deploy did not land, whatever the terminal said. Reopening the plugin is not part of the
-routine: Figma re-reads the plugin code on its own, and three consecutive deploys went live
-without a restart on 2026-08-27. Ask for one only when that call says `"unknown op"` while
-md5 already matches on both sides — then the files arrived and the runtime is holding an
-older copy.
+routine: on 2026-08-27 three consecutive deploys answered with the new behaviour within
+seconds of the pair landing, and nobody touched the plugin window. Ask for a restart only
+when that call says `"unknown op"` while md5 already matches on both sides — then the files
+arrived and the runtime is holding an older copy.
+
+Why it works is NOT established, and the difference matters before anyone builds on it. A
+plugin session sometimes rotates on its own — one was seen replaced with no deploy anywhere
+near it — so "answered immediately after the deploy" does not distinguish a runtime that
+re-read the code from a session that happened to restart underneath us. The deploy script
+therefore prints the session ids from `/status` on both sides of the transfer: the same id
+plus new behaviour would settle it, a changed id means the run proves nothing. Until a
+deploy is measured that way, treat the advice above as what was observed, not as how Figma
+works.
