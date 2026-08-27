@@ -26,6 +26,7 @@ import {
   resolveVariableRef,
 } from './values.ts'
 import { loadAllPagesAsync, walkSceneNodes } from '../utils/tree.ts'
+import { REMOVE_OPS } from './remove-ops.ts'
 
 /* ------------------------------------------------------------------ report */
 
@@ -1889,4 +1890,5 @@ export const WRITE_OPS: readonly OpDef[] = [
       return { dryRun, total: results.length, cleaned: clean.filter((r) => (r as { changed?: boolean }).changed).length, stillDirty: results.length - clean.length, results }
     },
   },
+  ...REMOVE_OPS,
 ]
