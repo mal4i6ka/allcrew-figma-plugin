@@ -271,22 +271,13 @@ async function planRemap(
   return { plan: applyRemapOverrides(plan, overrides), palette: resolved.swatches }
 }
 
-/**
- * How many rows the table is handed at once.
- *
- * Everything crossing into the UI is deep-frozen by the host, and a real design system's
- * inventory runs to thousands of colours — enough of them at once and the plugin VM is killed
- * outright ("Plugin runtime aborted"). The cap is a *view* limit only: Apply works from the
- * plan on this side, so every row is still written whether or not it was displayed.
- */
-const REMAP_ROW_LIMIT = 500
-
 /** The plan as the table renders it — colors as hex, one row per site. */
 function remapPlanView(plan: RemapPlan) {
   const renamedById = new Map(plan.renames.map((rename) => [rename.siteId, rename]))
-  // Rows a human would actually act on first. Named things lead: a loose colour's usage count
-  // is a number of painted places and a variable's is a number of bindings, so ranking them
-  // together lets one hex on a hundred thousand layers push every token out of the view.
+  // Every row, in the order a human would work through them: named things first, what moves
+  // before what does not, most used first. Recolouring the file *is* the task — a list that
+  // withheld part of it would be hiding the work rather than helping with it, and the filter
+  // above the table is what makes a long one usable.
   const rank = (entry: (typeof plan.entries)[number]): number => (entry.site.kind === 'detached' ? 1 : 0)
   const ranked = [...plan.entries].sort((a, b) => {
     const kind = rank(a) - rank(b)
@@ -294,12 +285,11 @@ function remapPlanView(plan: RemapPlan) {
     const moved = Number(a.flags.includes('unchanged')) - Number(b.flags.includes('unchanged'))
     return moved !== 0 ? moved : b.site.usage - a.site.usage
   })
-  const shown = ranked.slice(0, REMAP_ROW_LIMIT)
 
   return {
     total: plan.entries.length,
-    withheld: plan.entries.length - shown.length,
-    rows: shown.map((entry) => ({
+    withheld: 0,
+    rows: ranked.map((entry) => ({
       id: entry.site.id,
       kind: entry.site.kind,
       name: entry.site.name,

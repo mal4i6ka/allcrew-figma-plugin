@@ -24,8 +24,6 @@ const LABEL_SIZE = 11
 const ROW_GAP = 22
 const PADDING = 48
 
-/** Rows beyond this are summarised rather than drawn — a board nobody can scan is not a board. */
-const MAX_ROWS_PER_FAMILY = 24
 
 interface Fonts {
   body: FontName
@@ -123,19 +121,21 @@ function gutter(fonts: Fonts): FrameNode {
   return column
 }
 
-function pair(entry: RemapEntry, fonts: Fonts): FrameNode {
+function pair(entry: RemapEntry, fonts: Fonts, repeats = 1): FrameNode {
   const column = autoLayout(entry.site.name, 'VERTICAL', 3)
   column.appendChild(block(entry.from, entry.fromStep === null ? '' : String(entry.fromStep), fonts))
   column.appendChild(block(entry.to, entry.toStep === null ? '' : String(entry.toStep), fonts))
 
   const name = entry.site.name.length > 22 ? '…' + entry.site.name.slice(-21) : entry.site.name
-  column.appendChild(label(name, fonts, CAPTION_SIZE, '#8A8A8A'))
+  column.appendChild(label(repeats > 1 ? `${name}  ·  ×${repeats}` : name, fonts, CAPTION_SIZE, '#8A8A8A'))
   return column
 }
 
 interface FamilyGroup {
   title: string
   entries: RemapEntry[]
+  /** How many tokens each drawn pair stands for, when several make the identical change. */
+  counts: number[]
 }
 
 /**
@@ -154,6 +154,29 @@ function inReadingOrder(entries: readonly RemapEntry[]): RemapEntry[] {
     if (rungA !== rungB) return rungA ? -1 : 1
     return (lightness.get(b) ?? 0) - (lightness.get(a) ?? 0)
   })
+}
+
+/**
+ * Folds pairs that make the identical change into one card.
+ *
+ * The only thing worth hiding is a repetition: forty tokens going from the same old colour to
+ * the same new one are one decision, and drawing forty identical cards buries the thirty-nine
+ * decisions that are not repetitions. Anything that differs is drawn.
+ */
+function foldRepeats(entries: readonly RemapEntry[]): { entries: RemapEntry[]; counts: number[] } {
+  const order: string[] = []
+  const seen = new Map<string, { entry: RemapEntry; count: number }>()
+  for (const entry of entries) {
+    const key = `${toHex(entry.from)}|${entry.from.a}|${toHex(entry.to)}|${entry.to.a}`
+    const found = seen.get(key)
+    if (found) found.count++
+    else {
+      seen.set(key, { entry, count: 1 })
+      order.push(key)
+    }
+  }
+  const folded = order.map((key) => seen.get(key)!)
+  return { entries: folded.map((item) => item.entry), counts: folded.map((item) => item.count) }
 }
 
 function groupEntries(plan: RemapPlan): FamilyGroup[] {
@@ -176,9 +199,11 @@ function groupEntries(plan: RemapPlan): FamilyGroup[] {
 
   return order.map((key) => {
     const target = targetByFamily.get(key)
+    const folded = foldRepeats(inReadingOrder(grouped.get(key)!))
     return {
       title: target ? `${key}  →  ${target}` : key,
-      entries: inReadingOrder(grouped.get(key)!),
+      entries: folded.entries,
+      counts: folded.counts,
     }
   })
 }
@@ -238,16 +263,12 @@ export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport>
 
     const strip = autoLayout('strip', 'HORIZONTAL', 6)
     strip.appendChild(gutter(fonts))
-    const shown = group.entries.slice(0, MAX_ROWS_PER_FAMILY)
-    for (const entry of shown) strip.appendChild(pair(entry, fonts))
-    row.appendChild(strip)
-    rows += shown.length
-
-    const hidden = group.entries.length - shown.length
-    if (hidden > 0) {
-      omitted += hidden
-      row.appendChild(label(`+ ${hidden} more in this family`, fonts, CAPTION_SIZE, '#8A8A8A'))
+    for (const [index, entry] of group.entries.entries()) {
+      strip.appendChild(pair(entry, fonts, group.counts[index]))
+      omitted += group.counts[index] - 1
     }
+    row.appendChild(strip)
+    rows += group.entries.length
     content.appendChild(row)
   }
 
@@ -278,10 +299,7 @@ export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport>
 }
 
 function placementFor(groups: readonly FamilyGroup[]): { x: number; y: number } {
-  const widest = groups.reduce(
-    (most, group) => Math.max(most, Math.min(group.entries.length, MAX_ROWS_PER_FAMILY)),
-    0
-  )
+  const widest = groups.reduce((most, group) => Math.max(most, group.entries.length), 0)
   const width = widest * (SWATCH_WIDTH + 6) + PADDING * 2
 
   const nodes = figma.currentPage.children

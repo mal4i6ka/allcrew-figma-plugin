@@ -352,13 +352,16 @@ export function ladderOutliers(spectrum: InferredSpectrum): Set<number> {
 function fitLadder(
   source: readonly SpectrumStop[],
   target: readonly SpectrumStop[],
-  preferred: (stop: SpectrumStop) => SpectrumStop | null
+  preferred: (stop: SpectrumStop) => SpectrumStop | null,
+  anchorOf: (stop: SpectrumStop) => SpectrumStop | null,
+  allowProportional: boolean
 ): Map<SpectrumStop, SpectrumStop> {
   const assigned = new Map<SpectrumStop, SpectrumStop>()
   const span = source.length - 1
   const reach = target.length - 1
 
   if (source.length > target.length) {
+    if (!allowProportional) return assigned
     for (const [index, stop] of source.entries()) {
       assigned.set(stop, target[span === 0 ? 0 : Math.round((index * reach) / span)])
     }
@@ -366,13 +369,68 @@ function fitLadder(
   }
 
   const indexOf = new Map(target.map((stop, index) => [stop, index]))
+  const at = (stop: SpectrumStop | null): number => (stop === null ? -1 : (indexOf.get(stop) ?? -1))
+  const anchors = source.map((stop) => at(anchorOf(stop)))
+  const wanted = source.map((stop) => at(preferred(stop)))
+
+  // A rung with no counterpart can either share the one beside it or push the ladder inward
+  // until it finds a gap, and which is right depends entirely on the price. An old `10` above
+  // a new `50` costs two displaced rungs before the gap at `150` — cheap, and it buys back a
+  // pale tint that would otherwise be indistinguishable from its neighbour. One stray `10`
+  // left behind in a retired group costs *twelve*, sliding a whole ramp that matched the new
+  // one number for number. Past this many, sharing is the smaller lie.
+  const budget = 3
+  let cursor = -1
+  let displaced = 0
+  const shifted = source.map((_, index) => {
+    const desire = anchors[index] >= 0 ? anchors[index] : wanted[index] < 0 ? cursor + 1 : wanted[index]
+    cursor = Math.max(desire, cursor + 1)
+    if (anchors[index] >= 0 && cursor !== anchors[index]) displaced++
+    return cursor
+  })
+
+  if (cursor <= reach && displaced <= budget) {
+    for (const [index, stop] of source.entries()) assigned.set(stop, target[shifted[index]])
+    return assigned
+  }
+
   let floor = -1
-  for (const stop of source) {
-    const wanted = preferred(stop)
-    const at = wanted === null ? floor + 1 : (indexOf.get(wanted) ?? floor + 1)
-    const index = Math.min(Math.max(at, floor + 1), reach)
-    assigned.set(stop, target[index])
-    floor = index
+  for (const [index, stop] of source.entries()) {
+    if (anchors[index] >= 0) {
+      // An anchor never moves. A rung whose number the new ladder has is the strongest signal
+      // there is, and letting an unanchored neighbour shove it displaces every anchor below it
+      // — one stray `10` from a retired group and the whole neutral ramp slides a step, which
+      // reads as the palette having been normalised rather than mapped.
+      assigned.set(stop, target[anchors[index]])
+      floor = anchors[index]
+      continue
+    }
+
+    // A rung whose number the new ladder does not have has to fit *between* the rungs whose
+    // numbers it does. Without that, an old `10` takes the rung nearest its lightness — which
+    // is the one the old `50` is about to claim by name — and the ramp comes out inverted at
+    // the top: 10 darker than 50. Room is reserved for every unanchored rung still to come
+    // before the next anchor, so they cannot pile onto it either.
+    let nextAnchor = reach + 1
+    let waiting = 0
+    for (let ahead = index + 1; ahead < source.length; ahead++) {
+      if (anchors[ahead] >= 0) {
+        nextAnchor = anchors[ahead]
+        break
+      }
+      waiting++
+    }
+    const ceiling = Math.min(reach, nextAnchor - 1 - waiting)
+    const wish = wanted[index] < 0 ? floor + 1 : wanted[index]
+
+    // Room between the anchors, or none. With none the rung shares the nearest boundary rather
+    // than pushing an anchor aside — a duplicate is a smaller lie than a ladder off by one.
+    const settled =
+      ceiling >= floor + 1
+        ? Math.min(Math.max(wish, floor + 1), ceiling)
+        : Math.min(Math.max(wish, 0), Math.max(floor, 0))
+    assigned.set(stop, target[Math.min(settled, reach)])
+    floor = Math.max(floor, Math.min(settled, reach))
   }
   return assigned
 }
@@ -390,14 +448,24 @@ export function matchStops(from: InferredSpectrum, to: InferredSpectrum): StopMa
   const preferred = (stop: SpectrumStop): SpectrumStop | null =>
     (stop.step === null ? undefined : byStep.get(stop.step)) ?? nearestByLightness(to.stops, stop.l)
 
-  // Neutrals are fitted to nothing: backgrounds and text live on them, a shift in lightness
+  const anchorOf = (stop: SpectrumStop): SpectrumStop | null =>
+    (stop.step === null ? undefined : byStep.get(stop.step)) ?? null
+
+  // Neutrals are never *stretched*: backgrounds and text live on them, a shift in lightness
   // shows there first, and a palette whose neutrals reach pure white and black would pull every
-  // pale surface to #FFFFFF. They match by the colour they are, wherever that lands.
-  const sourceLadder = from.neutral || to.neutral ? [] : from.stops.filter((stop) => stop.step !== null)
+  // pale surface to #FFFFFF. They are still fitted, though — a gray ramp that comes out
+  // inverted at the top is wrong whichever colours it is made of.
+  const sourceLadder = from.stops.filter((stop) => stop.step !== null)
   const targetLadder = to.stops.filter((stop) => stop.step !== null && !untrusted.has(stop.step))
   const fitted =
     sourceLadder.length >= 3 && targetLadder.length >= 2
-      ? fitLadder([...sourceLadder].sort(byStepAscending), [...targetLadder].sort(byStepAscending), preferred)
+      ? fitLadder(
+          [...sourceLadder].sort(byStepAscending),
+          [...targetLadder].sort(byStepAscending),
+          preferred,
+          anchorOf,
+          !from.neutral && !to.neutral
+        )
       : new Map<SpectrumStop, SpectrumStop>()
 
   const matches: StopMatch[] = []

@@ -463,6 +463,7 @@
   /* Taller than the panel strictly needs: a filter above the list is only worth its row if
      the list it filters did not shrink by the same amount. */
   .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: 520px; overflow-y: auto; overflow-x: hidden; }
+  .rmp-label-mid { text-align: center; }
   .rmp-filter { display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box; }
   .rmp-search-wrap { position: relative; display: flex; flex: 1 1 auto; min-width: 0; width: 100%; }
   .rmp-filter input { flex: 1 1 auto; width: 100%; min-width: 0; box-sizing: border-box; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 6px 24px 6px 8px; font-family: var(--mono); font-size: 11px; }
@@ -858,7 +859,7 @@
           <span class="gen-text"><b>Remap color tokens</b><i>Move this file onto a new palette. Families are matched to families and steps to steps &mdash; and only to steps the new scale actually has.</i></span>
         </div>
 
-        <p class="label">New palette</p>
+        <p class="label rmp-label-mid">New palette from</p>
         <div class="pal-seg" role="group" aria-label="Where the new palette comes from">
           <button type="button" class="seg active" data-source="paste">Paste</button>
           <button type="button" class="seg" data-source="generator">Generator</button>
@@ -923,7 +924,7 @@
           <button class="btn ghost" id="rmp-unpark" type="button">Restore names this plugin parked in legacy/</button>
         </div>
         <div class="rmp-actions">
-          <button class="btn ghost" id="rmp-board" type="button" disabled>Draw the board on this page</button>
+          <button class="btn ghost" id="rmp-board" type="button" disabled>Draw Color remap board</button>
         </div>
         <div class="rmp-actions">
           <button class="btn ghost" id="rmp-json" type="button" disabled>mapping.json</button>
@@ -3883,6 +3884,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
 
       var RMP_FAMILIES = null
+      var RMP_TOTAL = 0
 
       function rmpRenderTable(rows, families) {
         var table = rmpEl('rmp-table')
@@ -3893,7 +3895,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
         var shown = []
         for (var f = 0; f < rows.length; f++) if (rmpMatches(rows[f])) shown.push(rows[f])
-        rmpText('rmp-filter-count', RMP_QUERY === '' ? '' : shown.length + ' / ' + rows.length)
+        // Always visible, and always the real numbers: the list is capped at 500 rows, and a
+        // count that only appears while filtering hides both that fact and its own scale.
+        rmpText('rmp-filter-count', RMP_QUERY === ''
+          ? rows.length + ' rows'
+          : shown.length + ' of ' + rows.length + ' rows')
         rmpEl('rmp-search-clear').classList.toggle('hidden', RMP_QUERY === '')
         if (shown.length === 0) {
           var empty = document.createElement('div')
@@ -3956,7 +3962,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           arrow.textContent = familyNote[order[g]] ? '→ ' + familyNote[order[g]] : '(' + grouped[order[g]].length + ')'
           head.appendChild(arrow)
           table.appendChild(head)
-          for (var r = 0; r < grouped[order[g]].length; r++) table.appendChild(rmpRow(grouped[order[g]][r]))
+          var batch = document.createDocumentFragment()
+          for (var r = 0; r < grouped[order[g]].length; r++) batch.appendChild(rmpRow(grouped[order[g]][r]))
+          table.appendChild(batch)
         }
         rmpSyncButtons()
       }
@@ -4374,6 +4382,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpSetBusy(false)
           rmpProgress('')
           rmpText('rmp-parse', msg.paletteSize + ' colors read from the ' + RMP_SOURCE)
+          RMP_TOTAL = msg.total || 0
           rmpRenderTable(msg.rows, msg.families)
           if (!msg.rows || msg.rows.length === 0) {
             rmpText('rmp-result', msg.paletteSize === 0
@@ -4390,11 +4399,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           var moved = 0
           for (var ri = 0; ri < msg.rows.length; ri++) if (msg.rows[ri].flags.indexOf('unchanged') === -1) moved++
           // The table is a view with a ceiling; Apply always works from the whole plan.
-          var scope = msg.withheld
-            ? moved + ' of the ' + msg.rows.length + ' rows shown move · ' + msg.total +
-              ' colours in total, all of them applied'
-            : moved + ' of ' + msg.total + ' values move'
-          rmpText('rmp-result', scope + (msg.renames.length ? ' · ' + msg.renames.length + ' renamed' : ''))
+          rmpText('rmp-result', moved + ' of ' + msg.total + ' values move' +
+            (msg.renames.length ? ' · ' + msg.renames.length + ' renamed' : ''))
         } else if (msg.type === 'REMAP_APPLIED') {
           rmpSetBusy(false)
           rmpProgress('')
