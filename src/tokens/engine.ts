@@ -840,9 +840,91 @@ function cssAttrValue(value: string): string {
   return String(value).replace(/[\\"]/g, '\\$&')
 }
 
+/* ------------------------------------------------------------------ legacy aliases */
+
+/**
+ * Keeping an exported key alive after the variable behind it was renamed.
+ *
+ * A remap renames the primitive layer so `colors/Blue/500` stops claiming to be blue when it
+ * is violet. In Figma that is free — a variable keeps its id, so every binding follows. In the
+ * *export* it is not: the custom property is named after the variable, so a rename silently
+ * deletes `--colors-blue-500` from `tokens.css` and whatever imported it stops resolving.
+ *
+ * That is the one cost the whole remap was supposed not to have, so the emitters carry the
+ * old names forward as aliases:
+ *
+ *     :root { --colors-blue-500: var(--colors-violet-500); }
+ *
+ * Three cases are deliberately *not* aliased, because each would make the output worse:
+ *
+ * - The target never reached the stylesheet. With `inlinePrimitives` on, a primitive that only
+ *   semantic tokens referenced is inlined away and has no custom property — so nothing was
+ *   lost when it was renamed, and an alias would point at a name that does not exist.
+ * - Something still owns the old name. A file that has a real `colors/Blue/500` again would
+ *   get two declarations of one property, and the alias would win or lose by source order.
+ * - The two names slug to the same custom property, which is a rename CSS never saw.
+ */
+
+/** Old variable name → the name it resolves to now. Chains are collapsed by the writer. */
+export type RenameMap = Record<string, string>
+
+export interface AliasPair {
+  /** CSS custom property name, without the leading `--`. */
+  from: string
+  to: string
+}
+
+/** The `$extensions` key the rename map travels under, inside `tokens.json`. */
+export const RENAMES_EXTENSION = 'altery'
+
+const segmentsOf = (name: string): string[] => name.split('/').filter((segment) => segment.trim() !== '')
+
+/**
+ * The aliases worth emitting for this tree.
+ *
+ * Order is by the old name so a re-export of an unchanged file produces an identical block.
+ */
+export function legacyAliasPairs(tree: TokenTree, renames: RenameMap | undefined): AliasPair[] {
+  if (!renames) return []
+  const emitted = new Set(leaves(tree).map((entry) => varName(entry.path)))
+  const pairs: AliasPair[] = []
+  const seen = new Set<string>()
+
+  for (const key of Object.keys(renames)) {
+    const from = varName(segmentsOf(key))
+    const to = varName(segmentsOf(renames[key]))
+    if (from === '' || to === '' || from === to) continue
+    if (!emitted.has(to) || emitted.has(from) || seen.has(from)) continue
+    seen.add(from)
+    pairs.push({ from, to })
+  }
+
+  return pairs.sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0))
+}
+
+export const LEGACY_COMMENT = '/* Renamed by a color remap — the old names keep resolving */'
+
+/**
+ * The alias block, or an empty string when there is nothing to alias.
+ *
+ * `selector` is passed in already wrapped, because the CSS-Module files put `:root` inside
+ * `:global(…)` and the aliases have to sit in the same scope as the declarations they shadow.
+ */
+export function toLegacyAliasCss(pairs: readonly AliasPair[], selector = ':root'): string {
+  if (pairs.length === 0) return ''
+  const lines = pairs.map((pair) => `  --${pair.from}: var(--${pair.to});`)
+  return `${LEGACY_COMMENT}\n${selector} {\n${lines.join('\n')}\n}\n`
+}
+
 /* ------------------------------------------------------------------ token emitters */
 
-export function toTokensCss(tree: TokenTree, ordered: string[], defaultTheme: string, attr?: string): string {
+export function toTokensCss(
+  tree: TokenTree,
+  ordered: string[],
+  defaultTheme: string,
+  attr?: string,
+  renames?: RenameMap
+): string {
   const a = attr || 'data-theme-name'
   const allLeaves = leaves(tree)
   if (allLeaves.length === 0) return ''
@@ -851,10 +933,13 @@ export function toTokensCss(tree: TokenTree, ordered: string[], defaultTheme: st
     const selector = theme === defaultTheme ? `:root,\n${themeSel}` : themeSel
     return themeBlock(allLeaves, theme, selector)
   })
-  return blocks.join('\n\n') + '\n'
+  // Last, and outside the theme blocks: an alias resolves wherever it is used, so one copy
+  // covers every theme.
+  const legacy = toLegacyAliasCss(legacyAliasPairs(tree, renames))
+  return blocks.join('\n\n') + '\n' + (legacy === '' ? '' : '\n' + legacy)
 }
 
-export function toThemeModuleCssFiles(tree: TokenTree, ordered: string[], defaultTheme: string, attr?: string, useGlobal?: boolean): Record<string, string> {
+export function toThemeModuleCssFiles(tree: TokenTree, ordered: string[], defaultTheme: string, attr?: string, useGlobal?: boolean, renames?: RenameMap): Record<string, string> {
   const a = attr || 'data-theme-name'
   const wrap = useGlobal ? (sel: string) => `:global(${sel})` : (sel: string) => sel
   const allLeaves = leaves(tree)
@@ -869,7 +954,10 @@ export function toThemeModuleCssFiles(tree: TokenTree, ordered: string[], defaul
     let n = 2
     while (used.has(name)) name = `${base}-${n++}`
     used.add(name)
-    files[`${name}.module.css`] = themeBlock(allLeaves, theme, selector) + '\n'
+    // The aliases ride with the default theme's file: they belong in exactly one module, and
+    // that is the one that also carries `:root`.
+    const legacy = theme === defaultTheme ? toLegacyAliasCss(legacyAliasPairs(tree, renames), wrap(':root')) : ''
+    files[`${name}.module.css`] = themeBlock(allLeaves, theme, selector) + '\n' + (legacy === '' ? '' : '\n' + legacy)
   }
   return files
 }
@@ -911,8 +999,15 @@ export function toTokensTs(tree: TokenTree, themes: string[]): string {
   )
 }
 
-export function toTokensJson(tree: TokenTree): string {
-  return JSON.stringify(tree, null, 2) + '\n'
+export function toTokensJson(tree: TokenTree, renames?: RenameMap): string {
+  // The map travels beside the tree rather than inside it: both walkers treat a node without
+  // `$value` as a subtree and a non-object as nothing, so a root `$extensions` yields no
+  // leaves in either engine.
+  const payload =
+    renames && Object.keys(renames).length > 0
+      ? { ...tree, $extensions: { [RENAMES_EXTENSION]: { renames } } }
+      : tree
+  return JSON.stringify(payload, null, 2) + '\n'
 }
 
 /* ------------------------------------------------------------------ breakpoint tokens */
@@ -1058,7 +1153,7 @@ function readmeExample(tree: TokenTree | undefined): string {
   return `\n\n\`\`\`css\n.button {\n${lines.join('\n')}\n}\n\`\`\``
 }
 
-export function buildReadme(summary: TokenSummary, options: NormalizedOptions, tree?: TokenTree): string {
+export function buildReadme(summary: TokenSummary, options: NormalizedOptions, tree?: TokenTree, renames?: RenameMap): string {
   const attr = options.themeAttr
   const themeList = summary.themes.map((t) => `\`${t}\``).join(', ')
   const moduleList = summary.themes.map((t) => `\`${varName([t])}.module.css\``).join(', ')
@@ -1111,6 +1206,14 @@ export function buildReadme(summary: TokenSummary, options: NormalizedOptions, t
         '.'
     : ''
 
+  const aliasPairs = tree ? legacyAliasPairs(tree, renames) : []
+  const aliasSection = aliasPairs.length
+    ? `\n\n## Renamed tokens\n\n${aliasPairs.length} custom propert${aliasPairs.length === 1 ? 'y was' : 'ies were'} renamed in Figma by a color remap. The old names are still declared at the bottom of \`tokens.css\`, pointing at the new ones, so nothing that already imported them breaks:\n\n\`\`\`css\n${aliasPairs
+        .slice(0, 6)
+        .map((pair) => `--${pair.from}: var(--${pair.to});`)
+        .join('\n')}${aliasPairs.length > 6 ? `\n/* …and ${aliasPairs.length - 6} more */` : ''}\n\`\`\`\n\nThey are aliases, not a second source of truth — migrate to the new names when convenient. \`tokens.ts\` only carries the current names.`
+    : ''
+
   const moduleSection = options.emitModuleFiles
     ? `\n\n## Per-theme CSS Modules\n\nThe same blocks are also emitted one file per theme — ${moduleList}${
         options.cssModulesGlobal ? ' — wrapped in `:global(…)` for CSS-Modules projects (Next.js, etc.)' : ''
@@ -1119,7 +1222,7 @@ export function buildReadme(summary: TokenSummary, options: NormalizedOptions, t
 
   return `# Altery Design Tokens\n\nGenerated by the **Altery Design System Export** Figma plugin from **${summary.fileName}**.\n\n- ${summary.totalVariables} variables across ${summary.collections.length} collection(s)${
     summary.textStyleCount ? `\n- ${summary.textStyleCount} text styles → \`typography/…\` tokens` : ''
-  }\n- Themes (modes): ${themeList || '`default`'}\n- Settings: ${settingsLine}\n\n## Files\n\n| File | What it is |\n|------|------------|\n| \`tokens.css\` | CSS custom properties. One self-contained block per theme. The merged single file. |${moduleRow}\n| \`tokens.json\` | Canonical W3C token tree (every mode under \`$extensions.modes\`, source collection under \`$extensions.figma\`). For diffing / re-import. |\n| \`tokens.ts\` | Typed \`tokens\` object (values are \`var(--…)\` refs) + \`themes\` / \`Theme\`. |\n\n${inlineNote}${typoNote}\n\n## Collections\n\n${collLines}\n\n## Using the tokens\n\nImport the stylesheet once:\n\n\`\`\`css\n@import "./tokens.css";\n\`\`\`\n\nThe default theme (\`${defaultTheme}\`) is applied on \`:root\`, so it works with no attribute set.${switchExample}\n\nEach \`[${attr}="…"]\` block re-declares **every** variable for that theme, so toggling\nthe attribute swaps the whole set.${readmeExample(tree)}${moduleSection}\n`
+  }\n- Themes (modes): ${themeList || '`default`'}\n- Settings: ${settingsLine}\n\n## Files\n\n| File | What it is |\n|------|------------|\n| \`tokens.css\` | CSS custom properties. One self-contained block per theme. The merged single file. |${moduleRow}\n| \`tokens.json\` | Canonical W3C token tree (every mode under \`$extensions.modes\`, source collection under \`$extensions.figma\`). For diffing / re-import. |\n| \`tokens.ts\` | Typed \`tokens\` object (values are \`var(--…)\` refs) + \`themes\` / \`Theme\`. |\n\n${inlineNote}${typoNote}\n\n## Collections\n\n${collLines}\n\n## Using the tokens\n\nImport the stylesheet once:\n\n\`\`\`css\n@import "./tokens.css";\n\`\`\`\n\nThe default theme (\`${defaultTheme}\`) is applied on \`:root\`, so it works with no attribute set.${switchExample}\n\nEach \`[${attr}="…"]\` block re-declares **every** variable for that theme, so toggling\nthe attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleSection}\n`
 }
 
 /* ------------------------------------------------------------------ options + buildPackage */
@@ -1213,7 +1316,7 @@ export function normalizeOptions(o: unknown): NormalizedOptions {
   }
 }
 
-export function buildPackage(graph: TokenGraph, options: unknown): TokenPackage {
+export function buildPackage(graph: TokenGraph, options: unknown, renames?: RenameMap): TokenPackage {
   const opts = normalizeOptions(options)
   const rawTree = variablesToW3CMultiMode(graph)
   const generated = (graph.collections || []).some((c) => c?.generated)
@@ -1228,14 +1331,14 @@ export function buildPackage(graph: TokenGraph, options: unknown): TokenPackage 
     const defaultMode = primaryDefaultMode(graph)
     const { defaultTheme, ordered } = orderedThemes(leaves(sourceTree), defaultMode)
     const cssTree = opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree, opts.flattenAliases) : sourceTree
-    files['tokens.css'] = toTokensCss(cssTree, ordered, defaultTheme, opts.themeAttr)
+    files['tokens.css'] = toTokensCss(cssTree, ordered, defaultTheme, opts.themeAttr, renames)
     if (opts.emitModuleFiles) {
-      const themeFiles = toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal)
+      const themeFiles = toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal, renames)
       for (const name of Object.keys(themeFiles)) files[name] = themeFiles[name]
     }
-    files['tokens.json'] = toTokensJson(sourceTree)
+    files['tokens.json'] = toTokensJson(sourceTree, renames)
     files['tokens.ts'] = toTokensTs(cssTree, ordered)
-    files['README.md'] = buildReadme(summary, opts, cssTree)
+    files['README.md'] = buildReadme(summary, opts, cssTree, renames)
     emitted.tree = cssTree
     emitted.themes = ordered
     emitted.defaultTheme = defaultTheme

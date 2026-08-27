@@ -12,6 +12,7 @@ import {
   toTokensCss,
   toTokensJson,
   variablesToW3CMultiMode,
+  type RenameMap,
 } from './engine.ts'
 import type { ExportOptions } from '../settings.ts'
 import { resolveThemeAttribute } from '../settings.ts'
@@ -20,6 +21,8 @@ export interface TokenEmitOptions {
   inlinePrimitives: boolean
   flattenAliases: boolean
   themeAttribute: string
+  /** Names a colour remap rewrote, so the export can keep the old keys resolving. */
+  renames?: RenameMap
 }
 
 export interface TokenArtifacts {
@@ -33,11 +36,12 @@ export interface TokenArtifacts {
   emitted: TokenTree
 }
 
-export function tokenEmitOptionsFrom(options: ExportOptions): TokenEmitOptions {
+export function tokenEmitOptionsFrom(options: ExportOptions, renames?: RenameMap): TokenEmitOptions {
   return {
     inlinePrimitives: options.tokens.inlinePrimitives,
     flattenAliases: options.tokens.flattenAliases,
     themeAttribute: resolveThemeAttribute(options),
+    renames,
   }
 }
 
@@ -46,8 +50,8 @@ export function emitTokenArtifacts(snapshot: VariableSnapshot, options: TokenEmi
   const { ordered, defaultTheme } = orderedThemes(leaves(source))
   const cssTree = options.inlinePrimitives ? inlinePrimitivesTree(source, options.flattenAliases) : source
   return {
-    css: toTokensCss(cssTree, ordered, defaultTheme, options.themeAttribute),
-    json: toTokensJson(source),
+    css: toTokensCss(cssTree, ordered, defaultTheme, options.themeAttribute, options.renames),
+    json: toTokensJson(source, options.renames),
     themes: ordered,
     defaultTheme,
     source,

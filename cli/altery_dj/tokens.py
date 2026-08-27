@@ -209,6 +209,60 @@ def inline_primitives(tree: dict, flatten_all: bool) -> dict:
     return out
 
 
+# ---------------------------------------------------------------- legacy aliases
+
+# Mirror of the TS engine's legacy-alias section (src/tokens/engine.ts). A colour remap renames
+# the primitive layer in Figma, which silently deletes the matching custom property here; the
+# old names are carried forward as aliases so nothing that already imported them breaks. The
+# rename map rides in tokens.json under `$extensions.altery.renames`, and both engines apply the
+# same three exclusions — target not emitted, old name still taken, or a rename CSS cannot see.
+
+RENAMES_EXTENSION = "altery"
+LEGACY_COMMENT = "/* Renamed by a color remap — the old names keep resolving */"
+
+
+def renames_of(tree) -> dict:
+    """The rename map tokens.json carries, if any."""
+    extensions = tree.get("$extensions") if isinstance(tree, dict) else None
+    if not isinstance(extensions, dict):
+        return {}
+    section = extensions.get(RENAMES_EXTENSION)
+    if not isinstance(section, dict):
+        return {}
+    renames = section.get("renames")
+    return renames if isinstance(renames, dict) else {}
+
+
+def _name_segments(name: str) -> list[str]:
+    return [segment for segment in str(name).split("/") if segment.strip()]
+
+
+def legacy_alias_pairs(tree, renames) -> list[tuple[str, str]]:
+    if not renames:
+        return []
+    emitted = {var_name(path) for path, _ in leaves(tree)}
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for key, target in renames.items():
+        source = var_name(_name_segments(key))
+        destination = var_name(_name_segments(target))
+        if not source or not destination or source == destination:
+            continue
+        if destination not in emitted or source in emitted or source in seen:
+            continue
+        seen.add(source)
+        pairs.append((source, destination))
+    pairs.sort(key=lambda pair: pair[0])
+    return pairs
+
+
+def to_legacy_alias_css(pairs, selector=":root") -> str:
+    if not pairs:
+        return ""
+    lines = "\n".join(f"  --{source}: var(--{destination});" for source, destination in pairs)
+    return f"{LEGACY_COMMENT}\n{selector} {{\n{lines}\n}}\n"
+
+
 # ---------------------------------------------------------------- tokens.css emitter
 
 MOTION_KEYFRAMES_COMMENT = "  /* use var(--motion-duration-*) in animation shorthand, not inside @keyframes */"
@@ -233,7 +287,7 @@ def _theme_declarations(all_leaves, theme) -> list[str]:
     return lines
 
 
-def to_tokens_css(tree, ordered, default_theme, attr) -> str:
+def to_tokens_css(tree, ordered, default_theme, attr, renames=None) -> str:
     theme_attr = attr or "data-theme"
     all_leaves = leaves(tree)
     if not all_leaves:
@@ -247,7 +301,10 @@ def to_tokens_css(tree, ordered, default_theme, attr) -> str:
         if index == 0 and has_motion:
             declarations.insert(0, MOTION_KEYFRAMES_COMMENT)
         blocks.append(f"{selector} {{\n" + "\n".join(declarations) + "\n}")
-    return "\n\n".join(blocks) + "\n"
+    # Last, and outside the theme blocks: an alias resolves wherever it is used, so one copy
+    # covers every theme.
+    legacy = to_legacy_alias_css(legacy_alias_pairs(tree, renames))
+    return "\n\n".join(blocks) + "\n" + ("" if not legacy else "\n" + legacy)
 
 
 # ---------------------------------------------------------------- bootstrap emitters
@@ -350,6 +407,9 @@ def run(args) -> int:
         print(f"[altery-dj tokens] {tokens_json} not found — apply an export first (`altery-dj apply`)")
         return 1
     source_tree = json.loads(tokens_json.read_text(encoding="utf-8"))
+    # The map travels beside the tree, not inside it — lift it out before anything walks it.
+    renames = renames_of(source_tree)
+    source_tree.pop("$extensions", None)
     default_theme, ordered = ordered_themes(leaves(source_tree))
 
     formats = {args.format} if args.format != "all" else {"css", "bootstrap", "scss"}
@@ -370,7 +430,9 @@ def run(args) -> int:
         css_tree = source_tree if args.no_inline else inline_primitives(source_tree, args.flatten_all)
         target = app_dir / "static" / "css" / "tokens.css"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(to_tokens_css(css_tree, ordered, default_theme, args.theme_attr), encoding="utf-8")
+        target.write_text(
+            to_tokens_css(css_tree, ordered, default_theme, args.theme_attr, renames), encoding="utf-8"
+        )
         written.append(target)
     if "bootstrap" in formats and mapping is not None:
         css = to_bootstrap_css(source_tree, mapping, ordered, default_theme, args.theme_attr)

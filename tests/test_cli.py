@@ -320,6 +320,25 @@ def test_tokens_reproduces_the_typescript_emitters_byte_for_byte(tmp_path: Path)
     assert produced_scss == (EXPECTED_DIR / '_tokens.scss').read_text()
 
 
+def test_tokens_keeps_renamed_keys_resolving(tmp_path: Path) -> None:
+    """Stage 3 parity: the alias block the TS engine emits, byte for byte from the CLI.
+
+    The fixture exercises the three exclusions as well as the happy path — a target that never
+    reached the stylesheet and an old name a live token still owns must both stay out.
+    """
+    app_dir = make_app(tmp_path)
+    shutil.copy(EXPECTED_DIR / 'tokens-renamed.json', app_dir / 'tokens.json')
+
+    result = run_cli('tokens', '--format', 'css', '--app', str(app_dir))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    produced = (app_dir / 'static' / 'css' / 'tokens.css').read_text()
+    assert produced == (EXPECTED_DIR / 'tokens-renamed.css').read_text()
+    assert '--color-brand: var(--color-primary);' in produced
+    assert '--color-ghost' not in produced, 'the target is not in the stylesheet'
+    assert '--color-primary: var(' not in produced, 'a live token still owns that name'
+
+
 def test_tokens_warns_on_a_mapping_to_a_missing_token(tmp_path: Path) -> None:
     app_dir = make_app(tmp_path)
     shutil.copy(EXPECTED_DIR / 'tokens.json', app_dir / 'tokens.json')
@@ -332,6 +351,81 @@ def test_tokens_warns_on_a_mapping_to_a_missing_token(tmp_path: Path) -> None:
     produced = (app_dir / 'static' / 'css' / 'bootstrap-tokens.css').read_text()
     assert '--bs-primary: #4f46e5;' in produced
     assert '--bs-info' not in produced
+
+
+REMAP_DIR = TESTS_DIR / 'fixtures' / 'remap'
+
+
+def _remap_repo(tmp_path: Path) -> Path:
+    """A committed git worktree holding the shared rewrite fixtures."""
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    for source in sorted((REMAP_DIR / 'input').iterdir()):
+        shutil.copy(source, repo / source.name)
+    subprocess.run(['git', 'init', '-q'], cwd=repo, check=True)
+    subprocess.run(['git', 'add', '-A'], cwd=repo, check=True)
+    subprocess.run(
+        ['git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'],
+        cwd=repo, check=True,
+    )
+    return repo
+
+
+def test_remap_rewrites_a_repository_exactly_like_the_typescript_engine(tmp_path: Path) -> None:
+    """Parity lock: src/tokens/remap/rewrite.test.ts asserts the same expected files.
+
+    A mapping that produced one result in the plugin and another here would be worse than no
+    tool at all.
+    """
+    repo = _remap_repo(tmp_path)
+
+    result = run_cli('remap', '--map', str(REMAP_DIR / 'mapping.json'), str(repo), '--by-name', '--write')
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    for expected in sorted((REMAP_DIR / 'expected').iterdir()):
+        if expected.name == 'report.txt':
+            continue
+        assert (repo / expected.name).read_text() == expected.read_text(), expected.name
+    assert 'changed 16 colour(s) in 3 file(s)' in result.stdout
+
+
+def test_remap_is_a_dry_run_until_told_otherwise(tmp_path: Path) -> None:
+    repo = _remap_repo(tmp_path)
+    before = (repo / 'theme.css').read_text()
+
+    result = run_cli('remap', '--map', str(REMAP_DIR / 'mapping.json'), str(repo))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'would change' in result.stdout
+    assert 'pass --write to apply' in result.stdout
+    assert (repo / 'theme.css').read_text() == before, 'a dry run writes nothing'
+
+
+def test_remap_refuses_to_write_into_a_dirty_worktree(tmp_path: Path) -> None:
+    # The diff is the only review this operation gets, so it must start from a clean one.
+    repo = _remap_repo(tmp_path)
+    (repo / 'theme.css').write_text('/* edited by hand */\n')
+
+    result = run_cli('remap', '--map', str(REMAP_DIR / 'mapping.json'), str(repo), '--write')
+
+    assert result.returncode == 1
+    assert 'refusing to write' in result.stdout
+    assert 'uncommitted change' in result.stdout
+    assert (repo / 'theme.css').read_text() == '/* edited by hand */\n', 'nothing was touched'
+
+    forced = run_cli('remap', '--map', str(REMAP_DIR / 'mapping.json'), str(repo), '--write', '--force')
+    assert forced.returncode == 0
+    assert (repo / 'tokens.json').read_text() == (REMAP_DIR / 'expected' / 'tokens.json').read_text()
+
+
+def test_remap_rejects_a_file_that_is_not_a_mapping(tmp_path: Path) -> None:
+    not_a_mapping = tmp_path / 'mapping.json'
+    not_a_mapping.write_text('{"format": "something-else", "version": 1, "records": []}')
+
+    result = run_cli('remap', '--map', str(not_a_mapping), str(tmp_path))
+
+    assert result.returncode == 1
+    assert 'not a colour mapping' in result.stdout
 
 
 @pytest.mark.skipif(not HAS_MSGMERGE, reason='msgmerge (GNU gettext) not installed')
