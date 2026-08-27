@@ -216,3 +216,29 @@ test('a family that would collide at every rung keeps its names instead of buryi
     `expected a family-level note, got ${JSON.stringify(plan.warnings)}`
   )
 })
+
+test('a color the new palette already holds does not move, wherever it was filed', () => {
+  // The zeroth rule. `brand/cultured` is byte-for-byte the new teal/50; the white lives in an
+  // oddly named group. Neither is allowed to "move" — they are already the reference.
+  const sites = [
+    site({ name: 'colour/white', rgba: rgba('#FFFFFF') }),
+    site({ id: 'v2', name: 'colors/brand/cultured', rgba: rgba('#F3F8F9') }),
+    site({ id: 'v3', name: 'colors/grey/500', rgba: rgba('#939393') }),
+  ]
+  const plan = buildRemapPlan({
+    sites,
+    palette: palette('neutral/0, #FFFFFF\nneutral/500, #797979\nteal/50, #F3F8F9\nteal/500, #2F7882'),
+  })
+
+  const white = plan.entries.find((entry) => entry.site.name === 'colour/white')!
+  assert.equal(white.via, 'exact')
+  assert.ok(white.flags.includes('unchanged'))
+  assert.equal(white.toName, 'neutral/0')
+
+  const cultured = plan.entries.find((entry) => entry.site.name === 'colors/brand/cultured')!
+  assert.equal(cultured.via, 'exact')
+  assert.equal(cultured.toName, 'teal/50')
+
+  const gray = plan.entries.find((entry) => entry.site.name === 'colors/grey/500')!
+  assert.notEqual(gray.via, 'exact', 'a color the palette does not hold still maps normally')
+})

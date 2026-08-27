@@ -276,3 +276,25 @@ Plus a new warning: when one opaque color leaves in two directions under two nam
 (`colors/teal/900` → teal/900 while `colour/neutral/900` → neutral/900, both `#314245`),
 the plan says so — `one color, two directions: …` — and leaves the choice to the row-level
 override, which is what it exists for.
+
+## The operator's three laws (2026-08-20, final ruling on matching)
+
+Restated by the operator after two rounds of near-misses, now encoded as law, in order:
+
+1. **Identity.** A color the new palette already holds byte-for-byte does not move — `via:
+   'exact'`, before any ladder arithmetic. Alpha rides along as everywhere else.
+2. **A shared step number is immovable.** No unanchored neighbour may displace an anchor. The
+   "displacement budget" that let `grey/10` push `grey/50` onto `neutral/150` is deleted.
+3. **No number → fit between the anchors**, on whichever position — free slot or shared
+   anchor — is nearest by lightness. Collapsing two old shades onto one new rung is the
+   expected outcome of a shrinking palette, never an error. New-only steps (a `150`, a `250`)
+   stay empty unless a color's own lightness genuinely lands there.
+
+Plus one guard for thin evidence: in families too short to fit as a ladder (< 3 numbered
+rungs), a step number that grossly contradicts the color's own lightness (Δl > 0.15 and
+lightness-nearest is closer) is not trusted — a two-stop `toxic/50` is a dark olive, and the
+numerals alone would send it to a near-white `green/50`.
+
+Verified on the real A → B exports plus the live file's strays with a standing invariant
+script: identity holds for all 15 byte-equal colors, every shared number lands 1:1 in every
+family, no ladder comes out inverted, `blue/250`/`neutral/150`/`red/850` stay empty.
