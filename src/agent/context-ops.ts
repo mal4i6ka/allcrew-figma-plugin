@@ -209,6 +209,8 @@ export const CONTEXT_OPS: readonly OpDef[] = [
   {
     name: 'node.focus',
     summary: 'Select a node and scroll the designer to it — how an agent says "this one, look".',
+    agent:
+      'Selects the node and scrolls the designer to it — use it instead of describing where something is.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'Node to reveal.' },
@@ -246,6 +248,8 @@ export const CONTEXT_OPS: readonly OpDef[] = [
   {
     name: 'design.context',
     summary: 'Reference HTML + CSS + PNG for a node, with the tokens it binds — implement from this.',
+    agent:
+      'Answers with file paths, not payloads — open them. The token usage table says which variables actually carry the subtree.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'Frame or component to describe.' },

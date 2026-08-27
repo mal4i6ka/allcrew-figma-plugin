@@ -14,6 +14,15 @@ test('the read registry stays read-only — writes live behind their own gate', 
   assert.ok(ALL_OPS.some((op) => op.mutates), 'no mutating op is registered at all')
 })
 
+test('every write op documents itself for the paste-once skill', () => {
+  // The "Teach the agent" section renders from OpDef.agent — a mutating op that ships without
+  // guidance is an op the agent will misuse, and it would silently vanish from the how-to list.
+  for (const op of ALL_OPS) {
+    if (!op.mutates) continue
+    assert.ok(typeof op.agent === 'string' && op.agent.length > 20, `${op.name} has no agent guidance`)
+  }
+})
+
 test('every op carries a summary and describes each param', () => {
   for (const op of ALL_OPS) {
     assert.ok(op.summary.length > 0, `${op.name} has no summary`)

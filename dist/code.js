@@ -14057,9 +14057,10 @@ ${renderSections(sections)}
 
   // src/agent/protocol.ts
   function toManifest(ops) {
-    return ops.map((op) => ({
+    return ops.map((op) => __spreadProps(__spreadValues({
       name: op.name,
-      summary: op.summary,
+      summary: op.summary
+    }, op.agent ? { agent: op.agent } : {}), {
       mutates: op.mutates,
       params: __spreadValues({}, op.params)
     }));
@@ -14506,6 +14507,7 @@ ${scripts}`, "");
     {
       name: "node.focus",
       summary: 'Select a node and scroll the designer to it \u2014 how an agent says "this one, look".',
+      agent: "Selects the node and scrolls the designer to it \u2014 use it instead of describing where something is.",
       mutates: false,
       params: {
         nodeId: { type: "string", required: true, description: "Node to reveal." },
@@ -14536,6 +14538,7 @@ ${scripts}`, "");
     {
       name: "design.context",
       summary: "Reference HTML + CSS + PNG for a node, with the tokens it binds \u2014 implement from this.",
+      agent: "Answers with file paths, not payloads \u2014 open them. The token usage table says which variables actually carry the subtree.",
       mutates: false,
       params: {
         nodeId: { type: "string", required: true, description: "Frame or component to describe." },
@@ -15402,6 +15405,7 @@ ${scripts}`, "");
     {
       name: "variables.set",
       summary: "Set variable values or aliases, in batch \u2014 the one op a recolor actually needs.",
+      agent: "Given a 40-character library key it aliases onto that library variable \u2014 how one file inherits another's tokens.",
       mutates: true,
       params: {
         updates: {
@@ -15475,6 +15479,7 @@ ${scripts}`, "");
     {
       name: "variables.create",
       summary: "Create variables in a collection \u2014 the rungs a new palette adds that the old one lacked.",
+      agent: 'modes: ["Light","Dark"] makes the collection offer those modes first \u2014 a fresh collection is single-mode. Values may then key by mode name.',
       mutates: true,
       params: {
         collection: {
@@ -15588,6 +15593,7 @@ ${scripts}`, "");
     {
       name: "board.render",
       summary: "Draw a documentation board \u2014 headings, callouts, swatch grids, before/after rows \u2014 on a page.",
+      agent: "replace: true redraws the same board in place \u2014 the idempotent way to keep documentation boards current.",
       mutates: true,
       params: {
         spec: {
@@ -15617,6 +15623,7 @@ ${scripts}`, "");
     {
       name: "node.bind",
       summary: "Bind layer properties to variables \u2014 the op that turns a lint finding into a fix.",
+      agent: "variable takes an id, a local name or a library key; null unbinds \u2014 a row WITHOUT the key is an error, never a silent unbind. The report's before names what each write displaced.",
       mutates: true,
       params: {
         bindings: {
@@ -15749,6 +15756,7 @@ ${scripts}`, "");
     {
       name: "style.bind",
       summary: "Bind a paint style \u2014 solid paint, or one gradient stop \u2014 to a variable, and verify it stuck.",
+      agent: "stop is the position in percent \u2014 the same number a pNN token name carries. Gradient-stop binding is undocumented API, so the op re-reads the style and reports verified.",
       mutates: true,
       params: {
         bindings: {
@@ -15864,6 +15872,7 @@ ${scripts}`, "");
     {
       name: "node.style",
       summary: "Apply a style to layers \u2014 or detach them \u2014 and verify it took. Re-attaches what drifted.",
+      agent: "Applying a style replaces what the layer renders \u2014 the report names the displaced paints. null detaches, keeping pixels.",
       mutates: true,
       params: {
         assignments: {
@@ -15971,6 +15980,7 @@ ${scripts}`, "");
     {
       name: "style.remove",
       summary: "Delete styles nothing uses. Refuses while a consumer exists; reports publish status first.",
+      agent: "Refuses while consumers exist. publishStatus in the report is the half this file cannot see: CURRENT means other files may consume it through the library.",
       mutates: true,
       params: {
         styles: {
@@ -16056,6 +16066,7 @@ ${scripts}`, "");
     {
       name: "variables.rebind",
       summary: "Repoint every binding of one variable onto another, document-wide \u2014 the migration op.",
+      agent: "The migration op. Build the map from a FRESH variables.external \u2014 once nothing references a remote variable Figma garbage-collects it and stale from-ids refuse the whole map. Mains are enough: instance mirrors follow.",
       mutates: true,
       params: {
         map: {
@@ -16456,6 +16467,7 @@ ${scripts}`, "");
     {
       name: "instance.detach",
       summary: "Detach instances from their main components. Bindings stay \u2014 plan a rebind after.",
+      agent: "Bindings survive a detach \u2014 the dependency turns class A for variables.rebind to reach. Nested foreign instances surface as new top-level ones: expect onion rounds.",
       mutates: true,
       params: {
         nodes: { type: "string[]", required: true, description: "Instance node ids to detach." },
@@ -16512,6 +16524,7 @@ ${scripts}`, "");
     {
       name: "variables.remove",
       summary: "Delete variables nothing references. Refuses while a binding or alias still points at one.",
+      agent: "Refuses while anything references the variable \u2014 a binding, a gradient stop, a style paint or another variable's alias. Zero references here still says nothing about other files.",
       mutates: true,
       params: {
         variables: {
@@ -16605,6 +16618,7 @@ ${scripts}`, "");
     {
       name: "text.normalize",
       summary: "Rewrite the invisible end-of-text run so orphan variable references die \u2014 surgery, verified.",
+      agent: "Last resort for orphan run-table entries. Verified per node \u2014 and some runs are beyond the public API; the report says which rather than claiming success.",
       mutates: true,
       params: {
         nodes: { type: "string[]", required: true, description: "TEXT node ids to normalize." },
@@ -17075,6 +17089,7 @@ ${scripts}`, "");
     {
       name: "node.get",
       summary: "One node by id: geometry, auto-layout, text, instance bindings, children.",
+      agent: 'bindings answer "which token"; paints: true adds raw colours and per-paint/stop bindings \u2014 what acting on a lint finding needs.',
       mutates: false,
       params: {
         nodeId: { type: "string", description: 'Node id, e.g. "12:345".', required: true },
@@ -17150,6 +17165,7 @@ ${scripts}`, "");
     {
       name: "components.list",
       summary: "Local components and component sets with their property/variant definitions.",
+      agent: "Variant property names and values are exact \u2014 use them verbatim, with each component's own description and links.",
       mutates: false,
       params: {
         scope: { type: "string", description: "Where to look.", enum: ["page", "document"], default: "document" },
@@ -17194,6 +17210,7 @@ ${scripts}`, "");
     {
       name: "styles.list",
       summary: "Local text, paint, effect and grid styles.",
+      agent: "paints: true shows per-stop bindings (a gradient binds per stop; its paint-level bound is null however tokenised). consumers: true says whether anything uses a style at all.",
       mutates: false,
       params: {
         paints: {
@@ -17266,6 +17283,7 @@ ${scripts}`, "");
     {
       name: "variables.get",
       summary: "Variable collections, modes and values \u2014 the same snapshot the token export reads.",
+      agent: "resolve: true follows alias chains per mode \u2014 a semantic token differs between Light and Dark; never collapse the modes.",
       mutates: false,
       params: {
         library: {
@@ -17337,6 +17355,7 @@ ${scripts}`, "");
     {
       name: "instances.external",
       summary: "Which foreign components are instantiated here, and how many external bindings each drags in.",
+      agent: "Class B of a migration: bindings inside foreign components have no local main to fix \u2014 swap or detach the instances, then rebind.",
       mutates: false,
       params: {
         scope: { type: "string", default: "document", enum: ["page", "document"], description: "Where to look." },
@@ -17448,6 +17467,7 @@ ${scripts}`, "");
     {
       name: "variables.external",
       summary: "Which variables this file binds to that it does not own \u2014 the dependency a library inherits.",
+      agent: "The self-containment audit. A collection listed here but absent from enabledLibraryCollections is a dependency with no live subscription \u2014 resolvable, never updatable.",
       mutates: false,
       params: {
         scope: {
@@ -17638,6 +17658,7 @@ ${scripts}`, "");
     {
       name: "variables.usage",
       summary: "How many things actually use each token \u2014 layers, styles and gradient stops, counted.",
+      agent: "Layers, styles and aliases are counted separately \u2014 a token nothing paints may still hold the ramp up via aliases. Zero covers THIS file only.",
       mutates: false,
       params: {
         variables: {
@@ -17841,6 +17862,7 @@ ${scripts}`, "");
     {
       name: "variables.match",
       summary: "Which token is this colour \u2014 exactly, or nearest, and whether the answer is ambiguous.",
+      agent: "ambiguous: true means one colour is several tokens \u2014 choosing between them is a decision about meaning, never automatable.",
       mutates: false,
       params: {
         colors: {
@@ -17921,6 +17943,7 @@ ${scripts}`, "");
     {
       name: "flow.map",
       summary: "Prototype graph of a page: starting points plus every reaction edge between frames.",
+      agent: "Read before proposing navigation: extend the existing prototype instead of inventing a parallel one.",
       mutates: false,
       params: {
         pageId: { type: "string", description: "Page id. Defaults to the page the designer is on." }
@@ -18035,6 +18058,7 @@ ${scripts}`, "");
     {
       name: "lint.colors",
       summary: "Layers painted with a raw colour instead of a variable \u2014 exactly what a recolor cannot reach.",
+      agent: "Findings carry value and paintIndex \u2014 node.bind's exact arguments. ignore takes brand hexes out of the debt count, and the report names them back.",
       mutates: false,
       params: {
         pageId: { type: "string", description: "Page id. Defaults to the page the designer is on." },
@@ -18082,6 +18106,7 @@ ${scripts}`, "");
     {
       name: "text.segments",
       summary: "The styled runs of one TEXT node \u2014 ranges, characters, and per-run variable bindings.",
+      agent: "The X-ray for a binding no write seems to reach: shows which styled run owns it \u2014 or that none does.",
       mutates: false,
       params: {
         nodeId: { type: "string", required: true, description: "A TEXT node id." }

@@ -3283,6 +3283,28 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           return '| ' + (op.mutates ? '**!** ' : '') + '`' + op.name + '` | ' + op.summary +
             ' | ' + (params || '—') + ' |'
         })
+        // Guidance lives ON the ops (OpDef.agent) so this text regenerates whole — the table
+        // was always live, but the how-to bullets used to be frozen prose from a 23-op era.
+        var wrapNote = function (text, width) {
+          var words = text.split(' ')
+          var lines = []
+          var line = ''
+          for (var i = 0; i < words.length; i++) {
+            var next = line ? line + ' ' + words[i] : words[i]
+            if (next.length > width && line) { lines.push(line); line = '  ' + words[i] }
+            else line = next
+          }
+          if (line) lines.push(line)
+          return lines
+        }
+        var opNotes = function (mutating) {
+          var out = []
+          ;(AGENT.ops || []).forEach(function (op) {
+            if (!!op.mutates !== mutating || !op.agent) return
+            wrapNote('- `' + op.name + '` — ' + op.agent, 88).forEach(function (l) { out.push(l) })
+          })
+          return out
+        }
         return [
           '---',
           'name: figma',
@@ -3325,10 +3347,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           '- Start at `document.info` or `selection.get`. Never invent a node id.',
           '- Search by name (`node.find`) before fetching by id — names are how designers talk',
           '  about their work, ids are an implementation detail.',
-          '- `components.list` gives the exact variant property names and values, plus each',
-          "  component's own description and documentation links. Use them verbatim.",
-          '- `flow.map` shows how screens are already wired together. Read it before proposing',
-          '  navigation, so you extend the existing prototype instead of inventing a parallel one.',
+        ]).concat(opNotes(false)).concat([
           '',
           '## Read the token, not the colour',
           '',
@@ -3357,14 +3376,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           '',
           '- Every write op takes `dryRun: true` and returns the identical report without',
           '  touching anything. Show that first when the change is more than trivial.',
-          '- Batches report per entry: one bad row never takes the other ninety-nine with it.',
-          '- Keep a batch modest. Each call is one undo step for the designer, and a call that',
-          '  imports from a library is network-bound.',
-          '- `variables.set` aliases onto a *library* variable when given its 40-character key —',
-          '  that is how one library inherits another\'s tokens.',
-          '- `node.focus` selects a node and scrolls the designer to it. Use it instead of',
-          '  describing where something is.',
-          '',
+          '- Reports are per entry, and they are the contract: read them back — `before`,',
+          '  `verified`, `variable` — a write this API accepts is not yet a write it applied.',
+          '- One call is one undo step for the designer. Keep batches modest; library imports',
+          '  are network-bound.',
+        ]).concat(opNotes(true)).concat([
           '## No Figma API token is involved',
           '',
           'Everything above runs through the plugin the designer already has open. There is no',

@@ -196,6 +196,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'variables.set',
     summary: 'Set variable values or aliases, in batch — the one op a recolor actually needs.',
+    agent:
+      "Given a 40-character library key it aliases onto that library variable — how one file inherits another's tokens.",
     mutates: true,
     params: {
       updates: {
@@ -277,6 +279,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'variables.create',
     summary: 'Create variables in a collection — the rungs a new palette adds that the old one lacked.',
+    agent:
+      'modes: ["Light","Dark"] makes the collection offer those modes first — a fresh collection is single-mode. Values may then key by mode name.',
     mutates: true,
     params: {
       collection: {
@@ -413,6 +417,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'board.render',
     summary: 'Draw a documentation board — headings, callouts, swatch grids, before/after rows — on a page.',
+    agent:
+      'replace: true redraws the same board in place — the idempotent way to keep documentation boards current.',
     mutates: true,
     params: {
       spec: {
@@ -446,6 +452,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'node.bind',
     summary: 'Bind layer properties to variables — the op that turns a lint finding into a fix.',
+    agent:
+      "variable takes an id, a local name or a library key; null unbinds — a row WITHOUT the key is an error, never a silent unbind. The report's before names what each write displaced.",
     mutates: true,
     params: {
       bindings: {
@@ -605,6 +613,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'style.bind',
     summary: 'Bind a paint style — solid paint, or one gradient stop — to a variable, and verify it stuck.',
+    agent:
+      'stop is the position in percent — the same number a pNN token name carries. Gradient-stop binding is undocumented API, so the op re-reads the style and reports verified.',
     mutates: true,
     params: {
       bindings: {
@@ -754,6 +764,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'node.style',
     summary: 'Apply a style to layers — or detach them — and verify it took. Re-attaches what drifted.',
+    agent:
+      'Applying a style replaces what the layer renders — the report names the displaced paints. null detaches, keeping pixels.',
     mutates: true,
     params: {
       assignments: {
@@ -884,6 +896,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'style.remove',
     summary: 'Delete styles nothing uses. Refuses while a consumer exists; reports publish status first.',
+    agent:
+      'Refuses while consumers exist. publishStatus in the report is the half this file cannot see: CURRENT means other files may consume it through the library.',
     mutates: true,
     params: {
       styles: {
@@ -991,6 +1005,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'variables.rebind',
     summary: 'Repoint every binding of one variable onto another, document-wide — the migration op.',
+    agent:
+      'The migration op. Build the map from a FRESH variables.external — once nothing references a remote variable Figma garbage-collects it and stale from-ids refuse the whole map. Mains are enough: instance mirrors follow.',
     mutates: true,
     params: {
       map: {
@@ -1446,6 +1462,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'instance.detach',
     summary: 'Detach instances from their main components. Bindings stay — plan a rebind after.',
+    agent:
+      'Bindings survive a detach — the dependency turns class A for variables.rebind to reach. Nested foreign instances surface as new top-level ones: expect onion rounds.',
     mutates: true,
     params: {
       nodes: { type: 'string[]', required: true, description: 'Instance node ids to detach.' },
@@ -1507,6 +1525,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'variables.remove',
     summary: 'Delete variables nothing references. Refuses while a binding or alias still points at one.',
+    agent:
+      "Refuses while anything references the variable — a binding, a gradient stop, a style paint or another variable's alias. Zero references here still says nothing about other files.",
     mutates: true,
     params: {
       variables: {
@@ -1609,6 +1629,8 @@ export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'text.normalize',
     summary: 'Rewrite the invisible end-of-text run so orphan variable references die — surgery, verified.',
+    agent:
+      'Last resort for orphan run-table entries. Verified per node — and some runs are beyond the public API; the report says which rather than claiming success.',
     mutates: true,
     params: {
       nodes: { type: 'string[]', required: true, description: 'TEXT node ids to normalize.' },

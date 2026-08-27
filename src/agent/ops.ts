@@ -683,6 +683,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'node.get',
     summary: 'One node by id: geometry, auto-layout, text, instance bindings, children.',
+    agent:
+      'bindings answer "which token"; paints: true adds raw colours and per-paint/stop bindings — what acting on a lint finding needs.',
     mutates: false,
     params: {
       nodeId: { type: 'string', description: 'Node id, e.g. "12:345".', required: true },
@@ -763,6 +765,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'components.list',
     summary: 'Local components and component sets with their property/variant definitions.',
+    agent:
+      'Variant property names and values are exact — use them verbatim, with each component\'s own description and links.',
     mutates: false,
     params: {
       scope: { type: 'string', description: 'Where to look.', enum: ['page', 'document'], default: 'document' },
@@ -816,6 +820,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'styles.list',
     summary: 'Local text, paint, effect and grid styles.',
+    agent:
+      'paints: true shows per-stop bindings (a gradient binds per stop; its paint-level bound is null however tokenised). consumers: true says whether anything uses a style at all.',
     mutates: false,
     params: {
       paints: {
@@ -903,6 +909,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'variables.get',
     summary: 'Variable collections, modes and values — the same snapshot the token export reads.',
+    agent:
+      'resolve: true follows alias chains per mode — a semantic token differs between Light and Dark; never collapse the modes.',
     mutates: false,
     params: {
       library: {
@@ -988,6 +996,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'instances.external',
     summary: 'Which foreign components are instantiated here, and how many external bindings each drags in.',
+    agent:
+      'Class B of a migration: bindings inside foreign components have no local main to fix — swap or detach the instances, then rebind.',
     mutates: false,
     params: {
       scope: { type: 'string', default: 'document', enum: ['page', 'document'], description: 'Where to look.' },
@@ -1113,6 +1123,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'variables.external',
     summary: 'Which variables this file binds to that it does not own — the dependency a library inherits.',
+    agent:
+      'The self-containment audit. A collection listed here but absent from enabledLibraryCollections is a dependency with no live subscription — resolvable, never updatable.',
     mutates: false,
     params: {
       scope: {
@@ -1343,6 +1355,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'variables.usage',
     summary: 'How many things actually use each token — layers, styles and gradient stops, counted.',
+    agent:
+      'Layers, styles and aliases are counted separately — a token nothing paints may still hold the ramp up via aliases. Zero covers THIS file only.',
     mutates: false,
     params: {
       variables: {
@@ -1602,6 +1616,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'variables.match',
     summary: 'Which token is this colour — exactly, or nearest, and whether the answer is ambiguous.',
+    agent:
+      'ambiguous: true means one colour is several tokens — choosing between them is a decision about meaning, never automatable.',
     mutates: false,
     params: {
       colors: {
@@ -1710,6 +1726,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'flow.map',
     summary: 'Prototype graph of a page: starting points plus every reaction edge between frames.',
+    agent:
+      'Read before proposing navigation: extend the existing prototype instead of inventing a parallel one.',
     mutates: false,
     params: {
       pageId: { type: 'string', description: 'Page id. Defaults to the page the designer is on.' },
@@ -1835,6 +1853,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'lint.colors',
     summary: 'Layers painted with a raw colour instead of a variable — exactly what a recolor cannot reach.',
+    agent:
+      'Findings carry value and paintIndex — node.bind\'s exact arguments. ignore takes brand hexes out of the debt count, and the report names them back.',
     mutates: false,
     params: {
       pageId: { type: 'string', description: 'Page id. Defaults to the page the designer is on.' },
@@ -1902,6 +1922,8 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'text.segments',
     summary: 'The styled runs of one TEXT node — ranges, characters, and per-run variable bindings.',
+    agent:
+      'The X-ray for a binding no write seems to reach: shows which styled run owns it — or that none does.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'A TEXT node id.' },

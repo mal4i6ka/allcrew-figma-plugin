@@ -42,6 +42,10 @@ export interface OpDef {
   summary: string
   /** True when the op writes to the document. Gated separately from reads — see `authorize`. */
   mutates: boolean
+  /** One or two sentences of usage guidance for the paste-once skill. Lives ON the op so the
+   * "Teach the agent" text regenerates whole: an op that ships without its own documentation
+   * is an op the agent will misuse — write ops are REQUIRED to carry this (enforced by test). */
+  agent?: string
   params: ParamSpecs
   run: (params: Record<string, unknown>) => Promise<unknown>
 }
@@ -51,6 +55,7 @@ export interface OpManifestEntry {
   name: string
   summary: string
   mutates: boolean
+  agent?: string
   params: Record<string, ParamSpec>
 }
 
@@ -58,6 +63,7 @@ export function toManifest(ops: readonly OpDef[]): OpManifestEntry[] {
   return ops.map((op) => ({
     name: op.name,
     summary: op.summary,
+    ...(op.agent ? { agent: op.agent } : {}),
     mutates: op.mutates,
     params: { ...op.params },
   }))
