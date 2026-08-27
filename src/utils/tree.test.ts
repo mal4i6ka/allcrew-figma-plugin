@@ -26,6 +26,70 @@ test('loadAllPagesAsync loads every page under figma.root', async () => {
   assert.deepEqual(loaded.sort(), ['page1', 'page2'])
 })
 
+test('loadAllPagesAsync keeps at most four loads in flight', async () => {
+  // The regression this guards: a 50-way parallel burst is what dropped the Figma client's
+  // connection on the 50-page Mobile DS. Bounded is the contract; four is today's batch size.
+  let inFlight = 0
+  let peak = 0
+  let loaded = 0
+  const page = (id: string) => ({
+    id,
+    name: id,
+    loadAsync: async () => {
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      inFlight -= 1
+      loaded += 1
+    },
+  })
+  setFigma({ root: { children: Array.from({ length: 11 }, (_, at) => page(`page${at}`)) } })
+
+  await loadAllPagesAsync()
+
+  assert.equal(loaded, 11)
+  assert.equal(peak <= 4, true, `expected at most 4 concurrent loads, saw ${peak}`)
+})
+
+test('loadAllPagesAsync retries a page that fails once', async () => {
+  let attempts = 0
+  setFigma({
+    root: {
+      children: [
+        {
+          name: 'Flaky',
+          loadAsync: async () => {
+            attempts += 1
+            if (attempts === 1) throw new Error('transient')
+          },
+        },
+      ],
+    },
+  })
+
+  await loadAllPagesAsync()
+
+  assert.equal(attempts, 2)
+})
+
+test('loadAllPagesAsync names the page that would not load after the retry', async () => {
+  setFigma({
+    root: {
+      children: [
+        { name: 'Fine', loadAsync: async () => {} },
+        {
+          name: '-- Main',
+          loadAsync: async () => {
+            throw new Error('Unable to establish connection to Figma after 10 seconds')
+          },
+        },
+      ],
+    },
+  })
+
+  await assert.rejects(loadAllPagesAsync(), /page "-- Main" would not load/)
+})
+
 test('findAllWithCriteria recursively collects nodes matching the predicate', async () => {
   setFigma({ skipInvisibleInstanceChildren: false })
 

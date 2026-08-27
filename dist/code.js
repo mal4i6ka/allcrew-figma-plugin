@@ -18077,7 +18077,7 @@ ${scripts}`, "");
       agent: "Findings carry value and paintIndex \u2014 node.bind's exact arguments. ignore takes brand hexes out of the debt count, and the report names them back.",
       mutates: false,
       params: {
-        pageId: { type: "string", description: "Page id. Defaults to the page the designer is on." },
+        pageId: { type: "string", description: 'Which page to walk \u2014 giving it implies scope: "page". Defaults to the current page when scope is "page".' },
         scope: {
           type: "string",
           default: "page",
@@ -18095,7 +18095,8 @@ ${scripts}`, "");
         const ignored = new Set(
           (Array.isArray(params.ignore) ? params.ignore : []).filter((entry) => typeof entry === "string").map((entry) => entry.trim().replace(/^#/, "").slice(0, 6).toLowerCase())
         );
-        const pages = params.scope === "document" ? (await loadAllPagesAsync(), figma.root.children.slice()) : [await resolvePage(params.pageId)];
+        const wantsPage = typeof params.pageId === "string" && params.pageId !== "";
+        const pages = params.scope === "document" && !wantsPage ? (await loadAllPagesAsync(), figma.root.children.slice()) : [await resolvePage(params.pageId)];
         const findings = [];
         for (const page of pages) {
           const roots = page.children.filter((node) => "visible" in node);
@@ -18110,7 +18111,8 @@ ${scripts}`, "");
         const byRule = {};
         for (const finding of findings) byRule[finding.rule] = ((_a = byRule[finding.rule]) != null ? _a : 0) + 1;
         return __spreadProps(__spreadValues({
-          scope: params.scope,
+          // The scope that actually ran, not the one passed — pageId may have narrowed it.
+          scope: wantsPage ? "page" : params.scope,
           pages: pages.map((page) => page.name),
           total: findings.length,
           byRule

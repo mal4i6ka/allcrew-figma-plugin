@@ -1861,7 +1861,7 @@ export const READ_OPS: readonly OpDef[] = [
       'Findings carry value and paintIndex — node.bind\'s exact arguments. ignore takes brand hexes out of the debt count, and the report names them back.',
     mutates: false,
     params: {
-      pageId: { type: 'string', description: 'Page id. Defaults to the page the designer is on.' },
+      pageId: { type: 'string', description: 'Which page to walk — giving it implies scope: "page". Defaults to the current page when scope is "page".' },
       scope: {
         type: 'string',
         default: 'page',
@@ -1887,8 +1887,12 @@ export const READ_OPS: readonly OpDef[] = [
           .filter((entry): entry is string => typeof entry === 'string')
           .map((entry) => entry.trim().replace(/^#/, '').slice(0, 6).toLowerCase())
       )
+      /* Same contract as resolveWalkRoots: an explicit pageId IS the scope, even beside
+       * scope:"document" — a declared param that gets silently ignored is how one stray field
+       * used to buy the most expensive walk in the file. */
+      const wantsPage = typeof params.pageId === 'string' && params.pageId !== ''
       const pages: PageNode[] =
-        params.scope === 'document'
+        params.scope === 'document' && !wantsPage
           ? (await loadAllPagesAsync(), figma.root.children.slice())
           : [await resolvePage(params.pageId)]
 
@@ -1911,7 +1915,8 @@ export const READ_OPS: readonly OpDef[] = [
       const byRule: Record<string, number> = {}
       for (const finding of findings) byRule[finding.rule] = (byRule[finding.rule] ?? 0) + 1
       return {
-        scope: params.scope,
+        // The scope that actually ran, not the one passed — pageId may have narrowed it.
+        scope: wantsPage ? 'page' : params.scope,
         pages: pages.map((page) => page.name),
         total: findings.length,
         byRule,
