@@ -57,7 +57,7 @@ for (const file of readdirSync(dir)) {
   if (file === 'mapping.json' || file === 'README.md' || file.startsWith('expected')) continue
   const text = readFileSync(join(dir, file), 'utf8')
   const result = rewriteColors(text, mapping, {})
-  console.log(`== ${file}: ${result.edits.length} edit(s)`)
-  for (const edit of result.edits.slice(0, 30)) console.log(`   ${edit.from} -> ${edit.to}${edit.viaName ? '  (by name ' + edit.viaName + ')' : ''}`)
+  console.log(`== ${file}: ${result.replacements.length} edit(s), untouched ${result.untouched}`)
+  for (const r of result.replacements.slice(0, 30)) console.log(`   ${JSON.stringify(r)}`)
   writeFileSync(join(dir, 'expected-' + file), result.text)
 }

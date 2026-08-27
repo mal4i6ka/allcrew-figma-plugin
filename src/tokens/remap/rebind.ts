@@ -68,10 +68,13 @@ export function rebindTargets(plan: RemapPlan): RebindTargets {
   )
 
   for (const [variableId, perMode] of keys) {
-    const distinct = new Set(perMode.values())
-    distinct.delete(null)
+    const votes = [...perMode.values()]
+    const distinct = new Set(votes)
+    const abstained = distinct.delete(null)
     if (distinct.size === 0) continue
-    if (distinct.size > 1) {
+    // A mode with no landing key is not an abstention — the alias rewrite is per variable,
+    // so moving the keyed mode would drag the keyless one onto a token it never chose.
+    if (distinct.size > 1 || abstained) {
       divergent.push(variableId)
       continue
     }

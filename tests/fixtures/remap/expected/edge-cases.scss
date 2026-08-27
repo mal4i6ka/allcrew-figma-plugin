@@ -1,0 +1,16 @@
+// The guard cases this rewrite is locked to, on both engines.
+$moves: #8B5CF6;                 // an ordinary literal still moves
+
+/* a hex inside a block comment stays where it is: #3B82F6
+   and so does a JSON example: { "#3B82F6": "primary" } */
+
+.swift-shaped {
+  // an argument label is not a color, whatever it is called:
+  // UIColor(red: 0.23, green: 0.51, blue: 0.96, alpha: 1.0)
+  content: "white looks like linen next to snow";
+}
+
+.already-migrated {
+  color: #FAFAFA;                // already a reference landing — never re-snapped away
+  background: #F0F0F0;           // one step off the reference — snaps onto its own token
+}

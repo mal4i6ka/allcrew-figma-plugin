@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { hexToOklch } from './color.ts'
+import { normalizePaletteSettings } from './palette-settings.ts'
 import {
   DEFAULT_PALETTE_SETTINGS,
   DEFAULT_STEPS,
@@ -462,4 +463,20 @@ test('duplicate spectrum names are reported before they silently merge groups', 
     settings({ spectra: [spectrum({ id: 'a' }), spectrum({ id: 'b', prefix: 'O2' })] })
   )
   assert.ok(palette.warnings.some((w) => w.message.includes('Duplicate')))
+})
+
+test('an emptied spectra list stays empty — only a missing or corrupt one gets the defaults', () => {
+  // The operator clears the board to build their own set; quietly refilling it with the
+  // default three made the preview show ramps that no longer existed.
+  const cleared = normalizePaletteSettings({ spectra: [] })
+  assert.equal(cleared.spectra.length, 0)
+
+  const missing = normalizePaletteSettings({})
+  assert.equal(missing.spectra.length, 3, 'settings from an older build get the defaults')
+
+  const corrupt = normalizePaletteSettings({ spectra: [{ bogus: true }, 42] })
+  assert.equal(corrupt.spectra.length, 3, 'a list of only-garbage entries is damage, not a choice')
+
+  const generated = generatePalette(cleared)
+  assert.equal(generated.spectra.length, 0, 'an empty palette generates as empty, not as the defaults')
 })

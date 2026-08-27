@@ -27,8 +27,17 @@ export interface SpectrumMember {
   rgba: Rgba
   /** Family read off the name, when the name carried one. */
   family: string | null
+  /**
+   * The full group path the name sits under (`colors/neutral`), when it has one. This is
+   * what named grouping keys on: a family is one group in one place in the file, and two
+   * groups that merely end in the same word are different families. Optional — a caller
+   * that only knows the leaf family leaves it unset and the family stands in.
+   */
+  group?: string | null
   /** Step read off the name, when the name carried one. */
   step: number | null
+  /** Library variable key, for palette members that are real published variables. */
+  variableKey?: string | null
 }
 
 /** Below this a color is translucent, and translucency is an axis of its own. */
@@ -47,7 +56,14 @@ export interface SpectrumStop extends SpectrumMember {
 
 export interface InferredSpectrum {
   key: string
+  /** What the panel and the board call it — the group path for a named ramp. */
   label: string
+  /**
+   * The family *name* — `neutral` for `colors/neutral` and for `colour/neutral` alike. Name
+   * matching compares this, so a retired copy of a ramp still finds the ramp's new family,
+   * while the label keeps saying which copy it was.
+   */
+  family: string
   /** Every member is see-through — an alpha ramp, not a lightness ramp. */
   translucent: boolean
   /** `named` when the file said so, `clustered` when hue geometry had to say it. */
@@ -248,6 +264,7 @@ function makeSpectrum(
   stops: SpectrumStop[],
   source: 'named' | 'clustered',
   label: string,
+  family: string,
   usedKeys: Set<string>
 ): InferredSpectrum {
   const sorted = [...stops].sort(byLightness)
@@ -263,6 +280,7 @@ function makeSpectrum(
   return {
     key,
     label,
+    family,
     source,
     neutral,
     translucent,
@@ -293,7 +311,7 @@ export function inferSpectra(members: readonly SpectrumMember[]): SpectrumInfere
   // colour it is, by nearest neighbour, and keeps its own alpha — which is what the rest of the
   // tool already promises about alpha everywhere else.
   const loose: SpectrumStop[] = []
-  const named = new Map<string, { label: string; stops: SpectrumStop[] }>()
+  const named = new Map<string, { label: string; family: string; stops: SpectrumStop[] }>()
   for (const stop of stops) {
     if (!isOpaque(stop)) {
       loose.push(stop)
@@ -303,21 +321,26 @@ export function inferSpectra(members: readonly SpectrumMember[]): SpectrumInfere
       unnamed.push(stop)
       continue
     }
-    const key = familyKey(stop.family)
-    const entry = named.get(key) ?? { label: stop.family, stops: [] }
+    // A family is one group in one place in the file. Keying on the leaf word instead merges
+    // `colors/neutral` with a `colour/neutral` from another collection, and whichever of the
+    // two the word does not describe — a British-spelt copy holding teal-tinted values, say —
+    // is then drawn *inside* the real ramp's strip, where it reads as a matching error.
+    const where = stop.group ?? stop.family
+    const key = familyKey(where)
+    const entry = named.get(key) ?? { label: where, family: stop.family, stops: [] }
     entry.stops.push(stop)
     named.set(key, entry)
   }
 
-  for (const { label, stops: group } of named.values()) {
-    if (looksLikeRamp(group)) spectra.push(makeSpectrum(group, 'named', label, usedKeys))
+  for (const { label, family, stops: group } of named.values()) {
+    if (looksLikeRamp(group)) spectra.push(makeSpectrum(group, 'named', label, family, usedKeys))
     else unnamed.push(...group)
   }
 
   const grays = unnamed.filter(isNeutral)
   const colored = unnamed.filter((stop) => !isNeutral(stop))
 
-  if (grays.length >= 2) spectra.push(makeSpectrum(grays, 'clustered', 'Neutral', usedKeys))
+  if (grays.length >= 2) spectra.push(makeSpectrum(grays, 'clustered', 'Neutral', 'Neutral', usedKeys))
   else loose.push(...grays)
 
   for (const cluster of clusterByHue(colored)) {
@@ -325,7 +348,8 @@ export function inferSpectra(members: readonly SpectrumMember[]): SpectrumInfere
       loose.push(...cluster)
       continue
     }
-    spectra.push(makeSpectrum(cluster, 'clustered', hueName(meanHue(cluster)), usedKeys))
+    const label = hueName(meanHue(cluster))
+    spectra.push(makeSpectrum(cluster, 'clustered', label, label, usedKeys))
   }
 
   spectra.sort((a, b) => Number(a.neutral) - Number(b.neutral) || a.hue - b.hue)

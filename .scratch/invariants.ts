@@ -5,14 +5,22 @@ import { buildRemapPlan, type ColorSite } from '../src/tokens/remap/plan.ts'
 import type { ParsedSwatch } from '../src/tokens/remap/input.ts'
 import { toHex } from '../src/tokens/remap/color-literal.ts'
 
-type Pair = { name: string; hex: string }
+type Pair = { name: string; hex: string; alpha?: number }
 function flatten(node: any, path: string[] = [], out: Pair[] = []): Pair[] {
   for (const [key, value] of Object.entries(node)) {
     if (value === null || typeof value !== 'object') continue
     const v = value as any
     if ('$value' in v) {
-      if (v.$type === 'color' && typeof v.$value === 'string' && v.$value.startsWith('#'))
-        out.push({ name: [...path, key].join('/'), hex: v.$value })
+      if (v.$type === 'color' && typeof v.$value === 'string') {
+        if (v.$value.startsWith('#')) out.push({ name: [...path, key].join('/'), hex: v.$value })
+        else {
+          const m = /rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/.exec(v.$value)
+          if (m) {
+            const hex = '#' + [m[1], m[2], m[3]].map((c) => Number(c).toString(16).padStart(2, '0')).join('')
+            out.push({ name: [...path, key].join('/'), hex, alpha: Number(m[4]) })
+          }
+        }
+      }
       continue
     }
     flatten(v, [...path, key], out)
@@ -33,12 +41,14 @@ B.push(
 
 const swatches: ParsedSwatch[] = A.map((p) => {
   const parsed = parseTokenName(p.name)
-  return { hex: p.hex.toUpperCase(), alpha: 1, rgba: rgba(p.hex), name: p.name, family: parsed.family, step: parsed.step }
+  const alpha = p.alpha ?? 1
+  return { hex: p.hex.toUpperCase(), alpha, rgba: { ...rgba(p.hex), a: alpha }, name: p.name, family: parsed.family, step: parsed.step }
 })
 const paletteSteps = new Map<string, Set<number>>()
 const paletteHexes = new Set(swatches.map((s) => s.hex))
 for (const s of swatches) {
-  if (s.family === null || s.step === null) continue
+  // Translucent tokens never join an opaque ladder — alpha/red/10 is not red's step 10.
+  if (s.family === null || s.step === null || s.alpha < 0.999) continue
   const key = s.family.toLowerCase()
   if (!paletteSteps.has(key)) paletteSteps.set(key, new Set())
   paletteSteps.get(key)!.add(s.step)
@@ -59,7 +69,8 @@ for (const e of plan.entries) {
 }
 // 2. anchors: a numbered old rung whose number exists in its landing family keeps that number
 for (const e of plan.entries) {
-  if (e.via === 'exact' || e.fromStep === null || e.toFamily === null) continue
+  // 'lightness' can be the short-family guard refusing an absurd number — not an anchor break.
+  if (e.via === 'exact' || e.via === 'lightness' || e.fromStep === null || e.toFamily === null) continue
   const steps = paletteSteps.get(e.toFamily.toLowerCase())
   if (steps?.has(e.fromStep) && e.toStep !== e.fromStep)
     fail(`anchor: ${e.site.name} step ${e.fromStep} landed on ${e.toStep} in ${e.toFamily}`)

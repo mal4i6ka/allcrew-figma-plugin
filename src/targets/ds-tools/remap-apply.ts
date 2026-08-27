@@ -95,7 +95,7 @@ const RENAME_KEY = 'altery-remap-renames'
  * one, so it is split. The chunk ceiling is what Apply checks before it touches anything.
  */
 const CHUNK_BYTES = 80_000
-const MAX_CHUNKS = 12
+const MAX_CHUNKS = 32
 
 type Channels = [number, number, number, number]
 
@@ -134,7 +134,7 @@ type SnapshotPaint = [
   /** 1 when this write also added a variable binding that Revert has to remove */ number,
 ]
 
-interface RemapSnapshot {
+export interface RemapSnapshot {
   version: 2
   values: SnapshotValue[]
   names: SnapshotName[]
@@ -144,6 +144,57 @@ interface RemapSnapshot {
 
 /** Old exported key → the name that key resolves to now; the emitter reads the same shape. */
 export type { RenameMap } from '../../tokens/engine.ts'
+
+/* ------------------------------------------------------------------ packing */
+
+/** `[nodeId, property, paint index, gradient stop]`, plus a trailing 1 when a binding was added. */
+type PackedPlace = [string, number, number, number] | [string, number, number, number, number]
+
+/**
+ * The stored form of a snapshot. Places outweigh everything else a thousandfold, and most of
+ * one place's JSON used to be its four color channels — repeated for every place wearing the
+ * color. Version 3 groups places under their old color once: the same undo in a third of the
+ * bytes, which is the difference between "refuse the page" and "fits with room to spare".
+ * The key is the exact round4 channels, so nothing is lost to re-quantizing.
+ */
+interface PackedSnapshot {
+  version: 3
+  values: SnapshotValue[]
+  names: SnapshotName[]
+  styles: SnapshotStyle[]
+  paints: Record<string, PackedPlace[]>
+}
+
+const channelKey = (channels: Channels): string => channels.join(',')
+
+export function packSnapshot(snapshot: RemapSnapshot): PackedSnapshot {
+  const paints: Record<string, PackedPlace[]> = {}
+  for (const place of snapshot.paints) {
+    const key = channelKey([place[4], place[5], place[6], place[7]])
+    const packed: PackedPlace =
+      place[8] === 1 ? [place[0], place[1], place[2], place[3], 1] : [place[0], place[1], place[2], place[3]]
+    const group = paints[key]
+    if (group) group.push(packed)
+    else paints[key] = [packed]
+  }
+  return { version: 3, values: snapshot.values, names: snapshot.names, styles: snapshot.styles, paints }
+}
+
+/** Both stored forms unfold to the in-memory shape, so Revert never learns which one it read. */
+export function unpackSnapshot(parsed: unknown): RemapSnapshot {
+  const raw = parsed as { version?: number }
+  if (raw.version === 2) return parsed as RemapSnapshot
+  if (raw.version !== 3) throw new Error(`the undo snapshot has version ${String(raw.version)}, which this build cannot read`)
+  const packed = parsed as PackedSnapshot
+  const paints: SnapshotPaint[] = []
+  for (const [key, group] of Object.entries(packed.paints)) {
+    const channels = key.split(',').map(Number) as Channels
+    for (const place of group) {
+      paints.push([place[0], place[1], place[2], place[3], channels[0], channels[1], channels[2], channels[3], place[4] ?? 0])
+    }
+  }
+  return { version: 2, values: packed.values, names: packed.names, styles: packed.styles, paints }
+}
 
 function writeChunked(text: string): number {
   const chunks: string[] = []
@@ -397,7 +448,7 @@ async function applyStyles(
 
 /* ------------------------------------------------------------------ canvas */
 
-async function scopeRoots(scope: RemapScope): Promise<readonly SceneNode[]> {
+export async function scopeRoots(scope: RemapScope): Promise<readonly SceneNode[]> {
   if (scope === 'selection') return figma.currentPage.selection
   if (scope === 'page') return figma.currentPage.children
   const roots: SceneNode[] = []
@@ -433,6 +484,8 @@ interface CanvasContext {
   snapshot: RemapSnapshot
   report: RemapApplyReport
   loader: Loader
+  /** Count the places, write nothing — the exact undo budget for the chosen scope. */
+  dry?: boolean
   /** Nodes already written, so an instance and its main are never processed twice. */
   done: Set<string>
 }
@@ -456,6 +509,10 @@ function rewritePaints(node: SceneNode, property: 'fills' | 'strokes', context: 
       const alpha = paint.opacity ?? 1
       const entry = context.targets.get(looseSiteId(hexOf(paint.color), alpha))
       if (!entry) continue
+      if (context.dry) {
+        context.report.paints++
+        continue
+      }
       const variable = context.bindTo.get(entry.site.id)
       let replacement: SolidPaint = { ...paint, color: { r: entry.to.r, g: entry.to.g, b: entry.to.b }, opacity: entry.to.a }
       if (variable) {
@@ -476,6 +533,10 @@ function rewritePaints(node: SceneNode, property: 'fills' | 'strokes', context: 
       const color = withAlpha(stop.color)
       const entry = context.targets.get(looseSiteId(hexOf(color), color.a))
       if (!entry) continue
+      if (context.dry) {
+        context.report.paints++
+        continue
+      }
       stops[stopIndex] = { ...stop, color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } }
       context.snapshot.paints.push([node.id, code, index, stopIndex, ...channelsOf(color), 0])
       context.report.paints++
@@ -505,6 +566,10 @@ function rewriteEffects(node: SceneNode, context: CanvasContext): boolean {
     const color = withAlpha(effect.color)
     const entry = context.targets.get(looseSiteId(hexOf(color), color.a))
     if (!entry) continue
+    if (context.dry) {
+      context.report.paints++
+      continue
+    }
     next[index] = { ...effect, color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } }
     context.snapshot.paints.push([node.id, 2, index, -1, ...channelsOf(color), 0])
     context.report.paints++
@@ -522,14 +587,16 @@ async function applyCanvas(
   snapshot: RemapSnapshot,
   report: RemapApplyReport,
   loader: Loader,
-  progress?: (label: string) => void
+  progress?: (label: string) => void,
+  dry = false
 ): Promise<void> {
   const targets = new Map<string, RemapEntry>()
   for (const entry of plan.entries) if (writableLoose(entry)) targets.set(entry.site.id, entry)
   if (targets.size === 0) return
 
   const bindTo = new Map<string, Variable>()
-  if (options.bind) {
+  // A dry run skips the lookups: a bound place costs the same undo bytes as a repainted one.
+  if (!dry && options.bind) {
     const exact = bindingCandidates(plan)
     for (const entry of targets.values()) {
       const variableId = exact.get(entry.site.id) ?? nearestVariableFor(entry, plan)
@@ -539,7 +606,7 @@ async function applyCanvas(
     }
   }
 
-  const context: CanvasContext = { targets, bindTo, snapshot, report, loader, done: new Set() }
+  const context: CanvasContext = { targets, bindTo, snapshot, report, loader, dry, done: new Set() }
   const roots = await scopeRoots(options.scope)
 
   figma.skipInvisibleInstanceChildren = true
@@ -562,7 +629,7 @@ async function applyCanvas(
       if ('children' in node) for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i])
 
       if (visited % 200 === 0) {
-        progress?.(`repainting… ${report.paints} places`)
+        progress?.(dry ? `sizing the undo… ${report.paints} places` : `repainting… ${report.paints} places`)
         await yieldToHost()
       }
     }
@@ -581,7 +648,7 @@ async function applyCanvas(
 /* ------------------------------------------------------------------ budget */
 
 /** Rough JSON cost of one snapshot record of each kind, measured against real output. */
-const BYTES = { value: 90, name: 70, style: 70, paint: 60 }
+const BYTES = { value: 90, name: 70, style: 70, paint: 28 }
 
 /**
  * Whether the undo record will fit, decided *before* anything is written.
@@ -639,7 +706,18 @@ export async function applyRemap(
     return report
   }
 
-  const estimate = estimateSnapshotBytes(plan, options)
+  let estimate = estimateSnapshotBytes(plan, options)
+  if (estimate > SNAPSHOT_BUDGET_BYTES && options.canvas) {
+    // The quick estimate prices every place a loose color is worn *anywhere in the document*,
+    // because that is what the inventory counted — but the chosen scope may be one page of a
+    // fifty-page file. Before refusing, walk the actual scope and count the actual places: a
+    // dry pass costs one read of the subtree and turns "about 7 MB" into the real number.
+    progress?.('sizing the undo for this scope…')
+    const dryReport = { ...report, paints: 0, instanceOverrides: 0, warnings: [] as string[] }
+    const drySnapshot: RemapSnapshot = { version: 2, values: [], names: [], styles: [], paints: [] }
+    await applyCanvas(plan, options, drySnapshot, dryReport as RemapApplyReport, makeLoader(), progress, true)
+    estimate = estimateSnapshotBytes(plan, { ...options, canvas: false }) + dryReport.paints * BYTES.paint
+  }
   if (estimate > SNAPSHOT_BUDGET_BYTES) {
     throw new Error(
       `This remap would need about ${Math.round(estimate / 1024)} kB of undo data, more than the ` +
@@ -683,7 +761,7 @@ export async function applyRemap(
 
   progress?.('storing the snapshot…')
   try {
-    report.snapshotBytes = writeChunked(JSON.stringify(snapshot))
+    report.snapshotBytes = writeChunked(JSON.stringify(packSnapshot(snapshot)))
   } catch (error) {
     // The pre-flight estimate should have caught this; if it did not, the styles and layers are
     // already changed, so say exactly that rather than implying the file is untouched.
@@ -936,7 +1014,7 @@ export async function revertRemap(progress?: (label: string) => void): Promise<R
 
   let snapshot: RemapSnapshot
   try {
-    snapshot = JSON.parse(raw) as RemapSnapshot
+    snapshot = unpackSnapshot(JSON.parse(raw))
   } catch {
     clearSnapshot()
     return { ...empty, warnings: ['the stored snapshot is unreadable and has been discarded'] }

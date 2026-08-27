@@ -17,6 +17,12 @@ export interface TokenName {
   leaf: string
   /** The segment above the leaf — the natural group in Figma's variable tree. */
   group: string | null
+  /**
+   * Everything above the leaf, joined — `colors/neutral` for `colors/neutral/900`. This is
+   * the identity of the group *in this file*: two groups that happen to end in the same word
+   * (`colors/neutral` and `colour/neutral`) are different places holding different ramps.
+   */
+  groupPath: string | null
   /** Ramp family this name claims to belong to, or null when the name shows no family. */
   family: string | null
   /** Ramp position this name claims, or null when the name carries no step. */
@@ -37,14 +43,15 @@ export function parseTokenName(name: string): TokenName {
     .filter((segment) => segment !== '')
   const leaf = path.length > 0 ? path[path.length - 1] : ''
   const group = path.length > 1 ? path[path.length - 2] : null
+  const groupPath = path.length > 1 ? path.slice(0, -1).join('/') : null
 
   const match = STEP_RE.exec(leaf)
-  if (!match) return { path, leaf, group, family: group, step: null }
+  if (!match) return { path, leaf, group, groupPath, family: group, step: null }
 
   const prefix = (match[1] ?? '').replace(/[\s_-]+$/, '').trim()
   // A group beats a prefix: `Orange/O500` is the Orange ramp, not the "O" ramp.
   const family = group ?? (prefix !== '' ? prefix : null)
-  return { path, leaf, group, family, step: Number(match[2]) }
+  return { path, leaf, group, groupPath, family, step: Number(match[2]) }
 }
 
 /** Same family, compared the way designers mean it — case and separators are noise. */

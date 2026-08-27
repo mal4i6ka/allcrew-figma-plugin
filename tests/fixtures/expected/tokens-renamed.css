@@ -1,5 +1,5 @@
 :root,
-[data-bs-theme="Light"] {
+[data-bs-theme="light"] {
   /* Color */
   --color-primary: #4f46e5;
   --color-secondary: #14b8a6;
@@ -15,7 +15,7 @@
   --typography-font-family-base: 'Inter', sans-serif;
 }
 
-[data-bs-theme="Dark"] {
+[data-bs-theme="dark"] {
   /* Color */
   --color-primary: #8472f6;
   --color-secondary: #14b8a6;

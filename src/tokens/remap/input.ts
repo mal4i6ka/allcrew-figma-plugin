@@ -25,6 +25,8 @@ export interface ParsedSwatch {
   /** Family read off the name, or null when the name carries none. */
   family: string | null
   step: number | null
+  /** Library variable key when the palette came from one — lets a board swatch carry the real token. */
+  variableKey?: string | null
 }
 
 export interface PaletteInput {

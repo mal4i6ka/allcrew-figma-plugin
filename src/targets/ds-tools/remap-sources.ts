@@ -107,11 +107,56 @@ const isRgb = (value: VariableValue): value is RGB | RGBA =>
 const IMPORT_CHUNK = 50
 
 /**
+ * Follows an alias chain to the color at its end.
+ *
+ * Aliases used to be skipped here, on the reasoning that they point at colors already in the
+ * list. That is only true when the alias points *inside the collection being read*. A real
+ * design system's `neutral/0` can be an alias into a base collection this reader never
+ * visits — skip it and the palette has no white at all, at which point every white in the
+ * target file "moves" to the lightest gray that made it in. The mapping was blamed; the
+ * reader was the thief.
+ *
+ * The chain is followed with the requested mode where the next variable has it and that
+ * variable's own default mode where it does not, and abandoned past a depth no sane token
+ * graph reaches.
+ */
+const ALIAS_DEPTH = 6
+
+async function resolveColor(variable: Variable, modeId: string): Promise<RGB | RGBA | null> {
+  let current = variable
+  let mode = modeId
+  for (let depth = 0; depth < ALIAS_DEPTH; depth++) {
+    const value = current.valuesByMode[mode] ?? (await defaultValueOf(current))
+    if (value === undefined) return null
+    if (isRgb(value)) return value
+    if (!isAlias(value)) return null
+    const next = await figma.variables.getVariableByIdAsync(value.id).catch(() => null)
+    if (!next) return null
+    current = next
+    if (!(mode in current.valuesByMode)) {
+      const collection = await figma.variables
+        .getVariableCollectionByIdAsync(current.variableCollectionId)
+        .catch(() => null)
+      mode = collection?.defaultModeId ?? Object.keys(current.valuesByMode)[0] ?? mode
+    }
+  }
+  return null
+}
+
+const defaultValueOf = async (variable: Variable): Promise<VariableValue | undefined> => {
+  const collection = await figma.variables
+    .getVariableCollectionByIdAsync(variable.variableCollectionId)
+    .catch(() => null)
+  const mode = collection?.defaultModeId ?? Object.keys(variable.valuesByMode)[0]
+  return mode === undefined ? undefined : variable.valuesByMode[mode]
+}
+
+/**
  * A published collection's color variables, taken from one mode.
  *
- * Alias-valued variables are skipped: a semantic token pointing at a primitive is not a color
- * the new palette offers, it is a second name for one that is already in the list, and
- * entering it twice would let it compete with itself in the family assignment.
+ * Alias-valued variables resolve to the color at the end of their chain — see above for the
+ * palette-shaped hole that skipping them leaves. Identical colors still collapse afterwards,
+ * so an alias that merely restates a color already in the list costs nothing.
  */
 export async function swatchesFromLibrary(
   key: string,
@@ -129,10 +174,10 @@ export async function swatchesFromLibrary(
   const colors = published.filter((variable) => variable.resolvedType === 'COLOR')
   if (colors.length === 0) return { swatches: [], warnings: ['that collection holds no color variables'] }
 
-  const entries: Array<{ hex: string; alpha: number; name: string }> = []
+  const entries: Array<{ hex: string; alpha: number; name: string; key?: string }> = []
   let modeId: string | null = null
   let chosenMode: string | null = null
-  let aliased = 0
+  let unresolved = 0
 
   for (const [index, candidate] of colors.entries()) {
     if (index % IMPORT_CHUNK === 0) {
@@ -156,20 +201,18 @@ export async function swatchesFromLibrary(
       if (modeName && !wanted) warnings.push(`that library has no "${modeName}" mode — read "${mode.name}" instead`)
     }
 
-    const value = variable.valuesByMode[modeId]
-    if (value === undefined) continue
-    if (isAlias(value)) {
-      aliased++
+    const value = await resolveColor(variable, modeId)
+    if (value === null) {
+      unresolved++
       continue
     }
-    if (!isRgb(value)) continue
     const color = withAlpha(value)
-    entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name })
+    entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name, key: variable.key })
   }
 
   const { swatches, duplicates } = swatchesFromNamedColors(entries)
   if (chosenMode) warnings.unshift(`read the "${chosenMode}" mode of that collection`)
-  if (aliased > 0) warnings.push(`${aliased} alias-valued token(s) skipped — they point at colors already in the list`)
+  if (unresolved > 0) warnings.push(`${unresolved} token(s) could not be resolved to a color and were left out`)
   if (duplicates > 0) warnings.push(`${duplicates} repeated color(s) were read once`)
   return { swatches, warnings }
 }

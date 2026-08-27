@@ -82,6 +82,10 @@ class Lookup:
     def __init__(self, mapping: dict, mode: str | None):
         self.by_hex: dict[str, tuple] = {}
         self.by_name: dict[str, tuple] = {}
+        # Colours that already speak the reference — every landing, plus everything that did
+        # not move. A literal holding one of these is finished, and snapping it to a
+        # *neighbouring* token would un-migrate it: a second run must be a no-op.
+        self.settled: set[str] = set()
         self.warnings: list[str] = []
         conflicting: set[str] = set()
 
@@ -98,6 +102,7 @@ class Lookup:
                 if name:
                     self.by_name[_name_key(name)] = target
 
+            self.settled.add(record["to"])
             if record["from"] == record["to"]:
                 continue
             existing = self.by_hex.get(record["from"])
@@ -117,6 +122,8 @@ class Lookup:
 
 
 def _match_literal(literal: dict, lookup: Lookup, snap: float):
+    if format_hex(literal["rgba"]) in lookup.settled:
+        return None
     exact = lookup.by_hex.get(format_hex(literal["rgba"]))
     if exact is not None:
         return exact, False

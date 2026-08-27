@@ -19,6 +19,12 @@ EXAMPLES = {
   altery-dj remap --map mapping.json --mode Light       # pick a theme when the mapping has several
   altery-dj remap --map mapping.json --snap 0           # exact colours only, no near matches
   altery-dj remap --map mapping.json --by-name          # also rewrite values by their token name""",
+    "remap": """\
+  altery-dj remap --map mapping.json                    # dry run over the current directory
+  altery-dj remap --map mapping.json src/ --write       # apply, refuses on a dirty worktree
+  altery-dj remap --map mapping.json --mode Light       # pick a theme when the mapping has several
+  altery-dj remap --map mapping.json --snap 0           # exact colours only, no near matches
+  altery-dj remap --map mapping.json --by-name          # also rewrite values by their token name""",
     "po": """\
   django-admin makemessages -l ru               # 1. Django owns django.po
   altery-dj po merge --locale ru                # 2. merge the plugin's figma.po into it
@@ -95,6 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
     tokens_parser.add_argument("--theme-attr", default="data-bs-theme", help="theme attribute for CSS selectors")
     tokens_parser.add_argument("--no-inline", action="store_true", help="keep aliases as var() references in tokens.css")
     tokens_parser.add_argument("--flatten-all", action="store_true", help="resolve EVERY alias to a literal in tokens.css")
+
+    from . import remap
 
     from . import remap
 

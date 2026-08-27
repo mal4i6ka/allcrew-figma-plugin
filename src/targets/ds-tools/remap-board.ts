@@ -13,6 +13,7 @@
 import { contrastRatio, parseHex, rgbToOklch } from '../../tokens/color.ts'
 import { toHex } from '../../tokens/remap/color-literal.ts'
 import type { RemapEntry, RemapPlan } from '../../tokens/remap/plan.ts'
+import { yieldToHost } from '../../utils/tree.ts'
 
 const SECTION_KEY = 'altery-remap-board'
 const SECTION_NAME = 'Color remap'
@@ -82,12 +83,33 @@ function autoLayout(name: string, direction: 'HORIZONTAL' | 'VERTICAL', gap: num
 const inkOn = (color: { r: number; g: number; b: number }): string =>
   contrastRatio(color, { r: 0, g: 0, b: 0 }) >= contrastRatio(color, { r: 1, g: 1, b: 1 }) ? '#000000' : '#FFFFFF'
 
-function block(color: { r: number; g: number; b: number; a: number }, caption: string, fonts: Fonts): FrameNode {
+function block(
+  color: { r: number; g: number; b: number; a: number },
+  caption: string,
+  fonts: Fonts,
+  variable?: Variable | null,
+  mode?: { collection: VariableCollection; modeId: string } | null
+): FrameNode {
   const frame = autoLayout('swatch', 'VERTICAL', 0)
   frame.primaryAxisSizingMode = 'FIXED'
   frame.counterAxisSizingMode = 'FIXED'
   frame.resize(SWATCH_WIDTH, SWATCH_HEIGHT)
-  frame.fills = [{ type: 'SOLID', color: { r: color.r, g: color.g, b: color.b }, opacity: color.a }]
+  // A swatch carrying the real token is inspectable: select it and Figma names the variable.
+  // The hex label keeps the value as drawn, so the record survives even where a bound fill
+  // later follows its variable.
+  const paint: SolidPaint = { type: 'SOLID', color: { r: color.r, g: color.g, b: color.b }, opacity: color.a }
+  frame.fills = [variable ? figma.variables.setBoundVariableForPaint(paint, 'color', variable) : paint]
+  // A bound fill resolves in the page's default mode, and this card describes one specific
+  // mode — a Light/Dark variable would otherwise paint its *other* value: a dark row's swatch
+  // rendered white, captioned with the dark hex. Pinning the row's own mode on the swatch
+  // keeps the binding and the drawn color telling the same story.
+  if (variable && mode) {
+    try {
+      frame.setExplicitVariableModeForCollection(mode.collection, mode.modeId)
+    } catch {
+      /* a mode id from a retired collection — the default-mode fill stands */
+    }
+  }
   frame.paddingLeft = 8
   frame.paddingTop = 7
   frame.primaryAxisAlignItems = 'MIN'
@@ -121,10 +143,17 @@ function gutter(fonts: Fonts): FrameNode {
   return column
 }
 
-function pair(entry: RemapEntry, fonts: Fonts, repeats = 1): FrameNode {
+function pair(entry: RemapEntry, fonts: Fonts, bindings: BoardBindings, repeats = 1): FrameNode {
   const column = autoLayout(entry.site.name, 'VERTICAL', 3)
-  column.appendChild(block(entry.from, entry.fromStep === null ? '' : String(entry.fromStep), fonts))
-  column.appendChild(block(entry.to, entry.toStep === null ? '' : String(entry.toStep), fonts))
+  const oldVariable = entry.site.kind === 'variable' ? bindings.old.get(variableIdOf(entry.site.id)) : undefined
+  const newVariable = entry.toVariableKey === null ? undefined : bindings.imported.get(entry.toVariableKey)
+  const oldCollection = oldVariable ? bindings.collections.get(oldVariable.variableCollectionId) : undefined
+  const oldMode =
+    oldVariable && oldCollection && entry.site.modeId !== null
+      ? { collection: oldCollection, modeId: entry.site.modeId }
+      : null
+  column.appendChild(block(entry.from, entry.fromStep === null ? '' : String(entry.fromStep), fonts, oldVariable, oldMode))
+  column.appendChild(block(entry.to, entry.toStep === null ? '' : String(entry.toStep), fonts, newVariable))
 
   const name = entry.site.name.length > 22 ? '…' + entry.site.name.slice(-21) : entry.site.name
   column.appendChild(label(repeats > 1 ? `${name}  ·  ×${repeats}` : name, fonts, CAPTION_SIZE, '#8A8A8A'))
@@ -208,6 +237,57 @@ function groupEntries(plan: RemapPlan): FamilyGroup[] {
   })
 }
 
+/** The old side's real variables and the new side's imported library variables, by id/key. */
+interface BoardBindings {
+  old: Map<string, Variable>
+  imported: Map<string, Variable>
+  /** Collections of the old-side variables, for pinning a row's mode on its swatch. */
+  collections: Map<string, VariableCollection>
+}
+
+const variableIdOf = (siteId: string): string => {
+  const separator = siteId.lastIndexOf('|')
+  return separator <= 0 ? siteId : siteId.slice(0, separator)
+}
+
+/**
+ * Fetches every variable the board's swatches will carry.
+ *
+ * Old-side ids resolve locally; new-side keys import from the library the palette was read
+ * from. Both are best-effort — a swatch whose token cannot be fetched simply stays a plain
+ * fill, which is what every swatch was before this existed.
+ */
+async function collectBindings(entries: readonly RemapEntry[]): Promise<BoardBindings> {
+  const oldIds = new Set<string>()
+  const keys = new Set<string>()
+  for (const entry of entries) {
+    if (entry.site.kind === 'variable') oldIds.add(variableIdOf(entry.site.id))
+    if (entry.toVariableKey !== null) keys.add(entry.toVariableKey)
+  }
+
+  const old = new Map<string, Variable>()
+  let fetched = 0
+  for (const id of oldIds) {
+    if (++fetched % 25 === 0) await yieldToHost()
+    const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
+    if (variable) old.set(id, variable)
+  }
+  const imported = new Map<string, Variable>()
+  for (const key of keys) {
+    if (++fetched % 25 === 0) await yieldToHost()
+    const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null)
+    if (variable) imported.set(key, variable)
+  }
+  const collections = new Map<string, VariableCollection>()
+  for (const variable of old.values()) {
+    const id = variable.variableCollectionId
+    if (collections.has(id)) continue
+    const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)
+    if (collection) collections.set(id, collection)
+  }
+  return { old, imported, collections }
+}
+
 export interface RemapBoardReport {
   section: string
   rows: number
@@ -225,6 +305,7 @@ export interface RemapBoardReport {
 export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport> {
   const fonts = await loadFonts()
   const groups = groupEntries(plan)
+  const bindings = await collectBindings(groups.flatMap((group) => group.entries))
 
   const previous = figma.currentPage
     .findAllWithCriteria({ types: ['SECTION'] })
@@ -264,7 +345,7 @@ export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport>
     const strip = autoLayout('strip', 'HORIZONTAL', 6)
     strip.appendChild(gutter(fonts))
     for (const [index, entry] of group.entries.entries()) {
-      strip.appendChild(pair(entry, fonts, group.counts[index]))
+      strip.appendChild(pair(entry, fonts, bindings, group.counts[index]))
       omitted += group.counts[index] - 1
     }
     row.appendChild(strip)

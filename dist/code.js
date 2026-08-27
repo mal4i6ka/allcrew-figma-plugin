@@ -7113,7 +7113,7 @@ ${indent2}</div>`;
   }
 
   // src/targets/django/smart-animate/types.ts
-  var MIXED = Symbol("smart-animate-mixed");
+  var MIXED = /* @__PURE__ */ Symbol("smart-animate-mixed");
 
   // src/targets/django/smart-animate/match-layers.ts
   function indexTree(root) {
@@ -9189,8 +9189,8 @@ ${mediaCss}`;
     return { kind: "library" };
   }
   function colorsMatch(a, b, epsilon = 1e-3) {
-    const alphaOf = (c) => "a" in c ? c.a : 1;
-    return Math.abs(a.r - b.r) <= epsilon && Math.abs(a.g - b.g) <= epsilon && Math.abs(a.b - b.b) <= epsilon && Math.abs(alphaOf(a) - alphaOf(b)) <= epsilon;
+    const alphaOf2 = (c) => "a" in c ? c.a : 1;
+    return Math.abs(a.r - b.r) <= epsilon && Math.abs(a.g - b.g) <= epsilon && Math.abs(a.b - b.b) <= epsilon && Math.abs(alphaOf2(a) - alphaOf2(b)) <= epsilon;
   }
   function srgbToLab({ r, g, b }) {
     const linear = (c) => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
@@ -12887,7 +12887,7 @@ ${scrollGuards}` : project.css;
       b: -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
     };
   }
-  function rgbToOklch2(rgb) {
+  function rgbToOklch(rgb) {
     const lab = rgbToOklab(rgb);
     const c = Math.sqrt(lab.a * lab.a + lab.b * lab.b);
     const h = c < 1e-7 ? 0 : (Math.atan2(lab.b, lab.a) * 180 / Math.PI + 360) % 360;
@@ -12929,7 +12929,7 @@ ${scrollGuards}` : project.css;
   }
   var hexToOklch = (hex) => {
     const rgb = parseHex(hex);
-    return rgb ? rgbToOklch2(rgb) : null;
+    return rgb ? rgbToOklch(rgb) : null;
   };
   var oklchToHex = (color) => formatHex(oklchToRgb(color));
   function mixRgb(a, b, amount) {
@@ -13395,7 +13395,8 @@ ${scrollGuards}` : project.css;
   function normalizePaletteSettings(value) {
     const defaults = DEFAULT_PALETTE_SETTINGS;
     if (!isRecord3(value)) return __spreadProps(__spreadValues({}, defaults), { spectra: defaults.spectra.map((s) => __spreadValues({}, s)) });
-    const spectra = Array.isArray(value.spectra) ? value.spectra.map(normalizeSpectrum).filter((spec) => spec !== null) : [];
+    const rawSpectra = Array.isArray(value.spectra) ? value.spectra : null;
+    const spectra = rawSpectra ? rawSpectra.map(normalizeSpectrum).filter((spec) => spec !== null) : [];
     const lightnessMax = number(value.lightnessMax, defaults.lightnessMax, 0.5, 1);
     const lightnessMin = number(value.lightnessMin, defaults.lightnessMin, 0, 0.5);
     return {
@@ -13409,7 +13410,11 @@ ${scrollGuards}` : project.css;
       chromaCurve: number(value.chromaCurve, defaults.chromaCurve, 0, 1),
       hueTorsion: value.hueTorsion === "auto" ? "auto" : number(value.hueTorsion, 0, -60, 60),
       neutralChroma: number(value.neutralChroma, defaults.neutralChroma, 0, 1),
-      spectra: spectra.length > 0 ? spectra : defaults.spectra.map((s) => __spreadValues({}, s))
+      // An empty list is a choice: the operator cleared the board to build their own set, and
+      // quietly refilling it with the default three makes the preview show ramps that no
+      // longer exist. The defaults return only when the field is missing entirely or every
+      // entry is corrupt — settings from an older build, not a deliberate empty state.
+      spectra: rawSpectra === null || rawSpectra.length > 0 && spectra.length === 0 ? defaults.spectra.map((s) => __spreadValues({}, s)) : spectra
     };
   }
 
@@ -14239,11 +14244,12 @@ ${scrollGuards}` : project.css;
     const path = String(name != null ? name : "").split(SEGMENT_RE).map(clean).filter((segment) => segment !== "");
     const leaf = path.length > 0 ? path[path.length - 1] : "";
     const group = path.length > 1 ? path[path.length - 2] : null;
+    const groupPath = path.length > 1 ? path.slice(0, -1).join("/") : null;
     const match = STEP_RE.exec(leaf);
-    if (!match) return { path, leaf, group, family: group, step: null };
+    if (!match) return { path, leaf, group, groupPath, family: group, step: null };
     const prefix = ((_a = match[1]) != null ? _a : "").replace(/[\s_-]+$/, "").trim();
     const family = group != null ? group : prefix !== "" ? prefix : null;
-    return { path, leaf, group, family, step: Number(match[2]) };
+    return { path, leaf, group, groupPath, family, step: Number(match[2]) };
   }
   var familyKey = (family) => family.toLowerCase().replace(/[\s._-]+/g, "").trim();
   function renameFamily(name, newFamily, newStep) {
@@ -14307,7 +14313,7 @@ ${scrollGuards}` : project.css;
     return label3;
   }
   var toStop = (member) => {
-    const { l, c, h } = rgbToOklch2(member.rgba);
+    const { l, c, h } = rgbToOklch(member.rgba);
     const ceiling = maxChroma(l, h);
     return __spreadProps(__spreadValues({}, member), { l, c, h, saturation: ceiling > 1e-6 ? Math.min(1, c / ceiling) : 0 });
   };
@@ -14368,7 +14374,7 @@ ${scrollGuards}` : project.css;
     }
     return clusters;
   }
-  function makeSpectrum(stops, source, label3, usedKeys) {
+  function makeSpectrum(stops, source, label3, family, usedKeys) {
     const sorted = [...stops].sort(byLightness);
     const neutral = sorted.every(isNeutral);
     const translucent = !sorted.some(isOpaque);
@@ -14380,6 +14386,7 @@ ${scrollGuards}` : project.css;
     return {
       key,
       label: label3,
+      family,
       source,
       neutral,
       translucent,
@@ -14390,7 +14397,7 @@ ${scrollGuards}` : project.css;
     };
   }
   function inferSpectra(members) {
-    var _a;
+    var _a, _b;
     const stops = members.map(toStop);
     const usedKeys = /* @__PURE__ */ new Set();
     const spectra = [];
@@ -14406,25 +14413,27 @@ ${scrollGuards}` : project.css;
         unnamed.push(stop);
         continue;
       }
-      const key = familyKey(stop.family);
-      const entry = (_a = named.get(key)) != null ? _a : { label: stop.family, stops: [] };
+      const where = (_a = stop.group) != null ? _a : stop.family;
+      const key = familyKey(where);
+      const entry = (_b = named.get(key)) != null ? _b : { label: where, family: stop.family, stops: [] };
       entry.stops.push(stop);
       named.set(key, entry);
     }
-    for (const { label: label3, stops: group } of named.values()) {
-      if (looksLikeRamp(group)) spectra.push(makeSpectrum(group, "named", label3, usedKeys));
+    for (const { label: label3, family, stops: group } of named.values()) {
+      if (looksLikeRamp(group)) spectra.push(makeSpectrum(group, "named", label3, family, usedKeys));
       else unnamed.push(...group);
     }
     const grays = unnamed.filter(isNeutral);
     const colored = unnamed.filter((stop) => !isNeutral(stop));
-    if (grays.length >= 2) spectra.push(makeSpectrum(grays, "clustered", "Neutral", usedKeys));
+    if (grays.length >= 2) spectra.push(makeSpectrum(grays, "clustered", "Neutral", "Neutral", usedKeys));
     else loose.push(...grays);
     for (const cluster of clusterByHue(colored)) {
       if (cluster.length < 2) {
         loose.push(...cluster);
         continue;
       }
-      spectra.push(makeSpectrum(cluster, "clustered", hueName2(meanHue(cluster)), usedKeys));
+      const label3 = hueName2(meanHue(cluster));
+      spectra.push(makeSpectrum(cluster, "clustered", label3, label3, usedKeys));
     }
     spectra.sort((a, b) => Number(a.neutral) - Number(b.neutral) || a.hue - b.hue);
     const warnings = spectra.filter((spectrum) => spectrum.crowded).map(
@@ -14435,8 +14444,8 @@ ${scrollGuards}` : project.css;
 
   // src/tokens/remap/match.ts
   function deltaE(a, b) {
-    const first = rgbToOklch2(a);
-    const second = rgbToOklch2(b);
+    const first = rgbToOklch(a);
+    const second = rgbToOklch(b);
     const ax = first.c * Math.cos(first.h * Math.PI / 180);
     const ay = first.c * Math.sin(first.h * Math.PI / 180);
     const bx = second.c * Math.cos(second.h * Math.PI / 180);
@@ -14460,17 +14469,19 @@ ${scrollGuards}` : project.css;
   var NEUTRAL_MISMATCH = 2;
   var EXACT_NAME_BONUS = 0.5;
   var PARTIAL_NAME_BONUS = 0.2;
+  var sameFamilyName = (from, to) => familyKey(from.family) === familyKey(to.family);
   function familyCost(from, to) {
+    const named = sameFamilyName(from, to);
     let cost;
     if (from.neutral && to.neutral) cost = 0;
-    else if (from.neutral !== to.neutral) cost = NEUTRAL_MISMATCH;
+    else if (from.neutral !== to.neutral) cost = named ? 0 : NEUTRAL_MISMATCH;
     else cost = hueDistance2(from.hue, to.hue) / 180;
     const fromCount = from.stops.length;
     const toCount = to.stops.length;
     cost += Math.abs(fromCount - toCount) / Math.max(fromCount, toCount) * WEIGHT_STOP_COUNT;
-    const fromKey = familyKey(from.label);
-    const toKey = familyKey(to.label);
-    if (fromKey === toKey) cost -= EXACT_NAME_BONUS;
+    const toKey = familyKey(to.family);
+    const fromKey = familyKey(from.family);
+    if (named) cost -= EXACT_NAME_BONUS;
     else if (fromKey.includes(toKey) || toKey.includes(fromKey)) cost -= PARTIAL_NAME_BONUS;
     return cost;
   }
@@ -14525,7 +14536,7 @@ ${scrollGuards}` : project.css;
     for (let j = 1; j <= cols; j++) if (match[j] > 0) assignment[match[j] - 1] = j - 1;
     return assignment;
   }
-  var compatible = (from, to) => from.neutral === to.neutral;
+  var compatible = (from, to) => from.neutral === to.neutral || sameFamilyName(from, to);
   function assignFamilies(from, to) {
     var _a, _b;
     if (from.length === 0 || to.length === 0) return { assignments: [], unused: [...to] };
@@ -14604,58 +14615,74 @@ ${scrollGuards}` : project.css;
     }
     return outliers;
   }
-  function fitLadder(source, target, preferred, anchorOf, allowProportional) {
+  function fitLadder(source, target, anchorOf, allowProportional) {
     const assigned = /* @__PURE__ */ new Map();
     const span = source.length - 1;
     const reach = target.length - 1;
-    if (source.length > target.length) {
-      if (!allowProportional) return assigned;
-      for (const [index, stop] of source.entries()) {
-        assigned.set(stop, target[span === 0 ? 0 : Math.round(index * reach / span)]);
-      }
-      return assigned;
-    }
-    const indexOf = new Map(target.map((stop, index) => [stop, index]));
+    const indexOf = new Map(target.map((stop, index2) => [stop, index2]));
     const at = (stop) => {
       var _a;
       return stop === null ? -1 : (_a = indexOf.get(stop)) != null ? _a : -1;
     };
     const anchors = source.map((stop) => at(anchorOf(stop)));
-    const wanted = source.map((stop) => at(preferred(stop)));
-    const budget = 3;
-    let cursor = -1;
-    let displaced = 0;
-    const shifted = source.map((_, index) => {
-      const desire = anchors[index] >= 0 ? anchors[index] : wanted[index] < 0 ? cursor + 1 : wanted[index];
-      cursor = Math.max(desire, cursor + 1);
-      if (anchors[index] >= 0 && cursor !== anchors[index]) displaced++;
-      return cursor;
-    });
-    if (cursor <= reach && displaced <= budget) {
-      for (const [index, stop] of source.entries()) assigned.set(stop, target[shifted[index]]);
+    if (source.length > target.length && !anchors.some((index2) => index2 >= 0)) {
+      if (!allowProportional) return assigned;
+      for (const [index2, stop] of source.entries()) {
+        assigned.set(stop, target[span === 0 ? 0 : Math.round(index2 * reach / span)]);
+      }
       return assigned;
     }
     let floor = -1;
-    for (const [index, stop] of source.entries()) {
+    let index = 0;
+    while (index < source.length) {
       if (anchors[index] >= 0) {
-        assigned.set(stop, target[anchors[index]]);
-        floor = anchors[index];
+        assigned.set(source[index], target[anchors[index]]);
+        floor = Math.max(floor, anchors[index]);
+        index++;
         continue;
       }
-      let nextAnchor = reach + 1;
-      let waiting = 0;
-      for (let ahead = index + 1; ahead < source.length; ahead++) {
-        if (anchors[ahead] >= 0) {
-          nextAnchor = anchors[ahead];
-          break;
+      let end = index;
+      while (end < source.length && anchors[end] < 0) end++;
+      const nextAnchor = end < source.length ? anchors[end] : -1;
+      const positions = [];
+      if (floor >= 0) positions.push(floor);
+      const upper = nextAnchor >= 0 ? nextAnchor - 1 : reach;
+      for (let position = floor + 1; position <= upper; position++) positions.push(position);
+      if (nextAnchor >= 0) positions.push(nextAnchor);
+      if (positions.length === 0) positions.push(Math.max(0, Math.min(floor, reach)));
+      const run = source.slice(index, end);
+      const width = positions.length;
+      let previous = new Array(width).fill(0);
+      const picks = [];
+      for (const stop of run) {
+        const current = new Array(width).fill(Infinity);
+        const pick = new Array(width).fill(-1);
+        let bestBefore = Infinity;
+        let bestAt = -1;
+        for (let p = 0; p < width; p++) {
+          if (previous[p] < bestBefore) {
+            bestBefore = previous[p];
+            bestAt = p;
+          }
+          current[p] = bestBefore + Math.abs(target[positions[p]].l - stop.l);
+          pick[p] = bestAt;
         }
-        waiting++;
+        picks.push(pick);
+        previous = current;
       }
-      const ceiling = Math.min(reach, nextAnchor - 1 - waiting);
-      const wish = wanted[index] < 0 ? floor + 1 : wanted[index];
-      const settled = ceiling >= floor + 1 ? Math.min(Math.max(wish, floor + 1), ceiling) : Math.min(Math.max(wish, 0), Math.max(floor, 0));
-      assigned.set(stop, target[Math.min(settled, reach)]);
-      floor = Math.max(floor, Math.min(settled, reach));
+      let at2 = 0;
+      for (let p = 1; p < width; p++) if (previous[p] < previous[at2]) at2 = p;
+      const chosen = new Array(run.length);
+      for (let i = run.length - 1; i >= 0; i--) {
+        chosen[i] = at2;
+        at2 = picks[i][at2];
+      }
+      for (const [i, stop] of run.entries()) {
+        const position = positions[chosen[i]];
+        assigned.set(stop, target[position]);
+        floor = Math.max(floor, position);
+      }
+      index = end;
     }
     return assigned;
   }
@@ -14671,8 +14698,13 @@ ${scrollGuards}` : project.css;
       byStep.set(stop.step, stop);
     }
     const preferred = (stop) => {
-      var _a;
-      return (_a = stop.step === null ? void 0 : byStep.get(stop.step)) != null ? _a : nearestByLightness(to.stops, stop.l);
+      const byNumber = stop.step === null ? void 0 : byStep.get(stop.step);
+      const byLight = nearestByLightness(to.stops, stop.l);
+      if (!byNumber) return byLight;
+      if (byLight && Math.abs(byNumber.l - stop.l) > LADDER_BREAK && Math.abs(byLight.l - stop.l) < Math.abs(byNumber.l - stop.l)) {
+        return byLight;
+      }
+      return byNumber;
     };
     const anchorOf = (stop) => {
       var _a;
@@ -14683,7 +14715,6 @@ ${scrollGuards}` : project.css;
     const fitted = sourceLadder.length >= 3 && targetLadder.length >= 2 ? fitLadder(
       [...sourceLadder].sort(byStepAscending),
       [...targetLadder].sort(byStepAscending),
-      preferred,
       anchorOf,
       !from.neutral && !to.neutral
     ) : /* @__PURE__ */ new Map();
@@ -14716,7 +14747,34 @@ ${scrollGuards}` : project.css;
   var SNAPSHOT_COUNT_KEY = "altery-remap-snapshot-chunks";
   var RENAME_KEY = "altery-remap-renames";
   var CHUNK_BYTES = 8e4;
-  var MAX_CHUNKS = 12;
+  var MAX_CHUNKS = 32;
+  var channelKey = (channels) => channels.join(",");
+  function packSnapshot(snapshot) {
+    const paints2 = {};
+    for (const place of snapshot.paints) {
+      const key = channelKey([place[4], place[5], place[6], place[7]]);
+      const packed = place[8] === 1 ? [place[0], place[1], place[2], place[3], 1] : [place[0], place[1], place[2], place[3]];
+      const group = paints2[key];
+      if (group) group.push(packed);
+      else paints2[key] = [packed];
+    }
+    return { version: 3, values: snapshot.values, names: snapshot.names, styles: snapshot.styles, paints: paints2 };
+  }
+  function unpackSnapshot(parsed) {
+    var _a;
+    const raw = parsed;
+    if (raw.version === 2) return parsed;
+    if (raw.version !== 3) throw new Error(`the undo snapshot has version ${String(raw.version)}, which this build cannot read`);
+    const packed = parsed;
+    const paints2 = [];
+    for (const [key, group] of Object.entries(packed.paints)) {
+      const channels = key.split(",").map(Number);
+      for (const place of group) {
+        paints2.push([place[0], place[1], place[2], place[3], channels[0], channels[1], channels[2], channels[3], (_a = place[4]) != null ? _a : 0]);
+      }
+    }
+    return { version: 2, values: packed.values, names: packed.names, styles: packed.styles, paints: paints2 };
+  }
   function writeChunked(text3) {
     const chunks = [];
     for (let i = 0; i < text3.length; i += CHUNK_BYTES) chunks.push(text3.slice(i, i + CHUNK_BYTES));
@@ -14931,6 +14989,10 @@ ${scrollGuards}` : project.css;
         const alpha = (_b = paint.opacity) != null ? _b : 1;
         const entry = context.targets.get(looseSiteId(hexOf(paint.color), alpha));
         if (!entry) continue;
+        if (context.dry) {
+          context.report.paints++;
+          continue;
+        }
         const variable = context.bindTo.get(entry.site.id);
         let replacement = __spreadProps(__spreadValues({}, paint), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b }, opacity: entry.to.a });
         if (variable) {
@@ -14950,6 +15012,10 @@ ${scrollGuards}` : project.css;
         const color = withAlpha(stop.color);
         const entry = context.targets.get(looseSiteId(hexOf(color), color.a));
         if (!entry) continue;
+        if (context.dry) {
+          context.report.paints++;
+          continue;
+        }
         stops[stopIndex] = __spreadProps(__spreadValues({}, stop), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
         context.snapshot.paints.push([node.id, code, index, stopIndex, ...channelsOf(color), 0]);
         context.report.paints++;
@@ -14976,6 +15042,10 @@ ${scrollGuards}` : project.css;
       const color = withAlpha(effect.color);
       const entry = context.targets.get(looseSiteId(hexOf(color), color.a));
       if (!entry) continue;
+      if (context.dry) {
+        context.report.paints++;
+        continue;
+      }
       next[index] = __spreadProps(__spreadValues({}, effect), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
       context.snapshot.paints.push([node.id, 2, index, -1, ...channelsOf(color), 0]);
       context.report.paints++;
@@ -14985,13 +15055,13 @@ ${scrollGuards}` : project.css;
     node.effects = next;
     return true;
   }
-  async function applyCanvas(plan, options, snapshot, report2, loader, progress2) {
+  async function applyCanvas(plan, options, snapshot, report2, loader, progress2, dry = false) {
     var _a;
     const targets = /* @__PURE__ */ new Map();
     for (const entry of plan.entries) if (writableLoose(entry)) targets.set(entry.site.id, entry);
     if (targets.size === 0) return;
     const bindTo = /* @__PURE__ */ new Map();
-    if (options.bind) {
+    if (!dry && options.bind) {
       const exact = bindingCandidates(plan);
       for (const entry of targets.values()) {
         const variableId = (_a = exact.get(entry.site.id)) != null ? _a : nearestVariableFor(entry, plan);
@@ -15000,7 +15070,7 @@ ${scrollGuards}` : project.css;
         if (variable) bindTo.set(entry.site.id, variable);
       }
     }
-    const context = { targets, bindTo, snapshot, report: report2, loader, done: /* @__PURE__ */ new Set() };
+    const context = { targets, bindTo, snapshot, report: report2, loader, dry, done: /* @__PURE__ */ new Set() };
     const roots = await scopeRoots(options.scope);
     figma.skipInvisibleInstanceChildren = true;
     try {
@@ -15018,7 +15088,7 @@ ${scrollGuards}` : project.css;
         rewriteEffects(node, context);
         if ("children" in node) for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
         if (visited % 200 === 0) {
-          progress2 == null ? void 0 : progress2(`repainting\u2026 ${report2.paints} places`);
+          progress2 == null ? void 0 : progress2(dry ? `sizing the undo\u2026 ${report2.paints} places` : `repainting\u2026 ${report2.paints} places`);
           await yieldToHost();
         }
       }
@@ -15031,7 +15101,7 @@ ${scrollGuards}` : project.css;
       );
     }
   }
-  var BYTES = { value: 90, name: 70, style: 70, paint: 60 };
+  var BYTES = { value: 90, name: 70, style: 70, paint: 28 };
   function estimateSnapshotBytes(plan, options) {
     const values = options.values ? plan.entries.filter(writableVariable).length : 0;
     const names = options.rename ? plan.renames.length : 0;
@@ -15064,7 +15134,14 @@ ${scrollGuards}` : project.css;
       warnings.push("nothing to write");
       return report2;
     }
-    const estimate = estimateSnapshotBytes(plan, options);
+    let estimate = estimateSnapshotBytes(plan, options);
+    if (estimate > SNAPSHOT_BUDGET_BYTES && options.canvas) {
+      progress2 == null ? void 0 : progress2("sizing the undo for this scope\u2026");
+      const dryReport = __spreadProps(__spreadValues({}, report2), { paints: 0, instanceOverrides: 0, warnings: [] });
+      const drySnapshot = { version: 2, values: [], names: [], styles: [], paints: [] };
+      await applyCanvas(plan, options, drySnapshot, dryReport, makeLoader(), progress2, true);
+      estimate = estimateSnapshotBytes(plan, __spreadProps(__spreadValues({}, options), { canvas: false })) + dryReport.paints * BYTES.paint;
+    }
     if (estimate > SNAPSHOT_BUDGET_BYTES) {
       throw new Error(
         `This remap would need about ${Math.round(estimate / 1024)} kB of undo data, more than the ${Math.round(SNAPSHOT_BUDGET_BYTES / 1024)} kB a Figma file can hold for a plugin. Nothing was written \u2014 narrow the scope, or turn off repainting loose layers and run that pass on its own.`
@@ -15098,7 +15175,7 @@ ${scrollGuards}` : project.css;
     }
     progress2 == null ? void 0 : progress2("storing the snapshot\u2026");
     try {
-      report2.snapshotBytes = writeChunked(JSON.stringify(snapshot));
+      report2.snapshotBytes = writeChunked(JSON.stringify(packSnapshot(snapshot)));
     } catch (error) {
       clearSnapshot();
       warnings.push(
@@ -15308,7 +15385,7 @@ ${scrollGuards}` : project.css;
     if (raw === "") return __spreadProps(__spreadValues({}, empty), { warnings: ["there is nothing to revert"] });
     let snapshot;
     try {
-      snapshot = JSON.parse(raw);
+      snapshot = unpackSnapshot(JSON.parse(raw));
     } catch (e) {
       clearSnapshot();
       return __spreadProps(__spreadValues({}, empty), { warnings: ["the stored snapshot is unreadable and has been discarded"] });
@@ -15382,8 +15459,207 @@ ${scrollGuards}` : project.css;
     const h = max === r ? 60 * ((g - b) / delta % 6) : max === g ? 60 * ((b - r) / delta + 2) : 60 * ((r - g) / delta + 4);
     return { h: (h % 360 + 360) % 360, s, l };
   }
+  function hwbToRgb(h, w, b) {
+    const total = w + b;
+    if (total >= 1) {
+      const gray = w / total;
+      return { r: gray, g: gray, b: gray };
+    }
+    const base = hslToRgb(h, 1, 0.5);
+    const apply = (channel) => channel * (1 - w - b) + w;
+    return { r: apply(base.r), g: apply(base.g), b: apply(base.b) };
+  }
+  function rgbToHwb(rgb) {
+    const { h } = rgbToHsl(rgb);
+    return { h, w: Math.min(rgb.r, rgb.g, rgb.b), b: 1 - Math.max(rgb.r, rgb.g, rgb.b) };
+  }
+  var NAMED_COLORS = {
+    aliceblue: "F0F8FF",
+    antiquewhite: "FAEBD7",
+    aqua: "00FFFF",
+    aquamarine: "7FFFD4",
+    azure: "F0FFFF",
+    beige: "F5F5DC",
+    bisque: "FFE4C4",
+    black: "000000",
+    blanchedalmond: "FFEBCD",
+    blue: "0000FF",
+    blueviolet: "8A2BE2",
+    brown: "A52A2A",
+    burlywood: "DEB887",
+    cadetblue: "5F9EA0",
+    chartreuse: "7FFF00",
+    chocolate: "D2691E",
+    coral: "FF7F50",
+    cornflowerblue: "6495ED",
+    cornsilk: "FFF8DC",
+    crimson: "DC143C",
+    cyan: "00FFFF",
+    darkblue: "00008B",
+    darkcyan: "008B8B",
+    darkgoldenrod: "B8860B",
+    darkgray: "A9A9A9",
+    darkgreen: "006400",
+    darkgrey: "A9A9A9",
+    darkkhaki: "BDB76B",
+    darkmagenta: "8B008B",
+    darkolivegreen: "556B2F",
+    darkorange: "FF8C00",
+    darkorchid: "9932CC",
+    darkred: "8B0000",
+    darksalmon: "E9967A",
+    darkseagreen: "8FBC8F",
+    darkslateblue: "483D8B",
+    darkslategray: "2F4F4F",
+    darkslategrey: "2F4F4F",
+    darkturquoise: "00CED1",
+    darkviolet: "9400D3",
+    deeppink: "FF1493",
+    deepskyblue: "00BFFF",
+    dimgray: "696969",
+    dimgrey: "696969",
+    dodgerblue: "1E90FF",
+    firebrick: "B22222",
+    floralwhite: "FFFAF0",
+    forestgreen: "228B22",
+    fuchsia: "FF00FF",
+    gainsboro: "DCDCDC",
+    ghostwhite: "F8F8FF",
+    gold: "FFD700",
+    goldenrod: "DAA520",
+    gray: "808080",
+    green: "008000",
+    greenyellow: "ADFF2F",
+    grey: "808080",
+    honeydew: "F0FFF0",
+    hotpink: "FF69B4",
+    indianred: "CD5C5C",
+    indigo: "4B0082",
+    ivory: "FFFFF0",
+    khaki: "F0E68C",
+    lavender: "E6E6FA",
+    lavenderblush: "FFF0F5",
+    lawngreen: "7CFC00",
+    lemonchiffon: "FFFACD",
+    lightblue: "ADD8E6",
+    lightcoral: "F08080",
+    lightcyan: "E0FFFF",
+    lightgoldenrodyellow: "FAFAD2",
+    lightgray: "D3D3D3",
+    lightgreen: "90EE90",
+    lightgrey: "D3D3D3",
+    lightpink: "FFB6C1",
+    lightsalmon: "FFA07A",
+    lightseagreen: "20B2AA",
+    lightskyblue: "87CEFA",
+    lightslategray: "778899",
+    lightslategrey: "778899",
+    lightsteelblue: "B0C4DE",
+    lightyellow: "FFFFE0",
+    lime: "00FF00",
+    limegreen: "32CD32",
+    linen: "FAF0E6",
+    magenta: "FF00FF",
+    maroon: "800000",
+    mediumaquamarine: "66CDAA",
+    mediumblue: "0000CD",
+    mediumorchid: "BA55D3",
+    mediumpurple: "9370DB",
+    mediumseagreen: "3CB371",
+    mediumslateblue: "7B68EE",
+    mediumspringgreen: "00FA9A",
+    mediumturquoise: "48D1CC",
+    mediumvioletred: "C71585",
+    midnightblue: "191970",
+    mintcream: "F5FFFA",
+    mistyrose: "FFE4E1",
+    moccasin: "FFE4B5",
+    navajowhite: "FFDEAD",
+    navy: "000080",
+    oldlace: "FDF5E6",
+    olive: "808000",
+    olivedrab: "6B8E23",
+    orange: "FFA500",
+    orangered: "FF4500",
+    orchid: "DA70D6",
+    palegoldenrod: "EEE8AA",
+    palegreen: "98FB98",
+    paleturquoise: "AFEEEE",
+    palevioletred: "DB7093",
+    papayawhip: "FFEFD5",
+    peachpuff: "FFDAB9",
+    peru: "CD853F",
+    pink: "FFC0CB",
+    plum: "DDA0DD",
+    powderblue: "B0E0E6",
+    purple: "800080",
+    rebeccapurple: "663399",
+    red: "FF0000",
+    rosybrown: "BC8F8F",
+    royalblue: "4169E1",
+    saddlebrown: "8B4513",
+    salmon: "FA8072",
+    sandybrown: "F4A460",
+    seagreen: "2E8B57",
+    seashell: "FFF5EE",
+    sienna: "A0522D",
+    silver: "C0C0C0",
+    skyblue: "87CEEB",
+    slateblue: "6A5ACD",
+    slategray: "708090",
+    slategrey: "708090",
+    snow: "FFFAFA",
+    springgreen: "00FF7F",
+    steelblue: "4682B4",
+    tan: "D2B48C",
+    teal: "008080",
+    thistle: "D8BFD8",
+    tomato: "FF6347",
+    turquoise: "40E0D0",
+    violet: "EE82EE",
+    wheat: "F5DEB3",
+    white: "FFFFFF",
+    whitesmoke: "F5F5F5",
+    yellow: "FFFF00",
+    yellowgreen: "9ACD32"
+  };
+  var NAMED_BY_HEX = /* @__PURE__ */ new Map();
+  for (const name of Object.keys(NAMED_COLORS)) {
+    if (!NAMED_BY_HEX.has(NAMED_COLORS[name])) NAMED_BY_HEX.set(NAMED_COLORS[name], name);
+  }
+  var namedColorFor = (rgb) => {
+    var _a;
+    return (_a = NAMED_BY_HEX.get(formatHex(rgb).slice(1))) != null ? _a : null;
+  };
   var HEX_RE = /#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\b/g;
-  var FUNC_RE = /\b(rgba?|hsla?)\(\s*([^()]*)\)/gi;
+  var FUNC_RE = /\b(rgba?|hsla?|hwb|oklch|oklab)\(\s*([^()]*)\)/gi;
+  var NAMED_RE = new RegExp("(?<![\\w-])([a-zA-Z]{3,20})(?![\\w-])", "g");
+  function inValuePosition(text3, start, end) {
+    const before = text3[start - 1];
+    const after = text3[end];
+    const quotedTight = (before === '"' || before === "'") && after === before;
+    let probe = quotedTight ? end + 1 : end;
+    while (probe < text3.length && (text3[probe] === " " || text3[probe] === "	")) probe++;
+    if (text3[probe] === ":") return false;
+    if (quotedTight) return true;
+    let lineStart = start;
+    while (lineStart > 0 && text3[lineStart - 1] !== "\n") lineStart--;
+    const head = text3.slice(lineStart, start);
+    if (head.indexOf("//") !== -1 || head.trim().startsWith("*")) return false;
+    let single = 0;
+    let double = 0;
+    for (const character of head) {
+      if (character === "'") single++;
+      else if (character === '"') double++;
+    }
+    if (single % 2 === 1 || double % 2 === 1) return false;
+    for (let i = start - 1; i >= lineStart; i--) {
+      const character = text3[i];
+      if (character === ":") return true;
+      if (character === ";" || character === "{" || character === "}") return false;
+    }
+    return false;
+  }
   function parseComponent(raw) {
     const text3 = raw.trim();
     if (text3 === "") return null;
@@ -15406,8 +15682,21 @@ ${scrollGuards}` : project.css;
       const channel = (part) => clamp012(part.percent ? part.value / 100 : part.value / 255);
       return { r: channel(first), g: channel(second), b: channel(third), a: alpha };
     }
-    const rgb = hslToRgb(first.value, second.percent ? second.value / 100 : second.value, third.percent ? third.value / 100 : third.value);
-    return __spreadProps(__spreadValues({}, rgb), { a: alpha });
+    const ratio = (part, full) => part.percent ? part.value / 100 : part.value / full;
+    if (fn === "hsl") {
+      return __spreadProps(__spreadValues({}, hslToRgb(first.value, ratio(second, 1), ratio(third, 1))), { a: alpha });
+    }
+    if (fn === "hwb") {
+      return __spreadProps(__spreadValues({}, hwbToRgb(first.value, ratio(second, 1), ratio(third, 1))), { a: alpha });
+    }
+    if (fn === "oklch") {
+      return __spreadProps(__spreadValues({}, oklchToRgb({ l: ratio(first, 1), c: second.percent ? second.value / 100 * 0.4 : second.value, h: third.value })), { a: alpha });
+    }
+    const a = second.percent ? second.value / 100 * 0.4 : second.value;
+    const b = third.percent ? third.value / 100 * 0.4 : third.value;
+    const chroma = Math.sqrt(a * a + b * b);
+    const hue = chroma < 1e-9 ? 0 : (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
+    return __spreadProps(__spreadValues({}, oklchToRgb({ l: ratio(first, 1), c: chroma, h: hue })), { a: alpha });
   }
   function parseHexLiteral(digits) {
     const expand = (hex) => hex.split("").map((char) => char + char).join("");
@@ -15425,8 +15714,17 @@ ${scrollGuards}` : project.css;
       notation: short ? "hex4" : "hex8"
     };
   }
+  function commentSpans(text3) {
+    const spans = [];
+    for (const match of text3.matchAll(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->/g)) {
+      spans.push([match.index, match.index + match[0].length]);
+    }
+    return spans;
+  }
   function findColorLiterals(text3) {
     const found = [];
+    const comments = commentSpans(text3);
+    const commented = (start) => comments.some(([from, to]) => start >= from && start < to);
     for (const match of text3.matchAll(HEX_RE)) {
       const parsed = parseHexLiteral(match[1]);
       if (!parsed) continue;
@@ -15465,7 +15763,7 @@ ${scrollGuards}` : project.css;
         end: match.index + match[0].length
       });
     }
-    return found.sort((a, b) => a.start - b.start);
+    return found.filter((literal) => !commented(literal.start)).sort((a, b) => a.start - b.start);
   }
   function parseColorLiteral(text3) {
     const found = findColorLiterals(text3);
@@ -15574,12 +15872,19 @@ ${scrollGuards}` : project.css;
     return frame3;
   }
   var inkOn = (color) => contrastRatio(color, { r: 0, g: 0, b: 0 }) >= contrastRatio(color, { r: 1, g: 1, b: 1 }) ? "#000000" : "#FFFFFF";
-  function block(color, caption, fonts) {
+  function block(color, caption, fonts, variable, mode) {
     const frame3 = autoLayout2("swatch", "VERTICAL", 0);
     frame3.primaryAxisSizingMode = "FIXED";
     frame3.counterAxisSizingMode = "FIXED";
     frame3.resize(SWATCH_WIDTH2, SWATCH_HEIGHT);
-    frame3.fills = [{ type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a }];
+    const paint = { type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a };
+    frame3.fills = [variable ? figma.variables.setBoundVariableForPaint(paint, "color", variable) : paint];
+    if (variable && mode) {
+      try {
+        frame3.setExplicitVariableModeForCollection(mode.collection, mode.modeId);
+      } catch (e) {
+      }
+    }
     frame3.paddingLeft = 8;
     frame3.paddingTop = 7;
     frame3.primaryAxisAlignItems = "MIN";
@@ -15603,16 +15908,20 @@ ${scrollGuards}` : project.css;
     }
     return column2;
   }
-  function pair(entry, fonts, repeats = 1) {
+  function pair(entry, fonts, bindings, repeats = 1) {
     const column2 = autoLayout2(entry.site.name, "VERTICAL", 3);
-    column2.appendChild(block(entry.from, entry.fromStep === null ? "" : String(entry.fromStep), fonts));
-    column2.appendChild(block(entry.to, entry.toStep === null ? "" : String(entry.toStep), fonts));
+    const oldVariable = entry.site.kind === "variable" ? bindings.old.get(variableIdOf(entry.site.id)) : void 0;
+    const newVariable = entry.toVariableKey === null ? void 0 : bindings.imported.get(entry.toVariableKey);
+    const oldCollection = oldVariable ? bindings.collections.get(oldVariable.variableCollectionId) : void 0;
+    const oldMode = oldVariable && oldCollection && entry.site.modeId !== null ? { collection: oldCollection, modeId: entry.site.modeId } : null;
+    column2.appendChild(block(entry.from, entry.fromStep === null ? "" : String(entry.fromStep), fonts, oldVariable, oldMode));
+    column2.appendChild(block(entry.to, entry.toStep === null ? "" : String(entry.toStep), fonts, newVariable));
     const name = entry.site.name.length > 22 ? "\u2026" + entry.site.name.slice(-21) : entry.site.name;
     column2.appendChild(label2(repeats > 1 ? `${name}  \xB7  \xD7${repeats}` : name, fonts, CAPTION_SIZE2, "#8A8A8A"));
     return column2;
   }
   function inReadingOrder(entries) {
-    const lightness = new Map(entries.map((entry) => [entry, rgbToOklch2(entry.from).l]));
+    const lightness = new Map(entries.map((entry) => [entry, rgbToOklch(entry.from).l]));
     return [...entries].sort((a, b) => {
       var _a, _b;
       const rungA = a.fromStep !== null;
@@ -15663,10 +15972,44 @@ ${scrollGuards}` : project.css;
       };
     });
   }
+  var variableIdOf = (siteId2) => {
+    const separator = siteId2.lastIndexOf("|");
+    return separator <= 0 ? siteId2 : siteId2.slice(0, separator);
+  };
+  async function collectBindings(entries) {
+    const oldIds = /* @__PURE__ */ new Set();
+    const keys = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      if (entry.site.kind === "variable") oldIds.add(variableIdOf(entry.site.id));
+      if (entry.toVariableKey !== null) keys.add(entry.toVariableKey);
+    }
+    const old = /* @__PURE__ */ new Map();
+    let fetched = 0;
+    for (const id of oldIds) {
+      if (++fetched % 25 === 0) await yieldToHost();
+      const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
+      if (variable) old.set(id, variable);
+    }
+    const imported = /* @__PURE__ */ new Map();
+    for (const key of keys) {
+      if (++fetched % 25 === 0) await yieldToHost();
+      const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null);
+      if (variable) imported.set(key, variable);
+    }
+    const collections = /* @__PURE__ */ new Map();
+    for (const variable of old.values()) {
+      const id = variable.variableCollectionId;
+      if (collections.has(id)) continue;
+      const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null);
+      if (collection) collections.set(id, collection);
+    }
+    return { old, imported, collections };
+  }
   async function drawRemapBoard(plan) {
     var _a;
     const fonts = await loadFonts2();
     const groups = groupEntries(plan);
+    const bindings = await collectBindings(groups.flatMap((group) => group.entries));
     const previous = figma.currentPage.findAllWithCriteria({ types: ["SECTION"] }).find((node) => node.getPluginData(SECTION_KEY) === "1");
     const previousBox = (_a = previous == null ? void 0 : previous.absoluteBoundingBox) != null ? _a : null;
     const spot = previousBox ? { x: previousBox.x, y: previousBox.y } : placementFor2(groups);
@@ -15697,7 +16040,7 @@ ${scrollGuards}` : project.css;
       const strip = autoLayout2("strip", "HORIZONTAL", 6);
       strip.appendChild(gutter(fonts));
       for (const [index, entry] of group.entries.entries()) {
-        strip.appendChild(pair(entry, fonts, group.counts[index]));
+        strip.appendChild(pair(entry, fonts, bindings, group.counts[index]));
         omitted += group.counts[index] - 1;
       }
       row.appendChild(strip);
@@ -15736,6 +16079,487 @@ ${scrollGuards}` : project.css;
       top = Math.min(top, node.y);
     }
     return { x: right + 200, y: top };
+  }
+
+  // src/tokens/remap/rebind.ts
+  var variableIdOf2 = (siteId2) => {
+    const separator = siteId2.lastIndexOf("|");
+    return separator <= 0 ? null : siteId2.slice(0, separator);
+  };
+  function rebindTargets(plan) {
+    var _a, _b, _c, _d;
+    const keys = /* @__PURE__ */ new Map();
+    for (const entry of plan.entries) {
+      if (entry.site.kind !== "variable") continue;
+      if (entry.flags.includes("excluded")) continue;
+      const variableId = (_a = variableIdOf2(entry.site.id)) != null ? _a : entry.site.id;
+      const perMode = (_b = keys.get(variableId)) != null ? _b : /* @__PURE__ */ new Map();
+      perMode.set((_c = entry.site.modeId) != null ? _c : "", entry.toVariableKey);
+      keys.set(variableId, perMode);
+    }
+    const byVariable = /* @__PURE__ */ new Map();
+    const divergent = [];
+    const names = new Map(
+      plan.entries.filter((entry) => entry.toVariableKey !== null).map((entry) => [entry.toVariableKey, entry.toName])
+    );
+    for (const [variableId, perMode] of keys) {
+      const votes = [...perMode.values()];
+      const distinct = new Set(votes);
+      const abstained = distinct.delete(null);
+      if (distinct.size === 0) continue;
+      if (distinct.size > 1 || abstained) {
+        divergent.push(variableId);
+        continue;
+      }
+      const key = [...distinct][0];
+      byVariable.set(variableId, { key, toName: (_d = names.get(key)) != null ? _d : null });
+    }
+    return { byVariable, divergent };
+  }
+  function sameRgba(a, b) {
+    const close = (x, y) => Math.abs(x - y) < 1 / 512;
+    return close(a.r, b.r) && close(a.g, b.g) && close(a.b, b.b) && close(a.a, b.a);
+  }
+  var emptyCounts = () => ({
+    aliases: 0,
+    literalsBound: 0,
+    nodes: 0,
+    instanceOverrides: 0,
+    styles: 0,
+    thirdParty: 0,
+    skipped: { alphaMismatch: 0, noTarget: 0, divergent: 0, already: 0 }
+  });
+  function describeRebind(counts) {
+    const parts = [
+      `${counts.aliases + counts.literalsBound} variable(s)`,
+      `${counts.styles} style color(s)`,
+      `${counts.nodes} canvas binding(s)` + (counts.instanceOverrides > 0 ? ` (${counts.instanceOverrides} in instances)` : "")
+    ];
+    if (counts.thirdParty > 0) parts.push(`${counts.thirdParty} from other libraries`);
+    const skips = counts.skipped.alphaMismatch + counts.skipped.noTarget + counts.skipped.divergent;
+    return parts.join(" \xB7 ") + (skips > 0 ? ` \xB7 ${skips} left as-is` : "");
+  }
+
+  // src/targets/ds-tools/remap-rebind.ts
+  var DEFAULT_REBIND_OPTIONS = { scope: "document" };
+  var SNAPSHOT_KEY2 = "altery-rebind-snapshot";
+  var SNAPSHOT_COUNT_KEY2 = "altery-rebind-snapshot-chunks";
+  var CHUNK_BYTES2 = 8e4;
+  var MAX_CHUNKS2 = 12;
+  var REBIND_BUDGET_BYTES = CHUNK_BYTES2 * MAX_CHUNKS2;
+  function writeChunked2(text3) {
+    const chunks = [];
+    for (let i = 0; i < text3.length; i += CHUNK_BYTES2) chunks.push(text3.slice(i, i + CHUNK_BYTES2));
+    if (chunks.length > MAX_CHUNKS2) {
+      throw new Error(`the rebind snapshot needs ${chunks.length} slots, more than the ${MAX_CHUNKS2} available`);
+    }
+    const previous = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    for (const [index, chunk] of chunks.entries()) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, chunk);
+    for (let index = chunks.length; index < previous; index++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, "");
+    figma.root.setPluginData(SNAPSHOT_COUNT_KEY2, String(chunks.length));
+  }
+  function readChunked2() {
+    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    let text3 = "";
+    for (let index = 0; index < count; index++) text3 += figma.root.getPluginData(`${SNAPSHOT_KEY2}-${index}`);
+    return text3;
+  }
+  function clearChunked() {
+    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    for (let index = 0; index < count; index++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, "");
+    figma.root.setPluginData(SNAPSHOT_COUNT_KEY2, "0");
+  }
+  var hasRebindSnapshot = () => Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0") > 0;
+  var isAliasValue2 = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
+  var isRgbValue = (value) => typeof value === "object" && value !== null && "r" in value;
+  var alphaOf = (value) => "a" in value ? value.a : 1;
+  var boundColorId = (holder) => {
+    var _a;
+    const alias = (_a = holder == null ? void 0 : holder.boundVariables) == null ? void 0 : _a.color;
+    return alias && alias.type === "VARIABLE_ALIAS" ? alias.id : null;
+  };
+  async function scanRebind(plan, options = DEFAULT_REBIND_OPTIONS, progress2) {
+    const { byVariable, divergent } = rebindTargets(plan);
+    const counts = emptyCounts();
+    counts.skipped.divergent = divergent.length;
+    const warnings = [];
+    const ops = [];
+    if (byVariable.size === 0) {
+      return { ops, counts, warnings: ["the plan carries no library keys \u2014 read the new palette from a library"] };
+    }
+    const importedByKey = /* @__PURE__ */ new Map();
+    const importedIds = /* @__PURE__ */ new Set();
+    const keys = new Set([...byVariable.values()].map((target) => target.key));
+    let fetched = 0;
+    for (const key of keys) {
+      if (++fetched % 25 === 0) {
+        progress2 == null ? void 0 : progress2(`importing library tokens\u2026 ${fetched}/${keys.size}`);
+        await yieldToHost();
+      }
+      const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null);
+      if (variable) {
+        importedByKey.set(key, variable);
+        importedIds.add(variable.id);
+      }
+    }
+    if (importedByKey.size < keys.size) {
+      warnings.push(`${keys.size - importedByKey.size} library token(s) could not be imported and keep their bindings`);
+    }
+    const valueOfKey = async (key) => {
+      var _a;
+      const variable = importedByKey.get(key);
+      if (!variable) return null;
+      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId).catch(() => null);
+      const mode = (_a = collection == null ? void 0 : collection.defaultModeId) != null ? _a : Object.keys(variable.valuesByMode)[0];
+      const value = mode === void 0 ? void 0 : variable.valuesByMode[mode];
+      if (!isRgbValue(value)) return null;
+      return { rgba: { r: value.r, g: value.g, b: value.b, a: alphaOf(value) }, id: variable.id };
+    };
+    const foreignIds = /* @__PURE__ */ new Set();
+    const divergentIds = new Set(divergent);
+    const rebindOf = (oldId) => {
+      if (importedIds.has(oldId)) return "already";
+      const target = byVariable.get(oldId);
+      if (!target || !importedByKey.has(target.key)) return "no-target";
+      return { key: target.key, foreign: foreignIds.has(oldId) };
+    };
+    progress2 == null ? void 0 : progress2("reading local variables\u2026");
+    const locals = await figma.variables.getLocalVariablesAsync("COLOR");
+    const localIds = new Set(locals.map((variable) => variable.id));
+    for (const id of byVariable.keys()) if (!localIds.has(id)) foreignIds.add(id);
+    const wholeFile = options.scope === "document";
+    if (!wholeFile) {
+      warnings.push("variables and styles are file-global \u2014 they move only on a whole-document rebind");
+    }
+    const planBySite = new Map(plan.entries.map((entry) => [entry.site.id, entry]));
+    for (const [index, variable] of wholeFile ? locals.entries() : []) {
+      if (index % 50 === 0) await yieldToHost();
+      for (const [modeId, value] of Object.entries(variable.valuesByMode)) {
+        if (isAliasValue2(value)) {
+          const decision = rebindOf(value.id);
+          if (decision === "already") {
+            counts.skipped.already++;
+            continue;
+          }
+          if (decision === "no-target") {
+            counts.skipped.noTarget++;
+            continue;
+          }
+          ops.push({ kind: "variable", variableId: variable.id, modeId, old: value.id, key: decision.key });
+          counts.aliases++;
+          if (decision.foreign) counts.thirdParty++;
+          continue;
+        }
+        if (!isRgbValue(value)) continue;
+        if (divergentIds.has(variable.id)) continue;
+        const entry = planBySite.get(`${variable.id}|${modeId}`);
+        if (!entry || entry.toVariableKey === null || entry.flags.includes("excluded")) continue;
+        const landing = await valueOfKey(entry.toVariableKey);
+        if (!landing) continue;
+        const current = { r: value.r, g: value.g, b: value.b, a: alphaOf(value) };
+        const target = __spreadValues({}, entry.to);
+        if (!sameRgba(target, landing.rgba)) {
+          if (sameRgba(__spreadProps(__spreadValues({}, target), { a: landing.rgba.a }), landing.rgba)) counts.skipped.alphaMismatch++;
+          continue;
+        }
+        if (!sameRgba(current, landing.rgba)) continue;
+        ops.push({
+          kind: "variable",
+          variableId: variable.id,
+          modeId,
+          old: [current.r, current.g, current.b, current.a],
+          key: entry.toVariableKey
+        });
+        counts.literalsBound++;
+      }
+    }
+    progress2 == null ? void 0 : progress2("reading styles\u2026");
+    const paintStyles = wholeFile ? await figma.getLocalPaintStylesAsync() : [];
+    for (const style of paintStyles) {
+      for (const [index, paint] of style.paints.entries()) {
+        if (paint.type === "SOLID") {
+          const oldId = boundColorId(paint);
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({ kind: "style", styleId: style.id, property: "paints", index, stop: -1, old: oldId, key: decision.key });
+            counts.styles++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+          continue;
+        }
+        if (!isGradient(paint)) continue;
+        for (const [stopIndex, stop] of paint.gradientStops.entries()) {
+          const oldId = boundColorId(stop);
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({
+              kind: "style",
+              styleId: style.id,
+              property: "paints",
+              index,
+              stop: stopIndex,
+              old: oldId,
+              key: decision.key
+            });
+            counts.styles++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+        }
+      }
+    }
+    const effectStyles = wholeFile ? await figma.getLocalEffectStylesAsync() : [];
+    for (const style of effectStyles) {
+      for (const [index, effect] of style.effects.entries()) {
+        const oldId = boundColorId(effect);
+        if (!oldId) continue;
+        const decision = rebindOf(oldId);
+        if (decision === "already") counts.skipped.already++;
+        else if (decision === "no-target") counts.skipped.noTarget++;
+        else {
+          ops.push({ kind: "style", styleId: style.id, property: "effects", index, stop: -1, old: oldId, key: decision.key });
+          counts.styles++;
+          if (decision.foreign) counts.thirdParty++;
+        }
+      }
+    }
+    if (wholeFile) await loadAllPagesAsync();
+    const overridden = /* @__PURE__ */ new Map();
+    const noteOverrides = (instance) => {
+      var _a;
+      let overrides;
+      try {
+        overrides = instance.overrides;
+      } catch (e) {
+        return;
+      }
+      for (const override of overrides) {
+        const fields = (_a = overridden.get(override.id)) != null ? _a : /* @__PURE__ */ new Set();
+        for (const field of override.overriddenFields) fields.add(field);
+        overridden.set(override.id, fields);
+      }
+    };
+    const collectPaintOps = (node, property, inInstance) => {
+      var _a, _b, _c, _d;
+      const styleId = node[property === "fills" ? "fillStyleId" : "strokeStyleId"];
+      if (typeof styleId === "string" && styleId !== "") return;
+      const paints2 = node[property];
+      if (!Array.isArray(paints2)) return;
+      if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has(property))) return;
+      const nodeLevel = (_b = node.boundVariables) == null ? void 0 : _b[property];
+      const nodeLevelIds = Array.isArray(nodeLevel) ? nodeLevel.map(
+        (alias) => alias && alias.type === "VARIABLE_ALIAS" ? alias.id : null
+      ) : [];
+      for (const [index, paint] of paints2.entries()) {
+        if (paint.type === "SOLID") {
+          const oldId = (_d = (_c = boundColorId(paint)) != null ? _c : nodeLevelIds[index]) != null ? _d : null;
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({ kind: "node", nodeId: node.id, property, index, stop: -1, old: oldId, key: decision.key, instance: inInstance });
+            counts.nodes++;
+            if (inInstance) counts.instanceOverrides++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+          continue;
+        }
+        if (!isGradient(paint)) continue;
+        for (const [stopIndex, stop] of paint.gradientStops.entries()) {
+          const oldId = boundColorId(stop);
+          if (!oldId) continue;
+          const decision = rebindOf(oldId);
+          if (decision === "already") counts.skipped.already++;
+          else if (decision === "no-target") counts.skipped.noTarget++;
+          else {
+            ops.push({ kind: "node", nodeId: node.id, property, index, stop: stopIndex, old: oldId, key: decision.key, instance: inInstance });
+            counts.nodes++;
+            if (inInstance) counts.instanceOverrides++;
+            if (decision.foreign) counts.thirdParty++;
+          }
+        }
+      }
+    };
+    const collectEffectOps = (node, inInstance) => {
+      var _a;
+      const effectStyleId = node.effectStyleId;
+      if (typeof effectStyleId === "string" && effectStyleId !== "") return;
+      const effects = node.effects;
+      if (!Array.isArray(effects)) return;
+      if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has("effects"))) return;
+      for (const [index, effect] of effects.entries()) {
+        const oldId = boundColorId(effect);
+        if (!oldId) continue;
+        const decision = rebindOf(oldId);
+        if (decision === "already") counts.skipped.already++;
+        else if (decision === "no-target") counts.skipped.noTarget++;
+        else {
+          ops.push({ kind: "node", nodeId: node.id, property: "effects", index, stop: -1, old: oldId, key: decision.key, instance: inInstance });
+          counts.nodes++;
+          if (inInstance) counts.instanceOverrides++;
+          if (decision.foreign) counts.thirdParty++;
+        }
+      }
+    };
+    figma.skipInvisibleInstanceChildren = true;
+    try {
+      let visited = 0;
+      const rootSets = wholeFile ? figma.root.children.map((page) => ({ label: page.name, roots: page.children })) : [{ label: options.scope, roots: await scopeRoots(options.scope) }];
+      for (const { label: label3, roots } of rootSets) {
+        progress2 == null ? void 0 : progress2(`scanning ${label3}\u2026`);
+        const stack = [];
+        for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], inInstance: false });
+        while (stack.length > 0) {
+          const { node, inInstance } = stack.pop();
+          if (++visited % 400 === 0) await yieldToHost();
+          const isInstance = node.type === "INSTANCE";
+          if (isInstance) noteOverrides(node);
+          const gated = inInstance || isInstance;
+          collectPaintOps(node, "fills", gated);
+          collectPaintOps(node, "strokes", gated);
+          collectEffectOps(node, gated);
+          if ("children" in node) {
+            const inside = inInstance || isInstance;
+            const children = node.children;
+            for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], inInstance: inside });
+          }
+        }
+      }
+    } finally {
+      figma.skipInvisibleInstanceChildren = false;
+    }
+    return { ops, counts, warnings };
+  }
+  var aliasTo = (variable) => ({ type: "VARIABLE_ALIAS", id: variable.id });
+  async function writePaintBinding(holder, property, index, stop, variable, restoreId) {
+    const record2 = holder;
+    const paints2 = record2[property];
+    if (!Array.isArray(paints2) || !paints2[index]) return false;
+    const next = [...paints2];
+    const paint = next[index];
+    const target = variable != null ? variable : restoreId ? await figma.variables.getVariableByIdAsync(restoreId).catch(() => null) : null;
+    if (!target) return false;
+    if (stop < 0) {
+      if (paint.type !== "SOLID") return false;
+      next[index] = figma.variables.setBoundVariableForPaint(paint, "color", target);
+    } else {
+      if (!isGradient(paint)) return false;
+      const stops = paint.gradientStops.map((gradientStop) => __spreadValues({}, gradientStop));
+      if (!stops[stop]) return false;
+      stops[stop] = __spreadProps(__spreadValues({}, stops[stop]), { boundVariables: { color: aliasTo(target) } });
+      next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+    }
+    record2[property] = next;
+    return true;
+  }
+  async function writeEffectBinding(holder, index, variable) {
+    const record2 = holder;
+    const effects = record2.effects;
+    if (!Array.isArray(effects) || !effects[index]) return false;
+    const next = [...effects];
+    next[index] = figma.variables.setBoundVariableForEffect(next[index], "color", variable);
+    record2.effects = next;
+    return true;
+  }
+  async function executeOps(ops, undo, progress2) {
+    const counts = emptyCounts();
+    const importedByKey = /* @__PURE__ */ new Map();
+    const importOf = async (key) => {
+      var _a;
+      if (!importedByKey.has(key)) {
+        importedByKey.set(key, await figma.variables.importVariableByKeyAsync(key).catch(() => null));
+      }
+      return (_a = importedByKey.get(key)) != null ? _a : null;
+    };
+    for (const [index, op] of ops.entries()) {
+      if (index % 25 === 0) {
+        progress2 == null ? void 0 : progress2(`${undo ? "restoring" : "rebinding"}\u2026 ${index}/${ops.length}`);
+        await yieldToHost();
+      }
+      if (op.kind === "variable") {
+        const variable = await figma.variables.getVariableByIdAsync(op.variableId).catch(() => null);
+        if (!variable) continue;
+        if (undo) {
+          if (typeof op.old === "string") {
+            const previous = await figma.variables.getVariableByIdAsync(op.old).catch(() => null);
+            if (previous) variable.setValueForMode(op.modeId, aliasTo(previous));
+          } else {
+            const [r, g, b, a] = op.old;
+            variable.setValueForMode(op.modeId, { r, g, b, a });
+          }
+          counts.aliases++;
+          continue;
+        }
+        const target2 = await importOf(op.key);
+        if (!target2) continue;
+        variable.setValueForMode(op.modeId, aliasTo(target2));
+        if (typeof op.old === "string") counts.aliases++;
+        else counts.literalsBound++;
+        continue;
+      }
+      const target = undo ? null : await importOf(op.key);
+      if (!undo && !target) continue;
+      if (op.kind === "style") {
+        const style = await figma.getStyleByIdAsync(op.styleId).catch(() => null);
+        if (!style) continue;
+        if (op.property === "paints" && style.type === "PAINT") {
+          const done = await writePaintBinding(style, "paints", op.index, op.stop, target, undo ? op.old : void 0);
+          if (done) counts.styles++;
+        } else if (op.property === "effects" && style.type === "EFFECT") {
+          const restore = undo ? await figma.variables.getVariableByIdAsync(op.old).catch(() => null) : target;
+          if (restore && await writeEffectBinding(style, op.index, restore)) counts.styles++;
+        }
+        continue;
+      }
+      const node = await figma.getNodeByIdAsync(op.nodeId).catch(() => null);
+      if (!node) continue;
+      if (op.property === "effects") {
+        const restore = undo ? await figma.variables.getVariableByIdAsync(op.old).catch(() => null) : target;
+        if (restore && await writeEffectBinding(node, op.index, restore)) {
+          counts.nodes++;
+          if (op.instance) counts.instanceOverrides++;
+        }
+      } else {
+        const done = await writePaintBinding(node, op.property, op.index, op.stop, target, undo ? op.old : void 0);
+        if (done) {
+          counts.nodes++;
+          if (op.instance) counts.instanceOverrides++;
+        }
+      }
+    }
+    return counts;
+  }
+  async function previewRebind(plan, options = DEFAULT_REBIND_OPTIONS, progress2) {
+    const scan = await scanRebind(plan, options, progress2);
+    return { counts: scan.counts, summary: describeRebind(scan.counts), warnings: scan.warnings };
+  }
+  async function applyRebind(plan, options = DEFAULT_REBIND_OPTIONS, progress2) {
+    const scan = await scanRebind(plan, options, progress2);
+    const snapshot = { version: 1, ops: scan.ops };
+    const serialized = JSON.stringify(snapshot);
+    if (serialized.length > REBIND_BUDGET_BYTES) {
+      throw new Error(
+        `this rebind would touch ${scan.ops.length} places \u2014 more than one undo snapshot can hold. Run it scope by scope, or shrink the mapping.`
+      );
+    }
+    writeChunked2(serialized);
+    await executeOps(scan.ops, false, progress2);
+    return { counts: scan.counts, summary: describeRebind(scan.counts), warnings: scan.warnings };
+  }
+  async function revertRebind(progress2) {
+    const raw = readChunked2();
+    if (raw === "") throw new Error("no rebind snapshot to revert");
+    const snapshot = JSON.parse(raw);
+    if (snapshot.version !== 1 || !Array.isArray(snapshot.ops)) throw new Error("the rebind snapshot is unreadable");
+    const counts = await executeOps(snapshot.ops, true, progress2);
+    clearChunked();
+    return { counts, summary: describeRebind(counts), warnings: [] };
   }
 
   // src/tokens/remap/audit.ts
@@ -15913,15 +16737,27 @@ ${scrollGuards}` : project.css;
   var NO_MODE = "\0no-mode";
   var siteMember = (site) => {
     const parsed = parseTokenName(site.name);
-    return { ref: site.id, name: site.name, rgba: site.rgba, family: parsed.family, step: parsed.step };
+    return {
+      ref: site.id,
+      name: site.name,
+      rgba: site.rgba,
+      family: parsed.family,
+      group: parsed.groupPath,
+      step: parsed.step
+    };
   };
-  var swatchMember = (swatch, index) => ({
-    ref: `new:${index}`,
-    name: swatch.name,
-    rgba: swatch.rgba,
-    family: swatch.family,
-    step: swatch.step
-  });
+  var swatchMember = (swatch, index) => {
+    var _a;
+    return {
+      ref: `new:${index}`,
+      name: swatch.name,
+      rgba: swatch.rgba,
+      family: swatch.family,
+      group: parseTokenName(swatch.name).groupPath,
+      step: swatch.step,
+      variableKey: (_a = swatch.variableKey) != null ? _a : null
+    };
+  };
   var land = (site, target) => ({ r: target.r, g: target.g, b: target.b, a: site.rgba.a });
   var sameColor = (a, b) => Math.abs(a.r - b.r) < 1 / 512 && Math.abs(a.g - b.g) < 1 / 512 && Math.abs(a.b - b.b) < 1 / 512;
   var colorKey = (color) => [color.r, color.g, color.b].map((channel) => Math.round(channel * 255)).join(",");
@@ -15939,12 +16775,15 @@ ${scrollGuards}` : project.css;
   function readPalette(palette) {
     const { spectra, loose, warnings } = inferSpectra(palette.map(swatchMember));
     const candidates = [
-      ...spectra.flatMap((spectrum) => spectrum.stops.map((stop) => __spreadProps(__spreadValues({}, stop), { familyLabel: spectrum.label }))),
+      // The *family name*, not the label: this value ends up in `toFamily`, and `toFamily` is
+      // what renames are built from — a group path there would be written into a name segment.
+      ...spectra.flatMap((spectrum) => spectrum.stops.map((stop) => __spreadProps(__spreadValues({}, stop), { familyLabel: spectrum.family }))),
       ...loose.map((stop) => __spreadProps(__spreadValues({}, stop), { familyLabel: null }))
     ];
     return { spectra, candidates, warnings };
   }
-  function entryFor(site, target, via, toFamily, flags) {
+  function entryFor(site, target, via, toFamily, flags, fromFamily) {
+    var _a;
     const parsed = parseTokenName(site.name);
     const to = land(site, target.rgba);
     const all = [...flags];
@@ -15955,7 +16794,10 @@ ${scrollGuards}` : project.css;
       from: site.rgba,
       to,
       toName: target.name === "" ? null : target.name,
-      fromFamily: parsed.family,
+      toVariableKey: (_a = target.variableKey) != null ? _a : null,
+      // The spectrum's label when the site came through a family match — `colour/neutral` and
+      // `colors/neutral` are different rows of the story, not one family told twice.
+      fromFamily: fromFamily !== void 0 ? fromFamily : parsed.family,
       toFamily,
       fromStep: parsed.step,
       toStep: target.step,
@@ -15970,6 +16812,37 @@ ${scrollGuards}` : project.css;
     const { assignments } = assignFamilies(spectra, palette.spectra);
     const entries = [];
     const families = [];
+    const identical = /* @__PURE__ */ new Map();
+    for (const candidate of palette.candidates) {
+      const key = colorKey(candidate.rgba);
+      const held = identical.get(key);
+      if (!held || held.familyLabel === null && candidate.familyLabel !== null) identical.set(key, candidate);
+    }
+    const identityOf = (color) => {
+      const channels = [color.r, color.g, color.b].map((channel) => channel * 255);
+      const options = channels.map((value) => {
+        const rounded = Math.round(value);
+        const keys = [rounded];
+        if (Math.abs(value - rounded + 0.5) < 0.51) keys.push(rounded - 1);
+        if (Math.abs(rounded + 0.5 - value) < 0.51) keys.push(rounded + 1);
+        return keys;
+      });
+      for (const r of options[0]) {
+        for (const g of options[1]) {
+          for (const b of options[2]) {
+            const candidate = identical.get(`${r},${g},${b}`);
+            if (candidate && sameColor(candidate.rgba, color)) return candidate;
+          }
+        }
+      }
+      return null;
+    };
+    for (const site of sites) {
+      const candidate = identityOf(site.rgba);
+      if (!candidate) continue;
+      entries.push(entryFor(site, candidate, "exact", candidate.familyLabel, []));
+      byId.delete(site.id);
+    }
     for (const assignment of assignments) {
       families.push({
         fromKey: assignment.from.key,
@@ -15983,7 +16856,16 @@ ${scrollGuards}` : project.css;
       for (const match of matchStops(assignment.from, assignment.to)) {
         const site = byId.get(match.from.ref);
         if (!site) continue;
-        entries.push(entryFor(site, match.to, match.via, assignment.to.label, assignment.shared ? ["shared-family"] : []));
+        entries.push(
+          entryFor(
+            site,
+            match.to,
+            match.via,
+            assignment.to.family,
+            assignment.shared ? ["shared-family"] : [],
+            assignment.from.label
+          )
+        );
       }
     }
     const matched = new Set(entries.map((entry) => entry.site.id));
@@ -15996,15 +16878,20 @@ ${scrollGuards}` : project.css;
     return { entries, families, assignments };
   }
   function separateAdjacent(entries, palette, adjacency, warnings) {
+    var _a;
     if (adjacency.length === 0) return;
     const byId = new Map(entries.map((entry) => [entry.site.id, entry]));
-    const stopsByFamily = new Map(palette.spectra.map((spectrum) => [spectrum.label, spectrum.stops]));
+    const stopsByFamily = new Map(palette.spectra.map((spectrum) => [spectrum.family, spectrum.stops]));
     for (const [left, right] of adjacency) {
       const a = byId.get(left);
       const b = byId.get(right);
       if (!a || !b || a === b) continue;
       if (!sameColor(a.to, b.to)) continue;
-      const mover = a.site.usage <= b.site.usage ? a : b;
+      if (sameColor(a.from, b.from)) continue;
+      const aFixed = a.via === "exact";
+      const bFixed = b.via === "exact";
+      if (aFixed && bFixed) continue;
+      const mover = aFixed ? b : bFixed ? a : a.site.usage <= b.site.usage ? a : b;
       const anchor = mover === a ? b : a;
       const stops = mover.toFamily === null ? void 0 : stopsByFamily.get(mover.toFamily);
       if (!stops || stops.length < 2) {
@@ -16029,6 +16916,7 @@ ${scrollGuards}` : project.css;
       mover.to = land(mover.site, best.rgba);
       mover.toStep = best.step;
       mover.toName = best.name === "" ? null : best.name;
+      mover.toVariableKey = (_a = best.variableKey) != null ? _a : null;
       mover.via = "lightness";
       mover.deltaE = deltaE(mover.from, mover.to);
       mover.flags = mover.flags.filter((flag2) => flag2 !== "unchanged");
@@ -16070,11 +16958,37 @@ ${scrollGuards}` : project.css;
       warnings.push(`${name} lands in different families per mode: ${[...families].join(" / ")}`);
     }
   }
+  function flagColorForks(entries, warnings) {
+    var _a;
+    const byColor = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      if (entry.from.a < 0.999 || entry.flags.includes("excluded")) continue;
+      const key = `${(_a = entry.site.modeId) != null ? _a : NO_MODE}|${colorKey(entry.from)}`;
+      const group = byColor.get(key);
+      if (group) group.push(entry);
+      else byColor.set(key, [entry]);
+    }
+    for (const group of byColor.values()) {
+      const landings = new Set(group.map((entry) => colorKey(entry.to)));
+      if (landings.size < 2) continue;
+      const tell = (entry) => {
+        var _a2;
+        return `${entry.site.name} \u2192 ${(_a2 = entry.toName) != null ? _a2 : "nearest"}`;
+      };
+      const shown = group.slice(0, 4).map(tell).join(", ");
+      const more = group.length > 4 ? ` and ${group.length - 4} more` : "";
+      warnings.push(`one color, two directions: ${shown}${more}`);
+    }
+  }
   function planRenames(entries, primaryModeId, taken, options, warnings) {
     var _a, _b, _c, _d;
     if (!options.rename) return [];
     const eligible = entries.filter(
-      (entry) => entry.site.kind === "variable" && entry.site.primitive && entry.site.editable && entry.toFamily !== null && // A translucent token is matched as a colour, not as a rung of a ladder, so the family it
+      (entry) => entry.site.kind === "variable" && entry.site.primitive && entry.site.editable && // A pair struck out of the run is struck out of everything the run writes. Renaming a
+      // variable is writing to it — and worse, the phantom rename claims the target name in
+      // collision resolution, so a variable the human kept can end up parked in legacy/ by
+      // one the human excluded.
+      !entry.flags.includes("excluded") && entry.toFamily !== null && // A translucent token is matched as a colour, not as a rung of a ladder, so the family it
       // happened to land near is not a family it belongs to. Renaming `colors/black/50` into
       // `colors/neutral/50` only collides with the neutral that is already there.
       entry.from.a >= 0.999
@@ -16156,6 +17070,7 @@ ${scrollGuards}` : project.css;
     }
     if (options.separateAdjacent) separateAdjacent(entries, palette, (_b = request.adjacency) != null ? _b : [], warnings);
     flagDuplicates(entries);
+    flagColorForks(entries, warnings);
     flagModeDivergence(entries, warnings);
     const taken = new Set(request.sites.filter((site) => site.kind === "variable").map((site) => site.name));
     const renames = planRenames(entries, request.primaryModeId, taken, options, warnings);
@@ -16213,6 +17128,7 @@ ${scrollGuards}` : project.css;
           fromStep: entry.fromStep,
           toFamily: entry.toFamily,
           toStep: entry.toStep,
+          toVariable: entry.toVariableKey,
           via: entry.via,
           deltaE: round9(entry.deltaE, 2),
           flags: entry.flags
@@ -16259,6 +17175,7 @@ ${scrollGuards}` : project.css;
   function buildLookup(mapping, options) {
     const byHex = /* @__PURE__ */ new Map();
     const byName = /* @__PURE__ */ new Map();
+    const settled = /* @__PURE__ */ new Set();
     const all = [];
     const conflicting = /* @__PURE__ */ new Set();
     const warnings = [];
@@ -16272,6 +17189,7 @@ ${scrollGuards}` : project.css;
       for (const name of [record2.name, record2.newName]) {
         if (name) byName.set(nameKey(name), target);
       }
+      settled.add(record2.to);
       if (record2.from === record2.to) continue;
       const existing = byHex.get(record2.from);
       if (existing && existing.hex !== record2.to) {
@@ -16290,10 +17208,11 @@ ${scrollGuards}` : project.css;
       const from = rgbaOf(hex, 1);
       if (from) all.push({ from, target });
     }
-    return { byHex, all, byName, warnings };
+    return { byHex, settled, all, byName, warnings };
   }
   function matchLiteral(literal, lookup, snap) {
     const hex = toHex(literal.rgba);
+    if (lookup.settled.has(hex)) return null;
     const exact = lookup.byHex.get(hex);
     if (exact) return { target: exact, snapped: false };
     if (snap <= 0) return null;
@@ -16412,9 +17331,10 @@ ${scrollGuards}` : project.css;
     }
     return swatches;
   }
+  var describes = (family, step) => family !== null && step !== null ? 2 : family !== null ? 1 : 0;
   function swatchesFromNamedColors(entries) {
-    var _a;
-    const seen = /* @__PURE__ */ new Set();
+    var _a, _b, _c, _d;
+    const at = /* @__PURE__ */ new Map();
     const swatches = [];
     let duplicates = 0;
     for (const entry of entries) {
@@ -16422,19 +17342,30 @@ ${scrollGuards}` : project.css;
       if (!rgb) continue;
       const alpha = (_a = entry.alpha) != null ? _a : 1;
       const key = `${entry.hex.toUpperCase()}|${alpha.toFixed(3)}`;
-      if (seen.has(key)) {
+      const parsed = parseTokenName(entry.name);
+      const existing = at.get(key);
+      if (existing !== void 0) {
         duplicates++;
+        const held = swatches[existing];
+        if (describes(parsed.family, parsed.step) > describes(held.family, held.step)) {
+          swatches[existing] = __spreadProps(__spreadValues({}, held), {
+            name: entry.name,
+            family: parsed.family,
+            step: parsed.step,
+            variableKey: (_c = (_b = entry.key) != null ? _b : held.variableKey) != null ? _c : null
+          });
+        }
         continue;
       }
-      seen.add(key);
-      const parsed = parseTokenName(entry.name);
+      at.set(key, swatches.length);
       swatches.push({
         hex: entry.hex.toUpperCase(),
         alpha,
         rgba: __spreadProps(__spreadValues({}, rgb), { a: alpha }),
         name: entry.name,
         family: parsed.family,
-        step: parsed.step
+        step: parsed.step,
+        variableKey: (_d = entry.key) != null ? _d : null
       });
     }
     return { swatches, duplicates };
@@ -16492,6 +17423,32 @@ ${scrollGuards}` : project.css;
   var isAlias2 = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
   var isRgb2 = (value) => typeof value === "object" && value !== null && "r" in value && "g" in value && "b" in value;
   var IMPORT_CHUNK = 50;
+  var ALIAS_DEPTH = 6;
+  async function resolveColor(variable, modeId) {
+    var _a, _b, _c;
+    let current = variable;
+    let mode = modeId;
+    for (let depth = 0; depth < ALIAS_DEPTH; depth++) {
+      const value = (_a = current.valuesByMode[mode]) != null ? _a : await defaultValueOf(current);
+      if (value === void 0) return null;
+      if (isRgb2(value)) return value;
+      if (!isAlias2(value)) return null;
+      const next = await figma.variables.getVariableByIdAsync(value.id).catch(() => null);
+      if (!next) return null;
+      current = next;
+      if (!(mode in current.valuesByMode)) {
+        const collection = await figma.variables.getVariableCollectionByIdAsync(current.variableCollectionId).catch(() => null);
+        mode = (_c = (_b = collection == null ? void 0 : collection.defaultModeId) != null ? _b : Object.keys(current.valuesByMode)[0]) != null ? _c : mode;
+      }
+    }
+    return null;
+  }
+  var defaultValueOf = async (variable) => {
+    var _a;
+    const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId).catch(() => null);
+    const mode = (_a = collection == null ? void 0 : collection.defaultModeId) != null ? _a : Object.keys(variable.valuesByMode)[0];
+    return mode === void 0 ? void 0 : variable.valuesByMode[mode];
+  };
   async function swatchesFromLibrary(key, modeName, progress2) {
     var _a, _b;
     const warnings = [];
@@ -16506,7 +17463,7 @@ ${scrollGuards}` : project.css;
     const entries = [];
     let modeId = null;
     let chosenMode = null;
-    let aliased = 0;
+    let unresolved = 0;
     for (const [index, candidate] of colors.entries()) {
       if (index % IMPORT_CHUNK === 0) {
         progress2 == null ? void 0 : progress2(`importing library colors\u2026 ${index}/${colors.length}`);
@@ -16525,19 +17482,17 @@ ${scrollGuards}` : project.css;
         chosenMode = mode.name;
         if (modeName && !wanted) warnings.push(`that library has no "${modeName}" mode \u2014 read "${mode.name}" instead`);
       }
-      const value = variable.valuesByMode[modeId];
-      if (value === void 0) continue;
-      if (isAlias2(value)) {
-        aliased++;
+      const value = await resolveColor(variable, modeId);
+      if (value === null) {
+        unresolved++;
         continue;
       }
-      if (!isRgb2(value)) continue;
       const color = withAlpha(value);
-      entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name });
+      entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name, key: variable.key });
     }
     const { swatches, duplicates } = swatchesFromNamedColors(entries);
     if (chosenMode) warnings.unshift(`read the "${chosenMode}" mode of that collection`);
-    if (aliased > 0) warnings.push(`${aliased} alias-valued token(s) skipped \u2014 they point at colors already in the list`);
+    if (unresolved > 0) warnings.push(`${unresolved} token(s) could not be resolved to a color and were left out`);
     if (duplicates > 0) warnings.push(`${duplicates} repeated color(s) were read once`);
     return { swatches, warnings };
   }
@@ -19227,7 +20182,7 @@ ${scripts}`, "");
           fromStep: entry.fromStep,
           // The panel sorts each family the way the board draws it, and needs the same lightness
           // to do it — the UI has no colour maths of its own.
-          fromL: Math.round(rgbToOklch2(entry.from).l * 1e3),
+          fromL: Math.round(rgbToOklch(entry.from).l * 1e3),
           toFamily: entry.toFamily,
           toStep: entry.toStep,
           via: entry.via,
@@ -19738,7 +20693,7 @@ ${scripts}`, "");
   }
   figma.on("selectionchange", postSelectionToUi);
   figma.ui.onmessage = async (msg) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
@@ -19820,6 +20775,9 @@ ${scripts}`, "");
       case "APPLY_PALETTE": {
         try {
           const settings = normalizePaletteSettings(msg.settings);
+          if (settings.spectra.length === 0) {
+            throw new Error("the palette is empty \u2014 add at least one color before generating");
+          }
           const options = __spreadValues(__spreadValues({}, DEFAULT_APPLY_OPTIONS), (_c = msg.applyOptions) != null ? _c : {});
           const report2 = await applyPalette(generatePalette(settings), options);
           await figma.clientStorage.setAsync("paletteSettings", settings);
@@ -19851,7 +20809,8 @@ ${scripts}`, "");
             sites: remapInventory.sites.length,
             adjacency: remapInventory.adjacency.length,
             warnings: remapInventory.warnings,
-            canRevert: hasRemapSnapshot()
+            canRevert: hasRemapSnapshot(),
+            canRevertRebind: hasRebindSnapshot()
           });
         } catch (err) {
           figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
@@ -19919,6 +20878,49 @@ ${scripts}`, "");
         }
         break;
       }
+      case "REMAP_REBIND_PREVIEW":
+      case "REMAP_REBIND_APPLY": {
+        try {
+          if (msg.source.kind !== "library") {
+            throw new Error("rebinding needs the new palette read from a library \u2014 its variable keys are the destination");
+          }
+          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
+          const progress2 = (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 });
+          const rebindOptions = { scope: (_g = msg.scope) != null ? _g : "document" };
+          const report2 = msg.type === "REMAP_REBIND_APPLY" ? await applyRebind(plan, rebindOptions, progress2) : await previewRebind(plan, rebindOptions, progress2);
+          if (msg.type === "REMAP_REBIND_APPLY") {
+            remapInventory = null;
+            figma.notify(`Rebound: ${report2.summary}`);
+          }
+          figma.ui.postMessage({
+            type: msg.type === "REMAP_REBIND_APPLY" ? "REMAP_REBOUND" : "REMAP_REBIND_PLAN",
+            counts: report2.counts,
+            summary: report2.summary,
+            warnings: report2.warnings,
+            canRevertRebind: hasRebindSnapshot()
+          });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "REMAP_REBIND_REVERT": {
+        try {
+          const report2 = await revertRebind((label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }));
+          remapInventory = null;
+          figma.notify(`Rebind reverted: ${report2.summary}`);
+          figma.ui.postMessage({
+            type: "REMAP_REBIND_REVERTED",
+            counts: report2.counts,
+            summary: report2.summary,
+            warnings: report2.warnings,
+            canRevertRebind: hasRebindSnapshot()
+          });
+        } catch (err) {
+          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
       case "REMAP_BOARD": {
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
@@ -19963,7 +20965,7 @@ ${scripts}`, "");
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind });
-          const settings = { snap: (_g = msg.snap) != null ? _g : 2, byName: (_h = msg.byName) != null ? _h : false, mode: (_i = msg.mode) != null ? _i : null };
+          const settings = { snap: (_h = msg.snap) != null ? _h : 2, byName: (_i = msg.byName) != null ? _i : false, mode: (_j = msg.mode) != null ? _j : null };
           let replaced = 0;
           let untouched = 0;
           const warnings = /* @__PURE__ */ new Set();
@@ -20084,7 +21086,7 @@ ${scripts}`, "");
             { nodeId: fileNodeIds[path], content }
           ])
         );
-        const existingFiles = new Map(Object.entries((_j = msg.existingFiles) != null ? _j : {}));
+        const existingFiles = new Map(Object.entries((_k = msg.existingFiles) != null ? _k : {}));
         const plan = planRegeneration(existingFiles, freshFiles);
         let tokensCss;
         let bootstrapTokensCss;
@@ -20142,7 +21144,7 @@ ${scripts}`, "");
         break;
       }
       case "SCROLL_INTO_VIEW": {
-        const node = (_k = lastScanIndex.get(msg.nodeId)) != null ? _k : await figma.getNodeByIdAsync(msg.nodeId);
+        const node = (_l = lastScanIndex.get(msg.nodeId)) != null ? _l : await figma.getNodeByIdAsync(msg.nodeId);
         if (node && "visible" in node) {
           const target = node;
           figma.viewport.scrollAndZoomIntoView([target]);
@@ -20212,7 +21214,7 @@ ${scripts}`, "");
       case "AGENT_SET_GATES": {
         const gates2 = setGates({ read: msg.read, write: msg.write });
         await rememberGates(gates2);
-        figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name, fileKey: (_l = figma.fileKey) != null ? _l : null }));
+        figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name, fileKey: (_m = figma.fileKey) != null ? _m : null }));
         break;
       }
       case "AGENT_REQUEST": {
@@ -20355,10 +21357,10 @@ ${scripts}`, "");
           if (exportOptions.targetOptions.platform === "tauri" && project) {
             let startPageId;
             try {
-              startPageId = (_m = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _m.nodeId;
+              startPageId = (_n = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _n.nodeId;
             } catch (e) {
             }
-            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_n = pageRoots[0]) == null ? void 0 : _n.id;
+            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_o = pageRoots[0]) == null ? void 0 : _o.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -20391,9 +21393,9 @@ ${scripts}`, "");
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_o = sceneNodesById.get(nodeId)) != null ? _o : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (_p = sceneNodesById.get(nodeId)) != null ? _p : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_p = node.parent) == null ? void 0 : _p.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((_q = node.parent) == null ? void 0 : _q.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -20416,7 +21418,7 @@ ${scripts}`, "");
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((_q = counts[finding.rule]) != null ? _q : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_r = counts[finding.rule]) != null ? _r : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -20466,7 +21468,7 @@ ${scripts}`, "");
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (_s = (_r = figma.currentUser) == null ? void 0 : _r.name) != null ? _s : "unknown";
+            exportedBy = (_t = (_s = figma.currentUser) == null ? void 0 : _s.name) != null ? _t : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }

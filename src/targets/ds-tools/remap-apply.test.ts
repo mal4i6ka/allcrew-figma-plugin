@@ -7,9 +7,11 @@ import {
   DEFAULT_REMAP_APPLY_OPTIONS,
   estimateSnapshotBytes,
   foldRenames,
+  packSnapshot,
   parseStyleSiteId,
   SNAPSHOT_BUDGET_BYTES,
   splitSiteId,
+  unpackSnapshot,
 } from './remap-apply.ts'
 
 test('site ids split back into a variable and a mode', () => {
@@ -121,7 +123,6 @@ test('the packed snapshot unfolds to exactly what was collected', () => {
       ['1:4', 1, 2, 3, 0.5, 0.25, 0.125, 0.5, 0],
     ] as Array<[string, number, number, number, number, number, number, number, number]>,
   }
-  const { packSnapshot, unpackSnapshot } = require('./remap-apply.ts') as typeof import('./remap-apply.ts')
   const restored = unpackSnapshot(JSON.parse(JSON.stringify(packSnapshot(collected))))
   assert.deepEqual(
     [...restored.paints].sort((a, b) => a[0].localeCompare(b[0])),
@@ -139,3 +140,4 @@ test('the packed snapshot unfolds to exactly what was collected', () => {
   // A version this build does not know is refused, not misread.
   assert.throws(() => unpackSnapshot({ version: 9 }), /version 9/)
 })
+

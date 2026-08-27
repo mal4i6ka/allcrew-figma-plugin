@@ -926,6 +926,24 @@
         <div class="rmp-actions">
           <button class="btn ghost" id="rmp-board" type="button" disabled>Draw Color remap board</button>
         </div>
+
+        <p class="label">Rebind to reference library</p>
+        <p class="pal-hint">Moves what things point at: semantic aliases, node and style bindings land on the
+          library's own tokens. Needs the palette read from a library. Preview first — it counts every pointer
+          that would move and writes nothing.</p>
+        <label class="pal-field pal-wide" style="margin-top:2px">Layers to rebind
+          <select id="rmp-rebind-scope">
+            <option value="document">Whole document — variables, styles and canvas</option>
+            <option value="page">This page — canvas bindings only</option>
+            <option value="selection">Selection only — canvas bindings only</option>
+          </select>
+        </label>
+        <div class="rmp-actions">
+          <button class="btn ghost" id="rmp-rebind-preview" type="button" disabled>Preview rebind</button>
+          <button class="btn primary" id="rmp-rebind" type="button" disabled>Rebind</button>
+          <button class="btn ghost" id="rmp-rebind-revert" type="button" disabled>Revert rebind</button>
+        </div>
+        <div id="rmp-rebind-result" class="pal-hint"></div>
         <div class="rmp-actions">
           <button class="btn ghost" id="rmp-json" type="button" disabled>mapping.json</button>
           <button class="btn ghost" id="rmp-csv" type="button" disabled>mapping.csv</button>
@@ -2939,7 +2957,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function palRenderPreview() {
         var host = document.getElementById('pal-preview')
         host.innerHTML = ''
+        var applyButton = document.getElementById('pal-apply')
+        if (applyButton) applyButton.disabled = !PAL_PALETTE || PAL_PALETTE.spectra.length === 0
         if (!PAL_PALETTE) return
+
+        if (PAL_PALETTE.spectra.length === 0) {
+          var empty = document.createElement('div')
+          empty.className = 'pal-hint'
+          empty.textContent = 'No spectra — add a color above to see its ramp here.'
+          host.appendChild(empty)
+          return
+        }
 
         PAL_PALETTE.spectra.forEach(function (spectrum) {
           var block = document.createElement('div')
@@ -3752,6 +3780,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         rmpEl('rmp-json').disabled = !hasPlan
         rmpEl('rmp-csv').disabled = !hasPlan
         rmpEl('rmp-board').disabled = !hasPlan
+        // Rebinding moves pointers onto library tokens, so it needs the keys only a library
+        // source carries — with any other source the buttons say why by staying off.
+        var canRebind = hasPlan && rmpSource().kind === 'library'
+        rmpEl('rmp-rebind-preview').disabled = !canRebind
+        rmpEl('rmp-rebind').disabled = !canRebind
       }
 
       function rmpSwatch(hex, alpha) {
@@ -4102,6 +4135,26 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         } }, '*')
       })
 
+      function rmpRebindMessage(type) {
+        rmpSetBusy(true)
+        rmpText('rmp-rebind-result', type === 'REMAP_REBIND_APPLY' ? 'Rebinding\u2026' : 'Counting what would move\u2026')
+        parent.postMessage({ pluginMessage: {
+          type: type,
+          source: rmpSource(),
+          options: rmpOptions(),
+          overrides: RMP_OVERRIDES,
+          excluded: rmpExcluded(),
+          scope: rmpEl('rmp-rebind-scope').value
+        } }, '*')
+      }
+      rmpEl('rmp-rebind-preview').addEventListener('click', function () { rmpRebindMessage('REMAP_REBIND_PREVIEW') })
+      rmpEl('rmp-rebind').addEventListener('click', function () { rmpRebindMessage('REMAP_REBIND_APPLY') })
+      rmpEl('rmp-rebind-revert').addEventListener('click', function () {
+        rmpSetBusy(true)
+        rmpText('rmp-rebind-result', 'Restoring previous bindings\u2026')
+        parent.postMessage({ pluginMessage: { type: 'REMAP_REBIND_REVERT' } }, '*')
+      })
+
       rmpEl('rmp-json').addEventListener('click', function () { rmpExport('json') })
       rmpEl('rmp-csv').addEventListener('click', function () { rmpExport('csv') })
 
@@ -4359,6 +4412,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpEl('rmp-stats').innerHTML = '<b>' + read.join('</b> · <b>') + '</b>'
           rmpRenderWarnings(msg.warnings)
           rmpEl('rmp-revert').disabled = !msg.canRevert
+          rmpEl('rmp-rebind-revert').disabled = !msg.canRevertRebind
           rmpText('rmp-result', '')
           rmpSyncButtons()
           if (rmpSourceReady()) rmpPreview()
@@ -4450,6 +4504,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           RMP_ROWS = null
           rmpEl('rmp-table').innerHTML = ''
           rmpSyncButtons()
+        } else if (msg.type === 'REMAP_REBIND_PLAN' || msg.type === 'REMAP_REBOUND' || msg.type === 'REMAP_REBIND_REVERTED') {
+          rmpSetBusy(false)
+          rmpProgress('')
+          var verb = msg.type === 'REMAP_REBIND_PLAN' ? 'Would move: ' : msg.type === 'REMAP_REBOUND' ? 'Rebound: ' : 'Restored: '
+          rmpText('rmp-rebind-result', verb + msg.summary)
+          rmpRenderWarnings(msg.warnings)
+          rmpEl('rmp-rebind-revert').disabled = !msg.canRevertRebind
+          if (msg.type !== 'REMAP_REBIND_PLAN') {
+            // Bindings moved (or moved back): the table on screen describes a file that no
+            // longer exists, and a stale Rebind button would re-run against it.
+            RMP_ROWS = null
+            rmpEl('rmp-table').innerHTML = ''
+            rmpSyncButtons()
+          }
         } else if (msg.type === 'REMAP_REWRITTEN') {
           rmpSetBusy(false)
           var lines = []

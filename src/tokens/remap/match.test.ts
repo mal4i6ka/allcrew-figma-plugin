@@ -287,22 +287,42 @@ const NEW_RED: Array<[number, string]> = [
   [500, '#d63a36'], [600, '#cd1918'], [700, '#a81413'], [800, '#7e1c19'], [850, '#651616'], [900, '#521614'],
 ]
 
-test('a tail with nowhere to go takes the first rung, and the ends stay pinned', () => {
-  // The old ladder starts at 10 where the new one starts at 50. Landing both on 50 is what made
-  // a pale background and its border the same colour.
+test('every shared number holds, and the tail collapses rather than shifting the ladder', () => {
+  // The old ladder starts at 10 where the new one starts at 50, and the new one carries 150
+  // and 850 that the old one never had. The reference is 1:1: every number both ladders share
+  // stays put, the 10 collapses onto the 50 beside it, and the new-only steps stay empty —
+  // landing anything on them is how a remapped file sprouts steps it never asked for.
   const matches = matchStops(rungs('red', OLD_RED), rungs('red', NEW_RED))
-  assert.equal(matches.find((match) => match.from.step === 10)!.to.step, 50)
-  assert.equal(matches.find((match) => match.from.step === 900)!.to.step, 900)
-  assert.equal(
-    new Set(matches.map((match) => match.to.step)).size,
-    matches.length,
-    'nothing shares a rung — this new ladder had room'
-  )
+  for (const step of [50, 100, 200, 300, 400, 500, 600, 700, 800, 900]) {
+    assert.equal(matches.find((match) => match.from.step === step)!.to.step, step, `${step} keeps its number`)
+  }
+  assert.equal(matches.find((match) => match.from.step === 10)!.to.step, 50, 'the tail collapses onto 50')
+  const landings = new Set(matches.map((match) => match.to.step))
+  assert.ok(!landings.has(150) && !landings.has(850), 'new-only steps stay empty')
 })
 
-test('when there is no room, the sharing lands in the middle rather than at an end', () => {
+test('with anchors and no room, the numbers hold and only the tails share', () => {
+  // Eleven rungs onto nine, but 50…700 match number for number. Stretching by index — the old
+  // behaviour — would land old `200` on new `250`-style off-by-ones all the way down; instead
+  // the anchored rungs stay put and the two dark tails share the darkest rung there is.
   const shorter = NEW_RED.slice(0, 9)
   const matches = matchStops(rungs('red', OLD_RED), rungs('red', shorter))
+
+  // The new ladder's 150 has no old counterpart; every number both ladders share holds.
+  for (const step of [50, 100, 200, 300, 400, 500, 600, 700]) {
+    assert.equal(matches.find((match) => match.from.step === step)!.to.step, step, `${step} keeps its number`)
+  }
+  assert.equal(matches.find((match) => match.from.step === 10)!.to.step, 50)
+  assert.equal(matches.find((match) => match.from.step === 800)!.to.step, 700)
+  assert.equal(matches.find((match) => match.from.step === 900)!.to.step, 700)
+})
+
+test('with no shared numbers and no room, the sharing lands in the middle', () => {
+  // Disjoint numbering leaves index position as the only structure, so the proportional
+  // stretch still applies: ends pinned, crowding pushed to the middle of the ladder.
+  const renumbered: Array<[number, string]> = OLD_RED.map(([, hex], index) => [index + 1, hex])
+  const shorter = NEW_RED.slice(0, 9)
+  const matches = matchStops(rungs('red', renumbered), rungs('red', shorter))
 
   assert.equal(matches[0].to.step, 50, 'the light end is pinned')
   assert.equal(matches[matches.length - 1].to.step, shorter[shorter.length - 1][0], 'so is the dark end')
@@ -366,9 +386,11 @@ test('a rung the new ladder cannot name still sits above the one it can', () => 
   const matches = matchStops(from, to)
   const landings = matches.map((match) => match.to.l)
   for (let i = 1; i < landings.length; i++) {
-    assert.ok(landings[i] < landings[i - 1], `${matches[i].from.step} landed lighter than ${matches[i - 1].from.step}`)
+    assert.ok(landings[i] <= landings[i - 1], `${matches[i].from.step} landed lighter than ${matches[i - 1].from.step}`)
   }
-  assert.equal(matches[0].to.step, 0, 'the unnamed rung takes the one above the first anchor')
+  // The free slot above the first anchor is pure white, and a pale gray must not become pure
+  // white just because the slot was free — the 10 shares the 50 its lightness actually sits by.
+  assert.equal(matches[0].to.step, 50, 'the unnamed rung shares the anchor nearest its lightness')
   assert.equal(matches[1].to.step, 50, 'and the anchor keeps its own number')
 })
 
@@ -468,8 +490,7 @@ test('the wide neutral reference is served in full — 0, 150, 850, 925 and 1000
     [300, '#B8BBBD'], [400, '#8C8C8C'], [500, '#797979'], [600, '#616161'], [700, '#333434'],
     [800, '#262829'], [850, '#202020'], [900, '#191B1C'], [925, '#11141A'], [950, '#0F1011'], [1000, '#000000'],
   ]
-  const same: Array<[number, string]> = wide.map(([step, hex], index) => [step, index % 2 ? hex : `#${(index + 1).toString(16).padStart(2, '0').repeat(3)}`])
-  // A source carrying every number of the reference, values shuffled off the reference's own:
+  // A source carrying every number of the reference, values shifted off the reference's own:
   const source = rungs('neutral', [
     [0, '#FEFEFE'], [50, '#F0F0F0'], [100, '#E6E6E6'], [150, '#DDDDDD'], [200, '#CCCCCC'],
     [300, '#B0B0B0'], [400, '#909090'], [500, '#7A7A7A'], [600, '#5E5E5E'], [700, '#3A3A3A'],

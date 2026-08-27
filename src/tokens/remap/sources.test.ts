@@ -109,8 +109,7 @@ test('when identical colors collapse, the rung outlives the alias that shares it
 
 test('a name that describes nothing does not displace one that describes something', () => {
   const { swatches } = swatchesFromNamedColors([
-    { hex: '#FFFFFF', name: 'Rectangle 12' },
-    { hex: '#FFFFFF', name: 'white' },
+    { hex: '#FFFFFF', name: 'Rectangle' },
     { hex: '#FFFFFF', name: 'neutral/0' },
     { hex: '#FFFFFF', name: 'neutral/25' },
   ])

@@ -1,0 +1,139 @@
+{
+  "format": "altery-color-remap",
+  "version": 1,
+  "generatedAt": null,
+  "source": {
+    "file": "Design System",
+    "palette": "paste"
+  },
+  "families": [
+    {
+      "from": "Blue",
+      "to": "Violet",
+      "mode": null,
+      "shared": false
+    }
+  ],
+  "renames": [
+    {
+      "from": "colors/Blue/500",
+      "to": "colors/Violet/500",
+      "legacy": false
+    }
+  ],
+  "records": [
+    {
+      "kind": "variable",
+      "id": "V:1",
+      "name": "colors/Blue/500",
+      "newName": "colors/Violet/500",
+      "mode": null,
+      "from": "#3B82F6",
+      "fromAlpha": 1,
+      "to": "#8B5CF6",
+      "toAlpha": 1,
+      "fromFamily": "Blue",
+      "fromStep": 500,
+      "toFamily": "Violet",
+      "toStep": 500,
+      "via": "step",
+      "deltaE": 12.4,
+      "flags": []
+    },
+    {
+      "kind": "variable",
+      "id": "V:2",
+      "name": "colors/Blue/600",
+      "newName": "colors/Violet/600",
+      "mode": null,
+      "from": "#2563EB",
+      "fromAlpha": 1,
+      "to": "#7C3AED",
+      "toAlpha": 1,
+      "fromFamily": "Blue",
+      "fromStep": 600,
+      "toFamily": "Violet",
+      "toStep": 600,
+      "via": "step",
+      "deltaE": 13.1,
+      "flags": []
+    },
+    {
+      "kind": "variable",
+      "id": "V:3",
+      "name": "colors/Gray/0",
+      "newName": null,
+      "mode": null,
+      "from": "#FFFFFF",
+      "fromAlpha": 1,
+      "to": "#FAFAFA",
+      "toAlpha": 1,
+      "fromFamily": "Gray",
+      "fromStep": 0,
+      "toFamily": "Neutral",
+      "toStep": 0,
+      "via": "lightness",
+      "deltaE": 1.9,
+      "flags": []
+    },
+    {
+      "kind": "style",
+      "id": "S:1",
+      "name": "shadow/ambient",
+      "newName": null,
+      "mode": null,
+      "from": "#0F172A",
+      "fromAlpha": 0.12,
+      "to": "#1E1B4B",
+      "toAlpha": 0.12,
+      "fromFamily": null,
+      "fromStep": null,
+      "toFamily": "Violet",
+      "toStep": 950,
+      "via": "nearest",
+      "deltaE": 6.0,
+      "flags": [
+        "orphan"
+      ]
+    },
+    {
+      "kind": "variable",
+      "id": "VariableID:9:9",
+      "name": "colors/Gray/25",
+      "newName": null,
+      "mode": null,
+      "from": "#FBFBFB",
+      "fromAlpha": 1,
+      "to": "#F0F0F0",
+      "toAlpha": 1,
+      "fromFamily": "Gray",
+      "fromStep": 25,
+      "toFamily": "Gray",
+      "toStep": 25,
+      "toVariable": null,
+      "via": "step",
+      "deltaE": 1.2,
+      "flags": []
+    },
+    {
+      "kind": "variable",
+      "id": "VariableID:9:9",
+      "name": "colors/Gray/25",
+      "newName": null,
+      "mode": null,
+      "from": "#FBFBFB",
+      "fromAlpha": 1,
+      "to": "#F0F0F0",
+      "toAlpha": 1,
+      "fromFamily": "Gray",
+      "fromStep": 25,
+      "toFamily": "Gray",
+      "toStep": 25,
+      "toVariable": null,
+      "via": "step",
+      "deltaE": 1.2,
+      "flags": []
+    }
+  ],
+  "warnings": []
+}
