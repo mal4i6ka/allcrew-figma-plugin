@@ -324,3 +324,20 @@ never the synchronous getters.
 
 The bridge logs every call with its op and duration; the plugin's status line shows the same
 thing to the designer.
+
+## Getting a build in front of Figma
+
+Figma does not load this plugin from the repo. It loads it from whatever `manifest.json`
+path is registered in `~/Library/Application Support/Figma/settings.json` — on this machine
+an external volume, not the checkout you just built in. So a build is not a deploy, and
+"restart the plugin" fixes nothing until the files move.
+
+Deploy the pair with `agent/deploy-to-figma.sh`, which exists because the failure it prevents
+is invisible: a `dist/code.js` from one build landing beside a `dist/ui.html` from another —
+both files intact, nothing corrupt to notice, and a UI calling into code that has never heard
+of it. rsync exiting 0 is not evidence that both arrived; the script compares md5 on both
+sides and retries until they agree, then clears the `._*` stubs a dying network mount leaves
+behind.
+
+Then reopen the plugin and confirm with one call to something the new build introduced —
+`"unknown op"` means the deploy did not land, whatever the terminal said.
