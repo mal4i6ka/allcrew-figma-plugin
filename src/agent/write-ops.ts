@@ -312,6 +312,17 @@ export function planDescribe(entry: Record<string, unknown>, where: string): Des
 
 /* --------------------------------------------------------------------- ops */
 
+/**
+ * Does a sublayer's binding belong to the instance, or is it the main's showing through?
+ * `mainAliasId` is what the corresponding node inside the main component binds for the same
+ * field. Equal means inherited — writing there would mint an override, so the caller must not.
+ * Absent means the main binds nothing while the sublayer does, which is an override too.
+ */
+export function isOwnOverride(mirrorAliasId: string, mainAliasId: string | undefined): boolean {
+  if (mirrorAliasId === '') return false
+  return mainAliasId !== mirrorAliasId
+}
+
 export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'variables.set',
@@ -1142,11 +1153,21 @@ export const WRITE_OPS: readonly OpDef[] = [
       pageId: { type: 'string', description: 'Which page to walk — giving it implies scope: "page". Defaults to the current page when scope is "page".' },
       nodeId: { type: 'string', description: 'Walk just this subtree. Overrides scope and pageId.' },
       styles: { type: 'boolean', default: true, description: 'Also migrate bindings inside local paint styles.' },
+      overrides: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Also repoint bindings that a layer INSIDE an instance overrides for itself. Off by ' +
+          'default and deliberately so: the walk then descends into every instance, which is the ' +
+          'expensive direction on a big file — pair it with pageId. It never CREATES an override; ' +
+          'a sublayer whose binding merely mirrors its main is left alone and counted as skipped.',
+      },
       dryRun: { type: 'boolean', default: false, description: 'Count and report every match without writing anything.' },
     },
     async run(params) {
       const rows = asArray(params.map, 'map')
       const dryRun = params.dryRun === true
+      const wantOverrides = params.overrides === true
 
       /* The whole map resolves before anything is touched: a migration that discovers a bad row
        * halfway through leaves the file half-moved, which is worse than either end state. */
@@ -1156,6 +1177,8 @@ export const WRITE_OPS: readonly OpDef[] = [
         matched: number
         rebound: number
         failed: number
+        overrides: number
+        inherited: number
         errors: string[]
       }> = []
       const pairByFromId = new Map<string, number>()
@@ -1169,7 +1192,7 @@ export const WRITE_OPS: readonly OpDef[] = [
         if (from.id === to.id) throw new Error(`map[${index}]: "${from.name}" maps to itself`)
         if (pairByFromId.has(from.id)) throw new Error(`map[${index}]: "${from.name}" appears twice as a source`)
         pairByFromId.set(from.id, pairs.length)
-        pairs.push({ from, to, matched: 0, rebound: 0, failed: 0, errors: [] })
+        pairs.push({ from, to, matched: 0, rebound: 0, failed: 0, overrides: 0, inherited: 0, errors: [] })
       }
 
       if (!dryRun) figma.commitUndo()
@@ -1221,7 +1244,60 @@ export const WRITE_OPS: readonly OpDef[] = [
       const styled = (value: unknown) => value !== undefined && value !== ''
       const writeErrors: string[] = []
 
+      /* A sublayer inside an instance reports the binding it EFFECTIVELY has, whether that came
+       * from its main or from an override on this instance. The two must not be treated alike:
+       * repointing an override edits something that already exists, while writing over an
+       * inherited binding mints a fresh override that the next component update will fight —
+       * the very thing the walk avoids by skipping instance children. The main's own alias for
+       * the same field is what tells them apart, and it is the only reliable signal: after the
+       * mains have moved, an inherited binding already reads as the NEW variable, so anything
+       * still reading the old one is an override by construction. */
+      const overrideJobs: Array<{
+        node: SceneNode
+        at: number
+        aliasId: string
+        field: string
+        prop?: 'fills' | 'strokes'
+        index?: number
+      }> = []
+
+      const collectOverrides = (node: SceneNode) => {
+        const holder = node as unknown as Record<string, unknown>
+        const bound = holder.boundVariables as Record<string, unknown> | undefined
+        if (bound) {
+          for (const [field, value] of Object.entries(bound)) {
+            if (field === 'fills' || field === 'strokes' || field === 'effects' || field === 'layoutGrids') continue
+            if (Array.isArray(value)) continue // per-segment text bindings: not an override story
+            const aliasId = (value as { id?: string })?.id ?? ''
+            const at = pairByFromId.get(aliasId)
+            if (at === undefined) continue
+            pairs[at].matched += 1
+            if (!dryRun) overrideJobs.push({ node, at, aliasId, field })
+          }
+        }
+        for (const prop of ['fills', 'strokes'] as const) {
+          const paints = holder[prop]
+          if (!Array.isArray(paints)) continue
+          ;(paints as Paint[]).forEach((paint, index) => {
+            if (paint.type !== 'SOLID') return
+            const aliasId =
+              (paint as { boundVariables?: { color?: { id?: string } } }).boundVariables?.color?.id ?? ''
+            const at = pairByFromId.get(aliasId)
+            if (at === undefined) return
+            pairs[at].matched += 1
+            if (!dryRun) overrideJobs.push({ node, at, aliasId, field: `${prop}[${index}]`, prop, index })
+          })
+        }
+      }
+
       const migrateNode = (node: SceneNode) => {
+        /* `I<instance path>;<main node id>` is how Figma names a sublayer seen through an
+         * instance. Those go to the override collector instead: the write needs the main for
+         * comparison, and reading it is async while this visitor is deliberately not. */
+        if (node.id.includes(';')) {
+          if (wantOverrides) collectOverrides(node)
+          return
+        }
         const holder = node as unknown as Record<string, unknown>
 
         const bound = holder.boundVariables as Record<string, unknown> | undefined
@@ -1439,10 +1515,72 @@ export const WRITE_OPS: readonly OpDef[] = [
       const tWalk = Date.now()
       let visited = 0
       for (const root of roots) {
-        const walked = await walkSceneNodes(root, migrateNode, { skipInstanceChildren: true })
+        const walked = await walkSceneNodes(root, migrateNode, { skipInstanceChildren: !wantOverrides })
         visited += walked.visited
       }
       const walkMs = Date.now() - tWalk
+
+      /* Overrides are applied after the walk, in one async pass: each job needs the main's alias
+       * for the same field, and one main serves many instances, so the lookups are cached. A job
+       * whose main agrees is INHERITED — reported as such and left alone, because the write that
+       * would "fix" it is exactly the override-minting this op refuses to do. */
+      const mainCache = new Map<string, Record<string, unknown> | null>()
+      for (const job of overrideJobs) {
+        const mainId = job.node.id.split(';').pop() ?? ''
+        let main = mainCache.get(mainId)
+        if (main === undefined) {
+          try {
+            const found = await figma.getNodeByIdAsync(mainId)
+            main = (found as unknown as Record<string, unknown>) ?? null
+          } catch {
+            main = null
+          }
+          mainCache.set(mainId, main)
+        }
+        let mainAlias: string | undefined
+        if (main) {
+          if (job.prop !== undefined && job.index !== undefined) {
+            const paints = main[job.prop]
+            const paint = Array.isArray(paints) ? (paints as Paint[])[job.index] : undefined
+            mainAlias = (paint as { boundVariables?: { color?: { id?: string } } } | undefined)?.boundVariables?.color
+              ?.id
+          } else {
+            const bound = main.boundVariables as Record<string, { id?: string }> | undefined
+            mainAlias = bound?.[job.field]?.id
+          }
+        }
+        if (!isOwnOverride(job.aliasId, mainAlias)) {
+          pairs[job.at].inherited += 1
+          continue
+        }
+        try {
+          if (job.prop !== undefined && job.index !== undefined) {
+            const holder = job.node as unknown as Record<string, unknown>
+            const paints = holder[job.prop]
+            if (!Array.isArray(paints)) throw new Error(`${job.prop} is not an array any more`)
+            const next = (paints as Paint[]).slice()
+            next[job.index] = figma.variables.setBoundVariableForPaint(
+              next[job.index] as SolidPaint,
+              'color',
+              pairs[job.at].to
+            )
+            holder[job.prop] = next
+          } else {
+            ;(job.node as unknown as { setBoundVariable: (f: string, v: Variable) => void }).setBoundVariable(
+              job.field,
+              pairs[job.at].to
+            )
+          }
+          pairs[job.at].rebound += 1
+          pairs[job.at].overrides += 1
+        } catch (err) {
+          pairs[job.at].failed += 1
+          const message = `override ${job.field}: ${String((err as Error)?.message || err)}`
+          if (pairs[job.at].errors.length < 3 && !pairs[job.at].errors.includes(message)) {
+            pairs[job.at].errors.push(message)
+          }
+        }
+      }
 
       for (const job of textJobs) {
         try {
@@ -1614,10 +1752,20 @@ export const WRITE_OPS: readonly OpDef[] = [
           matched: pair.matched,
           rebound: pair.rebound,
           failed: pair.failed,
+          /* Reported separately because they answer different questions: `overrides` is what this
+           * run edited inside instances, `inherited` is what it deliberately left for the main. */
+          ...(pair.overrides > 0 ? { overrides: pair.overrides } : {}),
+          ...(pair.inherited > 0 ? { inherited: pair.inherited } : {}),
           ...(pair.errors.length > 0 ? { errors: pair.errors } : {}),
         })),
         totalMatched: pairs.reduce((sum, pair) => sum + pair.matched, 0),
         totalRebound: pairs.reduce((sum, pair) => sum + pair.rebound, 0),
+        ...(wantOverrides
+          ? {
+              totalOverrides: pairs.reduce((sum, pair) => sum + pair.overrides, 0),
+              totalInherited: pairs.reduce((sum, pair) => sum + pair.inherited, 0),
+            }
+          : {}),
         ...(writeErrors.length > 0 ? { writeErrors } : {}),
       }
     },

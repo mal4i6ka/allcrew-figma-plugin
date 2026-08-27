@@ -15568,6 +15568,10 @@ ${scripts}`, "");
       variant: entry.variant === true
     });
   }
+  function isOwnOverride(mirrorAliasId, mainAliasId) {
+    if (mirrorAliasId === "") return false;
+    return mainAliasId !== mirrorAliasId;
+  }
   var WRITE_OPS = [
     {
       name: "variables.set",
@@ -16245,12 +16249,18 @@ ${scripts}`, "");
         pageId: { type: "string", description: 'Which page to walk \u2014 giving it implies scope: "page". Defaults to the current page when scope is "page".' },
         nodeId: { type: "string", description: "Walk just this subtree. Overrides scope and pageId." },
         styles: { type: "boolean", default: true, description: "Also migrate bindings inside local paint styles." },
+        overrides: {
+          type: "boolean",
+          default: false,
+          description: "Also repoint bindings that a layer INSIDE an instance overrides for itself. Off by default and deliberately so: the walk then descends into every instance, which is the expensive direction on a big file \u2014 pair it with pageId. It never CREATES an override; a sublayer whose binding merely mirrors its main is left alone and counted as skipped."
+        },
         dryRun: { type: "boolean", default: false, description: "Count and report every match without writing anything." }
       },
       async run(params) {
-        var _a, _b, _c, _d, _e, _f, _g;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
         const rows = asArray(params.map, "map");
         const dryRun = params.dryRun === true;
+        const wantOverrides = params.overrides === true;
         const pairs = [];
         const pairByFromId = /* @__PURE__ */ new Map();
         for (const [index, raw] of rows.entries()) {
@@ -16263,7 +16273,7 @@ ${scripts}`, "");
           if (from.id === to.id) throw new Error(`map[${index}]: "${from.name}" maps to itself`);
           if (pairByFromId.has(from.id)) throw new Error(`map[${index}]: "${from.name}" appears twice as a source`);
           pairByFromId.set(from.id, pairs.length);
-          pairs.push({ from, to, matched: 0, rebound: 0, failed: 0, errors: [] });
+          pairs.push({ from, to, matched: 0, rebound: 0, failed: 0, overrides: 0, inherited: 0, errors: [] });
         }
         if (!dryRun) figma.commitUndo();
         let roots;
@@ -16302,8 +16312,42 @@ ${scripts}`, "");
         const textFillJobs = [];
         const styled = (value) => value !== void 0 && value !== "";
         const writeErrors = [];
+        const overrideJobs = [];
+        const collectOverrides = (node) => {
+          var _a2;
+          const holder = node;
+          const bound = holder.boundVariables;
+          if (bound) {
+            for (const [field, value] of Object.entries(bound)) {
+              if (field === "fills" || field === "strokes" || field === "effects" || field === "layoutGrids") continue;
+              if (Array.isArray(value)) continue;
+              const aliasId = (_a2 = value == null ? void 0 : value.id) != null ? _a2 : "";
+              const at = pairByFromId.get(aliasId);
+              if (at === void 0) continue;
+              pairs[at].matched += 1;
+              if (!dryRun) overrideJobs.push({ node, at, aliasId, field });
+            }
+          }
+          for (const prop of ["fills", "strokes"]) {
+            const paints2 = holder[prop];
+            if (!Array.isArray(paints2)) continue;
+            paints2.forEach((paint, index) => {
+              var _a3, _b2, _c2;
+              if (paint.type !== "SOLID") return;
+              const aliasId = (_c2 = (_b2 = (_a3 = paint.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b2.id) != null ? _c2 : "";
+              const at = pairByFromId.get(aliasId);
+              if (at === void 0) return;
+              pairs[at].matched += 1;
+              if (!dryRun) overrideJobs.push({ node, at, aliasId, field: `${prop}[${index}]`, prop, index });
+            });
+          }
+        };
         const migrateNode = (node) => {
           var _a2, _b2, _c2, _d2, _e2;
+          if (node.id.includes(";")) {
+            if (wantOverrides) collectOverrides(node);
+            return;
+          }
           const holder = node;
           const bound = holder.boundVariables;
           if (bound) {
@@ -16502,26 +16546,83 @@ ${scripts}`, "");
         const tWalk = Date.now();
         let visited = 0;
         for (const root of roots) {
-          const walked = await walkSceneNodes(root, migrateNode, { skipInstanceChildren: true });
+          const walked = await walkSceneNodes(root, migrateNode, { skipInstanceChildren: !wantOverrides });
           visited += walked.visited;
         }
         const walkMs = Date.now() - tWalk;
+        const mainCache = /* @__PURE__ */ new Map();
+        for (const job of overrideJobs) {
+          const mainId = (_a = job.node.id.split(";").pop()) != null ? _a : "";
+          let main = mainCache.get(mainId);
+          if (main === void 0) {
+            try {
+              const found = await figma.getNodeByIdAsync(mainId);
+              main = found != null ? found : null;
+            } catch (e) {
+              main = null;
+            }
+            mainCache.set(mainId, main);
+          }
+          let mainAlias;
+          if (main) {
+            if (job.prop !== void 0 && job.index !== void 0) {
+              const paints2 = main[job.prop];
+              const paint = Array.isArray(paints2) ? paints2[job.index] : void 0;
+              mainAlias = (_c = (_b = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _b.color) == null ? void 0 : _c.id;
+            } else {
+              const bound = main.boundVariables;
+              mainAlias = (_d = bound == null ? void 0 : bound[job.field]) == null ? void 0 : _d.id;
+            }
+          }
+          if (!isOwnOverride(job.aliasId, mainAlias)) {
+            pairs[job.at].inherited += 1;
+            continue;
+          }
+          try {
+            if (job.prop !== void 0 && job.index !== void 0) {
+              const holder = job.node;
+              const paints2 = holder[job.prop];
+              if (!Array.isArray(paints2)) throw new Error(`${job.prop} is not an array any more`);
+              const next = paints2.slice();
+              next[job.index] = figma.variables.setBoundVariableForPaint(
+                next[job.index],
+                "color",
+                pairs[job.at].to
+              );
+              holder[job.prop] = next;
+            } else {
+              ;
+              job.node.setBoundVariable(
+                job.field,
+                pairs[job.at].to
+              );
+            }
+            pairs[job.at].rebound += 1;
+            pairs[job.at].overrides += 1;
+          } catch (err) {
+            pairs[job.at].failed += 1;
+            const message = `override ${job.field}: ${String((err == null ? void 0 : err.message) || err)}`;
+            if (pairs[job.at].errors.length < 3 && !pairs[job.at].errors.includes(message)) {
+              pairs[job.at].errors.push(message);
+            }
+          }
+        }
         for (const job of textJobs) {
           try {
             const text3 = job.node;
             await loadTextFonts(text3);
             const segments = text3.getStyledTextSegments(["boundVariables"]);
             for (const segment of segments) {
-              const at = pairByFromId.get((_c = (_b = (_a = segment.boundVariables) == null ? void 0 : _a[job.field]) == null ? void 0 : _b.id) != null ? _c : "");
+              const at = pairByFromId.get((_g = (_f = (_e = segment.boundVariables) == null ? void 0 : _e[job.field]) == null ? void 0 : _f.id) != null ? _g : "");
               if (at === void 0) continue;
               text3.setRangeBoundVariable(segment.start, segment.end, job.field, pairs[at].to);
               pairs[at].rebound += 1;
             }
-            const after = (_d = text3.boundVariables) == null ? void 0 : _d[job.field];
+            const after = (_h = text3.boundVariables) == null ? void 0 : _h[job.field];
             const leftover = Array.isArray(after) ? after.filter((entry) => {
               var _a2;
               return pairByFromId.has((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
-            }).length : pairByFromId.has((_e = after == null ? void 0 : after.id) != null ? _e : "") ? 1 : 0;
+            }).length : pairByFromId.has((_i = after == null ? void 0 : after.id) != null ? _i : "") ? 1 : 0;
             if (leftover > 0) {
               const entries = Array.isArray(after) ? after : [];
               const targets = new Set(
@@ -16550,11 +16651,11 @@ ${scripts}`, "");
                         target
                       );
                     }
-                    const recheck = (_f = text3.boundVariables) == null ? void 0 : _f[job.field];
+                    const recheck = (_j = text3.boundVariables) == null ? void 0 : _j[job.field];
                     const still = Array.isArray(recheck) ? recheck.filter((entry) => {
                       var _a2;
                       return pairByFromId.has((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
-                    }).length : pairByFromId.has((_g = recheck == null ? void 0 : recheck.id) != null ? _g : "") ? 1 : 0;
+                    }).length : pairByFromId.has((_k = recheck == null ? void 0 : recheck.id) != null ? _k : "") ? 1 : 0;
                     if (still === 0) {
                       pairs[at].rebound += leftover;
                       cleared = true;
@@ -16652,21 +16753,24 @@ ${scripts}`, "");
             }
           }
         }
-        return __spreadValues({
+        return __spreadValues(__spreadValues({
           dryRun,
           walked: { pages: labels, nodes: visited, styles: stylesScanned },
           ms: { walk: walkMs },
-          pairs: pairs.map((pair) => __spreadValues({
+          pairs: pairs.map((pair) => __spreadValues(__spreadValues(__spreadValues({
             from: pair.from.name,
             to: pair.to.name,
             type: pair.from.resolvedType,
             matched: pair.matched,
             rebound: pair.rebound,
             failed: pair.failed
-          }, pair.errors.length > 0 ? { errors: pair.errors } : {})),
+          }, pair.overrides > 0 ? { overrides: pair.overrides } : {}), pair.inherited > 0 ? { inherited: pair.inherited } : {}), pair.errors.length > 0 ? { errors: pair.errors } : {})),
           totalMatched: pairs.reduce((sum, pair) => sum + pair.matched, 0),
           totalRebound: pairs.reduce((sum, pair) => sum + pair.rebound, 0)
-        }, writeErrors.length > 0 ? { writeErrors } : {});
+        }, wantOverrides ? {
+          totalOverrides: pairs.reduce((sum, pair) => sum + pair.overrides, 0),
+          totalInherited: pairs.reduce((sum, pair) => sum + pair.inherited, 0)
+        } : {}), writeErrors.length > 0 ? { writeErrors } : {});
       }
     },
     {
