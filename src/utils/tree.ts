@@ -4,7 +4,27 @@
  */
 
 export async function loadAllPagesAsync(): Promise<void> {
-  await Promise.all(figma.root.children.map((page) => page.loadAsync()))
+  /* Not Promise.all: on a 50-page file that fires 50 parallel loads at once, which is exactly
+   * what "Unable to establish connection to Figma after 10 seconds" and the sandbox abort look
+   * like from the inside. Batches of four, one retry per page, and a failure NAMES its page —
+   * an anonymous rejection from a 50-way race helps nobody. */
+  const pages = figma.root.children.slice()
+  const BATCH = 4
+  for (let start = 0; start < pages.length; start += BATCH) {
+    await Promise.all(
+      pages.slice(start, start + BATCH).map(async (page) => {
+        try {
+          await page.loadAsync()
+        } catch {
+          try {
+            await page.loadAsync()
+          } catch (err) {
+            throw new Error(`page "${page.name}" would not load: ${String((err as Error)?.message || err)}`)
+          }
+        }
+      })
+    )
+  }
 }
 
 export interface FindAllWithCriteriaOptions {

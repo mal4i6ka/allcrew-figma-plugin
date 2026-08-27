@@ -613,7 +613,11 @@ async function resolveWalkRoots(params: Record<string, unknown>): Promise<{ root
     if (page) await (page as PageNode).loadAsync()
     return { roots: [found], labels: [`${found.name} (subtree)`] }
   }
-  if (params.scope === 'page') {
+  /* An explicit pageId IS the scope. The old contract — pageId honored only next to
+   * scope:"page" — turned one forgotten field into a silent document-wide walk, the single
+   * most expensive and sandbox-hostile interpretation of the call (a peer session killed the
+   * Mobile DS VM with exactly this). Ambiguity resolves toward the cheaper read. */
+  if (params.scope === 'page' || (typeof params.pageId === 'string' && params.pageId !== '')) {
     const page = await resolvePage(params.pageId)
     return { roots: [page], labels: [page.name] }
   }
@@ -1001,7 +1005,7 @@ export const READ_OPS: readonly OpDef[] = [
     mutates: false,
     params: {
       scope: { type: 'string', default: 'document', enum: ['page', 'document'], description: 'Where to look.' },
-      pageId: { type: 'string', description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+      pageId: { type: 'string', description: 'Which page to walk — giving it implies scope: "page". Defaults to the current page when scope is "page".' },
       nodeId: { type: 'string', description: 'Walk just this subtree. Overrides scope and pageId.' },
       limit: { type: 'number', default: 5, min: 0, max: 100, description: 'Sample instances listed per component; counts are complete.' },
     },
@@ -1133,7 +1137,7 @@ export const READ_OPS: readonly OpDef[] = [
         enum: ['page', 'document'],
         description: 'Where to walk. A page-scoped answer cannot say "this file is self-contained".',
       },
-      pageId: { type: 'string', description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+      pageId: { type: 'string', description: 'Which page to walk — giving it implies scope: "page". Defaults to the current page when scope is "page".' },
       nodeId: {
         type: 'string',
         description:
@@ -1367,7 +1371,7 @@ export const READ_OPS: readonly OpDef[] = [
       pageId: {
         type: 'string',
         description:
-          'With `scope: "page"`, which page to walk. Defaults to the one the designer is on. ' +
+          'Which page to walk — giving it implies scope: "page". Defaults to the designer\'s page when scope is "page". ' +
           'The way to cover a document too big for one call: walk it page by page and add the ' +
           'counts up, which is exactly as correct and finishes.',
       },

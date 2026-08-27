@@ -1019,7 +1019,7 @@ export const WRITE_OPS: readonly OpDef[] = [
           'Types must match: a COLOR cannot take over a FLOAT binding.',
       },
       scope: { type: 'string', default: 'document', enum: ['page', 'document'], description: 'Where to walk.' },
-      pageId: { type: 'string', description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+      pageId: { type: 'string', description: 'Which page to walk — giving it implies scope: "page". Defaults to the current page when scope is "page".' },
       nodeId: { type: 'string', description: 'Walk just this subtree. Overrides scope and pageId.' },
       styles: { type: 'boolean', default: true, description: 'Also migrate bindings inside local paint styles.' },
       dryRun: { type: 'boolean', default: false, description: 'Count and report every match without writing anything.' },
@@ -1071,7 +1071,8 @@ export const WRITE_OPS: readonly OpDef[] = [
         }
         roots = [found]
         labels = [found.type === 'PAGE' ? found.name : `${found.name} (subtree)`]
-      } else if (params.scope === 'page') {
+      } else if (params.scope === 'page' || (typeof params.pageId === 'string' && params.pageId !== '')) {
+        // Mirrors resolveWalkRoots: an explicit pageId IS the scope — never a silent document walk.
         let page: PageNode
         if (typeof params.pageId === 'string' && params.pageId !== '') {
           const found = await figma.getNodeByIdAsync(params.pageId)

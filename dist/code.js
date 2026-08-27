@@ -8291,7 +8291,23 @@ ${mediaCss}`;
 
   // src/utils/tree.ts
   async function loadAllPagesAsync() {
-    await Promise.all(figma.root.children.map((page) => page.loadAsync()));
+    const pages = figma.root.children.slice();
+    const BATCH = 4;
+    for (let start = 0; start < pages.length; start += BATCH) {
+      await Promise.all(
+        pages.slice(start, start + BATCH).map(async (page) => {
+          try {
+            await page.loadAsync();
+          } catch (e) {
+            try {
+              await page.loadAsync();
+            } catch (err) {
+              throw new Error(`page "${page.name}" would not load: ${String((err == null ? void 0 : err.message) || err)}`);
+            }
+          }
+        })
+      );
+    }
   }
   var YIELD_EVERY = 500;
   function yieldToHost() {
@@ -16075,7 +16091,7 @@ ${scripts}`, "");
           description: 'Array of { from, to }. `from` is the variable being migrated away from \u2014 its id ("VariableID:\u2026") or 40-char key, both reported by `variables.external`; a bare name resolves against LOCAL variables only. `to` is the local replacement \u2014 name or id. Types must match: a COLOR cannot take over a FLOAT binding.'
         },
         scope: { type: "string", default: "document", enum: ["page", "document"], description: "Where to walk." },
-        pageId: { type: "string", description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+        pageId: { type: "string", description: 'Which page to walk \u2014 giving it implies scope: "page". Defaults to the current page when scope is "page".' },
         nodeId: { type: "string", description: "Walk just this subtree. Overrides scope and pageId." },
         styles: { type: "boolean", default: true, description: "Also migrate bindings inside local paint styles." },
         dryRun: { type: "boolean", default: false, description: "Count and report every match without writing anything." }
@@ -16113,7 +16129,7 @@ ${scripts}`, "");
           }
           roots = [found];
           labels = [found.type === "PAGE" ? found.name : `${found.name} (subtree)`];
-        } else if (params.scope === "page") {
+        } else if (params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "") {
           let page;
           if (typeof params.pageId === "string" && params.pageId !== "") {
             const found = await figma.getNodeByIdAsync(params.pageId);
@@ -17032,7 +17048,7 @@ ${scripts}`, "");
       if (page) await page.loadAsync();
       return { roots: [found], labels: [`${found.name} (subtree)`] };
     }
-    if (params.scope === "page") {
+    if (params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "") {
       const page = await resolvePage(params.pageId);
       return { roots: [page], labels: [page.name] };
     }
@@ -17359,7 +17375,7 @@ ${scripts}`, "");
       mutates: false,
       params: {
         scope: { type: "string", default: "document", enum: ["page", "document"], description: "Where to look." },
-        pageId: { type: "string", description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+        pageId: { type: "string", description: 'Which page to walk \u2014 giving it implies scope: "page". Defaults to the current page when scope is "page".' },
         nodeId: { type: "string", description: "Walk just this subtree. Overrides scope and pageId." },
         limit: { type: "number", default: 5, min: 0, max: 100, description: "Sample instances listed per component; counts are complete." }
       },
@@ -17476,7 +17492,7 @@ ${scripts}`, "");
           enum: ["page", "document"],
           description: 'Where to walk. A page-scoped answer cannot say "this file is self-contained".'
         },
-        pageId: { type: "string", description: 'With `scope: "page"`, which page. Defaults to the current one.' },
+        pageId: { type: "string", description: 'Which page to walk \u2014 giving it implies scope: "page". Defaults to the current page when scope is "page".' },
         nodeId: {
           type: "string",
           description: "Walk just this subtree. The sharding escape hatch: a page too big for one call splits by its top-level frames, and the shard answers sum exactly like per-page answers do. Overrides scope and pageId."
@@ -17668,7 +17684,7 @@ ${scripts}`, "");
         collection: { type: "string", description: "Only tokens from this collection, by name or id." },
         pageId: {
           type: "string",
-          description: 'With `scope: "page"`, which page to walk. Defaults to the one the designer is on. The way to cover a document too big for one call: walk it page by page and add the counts up, which is exactly as correct and finishes.'
+          description: `Which page to walk \u2014 giving it implies scope: "page". Defaults to the designer's page when scope is "page". The way to cover a document too big for one call: walk it page by page and add the counts up, which is exactly as correct and finishes.`
         },
         nodeId: {
           type: "string",
