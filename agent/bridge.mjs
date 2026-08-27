@@ -62,8 +62,10 @@
  *   ALTERY_AGENT_CALL_TIMEOUT_MS  how long one call may take (default 180000)
  *   ALTERY_AGENT_FILES        where ops that return files write them
  *                             (default ~/.altery/agent-files)
- *   ALTERY_AGENT_SKILL_FILE   with --install-skill: where the paste-once skill is written
- *                             (default ~/.claude/skills/altery-figma-listener/SKILL.md)
+ *   ALTERY_AGENT_SKILL_FILE   comma-separated paths --install-skill writes the skill to
+ *                             (default: ~/.claude/skills/altery-figma-listener/SKILL.md for
+ *                             Claude Code, plus the agent-neutral ~/.altery/SKILL.md — point
+ *                             any other agent's standing-instructions mechanism at that one)
  */
 
 import http from 'node:http'
@@ -135,32 +137,45 @@ const pairingOpen = () => Date.now() < pairOpenUntil
  * standing instructions for whatever agent reads it, and silently (re)writing those is a trust
  * decision the person at the keyboard should make, not a default they discover.
  */
-const SKILL_INSTALL = (() => {
+const SKILL_TARGETS = (() => {
   const flag = process.argv.find((arg) => arg === '--install-skill' || arg.startsWith('--install-skill='))
   const env = process.env.ALTERY_AGENT_SKILL_FILE
-  if (!flag && !env) return null
-  const fromFlag = flag && flag.includes('=') ? flag.slice(flag.indexOf('=') + 1) : null
-  return fromFlag || env || path.join(os.homedir(), '.claude', 'skills', 'altery-figma-listener', 'SKILL.md')
+  if (!flag && !env) return []
+  const listed = (flag && flag.includes('=') ? flag.slice(flag.indexOf('=') + 1) : env || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+  if (listed.length > 0) return listed
+  /* Two defaults on purpose. The first is where Claude Code reads user-level skills. The second
+   * is agent-neutral: every other CLI has its own idea of standing instructions (AGENTS.md,
+   * rules files, config dirs), and chasing them all is a losing game — so the bridge maintains
+   * ONE canonical copy at a stable path and any agent gets pointed at it, or at GET /skill. */
+  return [
+    path.join(os.homedir(), '.claude', 'skills', 'altery-figma-listener', 'SKILL.md'),
+    path.join(os.homedir(), '.altery', 'SKILL.md'),
+  ]
 })()
 
 function installSkill(plugin) {
-  if (!SKILL_INSTALL || typeof plugin.skill !== 'string' || plugin.skill === '') return
-  try {
-    let current = null
+  if (SKILL_TARGETS.length === 0 || typeof plugin.skill !== 'string' || plugin.skill === '') return
+  for (const target of SKILL_TARGETS) {
     try {
-      current = fs.readFileSync(SKILL_INSTALL, 'utf8')
-    } catch {
-      /* not installed yet */
+      let current = null
+      try {
+        current = fs.readFileSync(target, 'utf8')
+      } catch {
+        /* not installed yet */
+      }
+      if (current === plugin.skill) continue
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.writeFileSync(target, plugin.skill)
+      console.log(
+        new Date().toISOString(),
+        `~ skill → ${target} (${plugin.skill.length} bytes, from "${plugin.file}")`
+      )
+    } catch (err) {
+      console.log(new Date().toISOString(), `! skill install failed for ${target}: ${String(err?.message || err)}`)
     }
-    if (current === plugin.skill) return
-    fs.mkdirSync(path.dirname(SKILL_INSTALL), { recursive: true })
-    fs.writeFileSync(SKILL_INSTALL, plugin.skill)
-    console.log(
-      new Date().toISOString(),
-      `~ skill → ${SKILL_INSTALL} (${plugin.skill.length} bytes, from "${plugin.file}")`
-    )
-  } catch (err) {
-    console.log(new Date().toISOString(), `! skill install failed: ${String(err?.message || err)}`)
   }
 }
 
@@ -869,6 +884,7 @@ server.listen(PORT, HOST, () => {
       : `${SECRET_FILE} (${SECRET_SOURCE === 'minted' ? 'just created' : 'existing'})`
   console.log(`  secret: ${where}`)
   console.log('  agents read it with:  -H "x-altery-secret: $(cat ' + SECRET_FILE + ')"')
+  if (SKILL_TARGETS.length > 0) console.log('  skill auto-install:   ' + SKILL_TARGETS.join(', '))
   if (pairingOpen()) {
     console.log(`  pairing OPEN for ${PAIR_WINDOW_MS / 60000} min — press "Pair with bridge" in the plugin now.`)
   } else {
