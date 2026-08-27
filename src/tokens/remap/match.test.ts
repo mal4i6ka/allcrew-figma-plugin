@@ -458,3 +458,25 @@ test('a crowded tail collapses onto its nearest rung instead of being forced bac
   assert.equal(landing(100), 100, 'the anchor holds')
   assert.equal(landing(200), 500, 'the mid-gray goes to the mid-gray, not backwards to near-white')
 })
+
+test('the wide neutral reference is served in full — 0, 150, 850, 925 and 1000 all anchor', () => {
+  // The reference's neutral scale is wider than a 50…900 run, and no rule born of the strict-
+  // ladder period may forbid its extra steps: a file that carries the same numbers pairs with
+  // every one of them.
+  const wide: Array<[number, string]> = [
+    [0, '#FFFFFF'], [50, '#F7F8F8'], [100, '#F2F4F5'], [150, '#F2F2F2'], [200, '#D9DCDE'],
+    [300, '#B8BBBD'], [400, '#8C8C8C'], [500, '#797979'], [600, '#616161'], [700, '#333434'],
+    [800, '#262829'], [850, '#202020'], [900, '#191B1C'], [925, '#11141A'], [950, '#0F1011'], [1000, '#000000'],
+  ]
+  const same: Array<[number, string]> = wide.map(([step, hex], index) => [step, index % 2 ? hex : `#${(index + 1).toString(16).padStart(2, '0').repeat(3)}`])
+  // A source carrying every number of the reference, values shuffled off the reference's own:
+  const source = rungs('neutral', [
+    [0, '#FEFEFE'], [50, '#F0F0F0'], [100, '#E6E6E6'], [150, '#DDDDDD'], [200, '#CCCCCC'],
+    [300, '#B0B0B0'], [400, '#909090'], [500, '#7A7A7A'], [600, '#5E5E5E'], [700, '#3A3A3A'],
+    [800, '#2A2A2A'], [850, '#222222'], [900, '#1B1B1B'], [925, '#141414'], [950, '#101010'], [1000, '#010101'],
+  ])
+  const matches = matchStops(source, rungs('neutral', wide))
+  for (const [step] of wide) {
+    assert.equal(matches.find((match) => match.from.step === step)!.to.step, step, `${step} anchors 1:1`)
+  }
+})

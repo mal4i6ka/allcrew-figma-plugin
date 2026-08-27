@@ -322,3 +322,25 @@ fixing:
   already one color in the source file, manufacturing a fork. Both barred.
 - The identity lookup keyed on the 8-bit grid missed colors a hair under a rounding boundary
   (hsl()/oklch() palettes); the probe now honors `sameColor`'s tolerance.
+
+## Re-verified against the original (2026-08-20, night)
+
+The operator's correction: the reference neutral scale is *wide* — 0, 50, 100, 150, 200…800,
+850, 900, 925, 950, 1000 — not the strict 50…900 run earlier insisted on. Audit of every rule
+born during the strict-ladder period: none forbids the wide steps. Anchors pair whatever
+numbers both sides share (locked by a test: a source carrying 0/150/850/925/1000 anchors all
+sixteen 1:1); new-only steps are reachable by lightness where honest and stay empty otherwise.
+One earlier claim corrected for the record: `blue/250` *is* in the reference collection — the
+эталон board simply doesn't draw it, and the engine never relied on its absence.
+
+`A-tokens.json` matches the original file's Variables panel group-for-group (119 = 16+10+11+
+12+11+11+10+1+37), so every invariant run against it stands against the true reference. With
+the full 119 (alpha included) the plan holds all invariants; 23 sites are byte-equal and ride
+unchanged, `fade`/`glow` keep their own alpha on their RGB matches.
+
+**Board swatches now carry the real tokens.** Old-side swatches bind the file's own variable,
+new-side swatches bind the imported library variable (`ParsedSwatch.variableKey` → plan
+`toVariableKey` → board `collectBindings`), so selecting any swatch names its token in
+Figma's UI. Best-effort: an unfetchable token leaves a plain fill. The hex label keeps the
+as-drawn value even where a bound fill later follows its variable. `mapping.json` records the
+landing's `toVariable` key for the developer side.
