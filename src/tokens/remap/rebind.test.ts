@@ -93,3 +93,19 @@ test('the report line says what moved and what stayed', () => {
   assert.match(line, /7 from other libraries/)
   assert.match(line, /2 left as-is/)
 })
+
+test('a keyless mode is a vote against moving the variable, not an abstention', () => {
+  // The alias rewrite is per variable: moving the keyed mode would drag the keyless one onto
+  // a token it never chose. Not reachable from today's all-or-nothing sources, and locked
+  // down so a future partially-keyed source cannot turn it on silently.
+  const keyed = keyedPalette()
+  const half = [keyed[0], { ...keyed[1], variableKey: null }]
+  const sites = [
+    site({ id: 'V:1|light', name: 'brand/base', rgba: rgba('#7C3AED'), modeId: 'light', modeName: 'Light' }),
+    site({ id: 'V:1|dark', name: 'brand/base', rgba: rgba('#6D28D9'), modeId: 'dark', modeName: 'Dark' }),
+  ]
+  const plan = buildRemapPlan({ sites, palette: half })
+  const { byVariable, divergent } = rebindTargets(plan)
+  assert.equal(byVariable.has('V:1'), false)
+  assert.deepEqual(divergent, ['V:1'])
+})
