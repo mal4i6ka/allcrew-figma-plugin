@@ -431,3 +431,27 @@ It now takes the same three scopes as the repaint: whole document (variables, st
 canvas), this page, or selection — the narrow scopes move canvas bindings only, because
 variables and styles are file-global (a selection does not own its semantic tokens), and the
 report says so.
+
+## Developer-file test kit found four rewriter bugs (2026-08-25)
+
+Generated a kit of real-shaped developer files (~/Downloads/dev-test-files: CSS, SCSS, DTCG
+JSON, TS theme, Tailwind config, Android XML, Swift, and a traps file) and ran the actual
+A→B mapping over it. Four confirmed rewriter defects, fixed in BOTH engines and locked by a
+new shared golden (tests/fixtures/remap/input/edge-cases.scss):
+
+1. **`green:` in a Swift `UIColor(red:green:blue:)` call was repainted** — a name followed
+   by a colon is a key or argument label, never a value.
+2. **Named colors inside string literals moved** (`content: "tan looks like linen…"`) — a
+   word inside an unclosed quote on the line is prose; the tight-quotes case (the string IS
+   the word) still counts.
+3. **Hexes inside `/* … */` and `<!-- … -->` comments were rewritten** — comment spans are
+   now computed once and every literal inside them is dropped, on all notations (the old
+   guard only covered `//` lines and only for named colors).
+4. **A color that is already a reference landing could be re-snapped to a neighbouring
+   token** (`#f3f8f9` = teal/50 snapped to neutral/100) — which also broke idempotence. The
+   lookup now carries a `settled` set (every `record.to`); a literal holding one is
+   finished, and a second run over a rewritten file is a no-op.
+
+Also observed working as designed: `#0041d3` is refused (blue/500 vs denim blue — one hex,
+two destinations, warned not guessed); Android ARGB 8-digit hexes are not misread as RGBA;
+alpha tails ride through (`#1d1d1d80` → `#191B1C80`, `rgba(29,29,29,.3)` → same alpha).
