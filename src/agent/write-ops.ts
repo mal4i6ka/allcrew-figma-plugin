@@ -1461,6 +1461,179 @@ export const WRITE_OPS: readonly OpDef[] = [
   },
 
   {
+    name: 'node.copy',
+    summary: 'Copy nodes onto a page — how an agent builds a side-by-side comparison out of real screens.',
+    agent:
+      'A COMPONENT copies as an INSTANCE unless you ask for "clone": cloning a component would put a second main in the library, which is a worse defect than the question the copy was meant to answer. modes pins a collection to one mode on the copy, so the same screen can stand twice in Light and Dark. To make a copy show different tokens, follow with variables.rebind scoped by nodeId — the copy is a normal subtree.',
+    mutates: true,
+    params: {
+      nodes: {
+        type: 'json',
+        required: true,
+        description:
+          'Array of { node, page, x, y, name, as, modes }. `node` is the id to copy — required. ' +
+          '`page` is an id or a page name, created when no page has that name; defaults to the ' +
+          "source's own page. `x`/`y` place the copy; omitted, it lands one width to the right of " +
+          'the source so it never covers it. `name` renames the copy. `as` is "instance" or ' +
+          '"clone" — the default is "instance" for a COMPONENT or COMPONENT_SET and "clone" for ' +
+          'everything else. `modes` is { collectionNameOrId: modeName }, pinned on the copy.',
+      },
+      dryRun: { type: 'boolean', default: false, description: 'Report every copy without creating anything.' },
+    },
+    async run(params) {
+      const rows = asArray(params.nodes, 'nodes')
+      const dryRun = params.dryRun === true
+      if (!dryRun) figma.commitUndo()
+
+      /* Page resolution is local rather than imported from board.ts: the board owns its own
+       * "create the page if the name is new" rule and the two are free to diverge. */
+      const resolvePage = async (ref: unknown, fallback: PageNode): Promise<PageNode> => {
+        if (typeof ref !== 'string' || ref === '') return fallback
+        if (/^\d+:\d+$/.test(ref)) {
+          const found = await figma.getNodeByIdAsync(ref)
+          if (!found || found.type !== 'PAGE') throw new Error(`no page with id ${ref}`)
+          await (found as PageNode).loadAsync()
+          return found as PageNode
+        }
+        const existing = figma.root.children.find((page) => page.name === ref)
+        if (existing) {
+          await existing.loadAsync()
+          return existing
+        }
+        const page = figma.createPage()
+        page.name = ref
+        return page
+      }
+
+      const pageOf = (node: BaseNode): PageNode | null => {
+        let walk: BaseNode | null = node.parent
+        while (walk && walk.type !== 'PAGE') walk = walk.parent
+        return (walk as PageNode) ?? null
+      }
+
+      const results = []
+      for (const [index, raw] of rows.entries()) {
+        const entry = record(raw, `nodes[${index}]`)
+        const id = typeof entry.node === 'string' ? entry.node : ''
+        try {
+          if (id === '') throw new Error('"node" must be a node id')
+          const source = await figma.getNodeByIdAsync(id)
+          if (!source) throw new Error(`no node with id ${id}`)
+          if (source.type === 'PAGE' || source.type === 'DOCUMENT') throw new Error(`${source.type} cannot be copied`)
+          const scene = source as SceneNode
+          const home = pageOf(scene)
+          if (home) await home.loadAsync()
+
+          const wantAs = typeof entry.as === 'string' ? entry.as : null
+          if (wantAs !== null && wantAs !== 'instance' && wantAs !== 'clone') {
+            throw new Error(`"as" must be "instance" or "clone", got ${JSON.stringify(entry.as)}`)
+          }
+          const componentish = scene.type === 'COMPONENT' || scene.type === 'COMPONENT_SET'
+          const as = wantAs ?? (componentish ? 'instance' : 'clone')
+          if (as === 'instance' && !componentish && scene.type !== 'INSTANCE') {
+            throw new Error(`${scene.type} has no instances — use as: "clone"`)
+          }
+
+          const target = await resolvePage(entry.page, home ?? figma.currentPage)
+          const x = typeof entry.x === 'number' ? entry.x : scene.x + scene.width + 64
+          const y = typeof entry.y === 'number' ? entry.y : scene.y
+
+          if (dryRun) {
+            results.push({
+              node: id,
+              name: scene.name,
+              type: scene.type,
+              as,
+              page: target.name,
+              x,
+              y,
+              ok: true,
+              copied: false,
+            })
+            continue
+          }
+
+          let copy: SceneNode
+          if (as === 'instance' && scene.type === 'COMPONENT_SET') {
+            const variant = (scene as ComponentSetNode).defaultVariant
+            if (!variant) throw new Error('component set has no default variant to instantiate')
+            copy = variant.createInstance()
+          } else if (as === 'instance' && scene.type === 'COMPONENT') {
+            copy = (scene as ComponentNode).createInstance()
+          } else if (as === 'instance') {
+            copy = (scene as InstanceNode).clone()
+          } else {
+            copy = scene.clone()
+          }
+
+          /* appendChild reparents whatever clone() or createInstance() chose for us — both
+           * document a parent of their own and the two do not agree, so the copy is placed
+           * explicitly instead of trusting either. */
+          target.appendChild(copy)
+          copy.x = x
+          copy.y = y
+          if (typeof entry.name === 'string' && entry.name !== '') copy.name = entry.name
+
+          const pinned: string[] = []
+          const modeWarnings: string[] = []
+          if (entry.modes !== undefined) {
+            const wanted = record(entry.modes, `nodes[${index}].modes`)
+            for (const [collectionRef, modeRef] of Object.entries(wanted)) {
+              try {
+                const collection = await resolveCollection(collectionRef)
+                const modes = resolveModes(collection, modeRef)
+                if (modes.length !== 1) throw new Error(`"${String(modeRef)}" must name exactly one mode`)
+                const holder = copy as SceneNode & {
+                  setExplicitVariableModeForCollection?: (collection: unknown, modeId: string) => void
+                }
+                if (typeof holder.setExplicitVariableModeForCollection !== 'function') {
+                  throw new Error(`${copy.type} cannot hold explicit modes`)
+                }
+                try {
+                  holder.setExplicitVariableModeForCollection(collection, modes[0].modeId)
+                } catch {
+                  // Older typings took the collection id; a plugin can meet either at runtime.
+                  holder.setExplicitVariableModeForCollection(collection.id, modes[0].modeId)
+                }
+                pinned.push(`${collection.name} → ${modes[0].name}`)
+              } catch (err) {
+                modeWarnings.push(`${collectionRef}: ${String((err as Error)?.message || err)}`)
+              }
+            }
+          }
+
+          results.push({
+            node: id,
+            name: scene.name,
+            type: scene.type,
+            as,
+            copy: copy.id,
+            copyName: copy.name,
+            page: target.name,
+            x: copy.x,
+            y: copy.y,
+            ...(pinned.length > 0 ? { modes: pinned } : {}),
+            ...(modeWarnings.length > 0 ? { modeWarnings } : {}),
+            ok: true,
+            copied: true,
+          })
+        } catch (err) {
+          results.push({ node: id, ok: false, copied: false, error: String((err as Error)?.message || err) })
+        }
+      }
+
+      const done = results.filter((row) => row.ok)
+      return {
+        dryRun,
+        total: results.length,
+        copied: dryRun ? 0 : done.filter((row) => row.copied).length,
+        failed: results.length - done.length,
+        results,
+      }
+    },
+  },
+
+  {
     name: 'instance.detach',
     summary: 'Detach instances from their main components. Bindings stay — plan a rebind after.',
     agent:
