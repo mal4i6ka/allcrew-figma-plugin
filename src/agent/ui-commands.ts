@@ -62,6 +62,11 @@ export interface UiCommandDef {
   /** Reply types posted from inside the case. Best-effort: a reply sent from a helper the case
    * calls is not visible here, so this is a hint for what to expect, not a contract. */
   replies: readonly string[]
+  /** Set only on a command a user module provides — the id of that module. Native commands are
+   * extracted from this build and carry nothing. Shown, never trusted with a decision: what a
+   * module command is allowed to do is decided by its derived `access`, exactly as for a
+   * native one. */
+  module?: string
 }
 
 /** Where the extractor starts reading. Cases above this point belong to other switches — the

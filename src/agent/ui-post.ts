@@ -15,10 +15,19 @@
  * bypasses this module is a reply the agent silently never hears about.
  */
 
-let recorder: unknown[] | null = null
+/**
+ * Every open recording, not one.
+ *
+ * A module command runs several plugin commands in a row, and two different questions are being
+ * asked at once: the caller wants everything the whole run said, and the step needs its own
+ * answer to hand to the next step. Both get their own sink and every message reaches all of
+ * them — an inner recording that stole the messages from the outer one would make a module's
+ * run invisible to the caller who asked for it.
+ */
+const recorders: unknown[][] = []
 
 export function postToUi(message: unknown, options?: UIPostMessageOptions): void {
-  if (recorder) recorder.push(message)
+  for (const sink of recorders) sink.push(message)
   figma.ui.postMessage(message, options)
 }
 
@@ -27,14 +36,15 @@ export function postToUi(message: unknown, options?: UIPostMessageOptions): void
  * call cannot silence a live one. */
 export function beginRecording(): unknown[] {
   const sink: unknown[] = []
-  recorder = sink
+  recorders.push(sink)
   return sink
 }
 
 export function endRecording(sink: unknown[]): void {
-  if (recorder === sink) recorder = null
+  const at = recorders.indexOf(sink)
+  if (at >= 0) recorders.splice(at, 1)
 }
 
 export function isRecording(): boolean {
-  return recorder !== null
+  return recorders.length > 0
 }

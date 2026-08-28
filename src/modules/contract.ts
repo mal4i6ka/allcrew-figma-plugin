@@ -394,15 +394,26 @@ function parseSteps(raw: unknown, path: string, context: Context): ModuleStep[] 
   return failed ? null : steps
 }
 
-/** A param value is a literal, unless it is `{ from: "<path>" }`. */
+/**
+ * A param value is a literal, unless it is `{ from: "<path>" }` — at any depth.
+ *
+ * The commands worth composing take objects (`source` is `{ kind, key }`), and a module's state
+ * holds scalars, so a reference has to be able to sit inside one. Checked as deep as it is
+ * substituted, or the validator would pass a file the runner then fails on.
+ */
 function checkReference(value: unknown, path: string, available: ReadonlySet<string>, context: Context): boolean {
-  if (!isRecord(value)) return true
-  if (typeof value.from !== 'string') return true
-  if (!isReachable(value.from, available)) {
-    context.fail(`${path}.from`, `nothing named "${value.from.split('.')[0]}" is available here`)
-    return false
+  if (Array.isArray(value)) {
+    return value.every((entry, index) => checkReference(entry, `${path}[${index}]`, available, context))
   }
-  return true
+  if (!isRecord(value)) return true
+  if (typeof value.from === 'string') {
+    if (!isReachable(value.from, available)) {
+      context.fail(`${path}.from`, `nothing named "${value.from.split('.')[0]}" is available here`)
+      return false
+    }
+    return true
+  }
+  return Object.entries(value).every(([key, entry]) => checkReference(entry, `${path}.${key}`, available, context))
 }
 
 const isReachable = (reference: string, available: ReadonlySet<string>): boolean =>

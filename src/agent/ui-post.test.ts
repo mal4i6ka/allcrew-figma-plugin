@@ -34,6 +34,23 @@ test('the options argument is passed through', () => {
   assert.deepEqual(panel, [{ message: { type: 'A' }, options: { origin: '*' } }])
 })
 
+test('a recording inside a recording feeds both', () => {
+  // A module command runs several plugin commands: the caller wants the whole run, each step
+  // wants its own answer, and an inner recording that stole the messages would make the run
+  // invisible to whoever asked for it.
+  const run = beginRecording()
+  postToUi({ type: 'BEFORE' })
+  const step = beginRecording()
+  postToUi({ type: 'INSIDE' })
+  endRecording(step)
+  postToUi({ type: 'AFTER' })
+  endRecording(run)
+
+  assert.deepEqual(step, [{ type: 'INSIDE' }])
+  assert.deepEqual(run, [{ type: 'BEFORE' }, { type: 'INSIDE' }, { type: 'AFTER' }])
+  assert.equal(isRecording(), false)
+})
+
 test('a stale close cannot silence a live recording', () => {
   // The array is the token. An abandoned call closing "the recording" would otherwise stop
   // recording whichever call the queue has moved on to.

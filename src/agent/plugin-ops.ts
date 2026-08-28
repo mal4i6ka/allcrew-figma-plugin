@@ -36,6 +36,35 @@ export function setUiMessageRunner(next: UiMessageRunner | null): void {
   runner = next
 }
 
+/**
+ * The user modules this build has installed, if any.
+ *
+ * A getter rather than a list: modules are read from storage after the plugin opens and change
+ * whenever one is installed or removed, and a snapshot taken at registration time would answer
+ * for a plugin that no longer exists. `run` executes one of their commands; everything else
+ * about how a module works stays on the other side of this seam.
+ */
+export interface ModuleProvider {
+  commands: () => readonly UiCommandDef[]
+  run: (name: string, params: Record<string, unknown>) => Promise<unknown>
+}
+
+let modules: ModuleProvider | null = null
+
+export function setModuleProvider(next: ModuleProvider | null): void {
+  modules = next
+}
+
+const moduleCommands = (): readonly UiCommandDef[] => {
+  try {
+    return modules?.commands() ?? []
+  } catch {
+    // A registry that throws must not take the whole surface down with it: the native half is
+    // still perfectly callable.
+    return []
+  }
+}
+
 export function commandNameOf(raw: unknown): string | null {
   if (typeof raw !== 'object' || raw === null) return null
   const command = (raw as Record<string, unknown>).command
@@ -123,14 +152,20 @@ function serialize<T>(work: () => Promise<T>): Promise<T> {
  * from `code.ts` for this bundle.
  */
 export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): readonly OpDef[] {
-  const byName = new Map(commands.map((command) => [command.name, command]))
+  // Native first, then whatever modules are installed right now. Read on every call rather than
+  // captured: a module installed a minute ago is callable a minute ago, and one removed is gone.
+  // A module cannot shadow a native command — the contract namespaces its names — so the native
+  // half always wins a collision anyway.
+  const all = (): readonly UiCommandDef[] => [...commands, ...moduleCommands()]
+  const lookup = (name: string): UiCommandDef | undefined =>
+    commands.find((command) => command.name === name) ?? moduleCommands().find((command) => command.name === name)
 
   /** Never callable through the channel, whatever the source says. */
   const deniedReason = (command: string): string | null => {
     if (command.startsWith('AGENT_')) {
       return "the listener's own messages are not callable through the listener — the gates are the designer's switch, and AGENT_REQUEST would only recurse"
     }
-    const def = byName.get(command)
+    const def = lookup(command)
     if (def?.access === 'deny') return def.summary || 'this command is marked unavailable to agents'
     return null
   }
@@ -145,7 +180,7 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
     // `AGENT_SET_GATES` as a read would otherwise get it authorised on the read gate — refused
     // a moment later by `run`, but authorised, and one layer should not depend on the next.
     if (deniedReason(command)) return true
-    return byName.get(command)?.access !== 'read'
+    return lookup(command)?.access !== 'read'
   }
 
   const describe = (command: UiCommandDef): Record<string, unknown> => ({
@@ -156,6 +191,9 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
     // this plugin's variables is 0.5s and 90s, and nothing else in the surface says so.
     ...(command.cost ? { cost: command.cost } : {}),
     ...(command.classified ? {} : { classified: false }),
+    // Whose command this is. A caller deciding whether to trust one wants to know it came from
+    // a file somebody installed rather than from the build.
+    ...(command.module ? { module: command.module } : {}),
     params: command.params,
     replies: command.replies,
   })
@@ -178,18 +216,23 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
       async run(params) {
         const wanted = params.command as string | undefined
         if (wanted) {
-          const def = byName.get(wanted)
+          const def = lookup(wanted)
           if (!def) throw new Error(`unknown command "${wanted}" — call plugin.commands with no params for the list`)
           return describe(def)
         }
+        const listed = all()
+        const fromModules = listed.filter((command) => command.module).length
         return {
-          count: commands.length,
+          count: listed.length,
           // Zero means the bundle was built without the extraction step — say so, rather than
           // let an agent conclude the plugin has no features.
           ...(commands.length === 0
             ? { warning: 'this build shipped without its command table — rebuild the plugin (npm run build)' }
             : {}),
-          commands: commands.map(describe),
+          // Named separately because the two halves age differently: one ships with the build,
+          // the other was installed by whoever is using it.
+          ...(fromModules > 0 ? { fromModules } : {}),
+          commands: listed.map(describe),
         }
       },
     },
@@ -238,7 +281,7 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
         const denied = deniedReason(command)
         if (denied) throw new Error(`"${command}" is not available through the channel: ${denied}`)
 
-        const def = byName.get(command)
+        const def = lookup(command)
         if (!def && commands.length > 0) {
           throw new Error(`unknown command "${command}" — call plugin.commands for the list`)
         }
@@ -258,8 +301,15 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
         const ignored = def ? Object.keys(extra).filter((key) => !def.params.some((param) => param.name === key)) : []
 
         const started = Date.now()
+        // A module command is a pipeline over these same commands, so it runs through the same
+        // recording, the same one-at-a-time queue and the same timeout — the only difference is
+        // who decides which messages get sent.
+        let moduleReport: unknown
         const capture = await serialize(() =>
-          withCapture(() => Promise.resolve(runner!({ ...extra, type: command })), params.timeoutMs as number)
+          withCapture(async () => {
+            if (def?.module) moduleReport = await modules!.run(command, extra)
+            else await runner!({ ...extra, type: command })
+          }, params.timeoutMs as number)
         )
         // A command that declined names the precondition it wanted (`COMMAND_REFUSED`, see
         // `refuse` in code.ts). On its own that is not a result to read — it is a failed call,
@@ -277,6 +327,11 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
         return {
           command,
           access: def?.access ?? 'write',
+          ...(def?.module ? { module: def.module } : {}),
+          // The pipeline's own account of itself: which step ran, which one stopped it, and
+          // whether it is waiting on a yes. The replies below are what those steps *said*; this
+          // is what the module *did*.
+          ...(moduleReport ? { run: moduleReport } : {}),
           ...(def && !def.classified ? { classified: false } : {}),
           ms: Date.now() - started,
           replies: digest.replies,

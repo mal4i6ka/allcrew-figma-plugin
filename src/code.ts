@@ -86,8 +86,20 @@ import { buildTokenEntries } from './targets/design-md/model'
 import { deliverPackage } from './delivery'
 import { agentManifest, handleAgentRequest, setGates } from './agent/listener.ts'
 import { postToUi } from './agent/ui-post.ts'
-import { setUiMessageRunner } from './agent/plugin-ops.ts'
+import { setModuleProvider, setUiMessageRunner } from './agent/plugin-ops.ts'
 import { UI_COMMANDS } from './agent/ui-commands.ts'
+import {
+  describeModules,
+  findModuleCommand,
+  moduleCommandDefs,
+  registerModules,
+  MODULE_SIZE_LIMIT,
+  type RegisteredModule,
+  type StoredModule,
+} from './modules/registry.ts'
+import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
+import { runModuleCommand } from './modules/run.ts'
+import { beginRecording, endRecording } from './agent/ui-post.ts'
 
 /* ------------------------------------------------------------------ types */
 
@@ -119,6 +131,12 @@ type PluginMessage =
   | { type: 'DELETE_USER_PRESET'; id: string }
   | { type: 'GENERATE_BREAKPOINT_COLLECTION'; breakpoints?: Record<string, number> }
   | { type: 'GENERATE_KIT' }
+  // User modules (see TASK-user-modules.md)
+  | { type: 'MODULES_LIST' }
+  | { type: 'MODULE_INSTALL'; file: unknown; replace?: boolean }
+  | { type: 'MODULE_REMOVE'; id: string }
+  | { type: 'MODULE_ENABLE'; id: string; enabled: boolean }
+  | { type: 'MODULE_EXPORT'; id: string }
   // Design-tokens target messages
   | { type: 'SCAN_TOKENS'; docs?: { componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number } }
   | { type: 'GENERATE_TYPOGRAPHY' }
@@ -918,6 +936,9 @@ Promise.all([
   figma.clientStorage.getAsync('userPresets'),
   figma.clientStorage.getAsync('paletteSettings'),
 ]).then(async ([storedOptions, storedPresets, storedPalette]) => {
+  // Before anything answers: a module command has to be callable from the first request, and
+  // the channel's command list is assembled per call from whatever this holds.
+  await loadUserModules()
   // The bridge URL and secret are setup and worth persisting; so is the answer a designer has
   // already given about this file. Re-asking on every open does not strengthen consent — it
   // trains the reflex to click through it — and the switches stay in the panel either way.
@@ -960,6 +981,83 @@ function postSelectionToUi(): void {
 }
 
 figma.on('selectionchange', postSelectionToUi)
+
+/* ------------------------------------------------------------------ user modules */
+
+/**
+ * Modules a designer installed, held in memory and backed by `clientStorage`.
+ *
+ * They are read once when the plugin opens and rewritten whenever one is installed or removed,
+ * so the list the channel answers from is the list on disk. Everything about whether a module
+ * is *usable* — whether it parses, what it may call, whether one of its steps names a command
+ * this build does not have — is decided in `src/modules/`, which knows nothing about Figma.
+ */
+const MODULES_KEY = 'userModules'
+
+let userModules: RegisteredModule[] = []
+
+async function readStoredModules(): Promise<Record<string, StoredModule>> {
+  const stored = await figma.clientStorage.getAsync(MODULES_KEY)
+  return stored && typeof stored === 'object' ? (stored as Record<string, StoredModule>) : {}
+}
+
+async function loadUserModules(): Promise<void> {
+  try {
+    userModules = registerModules(await readStoredModules(), UI_COMMANDS)
+  } catch (error) {
+    // A plugin that opens without its modules is workable; one that refuses to open is not.
+    console.warn('[modules] could not be read', error)
+    userModules = []
+  }
+}
+
+async function writeStoredModules(next: Record<string, StoredModule>): Promise<void> {
+  await figma.clientStorage.setAsync(MODULES_KEY, next)
+  userModules = registerModules(next, UI_COMMANDS)
+}
+
+/**
+ * The agent side of a module.
+ *
+ * Registered as a provider rather than imported by the channel: the list changes while the
+ * plugin runs, and `plugin.call` should dispatch against what is installed now. The steps go
+ * back through `handleUiMessage` — a module command is a pipeline over the plugin's own
+ * commands, and it gets no way to reach anything the panel could not.
+ */
+setModuleProvider({
+  commands: () => moduleCommandDefs(userModules),
+  async run(name, params) {
+    const found = findModuleCommand(userModules, name)
+    if (!found) throw new Error(`unknown module command "${name}"`)
+    if ('error' in found) throw new Error(found.error)
+
+    const { confirm, ...rest } = params as Record<string, unknown>
+    const report = await runModuleCommand(found.module, found.command, rest, {
+      call: (message) => handleUiMessage(message as PluginMessage),
+      // Each step gets its own recording inside whatever the caller already opened, so a step
+      // can read its own answer without hiding it from the run as a whole.
+      record: async (work) => {
+        const sink = beginRecording()
+        try {
+          await work()
+        } finally {
+          endRecording(sink)
+        }
+        return sink
+      },
+      confirmed: confirm === true,
+    })
+
+    // What the run kept is written back under the module's own id, and only the fields it
+    // declared — see `runModuleCommand`.
+    if (report.ok) {
+      const stored = await readStoredModules()
+      const entry = stored[found.entry.id]
+      if (entry) await writeStoredModules({ ...stored, [found.entry.id]: { ...entry, state: report.state } })
+    }
+    return report
+  },
+})
 
 /* ------------------------------------------------------------------ message handler */
 
@@ -1706,6 +1804,100 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       postToUi({ type: 'USER_PRESETS', userPresets: updated })
       break
     }
+    /* ---- user modules ---- */
+    case 'MODULES_LIST': {
+      // @agent read: the installed user modules, what each may run, and why any of them is unusable
+      postToUi({ type: 'MODULES', modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT })
+      break
+    }
+    case 'MODULE_INSTALL': {
+      // @agent write: validate a module file and install it — refused whole if anything in it does not check out
+      // @agent param file: the module document itself (see TASK-user-modules.md), object or JSON text
+      try {
+        const size = JSON.stringify(msg.file ?? null).length
+        if (size > MODULE_SIZE_LIMIT) {
+          throw new Error(`the module is ${size} bytes; the limit is ${MODULE_SIZE_LIMIT}`)
+        }
+        // Validated on its own terms: which key it will be stored under is decided *by* the id
+        // in the file, so checking the two against each other here — as the registry does for
+        // what is already stored — would refuse every install.
+        const { module: parsed, problems } = parseUserModule(msg.file, UI_COMMANDS)
+        if (!parsed) {
+          postToUi({ type: 'MODULE_REJECTED', problems })
+          figma.notify(`Module refused: ${problems.length} problem(s)`, { error: true })
+          break
+        }
+
+        const stored = await readStoredModules()
+        const existing = stored[parsed.id]
+        if (existing && msg.replace !== true) {
+          // Replacing carries away whatever the old one kept, so it is asked for rather than
+          // assumed — the version that is already there may be the one somebody is using.
+          refuse('MODULE_INSTALL', `"${parsed.id}" is already installed — pass replace: true to overwrite it`)
+          break
+        }
+        await writeStoredModules({
+          ...stored,
+          [parsed.id]: {
+            file: msg.file,
+            // An upgrade keeps what the old version stored; the module decides what to make of
+            // fields it no longer declares.
+            ...(existing?.state ? { state: existing.state } : {}),
+            installedAt: new Date().toISOString(),
+          },
+        })
+        figma.notify(`Installed "${parsed.name}"`)
+        postToUi({
+          type: 'MODULE_INSTALLED',
+          id: parsed.id,
+          replaced: Boolean(existing),
+          capabilities: moduleCapabilities(parsed, UI_COMMANDS),
+          modules: describeModules(userModules),
+        })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        figma.notify('Install failed: ' + message, { error: true })
+        postToUi({ type: 'MODULE_ERROR', message })
+      }
+      break
+    }
+    case 'MODULE_REMOVE': {
+      // @agent write: uninstall a module, and forget what it stored
+      const stored = await readStoredModules()
+      if (!(msg.id in stored)) {
+        refuse('MODULE_REMOVE', `no module "${msg.id}" is installed`)
+        break
+      }
+      const { [msg.id]: gone, ...rest } = stored
+      await writeStoredModules(rest)
+      figma.notify(`Removed "${msg.id}"`)
+      postToUi({ type: 'MODULE_REMOVED', id: msg.id, modules: describeModules(userModules) })
+      break
+    }
+    case 'MODULE_ENABLE': {
+      // @agent write: switch a module on or off without uninstalling it
+      const stored = await readStoredModules()
+      const entry = stored[msg.id]
+      if (!entry) {
+        refuse('MODULE_ENABLE', `no module "${msg.id}" is installed`)
+        break
+      }
+      await writeStoredModules({ ...stored, [msg.id]: { ...entry, disabled: msg.enabled === false } })
+      postToUi({ type: 'MODULES', modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT })
+      break
+    }
+    case 'MODULE_EXPORT': {
+      // @agent read: hand back a module's file exactly as it was installed, to save or pass on
+      const stored = await readStoredModules()
+      const entry = stored[msg.id]
+      if (!entry) {
+        refuse('MODULE_EXPORT', `no module "${msg.id}" is installed`)
+        break
+      }
+      postToUi({ type: 'MODULE_FILE', id: msg.id, file: entry.file, state: entry.state ?? null })
+      break
+    }
+
     case 'GENERATE_KIT': {
       // @agent write: draw the starter component kit onto the canvas
       try {

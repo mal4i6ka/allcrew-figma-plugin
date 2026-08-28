@@ -12,7 +12,7 @@ const panel: unknown[] = []
   },
 }
 
-const { pluginOps, setUiMessageRunner, commandNameOf } = await import('./plugin-ops.ts')
+const { pluginOps, setUiMessageRunner, setModuleProvider, commandNameOf } = await import('./plugin-ops.ts')
 const { postToUi, isRecording } = await import('./ui-post.ts')
 const { authorize } = await import('./protocol.ts')
 import type { UiCommandDef } from './ui-commands.ts'
@@ -292,6 +292,90 @@ test('a long reply crosses as a file, and the count says how many', async () => 
   setUiMessageRunner(runner([], [{ type: 'PURE_ANSWER', css: 'a'.repeat(2000) }]))
   const result = (await call.run({ command: 'PURE_READ', keep: 400 })) as Record<string, unknown>
   assert.equal(result.files, 1)
+})
+
+/* ------------------------------------------------------------- user modules */
+
+const MODULE_COMMAND: UiCommandDef = {
+  name: 'acme.pipe.run',
+  access: 'write',
+  classified: true,
+  summary: 'a pipeline somebody installed',
+  module: 'acme.pipe',
+  params: [{ name: 'key', required: false }],
+  replies: [],
+}
+
+test('a module command joins the same list, marked as whose it is', async () => {
+  setModuleProvider({ commands: () => [MODULE_COMMAND], run: async () => ({ ok: true }) })
+  try {
+    const listed = (await list.run({})) as { count: number; fromModules?: number; commands: Array<Record<string, unknown>> }
+    assert.equal(listed.count, 5)
+    assert.equal(listed.fromModules, 1)
+    assert.equal(listed.commands.at(-1)!.module, 'acme.pipe')
+  } finally {
+    setModuleProvider(null)
+  }
+})
+
+test('a module command is gated by what it derives, not by being a module', () => {
+  setModuleProvider({ commands: () => [MODULE_COMMAND], run: async () => ({ ok: true }) })
+  try {
+    // It wraps a write, so the read gate does not reach it — exactly as for the native write.
+    assert.equal(authorize(call, { read: true, write: false }, { command: 'acme.pipe.run' }).ok, false)
+    assert.deepEqual(authorize(call, { read: true, write: true }, { command: 'acme.pipe.run' }), { ok: true })
+
+    setModuleProvider({
+      commands: () => [{ ...MODULE_COMMAND, name: 'acme.pipe.look', access: 'read' }],
+      run: async () => ({ ok: true }),
+    })
+    assert.deepEqual(authorize(call, { read: true, write: false }, { command: 'acme.pipe.look' }), { ok: true })
+  } finally {
+    setModuleProvider(null)
+  }
+})
+
+test('calling a module command runs the module, not the message handler', async () => {
+  const handled: Array<Record<string, unknown>> = []
+  setUiMessageRunner(runner(handled))
+  const asked: Array<[string, Record<string, unknown>]> = []
+  setModuleProvider({
+    commands: () => [MODULE_COMMAND],
+    run: async (name, params) => {
+      asked.push([name, params])
+      // What a module's steps post reaches the caller's recording like anything else.
+      postToUi({ type: 'SCANNED', sites: 3 })
+      return { ok: true, steps: [{ step: 0, call: 'SCAN', ok: true }] }
+    },
+  })
+  try {
+    const result = (await call.run({ command: 'acme.pipe.run', params: { key: 'k' }, keep: 400 })) as Record<string, unknown>
+
+    assert.deepEqual(asked, [['acme.pipe.run', { key: 'k' }]])
+    assert.deepEqual(handled, [], 'a module command is not a message the handler ever sees')
+    assert.equal(result.module, 'acme.pipe')
+    // Two different accounts of one call: what the steps said, and what the pipeline did.
+    assert.deepEqual(result.replies, [{ type: 'SCANNED', sites: 3 }])
+    assert.deepEqual(result.run, { ok: true, steps: [{ step: 0, call: 'SCAN', ok: true }] })
+  } finally {
+    setModuleProvider(null)
+  }
+})
+
+test('a registry that throws leaves the native surface callable', async () => {
+  setUiMessageRunner(runner([], [{ type: 'PURE_ANSWER' }]))
+  setModuleProvider({
+    commands: () => {
+      throw new Error('storage is confused')
+    },
+    run: async () => ({}),
+  })
+  try {
+    const result = (await call.run({ command: 'PURE_READ', keep: 400 })) as Record<string, unknown>
+    assert.deepEqual(result.replies, [{ type: 'PURE_ANSWER' }])
+  } finally {
+    setModuleProvider(null)
+  }
 })
 
 /* ---------------------------------------------------------------- refusals out */
