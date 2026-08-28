@@ -15,13 +15,27 @@ import { applyProps, type AppliedProp } from './apply.ts'
 import { componentFor } from './components.ts'
 import { dependsOnChildren, planProps, type PropStep } from './props.ts'
 
-export const NODE_KINDS = ['frame', 'text', 'rectangle', 'ellipse', 'line', 'section', 'component', 'instance'] as const
+export const NODE_KINDS = [
+  'frame',
+  'text',
+  'rectangle',
+  'ellipse',
+  'line',
+  'section',
+  'component',
+  'instance',
+  'vector',
+  'svg',
+  'star',
+  'polygon',
+] as const
 
 export type NodeKind = (typeof NODE_KINDS)[number]
 
 export interface CreateSpec {
   kind: NodeKind
-  /** For `instance`: the component to instantiate — an id, or a published component key. */
+  /** For `instance`: the component to instantiate — an id, or a published component key.
+   *  For `svg`: the markup itself. */
   of?: string
   props?: unknown
   children?: unknown
@@ -62,6 +76,10 @@ export function planCreate(raw: unknown, where: string, problems: string[]): Cre
   }
   if (kind === 'instance' && typeof spec.of !== 'string') {
     problems.push(`${where}.of must name the component to instantiate (an id or a published key)`)
+    return null
+  }
+  if (kind === 'svg' && (typeof spec.of !== 'string' || !spec.of.includes('<svg'))) {
+    problems.push(`${where}.of must be the SVG markup itself, starting with <svg`)
     return null
   }
   for (const key of Object.keys(spec)) {
@@ -165,6 +183,16 @@ async function make(plan: CreatePlan): Promise<SceneNode> {
       if (font !== figma.mixed) await figma.loadFontAsync(font as FontName)
       return text
     }
+    case 'vector':
+      return figma.createVector()
+    case 'star':
+      return figma.createStar()
+    case 'polygon':
+      return figma.createPolygon()
+    case 'svg':
+      // Figma parses the markup itself and hands back a frame of real vector layers — which is
+      // how an icon gets onto the canvas without anyone hand-writing a path.
+      return figma.createNodeFromSvg(plan.of!)
     case 'instance': {
       const target = await componentFor(plan.of!)
       return target.createInstance()

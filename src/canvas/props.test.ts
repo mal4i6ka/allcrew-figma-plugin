@@ -217,7 +217,38 @@ test('an instance must name what it is an instance of', () => {
 })
 
 test('the kinds are the ones the applier knows how to make', () => {
-  assert.deepEqual([...NODE_KINDS], ['frame', 'text', 'rectangle', 'ellipse', 'line', 'section', 'component', 'instance'])
+  assert.deepEqual(
+    [...NODE_KINDS],
+    ['frame', 'text', 'rectangle', 'ellipse', 'line', 'section', 'component', 'instance', 'vector', 'svg', 'star', 'polygon']
+  )
+})
+
+test('svg carries the markup, and is refused without it', () => {
+  const problems: string[] = []
+  assert.ok(planCreate({ kind: 'svg', of: '<svg viewBox="0 0 2 2"><path d="M0 0 L2 2"/></svg>' }, 'n', problems))
+  assert.deepEqual(problems, [])
+  planCreate({ kind: 'svg', of: 'a circle' }, 'n', problems)
+  assert.match(problems[0], /must be the SVG markup itself, starting with <svg/)
+})
+
+test('a path is SVG data, and both spellings land in one step', () => {
+  assert.deepEqual(stepsOf({ path: 'M 0 0 L 10 0 L 10 10 Z' }), [
+    { step: 'paths', paths: [{ data: 'M 0 0 L 10 0 L 10 10 Z', windingRule: 'NONZERO' }] },
+  ])
+  assert.deepEqual(stepsOf({ paths: [{ data: 'M 0 0 L 1 1', windingRule: 'EVENODD' }] }), [
+    { step: 'paths', paths: [{ data: 'M 0 0 L 1 1', windingRule: 'EVENODD' }] },
+  ])
+  // Saying both is not two shapes; the first one planned wins and nothing is applied twice.
+  assert.equal(stepsOf({ path: 'M 0 0 L 1 1', paths: [{ data: 'M 2 2 L 3 3' }] }).length, 1)
+  assert.match(planProps({ path: '' }).problems[0], /must be SVG path data/)
+  assert.match(planProps({ paths: [{ data: 'M 0 0', windingRule: 'ROUND' }] }).problems[0], /NONZERO or EVENODD/)
+})
+
+test('a shape is set before the paints that fill it', () => {
+  assert.deepEqual(
+    planProps({ fill: '#FF5B0A', path: 'M 0 0 L 1 1' }).steps.map((step) => step.step),
+    ['paths', 'paint']
+  )
 })
 
 test('an unknown key on a spec is named rather than ignored', () => {

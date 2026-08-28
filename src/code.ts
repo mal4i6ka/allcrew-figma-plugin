@@ -1126,7 +1126,7 @@ function describeProperties(node: ComponentNode | ComponentSetNode): string {
   return describePropertyDefinitions(definitionsOf(node) as Record<string, { type: string; variantOptions?: readonly string[]; defaultValue?: unknown }>)
 }
 
-const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten']
+const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline']
 
 const EXPORT_FORMATS = ['PNG', 'JPG', 'SVG', 'PDF']
 
@@ -2098,7 +2098,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     /* ---- the generic canvas primitives ---- */
     case 'NODE_CREATE': {
       // @agent write: make nodes from a description — frames, text, shapes, sections, components, instances — nested
-      // @agent param nodes: an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance
+      // @agent param nodes: an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon
+      // @agent param of: for kind "svg", the markup itself — Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand
       // @agent param props: the same property vocabulary NODE_SET takes — name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset
       // @agent param of: for kind "instance", the component to make — the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures
       // @agent cost: proportional to what you ask for; one call is one undo step for the designer
@@ -2393,7 +2394,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'NODE_GROUP': {
       // @agent write: group, ungroup, or combine nodes with a boolean operation
       // @agent param nodes: the ids to combine — they must share one parent; for "ungroup", the single group to release
-      // @agent param as: group (default), ungroup, union, subtract, intersect, exclude, flatten
+      // @agent param as: group (default), ungroup, union, subtract, intersect, exclude, flatten, or outline — outline turns each node's stroke into a filled vector of its own
       // @agent param props: applied to what comes out — the same vocabulary NODE_SET takes, so one call can group and name
       try {
         const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
@@ -2424,6 +2425,31 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
         if (nodes.length === 0) {
           refuse('NODE_GROUP', 'name at least one node')
+          break
+        }
+
+        if (as === 'outline') {
+          // Per node, not a combine: a stroke becomes a filled shape of its own, which is what
+          // an icon needs before anyone can recolour it as a fill.
+          const outlined: Array<Record<string, unknown>> = []
+          for (const node of nodes) {
+            const holder = node as SceneNode & { outlineStroke?: () => VectorNode | null }
+            if (typeof holder.outlineStroke !== 'function') {
+              outlined.push({ node: node.id, ok: false, error: `a ${node.type} has no stroke to outline` })
+              continue
+            }
+            const vector = holder.outlineStroke()
+            if (!vector) {
+              outlined.push({ node: node.id, name: node.name, ok: false, error: 'nothing to outline — the node has no stroke' })
+              continue
+            }
+            if (plan.steps.length > 0) await applyProps(vector, plan.steps, false)
+            outlined.push({ node: node.id, name: node.name, ok: true, outlined: vector.id })
+          }
+          figma.commitUndo()
+          const wrong = outlined.filter((one) => one.ok === false).length
+          figma.notify(wrong > 0 ? `${wrong} could not be outlined` : `Outlined ${outlined.length}`)
+          postToUi({ type: 'NODES_GROUPED', as, failed: wrong, nodes: outlined })
           break
         }
 

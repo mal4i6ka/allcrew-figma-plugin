@@ -145,6 +145,9 @@ export interface NodeProps {
   data?: Record<string, string | null>
   /** Variables on the fields that are not paints: sizes, spacing, radii, text, visibility. */
   bind?: Record<string, string | null>
+  /** VECTOR only: the shape itself, as SVG path data. */
+  path?: string
+  paths?: Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>
   /** Styles the layer follows, by name, id or published key. `null` detaches from one. */
   fillStyle?: string | null
   strokeStyle?: string | null
@@ -245,6 +248,7 @@ export type PropStep =
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
   | { step: 'style'; kind: 'paint' | 'text' | 'effect' | 'grid'; slot: string; ref: string | null }
+  | { step: 'paths'; paths: Array<{ data: string; windingRule: 'NONZERO' | 'EVENODD' }> }
   | { step: 'reset' }
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
@@ -323,6 +327,9 @@ const ORDER = [
   'rotation',
   'opacity',
   'cornerRadius',
+  // Before the paints: the shape decides what there is to fill.
+  'path',
+  'paths',
   // Before the paints and the type: following a style sets the whole bundle, and a colour named
   // in the same breath is meant to override it, not to be overwritten by it.
   'fillStyle',
@@ -555,6 +562,32 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
       case 'runs': {
         const runs = planRuns(props.runs, `${where}.runs`, problems)
         if (runs) steps.push(runs)
+        break
+      }
+      case 'path':
+      case 'paths': {
+        // Both spellings land in the same step, so a shape is a shape whichever way it was said.
+        if (steps.some((step) => step.step === 'paths')) break
+        const wanted = 'path' in props ? [{ data: props.path }] : props.paths
+        if (!Array.isArray(wanted) || wanted.length === 0) {
+          fail('paths must be a non-empty array of { data } — or use path for a single one')
+          break
+        }
+        const paths: Array<{ data: string; windingRule: 'NONZERO' | 'EVENODD' }> = []
+        for (const [index, entry] of wanted.entries()) {
+          const one = entry as { data?: unknown; windingRule?: unknown }
+          if (typeof one?.data !== 'string' || one.data.trim() === '') {
+            fail(`paths[${index}].data must be SVG path data, e.g. "M 0 0 L 10 0 L 10 10 Z"`)
+            continue
+          }
+          const rule = one.windingRule === undefined ? 'NONZERO' : one.windingRule
+          if (rule !== 'NONZERO' && rule !== 'EVENODD') {
+            fail(`paths[${index}].windingRule must be NONZERO or EVENODD`)
+            continue
+          }
+          paths.push({ data: one.data.trim(), windingRule: rule })
+        }
+        if (paths.length > 0) steps.push({ step: 'paths', paths })
         break
       }
       case 'fillStyle':

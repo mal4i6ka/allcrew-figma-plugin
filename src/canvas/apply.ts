@@ -458,6 +458,17 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: step.slot, before: was?.name ?? null, after: style.name }
     }
 
+    case 'paths': {
+      if (!('vectorPaths' in bag)) throw new Error(`a ${node.type} has no paths — only a vector does`)
+      const before = (bag.vectorPaths as VectorPaths | undefined)?.length ?? 0
+      if (!dry) bag.vectorPaths = step.paths
+      return {
+        property: 'paths',
+        before: `${before} path(s)`,
+        after: step.paths.map((path) => `${path.windingRule} ${path.data}`).join(' · '),
+      }
+    }
+
     case 'reparent': {
       const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null
       const parent = step.parent === '' ? node.parent : await resolveParent(step.parent)
