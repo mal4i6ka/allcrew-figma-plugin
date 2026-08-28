@@ -22,6 +22,7 @@
  */
 
 import type { OpDef } from './protocol.ts'
+import { PROPS_VOCABULARY } from './props-vocabulary.ts'
 import { UI_COMMANDS, type UiCommandDef } from './ui-commands.ts'
 import { DEFAULT_DIGEST_BUDGET, digestReplies } from './reply-digest.ts'
 import { beginRecording, endRecording } from './ui-post.ts'
@@ -203,6 +204,42 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
   })
 
   return [
+    {
+      name: 'plugin.vocabulary',
+      summary: 'The node properties NODE_CREATE, NODE_SET and NODE_CLONE take — every one, with what it is for.',
+      mutates: false,
+      agent:
+        'The commands are only half of the surface: all three canvas commands take the same `props` object, ' +
+        'and this is what may go in it. Read out of the source at build time, so it cannot describe a stale ' +
+        'half of the vocabulary the way a hand-written summary did. Order matters and is not the caller\'s: ' +
+        'the plugin applies these in its own sequence (layout before sizing, a font before characters, a style ' +
+        'before the paints that override it, sizing last of all).',
+      params: {
+        property: {
+          type: 'string',
+          description: 'One property to describe, instead of the whole vocabulary.',
+        },
+      },
+      async run(params) {
+        const wanted = params.property as string | undefined
+        if (wanted) {
+          const entry = PROPS_VOCABULARY.find((one) => one.name === wanted)
+          if (!entry) {
+            throw new Error(
+              `no property called "${wanted}" — call plugin.vocabulary with no params for the list`
+            )
+          }
+          return entry
+        }
+        return {
+          count: PROPS_VOCABULARY.length,
+          ...(PROPS_VOCABULARY.length === 0
+            ? { warning: 'this build shipped without its property vocabulary — rebuild the plugin (npm run build)' }
+            : {}),
+          properties: PROPS_VOCABULARY,
+        }
+      },
+    },
     {
       name: 'plugin.commands',
       summary: "Every command the plugin's own panel can run, and which of them need the write gate.",

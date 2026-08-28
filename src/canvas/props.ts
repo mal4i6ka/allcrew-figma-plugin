@@ -249,24 +249,48 @@ export interface LayoutProps {
 export type SizingMode = 'FIXED' | 'HUG' | 'FILL'
 
 export interface NodeProps {
+  /** What the layer is called in the panel. */
   name?: string
+  /** Hidden layers still exist, still export, and still hold everything they hold. */
   visible?: boolean
+  /** Locked against the designer's mouse, not against this vocabulary. */
   locked?: boolean
+  /** 0 to 1. */
   opacity?: number
+  /** Position within the parent. In an auto-layout parent the layout decides instead. */
   x?: number
+  /** Position within the parent, downwards. */
   y?: number
+  /** A size in pixels. On an auto-layout frame this pins that axis; see `layout.sizing`. */
   width?: number
+  /** A height in pixels. On a hugging frame this pins it; `layout.sizing` gives it back. */
   height?: number
+  /** Degrees, -180 to 180. */
   rotation?: number
+  /** Whether a frame hides what sticks out of it. */
   clipsContent?: boolean
+
+  /** One number for every corner, or the corners that differ. */
   cornerRadius?: number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }
+
+  /** How the layer holds on when its parent resizes. */
   constraints?: { horizontal?: ConstraintKind; vertical?: ConstraintKind }
+
+  /** Auto-layout: direction, spacing, padding, alignment and how each axis is sized. */
   layout?: LayoutProps
+
+  /** What the layer is painted with. A list is a stack of layers, bottom-up. */
   fill?: PaintRef
+  /** What the outline is painted with — the same shapes `fill` takes. */
   stroke?: PaintRef
+
+  /** The line itself: how thick, where it sits, how it ends and turns. */
   strokeWeight?: number
+  /** Which side of the path the line sits on. */
   strokeAlign?: 'INSIDE' | 'OUTSIDE' | 'CENTER'
+  /** How an open end is finished. */
   strokeCap?: 'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'
+  /** How a corner is turned. */
   strokeJoin?: 'MITER' | 'BEVEL' | 'ROUND'
   /** A dash pattern: [dash, gap, …]. `[]` is a solid line. */
   strokeDashes?: number[]
@@ -278,14 +302,21 @@ export interface NodeProps {
   grid?: GridSpec[]
   /** Figma Motion animation styles on this node. `null` or `[]` removes what it has. */
   animation?: AnimationSpec | AnimationSpec[] | null
+  /** How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest. */
   blendMode?: string
-  /** TEXT only. */
+  /** TEXT only: the characters themselves. */
   text?: string
+  /** Pixels. */
   fontSize?: number
+  /** Family and style together, because Figma loads them as a pair. */
   fontName?: { family: string; style: string }
+  /** Horizontal alignment within the text box. */
   textAlign?: 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'
+  /** Pixels, or AUTO to follow the font. */
   lineHeight?: number | 'AUTO'
+  /** Pixels between characters; negative tightens. */
   letterSpacing?: number
+  /** Whether the box follows the text, and in which direction. */
   autoResize?: 'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'
   /** How lines are broken: `AUTO`, `BALANCE` (even lines) or `PRETTY` (no orphans). */
   textWrap?: 'AUTO' | 'BALANCE' | 'PRETTY'
@@ -304,22 +335,29 @@ export interface NodeProps {
   /** VECTOR only: the shape itself, as SVG path data — separated by SPACES, since Figma's parser
    * refuses commas ("Failed to convert path. Invalid command"). */
   path?: string
+  /** Several outlines at once, each with the rule that decides its inside. */
   paths?: Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>
   /** VECTOR only: the shape as points and the lines between them, which is how a vector is edited. */
   network?: NetworkSpec
   /** Styles the layer follows, by name, id or published key. `null` detaches from one. */
   fillStyle?: string | null
+  /** The paint style the outline follows. */
   strokeStyle?: string | null
+  /** The text style: family, size, line height and tracking as one named bundle. */
   textStyle?: string | null
+  /** The effect style — a named set of shadows and blurs. */
   effectStyle?: string | null
+  /** The grid style — a named set of layout grids. */
   gridStyle?: string | null
   /** A frame that scrolls in the prototype, and how many of its children stay put while it does. */
   scroll?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'
+  /** How many of the frame's first children stay put while the rest scrolls. */
   fixedChildren?: number
   /** TEXT only: styling for parts of the text rather than all of it. */
   runs?: TextRun[]
   /** Where the node should live. On a create this is the parent; on a change it moves it. */
   parent?: string
+  /** Where among the parent's children it sits; 0 is first. */
   index?: number
 }
 

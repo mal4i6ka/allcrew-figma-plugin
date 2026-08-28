@@ -2,6 +2,7 @@ import * as esbuild from "esbuild";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { extractUiCommands } from "./src/agent/ui-commands.ts";
+import { extractProps } from "./src/agent/props-vocabulary.ts";
 
 const watch = process.argv.includes("--watch");
 
@@ -45,6 +46,7 @@ function copyUi() {
  * no generated file that can fall behind.
  */
 const UI_COMMANDS_MARKER = "'__ALTERY_UI_COMMANDS__'";
+const PROPS_MARKER = "'__ALTERY_PROPS__'";
 
 /**
  * Every non-test source, concatenated, as the dictionary the extractor resolves param types
@@ -84,6 +86,29 @@ function injectUiCommands(source) {
   return source.replace(UI_COMMANDS_MARKER, JSON.stringify(JSON.stringify(commands)));
 }
 
+/**
+ * The same trick as the command table, one level down: the property vocabulary is read out of
+ * `props.ts` so the channel cannot describe a stale half of it.
+ */
+function injectProps(source) {
+  const props = extractProps(readFileSync("src/canvas/props.ts", "utf8"));
+  if (props.length === 0) {
+    throw new Error("no properties extracted from src/canvas/props.ts — the NodeProps interface moved or its shape changed");
+  }
+  const occurrences = source.split(PROPS_MARKER).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(
+      `props-vocabulary.ts contains ${PROPS_MARKER} ${occurrences} time(s), expected exactly 1 — the channel would describe an empty vocabulary`
+    );
+  }
+  const undocumented = props.filter((entry) => !entry.note).map((entry) => entry.name);
+  if (undocumented.length > 0) {
+    console.log(`[agent] ${undocumented.length} propert(ies) with no sentence above them: ${undocumented.join(", ")}`);
+  }
+  console.log(`[agent] ${props.length} node properties exposed to the listener`);
+  return source.replace(PROPS_MARKER, JSON.stringify(JSON.stringify(props)));
+}
+
 const mainCtx = await esbuild.context({
   ...commonOptions,
   entryPoints: ["src/code.ts"],
@@ -94,6 +119,15 @@ const mainCtx = await esbuild.context({
       setup(build) {
         build.onLoad({ filter: /src[\\/]agent[\\/]ui-commands\.ts$/ }, (args) => ({
           contents: injectUiCommands(readFileSync(args.path, "utf8")),
+          loader: "ts",
+        }));
+      },
+    },
+    {
+      name: "inject-props",
+      setup(build) {
+        build.onLoad({ filter: /src[\\/]agent[\\/]props-vocabulary\.ts$/ }, (args) => ({
+          contents: injectProps(readFileSync(args.path, "utf8")),
           loader: "ts",
         }));
       },
