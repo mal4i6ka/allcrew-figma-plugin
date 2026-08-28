@@ -235,15 +235,27 @@ export interface NetworkSpec {
 }
 
 export interface LayoutProps {
-  /** `GRID` is Figma's two-dimensional auto-layout; its tracks are not authored from here yet. */
+  /** `GRID` is Figma's two-dimensional auto-layout; its tracks are `rows` and `columns` below. */
   mode?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'GRID'
+  /** Between one child and the next, along the direction the layout runs. */
   gap?: number
+  /** Between wrapped lines. Only a wrapping layout has a second gap to set. */
+  wrapGap?: number
   /** One number for all four, or [top, right, bottom, left]. */
   padding?: number | [number, number, number, number]
   primaryAxis?: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN'
   counterAxis?: 'MIN' | 'CENTER' | 'MAX' | 'BASELINE'
   wrap?: boolean
   sizing?: { horizontal?: SizingMode; vertical?: SizingMode }
+  /** Later children behind earlier ones, which is how a stack of overlapping avatars is built. */
+  reverseZ?: boolean
+  /** Whether a stroke takes up room in the layout or is drawn over it. */
+  strokesInLayout?: boolean
+  /** GRID only: how many tracks each way. */
+  rows?: number
+  columns?: number
+  /** GRID only: whether a row is added when the children outgrow the grid. */
+  autoTracks?: 'NONE' | 'ROWS'
 }
 
 export type SizingMode = 'FIXED' | 'HUG' | 'FILL'
@@ -275,6 +287,23 @@ export interface NodeProps {
 
   /** How the layer holds on when its parent resizes. */
   constraints?: { horizontal?: ConstraintKind; vertical?: ConstraintKind }
+
+  /** A child that ignores its parent's auto-layout and sits where x and y put it. */
+  absolute?: boolean
+
+  /** A width the layout may not go under. `null` removes the bound. */
+  minWidth?: number | null
+  /** A width the layout may not exceed — how a card stops growing with its text. */
+  maxWidth?: number | null
+  /** A height the layout may not go under. */
+  minHeight?: number | null
+  /** A height the layout may not exceed; the content then scrolls or clips. */
+  maxHeight?: number | null
+
+  /** GRID only: how many tracks this child covers. */
+  gridSpan?: { rows?: number; columns?: number }
+  /** GRID only: how the child sits in its cell. */
+  gridAlign?: 'MIN' | 'CENTER' | 'MAX' | 'AUTO'
 
   /** Auto-layout: direction, spacing, padding, alignment and how each axis is sized. */
   layout?: LayoutProps
@@ -466,6 +495,7 @@ export type PropStep =
     }
   | { step: 'dashes'; dashes: number[] }
   | { step: 'brush'; brush: ComplexStrokeProperties; loads: 'STRETCH' | 'SCATTER' | null; summary: string }
+  | { step: 'bound'; property: string; value: number | null }
   | { step: 'runs'; runs: TextRun[] }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
@@ -497,6 +527,22 @@ const FIGMA_TEXT_NAMES: Readonly<Record<string, string>> = {
 }
 
 const LAYOUT_MODES = ['NONE', 'HORIZONTAL', 'VERTICAL', 'GRID']
+
+const LAYOUT_KEYS = [
+  'mode',
+  'gap',
+  'wrapGap',
+  'padding',
+  'primaryAxis',
+  'counterAxis',
+  'wrap',
+  'sizing',
+  'reverseZ',
+  'strokesInLayout',
+  'rows',
+  'columns',
+  'autoTracks',
+]
 const PRIMARY_AXIS = ['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN']
 const COUNTER_AXIS = ['MIN', 'CENTER', 'MAX', 'BASELINE']
 const SIZING = ['FIXED', 'HUG', 'FILL']
@@ -551,8 +597,17 @@ const ORDER = [
   'clipsContent',
   'layout',
   'constraints',
+  // Before the geometry: an absolutely-positioned child is the only kind whose x and y mean
+  // anything inside an auto-layout parent.
+  'absolute',
   'width',
   'height',
+  'minWidth',
+  'maxWidth',
+  'minHeight',
+  'maxHeight',
+  'gridSpan',
+  'gridAlign',
   'x',
   'y',
   'rotation',
@@ -612,9 +667,36 @@ export function dependsOnChildren(step: PropStep): boolean {
   return step.step === 'assign' && step.property === 'numberOfFixedChildren'
 }
 
+/** The properties that only mean anything once the node is inside its parent. */
+const PLACED = [
+  'layoutPositioning',
+  'x',
+  'y',
+  'gridRowSpan',
+  'gridColumnSpan',
+  'gridChildVerticalAlign',
+]
+
+/**
+ * Steps that cannot be applied while the node is still detached.
+ *
+ * A node is created on its own and filled in before it is appended, which is right for almost
+ * everything and wrong for the handful of properties that describe the node's place in a layout:
+ * FILL is meaningless without a parent to fill, `layoutPositioning: ABSOLUTE` has nothing to step
+ * out of, x and y of an absolute child are overwritten the moment the layout takes hold, and a
+ * resize is undone by whatever sizing mode the parent hands the new child. Each was applied,
+ * reported as applied, and then quietly lost.
+ */
+export function dependsOnPlacement(step: PropStep): boolean {
+  if (step.step === 'sizing' || step.step === 'resize') return true
+  return step.step === 'assign' && PLACED.includes(step.property)
+}
+
 export function planProps(raw: unknown, where = 'props'): PropPlan {
   const problems: string[] = []
   const steps: PropStep[] = []
+  // The layout as the caller wrote it, kept whether or not it becomes a step of its own.
+  let asked: LayoutProps | null = null
   if (raw === undefined || raw === null) return { steps, problems }
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     return { steps, problems: [`${where} must be an object of properties`] }
@@ -690,6 +772,53 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
           ...(typeof height === 'number' ? { height } : {}),
         }
         if (Object.keys(wanted).length > 0) steps.push({ step: 'resize', ...wanted })
+        break
+      }
+      case 'absolute': {
+        if (typeof props.absolute !== 'boolean') fail('absolute must be true or false')
+        else steps.push({ step: 'assign', property: 'layoutPositioning', value: props.absolute ? 'ABSOLUTE' : 'AUTO' })
+        break
+      }
+      case 'minWidth':
+      case 'maxWidth':
+      case 'minHeight':
+      case 'maxHeight': {
+        // `null` is how a bound is removed, and Figma stores exactly that — so it travels as a
+        // value rather than as an absence.
+        if (props[key] === null) steps.push({ step: 'bound', property: key, value: null })
+        else {
+          const size = number(key, 0)
+          if (size !== null) steps.push({ step: 'bound', property: key, value: size })
+        }
+        break
+      }
+      case 'gridSpan': {
+        const value = props.gridSpan
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+          fail('gridSpan must be { rows, columns }')
+          break
+        }
+        const span = value as { rows?: unknown; columns?: unknown }
+        if (span.rows === undefined && span.columns === undefined) {
+          fail('gridSpan must name rows, columns or both')
+          break
+        }
+        for (const axis of ['rows', 'columns'] as const) {
+          const count = span[axis]
+          if (count === undefined) continue
+          if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
+            fail(`gridSpan.${axis} must be a whole number of at least 1`)
+            continue
+          }
+          steps.push({ step: 'assign', property: axis === 'rows' ? 'gridRowSpan' : 'gridColumnSpan', value: count })
+        }
+        break
+      }
+      case 'gridAlign': {
+        const allowed = ['MIN', 'CENTER', 'MAX', 'AUTO']
+        const value = props.gridAlign
+        if (typeof value !== 'string' || !allowed.includes(value)) fail(`gridAlign must be one of: ${allowed.join(', ')}`)
+        else steps.push({ step: 'assign', property: 'gridChildVerticalAlign', value })
         break
       }
       case 'strokeWeight': {
@@ -786,7 +915,10 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
       }
       case 'layout': {
         const layout = planLayout(props.layout, `${where}.layout`, problems)
-        if (layout) steps.push(layout)
+        if (layout) {
+          asked = layout.layout
+          if (layout.step) steps.push(layout.step)
+        }
         break
       }
       case 'fill':
@@ -980,21 +1112,37 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
     }
   }
 
-  // Sizing last, and on purpose. It has to come after the resize (which would otherwise pin the
-  // axis it just freed), after the text (a hugging frame sizes to what is in it) and after the
-  // reparent, because FILL means nothing until the node is inside the parent it fills.
-  const laid = steps.find((step) => step.step === 'layout') as Extract<PropStep, { step: 'layout' }> | undefined
-  if (laid) {
-    const sizing = laid.layout.sizing ?? {}
+  // Sizing is two steps, not one, and the split is the whole of what makes it work.
+  //
+  // FIXED has to be set BEFORE the resize: a frame that is hugging swallows a resize whole, so
+  // asking for 260 and then pinning it froze the 320 the hug had produced. HUG and FILL have to
+  // be set AFTER — after the resize that would otherwise re-pin the axis, after the text a
+  // hugging frame measures itself against, and after the node is inside the parent it fills.
+  //
+  // Both are computed from the layout the caller wrote, whether or not a layout STEP came of it:
+  // `{ layout: { sizing: { horizontal: 'FILL' } } }` on a text node is a child saying how it
+  // fills its parent, and it emits no layout step at all.
+  if (asked) {
+    const sizing = asked.sizing ?? {}
     // A frame Figma hands out is 100×100 and FIXED, so `{ layout: { mode: 'VERTICAL' } }` alone
-    // makes a box that clips whatever is put in it — which is not what anyone means by turning
-    // auto-layout on. Each axis hugs unless the caller pinned it with a size or said otherwise.
-    const horizontal = sizing.horizontal ?? (laid.layout.mode && laid.layout.mode !== 'NONE' && !('width' in props) ? 'HUG' : undefined)
-    const vertical = sizing.vertical ?? (laid.layout.mode && laid.layout.mode !== 'NONE' && !('height' in props) ? 'HUG' : undefined)
-    if (horizontal || vertical) {
-      steps.push({ step: 'sizing', ...(horizontal ? { horizontal } : {}), ...(vertical ? { vertical } : {}) })
+    // makes a box that clips whatever is put in it — not what anyone means by turning auto-layout
+    // on. Each axis hugs unless the caller pinned it with a size or said otherwise.
+    const laidOut = asked.mode !== undefined && asked.mode !== 'NONE'
+    const horizontal = sizing.horizontal ?? ('width' in props ? 'FIXED' : laidOut ? 'HUG' : undefined)
+    const vertical = sizing.vertical ?? ('height' in props ? 'FIXED' : laidOut ? 'HUG' : undefined)
+
+    const pin: PropStep = { step: 'sizing' }
+    const fit: PropStep = { step: 'sizing' }
+    if (horizontal === 'FIXED') pin.horizontal = 'FIXED'
+    else if (horizontal) fit.horizontal = horizontal
+    if (vertical === 'FIXED') pin.vertical = 'FIXED'
+    else if (vertical) fit.vertical = vertical
+
+    if (pin.horizontal || pin.vertical) {
+      const resize = steps.findIndex((step) => step.step === 'resize')
+      steps.splice(resize === -1 ? steps.length : resize, 0, pin)
     }
-    delete laid.layout.sizing
+    if (fit.horizontal || fit.vertical) steps.push(fit)
   }
 
   return { steps, problems }
@@ -2395,7 +2543,7 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
   return { step: 'grid', grids, summary: summary.join(' · ') || 'none' }
 }
 
-function planLayout(raw: unknown, where: string, problems: string[]): PropStep | null {
+function planLayout(raw: unknown, where: string, problems: string[]): { step: PropStep | null; layout: LayoutProps } | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     problems.push(`${where} must be an object`)
     return null
@@ -2405,9 +2553,7 @@ function planLayout(raw: unknown, where: string, problems: string[]): PropStep |
   const fail = (message: string) => problems.push(`${where}.${message}`)
 
   for (const key of Object.keys(value)) {
-    if (!['mode', 'gap', 'padding', 'primaryAxis', 'counterAxis', 'wrap', 'sizing'].includes(key)) {
-      fail(`unknown key "${key}"`)
-    }
+    if (!LAYOUT_KEYS.includes(key)) fail(`unknown key "${key}" — accepted: ${LAYOUT_KEYS.join(', ')}`)
   }
 
   if (value.mode !== undefined) {
@@ -2443,6 +2589,27 @@ function planLayout(raw: unknown, where: string, problems: string[]): PropStep |
     if (typeof value.wrap !== 'boolean') fail('wrap must be a boolean')
     else layout.wrap = value.wrap
   }
+  if (value.wrapGap !== undefined) {
+    if (typeof value.wrapGap !== 'number' || !Number.isFinite(value.wrapGap) || value.wrapGap < 0) {
+      fail('wrapGap must be a number >= 0')
+    } else layout.wrapGap = value.wrapGap
+  }
+  for (const flag of ['reverseZ', 'strokesInLayout'] as const) {
+    if (value[flag] === undefined) continue
+    if (typeof value[flag] !== 'boolean') fail(`${flag} must be true or false`)
+    else layout[flag] = value[flag] as boolean
+  }
+  for (const track of ['rows', 'columns'] as const) {
+    if (value[track] === undefined) continue
+    const count = value[track]
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
+      fail(`${track} must be a whole number of at least 1`)
+    } else layout[track] = count
+  }
+  if (value.autoTracks !== undefined) {
+    if (value.autoTracks !== 'NONE' && value.autoTracks !== 'ROWS') fail('autoTracks must be NONE or ROWS')
+    else layout.autoTracks = value.autoTracks
+  }
   if (value.sizing !== undefined) {
     if (typeof value.sizing !== 'object' || value.sizing === null) fail('sizing must be { horizontal, vertical }')
     else {
@@ -2458,8 +2625,13 @@ function planLayout(raw: unknown, where: string, problems: string[]): PropStep |
   }
 
   // A layout with no mode still means something — padding on an already-vertical frame — so an
-  // absent mode leaves whatever the node has.
-  return { step: 'layout', layout }
+  // absent mode leaves whatever the node has. But an object holding NOTHING except `sizing` is
+  // not a layout at all: it is a child saying how it fills its parent, and emitting a layout step
+  // for it made a TEXT node answer "a TEXT has no auto-layout" for a request that was never
+  // about auto-layout.
+  const saysMore = Object.keys(layout).some((key) => key !== 'sizing')
+  const { sizing: _sizing, ...rest } = layout
+  return { step: saysMore ? { step: 'layout', layout: rest } : null, layout }
 }
 
 const HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/

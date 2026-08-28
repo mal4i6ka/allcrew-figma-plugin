@@ -202,6 +202,14 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         if (layout.primaryAxis) frame.primaryAxisAlignItems = layout.primaryAxis
         if (layout.counterAxis) frame.counterAxisAlignItems = layout.counterAxis
         if (layout.wrap !== undefined) frame.layoutWrap = layout.wrap ? 'WRAP' : 'NO_WRAP'
+        // The second gap only exists once the layout wraps, so it is set after `layoutWrap`.
+        if (layout.wrapGap !== undefined) frame.counterAxisSpacing = layout.wrapGap
+        if (layout.reverseZ !== undefined) frame.itemReverseZIndex = layout.reverseZ
+        if (layout.strokesInLayout !== undefined) frame.strokesIncludedInLayout = layout.strokesInLayout
+        const grid = frame as FrameNode & { gridRowCount?: number; gridColumnCount?: number; gridAutoTracks?: string }
+        if (layout.rows !== undefined) grid.gridRowCount = layout.rows
+        if (layout.columns !== undefined) grid.gridColumnCount = layout.columns
+        if (layout.autoTracks !== undefined) grid.gridAutoTracks = layout.autoTracks
       }
       return { property: 'layout', before, after: layout }
     }
@@ -442,6 +450,14 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       if (step.loads) await figma.loadBrushesAsync(step.loads)
       if (!dry) bag.complexStrokeProperties = step.brush
       return { property: 'brush', before, after: step.summary }
+    }
+
+    case 'bound': {
+      if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
+      const before = bag[step.property]
+      // Figma holds these as `number | null`, and null is how the bound comes off.
+      if (!dry) bag[step.property] = step.value
+      return { property: step.property, before, after: step.value }
     }
 
     case 'dashes': {

@@ -17991,6 +17991,21 @@ ${renderSections(sections)}
     textWrap: "textWrapStyle"
   };
   var LAYOUT_MODES = ["NONE", "HORIZONTAL", "VERTICAL", "GRID"];
+  var LAYOUT_KEYS = [
+    "mode",
+    "gap",
+    "wrapGap",
+    "padding",
+    "primaryAxis",
+    "counterAxis",
+    "wrap",
+    "sizing",
+    "reverseZ",
+    "strokesInLayout",
+    "rows",
+    "columns",
+    "autoTracks"
+  ];
   var PRIMARY_AXIS = ["MIN", "CENTER", "MAX", "SPACE_BETWEEN"];
   var COUNTER_AXIS = ["MIN", "CENTER", "MAX", "BASELINE"];
   var SIZING = ["FIXED", "HUG", "FILL"];
@@ -18034,8 +18049,17 @@ ${renderSections(sections)}
     "clipsContent",
     "layout",
     "constraints",
+    // Before the geometry: an absolutely-positioned child is the only kind whose x and y mean
+    // anything inside an auto-layout parent.
+    "absolute",
     "width",
     "height",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "gridSpan",
+    "gridAlign",
     "x",
     "y",
     "rotation",
@@ -18085,10 +18109,23 @@ ${renderSections(sections)}
   function dependsOnChildren(step) {
     return step.step === "assign" && step.property === "numberOfFixedChildren";
   }
+  var PLACED = [
+    "layoutPositioning",
+    "x",
+    "y",
+    "gridRowSpan",
+    "gridColumnSpan",
+    "gridChildVerticalAlign"
+  ];
+  function dependsOnPlacement(step) {
+    if (step.step === "sizing" || step.step === "resize") return true;
+    return step.step === "assign" && PLACED.includes(step.property);
+  }
   function planProps(raw, where = "props") {
     var _a, _b, _c;
     const problems = [];
     const steps = [];
+    let asked = null;
     if (raw === void 0 || raw === null) return { steps, problems };
     if (typeof raw !== "object" || Array.isArray(raw)) {
       return { steps, problems: [`${where} must be an object of properties`] };
@@ -18154,6 +18191,51 @@ ${renderSections(sections)}
           const height = "height" in props ? number2("height", 0.01) : void 0;
           const wanted = __spreadValues(__spreadValues({}, typeof width === "number" ? { width } : {}), typeof height === "number" ? { height } : {});
           if (Object.keys(wanted).length > 0) steps.push(__spreadValues({ step: "resize" }, wanted));
+          break;
+        }
+        case "absolute": {
+          if (typeof props.absolute !== "boolean") fail2("absolute must be true or false");
+          else steps.push({ step: "assign", property: "layoutPositioning", value: props.absolute ? "ABSOLUTE" : "AUTO" });
+          break;
+        }
+        case "minWidth":
+        case "maxWidth":
+        case "minHeight":
+        case "maxHeight": {
+          if (props[key] === null) steps.push({ step: "bound", property: key, value: null });
+          else {
+            const size = number2(key, 0);
+            if (size !== null) steps.push({ step: "bound", property: key, value: size });
+          }
+          break;
+        }
+        case "gridSpan": {
+          const value = props.gridSpan;
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            fail2("gridSpan must be { rows, columns }");
+            break;
+          }
+          const span = value;
+          if (span.rows === void 0 && span.columns === void 0) {
+            fail2("gridSpan must name rows, columns or both");
+            break;
+          }
+          for (const axis of ["rows", "columns"]) {
+            const count = span[axis];
+            if (count === void 0) continue;
+            if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
+              fail2(`gridSpan.${axis} must be a whole number of at least 1`);
+              continue;
+            }
+            steps.push({ step: "assign", property: axis === "rows" ? "gridRowSpan" : "gridColumnSpan", value: count });
+          }
+          break;
+        }
+        case "gridAlign": {
+          const allowed = ["MIN", "CENTER", "MAX", "AUTO"];
+          const value = props.gridAlign;
+          if (typeof value !== "string" || !allowed.includes(value)) fail2(`gridAlign must be one of: ${allowed.join(", ")}`);
+          else steps.push({ step: "assign", property: "gridChildVerticalAlign", value });
           break;
         }
         case "strokeWeight": {
@@ -18245,7 +18327,10 @@ ${renderSections(sections)}
         }
         case "layout": {
           const layout = planLayout(props.layout, `${where}.layout`, problems);
-          if (layout) steps.push(layout);
+          if (layout) {
+            asked = layout.layout;
+            if (layout.step) steps.push(layout.step);
+          }
           break;
         }
         case "fill":
@@ -18423,15 +18508,22 @@ ${renderSections(sections)}
         }
       }
     }
-    const laid = steps.find((step) => step.step === "layout");
-    if (laid) {
-      const sizing = (_a = laid.layout.sizing) != null ? _a : {};
-      const horizontal = (_b = sizing.horizontal) != null ? _b : laid.layout.mode && laid.layout.mode !== "NONE" && !("width" in props) ? "HUG" : void 0;
-      const vertical = (_c = sizing.vertical) != null ? _c : laid.layout.mode && laid.layout.mode !== "NONE" && !("height" in props) ? "HUG" : void 0;
-      if (horizontal || vertical) {
-        steps.push(__spreadValues(__spreadValues({ step: "sizing" }, horizontal ? { horizontal } : {}), vertical ? { vertical } : {}));
+    if (asked) {
+      const sizing = (_a = asked.sizing) != null ? _a : {};
+      const laidOut = asked.mode !== void 0 && asked.mode !== "NONE";
+      const horizontal = (_b = sizing.horizontal) != null ? _b : "width" in props ? "FIXED" : laidOut ? "HUG" : void 0;
+      const vertical = (_c = sizing.vertical) != null ? _c : "height" in props ? "FIXED" : laidOut ? "HUG" : void 0;
+      const pin = { step: "sizing" };
+      const fit = { step: "sizing" };
+      if (horizontal === "FIXED") pin.horizontal = "FIXED";
+      else if (horizontal) fit.horizontal = horizontal;
+      if (vertical === "FIXED") pin.vertical = "FIXED";
+      else if (vertical) fit.vertical = vertical;
+      if (pin.horizontal || pin.vertical) {
+        const resize = steps.findIndex((step) => step.step === "resize");
+        steps.splice(resize === -1 ? steps.length : resize, 0, pin);
       }
-      delete laid.layout.sizing;
+      if (fit.horizontal || fit.vertical) steps.push(fit);
     }
     return { steps, problems };
   }
@@ -19548,9 +19640,7 @@ ${renderSections(sections)}
     const layout = {};
     const fail2 = (message) => problems.push(`${where}.${message}`);
     for (const key of Object.keys(value)) {
-      if (!["mode", "gap", "padding", "primaryAxis", "counterAxis", "wrap", "sizing"].includes(key)) {
-        fail2(`unknown key "${key}"`);
-      }
+      if (!LAYOUT_KEYS.includes(key)) fail2(`unknown key "${key}" \u2014 accepted: ${LAYOUT_KEYS.join(", ")}`);
     }
     if (value.mode !== void 0) {
       if (typeof value.mode !== "string" || !LAYOUT_MODES.includes(value.mode)) fail2(`mode must be one of: ${LAYOUT_MODES.join(", ")}`);
@@ -19581,6 +19671,27 @@ ${renderSections(sections)}
       if (typeof value.wrap !== "boolean") fail2("wrap must be a boolean");
       else layout.wrap = value.wrap;
     }
+    if (value.wrapGap !== void 0) {
+      if (typeof value.wrapGap !== "number" || !Number.isFinite(value.wrapGap) || value.wrapGap < 0) {
+        fail2("wrapGap must be a number >= 0");
+      } else layout.wrapGap = value.wrapGap;
+    }
+    for (const flag2 of ["reverseZ", "strokesInLayout"]) {
+      if (value[flag2] === void 0) continue;
+      if (typeof value[flag2] !== "boolean") fail2(`${flag2} must be true or false`);
+      else layout[flag2] = value[flag2];
+    }
+    for (const track of ["rows", "columns"]) {
+      if (value[track] === void 0) continue;
+      const count = value[track];
+      if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
+        fail2(`${track} must be a whole number of at least 1`);
+      } else layout[track] = count;
+    }
+    if (value.autoTracks !== void 0) {
+      if (value.autoTracks !== "NONE" && value.autoTracks !== "ROWS") fail2("autoTracks must be NONE or ROWS");
+      else layout.autoTracks = value.autoTracks;
+    }
     if (value.sizing !== void 0) {
       if (typeof value.sizing !== "object" || value.sizing === null) fail2("sizing must be { horizontal, vertical }");
       else {
@@ -19594,7 +19705,9 @@ ${renderSections(sections)}
         }
       }
     }
-    return { step: "layout", layout };
+    const saysMore = Object.keys(layout).some((key) => key !== "sizing");
+    const _a = layout, { sizing: _sizing } = _a, rest = __objRest(_a, ["sizing"]);
+    return { step: saysMore ? { step: "layout", layout: rest } : null, layout };
   }
   var HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
   var BINDABLE = {
@@ -22973,7 +23086,7 @@ ${scripts}`, "");
   ];
 
   // src/agent/props-vocabulary.ts
-  var INJECTED = `[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer's mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see \`layout.sizing\`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; \`layout.sizing\` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes \`fill\` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"'INSIDE' | 'OUTSIDE' | 'CENTER'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'","note":"How an open end is finished."},{"name":"strokeJoin","type":"'MITER' | 'BEVEL' | 'ROUND'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. \`[]\` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw's brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. \`[]\` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. \`[]\` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Figma Motion animation styles on this node. \`null\` or \`[]\` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"{ family: string; style: string }","note":"Family and style together, because Figma loads them as a pair."},{"name":"textAlign","type":"'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | 'AUTO'","note":"Pixels, or AUTO to follow the font."},{"name":"letterSpacing","type":"number","note":"Pixels between characters; negative tightens."},{"name":"autoResize","type":"'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'","note":"Whether the box follows the text, and in which direction."},{"name":"textWrap","type":"'AUTO' | 'BALANCE' | 'PRETTY'","note":"How lines are broken: \`AUTO\`, \`BALANCE\` (even lines) or \`PRETTY\` (no orphans)."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE only: throw away every override first."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin's own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma's parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. \`null\` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame's first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent's children it sits; 0 is first."}]`;
+  var INJECTED = `[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer's mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see \`layout.sizing\`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; \`layout.sizing\` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent's auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. \`null\` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"'MIN' | 'CENTER' | 'MAX' | 'AUTO'","note":"GRID only: how the child sits in its cell."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes \`fill\` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"'INSIDE' | 'OUTSIDE' | 'CENTER'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'","note":"How an open end is finished."},{"name":"strokeJoin","type":"'MITER' | 'BEVEL' | 'ROUND'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. \`[]\` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw's brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. \`[]\` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. \`[]\` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Figma Motion animation styles on this node. \`null\` or \`[]\` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"{ family: string; style: string }","note":"Family and style together, because Figma loads them as a pair."},{"name":"textAlign","type":"'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | 'AUTO'","note":"Pixels, or AUTO to follow the font."},{"name":"letterSpacing","type":"number","note":"Pixels between characters; negative tightens."},{"name":"autoResize","type":"'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'","note":"Whether the box follows the text, and in which direction."},{"name":"textWrap","type":"'AUTO' | 'BALANCE' | 'PRETTY'","note":"How lines are broken: \`AUTO\`, \`BALANCE\` (even lines) or \`PRETTY\` (no orphans)."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE only: throw away every override first."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin's own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma's parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. \`null\` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame's first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent's children it sits; 0 is first."}]`;
   var PROPS_VOCABULARY = (() => {
     if (!INJECTED.startsWith("[")) return [];
     try {
@@ -25929,6 +26042,13 @@ ${scripts}`, "");
           if (layout.primaryAxis) frame3.primaryAxisAlignItems = layout.primaryAxis;
           if (layout.counterAxis) frame3.counterAxisAlignItems = layout.counterAxis;
           if (layout.wrap !== void 0) frame3.layoutWrap = layout.wrap ? "WRAP" : "NO_WRAP";
+          if (layout.wrapGap !== void 0) frame3.counterAxisSpacing = layout.wrapGap;
+          if (layout.reverseZ !== void 0) frame3.itemReverseZIndex = layout.reverseZ;
+          if (layout.strokesInLayout !== void 0) frame3.strokesIncludedInLayout = layout.strokesInLayout;
+          const grid = frame3;
+          if (layout.rows !== void 0) grid.gridRowCount = layout.rows;
+          if (layout.columns !== void 0) grid.gridColumnCount = layout.columns;
+          if (layout.autoTracks !== void 0) grid.gridAutoTracks = layout.autoTracks;
         }
         return { property: "layout", before, after: layout };
       }
@@ -26105,6 +26225,12 @@ ${scripts}`, "");
         if (step.loads) await figma.loadBrushesAsync(step.loads);
         if (!dry) bag.complexStrokeProperties = step.brush;
         return { property: "brush", before, after: step.summary };
+      }
+      case "bound": {
+        if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`);
+        const before = bag[step.property];
+        if (!dry) bag[step.property] = step.value;
+        return { property: step.property, before, after: step.value };
       }
       case "dashes": {
         if (!("dashPattern" in bag)) throw new Error(`a ${node.type} has no stroke to dash`);
@@ -26778,22 +26904,20 @@ ${scripts}`, "");
       };
     }
     const node = await make(plan);
-    const later = plan.steps.filter(dependsOnChildren);
-    const report2 = await applyProps(node, plan.steps.filter((step) => !dependsOnChildren(step)), false);
+    const later = plan.steps.filter((step) => dependsOnChildren(step) || dependsOnPlacement(step));
+    const report2 = await applyProps(
+      node,
+      plan.steps.filter((step) => !dependsOnChildren(step) && !dependsOnPlacement(step)),
+      false
+    );
     const children = [];
     for (const child of plan.children) {
-      const made = await createNode(child, fallbackParent, false);
-      const childNode = await figma.getNodeByIdAsync(made.id);
-      if (childNode && childNode.parent === figma.currentPage && !child.steps.some((step) => step.step === "reparent")) {
-        ;
-        node.appendChild(childNode);
-      }
-      children.push(made);
+      children.push(await createNode(child, node, false));
     }
-    const late = later.length > 0 ? await applyProps(node, later, false) : { applied: [], failed: 0 };
-    if (!plan.steps.some((step) => step.step === "reparent") && node.parent === null) {
+    if (!plan.steps.some((step) => step.step === "reparent") && node.parent !== fallbackParent) {
       fallbackParent.appendChild(node);
     }
+    const late = later.length > 0 ? await applyProps(node, later, false) : { applied: [], failed: 0 };
     return {
       kind: plan.kind,
       id: node.id,
@@ -27721,13 +27845,26 @@ ${scripts}`, "");
       strokeWeight: round11(bag.strokeWeight)
     }, bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 ? { timelines: bag.timelines.map((one) => `${one.id} ${one.duration}s`).join(" \xB7 ") } : {}), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
-      props.layout = {
+      props.layout = __spreadValues(__spreadValues({
         mode: bag.layoutMode,
         gap: round11(bag.itemSpacing),
         padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round11),
         primaryAxis: bag.primaryAxisAlignItems,
         counterAxis: bag.counterAxisAlignItems
-      };
+      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round11(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? { rows: bag.gridRowCount, columns: bag.gridColumnCount, autoTracks: bag.gridAutoTracks } : {});
+    }
+    if (typeof bag.layoutSizingHorizontal === "string") {
+      props.sizing = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical };
+    }
+    if (bag.layoutPositioning === "ABSOLUTE") props.absolute = true;
+    if (typeof bag.gridRowSpan === "number" && (bag.gridRowSpan > 1 || bag.gridColumnSpan > 1)) {
+      props.gridSpan = { rows: bag.gridRowSpan, columns: bag.gridColumnSpan };
+    }
+    if (typeof bag.gridChildVerticalAlign === "string" && bag.gridChildVerticalAlign !== "AUTO") {
+      props.gridAlign = bag.gridChildVerticalAlign;
+    }
+    for (const bound of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
+      if (typeof bag[bound] === "number") props[bound] = bag[bound];
     }
     const keys = node.getPluginDataKeys();
     if (keys.length > 0) {

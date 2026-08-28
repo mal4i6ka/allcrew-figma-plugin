@@ -1266,7 +1266,26 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round),
       primaryAxis: bag.primaryAxisAlignItems,
       counterAxis: bag.counterAxisAlignItems,
+      ...(bag.layoutWrap === 'WRAP' ? { wrap: true, wrapGap: round(bag.counterAxisSpacing) } : {}),
+      ...(bag.layoutMode === 'GRID'
+        ? { rows: bag.gridRowCount, columns: bag.gridColumnCount, autoTracks: bag.gridAutoTracks }
+        : {}),
     }
+  }
+  // How the node is sized inside ITS parent — invisible in a read until now, which made a frame
+  // that quietly hugged instead of holding its width impossible to diagnose from the outside.
+  if (typeof bag.layoutSizingHorizontal === 'string') {
+    props.sizing = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical }
+  }
+  if (bag.layoutPositioning === 'ABSOLUTE') props.absolute = true
+  if (typeof bag.gridRowSpan === 'number' && (bag.gridRowSpan > 1 || (bag.gridColumnSpan as number) > 1)) {
+    props.gridSpan = { rows: bag.gridRowSpan, columns: bag.gridColumnSpan }
+  }
+  if (typeof bag.gridChildVerticalAlign === 'string' && bag.gridChildVerticalAlign !== 'AUTO') {
+    props.gridAlign = bag.gridChildVerticalAlign
+  }
+  for (const bound of ['minWidth', 'maxWidth', 'minHeight', 'maxHeight'] as const) {
+    if (typeof bag[bound] === 'number') props[bound] = bag[bound]
   }
   const keys = node.getPluginDataKeys()
   if (keys.length > 0) {

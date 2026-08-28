@@ -23,10 +23,11 @@ test('the plan comes out in our order, not the order it was typed in', () => {
   })
   assert.deepEqual(
     steps.map((step) => (step.step === 'assign' ? step.property : step.step)),
-    // Sizing is last of all: after the resize that would otherwise pin the axis it frees, after
-    // the text a hugging frame sizes itself to, and after any reparent, since FILL means nothing
-    // until the node is inside the parent it fills.
-    ['name', 'layout', 'resize', 'font', 'text', 'sizing']
+    // Sizing is two steps and the split is the point: FIXED goes BEFORE the resize, because a
+    // hugging frame swallows a resize whole; HUG and FILL go after — after the resize that would
+    // otherwise re-pin the axis, after the text a hugging frame measures itself against, and
+    // after any reparent, since FILL means nothing until the node is inside what it fills.
+    ['name', 'layout', 'sizing', 'resize', 'font', 'text', 'sizing']
   )
 })
 
@@ -38,8 +39,12 @@ test('turning auto-layout on makes a frame hug, because 100x100 clips what you p
     horizontal: 'HUG',
     vertical: 'HUG',
   })
-  // A dimension the caller gave is a dimension they meant: that axis is not touched.
-  assert.deepEqual(stepsOf({ layout: { mode: 'VERTICAL' }, width: 320 }).at(-1), { step: 'sizing', vertical: 'HUG' })
+  // A dimension the caller gave is a dimension they meant: that axis is PINNED before the resize,
+  // because a hugging frame swallows one whole — a 260-wide frame came out 320.
+  const pinned = stepsOf({ layout: { mode: 'VERTICAL' }, width: 320 })
+  assert.deepEqual(pinned[1], { step: 'sizing', horizontal: 'FIXED' })
+  assert.equal(pinned[2].step, 'resize')
+  assert.deepEqual(pinned.at(-1), { step: 'sizing', vertical: 'HUG' })
   // And an explicit sizing wins over both.
   assert.deepEqual(stepsOf({ layout: { mode: 'HORIZONTAL', sizing: { horizontal: 'FILL' } } }).at(-1), {
     step: 'sizing',
@@ -796,4 +801,64 @@ test('every way of naming a shader wrongly is refused', () => {
   assert.match(paintProblem({ shader: 'abc', props: {} }) ?? '', /unknown key "props"/)
   assert.match(paintProblem({ shader: 'abc', properties: [] }) ?? '', /properties must be an object/)
   assert.match(paintProblem({ shader: 'abc', opacity: 3 }) ?? '', /opacity must be between 0 and 1/)
+})
+
+/* ------------------------------------------------------- auto-layout, in full */
+
+test('the second gap, the stacking order and the grid tracks all reach the layout', () => {
+  const step = stepsOf({
+    layout: { mode: 'HORIZONTAL', gap: 8, wrap: true, wrapGap: 12, reverseZ: true, strokesInLayout: false },
+  })[0] as { layout: Record<string, unknown> }
+  assert.deepEqual(step.layout, {
+    mode: 'HORIZONTAL',
+    gap: 8,
+    wrap: true,
+    wrapGap: 12,
+    reverseZ: true,
+    strokesInLayout: false,
+  })
+  const grid = stepsOf({ layout: { mode: 'GRID', rows: 2, columns: 3, autoTracks: 'ROWS' } })[0] as {
+    layout: Record<string, unknown>
+  }
+  assert.deepEqual(grid.layout, { mode: 'GRID', rows: 2, columns: 3, autoTracks: 'ROWS' })
+})
+
+test('a child may step out of the layout, and its x and y then mean something', () => {
+  assert.deepEqual(stepsOf({ absolute: true }), [
+    { step: 'assign', property: 'layoutPositioning', value: 'ABSOLUTE' },
+  ])
+  assert.deepEqual(stepsOf({ absolute: false })[0], { step: 'assign', property: 'layoutPositioning', value: 'AUTO' })
+  // And it is planned before the geometry it makes meaningful.
+  assert.deepEqual(
+    planProps({ x: 10, absolute: true, layout: { mode: 'VERTICAL' } }).steps.map((s) =>
+      s.step === 'assign' ? s.property : s.step
+    ),
+    ['layout', 'layoutPositioning', 'x', 'sizing']
+  )
+})
+
+test('bounds are numbers or null, and null is how one comes off', () => {
+  assert.deepEqual(stepsOf({ maxWidth: 320 }), [{ step: 'bound', property: 'maxWidth', value: 320 }])
+  assert.deepEqual(stepsOf({ maxWidth: null }), [{ step: 'bound', property: 'maxWidth', value: null }])
+  assert.match(planProps({ minHeight: -4 }).problems[0], /minHeight must be >= 0/)
+})
+
+test('a grid child says how many tracks it covers and how it sits in them', () => {
+  assert.deepEqual(stepsOf({ gridSpan: { rows: 2, columns: 3 } }), [
+    { step: 'assign', property: 'gridRowSpan', value: 2 },
+    { step: 'assign', property: 'gridColumnSpan', value: 3 },
+  ])
+  assert.deepEqual(stepsOf({ gridAlign: 'CENTER' }), [
+    { step: 'assign', property: 'gridChildVerticalAlign', value: 'CENTER' },
+  ])
+  assert.match(planProps({ gridSpan: {} }).problems[0], /must name rows, columns or both/)
+  assert.match(planProps({ gridSpan: { rows: 0 } }).problems[0], /whole number of at least 1/)
+  assert.match(planProps({ gridAlign: 'TOP' }).problems[0], /MIN, CENTER, MAX, AUTO/)
+})
+
+test('an unknown layout key lists the whole set, which is now thirteen words', () => {
+  const problem = planProps({ layout: { spacing: 4 } }).problems[0]
+  assert.match(problem, /unknown key "spacing"/)
+  assert.match(problem, /mode, gap, wrapGap, padding/)
+  assert.match(problem, /rows, columns, autoTracks/)
 })

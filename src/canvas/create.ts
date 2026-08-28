@@ -13,7 +13,7 @@
 
 import { applyProps, type AppliedProp } from './apply.ts'
 import { componentFor } from './components.ts'
-import { dependsOnChildren, planProps, type PropStep } from './props.ts'
+import { dependsOnChildren, dependsOnPlacement, planProps, type PropStep } from './props.ts'
 
 export const NODE_KINDS = [
   'frame',
@@ -153,29 +153,37 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
   }
 
   const node = await make(plan)
-  // Everything except what describes children the node does not have yet.
-  const later = plan.steps.filter(dependsOnChildren)
-  const report = await applyProps(node, plan.steps.filter((step) => !dependsOnChildren(step)), false)
+  // Everything except what describes children the node does not have yet, and what describes its
+  // place in a parent it is not in yet.
+  const later = plan.steps.filter((step) => dependsOnChildren(step) || dependsOnPlacement(step))
+  const report = await applyProps(
+    node,
+    plan.steps.filter((step) => !dependsOnChildren(step) && !dependsOnPlacement(step)),
+    false
+  )
 
   const children: CreatedNode[] = []
   for (const child of plan.children) {
-    const made = await createNode(child, fallbackParent, false)
-    const childNode = await figma.getNodeByIdAsync(made.id)
-    // A child whose own props named a parent has already been placed there; the rest belong to
-    // the node that declared them.
-    if (childNode && childNode.parent === figma.currentPage && !child.steps.some((step) => step.step === 'reparent')) {
-      ;(node as FrameNode).appendChild(childNode as SceneNode)
-    }
-    children.push(made)
+    // The node that declared the child IS the child's parent, and it is handed over as such
+    // rather than left to the page. A child built against the page and moved afterwards had
+    // already run the half of its properties that only mean something inside a parent — FILL,
+    // absolute positioning, its own size — against the wrong one, so each was applied, reported
+    // and lost.
+    children.push(await createNode(child, node as BaseNode & ChildrenMixin, false))
   }
 
-  // Now that the children are in, the properties that talk about them can be set.
-  const late = later.length > 0 ? await applyProps(node, later, false) : { applied: [], failed: 0 }
-
-  // Placed last, and only if nothing in its own props already placed it.
-  if (!plan.steps.some((step) => step.step === 'reparent') && node.parent === null) {
+  // Placed before the last pass, not after it: half of what is left describes where the node sits
+  // in its parent, and until it has one there is nothing for those properties to describe.
+  //
+  // The test is "not already there" rather than "has no parent": every `figma.create*` hands back
+  // a node already parented to the current page, so a check for a null parent is never true and
+  // the child would sit on the page for ever.
+  if (!plan.steps.some((step) => step.step === 'reparent') && node.parent !== fallbackParent) {
     fallbackParent.appendChild(node)
   }
+
+  // Now that the children are in and the node is placed, the rest can be set.
+  const late = later.length > 0 ? await applyProps(node, later, false) : { applied: [], failed: 0 }
 
   return {
     kind: plan.kind,
