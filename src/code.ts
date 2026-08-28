@@ -73,7 +73,7 @@ import { applyRebind, hasRebindSnapshot, previewRebind, revertRebind } from './t
 import { auditContrast, describeContrast } from './tokens/remap/audit'
 import { parsePaletteInput } from './tokens/remap/input'
 import { buildRemapPlan, type RemapOptions, type RemapPlan } from './tokens/remap/plan'
-import { buildMappingFile, toCsv } from './tokens/remap/contract'
+import { buildMappingFile, parseMappingFile, planFromMappingFile, toCsv } from './tokens/remap/contract'
 import { rewriteColors } from './tokens/remap/rewrite'
 import { swatchesFromPalette } from './tokens/remap/sources'
 import { listLibraryCollections, swatchesFromLibrary, swatchesFromSelection } from './targets/ds-tools/remap-sources'
@@ -141,7 +141,19 @@ type PluginMessage =
       excluded?: string[]
     }
   | { type: 'REMAP_REVERT' }
-  | { type: 'REMAP_BOARD'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[] }
+  | {
+      type: 'REMAP_BOARD'
+      /** Where the new palette comes from, when the plugin is to work the mapping out itself. */
+      source?: RemapSource
+      /** A `mapping.json` document instead: the board draws the correspondence it carries,
+       * whoever computed it. Exactly one of `source` and `mapping` belongs in a call. */
+      mapping?: unknown
+      /** Names the section and identifies it, so boards of different kinds coexist. */
+      title?: string
+      options?: Partial<RemapOptions>
+      overrides?: Record<string, string>
+      excluded?: string[]
+    }
   | { type: 'REMAP_UNPARK' }
   | { type: 'REMAP_REBIND_PREVIEW'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[]; scope?: RemapScope }
   | { type: 'REMAP_REBIND_APPLY'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[]; scope?: RemapScope }
@@ -171,6 +183,39 @@ type PluginMessage =
 let remapInventory: RemapInventory | null = null
 /** How deep the last reading went, so an implicit rescan does not silently widen it. */
 let remapDepth: ScanDepth = 'document'
+/** When that reading was taken — see `inventoryStamp`. */
+let remapInventoryAt = 0
+
+/**
+ * Which reading a plan was built on, reported with every plan-shaped answer.
+ *
+ * The inventory outlives the scan that produced it: it is reused by every preview until a write
+ * invalidates it, and a preview with no inventory quietly takes one. That is fine for a person
+ * who just pressed Scan themselves and can see the file, and a trap for an agent — a plan can
+ * be perfectly self-consistent about a document that has since moved on, and nothing in the
+ * answer said so. Only explicit writes clear it; a designer dragging layers does not.
+ *
+ * So the answer carries its own provenance and the caller decides whether to trust it. Cheap to
+ * produce, and it turns an invisible assumption into a checkable fact.
+ */
+function inventoryStamp(): { scannedAt: string; ageMs: number; depth: ScanDepth; sites: number } | null {
+  if (!remapInventory) return null
+  return {
+    scannedAt: new Date(remapInventoryAt).toISOString(),
+    ageMs: Date.now() - remapInventoryAt,
+    depth: remapDepth,
+    sites: remapInventory.sites.length,
+  }
+}
+
+/** The one place the inventory is read, so its stamp can never disagree with it. */
+async function readInventory(depth: ScanDepth): Promise<RemapInventory> {
+  const inventory = await readRemapInventory((label) => postToUi({ type: 'REMAP_PROGRESS', label }), depth)
+  remapInventory = inventory
+  remapDepth = depth
+  remapInventoryAt = Date.now()
+  return inventory
+}
 
 /** A row the human overrode in the approval table: site id → forced `#RRGGBB`. */
 function applyRemapOverrides(plan: RemapPlan, overrides: Record<string, string> | undefined): RemapPlan {
@@ -258,20 +303,15 @@ async function planRemap(
   overrides: Record<string, string> | undefined,
   excluded?: readonly string[]
 ): Promise<{ plan: RemapPlan; palette: ReturnType<typeof parsePaletteInput>['swatches'] }> {
-  if (!remapInventory) {
-    remapInventory = await readRemapInventory(
-      (label) => postToUi({ type: 'REMAP_PROGRESS', label }),
-      remapDepth
-    )
-  }
+  const inventory = remapInventory ?? (await readInventory(remapDepth))
   const resolved = await resolveRemapSource(source)
   postToUi({ type: 'REMAP_PROGRESS', label: `matching ${resolved.swatches.length} new colors…` })
   const plan = buildRemapPlan({
-    sites: remapInventory.sites,
+    sites: inventory.sites,
     palette: resolved.swatches,
-    primaryModeId: remapInventory.primaryModeId,
+    primaryModeId: inventory.primaryModeId,
     // The plan only needs the pair; the text/boundary distinction belongs to the audit.
-    adjacency: remapInventory.adjacency.map((pair) => [pair.a, pair.b] as [string, string]),
+    adjacency: inventory.adjacency.map((pair) => [pair.a, pair.b] as [string, string]),
     excluded,
     options,
   })
@@ -1062,20 +1102,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'REMAP_SCAN': {
       // @agent read: inventory every colour in the document — variables, styles, gradient stops, loose paints
       try {
-        remapInventory = await readRemapInventory(
-          (label) => postToUi({ type: 'REMAP_PROGRESS', label }),
-          msg.depth ?? 'document'
-        )
-        remapDepth = msg.depth ?? 'document'
+        const inventory = await readInventory(msg.depth ?? 'document')
         postToUi({
           type: 'REMAP_INVENTORY',
-          stats: remapInventory.stats,
-          modes: remapInventory.modes,
-          sites: remapInventory.sites.length,
-          adjacency: remapInventory.adjacency.length,
-          warnings: remapInventory.warnings,
+          stats: inventory.stats,
+          modes: inventory.modes,
+          sites: inventory.sites.length,
+          adjacency: inventory.adjacency.length,
+          warnings: inventory.warnings,
           canRevert: hasRemapSnapshot(),
           canRevertRebind: hasRebindSnapshot(),
+          inventory: inventoryStamp(),
         })
       } catch (err) {
         postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
@@ -1092,7 +1129,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent read: build the old-to-new colour mapping and return the table, structurally matched
       try {
         const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
-        postToUi({ type: 'REMAP_PLAN', ...remapPlanView(plan), paletteSize: palette.length })
+        postToUi({
+          type: 'REMAP_PLAN',
+          ...remapPlanView(plan),
+          paletteSize: palette.length,
+          inventory: inventoryStamp(),
+        })
       } catch (err) {
         postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
@@ -1205,13 +1247,29 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       break
     }
     case 'REMAP_BOARD': {
-      // @agent write: draw the standardised old/new swatch board on canvas, replacing the one drawn last time
+      // @agent write: draw the standardised old/new swatch board — from a palette, or from any mapping.json you supply
       try {
-        const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
+        // Two ways in, and they are not interchangeable: a palette makes the plugin compute the
+        // correspondence with its own structural matcher, a mapping means somebody else already
+        // did — an agent, a spreadsheet, a person — and the board is only the renderer. Naming
+        // both would silently pick one.
+        if ((msg.source === undefined) === (msg.mapping === undefined)) {
+          throw new Error('pass either source (a palette to match against) or mapping (a mapping.json to draw), not both')
+        }
+        const fromMapping = msg.mapping !== undefined
+        const plan = fromMapping
+          ? planFromMappingFile(parseMappingFile(msg.mapping))
+          : (await planRemap(msg.source!, msg.options, msg.overrides, msg.excluded)).plan
         postToUi({ type: 'REMAP_PROGRESS', label: 'drawing the board…' })
-        const report = await drawRemapBoard(plan)
-        figma.notify(report.rows ? `Board: ${report.rows} pairs on this page` : 'Board: nothing moves')
-        postToUi({ type: 'REMAP_BOARD_DRAWN', report })
+        const report = await drawRemapBoard(plan, { title: msg.title })
+        figma.notify(report.rows ? `${report.section}: ${report.rows} pairs on this page` : `${report.section}: nothing moves`)
+        postToUi({
+          type: 'REMAP_BOARD_DRAWN',
+          report,
+          // A mapping-drawn board owes nothing to the inventory, and stamping it with a
+          // leftover scan would be the exact confusion the stamp exists to prevent.
+          ...(fromMapping ? { drawnFrom: 'mapping' } : { drawnFrom: 'palette', inventory: inventoryStamp() }),
+        })
       } catch (err) {
         postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }

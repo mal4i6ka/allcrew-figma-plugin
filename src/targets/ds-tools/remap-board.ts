@@ -295,6 +295,18 @@ export interface RemapBoardReport {
   omitted: number
 }
 
+export interface RemapBoardOptions {
+  /** Names the section, and identifies it: a board replaces the one drawn under the same
+   * title, and leaves boards of other kinds alone. */
+  title?: string
+}
+
+/** A section name has to survive being a layer name and a pluginData key, so it is trimmed and
+ * bounded; an empty title is the default one rather than a nameless section. */
+export function boardTitle(raw: string | undefined): string {
+  return (raw ?? '').trim().slice(0, 60) || SECTION_NAME
+}
+
 /**
  * Draws the board on the current page, replacing the previous one.
  *
@@ -302,25 +314,30 @@ export interface RemapBoardReport {
  * at the canvas origin, and a section covering that spot adopts it — so removing the old one
  * afterwards would take the half-built board with it.
  */
-export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport> {
+export async function drawRemapBoard(plan: RemapPlan, options: RemapBoardOptions = {}): Promise<RemapBoardReport> {
+  const title = boardTitle(options.title)
   const fonts = await loadFonts()
   const groups = groupEntries(plan)
   const bindings = await collectBindings(groups.flatMap((group) => group.entries))
 
-  const previous = figma.currentPage
-    .findAllWithCriteria({ types: ['SECTION'] })
-    .find((node) => node.getPluginData(SECTION_KEY) === '1')
+  // Tagged with its own title, so boards of different kinds coexist and each replaces only
+  // itself: a semantic correspondence drawn next to a palette move must not eat it. Boards
+  // drawn before titles existed carry '1' and are still recognised as the colour one.
+  const previous = figma.currentPage.findAllWithCriteria({ types: ['SECTION'] }).find((node) => {
+    const tag = node.getPluginData(SECTION_KEY)
+    return tag === title || (title === SECTION_NAME && tag === '1')
+  })
   const previousBox = previous?.absoluteBoundingBox ?? null
   const spot = previousBox ? { x: previousBox.x, y: previousBox.y } : placementFor(groups)
   if (previous) previous.remove()
 
-  const content = autoLayout(SECTION_NAME, 'VERTICAL', ROW_GAP)
+  const content = autoLayout(title, 'VERTICAL', ROW_GAP)
   content.x = spot.x + PADDING
   content.y = spot.y + PADDING
 
   const moving = groups.reduce((total, group) => total + group.entries.length, 0)
   const heading = autoLayout('heading', 'VERTICAL', 4)
-  heading.appendChild(label(SECTION_NAME, fonts, LABEL_SIZE + 3, '#1A1A1A'))
+  heading.appendChild(label(title, fonts, LABEL_SIZE + 3, '#1A1A1A'))
   heading.appendChild(
     label(
       // An empty board is a result too: it says the file already holds this palette. Drawing
@@ -354,9 +371,9 @@ export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport>
   }
 
   const section = figma.createSection()
-  section.name = SECTION_NAME
+  section.name = title
   section.fills = [solid('#FFFFFF')]
-  section.setPluginData(SECTION_KEY, '1')
+  section.setPluginData(SECTION_KEY, title)
 
   figma.currentPage.appendChild(section)
   // Move before resizing. A section grows by covering canvas, and whatever it covers it
@@ -376,7 +393,7 @@ export async function drawRemapBoard(plan: RemapPlan): Promise<RemapBoardReport>
     content.y += sectionBox.y + PADDING - contentBox.y
   }
 
-  return { section: SECTION_NAME, rows, families: groups.length, omitted }
+  return { section: title, rows, families: groups.length, omitted }
 }
 
 function placementFor(groups: readonly FamilyGroup[]): { x: number; y: number } {

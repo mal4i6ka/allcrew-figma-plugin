@@ -219,6 +219,24 @@ test('the reads really are reads, by name and by spot check', () => {
   assert.equal(access('PREVIEW_PALETTE'), 'read')
 })
 
+test('commands report the replies they actually post', () => {
+  // This was silently empty for every command once the sandbox stopped calling
+  // `figma.ui.postMessage` by name and went through `postToUi` — the surface still listed 40
+  // commands, and told an agent nothing about what any of them answers.
+  const commands = extractUiCommands(SOURCE)
+  const replies = (name: string) => commands.find((command) => command.name === name)?.replies ?? []
+
+  assert.ok(replies('REMAP_BOARD').includes('REMAP_BOARD_DRAWN'), 'REMAP_BOARD lost its reply types')
+  assert.ok(replies('REMAP_SCAN').includes('REMAP_INVENTORY'))
+  assert.ok(replies('REMAP_PREVIEW').includes('REMAP_PLAN'))
+  assert.ok(replies('SCAN_TOP').includes('SCAN_TOP_RESULT'))
+
+  const silent = commands.filter((command) => command.access !== 'deny' && command.replies.length === 0)
+  // A handful genuinely answer nothing (they only store a setting); most do answer, and a
+  // wholesale empty list means the extraction broke rather than the plugin going quiet.
+  assert.ok(silent.length < 8, `${silent.length} commands report no replies: ${silent.map((c) => c.name).join(', ')}`)
+})
+
 test('the remap stage is reachable end to end, with its params', () => {
   // The reason this mechanism exists: the plugin's colour mapping and its standardised board,
   // driven from the agent side without an op per step.

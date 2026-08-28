@@ -16084,21 +16084,28 @@ ${scrollGuards}` : project.css;
     }
     return { old, imported, collections };
   }
-  async function drawRemapBoard(plan) {
+  function boardTitle(raw) {
+    return (raw != null ? raw : "").trim().slice(0, 60) || SECTION_NAME;
+  }
+  async function drawRemapBoard(plan, options = {}) {
     var _a;
+    const title = boardTitle(options.title);
     const fonts = await loadFonts2();
     const groups = groupEntries(plan);
     const bindings = await collectBindings(groups.flatMap((group) => group.entries));
-    const previous = figma.currentPage.findAllWithCriteria({ types: ["SECTION"] }).find((node) => node.getPluginData(SECTION_KEY) === "1");
+    const previous = figma.currentPage.findAllWithCriteria({ types: ["SECTION"] }).find((node) => {
+      const tag = node.getPluginData(SECTION_KEY);
+      return tag === title || title === SECTION_NAME && tag === "1";
+    });
     const previousBox = (_a = previous == null ? void 0 : previous.absoluteBoundingBox) != null ? _a : null;
     const spot = previousBox ? { x: previousBox.x, y: previousBox.y } : placementFor2(groups);
     if (previous) previous.remove();
-    const content = autoLayout2(SECTION_NAME, "VERTICAL", ROW_GAP2);
+    const content = autoLayout2(title, "VERTICAL", ROW_GAP2);
     content.x = spot.x + PADDING;
     content.y = spot.y + PADDING;
     const moving = groups.reduce((total, group) => total + group.entries.length, 0);
     const heading = autoLayout2("heading", "VERTICAL", 4);
-    heading.appendChild(label2(SECTION_NAME, fonts, LABEL_SIZE2 + 3, "#1A1A1A"));
+    heading.appendChild(label2(title, fonts, LABEL_SIZE2 + 3, "#1A1A1A"));
     heading.appendChild(
       label2(
         // An empty board is a result too: it says the file already holds this palette. Drawing
@@ -16127,9 +16134,9 @@ ${scrollGuards}` : project.css;
       content.appendChild(row);
     }
     const section = figma.createSection();
-    section.name = SECTION_NAME;
+    section.name = title;
     section.fills = [solid3("#FFFFFF")];
-    section.setPluginData(SECTION_KEY, "1");
+    section.setPluginData(SECTION_KEY, title);
     figma.currentPage.appendChild(section);
     section.x = spot.x;
     section.y = spot.y;
@@ -16141,7 +16148,7 @@ ${scrollGuards}` : project.css;
       content.x += sectionBox.x + PADDING - contentBox.x;
       content.y += sectionBox.y + PADDING - contentBox.y;
     }
-    return { section: SECTION_NAME, rows, families: groups.length, omitted };
+    return { section: title, rows, families: groups.length, omitted };
   }
   function placementFor2(groups) {
     const widest = groups.reduce((most, group) => Math.max(most, group.entries.length), 0);
@@ -17243,10 +17250,95 @@ ${scrollGuards}` : project.css;
     );
     return [CSV_COLUMNS.join(","), ...rows].join("\n") + "\n";
   }
+  function planFromMappingFile(file) {
+    const siteIdByName = /* @__PURE__ */ new Map();
+    for (const record2 of file.records) if (!siteIdByName.has(record2.name)) siteIdByName.set(record2.name, record2.id);
+    return {
+      entries: file.records.map((record2, index) => entryFromRecord(record2, index)),
+      // Renames are per entity, so they are addressed by the site id the name belonged to.
+      renames: file.renames.map((rename) => {
+        var _a;
+        return {
+          siteId: (_a = siteIdByName.get(rename.from)) != null ? _a : rename.from,
+          from: rename.from,
+          to: rename.to,
+          legacy: rename.legacy
+        };
+      }),
+      families: file.families.map((family) => ({
+        fromKey: family.from,
+        fromLabel: family.from,
+        toLabel: family.to,
+        modeId: family.mode,
+        shared: family.shared,
+        cost: 0,
+        stops: 0
+      })),
+      unusedFamilies: [],
+      warnings: file.warnings
+    };
+  }
+  function entryFromRecord(record2, index) {
+    const from = rgbaOf(record2.from, record2.fromAlpha, `records[${index}].from`);
+    const to = rgbaOf(record2.to, record2.toAlpha, `records[${index}].to`);
+    return {
+      site: {
+        id: record2.id,
+        kind: record2.kind,
+        name: record2.name,
+        modeId: null,
+        modeName: record2.mode,
+        rgba: from,
+        usage: 0,
+        // A mapping is a document about someone else's file. Nothing here decides whether a
+        // write is allowed — that is the inventory's job — so the permissive defaults only ever
+        // reach the renderer.
+        editable: true,
+        primitive: false
+      },
+      from,
+      to,
+      toName: null,
+      toVariableKey: record2.toVariable,
+      fromFamily: record2.fromFamily,
+      toFamily: record2.toFamily,
+      fromStep: record2.fromStep,
+      toStep: record2.toStep,
+      via: record2.via,
+      deltaE: record2.deltaE,
+      flags: record2.flags
+    };
+  }
+  function rgbaOf(hex, alpha, where) {
+    const rgb = parseHex(hex);
+    if (!rgb) throw new Error(`mapping: ${where} is not a hex color ("${hex}")`);
+    return __spreadProps(__spreadValues({}, rgb), { a: typeof alpha === "number" && alpha >= 0 && alpha <= 1 ? alpha : 1 });
+  }
+  function parseMappingFile(raw) {
+    var _a, _b, _c, _d, _e;
+    const value = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (typeof value !== "object" || value === null) throw new Error("mapping: not an object");
+    const file = value;
+    if (file.format !== MAPPING_FORMAT) throw new Error(`mapping: unknown format "${String(file.format)}"`);
+    if (typeof file.version !== "number" || file.version > MAPPING_VERSION) {
+      throw new Error(`mapping: version ${String(file.version)} is newer than this build understands`);
+    }
+    if (!Array.isArray(file.records)) throw new Error("mapping: records missing");
+    return {
+      format: MAPPING_FORMAT,
+      version: file.version,
+      generatedAt: (_a = file.generatedAt) != null ? _a : null,
+      source: (_b = file.source) != null ? _b : { file: null, palette: null },
+      families: (_c = file.families) != null ? _c : [],
+      renames: (_d = file.renames) != null ? _d : [],
+      records: file.records,
+      warnings: (_e = file.warnings) != null ? _e : []
+    };
+  }
 
   // src/tokens/remap/rewrite.ts
   var DEFAULT_REWRITE_OPTIONS = { snap: 2, mode: null, byName: false };
-  var rgbaOf = (hex, alpha) => {
+  var rgbaOf2 = (hex, alpha) => {
     const rgb = parseHex(hex);
     return rgb ? __spreadProps(__spreadValues({}, rgb), { a: alpha }) : null;
   };
@@ -17262,7 +17354,7 @@ ${scrollGuards}` : project.css;
       (record2) => options.mode == null || record2.mode === null || record2.mode === options.mode
     );
     for (const record2 of records) {
-      const to = rgbaOf(record2.to, 1);
+      const to = rgbaOf2(record2.to, 1);
       if (!to) continue;
       const target = { rgb: to, hex: record2.to };
       for (const name of [record2.name, record2.newName]) {
@@ -17284,7 +17376,7 @@ ${scrollGuards}` : project.css;
       );
     }
     for (const [hex, target] of byHex) {
-      const from = rgbaOf(hex, 1);
+      const from = rgbaOf2(hex, 1);
       if (from) all.push({ from, target });
     }
     return { byHex, settled, all, byName, warnings };
@@ -20980,7 +21072,7 @@ ${scripts}`, "");
   ];
 
   // src/agent/ui-commands.ts
-  var INJECTED = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }"}],"replies":[]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string"}],"replies":[]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":[]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":[]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":[]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown"},{"name":"fix","required":true,"type":"unknown"}],"replies":[]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>"}],"replies":[]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","params":[{"name":"depth","required":false,"type":"ScanDepth"}],"replies":[]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":[]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":[]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":[]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":[]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope"}],"replies":[]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope"}],"replies":[]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":[]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board on canvas, replacing the one drawn last time","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":[]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":[]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"format","required":true,"type":"'json' | 'csv'"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":[]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>"},{"name":"snap","required":false,"type":"number"},{"name":"byName","required":false,"type":"boolean"},{"name":"mode","required":false,"type":"string | null"}],"replies":[]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","params":[],"replies":[]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","params":[],"replies":[]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":[]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>"}],"replies":[]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope"}],"replies":[]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":[]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope"},{"name":"lintMaxDepth","required":false,"type":"number"}],"replies":[]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":[]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":[]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]"}],"replies":[]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":[]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string"},{"name":"form","required":true,"type":"AnnotationFormState"}],"replies":[]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean"},{"name":"write","required":true,"type":"boolean"}],"replies":[]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string"},{"name":"op","required":true,"type":"string"},{"name":"params","required":false,"type":"unknown"}],"replies":[]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string"},{"name":"values","required":true,"type":"unknown"}],"replies":[]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string"}],"replies":[]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":[]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string"},{"name":"format","required":true,"type":"ImportFormat"},{"name":"scope","required":true,"type":"ExportScope"}],"replies":[]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope"},{"name":"modules","required":true,"type":"ExportModules"},{"name":"cssFile","required":true,"type":"string"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":[]}]`;
+  var INJECTED = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown"},{"name":"fix","required":true,"type":"unknown"}],"replies":["PALETTE_FIXED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","params":[{"name":"depth","required":false,"type":"ScanDepth"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource"},{"name":"mapping","required":false,"type":"unknown"},{"name":"title","required":false,"type":"string"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"format","required":true,"type":"'json' | 'csv'"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>"},{"name":"snap","required":false,"type":"number"},{"name":"byName","required":false,"type":"boolean"},{"name":"mode","required":false,"type":"string | null"}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope"},{"name":"lintMaxDepth","required":false,"type":"number"}],"replies":["SCAN_RESULT"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":[]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":["ANNOTATION_PANEL"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string"},{"name":"form","required":true,"type":"AnnotationFormState"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean"},{"name":"write","required":true,"type":"boolean"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string"},{"name":"op","required":true,"type":"string"},{"name":"params","required":false,"type":"unknown"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string"},{"name":"values","required":true,"type":"unknown"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string"}],"replies":["USER_PRESETS"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string"},{"name":"format","required":true,"type":"ImportFormat"},{"name":"scope","required":true,"type":"ExportScope"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope"},{"name":"modules","required":true,"type":"ExportModules"},{"name":"cssFile","required":true,"type":"string"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
   var UI_COMMANDS = (() => {
     if (!INJECTED.startsWith("[")) return [];
     try {
@@ -22811,6 +22903,23 @@ ${scripts}`, "");
   // src/code.ts
   var remapInventory = null;
   var remapDepth = "document";
+  var remapInventoryAt = 0;
+  function inventoryStamp() {
+    if (!remapInventory) return null;
+    return {
+      scannedAt: new Date(remapInventoryAt).toISOString(),
+      ageMs: Date.now() - remapInventoryAt,
+      depth: remapDepth,
+      sites: remapInventory.sites.length
+    };
+  }
+  async function readInventory(depth) {
+    const inventory = await readRemapInventory((label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 }), depth);
+    remapInventory = inventory;
+    remapDepth = depth;
+    remapInventoryAt = Date.now();
+    return inventory;
+  }
   function applyRemapOverrides(plan, overrides) {
     if (!overrides) return plan;
     for (const entry of plan.entries) {
@@ -22863,20 +22972,15 @@ ${scripts}`, "");
     }
   }
   async function planRemap(source, options, overrides, excluded) {
-    if (!remapInventory) {
-      remapInventory = await readRemapInventory(
-        (label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 }),
-        remapDepth
-      );
-    }
+    const inventory = remapInventory != null ? remapInventory : await readInventory(remapDepth);
     const resolved = await resolveRemapSource(source);
     postToUi({ type: "REMAP_PROGRESS", label: `matching ${resolved.swatches.length} new colors\u2026` });
     const plan = buildRemapPlan({
-      sites: remapInventory.sites,
+      sites: inventory.sites,
       palette: resolved.swatches,
-      primaryModeId: remapInventory.primaryModeId,
+      primaryModeId: inventory.primaryModeId,
       // The plan only needs the pair; the text/boundary distinction belongs to the audit.
-      adjacency: remapInventory.adjacency.map((pair2) => [pair2.a, pair2.b]),
+      adjacency: inventory.adjacency.map((pair2) => [pair2.a, pair2.b]),
       excluded,
       options
     });
@@ -23423,7 +23527,7 @@ ${scripts}`, "");
   }
   figma.on("selectionchange", postSelectionToUi);
   async function handleUiMessage(msg) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
@@ -23527,20 +23631,17 @@ ${scripts}`, "");
       /* ---- DS Tools: color token remapping ---- */
       case "REMAP_SCAN": {
         try {
-          remapInventory = await readRemapInventory(
-            (label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 }),
-            (_d = msg.depth) != null ? _d : "document"
-          );
-          remapDepth = (_e = msg.depth) != null ? _e : "document";
+          const inventory = await readInventory((_d = msg.depth) != null ? _d : "document");
           postToUi({
             type: "REMAP_INVENTORY",
-            stats: remapInventory.stats,
-            modes: remapInventory.modes,
-            sites: remapInventory.sites.length,
-            adjacency: remapInventory.adjacency.length,
-            warnings: remapInventory.warnings,
+            stats: inventory.stats,
+            modes: inventory.modes,
+            sites: inventory.sites.length,
+            adjacency: inventory.adjacency.length,
+            warnings: inventory.warnings,
             canRevert: hasRemapSnapshot(),
-            canRevertRebind: hasRebindSnapshot()
+            canRevertRebind: hasRebindSnapshot(),
+            inventory: inventoryStamp()
           });
         } catch (err) {
           postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
@@ -23555,7 +23656,12 @@ ${scripts}`, "");
       case "REMAP_PREVIEW": {
         try {
           const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
-          postToUi(__spreadProps(__spreadValues({ type: "REMAP_PLAN" }, remapPlanView(plan)), { paletteSize: palette.length }));
+          postToUi(__spreadProps(__spreadValues({
+            type: "REMAP_PLAN"
+          }, remapPlanView(plan)), {
+            paletteSize: palette.length,
+            inventory: inventoryStamp()
+          }));
         } catch (err) {
           postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
@@ -23564,7 +23670,7 @@ ${scripts}`, "");
       case "REMAP_APPLY": {
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
-          const options = __spreadValues(__spreadValues({}, DEFAULT_REMAP_APPLY_OPTIONS), (_f = msg.applyOptions) != null ? _f : {});
+          const options = __spreadValues(__spreadValues({}, DEFAULT_REMAP_APPLY_OPTIONS), (_e = msg.applyOptions) != null ? _e : {});
           const audit = remapInventory ? auditContrast(plan, remapInventory.adjacency) : { findings: [], checked: 0, improved: 0 };
           const report2 = await applyRemap(
             plan,
@@ -23619,7 +23725,7 @@ ${scripts}`, "");
           }
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const progress2 = (label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 });
-          const rebindOptions = { scope: (_g = msg.scope) != null ? _g : "document" };
+          const rebindOptions = { scope: (_f = msg.scope) != null ? _f : "document" };
           const report2 = msg.type === "REMAP_REBIND_APPLY" ? await applyRebind(plan, rebindOptions, progress2) : await previewRebind(plan, rebindOptions, progress2);
           if (msg.type === "REMAP_REBIND_APPLY") {
             remapInventory = null;
@@ -23656,11 +23762,18 @@ ${scripts}`, "");
       }
       case "REMAP_BOARD": {
         try {
-          const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
+          if (msg.source === void 0 === (msg.mapping === void 0)) {
+            throw new Error("pass either source (a palette to match against) or mapping (a mapping.json to draw), not both");
+          }
+          const fromMapping = msg.mapping !== void 0;
+          const plan = fromMapping ? planFromMappingFile(parseMappingFile(msg.mapping)) : (await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)).plan;
           postToUi({ type: "REMAP_PROGRESS", label: "drawing the board\u2026" });
-          const report2 = await drawRemapBoard(plan);
-          figma.notify(report2.rows ? `Board: ${report2.rows} pairs on this page` : "Board: nothing moves");
-          postToUi({ type: "REMAP_BOARD_DRAWN", report: report2 });
+          const report2 = await drawRemapBoard(plan, { title: msg.title });
+          figma.notify(report2.rows ? `${report2.section}: ${report2.rows} pairs on this page` : `${report2.section}: nothing moves`);
+          postToUi(__spreadValues({
+            type: "REMAP_BOARD_DRAWN",
+            report: report2
+          }, fromMapping ? { drawnFrom: "mapping" } : { drawnFrom: "palette", inventory: inventoryStamp() }));
         } catch (err) {
           postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
@@ -23698,7 +23811,7 @@ ${scripts}`, "");
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind });
-          const settings = { snap: (_h = msg.snap) != null ? _h : 2, byName: (_i = msg.byName) != null ? _i : false, mode: (_j = msg.mode) != null ? _j : null };
+          const settings = { snap: (_g = msg.snap) != null ? _g : 2, byName: (_h = msg.byName) != null ? _h : false, mode: (_i = msg.mode) != null ? _i : null };
           let replaced = 0;
           let untouched = 0;
           const warnings = /* @__PURE__ */ new Set();
@@ -23819,7 +23932,7 @@ ${scripts}`, "");
             { nodeId: fileNodeIds[path], content }
           ])
         );
-        const existingFiles = new Map(Object.entries((_k = msg.existingFiles) != null ? _k : {}));
+        const existingFiles = new Map(Object.entries((_j = msg.existingFiles) != null ? _j : {}));
         const plan = planRegeneration(existingFiles, freshFiles);
         let tokensCss;
         let bootstrapTokensCss;
@@ -23877,7 +23990,7 @@ ${scripts}`, "");
         break;
       }
       case "SCROLL_INTO_VIEW": {
-        const node = (_l = lastScanIndex.get(msg.nodeId)) != null ? _l : await figma.getNodeByIdAsync(msg.nodeId);
+        const node = (_k = lastScanIndex.get(msg.nodeId)) != null ? _k : await figma.getNodeByIdAsync(msg.nodeId);
         if (node && "visible" in node) {
           const target = node;
           figma.viewport.scrollAndZoomIntoView([target]);
@@ -23953,7 +24066,7 @@ ${scripts}`, "");
           ops: agentManifest(),
           commands: UI_COMMANDS,
           file: figma.root.name,
-          fileKey: (_m = figma.fileKey) != null ? _m : null
+          fileKey: (_l = figma.fileKey) != null ? _l : null
         }));
         break;
       }
@@ -24097,10 +24210,10 @@ ${scripts}`, "");
           if (exportOptions.targetOptions.platform === "tauri" && project) {
             let startPageId;
             try {
-              startPageId = (_n = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _n.nodeId;
+              startPageId = (_m = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _m.nodeId;
             } catch (e) {
             }
-            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_o = pageRoots[0]) == null ? void 0 : _o.id;
+            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_n = pageRoots[0]) == null ? void 0 : _n.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -24133,9 +24246,9 @@ ${scripts}`, "");
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_p = sceneNodesById.get(nodeId)) != null ? _p : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (_o = sceneNodesById.get(nodeId)) != null ? _o : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_q = node.parent) == null ? void 0 : _q.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((_p = node.parent) == null ? void 0 : _p.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -24158,7 +24271,7 @@ ${scripts}`, "");
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((_r = counts[finding.rule]) != null ? _r : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_q = counts[finding.rule]) != null ? _q : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -24208,7 +24321,7 @@ ${scripts}`, "");
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (_t = (_s = figma.currentUser) == null ? void 0 : _s.name) != null ? _t : "unknown";
+            exportedBy = (_s = (_r = figma.currentUser) == null ? void 0 : _r.name) != null ? _s : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }

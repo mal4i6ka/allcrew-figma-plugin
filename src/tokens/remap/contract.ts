@@ -12,6 +12,7 @@
  */
 
 import { toHex } from './color-literal.ts'
+import { parseHex } from '../color.ts'
 import type { RemapEntry, RemapFlag, RemapPlan, SiteKind } from './plan.ts'
 
 export const MAPPING_FORMAT = 'altery-color-remap'
@@ -177,6 +178,86 @@ export function colorReplacements(mapping: MappingFile, mode?: string | null): C
 }
 
 /** Reads a `mapping.json` back, rejecting anything that is not one. */
+/**
+ * The inverse of `buildMappingFile`: a mapping read back as a plan.
+ *
+ * The file was always rich enough for this — every record carries both colors, both names,
+ * family, step, `via` and flags — but nothing read it back, so the only correspondence the
+ * plugin could show was one it had just computed itself from a palette. That is the wrong
+ * limit: the structural matcher is right for ramps and has nothing to say about, for instance,
+ * which semantic token replaces which. Those correspondences come from somewhere else — an
+ * agent, a spreadsheet, a person — and this is how they get in.
+ *
+ * Two fields do not survive the round trip, and neither is a loss the board can see: `usage`
+ * (bindings per site, which only the inventory knows) and a family's `cost`/`stops`, which
+ * describe how the matcher chose, not what it chose. Both come back as zero.
+ */
+export function planFromMappingFile(file: MappingFile): RemapPlan {
+  const siteIdByName = new Map<string, string>()
+  for (const record of file.records) if (!siteIdByName.has(record.name)) siteIdByName.set(record.name, record.id)
+
+  return {
+    entries: file.records.map((record, index) => entryFromRecord(record, index)),
+    // Renames are per entity, so they are addressed by the site id the name belonged to.
+    renames: file.renames.map((rename) => ({
+      siteId: siteIdByName.get(rename.from) ?? rename.from,
+      from: rename.from,
+      to: rename.to,
+      legacy: rename.legacy,
+    })),
+    families: file.families.map((family) => ({
+      fromKey: family.from,
+      fromLabel: family.from,
+      toLabel: family.to,
+      modeId: family.mode,
+      shared: family.shared,
+      cost: 0,
+      stops: 0,
+    })),
+    unusedFamilies: [],
+    warnings: file.warnings,
+  }
+}
+
+function entryFromRecord(record: MappingRecord, index: number): RemapEntry {
+  const from = rgbaOf(record.from, record.fromAlpha, `records[${index}].from`)
+  const to = rgbaOf(record.to, record.toAlpha, `records[${index}].to`)
+
+  return {
+    site: {
+      id: record.id,
+      kind: record.kind,
+      name: record.name,
+      modeId: null,
+      modeName: record.mode,
+      rgba: from,
+      usage: 0,
+      // A mapping is a document about someone else's file. Nothing here decides whether a
+      // write is allowed — that is the inventory's job — so the permissive defaults only ever
+      // reach the renderer.
+      editable: true,
+      primitive: false,
+    },
+    from,
+    to,
+    toName: null,
+    toVariableKey: record.toVariable,
+    fromFamily: record.fromFamily,
+    toFamily: record.toFamily,
+    fromStep: record.fromStep,
+    toStep: record.toStep,
+    via: record.via,
+    deltaE: record.deltaE,
+    flags: record.flags,
+  }
+}
+
+function rgbaOf(hex: string, alpha: number, where: string): { r: number; g: number; b: number; a: number } {
+  const rgb = parseHex(hex)
+  if (!rgb) throw new Error(`mapping: ${where} is not a hex color ("${hex}")`)
+  return { ...rgb, a: typeof alpha === 'number' && alpha >= 0 && alpha <= 1 ? alpha : 1 }
+}
+
 export function parseMappingFile(raw: unknown): MappingFile {
   const value = typeof raw === 'string' ? JSON.parse(raw) : raw
   if (typeof value !== 'object' || value === null) throw new Error('mapping: not an object')

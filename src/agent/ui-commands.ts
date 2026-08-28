@@ -62,7 +62,9 @@ const HANDLER_ANCHOR = 'async function handleUiMessage'
 const CASE_PATTERN = /case '([A-Z][A-Z0-9_]*)':/g
 const MARKER_PATTERN = /@agent\s+(read|write|deny)\s*:\s*([^\n]*)/
 const PARAM_PATTERN = /\bmsg\.([A-Za-z_$][A-Za-z0-9_$]*)/g
-const REPLY_PATTERN = /postMessage\(\s*\{\s*(?:\/\/[^\n]*\n\s*)*type:\s*'([A-Za-z][A-Za-z0-9_]*)'/g
+/** Both spellings: the sandbox posts through `postToUi` (see `ui-post.ts`), and a call site that
+ * still names the host method directly is one this should not go blind on. */
+const REPLY_PATTERN = /post(?:ToUi|Message)\(\s*\{\s*(?:\/\/[^\n]*\n\s*)*type:\s*'([A-Za-z][A-Za-z0-9_]*)'/g
 
 export function extractUiCommands(source: string): UiCommandDef[] {
   const start = source.indexOf(HANDLER_ANCHOR)
