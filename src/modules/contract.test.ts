@@ -279,3 +279,15 @@ test('a value block must name a declared field, like every other binding', () =>
   assert.equal(module, null)
   assert.match(problems[0].path, /\.bind$/)
 })
+
+test('there is no spacer block — spacing is the layout\'s business', () => {
+  // A screen is laid out by rules the panel owns: prose, controls, readouts, data, actions.
+  // A block whose only job is to push things apart would be an invitation to fight them.
+  const padded = clone(MODULE)
+  padded.screens.main.blocks.push({ block: 'spacer' } as never)
+  const { module, problems } = parseUserModule(padded, KNOWN)
+  assert.equal(module, null)
+  assert.match(problems[0].message, /unknown block "spacer"/)
+  // And the message lists what it could have been instead.
+  assert.match(problems[0].message, /heading, text, callout, field, value, select, toggle, button, table/)
+})

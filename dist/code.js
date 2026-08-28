@@ -22985,7 +22985,7 @@ ${scripts}`, "");
 
   // src/modules/contract.ts
   var MODULE_FORMAT = "altery.module/1";
-  var BLOCK_TYPES = ["heading", "text", "callout", "field", "value", "select", "toggle", "button", "table", "spacer"];
+  var BLOCK_TYPES = ["heading", "text", "callout", "field", "value", "select", "toggle", "button", "table"];
   var STATE_TYPES = ["string", "number", "boolean"];
   var ID_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
   var VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
@@ -23157,7 +23157,8 @@ ${scripts}`, "");
         return from === null ? null : __spreadValues({ block: "table", from }, optionalLabel(raw));
       }
       default:
-        return { block: "spacer" };
+        context.fail(`${path}.block`, `no renderer for block "${kind}"`);
+        return null;
     }
   }
   function parseSteps2(raw, path, context) {

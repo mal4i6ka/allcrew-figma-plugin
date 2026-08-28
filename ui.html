@@ -467,6 +467,10 @@
      applied to a real <table> it collapses every cell against its neighbour. Same visual
      language — mono, faint uppercase head, thin separators — scoped to its own name, and it
      scrolls sideways rather than pushing the panel wider. */
+  /* The same rhythm the views have. `.view` puts a 12px gap between its *direct* children, and
+     a module's cards live one level down inside this container — which is why they arrived
+     glued to each other. */
+  #mod-blocks { display: flex; flex-direction: column; gap: 12px; }
   .mod-table-wrap { max-height: 320px; overflow: auto; }
   .mod-table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 10.5px; }
   .mod-table th { position: sticky; top: 0; background: var(--surface); color: var(--faint); font-size: 9px; font-weight: 500;
@@ -4122,27 +4126,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             return vrow
           }
           case 'button': {
-            var actions = document.createElement('div')
-            actions.className = 'rmp-actions'
+            // Bare: the section's layout decides which row it lands in.
             var button = document.createElement('button')
             button.className = 'btn primary'
             button.type = 'button'
             button.textContent = MOD.running ? 'Working…' : block.label
             button.disabled = MOD.running
             button.addEventListener('click', function () { modRun(screen, index) })
-            actions.appendChild(button)
-            return actions
+            return button
           }
           case 'table': {
             var rows = MOD.view[block.from]
             if (!Array.isArray(rows)) rows = (rows && Array.isArray(rows.rows)) ? rows.rows : null
             if (!rows) return modText('p', 'sec-hint', (block.label || block.from) + ' — nothing yet')
             return modTable(block.label || block.from, rows)
-          }
-          case 'spacer': {
-            var spacer = document.createElement('div')
-            spacer.style.height = '6px'
-            return spacer
           }
           default:
             // Unreachable through the contract, which refuses unknown blocks at install — and
@@ -4195,7 +4192,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
        * decides which target you are looking at, and Settings is already a sub-page.
        */
       function renderModuleScreen() {
-        renderBlocksInto(modEl('mod-blocks'), (MOD.screens || {}).main || [], 'main', MOD.name)
+        renderBlocksInto(modEl('mod-blocks'), (MOD.screens || {}).main || [], 'main', MOD.summary, MOD.name)
 
         var settings = (MOD.screens || {}).settings
         modEl('mod-settings-head').classList.toggle('hidden', !settings)
@@ -4203,26 +4200,72 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         renderBlocksInto(modEl('mod-settings-blocks'), settings || [], 'settings', null)
       }
 
-      /** One card per heading, so a module's screen has the rhythm of every other screen here:
-       * a titled card, then its rows. The module's name and summary title the first card, which
-       * is why a module does not need to repeat them as blocks. */
-      function renderBlocksInto(host, blocks, screen, title) {
+      /**
+       * One layout for every module screen, imposed rather than agreed.
+       *
+       * A module says which blocks it wants; the panel decides where they go. A section — the
+       * blocks under one heading — always renders in the same order: prose, then the controls
+       * you set, then the values you read, then the data, then the buttons at the bottom, which
+       * is the rhythm every native card in this panel already has. Order in the file is not
+       * layout, so an author cannot accidentally invent a screen that looks foreign, and does
+       * not have to think about spacing at all.
+       *
+       * To put a button in the middle of a screen, start a new section: that is what a heading
+       * is for.
+       */
+      var MOD_ORDER = { text: 0, callout: 0, field: 1, select: 1, toggle: 1, value: 2, table: 3, button: 4 }
+
+      function renderBlocksInto(host, blocks, screen, summary, fallbackTitle) {
         host.innerHTML = ''
         if (blocks.length === 0) return
-        var card = null
-        var openCard = function (heading) {
-          card = document.createElement('section')
-          card.className = 'card'
-          if (heading) card.appendChild(modText('p', 'label', heading))
-          host.appendChild(card)
-        }
-        if (title) {
-          openCard(title)
-          if (MOD.summary) card.appendChild(modText('p', 'sec-hint', MOD.summary))
-        }
+
+        // Split at headings. Everything before the first one is a section without a title.
+        var sections = []
+        var current = { title: null, blocks: [] }
         blocks.forEach(function (block, index) {
-          if (card === null || block.block === 'heading') openCard(block.block === 'heading' ? block.text : null)
-          if (block.block !== 'heading') card.appendChild(modBlockNode(block, index, screen))
+          if (block.block === 'heading') {
+            if (current.blocks.length > 0 || current.title) sections.push(current)
+            current = { title: block.text, blocks: [] }
+            return
+          }
+          current.blocks.push({ block: block, index: index })
+        })
+        sections.push(current)
+
+        sections.forEach(function (section, position) {
+          if (section.blocks.length === 0 && !section.title) return
+          var card = document.createElement('section')
+          card.className = 'card'
+          // Every card in this panel is titled, and an untitled one reads unmoored next to its
+          // neighbours — so a leading section with no heading of its own borrows the module's
+          // name, with the summary as its hint underneath.
+          var title = section.title || (position === 0 ? fallbackTitle : null)
+          if (title) card.appendChild(modText('p', 'label', title))
+          if (position === 0 && summary) card.appendChild(modText('p', 'sec-hint', summary))
+
+          var ordered = section.blocks.slice().sort(function (a, b) {
+            var byRole = (MOD_ORDER[a.block.block] || 0) - (MOD_ORDER[b.block.block] || 0)
+            return byRole !== 0 ? byRole : a.index - b.index
+          })
+
+          var actions = null
+          ordered.forEach(function (entry) {
+            var node = modBlockNode(entry.block, entry.index, screen)
+            if (!node) return
+            if (entry.block.block === 'button') {
+              // Every button of a section shares one action row, the way the panel's own cards
+              // put their buttons side by side at the bottom.
+              if (!actions) {
+                actions = document.createElement('div')
+                actions.className = 'rmp-actions'
+                card.appendChild(actions)
+              }
+              actions.appendChild(node)
+              return
+            }
+            card.appendChild(node)
+          })
+          host.appendChild(card)
         })
       }
 

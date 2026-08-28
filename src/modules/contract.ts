@@ -51,7 +51,6 @@ export type ModuleBlock =
   | { block: 'toggle'; bind: string; label?: string }
   | { block: 'button'; label: string; steps: ModuleStep[] }
   | { block: 'table'; from: string; label?: string }
-  | { block: 'spacer' }
 
 export interface ModuleScreen {
   blocks: ModuleBlock[]
@@ -99,7 +98,12 @@ export interface ModuleCapability {
   cost?: string
 }
 
-const BLOCK_TYPES = ['heading', 'text', 'callout', 'field', 'value', 'select', 'toggle', 'button', 'table', 'spacer']
+/**
+ * The whole vocabulary. No `spacer`: spacing is the panel's business, not the author's — a
+ * screen is laid out by the rules in the renderer, and a block whose only job is to push
+ * things apart would be an invitation to fight them.
+ */
+const BLOCK_TYPES = ['heading', 'text', 'callout', 'field', 'value', 'select', 'toggle', 'button', 'table']
 const STATE_TYPES: StateType[] = ['string', 'number', 'boolean']
 const ID_PATTERN = /^[a-z0-9][a-z0-9.-]*$/
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/
@@ -310,7 +314,10 @@ function parseBlock(raw: unknown, path: string, context: Context): ModuleBlock |
       return from === null ? null : { block: 'table', from, ...optionalLabel(raw) }
     }
     default:
-      return { block: 'spacer' }
+      // Unreachable: `kind` was checked against BLOCK_TYPES above, and every one of them has a
+      // case. Named rather than silently dropped, on the same principle as the rest.
+      context.fail(`${path}.block`, `no renderer for block "${kind}"`)
+      return null
   }
 }
 

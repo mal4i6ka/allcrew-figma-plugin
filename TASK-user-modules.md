@@ -76,9 +76,18 @@ These came out of the session that produced the agent channel; treat them as fix
 }
 ```
 
-**Blocks** (v1): `heading`, `text`, `callout`, `field`, `select`, `toggle`, `button`, `table`,
-`spacer`. A block that reads or writes a value carries `bind`, naming a declared state field; a
-`button` carries `steps`.
+**Blocks** (v1): `heading`, `text`, `callout`, `field`, `value`, `select`, `toggle`, `button`,
+`table`. A block that reads or writes a value carries `bind`, naming a declared state field;
+`value` shows one without offering to edit it; a `button` carries `steps`.
+
+**Layout is the panel's, not the author's.** A screen splits into sections at each `heading`,
+and every section renders in one fixed order — prose, then the controls you set, then the values
+you read, then the data, then the buttons, side by side at the bottom. Order in the file is not
+layout, which is why any module comes out with the panel's own rhythm and why there is no
+`spacer`: a block whose only job is to push things apart would be an invitation to fight the
+rules. To put a button in the middle of a screen, start a new section — that is what a heading
+is for. A module's `settings` screen renders in the panel's Settings sub-page, under the
+module's name, next to every other target's options.
 
 **Steps** (v1), in order, each one of:
 
