@@ -137,6 +137,9 @@ type PluginMessage =
   | { type: 'MODULE_REMOVE'; id: string }
   | { type: 'MODULE_ENABLE'; id: string; enabled: boolean }
   | { type: 'MODULE_EXPORT'; id: string }
+  | { type: 'MODULE_VIEW'; id: string; screen?: 'main' | 'settings' }
+  | { type: 'MODULE_STATE_SET'; id: string; field: string; value: unknown }
+  | { type: 'MODULE_RUN'; id: string; screen: 'main' | 'settings'; block: number; confirm?: boolean }
   // Design-tokens target messages
   | { type: 'SCAN_TOKENS'; docs?: { componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number } }
   | { type: 'GENERATE_TYPOGRAPHY' }
@@ -1011,6 +1014,18 @@ async function loadUserModules(): Promise<void> {
   }
 }
 
+/** Declared defaults with whatever the module has kept laid over them — what a field shows, and
+ * what a run starts from. A stored value for a field the module no longer declares is dropped
+ * rather than carried forward by an upgrade. */
+function moduleStateOf(entry: RegisteredModule): Record<string, unknown> {
+  const state: Record<string, unknown> = {}
+  for (const [name, field] of Object.entries(entry.module?.state ?? {})) {
+    const kept = entry.stored?.state?.[name]
+    state[name] = typeof kept === field.type ? kept : field.default
+  }
+  return state
+}
+
 async function writeStoredModules(next: Record<string, StoredModule>): Promise<void> {
   await figma.clientStorage.setAsync(MODULES_KEY, next)
   userModules = registerModules(next, UI_COMMANDS)
@@ -1046,6 +1061,7 @@ setModuleProvider({
         return sink
       },
       confirmed: confirm === true,
+      state: moduleStateOf(found.entry),
     })
 
     // What the run kept is written back under the module's own id, and only the fields it
@@ -1884,6 +1900,110 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       }
       await writeStoredModules({ ...stored, [msg.id]: { ...entry, disabled: msg.enabled === false } })
       postToUi({ type: 'MODULES', modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT })
+      break
+    }
+    case 'MODULE_VIEW': {
+      // @agent read: one module's screen as declared, with the values its fields currently hold
+      const entry = userModules.find((candidate) => candidate.id === msg.id)
+      if (!entry?.module) {
+        refuse('MODULE_VIEW', `no usable module "${msg.id}" — MODULES_LIST says why`)
+        break
+      }
+      const which = msg.screen ?? 'main'
+      const screen = entry.module.screens[which]
+      if (!screen) {
+        refuse('MODULE_VIEW', `module "${msg.id}" has no ${which} screen`)
+        break
+      }
+      postToUi({
+        type: 'MODULE_SCREEN',
+        id: entry.id,
+        screen: which,
+        // Which screens exist travels with the screen itself: the panel would otherwise have to
+        // stitch this together with the module list, and get it wrong whenever the two messages
+        // arrived in the other order.
+        screens: Object.keys(entry.module.screens),
+        name: entry.module.name,
+        summary: entry.module.summary,
+        blocks: screen.blocks,
+        // Declared defaults, overlaid with whatever it has kept — what a field should show.
+        state: moduleStateOf(entry),
+      })
+      break
+    }
+    case 'MODULE_STATE_SET': {
+      // @agent write: set one field of a module's own state, checked against the type it declared
+      const entry = userModules.find((candidate) => candidate.id === msg.id)
+      const declared = entry?.module?.state[msg.field]
+      if (!entry?.module || !declared) {
+        refuse('MODULE_STATE_SET', `module "${msg.id}" declares no field "${msg.field}"`)
+        break
+      }
+      if (typeof msg.value !== declared.type) {
+        // The same rule the runner enforces on `set`: a declared type is a promise to whoever
+        // renders the field and to whoever reads the storage next time.
+        refuse('MODULE_STATE_SET', `"${msg.field}" is declared ${declared.type}, not ${typeof msg.value}`)
+        break
+      }
+      const stored = await readStoredModules()
+      const held = stored[msg.id]
+      if (!held) {
+        refuse('MODULE_STATE_SET', `module "${msg.id}" is not installed`)
+        break
+      }
+      const state = { ...moduleStateOf(entry), [msg.field]: msg.value }
+      await writeStoredModules({ ...stored, [msg.id]: { ...held, state } })
+      postToUi({ type: 'MODULE_STATE', id: msg.id, state })
+      break
+    }
+    case 'MODULE_RUN': {
+      // @agent write: run one button of a module's screen — write-gated because the button may be
+      // @agent param block: the index of the button in that screen's blocks, as MODULE_VIEW numbers them
+      const entry = userModules.find((candidate) => candidate.id === msg.id)
+      const screen = entry?.module?.screens[msg.screen]
+      const block = screen?.blocks[msg.block]
+      if (!entry?.module || !block) {
+        refuse('MODULE_RUN', `no block ${msg.block} on the ${msg.screen} screen of "${msg.id}"`)
+        break
+      }
+      if (block.block !== 'button') {
+        refuse('MODULE_RUN', `block ${msg.block} is a ${block.block}, not a button`)
+        break
+      }
+      try {
+        // The steps are read from what is stored, never taken from the caller: the panel names
+        // which button was pressed, and the sandbox decides what that means.
+        const report = await runModuleCommand(
+          entry.module,
+          { name: `${entry.id}#${msg.screen}[${msg.block}]`, summary: block.label, params: [], steps: block.steps, access: 'write', confirms: block.steps.some((step) => 'confirm' in step) },
+          {},
+          {
+            call: (message) => handleUiMessage(message as PluginMessage),
+            record: async (work) => {
+              const sink = beginRecording()
+              try {
+                await work()
+              } finally {
+                endRecording(sink)
+              }
+              return sink
+            },
+            confirmed: msg.confirm === true,
+            state: moduleStateOf(entry),
+          }
+        )
+        if (report.ok) {
+          const stored = await readStoredModules()
+          const held = stored[msg.id]
+          if (held) await writeStoredModules({ ...stored, [msg.id]: { ...held, state: report.state } })
+        }
+        postToUi({ type: 'MODULE_RUN_REPORT', id: msg.id, screen: msg.screen, block: msg.block, report })
+        if (report.error) figma.notify(`${block.label}: ${report.error}`, { error: true })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        figma.notify(`${block.label} failed: ${message}`, { error: true })
+        postToUi({ type: 'MODULE_ERROR', message })
+      }
       break
     }
     case 'MODULE_EXPORT': {

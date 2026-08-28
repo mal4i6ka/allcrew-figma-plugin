@@ -27,6 +27,14 @@ export interface ModuleRunContext {
   record: (work: () => Promise<void>) => Promise<unknown[]>
   /** Whether the caller has already agreed to whatever the steps warn about. */
   confirmed?: boolean
+  /**
+   * What the module has kept from earlier runs, if the caller has it.
+   *
+   * Omitted, every run starts from the declared defaults — which is right for a fresh install
+   * and wrong for a module whose whole point is remembering the key somebody typed once. A
+   * stored value of the wrong type is ignored in favour of the default rather than trusted.
+   */
+  state?: Record<string, unknown>
 }
 
 export interface ModuleStepReport {
@@ -43,6 +51,14 @@ export interface ModuleRunReport {
   steps: ModuleStepReport[]
   /** The declared state as the run left it — the caller decides whether to persist it. */
   state: Record<string, unknown>
+  /**
+   * What each step kept under its `as` name.
+   *
+   * Not persisted, and deliberately separate from `state`: this is what a screen renders a
+   * table from — hundreds of rows of it — while state is the handful of scalars a module is
+   * allowed to remember. Keeping the two apart is what stops a plan ending up in storage.
+   */
+  view: Record<string, unknown>
   /** Set when a `confirm` step stopped the run. Re-run with `confirmed` to get past it. */
   needsConfirmation?: string
   error?: string
@@ -68,10 +84,13 @@ export async function runModuleCommand(
   // field for the length of the run, and nothing a step writes escapes into the next call
   // unless the caller persists what the report hands back.
   const scope: Record<string, unknown> = {}
-  for (const [name, field] of Object.entries(module.state)) scope[name] = field.default
+  for (const [name, field] of Object.entries(module.state)) {
+    const kept = context.state?.[name]
+    scope[name] = typeof kept === field.type ? kept : field.default
+  }
   Object.assign(scope, params)
 
-  const report: ModuleRunReport = { command: command.name, module: module.id, ok: true, steps: [], state: {} }
+  const report: ModuleRunReport = { command: command.name, module: module.id, ok: true, steps: [], state: {}, view: {} }
 
   for (const [index, step] of command.steps.entries()) {
     if ('confirm' in step) {
@@ -131,7 +150,10 @@ export async function runModuleCommand(
 
     // The answer is the last thing the command said: these post progress first and their result
     // last, so a step that keeps "the reply" keeps the one worth reading.
-    if (step.as) scope[step.as] = replies.length > 0 ? replies[replies.length - 1] : null
+    if (step.as) {
+      scope[step.as] = replies.length > 0 ? replies[replies.length - 1] : null
+      report.view[step.as] = scope[step.as]
+    }
     report.steps.push({ step: index, call: step.call, ok: true })
   }
 

@@ -248,3 +248,17 @@ test('the matching type goes through', async () => {
   assert.equal(report.ok, true)
   assert.equal(report.state.rows, 560)
 })
+
+test('a run starts from what the module kept, not from its declared defaults', async () => {
+  // Found by wiring the screens: a module whose point is remembering the key somebody typed
+  // once was starting every run from the default and quietly ignoring it.
+  const { sent, context } = harness(ANSWERS)
+  await runModuleCommand(MODULE, COMMAND, {}, { ...context, confirmed: true, state: { key: 'kept-key' } })
+  assert.equal(sent[1].source, 'kept-key')
+})
+
+test('a kept value of the wrong type falls back to the default rather than being trusted', async () => {
+  const { sent, context } = harness(ANSWERS)
+  await runModuleCommand(MODULE, COMMAND, {}, { ...context, confirmed: true, state: { key: 42 } })
+  assert.equal(sent[1].source, 'stored-key')
+})

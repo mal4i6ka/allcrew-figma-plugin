@@ -967,6 +967,22 @@
          things a person actually does — flip the channel on, and hand their agent the skill
          that teaches it to use the channel. Bridge URL, secret and the read/write gates live
          under Settings (data-needs-target="agent"). -->
+    <!-- A user module's screens. Everything inside is built by renderModuleScreen() from the
+         module's declared blocks, using this panel's own classes — a module ships a description
+         of a screen, never markup, so it cannot draw something that does not belong here. -->
+    <div id="view-module" class="view hidden">
+      <section class="card" id="mod-head">
+        <p class="label" id="mod-name">Module</p>
+        <p class="sec-hint" id="mod-summary"></p>
+        <div class="seg" id="mod-screens" role="radiogroup" aria-label="Module screen"></div>
+      </section>
+      <div id="mod-blocks"></div>
+      <section class="card hidden" id="mod-result">
+        <p class="label">Result</p>
+        <p class="sec-hint" id="mod-result-text"></p>
+      </section>
+    </div>
+
     <div id="view-agent" class="view hidden">
       <section class="card">
         <p class="label">
@@ -1624,14 +1640,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // VIEW tracks the current page so a target change re-applies visibility for THAT page
       // instead of unconditionally revealing the dashboards (the old settings-page nav bug).
       var VIEW = 'main'
+      /** Which user module the picker is pointed at, or null for a native target. */
+      var MODULE_TARGET = null
+
       function show(view) {
         VIEW = view
         var settings = view === 'settings'
-        var target = (OPTIONS && OPTIONS.target) || 'django'
+        var target = MODULE_TARGET ? 'module:' + MODULE_TARGET : (OPTIONS && OPTIONS.target) || 'django'
         document.getElementById('view-main').classList.toggle('hidden', settings || target !== 'django')
         document.getElementById('view-design-tokens').classList.toggle('hidden', settings || target !== 'design-tokens')
         document.getElementById('view-ds-tools').classList.toggle('hidden', settings || target !== 'ds-tools')
         document.getElementById('view-agent').classList.toggle('hidden', settings || target !== 'agent')
+        // A module's own target id is `module:<id>` — the picker's value carries which one.
+        document.getElementById('view-module').classList.toggle('hidden', settings || target.slice(0, 7) !== 'module:')
         document.getElementById('view-settings').classList.toggle('hidden', !settings)
         document.querySelector('footer').classList.toggle('hidden', settings)
         document.getElementById('open-settings').classList.toggle('hidden', settings)
@@ -1646,6 +1667,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // the platform back. Preset application passes the display value too (see below).
       function onTargetChange(picked) {
         if (!OPTIONS) return
+        // A module is a target like any other as far as the picker is concerned, and unlike any
+        // other it is not persisted as one: `OPTIONS.target` keeps the last *native* choice, so
+        // uninstalling a module cannot leave the panel pointed at a view that no longer exists.
+        if (picked.slice(0, 7) === 'module:') {
+          MODULE_TARGET = picked.slice(7)
+          show(VIEW)
+          requestModuleScreen(MODULE_TARGET, 'main')
+          return
+        }
+        MODULE_TARGET = null
         var target = picked === 'tauri' ? 'django' : picked
         OPTIONS.target = target
         if (picked === 'tauri') OPTIONS.targetOptions.platform = 'tauri'
@@ -3855,6 +3886,302 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
       }
       // ── end Agent listener ───────────────────────────────────────────────────────────
+      // ── User modules ─────────────────────────────────────────────────────────────────
+      /**
+       * A module's screen, drawn with this panel's own components.
+       *
+       * The module ships a list of declared blocks and nothing else — no markup, no script — so
+       * everything here is a switch from a block name onto the classes the rest of the panel
+       * uses. That is the whole reason the contract is declarative: a module cannot draw
+       * something that looks foreign, and cannot inject anything, because it never gets to say
+       * how a thing is drawn — only which thing.
+       *
+       * State lives in the sandbox. A field posts MODULE_STATE_SET and waits to be told the new
+       * value; a button posts MODULE_RUN with its own index and the sandbox looks up what that
+       * means. The panel never sends steps — it names which button was pressed.
+       */
+      var MOD = { id: null, screen: 'main', blocks: [], state: {}, view: {}, running: false }
+
+      function modEl(id) { return document.getElementById(id) }
+
+      function requestModuleScreen(id, screen) {
+        parent.postMessage({ pluginMessage: { type: 'MODULE_VIEW', id: id, screen: screen || 'main' } }, '*')
+      }
+
+      function modText(tag, className, text) {
+        var node = document.createElement(tag)
+        if (className) node.className = className
+        node.textContent = text == null ? '' : String(text)
+        return node
+      }
+
+      /** `<b>label</b><i>hint</i>` — the shape every settings row in this panel uses. */
+      function modRowLabel(label, hint) {
+        var span = document.createElement('span')
+        span.className = 'set-text'
+        span.appendChild(modText('b', null, label))
+        if (hint) span.appendChild(modText('i', null, hint))
+        return span
+      }
+
+      function modStateSet(field, value) {
+        parent.postMessage({ pluginMessage: { type: 'MODULE_STATE_SET', id: MOD.id, field: field, value: value } }, '*')
+      }
+
+      function modRun(index) {
+        if (MOD.running) return
+        MOD.running = true
+        modShowResult('Running…')
+        parent.postMessage({ pluginMessage: { type: 'MODULE_RUN', id: MOD.id, screen: MOD.screen, block: index } }, '*')
+      }
+
+      function modShowResult(text, isError) {
+        var card = modEl('mod-result')
+        card.classList.remove('hidden')
+        var line = modEl('mod-result-text')
+        line.textContent = text
+        line.style.color = isError ? 'var(--danger, #C4321A)' : ''
+      }
+
+      function modBlockNode(block, index) {
+        switch (block.block) {
+          case 'heading':
+            return modText('p', 'label', block.text)
+          case 'text':
+            return modText('p', 'sec-hint', block.text)
+          case 'callout': {
+            var callout = modText('p', 'sec-hint', block.text)
+            // The module picks a tone, never a colour: the palette stays this panel's.
+            if (block.tone === 'warn') callout.style.color = 'var(--warn, #8A6100)'
+            return callout
+          }
+          case 'field': {
+            var row = document.createElement('div')
+            row.className = 'set-row'
+            row.appendChild(modRowLabel(block.label || block.bind, null))
+            var input = document.createElement('input')
+            input.className = 'set-input'
+            input.type = 'text'
+            input.value = MOD.state[block.bind] == null ? '' : String(MOD.state[block.bind])
+            if (block.placeholder) input.placeholder = block.placeholder
+            input.addEventListener('change', function () { modStateSet(block.bind, input.value) })
+            row.appendChild(input)
+            return row
+          }
+          case 'select': {
+            var srow = document.createElement('div')
+            srow.className = 'set-row'
+            srow.appendChild(modRowLabel(block.label || block.bind, null))
+            var select = document.createElement('select')
+            select.className = 'set-ctl'
+            ;(block.options || []).forEach(function (option) {
+              var el = document.createElement('option')
+              el.value = option.value
+              el.textContent = option.label || option.value
+              select.appendChild(el)
+            })
+            select.value = String(MOD.state[block.bind])
+            select.addEventListener('change', function () { modStateSet(block.bind, select.value) })
+            srow.appendChild(select)
+            return srow
+          }
+          case 'toggle': {
+            var label = document.createElement('label')
+            label.className = 'set-row'
+            label.appendChild(modRowLabel(block.label || block.bind, null))
+            var wrap = document.createElement('span')
+            wrap.className = 'switch'
+            var box = document.createElement('input')
+            box.type = 'checkbox'
+            box.checked = MOD.state[block.bind] === true
+            box.addEventListener('change', function () { modStateSet(block.bind, box.checked) })
+            wrap.appendChild(box)
+            wrap.appendChild(modText('span', 'track', ''))
+            label.appendChild(wrap)
+            return label
+          }
+          case 'button': {
+            var actions = document.createElement('div')
+            actions.className = 'rmp-actions'
+            var button = document.createElement('button')
+            button.className = 'btn primary'
+            button.type = 'button'
+            button.textContent = block.label
+            button.disabled = MOD.running
+            button.addEventListener('click', function () { modRun(index) })
+            actions.appendChild(button)
+            return actions
+          }
+          case 'table': {
+            var rows = MOD.view[block.from]
+            if (!Array.isArray(rows)) rows = (rows && Array.isArray(rows.rows)) ? rows.rows : null
+            if (!rows) return modText('p', 'sec-hint', (block.label || block.from) + ' — nothing yet')
+            return modTable(block.label || block.from, rows)
+          }
+          case 'spacer': {
+            var spacer = document.createElement('div')
+            spacer.style.height = '6px'
+            return spacer
+          }
+          default:
+            // Unreachable through the contract, which refuses unknown blocks at install — and
+            // said so rather than dropping them. Kept as a visible fallback anyway: a screen
+            // with a hole in it should say where.
+            return modText('p', 'sec-hint', 'unsupported block: ' + String(block.block))
+        }
+      }
+
+      /** Rows are drawn from whatever keys the first few actually have — a module's table is a
+       * view of a command's reply, and this panel does not get to assume its columns. */
+      function modTable(label, rows) {
+        var shown = rows.slice(0, 40)
+        var columns = []
+        shown.forEach(function (row) {
+          if (!row || typeof row !== 'object') return
+          Object.keys(row).forEach(function (key) {
+            if (columns.indexOf(key) < 0 && columns.length < 6 && typeof row[key] !== 'object') columns.push(key)
+          })
+        })
+
+        var wrap = document.createElement('div')
+        wrap.appendChild(modText('p', 'label', label + ' · ' + rows.length))
+        var table = document.createElement('table')
+        table.className = 'rmp-table'
+        var head = document.createElement('tr')
+        columns.forEach(function (column) { head.appendChild(modText('th', null, column)) })
+        table.appendChild(head)
+        shown.forEach(function (row) {
+          var tr = document.createElement('tr')
+          columns.forEach(function (column) {
+            tr.appendChild(modText('td', null, row && row[column] != null ? row[column] : ''))
+          })
+          table.appendChild(tr)
+        })
+        wrap.appendChild(table)
+        if (rows.length > shown.length) {
+          wrap.appendChild(modText('p', 'sec-hint', 'showing ' + shown.length + ' of ' + rows.length))
+        }
+        return wrap
+      }
+
+      function renderModuleScreen() {
+        modEl('mod-name').textContent = MOD.name || MOD.id || 'Module'
+        modEl('mod-summary').textContent = MOD.summary || ''
+
+        var tabs = modEl('mod-screens')
+        tabs.innerHTML = ''
+        // Only shown when there is a choice to make: a module with one screen has no tabs.
+        tabs.classList.toggle('hidden', (MOD.screens || ['main']).length < 2)
+        ;(MOD.screens || ['main']).forEach(function (name) {
+          var tab = document.createElement('button')
+          tab.type = 'button'
+          tab.className = 'seg' + (name === MOD.screen ? ' active' : '')
+          tab.textContent = name
+          tab.addEventListener('click', function () { requestModuleScreen(MOD.id, name) })
+          tabs.appendChild(tab)
+        })
+
+        var host = modEl('mod-blocks')
+        host.innerHTML = ''
+        // Blocks are grouped into one card per run of non-heading blocks, so a module's screen
+        // has the same rhythm as every other screen here: a titled card, then its rows.
+        var card = null
+        ;(MOD.blocks || []).forEach(function (block, index) {
+          if (block.block === 'heading' || card === null) {
+            card = document.createElement('section')
+            card.className = 'card'
+            host.appendChild(card)
+          }
+          card.appendChild(modBlockNode(block, index))
+        })
+      }
+
+      function modHandleMessage(msg) {
+        if (msg.type === 'MODULE_SCREEN') {
+          MOD = {
+            id: msg.id,
+            screen: msg.screen,
+            // Carried by the message, so the tabs do not depend on the module list having
+            // arrived first — or at all.
+            screens: msg.screens || ['main'],
+            name: msg.name,
+            summary: msg.summary,
+            blocks: msg.blocks || [],
+            state: msg.state || {},
+            // A view survives a screen switch: the table a button filled is still the truth
+            // about what that button found.
+            view: MOD.id === msg.id ? MOD.view : {},
+            running: false,
+          }
+          renderModuleScreen()
+          return
+        }
+        if (msg.type === 'MODULE_STATE' && msg.id === MOD.id) {
+          MOD.state = msg.state || {}
+          renderModuleScreen()
+          return
+        }
+        if (msg.type === 'MODULE_RUN_REPORT' && msg.id === MOD.id) {
+          MOD.running = false
+          var report = msg.report || {}
+          MOD.state = report.state || MOD.state
+          MOD.view = report.view || MOD.view
+          if (report.needsConfirmation) {
+            // The sandbox stopped and asked; the same call goes back with the answer, so the
+            // decision is the human's and the steps are still the module's.
+            if (window.confirm(report.needsConfirmation)) {
+              MOD.running = true
+              parent.postMessage({ pluginMessage: {
+                type: 'MODULE_RUN', id: MOD.id, screen: msg.screen, block: msg.block, confirm: true
+              } }, '*')
+              modShowResult('Running…')
+              return
+            }
+            modShowResult('Cancelled — nothing ran past the confirmation.')
+          } else if (report.ok) {
+            var ran = (report.steps || []).length
+            modShowResult('Done · ' + ran + ' step' + (ran === 1 ? '' : 's'))
+          } else {
+            modShowResult(report.error || 'The run stopped.', true)
+          }
+          renderModuleScreen()
+          return
+        }
+        if (msg.type === 'MODULES') {
+          MODULES = msg.modules || []
+          renderModulePicker()
+          return
+        }
+      }
+
+      /**
+       * The picker's user half, under a divider.
+       *
+       * Grouped rather than mixed in: which half a target belongs to decides who to talk to
+       * when it misbehaves, and that is worth one line of chrome.
+       */
+      var MODULES = []
+
+      function renderModulePicker() {
+        var select = modEl('target-select')
+        var group = document.getElementById('target-modules')
+        if (group) group.parentNode.removeChild(group)
+        var usable = MODULES.filter(function (entry) { return entry.active && entry.name })
+        if (usable.length === 0) return
+        group = document.createElement('optgroup')
+        group.id = 'target-modules'
+        group.label = 'Modules'
+        usable.forEach(function (entry) {
+          var option = document.createElement('option')
+          option.value = 'module:' + entry.id
+          option.textContent = entry.name
+          group.appendChild(option)
+        })
+        select.appendChild(group)
+      }
+
+      parent.postMessage({ pluginMessage: { type: 'MODULES_LIST' } }, '*')
+      // ── end User modules ─────────────────────────────────────────────────────────────
       // ── Remap ────────────────────────────────────────────────────────────────────────
       // The plan is rebuilt on the plugin side for every preview, so the UI keeps only what a
       // human typed: the palette text and any row they overrode. Nothing here is state that
@@ -4430,6 +4757,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (!msg) return
         if (msg.type === 'AGENT_GATES' || msg.type === 'AGENT_RESPONSE' || msg.type === 'AGENT_ACTIVITY') {
           agentHandleMessage(msg)
+          return
+        }
+        if (msg.type.slice(0, 7) === 'MODULE_' || msg.type === 'MODULES') {
+          modHandleMessage(msg)
           return
         }
         if (msg.type === 'FILES_READY') {
