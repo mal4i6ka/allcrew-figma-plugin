@@ -231,6 +231,11 @@ test('commands report the replies they actually post', () => {
   assert.ok(replies('REMAP_PREVIEW').includes('REMAP_PLAN'))
   assert.ok(replies('SCAN_TOP').includes('SCAN_TOP_RESULT'))
 
+  // Posted by a helper the case calls, not by the case — the caller still has to expect them.
+  assert.ok(replies('LOAD_ANNOTATION_PANEL').includes('COMMAND_REFUSED'), 'a refusal must be declared')
+  assert.ok(replies('SET_ANNOTATION').includes('COMMAND_REFUSED'))
+  assert.ok(replies('SCAN').includes('SELECTION_CHANGED'), 'the scan posts a selection notice too')
+
   const silent = commands.filter((command) => command.access !== 'deny' && command.replies.length === 0)
   // A handful genuinely answer nothing (they only store a setting); most do answer, and a
   // wholesale empty list means the extraction broke rather than the plugin going quiet.

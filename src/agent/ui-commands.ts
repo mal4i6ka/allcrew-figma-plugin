@@ -94,7 +94,7 @@ export function extractUiCommands(source: string): UiCommandDef[] {
         declared.get(entry.name) ?? [],
         matchesOf(PARAM_PATTERN, body).filter((param) => param !== 'type')
       ),
-      replies: matchesOf(REPLY_PATTERN, body),
+      replies: repliesIn(body),
       // A label with nothing but its marker between it and the next one is a fall-through: the
       // code that serves it is the block below, and so are its params.
       fallsThrough: stripComments(body).trim() === '',
@@ -196,6 +196,26 @@ function fieldsOf(member: string): UiCommandParam[] {
   }
   push()
   return fields
+}
+
+/**
+ * Some replies are posted for a case rather than by it, from a helper it calls. Those are
+ * invisible to a regex over the case body — and the two that matter are the ones a caller most
+ * needs to expect: a refusal, and the selection notice that rides along with a scan. Named
+ * here rather than inlined at every call site, which would trade one blind spot for forty
+ * copies of the same three lines.
+ */
+const HELPER_REPLIES: ReadonlyArray<{ call: string; posts: string }> = [
+  { call: 'refuse(', posts: 'COMMAND_REFUSED' },
+  { call: 'postSelectionToUi(', posts: 'SELECTION_CHANGED' },
+]
+
+function repliesIn(body: string): string[] {
+  const found = matchesOf(REPLY_PATTERN, body)
+  for (const helper of HELPER_REPLIES) {
+    if (body.includes(helper.call) && !found.includes(helper.posts)) found.push(helper.posts)
+  }
+  return found
 }
 
 function matchesOf(pattern: RegExp, text: string): string[] {

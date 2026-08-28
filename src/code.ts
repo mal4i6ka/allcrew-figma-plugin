@@ -964,6 +964,23 @@ figma.on('selectionchange', postSelectionToUi)
 /* ------------------------------------------------------------------ message handler */
 
 /**
+ * A command declining to run, out loud.
+ *
+ * Several cases used to guard a precondition and `break` — no reply, no notice, nothing. For
+ * the panel that is invisible and harmless: the operator picked the node from a list this
+ * plugin built, so the precondition held by construction. For anything driving the same
+ * commands from outside it is a dead end, and three different failures — node absent, wrong
+ * type, no scan yet — arrive as the identical empty answer.
+ *
+ * One reply type for all of them, rather than an area-specific `*_ERROR` each: a refusal is a
+ * refusal, and the caller should have exactly one thing to look for. The panel ignores it, as
+ * it ignored the silence, so nothing the designer sees changes.
+ */
+function refuse(command: PluginMessage['type'], reason: string): void {
+  postToUi({ type: 'COMMAND_REFUSED', command, reason })
+}
+
+/**
  * One switch, and every feature this plugin has hangs off it.
  *
  * A named function rather than an inline arrow because it has two callers now: the panel, and
@@ -1062,7 +1079,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'FIX_PALETTE': {
       // @agent write: apply one palette fix and store the corrected settings
       const fix = normalizePaletteFix(msg.fix)
-      if (!fix) break
+      if (!fix) {
+        refuse(
+          'FIX_PALETTE',
+          'fix must be { kind: "anchor-step", spectrumId, step } or { kind: "reset-steps" | "rename-duplicates" | "split-dark-theme" }'
+        )
+        break
+      }
       const settings = applyPaletteFix(normalizePaletteSettings(msg.settings), fix)
       await figma.clientStorage.setAsync('paletteSettings', settings)
       // Unlike a preview, this one carries settings the UI must adopt — the fix changed them.
@@ -1523,11 +1546,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'SCROLL_INTO_VIEW': {
       // @agent read: scroll the designer to a node — viewport only, the document is untouched
       const node = lastScanIndex.get(msg.nodeId) ?? (await figma.getNodeByIdAsync(msg.nodeId))
-      if (node && 'visible' in node) {
-        const target = node as SceneNode
-        figma.viewport.scrollAndZoomIntoView([target])
-        try { figma.currentPage.selection = [target] } catch { /* stale */ }
+      if (!node || !('visible' in node)) {
+        refuse('SCROLL_INTO_VIEW', `no scene node with id ${msg.nodeId} — it may have been removed, or live on a page this session has not loaded`)
+        break
       }
+      const target = node as SceneNode
+      figma.viewport.scrollAndZoomIntoView([target])
+      try { figma.currentPage.selection = [target] } catch { /* stale */ }
+      // Answers now: "the viewport moved" and "there was something to move to" are different
+      // facts, and only one of them used to be observable — by looking at the screen.
+      postToUi({ type: 'FOCUSED', nodeId: target.id, name: target.name, nodeType: target.type })
       break
     }
     case 'FIX_LINT': {
@@ -1572,7 +1600,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'LOAD_ANNOTATION_PANEL': {
       // @agent read: read the annotation form state for one node
       const node = lastScanIndex.get(msg.nodeId)
-      if (!node || node.type !== 'TEXT') break
+      // The index is built by SCAN, so this is the same "which reading am I on" question the
+      // remap inventory answers — here the dependency was not even visible.
+      if (!node) {
+        refuse('LOAD_ANNOTATION_PANEL', `node ${msg.nodeId} is not in the last scan — run SCAN over the page that holds it first`)
+        break
+      }
+      if (node.type !== 'TEXT') {
+        refuse('LOAD_ANNOTATION_PANEL', `node ${msg.nodeId} is a ${node.type} — annotations live on TEXT nodes`)
+        break
+      }
       const resolved = await resolveKey(node)
       const form = loadAnnotationForm(node)
       const html = renderAnnotationPanel(form, {
@@ -1584,7 +1621,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'SET_ANNOTATION': {
       // @agent write: write a node's annotation: export settings, docs, interaction notes
       const node = lastScanIndex.get(msg.nodeId)
-      if (!node || node.type !== 'TEXT') break
+      // A write that answers nothing is the worst of the three: silence here was
+      // indistinguishable from a write that landed.
+      if (!node) {
+        refuse('SET_ANNOTATION', `node ${msg.nodeId} is not in the last scan — run SCAN over the page that holds it first; nothing was written`)
+        break
+      }
+      if (node.type !== 'TEXT') {
+        refuse('SET_ANNOTATION', `node ${msg.nodeId} is a ${node.type} — annotations live on TEXT nodes; nothing was written`)
+        break
+      }
       try {
         applyAnnotationForm(node, msg.form)
         postToUi({ type: 'ANNOTATION_SAVED', nodeId: msg.nodeId })

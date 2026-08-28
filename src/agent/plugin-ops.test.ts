@@ -284,6 +284,30 @@ test('a long reply crosses as a file, and the count says how many', async () => 
   assert.equal(result.files, 1)
 })
 
+/* ---------------------------------------------------------------- refusals out */
+
+test('a command that declines comes back as a failed call, with its reason', async () => {
+  setUiMessageRunner(async () => {
+    postToUi({ type: 'COMMAND_REFUSED', command: 'PURE_READ', reason: 'node 1:2 is not in the last scan' })
+  })
+  // Not a result to be read past: an agent should not have to notice a reply type to learn the
+  // command did nothing.
+  await assert.rejects(
+    () => call.run({ command: 'PURE_READ', keep: 400 }),
+    /"PURE_READ" declined: node 1:2 is not in the last scan/
+  )
+})
+
+test('a refusal beside real replies is a partial run, not a failed call', async () => {
+  setUiMessageRunner(async () => {
+    postToUi({ type: 'PURE_ANSWER', value: 1 })
+    postToUi({ type: 'COMMAND_REFUSED', command: 'PURE_READ', reason: 'row 2 had no target' })
+  })
+  const result = (await call.run({ command: 'PURE_READ', keep: 400 })) as Record<string, unknown>
+  assert.equal(result.refused, 'row 2 had no target')
+  assert.equal((result.replies as unknown[]).length, 2)
+})
+
 /* ------------------------------------------------------------------ wedged */
 
 test('a command that never finishes answers anyway, and does not keep the channel', async () => {

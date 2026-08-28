@@ -258,6 +258,17 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
         const capture = await serialize(() =>
           withCapture(() => Promise.resolve(runner!({ ...extra, type: command })), params.timeoutMs as number)
         )
+        // A command that declined names the precondition it wanted (`COMMAND_REFUSED`, see
+        // `refuse` in code.ts). On its own that is not a result to read — it is a failed call,
+        // and an agent should not have to notice a reply type to find that out.
+        const refusal = capture.replies.find(
+          (reply): reply is { type: string; reason?: unknown } =>
+            typeof reply === 'object' && reply !== null && (reply as { type?: unknown }).type === 'COMMAND_REFUSED'
+        )
+        if (refusal && capture.replies.length === 1) {
+          throw new Error(`"${command}" declined: ${String(refusal.reason ?? 'no reason given')}`)
+        }
+
         const digest = digestReplies(capture.replies, { ...DEFAULT_DIGEST_BUDGET, keep: params.keep as number })
 
         return {
@@ -269,6 +280,9 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
           ...(digest.collapsed ? { collapsed: digest.collapsed } : {}),
           ...(digest.files ? { files: digest.files } : {}),
           ...(digest.truncated ? { truncated: true } : {}),
+          // A refusal alongside other replies is a partial run, not a failed call — it stays in
+          // the digest and is flagged rather than thrown.
+          ...(refusal ? { refused: String(refusal.reason ?? 'no reason given') } : {}),
           ...(ignored.length > 0 ? { ignoredParams: ignored } : {}),
           ...(capture.timedOut
             ? {
