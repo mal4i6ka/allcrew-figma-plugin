@@ -8,6 +8,7 @@
  */
 
 import { formatHex, parseHex, type Rgb } from '../tokens/color.ts'
+import { buildEasing } from '../canvas/props.ts'
 
 /* ------------------------------------------------------------------ colour */
 
@@ -198,6 +199,20 @@ export async function describeValue(value: VariableValue | undefined): Promise<s
     const color = value as RGBA | RGB
     return describeColor({ r: color.r, g: color.g, b: color.b, a: 'a' in color ? color.a : 1 })
   }
+  // An EASING variable holds a curve, and `String(…)` on one says "[object Object]" — which is
+  // what a freshly created motion token reported until this line existed.
+  if (typeof value === 'object' && value !== null && 'type' in value) {
+    const easing = value as MotionEasing
+    if (easing.type === 'CUSTOM_CUBIC_BEZIER' && easing.easingFunctionCubicBezier) {
+      const { x1, y1, x2, y2 } = easing.easingFunctionCubicBezier
+      return `bezier(${x1}, ${y1}, ${x2}, ${y2})`
+    }
+    // A Motion easing carries a NORMALIZED spring — one `bounce` from 0 to 1 — where a prototype
+    // transition carries a physical one (mass, stiffness, damping). Two shapes, one field name.
+    const spring = easing.easingFunctionSpring as { bounce?: number } | undefined
+    if (spring && typeof spring.bounce === 'number') return `${easing.type} (bounce ${Math.round(spring.bounce * 1000) / 1000})`
+    return easing.type
+  }
   return String(value)
 }
 
@@ -240,6 +255,42 @@ export async function coerceVariableValue(variable: Variable, raw: unknown): Pro
     case 'STRING': {
       if (typeof raw !== 'string') throw new Error(`"${variable.name}" needs a string — got ${JSON.stringify(raw)}`)
       return raw
+    }
+    case 'TIMING': {
+      // Figma's newest variable types. A TIMING is a duration in seconds, so it reads like a
+      // FLOAT and is kept separate only because Figma keeps it separate.
+      const seconds = typeof raw === 'string' ? Number(raw) : raw
+      if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {
+        throw new Error(`"${variable.name}" needs a number of seconds — got ${JSON.stringify(raw)}`)
+      }
+      return seconds
+    }
+    case 'EASING': {
+      // And an EASING holds a curve, which is the same thing a prototype link's `easing` takes —
+      // so it is read by the same function rather than by a second one that could disagree.
+      const problems: string[] = []
+      const easing = buildEasing(
+        typeof raw === 'string' ? { easing: raw } : (raw as Record<string, unknown>),
+        (message) => problems.push(message)
+      )
+      if (!easing) throw new Error(`"${variable.name}" needs a curve — ${problems.join(' · ')}`)
+      // A spring means two different things in the two places Figma keeps easings: a prototype
+      // transition holds mass, stiffness and damping, while a Motion easing holds one normalized
+      // `bounce`. Figma converts between them, so the caller keeps saying the physical one.
+      if (easing.type === 'CUSTOM_SPRING' && easing.easingFunctionSpring) {
+        const physical = easing.easingFunctionSpring
+        return {
+          type: 'CUSTOM_SPRING',
+          easingFunctionSpring: {
+            bounce: figma.motion.physicalSpringToNormalized({
+              mass: physical.mass,
+              stiffness: physical.stiffness,
+              damping: physical.damping,
+            }),
+          },
+        } as MotionEasing
+      }
+      return easing as MotionEasing
     }
   }
 }

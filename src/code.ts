@@ -1234,7 +1234,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}),
     ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}),
     ...(Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0
-      ? { animation: describeAnimation(bag.animationStyles) }
+      ? { animation: await describeAnimation(bag.animationStyles) }
       : {}),
     ...(Array.isArray(bag.timelines) && bag.timelines.length > 0
       ? { timelines: (bag.timelines as Timeline[]).map((one) => `${one.id} ${one.duration}s`).join(' · ') }
@@ -1295,6 +1295,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     props.fontSize = node.fontSize === figma.mixed ? 'mixed' : round(node.fontSize)
     props.fontName = node.fontName === figma.mixed ? 'mixed' : `${node.fontName.family} ${node.fontName.style}`
     props.textAlign = node.textAlignHorizontal
+    // A read that omits how the lines break cannot be sent back, which is the promise this shape
+    // makes everywhere else.
+    const wrap = (node as unknown as { textWrapStyle?: unknown }).textWrapStyle
+    if (typeof wrap === 'string' && wrap !== 'AUTO') props.textWrap = wrap
   }
   return { ...base, props }
 }

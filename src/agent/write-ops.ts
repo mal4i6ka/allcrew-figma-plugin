@@ -53,7 +53,8 @@ function record(value: unknown, what: string): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-const RESOLVED_TYPES = ['COLOR', 'FLOAT', 'BOOLEAN', 'STRING'] as const
+/** EASING and TIMING joined the four in 2026: a curve and a duration, held as tokens. */
+const RESOLVED_TYPES = ['COLOR', 'FLOAT', 'BOOLEAN', 'STRING', 'EASING', 'TIMING'] as const
 
 /* ---------------------------------------------------------------- bindings */
 

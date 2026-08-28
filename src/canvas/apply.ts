@@ -459,6 +459,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           if (paints) node.setRangeFills(from, to, paints)
           if (run.textDecoration) node.setRangeTextDecoration(from, to, run.textDecoration)
           if (run.textCase) node.setRangeTextCase(from, to, run.textCase)
+          if (run.textWrap) node.setRangeTextWrapStyle(from, to, run.textWrap)
           if (run.letterSpacing !== undefined) {
             node.setRangeLetterSpacing(from, to, { value: run.letterSpacing, unit: 'PIXELS' })
           }
@@ -751,6 +752,7 @@ function describeRun(run: TextRun): string {
   if (run.fill !== undefined) parts.push(typeof run.fill === 'string' ? run.fill : 'fill')
   if (run.textDecoration) parts.push(run.textDecoration.toLowerCase())
   if (run.textCase) parts.push(run.textCase.toLowerCase())
+  if (run.textWrap) parts.push(`wrap ${run.textWrap.toLowerCase()}`)
   if (run.letterSpacing !== undefined) parts.push(`tracking ${run.letterSpacing}`)
   if (run.lineHeight !== undefined) parts.push(`leading ${run.lineHeight}`)
   if (run.link !== undefined) parts.push(run.link === null ? 'unlinked' : 'linked')
@@ -773,6 +775,7 @@ function asInstance(node: SceneNode, wanted: string): InstanceNode {
 
 /** The properties that a TEXT node will not let go of until its font is in memory. */
 const TEXT_PROPERTIES = [
+  'textWrapStyle',
   'fontSize',
   'letterSpacing',
   'textAlignHorizontal',
@@ -1000,18 +1003,32 @@ function hexOf(color: { r: number; g: number; b: number; a?: number }): string {
 }
 
 /** Applied animation styles as one line, in the words the vocabulary takes them in. */
-export function describeAnimation(value: unknown): string {
+export async function describeAnimation(value: unknown): Promise<string> {
   if (!Array.isArray(value) || value.length === 0) return 'none'
-  return (value as AppliedAnimationStyle[])
-    .map((style) => {
+  const lines: string[] = []
+  for (const style of value as AppliedAnimationStyle[]) {
+    lines.push(await (async () => {
       // Figma answers with every setting the style has, defaults and all — eleven of them for
       // Position — which turned one line into a file. The first few are the ones a caller set or
       // would recognise; the rest are counted.
-      const entries = Object.entries(style.props ?? {})
-      const shown = entries
-        .slice(0, MAX_ANIMATION_PROPS)
-        .map(([name, held]) => `${name}=${typeof held === 'object' ? JSON.stringify(held) : held}`)
-        .join(', ')
+      // A prop that follows a token goes first: it is the half somebody chose, where the rest is
+      // whatever Figma filled in.
+      const entries = Object.entries(style.props ?? {}).sort(
+        (left, right) => Number(typeof right[1] === 'object') - Number(typeof left[1] === 'object')
+      )
+      const said: string[] = []
+      for (const [name, held] of entries.slice(0, MAX_ANIMATION_PROPS)) {
+        // A raw VariableID in a report is no use to anybody; the name is the whole point of a
+        // token, the same way it is for a paint.
+        const alias = held as { type?: string; id?: string }
+        if (alias && typeof alias === 'object' && alias.type === 'VARIABLE_ALIAS' && alias.id) {
+          const variable = await figma.variables.getVariableByIdAsync(alias.id).catch(() => null)
+          said.push(`${name}=var:${variable?.name ?? alias.id}`)
+          continue
+        }
+        said.push(`${name}=${typeof held === 'object' ? JSON.stringify(held) : held}`)
+      }
+      const shown = said.join(', ')
       const rest = entries.length > MAX_ANIMATION_PROPS ? `, +${entries.length - MAX_ANIMATION_PROPS} more` : ''
       // An applied style carries a per-instance CodeComponentId and a localisation key
       // (`motion.preset_name.position`) — neither is the word a caller writes. The catalogue has
@@ -1019,8 +1036,9 @@ export function describeAnimation(value: unknown): string {
       const called = animationStyleWord(style.name) ?? animationStyleWord(style.styleId) ?? style.name ?? style.styleId
       const seconds = style.duration === undefined ? '' : ` ${Math.round(style.duration * 1000) / 1000}s`
       return `${called}${seconds}${shown ? ` (${shown}${rest})` : ''}`
-    })
-    .join(' · ')
+    })())
+  }
+  return lines.join(' · ')
 }
 
 const MAX_ANIMATION_PROPS = 5

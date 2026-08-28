@@ -248,6 +248,8 @@ export interface NodeProps {
   lineHeight?: number | 'AUTO'
   letterSpacing?: number
   autoResize?: 'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'
+  /** How lines are broken: `AUTO`, `BALANCE` (even lines) or `PRETTY` (no orphans). */
+  textWrap?: 'AUTO' | 'BALANCE' | 'PRETTY'
   /** INSTANCE only: component properties by their catalogue names — variants, text, booleans. */
   properties?: Record<string, string | boolean>
   /** INSTANCE only: the component to become — an id or a published key. */
@@ -301,6 +303,7 @@ export interface TextRun {
   fill?: PaintRef
   textDecoration?: 'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'
   textCase?: 'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE'
+  textWrap?: 'AUTO' | 'BALANCE' | 'PRETTY'
   letterSpacing?: number
   lineHeight?: number | 'AUTO'
   /** A URL, or null to remove the link. */
@@ -404,6 +407,14 @@ export interface PropPlan {
 const BLEND_FREE_ENUMS: Readonly<Record<string, readonly string[]>> = {
   textAlign: ['LEFT', 'CENTER', 'RIGHT', 'JUSTIFIED'],
   autoResize: ['NONE', 'WIDTH_AND_HEIGHT', 'HEIGHT', 'TRUNCATE'],
+  textWrap: ['AUTO', 'BALANCE', 'PRETTY'],
+}
+
+/** The vocabulary's words for text, against the names Figma gives the same properties. */
+const FIGMA_TEXT_NAMES: Readonly<Record<string, string>> = {
+  textAlign: 'textAlignHorizontal',
+  autoResize: 'textAutoResize',
+  textWrap: 'textWrapStyle',
 }
 
 const LAYOUT_MODES = ['NONE', 'HORIZONTAL', 'VERTICAL', 'GRID']
@@ -496,6 +507,7 @@ const ORDER = [
   'letterSpacing',
   'textAlign',
   'autoResize',
+  'textWrap',
   'text',
   'runs',
   'bind',
@@ -623,11 +635,12 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         break
       }
       case 'textAlign':
-      case 'autoResize': {
+      case 'autoResize':
+      case 'textWrap': {
         const allowed = BLEND_FREE_ENUMS[key]
         const value = props[key]
         if (typeof value !== 'string' || !allowed.includes(value)) fail(`${key} must be one of: ${allowed.join(', ')}`)
-        else steps.push({ step: 'assign', property: key === 'textAlign' ? 'textAlignHorizontal' : 'textAutoResize', value })
+        else steps.push({ step: 'assign', property: FIGMA_TEXT_NAMES[key], value })
         break
       }
       case 'text': {
@@ -1417,7 +1430,7 @@ async function describeAction(
  * and numbers is refused rather than resolved: which one the caller meant is a guess, and a
  * wrong guess here is invisible until someone plays the prototype.
  */
-function buildEasing(link: Record<string, unknown>, fail: (message: string) => void): Easing | null {
+export function buildEasing(link: Record<string, unknown>, fail: (message: string) => void): Easing | null {
   const named = link.easing === undefined ? null : normaliseEnum(String(link.easing))
   const custom = [link.bezier !== undefined ? 'bezier' : '', link.spring !== undefined ? 'spring' : ''].filter(Boolean)
 
@@ -1515,6 +1528,7 @@ const RUN_KEYS = [
   'fill',
   'textDecoration',
   'textCase',
+  'textWrap',
   'letterSpacing',
   'lineHeight',
   'link',
@@ -1595,6 +1609,11 @@ function planRuns(raw: unknown, where: string, problems: string[]): PropStep | n
       'textCase',
       typeof run.textCase === 'string' && TEXT_CASES.includes(run.textCase),
       `textCase must be one of: ${TEXT_CASES.join(', ')}`
+    )
+    check(
+      'textWrap',
+      typeof run.textWrap === 'string' && BLEND_FREE_ENUMS.textWrap.includes(run.textWrap),
+      `textWrap must be one of: ${BLEND_FREE_ENUMS.textWrap.join(', ')}`
     )
     check('link', typeof run.link === 'string' || run.link === null, 'link must be a URL, or null to remove one')
     if (run.fill !== undefined) {
@@ -1823,6 +1842,13 @@ function planAnimation(raw: unknown, where: string, problems: string[]): PropSte
         continue
       }
       for (const [name, value] of Object.entries(spec.props as Record<string, unknown>)) {
+        const alias = value as { variable?: unknown }
+        // An easing may follow a variable too, now that Figma has EASING variables — so the
+        // variable form is taken before the curve form, or it would be read as a bad curve.
+        if (name === 'easing' && typeof alias?.variable === 'string' && alias.variable.trim() !== '') {
+          settings.easing = { variable: alias.variable.trim() }
+          continue
+        }
         if (name === 'easing') {
           const easing = buildEasing(
             typeof value === 'string' ? { easing: value } : (value as Record<string, unknown>),
@@ -1839,9 +1865,8 @@ function planAnimation(raw: unknown, where: string, problems: string[]): PropSte
           settings[name] = value
           continue
         }
-        const named = value as { variable?: unknown }
-        if (typeof named?.variable === 'string' && named.variable.trim() !== '') {
-          settings[name] = { variable: named.variable.trim() }
+        if (typeof alias?.variable === 'string' && alias.variable.trim() !== '') {
+          settings[name] = { variable: alias.variable.trim() }
           continue
         }
         fail(`props.${name} must be a string, a number, a boolean or { variable }`)

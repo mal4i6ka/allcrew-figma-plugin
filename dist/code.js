@@ -17979,6 +17979,1690 @@ ${renderSections(sections)}
     }
   }
 
+  // src/canvas/props.ts
+  var BLEND_FREE_ENUMS = {
+    textAlign: ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"],
+    autoResize: ["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"],
+    textWrap: ["AUTO", "BALANCE", "PRETTY"]
+  };
+  var FIGMA_TEXT_NAMES = {
+    textAlign: "textAlignHorizontal",
+    autoResize: "textAutoResize",
+    textWrap: "textWrapStyle"
+  };
+  var LAYOUT_MODES = ["NONE", "HORIZONTAL", "VERTICAL", "GRID"];
+  var PRIMARY_AXIS = ["MIN", "CENTER", "MAX", "SPACE_BETWEEN"];
+  var COUNTER_AXIS = ["MIN", "CENTER", "MAX", "BASELINE"];
+  var SIZING = ["FIXED", "HUG", "FILL"];
+  var CONSTRAINTS = ["MIN", "CENTER", "MAX", "STRETCH", "SCALE"];
+  var STROKE_ALIGN = ["INSIDE", "OUTSIDE", "CENTER"];
+  var STROKE_CAP = ["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL"];
+  var STROKE_JOIN = ["MITER", "BEVEL", "ROUND"];
+  var SCALE_MODES = ["FILL", "FIT", "CROP", "TILE"];
+  var GRADIENTS2 = ["LINEAR", "RADIAL", "ANGULAR", "DIAMOND"];
+  var DEFAULT_GRADIENT_ANGLE = 90;
+  var BLEND_MODES = [
+    "PASS_THROUGH",
+    "NORMAL",
+    "DARKEN",
+    "MULTIPLY",
+    "LINEAR_BURN",
+    "COLOR_BURN",
+    "LIGHTEN",
+    "SCREEN",
+    "LINEAR_DODGE",
+    "COLOR_DODGE",
+    "OVERLAY",
+    "SOFT_LIGHT",
+    "HARD_LIGHT",
+    "DIFFERENCE",
+    "EXCLUSION",
+    "HUE",
+    "SATURATION",
+    "COLOR",
+    "LUMINOSITY"
+  ];
+  var ORDER = [
+    "name",
+    // What the instance *is*, before anything about how it looks: a swap brings the new
+    // component's own size and paints with it, and a variant is a different node underneath.
+    "reset",
+    "swap",
+    "properties",
+    "visible",
+    "locked",
+    "clipsContent",
+    "layout",
+    "constraints",
+    "width",
+    "height",
+    "x",
+    "y",
+    "rotation",
+    "opacity",
+    "cornerRadius",
+    // Before the paints: the shape decides what there is to fill.
+    "path",
+    "paths",
+    "network",
+    // Before the paints and the type: following a style sets the whole bundle, and a colour named
+    // in the same breath is meant to override it, not to be overwritten by it.
+    "fillStyle",
+    "strokeStyle",
+    "textStyle",
+    "effectStyle",
+    "gridStyle",
+    "fill",
+    "stroke",
+    "strokeWeight",
+    "strokeAlign",
+    "strokeCap",
+    "strokeJoin",
+    "strokeDashes",
+    "effects",
+    "grid",
+    "animation",
+    "blendMode",
+    "fontName",
+    "fontSize",
+    "lineHeight",
+    "letterSpacing",
+    "textAlign",
+    "autoResize",
+    "textWrap",
+    "text",
+    "runs",
+    "bind",
+    "scroll",
+    "fixedChildren",
+    "links",
+    "data",
+    "parent",
+    "index"
+  ];
+  var KNOWN = new Set(ORDER);
+  function dependsOnChildren(step) {
+    return step.step === "assign" && step.property === "numberOfFixedChildren";
+  }
+  function planProps(raw, where = "props") {
+    var _a, _b, _c;
+    const problems = [];
+    const steps = [];
+    if (raw === void 0 || raw === null) return { steps, problems };
+    if (typeof raw !== "object" || Array.isArray(raw)) {
+      return { steps, problems: [`${where} must be an object of properties`] };
+    }
+    const props = raw;
+    for (const key of Object.keys(props)) {
+      if (!KNOWN.has(key)) {
+        problems.push(`${where}: unknown property "${key}" \u2014 accepted: ${[...KNOWN].join(", ")}`);
+      }
+    }
+    const fail2 = (message) => problems.push(`${where}.${message}`);
+    const number2 = (key, min, max) => {
+      const value = props[key];
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        fail2(`${key} must be a number`);
+        return null;
+      }
+      if (min !== void 0 && value < min) {
+        fail2(`${key} must be >= ${min}`);
+        return null;
+      }
+      if (max !== void 0 && value > max) {
+        fail2(`${key} must be <= ${max}`);
+        return null;
+      }
+      return value;
+    };
+    for (const key of ORDER) {
+      if (!(key in props)) continue;
+      switch (key) {
+        case "name": {
+          if (typeof props.name !== "string" || props.name.trim() === "") fail2("name must be a non-empty string");
+          else steps.push({ step: "assign", property: "name", value: props.name });
+          break;
+        }
+        case "visible":
+        case "locked":
+        case "clipsContent": {
+          if (typeof props[key] !== "boolean") fail2(`${key} must be a boolean`);
+          else steps.push({ step: "assign", property: key, value: props[key] });
+          break;
+        }
+        case "opacity": {
+          const value = number2("opacity", 0, 1);
+          if (value !== null) steps.push({ step: "assign", property: "opacity", value });
+          break;
+        }
+        case "rotation": {
+          const value = number2("rotation", -180, 180);
+          if (value !== null) steps.push({ step: "assign", property: "rotation", value });
+          break;
+        }
+        case "x":
+        case "y": {
+          const value = number2(key);
+          if (value !== null) steps.push({ step: "assign", property: key, value });
+          break;
+        }
+        case "width":
+        case "height": {
+          if (steps.some((step) => step.step === "resize")) break;
+          const width = "width" in props ? number2("width", 0.01) : void 0;
+          const height = "height" in props ? number2("height", 0.01) : void 0;
+          const wanted = __spreadValues(__spreadValues({}, typeof width === "number" ? { width } : {}), typeof height === "number" ? { height } : {});
+          if (Object.keys(wanted).length > 0) steps.push(__spreadValues({ step: "resize" }, wanted));
+          break;
+        }
+        case "strokeWeight": {
+          const value = number2("strokeWeight", 0);
+          if (value !== null) steps.push({ step: "assign", property: "strokeWeight", value });
+          break;
+        }
+        case "fontSize": {
+          const value = number2("fontSize", 1);
+          if (value !== null) steps.push({ step: "assign", property: "fontSize", value });
+          break;
+        }
+        case "letterSpacing": {
+          const value = number2("letterSpacing");
+          if (value !== null) steps.push({ step: "assign", property: "letterSpacing", value });
+          break;
+        }
+        case "lineHeight": {
+          const value = props.lineHeight;
+          if (value === "AUTO" || typeof value === "number" && Number.isFinite(value) && value > 0) {
+            steps.push({ step: "lineHeight", value });
+          } else fail2('lineHeight must be a positive number or "AUTO"');
+          break;
+        }
+        case "textAlign":
+        case "autoResize":
+        case "textWrap": {
+          const allowed = BLEND_FREE_ENUMS[key];
+          const value = props[key];
+          if (typeof value !== "string" || !allowed.includes(value)) fail2(`${key} must be one of: ${allowed.join(", ")}`);
+          else steps.push({ step: "assign", property: FIGMA_TEXT_NAMES[key], value });
+          break;
+        }
+        case "text": {
+          if (typeof props.text !== "string") fail2("text must be a string");
+          else steps.push({ step: "text", characters: props.text });
+          break;
+        }
+        case "fontName": {
+          const font = props.fontName;
+          if (typeof font !== "object" || font === null || typeof font.family !== "string" || typeof font.style !== "string") {
+            fail2("fontName must be { family, style }");
+          } else {
+            const named = font;
+            steps.push({ step: "font", family: named.family, style: named.style });
+          }
+          break;
+        }
+        case "cornerRadius": {
+          const value = props.cornerRadius;
+          if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+            steps.push({ step: "radius", corners: { topLeft: value, topRight: value, bottomRight: value, bottomLeft: value } });
+          } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+            const corners = {};
+            for (const [corner, amount] of Object.entries(value)) {
+              if (!["topLeft", "topRight", "bottomRight", "bottomLeft"].includes(corner)) {
+                fail2(`cornerRadius: unknown corner "${corner}"`);
+                continue;
+              }
+              if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
+                fail2(`cornerRadius.${corner} must be a number >= 0`);
+                continue;
+              }
+              corners[corner] = amount;
+            }
+            if (Object.keys(corners).length > 0) steps.push({ step: "radius", corners });
+          } else fail2("cornerRadius must be a number or { topLeft, topRight, bottomRight, bottomLeft }");
+          break;
+        }
+        case "constraints": {
+          const value = props.constraints;
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            fail2("constraints must be { horizontal, vertical }");
+            break;
+          }
+          const entry = value;
+          const step = { step: "constraints" };
+          for (const axis of ["horizontal", "vertical"]) {
+            const kind = entry[axis];
+            if (kind === void 0) continue;
+            if (typeof kind !== "string" || !CONSTRAINTS.includes(kind)) {
+              fail2(`constraints.${axis} must be one of: ${CONSTRAINTS.join(", ")}`);
+              continue;
+            }
+            step[axis] = kind;
+          }
+          if (step.horizontal || step.vertical) steps.push(step);
+          break;
+        }
+        case "layout": {
+          const layout = planLayout(props.layout, `${where}.layout`, problems);
+          if (layout) steps.push(layout);
+          break;
+        }
+        case "fill":
+        case "stroke": {
+          const ref = props[key];
+          if (paintProblem(ref)) fail2(`${key}: ${paintProblem(ref)}`);
+          else steps.push({ step: "paint", property: key === "fill" ? "fills" : "strokes", ref });
+          break;
+        }
+        case "runs": {
+          const runs = planRuns(props.runs, `${where}.runs`, problems);
+          if (runs) steps.push(runs);
+          break;
+        }
+        case "path":
+        case "paths": {
+          if (steps.some((step) => step.step === "paths")) break;
+          const wanted = "path" in props ? [{ data: props.path }] : props.paths;
+          if (!Array.isArray(wanted) || wanted.length === 0) {
+            fail2("paths must be a non-empty array of { data } \u2014 or use path for a single one");
+            break;
+          }
+          const paths = [];
+          for (const [index, entry] of wanted.entries()) {
+            const one = entry;
+            if (typeof (one == null ? void 0 : one.data) !== "string" || one.data.trim() === "") {
+              fail2(`paths[${index}].data must be SVG path data, e.g. "M 0 0 L 10 0 L 10 10 Z"`);
+              continue;
+            }
+            const rule = one.windingRule === void 0 ? "NONZERO" : one.windingRule;
+            if (rule !== "NONZERO" && rule !== "EVENODD") {
+              fail2(`paths[${index}].windingRule must be NONZERO or EVENODD`);
+              continue;
+            }
+            paths.push({ data: one.data.trim(), windingRule: rule });
+          }
+          if (paths.length > 0) steps.push({ step: "paths", paths });
+          break;
+        }
+        case "network": {
+          const network = planNetwork(props.network, `${where}.network`, problems);
+          if (network) steps.push(network);
+          break;
+        }
+        case "fillStyle":
+        case "strokeStyle":
+        case "textStyle":
+        case "effectStyle":
+        case "gridStyle": {
+          const value = props[key];
+          if (value !== null && (typeof value !== "string" || value.trim() === "")) {
+            fail2(`${key} must be a style name, id or key \u2014 or null to detach`);
+            break;
+          }
+          steps.push({
+            step: "style",
+            kind: STYLE_SLOTS[key],
+            slot: key,
+            ref: value === null ? null : value.trim()
+          });
+          break;
+        }
+        case "bind": {
+          const bind = planBindings(props.bind, `${where}.bind`, problems);
+          if (bind) steps.push(bind);
+          break;
+        }
+        case "scroll": {
+          const value = typeof props.scroll === "string" ? normaliseEnum(props.scroll) : "";
+          if (!OVERFLOW2.includes(value)) fail2(`scroll must be one of: ${OVERFLOW2.join(", ")}`);
+          else steps.push({ step: "assign", property: "overflowDirection", value });
+          break;
+        }
+        case "fixedChildren": {
+          const value = number2("fixedChildren", 0);
+          if (value !== null) steps.push({ step: "assign", property: "numberOfFixedChildren", value });
+          break;
+        }
+        case "links": {
+          const links = planLinks(props.links, `${where}.links`, problems);
+          if (links) steps.push(links);
+          break;
+        }
+        case "data": {
+          const value = props.data;
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            fail2('data must be an object of { key: "value" }');
+            break;
+          }
+          const data = {};
+          for (const [name, note] of Object.entries(value)) {
+            if (typeof note === "string" || note === null) data[name] = note;
+            else fail2(`data.${name} must be a string, or null to clear it`);
+          }
+          if (Object.keys(data).length > 0) steps.push({ step: "data", data });
+          break;
+        }
+        case "reset": {
+          if (typeof props.reset !== "boolean") fail2("reset must be true or false");
+          else if (props.reset) steps.push({ step: "reset" });
+          break;
+        }
+        case "swap": {
+          if (typeof props.swap !== "string" || props.swap.trim() === "") {
+            fail2("swap must be a component id or a published key");
+          } else steps.push({ step: "swap", component: props.swap.trim() });
+          break;
+        }
+        case "properties": {
+          const value = props.properties;
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            fail2("properties must be an object of { propertyName: value }");
+            break;
+          }
+          const wanted = {};
+          for (const [name, setting] of Object.entries(value)) {
+            if (typeof setting === "string" || typeof setting === "boolean") wanted[name] = setting;
+            else fail2(`properties.${name} must be a string or a boolean`);
+          }
+          if (Object.keys(wanted).length > 0) steps.push({ step: "properties", properties: wanted });
+          else if (Object.keys(value).length === 0) fail2("properties must name at least one property");
+          break;
+        }
+        case "strokeAlign":
+        case "strokeCap":
+        case "strokeJoin":
+        case "blendMode": {
+          const allowed = key === "strokeAlign" ? STROKE_ALIGN : key === "strokeCap" ? STROKE_CAP : key === "strokeJoin" ? STROKE_JOIN : BLEND_MODES;
+          const value = props[key];
+          if (typeof value !== "string" || !allowed.includes(value)) fail2(`${key} must be one of: ${allowed.join(", ")}`);
+          else steps.push({ step: "assign", property: key, value });
+          break;
+        }
+        case "strokeDashes": {
+          const value = props.strokeDashes;
+          if (!Array.isArray(value) || value.some((one) => typeof one !== "number" || !Number.isFinite(one) || one < 0)) {
+            fail2("strokeDashes must be an array of numbers >= 0 \u2014 [] is a solid line");
+          } else steps.push({ step: "dashes", dashes: value });
+          break;
+        }
+        case "effects": {
+          const effects = planEffects(props.effects, `${where}.effects`, problems);
+          if (effects) steps.push(effects);
+          break;
+        }
+        case "grid": {
+          const grid = planGrids(props.grid, `${where}.grid`, problems);
+          if (grid) steps.push(grid);
+          break;
+        }
+        case "animation": {
+          const animation = planAnimation(props.animation, `${where}.animation`, problems);
+          if (animation) steps.push(animation);
+          break;
+        }
+        case "parent": {
+          if (typeof props.parent !== "string" || props.parent === "") fail2('parent must be a node id or "page"');
+          else {
+            const index = "index" in props ? number2("index", 0) : null;
+            steps.push(__spreadValues({ step: "reparent", parent: props.parent }, index !== null ? { index } : {}));
+          }
+          break;
+        }
+        case "index": {
+          if (!("parent" in props)) {
+            const index = number2("index", 0);
+            if (index !== null) steps.push({ step: "reparent", parent: "", index });
+          }
+          break;
+        }
+      }
+    }
+    const laid = steps.find((step) => step.step === "layout");
+    if (laid) {
+      const sizing = (_a = laid.layout.sizing) != null ? _a : {};
+      const horizontal = (_b = sizing.horizontal) != null ? _b : laid.layout.mode && laid.layout.mode !== "NONE" && !("width" in props) ? "HUG" : void 0;
+      const vertical = (_c = sizing.vertical) != null ? _c : laid.layout.mode && laid.layout.mode !== "NONE" && !("height" in props) ? "HUG" : void 0;
+      if (horizontal || vertical) {
+        steps.push(__spreadValues(__spreadValues({ step: "sizing" }, horizontal ? { horizontal } : {}), vertical ? { vertical } : {}));
+      }
+      delete laid.layout.sizing;
+    }
+    return { steps, problems };
+  }
+  var TRIGGERS = {
+    click: "ON_CLICK",
+    hover: "ON_HOVER",
+    press: "ON_PRESS",
+    drag: "ON_DRAG",
+    timeout: "AFTER_TIMEOUT",
+    keyDown: "ON_KEY_DOWN",
+    mouseEnter: "MOUSE_ENTER",
+    mouseLeave: "MOUSE_LEAVE",
+    mouseUp: "MOUSE_UP",
+    mouseDown: "MOUSE_DOWN"
+  };
+  var DELAYED = ["MOUSE_ENTER", "MOUSE_LEAVE", "MOUSE_UP", "MOUSE_DOWN"];
+  var EASINGS = [
+    "EASE_IN",
+    "EASE_OUT",
+    "EASE_IN_AND_OUT",
+    "LINEAR",
+    "EASE_IN_BACK",
+    "EASE_OUT_BACK",
+    "EASE_IN_AND_OUT_BACK",
+    "GENTLE",
+    "QUICK",
+    "BOUNCY",
+    "SLOW"
+  ];
+  var DEFAULT_EASING = "EASE_OUT";
+  function normaliseEnum(value) {
+    return value.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  }
+  var NAVIGATIONS = ["NAVIGATE", "SWAP", "OVERLAY", "SCROLL_TO", "CHANGE_TO"];
+  var OVERFLOW2 = ["NONE", "HORIZONTAL", "VERTICAL", "BOTH"];
+  var STYLE_SLOTS = {
+    fillStyle: "paint",
+    strokeStyle: "paint",
+    textStyle: "text",
+    effectStyle: "effect",
+    gridStyle: "grid"
+  };
+  var SIMPLE_ANIMATIONS = ["INSTANT", "DISSOLVE", "SMART_ANIMATE", "SCROLL_ANIMATE"];
+  var DIRECTIONAL_ANIMATIONS = ["MOVE_IN", "MOVE_OUT", "PUSH", "SLIDE_IN", "SLIDE_OUT"];
+  var DIRECTIONS = ["LEFT", "RIGHT", "TOP", "BOTTOM"];
+  var LINK_KEYS = [
+    "if",
+    "then",
+    "else",
+    "set",
+    "mode",
+    "url",
+    "newTab",
+    "on",
+    "after",
+    "delay",
+    "keys",
+    "to",
+    "as",
+    "animation",
+    "duration",
+    "easing",
+    "bezier",
+    "spring",
+    "matchLayers",
+    "resetScroll",
+    "resetVideo",
+    "resetInteractive"
+  ];
+  var COMPARISONS = {
+    "==": "EQUALS",
+    "=": "EQUALS",
+    "is": "EQUALS",
+    "!=": "NOT_EQUAL",
+    "<": "LESS_THAN",
+    "<=": "LESS_THAN_OR_EQUAL",
+    ">": "GREATER_THAN",
+    ">=": "GREATER_THAN_OR_EQUAL",
+    "and": "AND",
+    "or": "OR"
+  };
+  var DEFAULT_DURATION = 0.3;
+  var DEFAULT_TIMEOUT = 1;
+  function planLinks(raw, where, problems) {
+    if (!Array.isArray(raw)) {
+      problems.push(`${where} must be an array of { on, to } links \u2014 [] removes every link`);
+      return null;
+    }
+    const links = [];
+    const destinations = [];
+    for (const [index, entry] of raw.entries()) {
+      const at = `${where}[${index}]`;
+      const fail2 = (message) => problems.push(`${at}: ${message}`);
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        fail2("must be { on, to, \u2026 }");
+        continue;
+      }
+      const link = entry;
+      for (const key of Object.keys(link)) {
+        if (!LINK_KEYS.includes(key)) fail2(`unknown key "${key}" \u2014 accepted: ${LINK_KEYS.join(", ")}`);
+      }
+      const trigger = planTrigger(link, fail2);
+      if (!trigger) continue;
+      const actions = planActions(link, fail2, destinations);
+      if (!actions) continue;
+      links.push({ trigger, actions });
+    }
+    return { step: "links", links, destinations };
+  }
+  function planActions(link, fail2, destinations) {
+    var _a;
+    const actions = [];
+    if (link.if !== void 0) {
+      if (link.then === void 0) {
+        fail2("an `if` needs a `then` \u2014 what should happen when it holds");
+        return null;
+      }
+      const condition = planCondition(link.if, fail2, "if");
+      if (!condition) return null;
+      const yes = planActions(link.then, fail2, destinations);
+      if (!yes) return null;
+      const blocks = [{ condition, actions: yes }];
+      if (link.else !== void 0) {
+        if (((_a = link.else) == null ? void 0 : _a.if) !== void 0) {
+          fail2(
+            "an `else` cannot ask another question \u2014 Figma stores one condition and one else. Write the branches as separate links on the same trigger, with conditions that cannot both hold"
+          );
+          return null;
+        }
+        const otherwise = planActions(link.else, fail2, destinations);
+        if (!otherwise) return null;
+        blocks.push({ actions: otherwise });
+      }
+      actions.push({ kind: "conditional", blocks });
+    }
+    if (link.set !== void 0) {
+      const set = link.set;
+      if (typeof (set == null ? void 0 : set.variable) !== "string" || set.variable.trim() === "") {
+        fail2("set.variable must name a variable");
+        return null;
+      }
+      const value = set.value;
+      const alias = value;
+      const usable = typeof value === "string" || typeof value === "number" || typeof value === "boolean" || typeof value === "object" && value !== null && typeof (alias == null ? void 0 : alias.variable) === "string";
+      if (!usable) {
+        fail2("set.value must be a string, a number, a boolean, or { variable } to copy another one");
+        return null;
+      }
+      actions.push({
+        kind: "setVariable",
+        variable: set.variable.trim(),
+        value
+      });
+    }
+    if (link.mode !== void 0) {
+      const mode = link.mode;
+      if (typeof (mode == null ? void 0 : mode.collection) !== "string" || typeof (mode == null ? void 0 : mode.mode) !== "string") {
+        fail2('mode must be { collection: "Semantic", mode: "Dark" }');
+        return null;
+      }
+      actions.push({ kind: "setMode", collection: mode.collection.trim(), mode: mode.mode.trim() });
+    }
+    if (link.url !== void 0) {
+      if (typeof link.url !== "string" || link.url.trim() === "") {
+        fail2("url must be a link to open");
+        return null;
+      }
+      actions.push({ kind: "url", url: link.url.trim(), newTab: link.newTab !== false });
+    }
+    if (link.to !== void 0) {
+      const navigation = planNavigation(link, fail2, destinations);
+      if (!navigation) return null;
+      actions.push(navigation);
+    }
+    if (actions.length === 0) {
+      fail2("a link must do something \u2014 name a `to`, a `set`, a `mode`, a `url` or an `if`");
+      return null;
+    }
+    return actions;
+  }
+  function planCondition(raw, fail2, where) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      fail2(`${where} must be { left, is, right }`);
+      return null;
+    }
+    const spec = raw;
+    const fn = typeof spec.is === "string" ? COMPARISONS[spec.is.trim().toLowerCase()] : void 0;
+    if (!fn) {
+      fail2(`${where}.is must be one of: ${Object.keys(COMPARISONS).join(", ")}`);
+      return null;
+    }
+    const left = planOperand(spec.left, fail2, `${where}.left`);
+    const right = planOperand(spec.right, fail2, `${where}.right`);
+    if (!left || !right) return null;
+    return { fn, args: [left, right] };
+  }
+  function planOperand(raw, fail2, where) {
+    if (typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean") {
+      return { kind: "literal", value: raw };
+    }
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+      const named = raw;
+      if (typeof named.variable === "string" && named.variable.trim() !== "") {
+        return { kind: "variable", name: named.variable.trim() };
+      }
+      if (named.is !== void 0) {
+        const nested = planCondition(raw, fail2, where);
+        return nested ? { kind: "condition", condition: nested } : null;
+      }
+    }
+    fail2(`${where} must be a value, { variable }, or another { left, is, right }`);
+    return null;
+  }
+  function planTrigger(link, fail2) {
+    var _a;
+    const asked = link.on === void 0 ? "click" : link.on;
+    const on = typeof asked === "string" ? (_a = Object.keys(TRIGGERS).find((word) => word.toLowerCase() === asked.toLowerCase())) != null ? _a : "" : "";
+    if (on === "") {
+      fail2(`on must be one of: ${Object.keys(TRIGGERS).join(", ")}`);
+      return null;
+    }
+    const type = TRIGGERS[on];
+    if (link.after !== void 0 && type !== "AFTER_TIMEOUT") {
+      fail2(`after only applies to a timeout trigger, not to ${on}`);
+      return null;
+    }
+    if (link.delay !== void 0 && !DELAYED.includes(type)) {
+      fail2(`delay only applies to mouseEnter, mouseLeave, mouseUp and mouseDown, not to ${on}`);
+      return null;
+    }
+    if (link.keys !== void 0 && type !== "ON_KEY_DOWN") {
+      fail2(`keys only applies to keyDown, not to ${on}`);
+      return null;
+    }
+    const after = link.after === void 0 ? DEFAULT_TIMEOUT : link.after;
+    if (type === "AFTER_TIMEOUT" && (typeof after !== "number" || !Number.isFinite(after) || after <= 0)) {
+      fail2("after must be a number of seconds greater than 0");
+      return null;
+    }
+    const delay = link.delay === void 0 ? 0 : link.delay;
+    if (DELAYED.includes(type) && (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0)) {
+      fail2("delay must be a number of seconds >= 0");
+      return null;
+    }
+    if (type === "ON_KEY_DOWN") {
+      const keys = link.keys;
+      if (!Array.isArray(keys) || keys.length === 0 || keys.some((key) => typeof key !== "number" || !Number.isInteger(key))) {
+        fail2("keyDown needs keys: an array of key codes, e.g. [13] for Enter");
+        return null;
+      }
+    }
+    if (type === "AFTER_TIMEOUT") return { type, timeout: after * 1e3 };
+    if (type === "ON_KEY_DOWN") return { type, device: "KEYBOARD", keyCodes: link.keys };
+    if (DELAYED.includes(type)) {
+      return { type, delay: delay * 1e3 };
+    }
+    return { type };
+  }
+  function planNavigation(link, fail2, destinations) {
+    if (typeof link.to !== "string" || link.to.trim() === "") {
+      fail2('to must be a node id, "back" or "close"');
+      return null;
+    }
+    const to = link.to.trim();
+    const target = to.toLowerCase();
+    if (target === "back") return { kind: "back" };
+    if (target === "close") return { kind: "close" };
+    const navigation = link.as === void 0 ? "NAVIGATE" : link.as;
+    if (typeof navigation !== "string" || !NAVIGATIONS.includes(normaliseEnum(navigation))) {
+      fail2(`as must be one of: ${NAVIGATIONS.join(", ")}`);
+      return null;
+    }
+    const duration = link.duration === void 0 ? DEFAULT_DURATION : link.duration;
+    if (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0 || duration > 10) {
+      fail2("duration must be a number of seconds between 0 and 10");
+      return null;
+    }
+    const easing = buildEasing(link, fail2);
+    if (easing === null) return null;
+    const animation = link.animation === void 0 ? "INSTANT" : link.animation;
+    if (typeof animation !== "string") {
+      fail2("animation must be a string");
+      return null;
+    }
+    if (link.matchLayers !== void 0 && typeof link.matchLayers !== "boolean") {
+      fail2("matchLayers must be true or false");
+      return null;
+    }
+    const transition = buildTransition(normaliseEnum(animation), duration, easing, link.matchLayers === true);
+    if (transition === void 0) {
+      fail2(
+        `animation must be one of: ${SIMPLE_ANIMATIONS.join(", ")}, or ${DIRECTIONAL_ANIMATIONS.join("/")} with _${DIRECTIONS.join("/_")}`
+      );
+      return null;
+    }
+    for (const flag2 of ["resetScroll", "resetVideo", "resetInteractive"]) {
+      if (link[flag2] !== void 0 && typeof link[flag2] !== "boolean") {
+        fail2(`${flag2} must be true or false`);
+        return null;
+      }
+    }
+    destinations.push(to);
+    return __spreadValues(__spreadValues(__spreadValues({
+      kind: "node",
+      destinationId: to,
+      navigation: normaliseEnum(navigation),
+      transition
+    }, typeof link.resetScroll === "boolean" ? { resetScroll: link.resetScroll } : {}), typeof link.resetVideo === "boolean" ? { resetVideo: link.resetVideo } : {}), typeof link.resetInteractive === "boolean" ? { resetInteractive: link.resetInteractive } : {});
+  }
+  async function describeBranches(blocks, nameOf, depth = 0) {
+    const parts = [];
+    for (const [index, block2] of blocks.entries()) {
+      const inside = [];
+      for (const action of block2.actions) inside.push(await describeAction(action, nameOf, depth + 1));
+      const label3 = block2.condition ? index === 0 && depth === 0 ? "if" : "else if" : "else";
+      parts.push(`${label3} {${inside.join(" \xB7 ") || "nothing"}}`);
+    }
+    return parts.join(" ");
+  }
+  function seconds(value) {
+    return `${Math.round(value * 1e3) / 1e3}s`;
+  }
+  async function describeLinks(reactions, nameOf) {
+    var _a, _b, _c;
+    const spelling = {};
+    for (const [word, type] of Object.entries(TRIGGERS)) spelling[type] = word;
+    const parts = [];
+    for (const reaction of reactions) {
+      const trigger = reaction.trigger;
+      let on = trigger ? (_a = spelling[trigger.type]) != null ? _a : trigger.type.toLowerCase() : "nothing";
+      if (trigger) {
+        if (trigger.type === "AFTER_TIMEOUT") on = `${on} ${seconds(trigger.timeout / 1e3)}`;
+        else if (trigger.type === "ON_KEY_DOWN") on = `${on} [${((_b = trigger.keyCodes) != null ? _b : []).join(",")}]`;
+        else if ("delay" in trigger && trigger.delay) on = `${on} ${seconds(trigger.delay / 1e3)}`;
+      }
+      const actions = (_c = reaction.actions) != null ? _c : reaction.action ? [reaction.action] : [];
+      for (const action of actions) parts.push(`${on} \u2192 ${await describeAction(action, nameOf)}`);
+    }
+    return parts.join(" \xB7 ");
+  }
+  async function describeAction(action, nameOf, depth = 0) {
+    var _a, _b, _c;
+    if (action.type === "BACK" || action.type === "CLOSE") return action.type.toLowerCase();
+    if (action.type === "URL") return `open ${action.url}`;
+    if (action.type === "SET_VARIABLE") {
+      const named2 = action.variableId && nameOf ? await nameOf(action.variableId) : null;
+      const value = (_a = action.variableValue) == null ? void 0 : _a.value;
+      const shown = value !== null && typeof value === "object" && "id" in value ? `var:${(_b = nameOf ? await nameOf(value.id) : null) != null ? _b : value.id}` : JSON.stringify(value);
+      return `set ${named2 != null ? named2 : action.variableId} = ${shown}`;
+    }
+    if (action.type === "SET_VARIABLE_MODE") {
+      const collection = action.variableCollectionId;
+      const named2 = collection && nameOf ? await nameOf(collection) : null;
+      const mode = action.variableModeId && nameOf ? await nameOf(action.variableModeId, collection != null ? collection : void 0) : null;
+      return `mode ${named2 != null ? named2 : collection} = ${mode != null ? mode : action.variableModeId}`;
+    }
+    if (action.type === "CONDITIONAL") return describeBranches(action.conditionalBlocks, nameOf, depth);
+    if (action.type !== "NODE") return action.type.toLowerCase();
+    const transition = action.transition;
+    const named = transition ? `${transition.type}${"direction" in transition ? `_${transition.direction}` : ""} ${seconds(transition.duration)}${transition.easing.type === DEFAULT_EASING ? "" : ` ${transition.easing.type}`}${"matchLayers" in transition && transition.matchLayers ? " +match" : ""}` : "INSTANT";
+    const navigation = action.navigation === "NAVIGATE" ? "" : ` (${action.navigation})`;
+    return `${(_c = action.destinationId) != null ? _c : "?"}${navigation}${named === "INSTANT" ? "" : ` ${named}`}`;
+  }
+  function buildEasing(link, fail2) {
+    var _a;
+    const named = link.easing === void 0 ? null : normaliseEnum(String(link.easing));
+    const custom = [link.bezier !== void 0 ? "bezier" : "", link.spring !== void 0 ? "spring" : ""].filter(Boolean);
+    if (custom.length > 1) {
+      fail2("name either a bezier or a spring, not both");
+      return null;
+    }
+    if (custom.length === 1 && named && named !== `CUSTOM_${custom[0].toUpperCase()}` && named !== "CUSTOM_CUBIC_BEZIER") {
+      fail2(`easing "${named}" and a ${custom[0]} say different things \u2014 pass one`);
+      return null;
+    }
+    if (link.bezier !== void 0) {
+      const curve = link.bezier;
+      if (!Array.isArray(curve) || curve.length !== 4 || curve.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
+        fail2("bezier must be [x1, y1, x2, y2]");
+        return null;
+      }
+      const [x1, y1, x2, y2] = curve;
+      return { type: "CUSTOM_CUBIC_BEZIER", easingFunctionCubicBezier: { x1, y1, x2, y2 } };
+    }
+    if (link.spring !== void 0) {
+      const spring = link.spring;
+      if (typeof spring !== "object" || spring === null || Array.isArray(spring)) {
+        fail2("spring must be { mass, stiffness, damping }");
+        return null;
+      }
+      const values = spring;
+      for (const field of ["mass", "stiffness", "damping"]) {
+        if (typeof values[field] !== "number" || !Number.isFinite(values[field]) || values[field] <= 0) {
+          fail2(`spring.${field} must be a number > 0`);
+          return null;
+        }
+      }
+      if (values.initialVelocity !== void 0 && typeof values.initialVelocity !== "number") {
+        fail2("spring.initialVelocity must be a number");
+        return null;
+      }
+      return {
+        type: "CUSTOM_SPRING",
+        easingFunctionSpring: {
+          mass: values.mass,
+          stiffness: values.stiffness,
+          damping: values.damping,
+          initialVelocity: (_a = values.initialVelocity) != null ? _a : 0
+        }
+      };
+    }
+    if (named === null) return { type: DEFAULT_EASING };
+    if (!EASINGS.includes(named)) {
+      fail2(`easing must be one of: ${EASINGS.join(", ")} \u2014 or pass bezier / spring`);
+      return null;
+    }
+    return { type: named };
+  }
+  function buildTransition(animation, duration, easing, matchLayers2) {
+    if (animation === "INSTANT") return null;
+    if (SIMPLE_ANIMATIONS.includes(animation)) {
+      return { type: animation, easing, duration };
+    }
+    const cut = animation.lastIndexOf("_");
+    const base = cut === -1 ? "" : animation.slice(0, cut);
+    const direction = cut === -1 ? "" : animation.slice(cut + 1);
+    if (!DIRECTIONAL_ANIMATIONS.includes(base) || !DIRECTIONS.includes(direction)) return void 0;
+    return {
+      type: base,
+      direction,
+      matchLayers: matchLayers2,
+      easing,
+      duration
+    };
+  }
+  var DECORATIONS = ["NONE", "UNDERLINE", "STRIKETHROUGH"];
+  var TEXT_CASES = ["ORIGINAL", "UPPER", "LOWER", "TITLE"];
+  var RUN_KEYS = [
+    "from",
+    "to",
+    "match",
+    "fontName",
+    "fontSize",
+    "fill",
+    "textDecoration",
+    "textCase",
+    "textWrap",
+    "letterSpacing",
+    "lineHeight",
+    "link"
+  ];
+  function planRuns(raw, where, problems) {
+    if (!Array.isArray(raw)) {
+      problems.push(`${where} must be an array of { from, to } or { match } runs`);
+      return null;
+    }
+    const runs = [];
+    for (const [index, entry] of raw.entries()) {
+      const at = `${where}[${index}]`;
+      const fail2 = (message) => problems.push(`${at}: ${message}`);
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        fail2("must be an object");
+        continue;
+      }
+      const run = entry;
+      for (const key of Object.keys(run)) {
+        if (!RUN_KEYS.includes(key)) fail2(`unknown key "${key}" \u2014 accepted: ${RUN_KEYS.join(", ")}`);
+      }
+      const hasRange = run.from !== void 0 || run.to !== void 0;
+      if (run.match !== void 0 && hasRange) {
+        fail2("name either a match or a from/to range, not both");
+        continue;
+      }
+      if (run.match !== void 0) {
+        if (typeof run.match !== "string" || run.match === "") {
+          fail2("match must be a non-empty string");
+          continue;
+        }
+      } else {
+        const from = run.from;
+        const to = run.to;
+        if (typeof from !== "number" || !Number.isInteger(from) || from < 0) {
+          fail2("from must be a whole number >= 0");
+          continue;
+        }
+        if (typeof to !== "number" || !Number.isInteger(to) || to <= from) {
+          fail2("to must be a whole number greater than from");
+          continue;
+        }
+      }
+      let bad = false;
+      const check = (key, ok, message) => {
+        if (run[key] !== void 0 && !ok) {
+          fail2(message);
+          bad = true;
+        }
+      };
+      check(
+        "fontName",
+        typeof run.fontName === "object" && run.fontName !== null && typeof run.fontName.family === "string" && typeof run.fontName.style === "string",
+        "fontName must be { family, style }"
+      );
+      check("fontSize", typeof run.fontSize === "number" && run.fontSize > 0, "fontSize must be a number > 0");
+      check("letterSpacing", typeof run.letterSpacing === "number", "letterSpacing must be a number");
+      check(
+        "lineHeight",
+        run.lineHeight === "AUTO" || typeof run.lineHeight === "number" && run.lineHeight > 0,
+        'lineHeight must be a positive number or "AUTO"'
+      );
+      check(
+        "textDecoration",
+        typeof run.textDecoration === "string" && DECORATIONS.includes(run.textDecoration),
+        `textDecoration must be one of: ${DECORATIONS.join(", ")}`
+      );
+      check(
+        "textCase",
+        typeof run.textCase === "string" && TEXT_CASES.includes(run.textCase),
+        `textCase must be one of: ${TEXT_CASES.join(", ")}`
+      );
+      check(
+        "textWrap",
+        typeof run.textWrap === "string" && BLEND_FREE_ENUMS.textWrap.includes(run.textWrap),
+        `textWrap must be one of: ${BLEND_FREE_ENUMS.textWrap.join(", ")}`
+      );
+      check("link", typeof run.link === "string" || run.link === null, "link must be a URL, or null to remove one");
+      if (run.fill !== void 0) {
+        const problem = paintProblem(run.fill);
+        if (problem) {
+          fail2(`fill: ${problem}`);
+          bad = true;
+        }
+      }
+      if (bad) continue;
+      const styling = Object.keys(run).filter((key) => !["from", "to", "match"].includes(key));
+      if (styling.length === 0) {
+        fail2("a run that sets nothing styles nothing \u2014 say what should change");
+        continue;
+      }
+      runs.push(run);
+    }
+    return { step: "runs", runs };
+  }
+  function resolveRanges(characters, run) {
+    if (run.match !== void 0) {
+      const ranges = [];
+      let at = characters.indexOf(run.match);
+      while (at !== -1) {
+        ranges.push([at, at + run.match.length]);
+        at = characters.indexOf(run.match, at + run.match.length);
+      }
+      if (ranges.length === 0) return { ranges: [], problem: `"${run.match}" is not in this text` };
+      return { ranges };
+    }
+    const from = run.from;
+    const to = run.to;
+    if (from >= characters.length) {
+      return { ranges: [], problem: `from ${from} is past the end of ${characters.length} character(s)` };
+    }
+    return { ranges: [[from, Math.min(to, characters.length)]] };
+  }
+  function planEffects(raw, where, problems) {
+    if (!Array.isArray(raw)) {
+      problems.push(`${where} must be an array of shadows and blurs \u2014 [] removes them`);
+      return null;
+    }
+    const effects = [];
+    const bind = [];
+    const summary = [];
+    for (const [index, entry] of raw.entries()) {
+      const at = `${where}[${index}]`;
+      const fail2 = (message) => problems.push(`${at}: ${message}`);
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        fail2("must be { shadow } or { blur }");
+        continue;
+      }
+      const spec = entry;
+      const measure = (value, fallback, field, label3) => {
+        if (value === void 0) return fallback;
+        if (typeof value === "number" && Number.isFinite(value)) return value;
+        const named2 = value;
+        if (typeof (named2 == null ? void 0 : named2.variable) === "string" && named2.variable.trim() !== "") {
+          bind.push({ index: effects.length, field, variable: named2.variable.trim() });
+          return fallback;
+        }
+        fail2(`${label3} must be a number or { variable }`);
+        return null;
+      };
+      if (typeof spec.blur === "string") {
+        const kind2 = spec.blur.toLowerCase();
+        if (kind2 !== "layer" && kind2 !== "background") {
+          fail2('blur must be "layer" or "background"');
+          continue;
+        }
+        const radius2 = measure(spec.radius, 0, "radius", "radius");
+        if (radius2 === null) continue;
+        if (spec.radius === void 0) {
+          fail2("radius must be a number >= 0");
+          continue;
+        }
+        effects.push({
+          type: kind2 === "layer" ? "LAYER_BLUR" : "BACKGROUND_BLUR",
+          blurType: "NORMAL",
+          radius: radius2,
+          visible: spec.visible !== false
+        });
+        summary.push(`${kind2} blur ${radius2}`);
+        continue;
+      }
+      if (typeof spec.shadow !== "string") {
+        fail2('must carry either `shadow` ("drop" / "inner") or `blur` ("layer" / "background")');
+        continue;
+      }
+      const kind = spec.shadow.toLowerCase();
+      if (kind !== "drop" && kind !== "inner") {
+        fail2('shadow must be "drop" or "inner"');
+        continue;
+      }
+      for (const unknownKey of Object.keys(spec)) {
+        if (!["shadow", "color", "opacity", "offset", "radius", "spread", "visible"].includes(unknownKey)) {
+          fail2(`unknown key "${unknownKey}" \u2014 accepted: shadow, color, opacity, offset, radius, spread, visible`);
+        }
+      }
+      let hex = "#000000";
+      const named = spec.color;
+      if (typeof (named == null ? void 0 : named.variable) === "string" && named.variable.trim() !== "") {
+        bind.push({ index: effects.length, field: "color", variable: named.variable.trim() });
+      } else if (spec.color !== void 0) {
+        if (typeof spec.color !== "string" || !HEX.test(spec.color)) {
+          fail2("color must be a #RRGGBB colour or { variable }");
+          continue;
+        }
+        hex = spec.color;
+      }
+      const rgb = parseHex(hex);
+      if (!rgb) {
+        fail2(`"${hex}" is not a colour`);
+        continue;
+      }
+      const alpha = spec.opacity === void 0 ? 0.25 : spec.opacity;
+      if (typeof alpha !== "number" || alpha < 0 || alpha > 1) {
+        fail2("opacity must be between 0 and 1");
+        continue;
+      }
+      const offset = spec.offset === void 0 ? [0, 4] : spec.offset;
+      if (!Array.isArray(offset) || offset.length !== 2) {
+        fail2("offset must be [x, y]");
+        continue;
+      }
+      const x = measure(offset[0], 0, "offsetX", "offset[0]");
+      const y = measure(offset[1], 4, "offsetY", "offset[1]");
+      const radius = measure(spec.radius, 8, "radius", "radius");
+      const spread = measure(spec.spread, 0, "spread", "spread");
+      if (x === null || y === null || radius === null || spread === null) continue;
+      effects.push({
+        type: kind === "drop" ? "DROP_SHADOW" : "INNER_SHADOW",
+        color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha },
+        offset: { x, y },
+        radius,
+        spread,
+        visible: spec.visible !== false,
+        blendMode: "NORMAL"
+      });
+      summary.push(
+        `${kind} shadow ${hex}${alpha === 1 ? "" : ` @${alpha}`} ${x},${y} blur ${radius}${spread ? ` spread ${spread}` : ""}`
+      );
+    }
+    return { step: "effects", effects, bind, summary: summary.join(" \xB7 ") || "none" };
+  }
+  function planAnimation(raw, where, problems) {
+    const wanted = raw === null ? [] : Array.isArray(raw) ? raw : [raw];
+    const styles = [];
+    const summary = [];
+    for (const [index, entry] of wanted.entries()) {
+      const at = `${where}[${index}]`;
+      const fail2 = (message) => problems.push(`${at}: ${message}`);
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        fail2("must be { style, duration?, offset?, props? }");
+        continue;
+      }
+      const spec = entry;
+      for (const key of Object.keys(spec)) {
+        if (!["style", "duration", "offset", "props"].includes(key)) {
+          fail2(`unknown key "${key}" \u2014 accepted: style, duration, offset, props`);
+        }
+      }
+      if (typeof spec.style !== "string" || spec.style.trim() === "") {
+        fail2('style must name one of the styles MOTION_STYLES lists, e.g. "Position"');
+        continue;
+      }
+      let wrong = false;
+      for (const seconds2 of ["duration", "offset"]) {
+        const value = spec[seconds2];
+        if (value !== void 0 && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+          fail2(`${seconds2} must be a number of seconds >= 0`);
+          wrong = true;
+        }
+      }
+      if (wrong) continue;
+      const settings = {};
+      if (spec.props !== void 0) {
+        if (typeof spec.props !== "object" || spec.props === null || Array.isArray(spec.props)) {
+          fail2("props must be an object of the settings that style takes");
+          continue;
+        }
+        for (const [name, value] of Object.entries(spec.props)) {
+          const alias = value;
+          if (name === "easing" && typeof (alias == null ? void 0 : alias.variable) === "string" && alias.variable.trim() !== "") {
+            settings.easing = { variable: alias.variable.trim() };
+            continue;
+          }
+          if (name === "easing") {
+            const easing = buildEasing(
+              typeof value === "string" ? { easing: value } : value,
+              (message) => fail2(`props.easing: ${message}`)
+            );
+            if (!easing) {
+              wrong = true;
+              break;
+            }
+            settings.easing = easing;
+            continue;
+          }
+          if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+            settings[name] = value;
+            continue;
+          }
+          if (typeof (alias == null ? void 0 : alias.variable) === "string" && alias.variable.trim() !== "") {
+            settings[name] = { variable: alias.variable.trim() };
+            continue;
+          }
+          fail2(`props.${name} must be a string, a number, a boolean or { variable }`);
+          wrong = true;
+          break;
+        }
+      }
+      if (wrong) continue;
+      styles.push(__spreadProps(__spreadValues(__spreadValues({
+        style: spec.style.trim()
+      }, spec.duration === void 0 ? {} : { duration: spec.duration }), spec.offset === void 0 ? {} : { offset: spec.offset }), {
+        props: settings
+      }));
+      const said = Object.entries(settings).map(([name, value]) => `${name}=${typeof value === "object" ? JSON.stringify(value) : value}`).join(", ");
+      summary.push(
+        `${spec.style.trim()}${spec.duration === void 0 ? "" : ` ${spec.duration}s`}${said ? ` (${said})` : ""}`
+      );
+    }
+    return { step: "animation", styles, summary: summary.join(" \xB7 ") || "none" };
+  }
+  var STROKE_CAPS = ["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL"];
+  var JOINS = ["MITER", "BEVEL", "ROUND"];
+  function planNetwork(raw, where, problems) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      problems.push(`${where} must be { vertices, segments, regions? }`);
+      return null;
+    }
+    const spec = raw;
+    for (const key of Object.keys(spec)) {
+      if (!["vertices", "segments", "regions"].includes(key)) {
+        problems.push(`${where}: unknown key "${key}" \u2014 accepted: vertices, segments, regions`);
+      }
+    }
+    if (!Array.isArray(spec.vertices) || spec.vertices.length < 2) {
+      problems.push(`${where}.vertices must be an array of at least two points`);
+      return null;
+    }
+    if (!Array.isArray(spec.segments) || spec.segments.length < 1) {
+      problems.push(`${where}.segments must be an array of at least one { start, end }`);
+      return null;
+    }
+    const vertices = [];
+    for (const [index, entry] of spec.vertices.entries()) {
+      const at = `${where}.vertices[${index}]`;
+      if (Array.isArray(entry)) {
+        if (entry.length !== 2 || entry.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
+          problems.push(`${at} must be [x, y]`);
+          continue;
+        }
+        vertices.push({ x: entry[0], y: entry[1] });
+        continue;
+      }
+      if (typeof entry !== "object" || entry === null) {
+        problems.push(`${at} must be [x, y] or { x, y }`);
+        continue;
+      }
+      const point = entry;
+      if (typeof point.x !== "number" || typeof point.y !== "number") {
+        problems.push(`${at} must carry x and y`);
+        continue;
+      }
+      if (point.cap !== void 0 && (typeof point.cap !== "string" || !STROKE_CAPS.includes(point.cap))) {
+        problems.push(`${at}.cap must be one of: ${STROKE_CAPS.join(", ")}`);
+        continue;
+      }
+      if (point.join !== void 0 && (typeof point.join !== "string" || !JOINS.includes(point.join))) {
+        problems.push(`${at}.join must be one of: ${JOINS.join(", ")}`);
+        continue;
+      }
+      if (point.cornerRadius !== void 0 && (typeof point.cornerRadius !== "number" || point.cornerRadius < 0)) {
+        problems.push(`${at}.cornerRadius must be a number >= 0`);
+        continue;
+      }
+      vertices.push(__spreadValues(__spreadValues(__spreadValues({
+        x: point.x,
+        y: point.y
+      }, point.cap ? { strokeCap: point.cap } : {}), point.join ? { strokeJoin: point.join } : {}), point.cornerRadius === void 0 ? {} : { cornerRadius: point.cornerRadius }));
+    }
+    const segments = [];
+    for (const [index, entry] of spec.segments.entries()) {
+      const at = `${where}.segments[${index}]`;
+      const pair2 = Array.isArray(entry) ? { start: entry[0], end: entry[1], curve: void 0 } : entry;
+      if (typeof (pair2 == null ? void 0 : pair2.start) !== "number" || typeof (pair2 == null ? void 0 : pair2.end) !== "number") {
+        problems.push(`${at} must be [start, end] or { start, end }`);
+        continue;
+      }
+      const ends = [pair2.start, pair2.end];
+      const stray = ends.find((one) => !Number.isInteger(one) || one < 0 || one >= vertices.length);
+      if (stray !== void 0) {
+        problems.push(`${at}: there is no vertex ${stray} \u2014 the network has ${vertices.length}`);
+        continue;
+      }
+      if (pair2.start === pair2.end) {
+        problems.push(`${at}: a segment cannot start and end at the same point`);
+        continue;
+      }
+      let curve = null;
+      if (pair2.curve !== void 0) {
+        const bend = pair2.curve;
+        if (!Array.isArray(bend) || bend.length !== 4 || bend.some((one) => typeof one !== "number")) {
+          problems.push(`${at}.curve must be [x1, y1, x2, y2] \u2014 the two tangents, each relative to its own end`);
+          continue;
+        }
+        curve = {
+          tangentStart: { x: bend[0], y: bend[1] },
+          tangentEnd: { x: bend[2], y: bend[3] }
+        };
+      }
+      segments.push(__spreadValues({ start: pair2.start, end: pair2.end }, curve != null ? curve : {}));
+    }
+    const regions = [];
+    if (spec.regions !== void 0) {
+      if (!Array.isArray(spec.regions)) {
+        problems.push(`${where}.regions must be an array of { loops }`);
+        return null;
+      }
+      for (const [index, entry] of spec.regions.entries()) {
+        const at = `${where}.regions[${index}]`;
+        const region = entry;
+        if (!Array.isArray(region == null ? void 0 : region.loops) || region.loops.length === 0) {
+          problems.push(`${at}.loops must be an array of loops, each a list of segment indices`);
+          continue;
+        }
+        const rule = region.windingRule === void 0 ? "NONZERO" : region.windingRule;
+        if (rule !== "NONZERO" && rule !== "EVENODD") {
+          problems.push(`${at}.windingRule must be NONZERO or EVENODD`);
+          continue;
+        }
+        let broken = false;
+        for (const loop of region.loops) {
+          if (!Array.isArray(loop) || loop.length === 0) {
+            problems.push(`${at}: every loop must be a list of segment indices`);
+            broken = true;
+            break;
+          }
+          const stray = loop.find((one) => typeof one !== "number" || !Number.isInteger(one) || one < 0 || one >= segments.length);
+          if (stray !== void 0) {
+            problems.push(`${at}: there is no segment ${stray} \u2014 the network has ${segments.length}`);
+            broken = true;
+            break;
+          }
+        }
+        if (broken) continue;
+        regions.push({ windingRule: rule, loops: region.loops });
+      }
+    }
+    return {
+      step: "network",
+      network: __spreadValues({ vertices, segments }, regions.length > 0 ? { regions } : {}),
+      summary: `${vertices.length} point(s), ${segments.length} segment(s)${regions.length ? `, ${regions.length} region(s)` : ""}`
+    };
+  }
+  var GRID_ALIGN = ["MIN", "MAX", "CENTER", "STRETCH"];
+  function planGrids(raw, where, problems) {
+    if (!Array.isArray(raw)) {
+      problems.push(`${where} must be an array of grids \u2014 [] removes them`);
+      return null;
+    }
+    const grids = [];
+    const summary = [];
+    for (const [index, entry] of raw.entries()) {
+      const at = `${where}[${index}]`;
+      const fail2 = (message) => problems.push(`${at}: ${message}`);
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        fail2("must be { columns }, { rows } or { square }");
+        continue;
+      }
+      const spec = entry;
+      const paint = () => {
+        if (spec.color === void 0) return {};
+        if (typeof spec.color !== "string" || !HEX.test(spec.color)) {
+          fail2("color must be a #RRGGBB colour");
+          return null;
+        }
+        const rgb = parseHex(spec.color);
+        if (!rgb) {
+          fail2(`"${spec.color}" is not a colour`);
+          return null;
+        }
+        const alpha = spec.opacity === void 0 ? 0.1 : spec.opacity;
+        if (typeof alpha !== "number" || alpha < 0 || alpha > 1) {
+          fail2("opacity must be between 0 and 1");
+          return null;
+        }
+        return { color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha } };
+      };
+      if (spec.square !== void 0) {
+        const size2 = spec.square;
+        if (typeof size2 !== "number" || !Number.isFinite(size2) || size2 <= 0) {
+          fail2("square must be a cell size greater than 0");
+          continue;
+        }
+        const colour2 = paint();
+        if (!colour2) continue;
+        grids.push(__spreadValues({ pattern: "GRID", sectionSize: size2, visible: spec.visible !== false }, colour2));
+        summary.push(`square ${size2}`);
+        continue;
+      }
+      const vertical = spec.columns !== void 0;
+      const count = vertical ? spec.columns : spec.rows;
+      if (count === void 0) {
+        fail2("must be { columns }, { rows } or { square }");
+        continue;
+      }
+      if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
+        fail2(`${vertical ? "columns" : "rows"} must be a whole number of at least 1`);
+        continue;
+      }
+      for (const key of Object.keys(spec)) {
+        if (!["columns", "rows", "gutter", "margin", "width", "height", "align", "color", "opacity", "visible"].includes(key)) {
+          fail2(`unknown key "${key}" \u2014 accepted: columns/rows, gutter, margin, width/height, align, color, opacity, visible`);
+        }
+      }
+      const gutter2 = spec.gutter === void 0 ? 0 : spec.gutter;
+      if (typeof gutter2 !== "number" || !Number.isFinite(gutter2) || gutter2 < 0) {
+        fail2("gutter must be a number >= 0");
+        continue;
+      }
+      const size = vertical ? spec.width : spec.height;
+      if (size !== void 0 && (typeof size !== "number" || !Number.isFinite(size) || size <= 0)) {
+        fail2(`${vertical ? "width" : "height"} must be a number greater than 0`);
+        continue;
+      }
+      const margin = spec.margin === void 0 ? 0 : spec.margin;
+      if (typeof margin !== "number" || !Number.isFinite(margin) || margin < 0) {
+        fail2("margin must be a number >= 0");
+        continue;
+      }
+      const align = spec.align === void 0 ? size === void 0 ? "STRETCH" : "MIN" : spec.align;
+      if (typeof align !== "string" || !GRID_ALIGN.includes(align)) {
+        fail2(`align must be one of: ${GRID_ALIGN.join(", ")}`);
+        continue;
+      }
+      const colour = paint();
+      if (!colour) continue;
+      grids.push(__spreadValues(__spreadProps(__spreadValues(__spreadValues({
+        pattern: vertical ? "COLUMNS" : "ROWS",
+        alignment: align,
+        gutterSize: gutter2,
+        count
+      }, size === void 0 ? {} : { sectionSize: size }), margin === 0 ? {} : { offset: margin }), {
+        visible: spec.visible !== false
+      }), colour));
+      summary.push(
+        `${count} ${vertical ? "column" : "row"}(s) ${align.toLowerCase()}${gutter2 ? ` gutter ${gutter2}` : ""}${margin ? ` margin ${margin}` : ""}${size ? ` at ${size}` : ""}`
+      );
+    }
+    return { step: "grid", grids, summary: summary.join(" \xB7 ") || "none" };
+  }
+  function planLayout(raw, where, problems) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      problems.push(`${where} must be an object`);
+      return null;
+    }
+    const value = raw;
+    const layout = {};
+    const fail2 = (message) => problems.push(`${where}.${message}`);
+    for (const key of Object.keys(value)) {
+      if (!["mode", "gap", "padding", "primaryAxis", "counterAxis", "wrap", "sizing"].includes(key)) {
+        fail2(`unknown key "${key}"`);
+      }
+    }
+    if (value.mode !== void 0) {
+      if (typeof value.mode !== "string" || !LAYOUT_MODES.includes(value.mode)) fail2(`mode must be one of: ${LAYOUT_MODES.join(", ")}`);
+      else layout.mode = value.mode;
+    }
+    if (value.gap !== void 0) {
+      if (typeof value.gap !== "number" || !Number.isFinite(value.gap)) fail2("gap must be a number");
+      else layout.gap = value.gap;
+    }
+    if (value.padding !== void 0) {
+      if (typeof value.padding === "number" && Number.isFinite(value.padding)) {
+        layout.padding = [value.padding, value.padding, value.padding, value.padding];
+      } else if (Array.isArray(value.padding) && value.padding.length === 4 && value.padding.every((one) => typeof one === "number" && Number.isFinite(one))) {
+        layout.padding = value.padding;
+      } else fail2("padding must be a number or [top, right, bottom, left]");
+    }
+    if (value.primaryAxis !== void 0) {
+      if (typeof value.primaryAxis !== "string" || !PRIMARY_AXIS.includes(value.primaryAxis)) {
+        fail2(`primaryAxis must be one of: ${PRIMARY_AXIS.join(", ")}`);
+      } else layout.primaryAxis = value.primaryAxis;
+    }
+    if (value.counterAxis !== void 0) {
+      if (typeof value.counterAxis !== "string" || !COUNTER_AXIS.includes(value.counterAxis)) {
+        fail2(`counterAxis must be one of: ${COUNTER_AXIS.join(", ")}`);
+      } else layout.counterAxis = value.counterAxis;
+    }
+    if (value.wrap !== void 0) {
+      if (typeof value.wrap !== "boolean") fail2("wrap must be a boolean");
+      else layout.wrap = value.wrap;
+    }
+    if (value.sizing !== void 0) {
+      if (typeof value.sizing !== "object" || value.sizing === null) fail2("sizing must be { horizontal, vertical }");
+      else {
+        const sizing = value.sizing;
+        layout.sizing = {};
+        for (const axis of ["horizontal", "vertical"]) {
+          const mode = sizing[axis];
+          if (mode === void 0) continue;
+          if (typeof mode !== "string" || !SIZING.includes(mode)) fail2(`sizing.${axis} must be one of: ${SIZING.join(", ")}`);
+          else layout.sizing[axis] = mode;
+        }
+      }
+    }
+    return { step: "layout", layout };
+  }
+  var HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+  var BINDABLE = {
+    width: "FLOAT",
+    height: "FLOAT",
+    minWidth: "FLOAT",
+    maxWidth: "FLOAT",
+    minHeight: "FLOAT",
+    maxHeight: "FLOAT",
+    itemSpacing: "FLOAT",
+    counterAxisSpacing: "FLOAT",
+    gridRowGap: "FLOAT",
+    gridColumnGap: "FLOAT",
+    paddingLeft: "FLOAT",
+    paddingRight: "FLOAT",
+    paddingTop: "FLOAT",
+    paddingBottom: "FLOAT",
+    cornerRadius: "FLOAT",
+    topLeftRadius: "FLOAT",
+    topRightRadius: "FLOAT",
+    bottomLeftRadius: "FLOAT",
+    bottomRightRadius: "FLOAT",
+    strokeWeight: "FLOAT",
+    strokeTopWeight: "FLOAT",
+    strokeRightWeight: "FLOAT",
+    strokeBottomWeight: "FLOAT",
+    strokeLeftWeight: "FLOAT",
+    opacity: "FLOAT",
+    fontSize: "FLOAT",
+    letterSpacing: "FLOAT",
+    lineHeight: "FLOAT",
+    paragraphSpacing: "FLOAT",
+    paragraphIndent: "FLOAT",
+    fontWeight: "FLOAT",
+    characters: "STRING",
+    fontFamily: "STRING",
+    fontStyle: "STRING",
+    visible: "BOOLEAN"
+  };
+  var BIND_ALIASES = {
+    text: ["characters"],
+    gap: ["itemSpacing"],
+    padding: ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"],
+    radius: ["cornerRadius"],
+    strokeWeights: ["strokeTopWeight", "strokeRightWeight", "strokeBottomWeight", "strokeLeftWeight"]
+  };
+  var BOUND_ELSEWHERE = {
+    fill: 'fill: { variable: "\u2026" } paints and binds in one go',
+    fills: 'fill: { variable: "\u2026" } paints and binds in one go',
+    stroke: 'stroke: { variable: "\u2026" } paints and binds in one go',
+    strokes: 'stroke: { variable: "\u2026" } paints and binds in one go',
+    effects: "an effect variable has to be bound on the effect itself, which this vocabulary does not reach yet"
+  };
+  function planBindings(raw, where, problems) {
+    var _a;
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      problems.push(`${where} must be an object of { field: "variable name" } \u2014 null unbinds`);
+      return null;
+    }
+    const bindings = [];
+    for (const [asked, value] of Object.entries(raw)) {
+      if (BOUND_ELSEWHERE[asked]) {
+        problems.push(`${where}.${asked}: ${BOUND_ELSEWHERE[asked]}`);
+        continue;
+      }
+      const fields = (_a = BIND_ALIASES[asked]) != null ? _a : BINDABLE[asked] ? [asked] : null;
+      if (!fields) {
+        problems.push(
+          `${where}: "${asked}" is not a bindable field \u2014 accepted: ${[...Object.keys(BIND_ALIASES), ...Object.keys(BINDABLE)].join(", ")}`
+        );
+        continue;
+      }
+      if (value !== null && (typeof value !== "string" || value.trim() === "")) {
+        problems.push(`${where}.${asked} must be a variable name, id or key \u2014 or null to unbind`);
+        continue;
+      }
+      for (const field of fields) bindings.push({ field, variable: value === null ? null : value.trim(), wants: BINDABLE[field] });
+    }
+    if (bindings.length === 0 && problems.length === 0) {
+      problems.push(`${where} names nothing to bind`);
+      return null;
+    }
+    return { step: "bind", bindings };
+  }
+  function gradientHandles(ref) {
+    var _a;
+    if (ref.from && ref.to) return { from: ref.from, to: ref.to };
+    const centred = ref.gradient !== void 0 && normaliseEnum(ref.gradient) !== "LINEAR";
+    const radians = ((_a = ref.angle) != null ? _a : centred ? 0 : DEFAULT_GRADIENT_ANGLE) * Math.PI / 180;
+    const dx = Math.cos(radians) / 2;
+    const dy = Math.sin(radians) / 2;
+    if (centred) return { from: [0.5, 0.5], to: [0.5 + dx, 0.5 + dy] };
+    return { from: [0.5 - dx, 0.5 - dy], to: [0.5 + dx, 0.5 + dy] };
+  }
+  function gradientTransform(from, to, kind = "LINEAR") {
+    const centred = normaliseEnum(kind) !== "LINEAR";
+    const dx = to[0] - from[0];
+    const dy = to[1] - from[1];
+    const squared = dx * dx + dy * dy || 1e-6;
+    const reach = centred ? 0.5 : 1;
+    const origin = centred ? 0.5 : 0;
+    const a = reach * dx / squared;
+    const b = reach * dy / squared;
+    const zeroed = (value) => value + 0;
+    return [
+      [zeroed(a), zeroed(b), zeroed(origin - (a * from[0] + b * from[1]))],
+      [zeroed(-b), zeroed(a), zeroed(origin - (-b * from[0] + a * from[1]))]
+    ];
+  }
+  function paintProblem(ref) {
+    if (Array.isArray(ref)) {
+      for (const [index, one] of ref.entries()) {
+        const problem = paintProblem(one);
+        if (problem) return `[${index}] ${problem}`;
+      }
+      return null;
+    }
+    if (ref === null) return null;
+    if (typeof ref === "string") return HEX.test(ref) ? null : `"${ref}" is not a #RRGGBB colour`;
+    if (typeof ref !== "object") return 'must be "#RRGGBB", { color }, { variable }, { image }, a list of those, or null';
+    const entry = ref;
+    if (entry.gradient !== void 0) return gradientProblem(ref);
+    if (entry.image !== void 0) return imageProblem(entry);
+    if (typeof entry.variable === "string") return entry.variable === "" ? "variable must be a name, id or library key" : null;
+    if (typeof entry.color === "string") {
+      if (!HEX.test(entry.color)) return `"${entry.color}" is not a #RRGGBB colour`;
+      if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
+        return "opacity must be between 0 and 1";
+      }
+      return null;
+    }
+    return "must carry either `color`, `variable` or `image`";
+  }
+  function gradientProblem(entry) {
+    const kind = typeof entry.gradient === "string" ? normaliseEnum(entry.gradient) : "";
+    if (!GRADIENTS2.includes(kind)) return `gradient must be one of: ${GRADIENTS2.join(", ")}`;
+    for (const key of Object.keys(entry)) {
+      if (!["gradient", "stops", "angle", "from", "to", "opacity"].includes(key)) {
+        return `unknown key "${key}" \u2014 accepted: gradient, stops, angle, from, to, opacity`;
+      }
+    }
+    if (!Array.isArray(entry.stops) || entry.stops.length < 2) {
+      return "stops must be an array of at least two colours";
+    }
+    for (const [index, stop] of entry.stops.entries()) {
+      if (typeof stop === "string") {
+        if (!HEX.test(stop)) return `stops[${index}]: "${stop}" is not a #RRGGBB colour`;
+        continue;
+      }
+      if (typeof stop !== "object" || stop === null || Array.isArray(stop)) {
+        return `stops[${index}] must be "#RRGGBB" or { at, color }`;
+      }
+      const one = stop;
+      if (typeof one.at !== "number" || one.at < 0 || one.at > 1) return `stops[${index}].at must be between 0 and 1`;
+      if (typeof one.color === "object" && one.color !== null) {
+        const bound = one.color;
+        if (typeof bound.variable !== "string" || bound.variable === "") {
+          return `stops[${index}].color must be "#RRGGBB" or { variable }`;
+        }
+      } else if (typeof one.color !== "string" || !HEX.test(one.color)) {
+        return `stops[${index}].color must be "#RRGGBB" or { variable }`;
+      }
+      if (one.opacity !== void 0 && (typeof one.opacity !== "number" || one.opacity < 0 || one.opacity > 1)) {
+        return `stops[${index}].opacity must be between 0 and 1`;
+      }
+    }
+    if (entry.angle !== void 0 && (typeof entry.angle !== "number" || !Number.isFinite(entry.angle))) {
+      return "angle must be a number of degrees";
+    }
+    for (const end of ["from", "to"]) {
+      const point = entry[end];
+      if (point === void 0) continue;
+      if (!Array.isArray(point) || point.length !== 2 || point.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
+        return `${end} must be [x, y] in the layer's own 0..1 coordinates`;
+      }
+    }
+    if (entry.from === void 0 !== (entry.to === void 0)) return "from and to travel together";
+    if (entry.angle !== void 0 && entry.from !== void 0) return "name either an angle or from/to, not both";
+    if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
+      return "opacity must be between 0 and 1";
+    }
+    return null;
+  }
+  function imageProblem(entry) {
+    const image = entry.image;
+    if (typeof image !== "object" || image === null || Array.isArray(image)) {
+      return "image must be { hash }, { url } or { bytes } \u2014 bytes being base64";
+    }
+    const source = image;
+    const named = ["hash", "url", "bytes"].filter((key) => source[key] !== void 0);
+    if (named.length === 0) return "image must name one of hash, url or bytes";
+    if (named.length > 1) return `image names ${named.join(" and ")} \u2014 pick one`;
+    if (typeof source[named[0]] !== "string" || source[named[0]] === "") {
+      return `image.${named[0]} must be a non-empty string`;
+    }
+    if (entry.scaleMode !== void 0 && (typeof entry.scaleMode !== "string" || !SCALE_MODES.includes(entry.scaleMode))) {
+      return `scaleMode must be one of: ${SCALE_MODES.join(", ")}`;
+    }
+    if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
+      return "opacity must be between 0 and 1";
+    }
+    return null;
+  }
+
   // src/agent/values.ts
   var clamp013 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
   function parseColor(input) {
@@ -18114,6 +19798,16 @@ ${renderSections(sections)}
       const color = value;
       return describeColor({ r: color.r, g: color.g, b: color.b, a: "a" in color ? color.a : 1 });
     }
+    if (typeof value === "object" && value !== null && "type" in value) {
+      const easing = value;
+      if (easing.type === "CUSTOM_CUBIC_BEZIER" && easing.easingFunctionCubicBezier) {
+        const { x1, y1, x2, y2 } = easing.easingFunctionCubicBezier;
+        return `bezier(${x1}, ${y1}, ${x2}, ${y2})`;
+      }
+      const spring = easing.easingFunctionSpring;
+      if (spring && typeof spring.bounce === "number") return `${easing.type} (bounce ${Math.round(spring.bounce * 1e3) / 1e3})`;
+      return easing.type;
+    }
     return String(value);
   }
   async function coerceVariableValue(variable, raw) {
@@ -18149,6 +19843,35 @@ ${renderSections(sections)}
       case "STRING": {
         if (typeof raw !== "string") throw new Error(`"${variable.name}" needs a string \u2014 got ${JSON.stringify(raw)}`);
         return raw;
+      }
+      case "TIMING": {
+        const seconds2 = typeof raw === "string" ? Number(raw) : raw;
+        if (typeof seconds2 !== "number" || !Number.isFinite(seconds2) || seconds2 < 0) {
+          throw new Error(`"${variable.name}" needs a number of seconds \u2014 got ${JSON.stringify(raw)}`);
+        }
+        return seconds2;
+      }
+      case "EASING": {
+        const problems = [];
+        const easing = buildEasing(
+          typeof raw === "string" ? { easing: raw } : raw,
+          (message) => problems.push(message)
+        );
+        if (!easing) throw new Error(`"${variable.name}" needs a curve \u2014 ${problems.join(" \xB7 ")}`);
+        if (easing.type === "CUSTOM_SPRING" && easing.easingFunctionSpring) {
+          const physical = easing.easingFunctionSpring;
+          return {
+            type: "CUSTOM_SPRING",
+            easingFunctionSpring: {
+              bounce: figma.motion.physicalSpringToNormalized({
+                mass: physical.mass,
+                stiffness: physical.stiffness,
+                damping: physical.damping
+              })
+            }
+          };
+        }
+        return easing;
       }
     }
   }
@@ -19255,7 +20978,7 @@ ${scripts}`, "");
     }
     return value;
   }
-  var RESOLVED_TYPES = ["COLOR", "FLOAT", "BOOLEAN", "STRING"];
+  var RESOLVED_TYPES = ["COLOR", "FLOAT", "BOOLEAN", "STRING", "EASING", "TIMING"];
   var SCALAR_FIELDS = {
     width: "FLOAT",
     height: "FLOAT",
@@ -23476,1672 +25199,6 @@ ${scripts}`, "");
     });
   }
 
-  // src/canvas/props.ts
-  var BLEND_FREE_ENUMS = {
-    textAlign: ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"],
-    autoResize: ["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"]
-  };
-  var LAYOUT_MODES = ["NONE", "HORIZONTAL", "VERTICAL", "GRID"];
-  var PRIMARY_AXIS = ["MIN", "CENTER", "MAX", "SPACE_BETWEEN"];
-  var COUNTER_AXIS = ["MIN", "CENTER", "MAX", "BASELINE"];
-  var SIZING = ["FIXED", "HUG", "FILL"];
-  var CONSTRAINTS = ["MIN", "CENTER", "MAX", "STRETCH", "SCALE"];
-  var STROKE_ALIGN = ["INSIDE", "OUTSIDE", "CENTER"];
-  var STROKE_CAP = ["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL"];
-  var STROKE_JOIN = ["MITER", "BEVEL", "ROUND"];
-  var SCALE_MODES = ["FILL", "FIT", "CROP", "TILE"];
-  var GRADIENTS2 = ["LINEAR", "RADIAL", "ANGULAR", "DIAMOND"];
-  var DEFAULT_GRADIENT_ANGLE = 90;
-  var BLEND_MODES = [
-    "PASS_THROUGH",
-    "NORMAL",
-    "DARKEN",
-    "MULTIPLY",
-    "LINEAR_BURN",
-    "COLOR_BURN",
-    "LIGHTEN",
-    "SCREEN",
-    "LINEAR_DODGE",
-    "COLOR_DODGE",
-    "OVERLAY",
-    "SOFT_LIGHT",
-    "HARD_LIGHT",
-    "DIFFERENCE",
-    "EXCLUSION",
-    "HUE",
-    "SATURATION",
-    "COLOR",
-    "LUMINOSITY"
-  ];
-  var ORDER = [
-    "name",
-    // What the instance *is*, before anything about how it looks: a swap brings the new
-    // component's own size and paints with it, and a variant is a different node underneath.
-    "reset",
-    "swap",
-    "properties",
-    "visible",
-    "locked",
-    "clipsContent",
-    "layout",
-    "constraints",
-    "width",
-    "height",
-    "x",
-    "y",
-    "rotation",
-    "opacity",
-    "cornerRadius",
-    // Before the paints: the shape decides what there is to fill.
-    "path",
-    "paths",
-    "network",
-    // Before the paints and the type: following a style sets the whole bundle, and a colour named
-    // in the same breath is meant to override it, not to be overwritten by it.
-    "fillStyle",
-    "strokeStyle",
-    "textStyle",
-    "effectStyle",
-    "gridStyle",
-    "fill",
-    "stroke",
-    "strokeWeight",
-    "strokeAlign",
-    "strokeCap",
-    "strokeJoin",
-    "strokeDashes",
-    "effects",
-    "grid",
-    "animation",
-    "blendMode",
-    "fontName",
-    "fontSize",
-    "lineHeight",
-    "letterSpacing",
-    "textAlign",
-    "autoResize",
-    "text",
-    "runs",
-    "bind",
-    "scroll",
-    "fixedChildren",
-    "links",
-    "data",
-    "parent",
-    "index"
-  ];
-  var KNOWN = new Set(ORDER);
-  function dependsOnChildren(step) {
-    return step.step === "assign" && step.property === "numberOfFixedChildren";
-  }
-  function planProps(raw, where = "props") {
-    var _a, _b, _c;
-    const problems = [];
-    const steps = [];
-    if (raw === void 0 || raw === null) return { steps, problems };
-    if (typeof raw !== "object" || Array.isArray(raw)) {
-      return { steps, problems: [`${where} must be an object of properties`] };
-    }
-    const props = raw;
-    for (const key of Object.keys(props)) {
-      if (!KNOWN.has(key)) {
-        problems.push(`${where}: unknown property "${key}" \u2014 accepted: ${[...KNOWN].join(", ")}`);
-      }
-    }
-    const fail2 = (message) => problems.push(`${where}.${message}`);
-    const number2 = (key, min, max) => {
-      const value = props[key];
-      if (typeof value !== "number" || !Number.isFinite(value)) {
-        fail2(`${key} must be a number`);
-        return null;
-      }
-      if (min !== void 0 && value < min) {
-        fail2(`${key} must be >= ${min}`);
-        return null;
-      }
-      if (max !== void 0 && value > max) {
-        fail2(`${key} must be <= ${max}`);
-        return null;
-      }
-      return value;
-    };
-    for (const key of ORDER) {
-      if (!(key in props)) continue;
-      switch (key) {
-        case "name": {
-          if (typeof props.name !== "string" || props.name.trim() === "") fail2("name must be a non-empty string");
-          else steps.push({ step: "assign", property: "name", value: props.name });
-          break;
-        }
-        case "visible":
-        case "locked":
-        case "clipsContent": {
-          if (typeof props[key] !== "boolean") fail2(`${key} must be a boolean`);
-          else steps.push({ step: "assign", property: key, value: props[key] });
-          break;
-        }
-        case "opacity": {
-          const value = number2("opacity", 0, 1);
-          if (value !== null) steps.push({ step: "assign", property: "opacity", value });
-          break;
-        }
-        case "rotation": {
-          const value = number2("rotation", -180, 180);
-          if (value !== null) steps.push({ step: "assign", property: "rotation", value });
-          break;
-        }
-        case "x":
-        case "y": {
-          const value = number2(key);
-          if (value !== null) steps.push({ step: "assign", property: key, value });
-          break;
-        }
-        case "width":
-        case "height": {
-          if (steps.some((step) => step.step === "resize")) break;
-          const width = "width" in props ? number2("width", 0.01) : void 0;
-          const height = "height" in props ? number2("height", 0.01) : void 0;
-          const wanted = __spreadValues(__spreadValues({}, typeof width === "number" ? { width } : {}), typeof height === "number" ? { height } : {});
-          if (Object.keys(wanted).length > 0) steps.push(__spreadValues({ step: "resize" }, wanted));
-          break;
-        }
-        case "strokeWeight": {
-          const value = number2("strokeWeight", 0);
-          if (value !== null) steps.push({ step: "assign", property: "strokeWeight", value });
-          break;
-        }
-        case "fontSize": {
-          const value = number2("fontSize", 1);
-          if (value !== null) steps.push({ step: "assign", property: "fontSize", value });
-          break;
-        }
-        case "letterSpacing": {
-          const value = number2("letterSpacing");
-          if (value !== null) steps.push({ step: "assign", property: "letterSpacing", value });
-          break;
-        }
-        case "lineHeight": {
-          const value = props.lineHeight;
-          if (value === "AUTO" || typeof value === "number" && Number.isFinite(value) && value > 0) {
-            steps.push({ step: "lineHeight", value });
-          } else fail2('lineHeight must be a positive number or "AUTO"');
-          break;
-        }
-        case "textAlign":
-        case "autoResize": {
-          const allowed = BLEND_FREE_ENUMS[key];
-          const value = props[key];
-          if (typeof value !== "string" || !allowed.includes(value)) fail2(`${key} must be one of: ${allowed.join(", ")}`);
-          else steps.push({ step: "assign", property: key === "textAlign" ? "textAlignHorizontal" : "textAutoResize", value });
-          break;
-        }
-        case "text": {
-          if (typeof props.text !== "string") fail2("text must be a string");
-          else steps.push({ step: "text", characters: props.text });
-          break;
-        }
-        case "fontName": {
-          const font = props.fontName;
-          if (typeof font !== "object" || font === null || typeof font.family !== "string" || typeof font.style !== "string") {
-            fail2("fontName must be { family, style }");
-          } else {
-            const named = font;
-            steps.push({ step: "font", family: named.family, style: named.style });
-          }
-          break;
-        }
-        case "cornerRadius": {
-          const value = props.cornerRadius;
-          if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-            steps.push({ step: "radius", corners: { topLeft: value, topRight: value, bottomRight: value, bottomLeft: value } });
-          } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-            const corners = {};
-            for (const [corner, amount] of Object.entries(value)) {
-              if (!["topLeft", "topRight", "bottomRight", "bottomLeft"].includes(corner)) {
-                fail2(`cornerRadius: unknown corner "${corner}"`);
-                continue;
-              }
-              if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
-                fail2(`cornerRadius.${corner} must be a number >= 0`);
-                continue;
-              }
-              corners[corner] = amount;
-            }
-            if (Object.keys(corners).length > 0) steps.push({ step: "radius", corners });
-          } else fail2("cornerRadius must be a number or { topLeft, topRight, bottomRight, bottomLeft }");
-          break;
-        }
-        case "constraints": {
-          const value = props.constraints;
-          if (typeof value !== "object" || value === null || Array.isArray(value)) {
-            fail2("constraints must be { horizontal, vertical }");
-            break;
-          }
-          const entry = value;
-          const step = { step: "constraints" };
-          for (const axis of ["horizontal", "vertical"]) {
-            const kind = entry[axis];
-            if (kind === void 0) continue;
-            if (typeof kind !== "string" || !CONSTRAINTS.includes(kind)) {
-              fail2(`constraints.${axis} must be one of: ${CONSTRAINTS.join(", ")}`);
-              continue;
-            }
-            step[axis] = kind;
-          }
-          if (step.horizontal || step.vertical) steps.push(step);
-          break;
-        }
-        case "layout": {
-          const layout = planLayout(props.layout, `${where}.layout`, problems);
-          if (layout) steps.push(layout);
-          break;
-        }
-        case "fill":
-        case "stroke": {
-          const ref = props[key];
-          if (paintProblem(ref)) fail2(`${key}: ${paintProblem(ref)}`);
-          else steps.push({ step: "paint", property: key === "fill" ? "fills" : "strokes", ref });
-          break;
-        }
-        case "runs": {
-          const runs = planRuns(props.runs, `${where}.runs`, problems);
-          if (runs) steps.push(runs);
-          break;
-        }
-        case "path":
-        case "paths": {
-          if (steps.some((step) => step.step === "paths")) break;
-          const wanted = "path" in props ? [{ data: props.path }] : props.paths;
-          if (!Array.isArray(wanted) || wanted.length === 0) {
-            fail2("paths must be a non-empty array of { data } \u2014 or use path for a single one");
-            break;
-          }
-          const paths = [];
-          for (const [index, entry] of wanted.entries()) {
-            const one = entry;
-            if (typeof (one == null ? void 0 : one.data) !== "string" || one.data.trim() === "") {
-              fail2(`paths[${index}].data must be SVG path data, e.g. "M 0 0 L 10 0 L 10 10 Z"`);
-              continue;
-            }
-            const rule = one.windingRule === void 0 ? "NONZERO" : one.windingRule;
-            if (rule !== "NONZERO" && rule !== "EVENODD") {
-              fail2(`paths[${index}].windingRule must be NONZERO or EVENODD`);
-              continue;
-            }
-            paths.push({ data: one.data.trim(), windingRule: rule });
-          }
-          if (paths.length > 0) steps.push({ step: "paths", paths });
-          break;
-        }
-        case "network": {
-          const network = planNetwork(props.network, `${where}.network`, problems);
-          if (network) steps.push(network);
-          break;
-        }
-        case "fillStyle":
-        case "strokeStyle":
-        case "textStyle":
-        case "effectStyle":
-        case "gridStyle": {
-          const value = props[key];
-          if (value !== null && (typeof value !== "string" || value.trim() === "")) {
-            fail2(`${key} must be a style name, id or key \u2014 or null to detach`);
-            break;
-          }
-          steps.push({
-            step: "style",
-            kind: STYLE_SLOTS[key],
-            slot: key,
-            ref: value === null ? null : value.trim()
-          });
-          break;
-        }
-        case "bind": {
-          const bind = planBindings(props.bind, `${where}.bind`, problems);
-          if (bind) steps.push(bind);
-          break;
-        }
-        case "scroll": {
-          const value = typeof props.scroll === "string" ? normaliseEnum(props.scroll) : "";
-          if (!OVERFLOW2.includes(value)) fail2(`scroll must be one of: ${OVERFLOW2.join(", ")}`);
-          else steps.push({ step: "assign", property: "overflowDirection", value });
-          break;
-        }
-        case "fixedChildren": {
-          const value = number2("fixedChildren", 0);
-          if (value !== null) steps.push({ step: "assign", property: "numberOfFixedChildren", value });
-          break;
-        }
-        case "links": {
-          const links = planLinks(props.links, `${where}.links`, problems);
-          if (links) steps.push(links);
-          break;
-        }
-        case "data": {
-          const value = props.data;
-          if (typeof value !== "object" || value === null || Array.isArray(value)) {
-            fail2('data must be an object of { key: "value" }');
-            break;
-          }
-          const data = {};
-          for (const [name, note] of Object.entries(value)) {
-            if (typeof note === "string" || note === null) data[name] = note;
-            else fail2(`data.${name} must be a string, or null to clear it`);
-          }
-          if (Object.keys(data).length > 0) steps.push({ step: "data", data });
-          break;
-        }
-        case "reset": {
-          if (typeof props.reset !== "boolean") fail2("reset must be true or false");
-          else if (props.reset) steps.push({ step: "reset" });
-          break;
-        }
-        case "swap": {
-          if (typeof props.swap !== "string" || props.swap.trim() === "") {
-            fail2("swap must be a component id or a published key");
-          } else steps.push({ step: "swap", component: props.swap.trim() });
-          break;
-        }
-        case "properties": {
-          const value = props.properties;
-          if (typeof value !== "object" || value === null || Array.isArray(value)) {
-            fail2("properties must be an object of { propertyName: value }");
-            break;
-          }
-          const wanted = {};
-          for (const [name, setting] of Object.entries(value)) {
-            if (typeof setting === "string" || typeof setting === "boolean") wanted[name] = setting;
-            else fail2(`properties.${name} must be a string or a boolean`);
-          }
-          if (Object.keys(wanted).length > 0) steps.push({ step: "properties", properties: wanted });
-          else if (Object.keys(value).length === 0) fail2("properties must name at least one property");
-          break;
-        }
-        case "strokeAlign":
-        case "strokeCap":
-        case "strokeJoin":
-        case "blendMode": {
-          const allowed = key === "strokeAlign" ? STROKE_ALIGN : key === "strokeCap" ? STROKE_CAP : key === "strokeJoin" ? STROKE_JOIN : BLEND_MODES;
-          const value = props[key];
-          if (typeof value !== "string" || !allowed.includes(value)) fail2(`${key} must be one of: ${allowed.join(", ")}`);
-          else steps.push({ step: "assign", property: key, value });
-          break;
-        }
-        case "strokeDashes": {
-          const value = props.strokeDashes;
-          if (!Array.isArray(value) || value.some((one) => typeof one !== "number" || !Number.isFinite(one) || one < 0)) {
-            fail2("strokeDashes must be an array of numbers >= 0 \u2014 [] is a solid line");
-          } else steps.push({ step: "dashes", dashes: value });
-          break;
-        }
-        case "effects": {
-          const effects = planEffects(props.effects, `${where}.effects`, problems);
-          if (effects) steps.push(effects);
-          break;
-        }
-        case "grid": {
-          const grid = planGrids(props.grid, `${where}.grid`, problems);
-          if (grid) steps.push(grid);
-          break;
-        }
-        case "animation": {
-          const animation = planAnimation(props.animation, `${where}.animation`, problems);
-          if (animation) steps.push(animation);
-          break;
-        }
-        case "parent": {
-          if (typeof props.parent !== "string" || props.parent === "") fail2('parent must be a node id or "page"');
-          else {
-            const index = "index" in props ? number2("index", 0) : null;
-            steps.push(__spreadValues({ step: "reparent", parent: props.parent }, index !== null ? { index } : {}));
-          }
-          break;
-        }
-        case "index": {
-          if (!("parent" in props)) {
-            const index = number2("index", 0);
-            if (index !== null) steps.push({ step: "reparent", parent: "", index });
-          }
-          break;
-        }
-      }
-    }
-    const laid = steps.find((step) => step.step === "layout");
-    if (laid) {
-      const sizing = (_a = laid.layout.sizing) != null ? _a : {};
-      const horizontal = (_b = sizing.horizontal) != null ? _b : laid.layout.mode && laid.layout.mode !== "NONE" && !("width" in props) ? "HUG" : void 0;
-      const vertical = (_c = sizing.vertical) != null ? _c : laid.layout.mode && laid.layout.mode !== "NONE" && !("height" in props) ? "HUG" : void 0;
-      if (horizontal || vertical) {
-        steps.push(__spreadValues(__spreadValues({ step: "sizing" }, horizontal ? { horizontal } : {}), vertical ? { vertical } : {}));
-      }
-      delete laid.layout.sizing;
-    }
-    return { steps, problems };
-  }
-  var TRIGGERS = {
-    click: "ON_CLICK",
-    hover: "ON_HOVER",
-    press: "ON_PRESS",
-    drag: "ON_DRAG",
-    timeout: "AFTER_TIMEOUT",
-    keyDown: "ON_KEY_DOWN",
-    mouseEnter: "MOUSE_ENTER",
-    mouseLeave: "MOUSE_LEAVE",
-    mouseUp: "MOUSE_UP",
-    mouseDown: "MOUSE_DOWN"
-  };
-  var DELAYED = ["MOUSE_ENTER", "MOUSE_LEAVE", "MOUSE_UP", "MOUSE_DOWN"];
-  var EASINGS = [
-    "EASE_IN",
-    "EASE_OUT",
-    "EASE_IN_AND_OUT",
-    "LINEAR",
-    "EASE_IN_BACK",
-    "EASE_OUT_BACK",
-    "EASE_IN_AND_OUT_BACK",
-    "GENTLE",
-    "QUICK",
-    "BOUNCY",
-    "SLOW"
-  ];
-  var DEFAULT_EASING = "EASE_OUT";
-  function normaliseEnum(value) {
-    return value.trim().toUpperCase().replace(/[\s-]+/g, "_");
-  }
-  var NAVIGATIONS = ["NAVIGATE", "SWAP", "OVERLAY", "SCROLL_TO", "CHANGE_TO"];
-  var OVERFLOW2 = ["NONE", "HORIZONTAL", "VERTICAL", "BOTH"];
-  var STYLE_SLOTS = {
-    fillStyle: "paint",
-    strokeStyle: "paint",
-    textStyle: "text",
-    effectStyle: "effect",
-    gridStyle: "grid"
-  };
-  var SIMPLE_ANIMATIONS = ["INSTANT", "DISSOLVE", "SMART_ANIMATE", "SCROLL_ANIMATE"];
-  var DIRECTIONAL_ANIMATIONS = ["MOVE_IN", "MOVE_OUT", "PUSH", "SLIDE_IN", "SLIDE_OUT"];
-  var DIRECTIONS = ["LEFT", "RIGHT", "TOP", "BOTTOM"];
-  var LINK_KEYS = [
-    "if",
-    "then",
-    "else",
-    "set",
-    "mode",
-    "url",
-    "newTab",
-    "on",
-    "after",
-    "delay",
-    "keys",
-    "to",
-    "as",
-    "animation",
-    "duration",
-    "easing",
-    "bezier",
-    "spring",
-    "matchLayers",
-    "resetScroll",
-    "resetVideo",
-    "resetInteractive"
-  ];
-  var COMPARISONS = {
-    "==": "EQUALS",
-    "=": "EQUALS",
-    "is": "EQUALS",
-    "!=": "NOT_EQUAL",
-    "<": "LESS_THAN",
-    "<=": "LESS_THAN_OR_EQUAL",
-    ">": "GREATER_THAN",
-    ">=": "GREATER_THAN_OR_EQUAL",
-    "and": "AND",
-    "or": "OR"
-  };
-  var DEFAULT_DURATION = 0.3;
-  var DEFAULT_TIMEOUT = 1;
-  function planLinks(raw, where, problems) {
-    if (!Array.isArray(raw)) {
-      problems.push(`${where} must be an array of { on, to } links \u2014 [] removes every link`);
-      return null;
-    }
-    const links = [];
-    const destinations = [];
-    for (const [index, entry] of raw.entries()) {
-      const at = `${where}[${index}]`;
-      const fail2 = (message) => problems.push(`${at}: ${message}`);
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-        fail2("must be { on, to, \u2026 }");
-        continue;
-      }
-      const link = entry;
-      for (const key of Object.keys(link)) {
-        if (!LINK_KEYS.includes(key)) fail2(`unknown key "${key}" \u2014 accepted: ${LINK_KEYS.join(", ")}`);
-      }
-      const trigger = planTrigger(link, fail2);
-      if (!trigger) continue;
-      const actions = planActions(link, fail2, destinations);
-      if (!actions) continue;
-      links.push({ trigger, actions });
-    }
-    return { step: "links", links, destinations };
-  }
-  function planActions(link, fail2, destinations) {
-    var _a;
-    const actions = [];
-    if (link.if !== void 0) {
-      if (link.then === void 0) {
-        fail2("an `if` needs a `then` \u2014 what should happen when it holds");
-        return null;
-      }
-      const condition = planCondition(link.if, fail2, "if");
-      if (!condition) return null;
-      const yes = planActions(link.then, fail2, destinations);
-      if (!yes) return null;
-      const blocks = [{ condition, actions: yes }];
-      if (link.else !== void 0) {
-        if (((_a = link.else) == null ? void 0 : _a.if) !== void 0) {
-          fail2(
-            "an `else` cannot ask another question \u2014 Figma stores one condition and one else. Write the branches as separate links on the same trigger, with conditions that cannot both hold"
-          );
-          return null;
-        }
-        const otherwise = planActions(link.else, fail2, destinations);
-        if (!otherwise) return null;
-        blocks.push({ actions: otherwise });
-      }
-      actions.push({ kind: "conditional", blocks });
-    }
-    if (link.set !== void 0) {
-      const set = link.set;
-      if (typeof (set == null ? void 0 : set.variable) !== "string" || set.variable.trim() === "") {
-        fail2("set.variable must name a variable");
-        return null;
-      }
-      const value = set.value;
-      const alias = value;
-      const usable = typeof value === "string" || typeof value === "number" || typeof value === "boolean" || typeof value === "object" && value !== null && typeof (alias == null ? void 0 : alias.variable) === "string";
-      if (!usable) {
-        fail2("set.value must be a string, a number, a boolean, or { variable } to copy another one");
-        return null;
-      }
-      actions.push({
-        kind: "setVariable",
-        variable: set.variable.trim(),
-        value
-      });
-    }
-    if (link.mode !== void 0) {
-      const mode = link.mode;
-      if (typeof (mode == null ? void 0 : mode.collection) !== "string" || typeof (mode == null ? void 0 : mode.mode) !== "string") {
-        fail2('mode must be { collection: "Semantic", mode: "Dark" }');
-        return null;
-      }
-      actions.push({ kind: "setMode", collection: mode.collection.trim(), mode: mode.mode.trim() });
-    }
-    if (link.url !== void 0) {
-      if (typeof link.url !== "string" || link.url.trim() === "") {
-        fail2("url must be a link to open");
-        return null;
-      }
-      actions.push({ kind: "url", url: link.url.trim(), newTab: link.newTab !== false });
-    }
-    if (link.to !== void 0) {
-      const navigation = planNavigation(link, fail2, destinations);
-      if (!navigation) return null;
-      actions.push(navigation);
-    }
-    if (actions.length === 0) {
-      fail2("a link must do something \u2014 name a `to`, a `set`, a `mode`, a `url` or an `if`");
-      return null;
-    }
-    return actions;
-  }
-  function planCondition(raw, fail2, where) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      fail2(`${where} must be { left, is, right }`);
-      return null;
-    }
-    const spec = raw;
-    const fn = typeof spec.is === "string" ? COMPARISONS[spec.is.trim().toLowerCase()] : void 0;
-    if (!fn) {
-      fail2(`${where}.is must be one of: ${Object.keys(COMPARISONS).join(", ")}`);
-      return null;
-    }
-    const left = planOperand(spec.left, fail2, `${where}.left`);
-    const right = planOperand(spec.right, fail2, `${where}.right`);
-    if (!left || !right) return null;
-    return { fn, args: [left, right] };
-  }
-  function planOperand(raw, fail2, where) {
-    if (typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean") {
-      return { kind: "literal", value: raw };
-    }
-    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
-      const named = raw;
-      if (typeof named.variable === "string" && named.variable.trim() !== "") {
-        return { kind: "variable", name: named.variable.trim() };
-      }
-      if (named.is !== void 0) {
-        const nested = planCondition(raw, fail2, where);
-        return nested ? { kind: "condition", condition: nested } : null;
-      }
-    }
-    fail2(`${where} must be a value, { variable }, or another { left, is, right }`);
-    return null;
-  }
-  function planTrigger(link, fail2) {
-    var _a;
-    const asked = link.on === void 0 ? "click" : link.on;
-    const on = typeof asked === "string" ? (_a = Object.keys(TRIGGERS).find((word) => word.toLowerCase() === asked.toLowerCase())) != null ? _a : "" : "";
-    if (on === "") {
-      fail2(`on must be one of: ${Object.keys(TRIGGERS).join(", ")}`);
-      return null;
-    }
-    const type = TRIGGERS[on];
-    if (link.after !== void 0 && type !== "AFTER_TIMEOUT") {
-      fail2(`after only applies to a timeout trigger, not to ${on}`);
-      return null;
-    }
-    if (link.delay !== void 0 && !DELAYED.includes(type)) {
-      fail2(`delay only applies to mouseEnter, mouseLeave, mouseUp and mouseDown, not to ${on}`);
-      return null;
-    }
-    if (link.keys !== void 0 && type !== "ON_KEY_DOWN") {
-      fail2(`keys only applies to keyDown, not to ${on}`);
-      return null;
-    }
-    const after = link.after === void 0 ? DEFAULT_TIMEOUT : link.after;
-    if (type === "AFTER_TIMEOUT" && (typeof after !== "number" || !Number.isFinite(after) || after <= 0)) {
-      fail2("after must be a number of seconds greater than 0");
-      return null;
-    }
-    const delay = link.delay === void 0 ? 0 : link.delay;
-    if (DELAYED.includes(type) && (typeof delay !== "number" || !Number.isFinite(delay) || delay < 0)) {
-      fail2("delay must be a number of seconds >= 0");
-      return null;
-    }
-    if (type === "ON_KEY_DOWN") {
-      const keys = link.keys;
-      if (!Array.isArray(keys) || keys.length === 0 || keys.some((key) => typeof key !== "number" || !Number.isInteger(key))) {
-        fail2("keyDown needs keys: an array of key codes, e.g. [13] for Enter");
-        return null;
-      }
-    }
-    if (type === "AFTER_TIMEOUT") return { type, timeout: after * 1e3 };
-    if (type === "ON_KEY_DOWN") return { type, device: "KEYBOARD", keyCodes: link.keys };
-    if (DELAYED.includes(type)) {
-      return { type, delay: delay * 1e3 };
-    }
-    return { type };
-  }
-  function planNavigation(link, fail2, destinations) {
-    if (typeof link.to !== "string" || link.to.trim() === "") {
-      fail2('to must be a node id, "back" or "close"');
-      return null;
-    }
-    const to = link.to.trim();
-    const target = to.toLowerCase();
-    if (target === "back") return { kind: "back" };
-    if (target === "close") return { kind: "close" };
-    const navigation = link.as === void 0 ? "NAVIGATE" : link.as;
-    if (typeof navigation !== "string" || !NAVIGATIONS.includes(normaliseEnum(navigation))) {
-      fail2(`as must be one of: ${NAVIGATIONS.join(", ")}`);
-      return null;
-    }
-    const duration = link.duration === void 0 ? DEFAULT_DURATION : link.duration;
-    if (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0 || duration > 10) {
-      fail2("duration must be a number of seconds between 0 and 10");
-      return null;
-    }
-    const easing = buildEasing(link, fail2);
-    if (easing === null) return null;
-    const animation = link.animation === void 0 ? "INSTANT" : link.animation;
-    if (typeof animation !== "string") {
-      fail2("animation must be a string");
-      return null;
-    }
-    if (link.matchLayers !== void 0 && typeof link.matchLayers !== "boolean") {
-      fail2("matchLayers must be true or false");
-      return null;
-    }
-    const transition = buildTransition(normaliseEnum(animation), duration, easing, link.matchLayers === true);
-    if (transition === void 0) {
-      fail2(
-        `animation must be one of: ${SIMPLE_ANIMATIONS.join(", ")}, or ${DIRECTIONAL_ANIMATIONS.join("/")} with _${DIRECTIONS.join("/_")}`
-      );
-      return null;
-    }
-    for (const flag2 of ["resetScroll", "resetVideo", "resetInteractive"]) {
-      if (link[flag2] !== void 0 && typeof link[flag2] !== "boolean") {
-        fail2(`${flag2} must be true or false`);
-        return null;
-      }
-    }
-    destinations.push(to);
-    return __spreadValues(__spreadValues(__spreadValues({
-      kind: "node",
-      destinationId: to,
-      navigation: normaliseEnum(navigation),
-      transition
-    }, typeof link.resetScroll === "boolean" ? { resetScroll: link.resetScroll } : {}), typeof link.resetVideo === "boolean" ? { resetVideo: link.resetVideo } : {}), typeof link.resetInteractive === "boolean" ? { resetInteractive: link.resetInteractive } : {});
-  }
-  async function describeBranches(blocks, nameOf, depth = 0) {
-    const parts = [];
-    for (const [index, block2] of blocks.entries()) {
-      const inside = [];
-      for (const action of block2.actions) inside.push(await describeAction(action, nameOf, depth + 1));
-      const label3 = block2.condition ? index === 0 && depth === 0 ? "if" : "else if" : "else";
-      parts.push(`${label3} {${inside.join(" \xB7 ") || "nothing"}}`);
-    }
-    return parts.join(" ");
-  }
-  function seconds(value) {
-    return `${Math.round(value * 1e3) / 1e3}s`;
-  }
-  async function describeLinks(reactions, nameOf) {
-    var _a, _b, _c;
-    const spelling = {};
-    for (const [word, type] of Object.entries(TRIGGERS)) spelling[type] = word;
-    const parts = [];
-    for (const reaction of reactions) {
-      const trigger = reaction.trigger;
-      let on = trigger ? (_a = spelling[trigger.type]) != null ? _a : trigger.type.toLowerCase() : "nothing";
-      if (trigger) {
-        if (trigger.type === "AFTER_TIMEOUT") on = `${on} ${seconds(trigger.timeout / 1e3)}`;
-        else if (trigger.type === "ON_KEY_DOWN") on = `${on} [${((_b = trigger.keyCodes) != null ? _b : []).join(",")}]`;
-        else if ("delay" in trigger && trigger.delay) on = `${on} ${seconds(trigger.delay / 1e3)}`;
-      }
-      const actions = (_c = reaction.actions) != null ? _c : reaction.action ? [reaction.action] : [];
-      for (const action of actions) parts.push(`${on} \u2192 ${await describeAction(action, nameOf)}`);
-    }
-    return parts.join(" \xB7 ");
-  }
-  async function describeAction(action, nameOf, depth = 0) {
-    var _a, _b, _c;
-    if (action.type === "BACK" || action.type === "CLOSE") return action.type.toLowerCase();
-    if (action.type === "URL") return `open ${action.url}`;
-    if (action.type === "SET_VARIABLE") {
-      const named2 = action.variableId && nameOf ? await nameOf(action.variableId) : null;
-      const value = (_a = action.variableValue) == null ? void 0 : _a.value;
-      const shown = value !== null && typeof value === "object" && "id" in value ? `var:${(_b = nameOf ? await nameOf(value.id) : null) != null ? _b : value.id}` : JSON.stringify(value);
-      return `set ${named2 != null ? named2 : action.variableId} = ${shown}`;
-    }
-    if (action.type === "SET_VARIABLE_MODE") {
-      const collection = action.variableCollectionId;
-      const named2 = collection && nameOf ? await nameOf(collection) : null;
-      const mode = action.variableModeId && nameOf ? await nameOf(action.variableModeId, collection != null ? collection : void 0) : null;
-      return `mode ${named2 != null ? named2 : collection} = ${mode != null ? mode : action.variableModeId}`;
-    }
-    if (action.type === "CONDITIONAL") return describeBranches(action.conditionalBlocks, nameOf, depth);
-    if (action.type !== "NODE") return action.type.toLowerCase();
-    const transition = action.transition;
-    const named = transition ? `${transition.type}${"direction" in transition ? `_${transition.direction}` : ""} ${seconds(transition.duration)}${transition.easing.type === DEFAULT_EASING ? "" : ` ${transition.easing.type}`}${"matchLayers" in transition && transition.matchLayers ? " +match" : ""}` : "INSTANT";
-    const navigation = action.navigation === "NAVIGATE" ? "" : ` (${action.navigation})`;
-    return `${(_c = action.destinationId) != null ? _c : "?"}${navigation}${named === "INSTANT" ? "" : ` ${named}`}`;
-  }
-  function buildEasing(link, fail2) {
-    var _a;
-    const named = link.easing === void 0 ? null : normaliseEnum(String(link.easing));
-    const custom = [link.bezier !== void 0 ? "bezier" : "", link.spring !== void 0 ? "spring" : ""].filter(Boolean);
-    if (custom.length > 1) {
-      fail2("name either a bezier or a spring, not both");
-      return null;
-    }
-    if (custom.length === 1 && named && named !== `CUSTOM_${custom[0].toUpperCase()}` && named !== "CUSTOM_CUBIC_BEZIER") {
-      fail2(`easing "${named}" and a ${custom[0]} say different things \u2014 pass one`);
-      return null;
-    }
-    if (link.bezier !== void 0) {
-      const curve = link.bezier;
-      if (!Array.isArray(curve) || curve.length !== 4 || curve.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
-        fail2("bezier must be [x1, y1, x2, y2]");
-        return null;
-      }
-      const [x1, y1, x2, y2] = curve;
-      return { type: "CUSTOM_CUBIC_BEZIER", easingFunctionCubicBezier: { x1, y1, x2, y2 } };
-    }
-    if (link.spring !== void 0) {
-      const spring = link.spring;
-      if (typeof spring !== "object" || spring === null || Array.isArray(spring)) {
-        fail2("spring must be { mass, stiffness, damping }");
-        return null;
-      }
-      const values = spring;
-      for (const field of ["mass", "stiffness", "damping"]) {
-        if (typeof values[field] !== "number" || !Number.isFinite(values[field]) || values[field] <= 0) {
-          fail2(`spring.${field} must be a number > 0`);
-          return null;
-        }
-      }
-      if (values.initialVelocity !== void 0 && typeof values.initialVelocity !== "number") {
-        fail2("spring.initialVelocity must be a number");
-        return null;
-      }
-      return {
-        type: "CUSTOM_SPRING",
-        easingFunctionSpring: {
-          mass: values.mass,
-          stiffness: values.stiffness,
-          damping: values.damping,
-          initialVelocity: (_a = values.initialVelocity) != null ? _a : 0
-        }
-      };
-    }
-    if (named === null) return { type: DEFAULT_EASING };
-    if (!EASINGS.includes(named)) {
-      fail2(`easing must be one of: ${EASINGS.join(", ")} \u2014 or pass bezier / spring`);
-      return null;
-    }
-    return { type: named };
-  }
-  function buildTransition(animation, duration, easing, matchLayers2) {
-    if (animation === "INSTANT") return null;
-    if (SIMPLE_ANIMATIONS.includes(animation)) {
-      return { type: animation, easing, duration };
-    }
-    const cut = animation.lastIndexOf("_");
-    const base = cut === -1 ? "" : animation.slice(0, cut);
-    const direction = cut === -1 ? "" : animation.slice(cut + 1);
-    if (!DIRECTIONAL_ANIMATIONS.includes(base) || !DIRECTIONS.includes(direction)) return void 0;
-    return {
-      type: base,
-      direction,
-      matchLayers: matchLayers2,
-      easing,
-      duration
-    };
-  }
-  var DECORATIONS = ["NONE", "UNDERLINE", "STRIKETHROUGH"];
-  var TEXT_CASES = ["ORIGINAL", "UPPER", "LOWER", "TITLE"];
-  var RUN_KEYS = [
-    "from",
-    "to",
-    "match",
-    "fontName",
-    "fontSize",
-    "fill",
-    "textDecoration",
-    "textCase",
-    "letterSpacing",
-    "lineHeight",
-    "link"
-  ];
-  function planRuns(raw, where, problems) {
-    if (!Array.isArray(raw)) {
-      problems.push(`${where} must be an array of { from, to } or { match } runs`);
-      return null;
-    }
-    const runs = [];
-    for (const [index, entry] of raw.entries()) {
-      const at = `${where}[${index}]`;
-      const fail2 = (message) => problems.push(`${at}: ${message}`);
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-        fail2("must be an object");
-        continue;
-      }
-      const run = entry;
-      for (const key of Object.keys(run)) {
-        if (!RUN_KEYS.includes(key)) fail2(`unknown key "${key}" \u2014 accepted: ${RUN_KEYS.join(", ")}`);
-      }
-      const hasRange = run.from !== void 0 || run.to !== void 0;
-      if (run.match !== void 0 && hasRange) {
-        fail2("name either a match or a from/to range, not both");
-        continue;
-      }
-      if (run.match !== void 0) {
-        if (typeof run.match !== "string" || run.match === "") {
-          fail2("match must be a non-empty string");
-          continue;
-        }
-      } else {
-        const from = run.from;
-        const to = run.to;
-        if (typeof from !== "number" || !Number.isInteger(from) || from < 0) {
-          fail2("from must be a whole number >= 0");
-          continue;
-        }
-        if (typeof to !== "number" || !Number.isInteger(to) || to <= from) {
-          fail2("to must be a whole number greater than from");
-          continue;
-        }
-      }
-      let bad = false;
-      const check = (key, ok, message) => {
-        if (run[key] !== void 0 && !ok) {
-          fail2(message);
-          bad = true;
-        }
-      };
-      check(
-        "fontName",
-        typeof run.fontName === "object" && run.fontName !== null && typeof run.fontName.family === "string" && typeof run.fontName.style === "string",
-        "fontName must be { family, style }"
-      );
-      check("fontSize", typeof run.fontSize === "number" && run.fontSize > 0, "fontSize must be a number > 0");
-      check("letterSpacing", typeof run.letterSpacing === "number", "letterSpacing must be a number");
-      check(
-        "lineHeight",
-        run.lineHeight === "AUTO" || typeof run.lineHeight === "number" && run.lineHeight > 0,
-        'lineHeight must be a positive number or "AUTO"'
-      );
-      check(
-        "textDecoration",
-        typeof run.textDecoration === "string" && DECORATIONS.includes(run.textDecoration),
-        `textDecoration must be one of: ${DECORATIONS.join(", ")}`
-      );
-      check(
-        "textCase",
-        typeof run.textCase === "string" && TEXT_CASES.includes(run.textCase),
-        `textCase must be one of: ${TEXT_CASES.join(", ")}`
-      );
-      check("link", typeof run.link === "string" || run.link === null, "link must be a URL, or null to remove one");
-      if (run.fill !== void 0) {
-        const problem = paintProblem(run.fill);
-        if (problem) {
-          fail2(`fill: ${problem}`);
-          bad = true;
-        }
-      }
-      if (bad) continue;
-      const styling = Object.keys(run).filter((key) => !["from", "to", "match"].includes(key));
-      if (styling.length === 0) {
-        fail2("a run that sets nothing styles nothing \u2014 say what should change");
-        continue;
-      }
-      runs.push(run);
-    }
-    return { step: "runs", runs };
-  }
-  function resolveRanges(characters, run) {
-    if (run.match !== void 0) {
-      const ranges = [];
-      let at = characters.indexOf(run.match);
-      while (at !== -1) {
-        ranges.push([at, at + run.match.length]);
-        at = characters.indexOf(run.match, at + run.match.length);
-      }
-      if (ranges.length === 0) return { ranges: [], problem: `"${run.match}" is not in this text` };
-      return { ranges };
-    }
-    const from = run.from;
-    const to = run.to;
-    if (from >= characters.length) {
-      return { ranges: [], problem: `from ${from} is past the end of ${characters.length} character(s)` };
-    }
-    return { ranges: [[from, Math.min(to, characters.length)]] };
-  }
-  function planEffects(raw, where, problems) {
-    if (!Array.isArray(raw)) {
-      problems.push(`${where} must be an array of shadows and blurs \u2014 [] removes them`);
-      return null;
-    }
-    const effects = [];
-    const bind = [];
-    const summary = [];
-    for (const [index, entry] of raw.entries()) {
-      const at = `${where}[${index}]`;
-      const fail2 = (message) => problems.push(`${at}: ${message}`);
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-        fail2("must be { shadow } or { blur }");
-        continue;
-      }
-      const spec = entry;
-      const measure = (value, fallback, field, label3) => {
-        if (value === void 0) return fallback;
-        if (typeof value === "number" && Number.isFinite(value)) return value;
-        const named2 = value;
-        if (typeof (named2 == null ? void 0 : named2.variable) === "string" && named2.variable.trim() !== "") {
-          bind.push({ index: effects.length, field, variable: named2.variable.trim() });
-          return fallback;
-        }
-        fail2(`${label3} must be a number or { variable }`);
-        return null;
-      };
-      if (typeof spec.blur === "string") {
-        const kind2 = spec.blur.toLowerCase();
-        if (kind2 !== "layer" && kind2 !== "background") {
-          fail2('blur must be "layer" or "background"');
-          continue;
-        }
-        const radius2 = measure(spec.radius, 0, "radius", "radius");
-        if (radius2 === null) continue;
-        if (spec.radius === void 0) {
-          fail2("radius must be a number >= 0");
-          continue;
-        }
-        effects.push({
-          type: kind2 === "layer" ? "LAYER_BLUR" : "BACKGROUND_BLUR",
-          blurType: "NORMAL",
-          radius: radius2,
-          visible: spec.visible !== false
-        });
-        summary.push(`${kind2} blur ${radius2}`);
-        continue;
-      }
-      if (typeof spec.shadow !== "string") {
-        fail2('must carry either `shadow` ("drop" / "inner") or `blur` ("layer" / "background")');
-        continue;
-      }
-      const kind = spec.shadow.toLowerCase();
-      if (kind !== "drop" && kind !== "inner") {
-        fail2('shadow must be "drop" or "inner"');
-        continue;
-      }
-      for (const unknownKey of Object.keys(spec)) {
-        if (!["shadow", "color", "opacity", "offset", "radius", "spread", "visible"].includes(unknownKey)) {
-          fail2(`unknown key "${unknownKey}" \u2014 accepted: shadow, color, opacity, offset, radius, spread, visible`);
-        }
-      }
-      let hex = "#000000";
-      const named = spec.color;
-      if (typeof (named == null ? void 0 : named.variable) === "string" && named.variable.trim() !== "") {
-        bind.push({ index: effects.length, field: "color", variable: named.variable.trim() });
-      } else if (spec.color !== void 0) {
-        if (typeof spec.color !== "string" || !HEX.test(spec.color)) {
-          fail2("color must be a #RRGGBB colour or { variable }");
-          continue;
-        }
-        hex = spec.color;
-      }
-      const rgb = parseHex(hex);
-      if (!rgb) {
-        fail2(`"${hex}" is not a colour`);
-        continue;
-      }
-      const alpha = spec.opacity === void 0 ? 0.25 : spec.opacity;
-      if (typeof alpha !== "number" || alpha < 0 || alpha > 1) {
-        fail2("opacity must be between 0 and 1");
-        continue;
-      }
-      const offset = spec.offset === void 0 ? [0, 4] : spec.offset;
-      if (!Array.isArray(offset) || offset.length !== 2) {
-        fail2("offset must be [x, y]");
-        continue;
-      }
-      const x = measure(offset[0], 0, "offsetX", "offset[0]");
-      const y = measure(offset[1], 4, "offsetY", "offset[1]");
-      const radius = measure(spec.radius, 8, "radius", "radius");
-      const spread = measure(spec.spread, 0, "spread", "spread");
-      if (x === null || y === null || radius === null || spread === null) continue;
-      effects.push({
-        type: kind === "drop" ? "DROP_SHADOW" : "INNER_SHADOW",
-        color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha },
-        offset: { x, y },
-        radius,
-        spread,
-        visible: spec.visible !== false,
-        blendMode: "NORMAL"
-      });
-      summary.push(
-        `${kind} shadow ${hex}${alpha === 1 ? "" : ` @${alpha}`} ${x},${y} blur ${radius}${spread ? ` spread ${spread}` : ""}`
-      );
-    }
-    return { step: "effects", effects, bind, summary: summary.join(" \xB7 ") || "none" };
-  }
-  function planAnimation(raw, where, problems) {
-    const wanted = raw === null ? [] : Array.isArray(raw) ? raw : [raw];
-    const styles = [];
-    const summary = [];
-    for (const [index, entry] of wanted.entries()) {
-      const at = `${where}[${index}]`;
-      const fail2 = (message) => problems.push(`${at}: ${message}`);
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-        fail2("must be { style, duration?, offset?, props? }");
-        continue;
-      }
-      const spec = entry;
-      for (const key of Object.keys(spec)) {
-        if (!["style", "duration", "offset", "props"].includes(key)) {
-          fail2(`unknown key "${key}" \u2014 accepted: style, duration, offset, props`);
-        }
-      }
-      if (typeof spec.style !== "string" || spec.style.trim() === "") {
-        fail2('style must name one of the styles MOTION_STYLES lists, e.g. "Position"');
-        continue;
-      }
-      let wrong = false;
-      for (const seconds2 of ["duration", "offset"]) {
-        const value = spec[seconds2];
-        if (value !== void 0 && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
-          fail2(`${seconds2} must be a number of seconds >= 0`);
-          wrong = true;
-        }
-      }
-      if (wrong) continue;
-      const settings = {};
-      if (spec.props !== void 0) {
-        if (typeof spec.props !== "object" || spec.props === null || Array.isArray(spec.props)) {
-          fail2("props must be an object of the settings that style takes");
-          continue;
-        }
-        for (const [name, value] of Object.entries(spec.props)) {
-          if (name === "easing") {
-            const easing = buildEasing(
-              typeof value === "string" ? { easing: value } : value,
-              (message) => fail2(`props.easing: ${message}`)
-            );
-            if (!easing) {
-              wrong = true;
-              break;
-            }
-            settings.easing = easing;
-            continue;
-          }
-          if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-            settings[name] = value;
-            continue;
-          }
-          const named = value;
-          if (typeof (named == null ? void 0 : named.variable) === "string" && named.variable.trim() !== "") {
-            settings[name] = { variable: named.variable.trim() };
-            continue;
-          }
-          fail2(`props.${name} must be a string, a number, a boolean or { variable }`);
-          wrong = true;
-          break;
-        }
-      }
-      if (wrong) continue;
-      styles.push(__spreadProps(__spreadValues(__spreadValues({
-        style: spec.style.trim()
-      }, spec.duration === void 0 ? {} : { duration: spec.duration }), spec.offset === void 0 ? {} : { offset: spec.offset }), {
-        props: settings
-      }));
-      const said = Object.entries(settings).map(([name, value]) => `${name}=${typeof value === "object" ? JSON.stringify(value) : value}`).join(", ");
-      summary.push(
-        `${spec.style.trim()}${spec.duration === void 0 ? "" : ` ${spec.duration}s`}${said ? ` (${said})` : ""}`
-      );
-    }
-    return { step: "animation", styles, summary: summary.join(" \xB7 ") || "none" };
-  }
-  var STROKE_CAPS = ["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL"];
-  var JOINS = ["MITER", "BEVEL", "ROUND"];
-  function planNetwork(raw, where, problems) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      problems.push(`${where} must be { vertices, segments, regions? }`);
-      return null;
-    }
-    const spec = raw;
-    for (const key of Object.keys(spec)) {
-      if (!["vertices", "segments", "regions"].includes(key)) {
-        problems.push(`${where}: unknown key "${key}" \u2014 accepted: vertices, segments, regions`);
-      }
-    }
-    if (!Array.isArray(spec.vertices) || spec.vertices.length < 2) {
-      problems.push(`${where}.vertices must be an array of at least two points`);
-      return null;
-    }
-    if (!Array.isArray(spec.segments) || spec.segments.length < 1) {
-      problems.push(`${where}.segments must be an array of at least one { start, end }`);
-      return null;
-    }
-    const vertices = [];
-    for (const [index, entry] of spec.vertices.entries()) {
-      const at = `${where}.vertices[${index}]`;
-      if (Array.isArray(entry)) {
-        if (entry.length !== 2 || entry.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
-          problems.push(`${at} must be [x, y]`);
-          continue;
-        }
-        vertices.push({ x: entry[0], y: entry[1] });
-        continue;
-      }
-      if (typeof entry !== "object" || entry === null) {
-        problems.push(`${at} must be [x, y] or { x, y }`);
-        continue;
-      }
-      const point = entry;
-      if (typeof point.x !== "number" || typeof point.y !== "number") {
-        problems.push(`${at} must carry x and y`);
-        continue;
-      }
-      if (point.cap !== void 0 && (typeof point.cap !== "string" || !STROKE_CAPS.includes(point.cap))) {
-        problems.push(`${at}.cap must be one of: ${STROKE_CAPS.join(", ")}`);
-        continue;
-      }
-      if (point.join !== void 0 && (typeof point.join !== "string" || !JOINS.includes(point.join))) {
-        problems.push(`${at}.join must be one of: ${JOINS.join(", ")}`);
-        continue;
-      }
-      if (point.cornerRadius !== void 0 && (typeof point.cornerRadius !== "number" || point.cornerRadius < 0)) {
-        problems.push(`${at}.cornerRadius must be a number >= 0`);
-        continue;
-      }
-      vertices.push(__spreadValues(__spreadValues(__spreadValues({
-        x: point.x,
-        y: point.y
-      }, point.cap ? { strokeCap: point.cap } : {}), point.join ? { strokeJoin: point.join } : {}), point.cornerRadius === void 0 ? {} : { cornerRadius: point.cornerRadius }));
-    }
-    const segments = [];
-    for (const [index, entry] of spec.segments.entries()) {
-      const at = `${where}.segments[${index}]`;
-      const pair2 = Array.isArray(entry) ? { start: entry[0], end: entry[1], curve: void 0 } : entry;
-      if (typeof (pair2 == null ? void 0 : pair2.start) !== "number" || typeof (pair2 == null ? void 0 : pair2.end) !== "number") {
-        problems.push(`${at} must be [start, end] or { start, end }`);
-        continue;
-      }
-      const ends = [pair2.start, pair2.end];
-      const stray = ends.find((one) => !Number.isInteger(one) || one < 0 || one >= vertices.length);
-      if (stray !== void 0) {
-        problems.push(`${at}: there is no vertex ${stray} \u2014 the network has ${vertices.length}`);
-        continue;
-      }
-      if (pair2.start === pair2.end) {
-        problems.push(`${at}: a segment cannot start and end at the same point`);
-        continue;
-      }
-      let curve = null;
-      if (pair2.curve !== void 0) {
-        const bend = pair2.curve;
-        if (!Array.isArray(bend) || bend.length !== 4 || bend.some((one) => typeof one !== "number")) {
-          problems.push(`${at}.curve must be [x1, y1, x2, y2] \u2014 the two tangents, each relative to its own end`);
-          continue;
-        }
-        curve = {
-          tangentStart: { x: bend[0], y: bend[1] },
-          tangentEnd: { x: bend[2], y: bend[3] }
-        };
-      }
-      segments.push(__spreadValues({ start: pair2.start, end: pair2.end }, curve != null ? curve : {}));
-    }
-    const regions = [];
-    if (spec.regions !== void 0) {
-      if (!Array.isArray(spec.regions)) {
-        problems.push(`${where}.regions must be an array of { loops }`);
-        return null;
-      }
-      for (const [index, entry] of spec.regions.entries()) {
-        const at = `${where}.regions[${index}]`;
-        const region = entry;
-        if (!Array.isArray(region == null ? void 0 : region.loops) || region.loops.length === 0) {
-          problems.push(`${at}.loops must be an array of loops, each a list of segment indices`);
-          continue;
-        }
-        const rule = region.windingRule === void 0 ? "NONZERO" : region.windingRule;
-        if (rule !== "NONZERO" && rule !== "EVENODD") {
-          problems.push(`${at}.windingRule must be NONZERO or EVENODD`);
-          continue;
-        }
-        let broken = false;
-        for (const loop of region.loops) {
-          if (!Array.isArray(loop) || loop.length === 0) {
-            problems.push(`${at}: every loop must be a list of segment indices`);
-            broken = true;
-            break;
-          }
-          const stray = loop.find((one) => typeof one !== "number" || !Number.isInteger(one) || one < 0 || one >= segments.length);
-          if (stray !== void 0) {
-            problems.push(`${at}: there is no segment ${stray} \u2014 the network has ${segments.length}`);
-            broken = true;
-            break;
-          }
-        }
-        if (broken) continue;
-        regions.push({ windingRule: rule, loops: region.loops });
-      }
-    }
-    return {
-      step: "network",
-      network: __spreadValues({ vertices, segments }, regions.length > 0 ? { regions } : {}),
-      summary: `${vertices.length} point(s), ${segments.length} segment(s)${regions.length ? `, ${regions.length} region(s)` : ""}`
-    };
-  }
-  var GRID_ALIGN = ["MIN", "MAX", "CENTER", "STRETCH"];
-  function planGrids(raw, where, problems) {
-    if (!Array.isArray(raw)) {
-      problems.push(`${where} must be an array of grids \u2014 [] removes them`);
-      return null;
-    }
-    const grids = [];
-    const summary = [];
-    for (const [index, entry] of raw.entries()) {
-      const at = `${where}[${index}]`;
-      const fail2 = (message) => problems.push(`${at}: ${message}`);
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-        fail2("must be { columns }, { rows } or { square }");
-        continue;
-      }
-      const spec = entry;
-      const paint = () => {
-        if (spec.color === void 0) return {};
-        if (typeof spec.color !== "string" || !HEX.test(spec.color)) {
-          fail2("color must be a #RRGGBB colour");
-          return null;
-        }
-        const rgb = parseHex(spec.color);
-        if (!rgb) {
-          fail2(`"${spec.color}" is not a colour`);
-          return null;
-        }
-        const alpha = spec.opacity === void 0 ? 0.1 : spec.opacity;
-        if (typeof alpha !== "number" || alpha < 0 || alpha > 1) {
-          fail2("opacity must be between 0 and 1");
-          return null;
-        }
-        return { color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha } };
-      };
-      if (spec.square !== void 0) {
-        const size2 = spec.square;
-        if (typeof size2 !== "number" || !Number.isFinite(size2) || size2 <= 0) {
-          fail2("square must be a cell size greater than 0");
-          continue;
-        }
-        const colour2 = paint();
-        if (!colour2) continue;
-        grids.push(__spreadValues({ pattern: "GRID", sectionSize: size2, visible: spec.visible !== false }, colour2));
-        summary.push(`square ${size2}`);
-        continue;
-      }
-      const vertical = spec.columns !== void 0;
-      const count = vertical ? spec.columns : spec.rows;
-      if (count === void 0) {
-        fail2("must be { columns }, { rows } or { square }");
-        continue;
-      }
-      if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
-        fail2(`${vertical ? "columns" : "rows"} must be a whole number of at least 1`);
-        continue;
-      }
-      for (const key of Object.keys(spec)) {
-        if (!["columns", "rows", "gutter", "margin", "width", "height", "align", "color", "opacity", "visible"].includes(key)) {
-          fail2(`unknown key "${key}" \u2014 accepted: columns/rows, gutter, margin, width/height, align, color, opacity, visible`);
-        }
-      }
-      const gutter2 = spec.gutter === void 0 ? 0 : spec.gutter;
-      if (typeof gutter2 !== "number" || !Number.isFinite(gutter2) || gutter2 < 0) {
-        fail2("gutter must be a number >= 0");
-        continue;
-      }
-      const size = vertical ? spec.width : spec.height;
-      if (size !== void 0 && (typeof size !== "number" || !Number.isFinite(size) || size <= 0)) {
-        fail2(`${vertical ? "width" : "height"} must be a number greater than 0`);
-        continue;
-      }
-      const margin = spec.margin === void 0 ? 0 : spec.margin;
-      if (typeof margin !== "number" || !Number.isFinite(margin) || margin < 0) {
-        fail2("margin must be a number >= 0");
-        continue;
-      }
-      const align = spec.align === void 0 ? size === void 0 ? "STRETCH" : "MIN" : spec.align;
-      if (typeof align !== "string" || !GRID_ALIGN.includes(align)) {
-        fail2(`align must be one of: ${GRID_ALIGN.join(", ")}`);
-        continue;
-      }
-      const colour = paint();
-      if (!colour) continue;
-      grids.push(__spreadValues(__spreadProps(__spreadValues(__spreadValues({
-        pattern: vertical ? "COLUMNS" : "ROWS",
-        alignment: align,
-        gutterSize: gutter2,
-        count
-      }, size === void 0 ? {} : { sectionSize: size }), margin === 0 ? {} : { offset: margin }), {
-        visible: spec.visible !== false
-      }), colour));
-      summary.push(
-        `${count} ${vertical ? "column" : "row"}(s) ${align.toLowerCase()}${gutter2 ? ` gutter ${gutter2}` : ""}${margin ? ` margin ${margin}` : ""}${size ? ` at ${size}` : ""}`
-      );
-    }
-    return { step: "grid", grids, summary: summary.join(" \xB7 ") || "none" };
-  }
-  function planLayout(raw, where, problems) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      problems.push(`${where} must be an object`);
-      return null;
-    }
-    const value = raw;
-    const layout = {};
-    const fail2 = (message) => problems.push(`${where}.${message}`);
-    for (const key of Object.keys(value)) {
-      if (!["mode", "gap", "padding", "primaryAxis", "counterAxis", "wrap", "sizing"].includes(key)) {
-        fail2(`unknown key "${key}"`);
-      }
-    }
-    if (value.mode !== void 0) {
-      if (typeof value.mode !== "string" || !LAYOUT_MODES.includes(value.mode)) fail2(`mode must be one of: ${LAYOUT_MODES.join(", ")}`);
-      else layout.mode = value.mode;
-    }
-    if (value.gap !== void 0) {
-      if (typeof value.gap !== "number" || !Number.isFinite(value.gap)) fail2("gap must be a number");
-      else layout.gap = value.gap;
-    }
-    if (value.padding !== void 0) {
-      if (typeof value.padding === "number" && Number.isFinite(value.padding)) {
-        layout.padding = [value.padding, value.padding, value.padding, value.padding];
-      } else if (Array.isArray(value.padding) && value.padding.length === 4 && value.padding.every((one) => typeof one === "number" && Number.isFinite(one))) {
-        layout.padding = value.padding;
-      } else fail2("padding must be a number or [top, right, bottom, left]");
-    }
-    if (value.primaryAxis !== void 0) {
-      if (typeof value.primaryAxis !== "string" || !PRIMARY_AXIS.includes(value.primaryAxis)) {
-        fail2(`primaryAxis must be one of: ${PRIMARY_AXIS.join(", ")}`);
-      } else layout.primaryAxis = value.primaryAxis;
-    }
-    if (value.counterAxis !== void 0) {
-      if (typeof value.counterAxis !== "string" || !COUNTER_AXIS.includes(value.counterAxis)) {
-        fail2(`counterAxis must be one of: ${COUNTER_AXIS.join(", ")}`);
-      } else layout.counterAxis = value.counterAxis;
-    }
-    if (value.wrap !== void 0) {
-      if (typeof value.wrap !== "boolean") fail2("wrap must be a boolean");
-      else layout.wrap = value.wrap;
-    }
-    if (value.sizing !== void 0) {
-      if (typeof value.sizing !== "object" || value.sizing === null) fail2("sizing must be { horizontal, vertical }");
-      else {
-        const sizing = value.sizing;
-        layout.sizing = {};
-        for (const axis of ["horizontal", "vertical"]) {
-          const mode = sizing[axis];
-          if (mode === void 0) continue;
-          if (typeof mode !== "string" || !SIZING.includes(mode)) fail2(`sizing.${axis} must be one of: ${SIZING.join(", ")}`);
-          else layout.sizing[axis] = mode;
-        }
-      }
-    }
-    return { step: "layout", layout };
-  }
-  var HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-  var BINDABLE = {
-    width: "FLOAT",
-    height: "FLOAT",
-    minWidth: "FLOAT",
-    maxWidth: "FLOAT",
-    minHeight: "FLOAT",
-    maxHeight: "FLOAT",
-    itemSpacing: "FLOAT",
-    counterAxisSpacing: "FLOAT",
-    gridRowGap: "FLOAT",
-    gridColumnGap: "FLOAT",
-    paddingLeft: "FLOAT",
-    paddingRight: "FLOAT",
-    paddingTop: "FLOAT",
-    paddingBottom: "FLOAT",
-    cornerRadius: "FLOAT",
-    topLeftRadius: "FLOAT",
-    topRightRadius: "FLOAT",
-    bottomLeftRadius: "FLOAT",
-    bottomRightRadius: "FLOAT",
-    strokeWeight: "FLOAT",
-    strokeTopWeight: "FLOAT",
-    strokeRightWeight: "FLOAT",
-    strokeBottomWeight: "FLOAT",
-    strokeLeftWeight: "FLOAT",
-    opacity: "FLOAT",
-    fontSize: "FLOAT",
-    letterSpacing: "FLOAT",
-    lineHeight: "FLOAT",
-    paragraphSpacing: "FLOAT",
-    paragraphIndent: "FLOAT",
-    fontWeight: "FLOAT",
-    characters: "STRING",
-    fontFamily: "STRING",
-    fontStyle: "STRING",
-    visible: "BOOLEAN"
-  };
-  var BIND_ALIASES = {
-    text: ["characters"],
-    gap: ["itemSpacing"],
-    padding: ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"],
-    radius: ["cornerRadius"],
-    strokeWeights: ["strokeTopWeight", "strokeRightWeight", "strokeBottomWeight", "strokeLeftWeight"]
-  };
-  var BOUND_ELSEWHERE = {
-    fill: 'fill: { variable: "\u2026" } paints and binds in one go',
-    fills: 'fill: { variable: "\u2026" } paints and binds in one go',
-    stroke: 'stroke: { variable: "\u2026" } paints and binds in one go',
-    strokes: 'stroke: { variable: "\u2026" } paints and binds in one go',
-    effects: "an effect variable has to be bound on the effect itself, which this vocabulary does not reach yet"
-  };
-  function planBindings(raw, where, problems) {
-    var _a;
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      problems.push(`${where} must be an object of { field: "variable name" } \u2014 null unbinds`);
-      return null;
-    }
-    const bindings = [];
-    for (const [asked, value] of Object.entries(raw)) {
-      if (BOUND_ELSEWHERE[asked]) {
-        problems.push(`${where}.${asked}: ${BOUND_ELSEWHERE[asked]}`);
-        continue;
-      }
-      const fields = (_a = BIND_ALIASES[asked]) != null ? _a : BINDABLE[asked] ? [asked] : null;
-      if (!fields) {
-        problems.push(
-          `${where}: "${asked}" is not a bindable field \u2014 accepted: ${[...Object.keys(BIND_ALIASES), ...Object.keys(BINDABLE)].join(", ")}`
-        );
-        continue;
-      }
-      if (value !== null && (typeof value !== "string" || value.trim() === "")) {
-        problems.push(`${where}.${asked} must be a variable name, id or key \u2014 or null to unbind`);
-        continue;
-      }
-      for (const field of fields) bindings.push({ field, variable: value === null ? null : value.trim(), wants: BINDABLE[field] });
-    }
-    if (bindings.length === 0 && problems.length === 0) {
-      problems.push(`${where} names nothing to bind`);
-      return null;
-    }
-    return { step: "bind", bindings };
-  }
-  function gradientHandles(ref) {
-    var _a;
-    if (ref.from && ref.to) return { from: ref.from, to: ref.to };
-    const centred = ref.gradient !== void 0 && normaliseEnum(ref.gradient) !== "LINEAR";
-    const radians = ((_a = ref.angle) != null ? _a : centred ? 0 : DEFAULT_GRADIENT_ANGLE) * Math.PI / 180;
-    const dx = Math.cos(radians) / 2;
-    const dy = Math.sin(radians) / 2;
-    if (centred) return { from: [0.5, 0.5], to: [0.5 + dx, 0.5 + dy] };
-    return { from: [0.5 - dx, 0.5 - dy], to: [0.5 + dx, 0.5 + dy] };
-  }
-  function gradientTransform(from, to, kind = "LINEAR") {
-    const centred = normaliseEnum(kind) !== "LINEAR";
-    const dx = to[0] - from[0];
-    const dy = to[1] - from[1];
-    const squared = dx * dx + dy * dy || 1e-6;
-    const reach = centred ? 0.5 : 1;
-    const origin = centred ? 0.5 : 0;
-    const a = reach * dx / squared;
-    const b = reach * dy / squared;
-    const zeroed = (value) => value + 0;
-    return [
-      [zeroed(a), zeroed(b), zeroed(origin - (a * from[0] + b * from[1]))],
-      [zeroed(-b), zeroed(a), zeroed(origin - (-b * from[0] + a * from[1]))]
-    ];
-  }
-  function paintProblem(ref) {
-    if (Array.isArray(ref)) {
-      for (const [index, one] of ref.entries()) {
-        const problem = paintProblem(one);
-        if (problem) return `[${index}] ${problem}`;
-      }
-      return null;
-    }
-    if (ref === null) return null;
-    if (typeof ref === "string") return HEX.test(ref) ? null : `"${ref}" is not a #RRGGBB colour`;
-    if (typeof ref !== "object") return 'must be "#RRGGBB", { color }, { variable }, { image }, a list of those, or null';
-    const entry = ref;
-    if (entry.gradient !== void 0) return gradientProblem(ref);
-    if (entry.image !== void 0) return imageProblem(entry);
-    if (typeof entry.variable === "string") return entry.variable === "" ? "variable must be a name, id or library key" : null;
-    if (typeof entry.color === "string") {
-      if (!HEX.test(entry.color)) return `"${entry.color}" is not a #RRGGBB colour`;
-      if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
-        return "opacity must be between 0 and 1";
-      }
-      return null;
-    }
-    return "must carry either `color`, `variable` or `image`";
-  }
-  function gradientProblem(entry) {
-    const kind = typeof entry.gradient === "string" ? normaliseEnum(entry.gradient) : "";
-    if (!GRADIENTS2.includes(kind)) return `gradient must be one of: ${GRADIENTS2.join(", ")}`;
-    for (const key of Object.keys(entry)) {
-      if (!["gradient", "stops", "angle", "from", "to", "opacity"].includes(key)) {
-        return `unknown key "${key}" \u2014 accepted: gradient, stops, angle, from, to, opacity`;
-      }
-    }
-    if (!Array.isArray(entry.stops) || entry.stops.length < 2) {
-      return "stops must be an array of at least two colours";
-    }
-    for (const [index, stop] of entry.stops.entries()) {
-      if (typeof stop === "string") {
-        if (!HEX.test(stop)) return `stops[${index}]: "${stop}" is not a #RRGGBB colour`;
-        continue;
-      }
-      if (typeof stop !== "object" || stop === null || Array.isArray(stop)) {
-        return `stops[${index}] must be "#RRGGBB" or { at, color }`;
-      }
-      const one = stop;
-      if (typeof one.at !== "number" || one.at < 0 || one.at > 1) return `stops[${index}].at must be between 0 and 1`;
-      if (typeof one.color === "object" && one.color !== null) {
-        const bound = one.color;
-        if (typeof bound.variable !== "string" || bound.variable === "") {
-          return `stops[${index}].color must be "#RRGGBB" or { variable }`;
-        }
-      } else if (typeof one.color !== "string" || !HEX.test(one.color)) {
-        return `stops[${index}].color must be "#RRGGBB" or { variable }`;
-      }
-      if (one.opacity !== void 0 && (typeof one.opacity !== "number" || one.opacity < 0 || one.opacity > 1)) {
-        return `stops[${index}].opacity must be between 0 and 1`;
-      }
-    }
-    if (entry.angle !== void 0 && (typeof entry.angle !== "number" || !Number.isFinite(entry.angle))) {
-      return "angle must be a number of degrees";
-    }
-    for (const end of ["from", "to"]) {
-      const point = entry[end];
-      if (point === void 0) continue;
-      if (!Array.isArray(point) || point.length !== 2 || point.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
-        return `${end} must be [x, y] in the layer's own 0..1 coordinates`;
-      }
-    }
-    if (entry.from === void 0 !== (entry.to === void 0)) return "from and to travel together";
-    if (entry.angle !== void 0 && entry.from !== void 0) return "name either an angle or from/to, not both";
-    if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
-      return "opacity must be between 0 and 1";
-    }
-    return null;
-  }
-  function imageProblem(entry) {
-    const image = entry.image;
-    if (typeof image !== "object" || image === null || Array.isArray(image)) {
-      return "image must be { hash }, { url } or { bytes } \u2014 bytes being base64";
-    }
-    const source = image;
-    const named = ["hash", "url", "bytes"].filter((key) => source[key] !== void 0);
-    if (named.length === 0) return "image must name one of hash, url or bytes";
-    if (named.length > 1) return `image names ${named.join(" and ")} \u2014 pick one`;
-    if (typeof source[named[0]] !== "string" || source[named[0]] === "") {
-      return `image.${named[0]} must be a non-empty string`;
-    }
-    if (entry.scaleMode !== void 0 && (typeof entry.scaleMode !== "string" || !SCALE_MODES.includes(entry.scaleMode))) {
-      return `scaleMode must be one of: ${SCALE_MODES.join(", ")}`;
-    }
-    if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
-      return "opacity must be between 0 and 1";
-    }
-    return null;
-  }
-
   // src/canvas/components.ts
   function humanPropertyName(raw) {
     const hash = raw.indexOf("#");
@@ -25865,6 +25922,7 @@ ${scripts}`, "");
             if (paints2) node.setRangeFills(from, to, paints2);
             if (run.textDecoration) node.setRangeTextDecoration(from, to, run.textDecoration);
             if (run.textCase) node.setRangeTextCase(from, to, run.textCase);
+            if (run.textWrap) node.setRangeTextWrapStyle(from, to, run.textWrap);
             if (run.letterSpacing !== void 0) {
               node.setRangeLetterSpacing(from, to, { value: run.letterSpacing, unit: "PIXELS" });
             }
@@ -26103,6 +26161,7 @@ ${scripts}`, "");
     if (run.fill !== void 0) parts.push(typeof run.fill === "string" ? run.fill : "fill");
     if (run.textDecoration) parts.push(run.textDecoration.toLowerCase());
     if (run.textCase) parts.push(run.textCase.toLowerCase());
+    if (run.textWrap) parts.push(`wrap ${run.textWrap.toLowerCase()}`);
     if (run.letterSpacing !== void 0) parts.push(`tracking ${run.letterSpacing}`);
     if (run.lineHeight !== void 0) parts.push(`leading ${run.lineHeight}`);
     if (run.link !== void 0) parts.push(run.link === null ? "unlinked" : "linked");
@@ -26120,6 +26179,7 @@ ${scripts}`, "");
     return node;
   }
   var TEXT_PROPERTIES = [
+    "textWrapStyle",
     "fontSize",
     "letterSpacing",
     "textAlignHorizontal",
@@ -26286,17 +26346,33 @@ ${scripts}`, "");
     const hex = `#${[color.r, color.g, color.b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
     return color.a !== void 0 && color.a < 1 ? `${hex} @${round10(color.a)}` : hex;
   }
-  function describeAnimation(value) {
+  async function describeAnimation(value) {
     if (!Array.isArray(value) || value.length === 0) return "none";
-    return value.map((style) => {
-      var _a, _b, _c, _d;
-      const entries = Object.entries((_a = style.props) != null ? _a : {});
-      const shown = entries.slice(0, MAX_ANIMATION_PROPS).map(([name, held]) => `${name}=${typeof held === "object" ? JSON.stringify(held) : held}`).join(", ");
-      const rest = entries.length > MAX_ANIMATION_PROPS ? `, +${entries.length - MAX_ANIMATION_PROPS} more` : "";
-      const called = (_d = (_c = (_b = animationStyleWord(style.name)) != null ? _b : animationStyleWord(style.styleId)) != null ? _c : style.name) != null ? _d : style.styleId;
-      const seconds2 = style.duration === void 0 ? "" : ` ${Math.round(style.duration * 1e3) / 1e3}s`;
-      return `${called}${seconds2}${shown ? ` (${shown}${rest})` : ""}`;
-    }).join(" \xB7 ");
+    const lines = [];
+    for (const style of value) {
+      lines.push(await (async () => {
+        var _a, _b, _c, _d, _e;
+        const entries = Object.entries((_a = style.props) != null ? _a : {}).sort(
+          (left, right) => Number(typeof right[1] === "object") - Number(typeof left[1] === "object")
+        );
+        const said = [];
+        for (const [name, held] of entries.slice(0, MAX_ANIMATION_PROPS)) {
+          const alias = held;
+          if (alias && typeof alias === "object" && alias.type === "VARIABLE_ALIAS" && alias.id) {
+            const variable = await figma.variables.getVariableByIdAsync(alias.id).catch(() => null);
+            said.push(`${name}=var:${(_b = variable == null ? void 0 : variable.name) != null ? _b : alias.id}`);
+            continue;
+          }
+          said.push(`${name}=${typeof held === "object" ? JSON.stringify(held) : held}`);
+        }
+        const shown = said.join(", ");
+        const rest = entries.length > MAX_ANIMATION_PROPS ? `, +${entries.length - MAX_ANIMATION_PROPS} more` : "";
+        const called = (_e = (_d = (_c = animationStyleWord(style.name)) != null ? _c : animationStyleWord(style.styleId)) != null ? _d : style.name) != null ? _e : style.styleId;
+        const seconds2 = style.duration === void 0 ? "" : ` ${Math.round(style.duration * 1e3) / 1e3}s`;
+        return `${called}${seconds2}${shown ? ` (${shown}${rest})` : ""}`;
+      })());
+    }
+    return lines.join(" \xB7 ");
   }
   var MAX_ANIMATION_PROPS = 5;
   var styleWords = null;
@@ -27368,7 +27444,7 @@ ${scripts}`, "");
     }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round11(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints2(bag.fills) } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues({
       stroke: await describePaints2(bag.strokes),
       strokeWeight: round11(bag.strokeWeight)
-    }, bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 ? { timelines: bag.timelines.map((one) => `${one.id} ${one.duration}s`).join(" \xB7 ") } : {}), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
+    }, bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 ? { timelines: bag.timelines.map((one) => `${one.id} ${one.duration}s`).join(" \xB7 ") } : {}), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
       props.layout = {
         mode: bag.layoutMode,
@@ -27405,6 +27481,8 @@ ${scripts}`, "");
       props.fontSize = node.fontSize === figma.mixed ? "mixed" : round11(node.fontSize);
       props.fontName = node.fontName === figma.mixed ? "mixed" : `${node.fontName.family} ${node.fontName.style}`;
       props.textAlign = node.textAlignHorizontal;
+      const wrap = node.textWrapStyle;
+      if (typeof wrap === "string" && wrap !== "AUTO") props.textWrap = wrap;
     }
     return __spreadProps(__spreadValues({}, base), { props });
   }

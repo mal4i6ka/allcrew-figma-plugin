@@ -9,7 +9,7 @@
     "test": "node --experimental-transform-types --test \"src/*.test.ts\" \"src/agent/*.test.ts\" \"src/modules/*.test.ts\" \"src/canvas/*.test.ts\" \"src/targets/django/**/*.test.ts\" \"src/targets/design-md/*.test.ts\" \"src/targets/tauri/*.test.ts\" \"src/targets/ds-tools/**/*.test.ts\" \"src/utils/**/*.test.ts\" \"src/tokens/**/*.test.ts\""
   },
   "devDependencies": {
-    "@figma/plugin-typings": "^1.130.0",
+    "@figma/plugin-typings": "^1.136.0",
     "esbuild": "^0.28.1",
     "jszip": "^3.10.1",
     "typescript": "^6.0.3"
