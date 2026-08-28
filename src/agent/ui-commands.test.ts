@@ -1,0 +1,207 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { extractUiCommands } from './ui-commands.ts'
+
+const SOURCE = readFileSync(new URL('../code.ts', import.meta.url), 'utf8')
+
+/* ------------------------------------------------------------------ the parser */
+
+const SAMPLE = `
+type PluginMessage =
+  | { type: 'DO_THING'; nodeId: string; depth?: number }
+  | { type: 'PURE_THING' }
+
+async function handleUiMessage(msg: PluginMessage): Promise<void> {
+  switch (msg.type) {
+    case 'DO_THING': {
+      // @agent write: does the thing
+      await write(msg.nodeId)
+      figma.ui.postMessage({ type: 'THING_DONE' })
+      break
+    }
+    case 'PURE_THING': {
+      // @agent read: answers without touching anything
+      figma.ui.postMessage({
+        type: 'THING_ANSWER',
+        value: 1,
+      })
+      break
+    }
+    case 'UNMARKED_THING': {
+      figma.ui.postMessage({ type: 'WHATEVER' })
+      break
+    }
+  }
+}
+`
+
+test('a case becomes a command, with its marker, params and replies', () => {
+  const commands = extractUiCommands(SAMPLE)
+  assert.deepEqual(commands.map((command) => command.name), ['DO_THING', 'PURE_THING', 'UNMARKED_THING'])
+
+  const doThing = commands[0]
+  assert.equal(doThing.access, 'write')
+  assert.equal(doThing.summary, 'does the thing')
+  assert.deepEqual(doThing.params, [
+    { name: 'nodeId', required: true, type: 'string' },
+    { name: 'depth', required: false, type: 'number' },
+  ])
+  assert.deepEqual(doThing.replies, ['THING_DONE'])
+})
+
+test('a reply posted across several lines is still found', () => {
+  const pure = extractUiCommands(SAMPLE)[1]
+  assert.equal(pure.access, 'read')
+  assert.deepEqual(pure.replies, ['THING_ANSWER'])
+})
+
+test('a case with no marker is a write, and says the classification was assumed', () => {
+  // The whole point: an unclassified command still works, it just costs the write gate. Reading
+  // "harmless" into silence is how a read gate ends up authorising a mutation.
+  const unmarked = extractUiCommands(SAMPLE)[2]
+  assert.equal(unmarked.access, 'write')
+  assert.equal(unmarked.classified, false)
+  assert.equal(unmarked.summary, undefined)
+})
+
+test('cases outside the handler are not commands', () => {
+  const commands = extractUiCommands(`
+    function resolveSource(kind: string) {
+      switch (kind) {
+        case 'LIBRARY': { return 1 }
+      }
+    }
+    async function handleUiMessage(msg: PluginMessage): Promise<void> {
+      switch (msg.type) {
+        case 'REAL': { break }
+      }
+    }
+  `)
+  assert.deepEqual(commands.map((command) => command.name), ['REAL'])
+})
+
+test('a fall-through label inherits the params of the block that serves it', () => {
+  const commands = extractUiCommands(`
+type PluginMessage =
+  | { type: 'PREVIEW_IT'; source: Source }
+  | { type: 'APPLY_IT'; source: Source }
+
+async function handleUiMessage(msg: PluginMessage): Promise<void> {
+  switch (msg.type) {
+    case 'PREVIEW_IT':
+      // @agent read: counts only
+    case 'APPLY_IT': {
+      // @agent write: writes
+      const plan = await plan(msg.source)
+      figma.ui.postMessage({ type: 'DONE' })
+      break
+    }
+  }
+}
+  `)
+  const [preview, apply] = commands
+  assert.equal(preview.access, 'read')
+  assert.equal(apply.access, 'write')
+  // The label has no body of its own, so an empty param list would have been a lie.
+  assert.deepEqual(preview.params, apply.params)
+  assert.deepEqual(preview.replies, apply.replies)
+})
+
+test('a param the union forgot is still reported from the body', () => {
+  const commands = extractUiCommands(`
+type PluginMessage =
+  | { type: 'DRIFTED' }
+
+async function handleUiMessage(msg: PluginMessage): Promise<void> {
+  switch (msg.type) {
+    case 'DRIFTED': {
+      // @agent read: reads
+      use(msg.somethingNew)
+      break
+    }
+  }
+}
+  `)
+  assert.deepEqual(commands[0].params, [{ name: 'somethingNew', required: false }])
+})
+
+test('a nested object type is one param, not three', () => {
+  const commands = extractUiCommands(`
+type PluginMessage =
+  | {
+      type: 'WITH_FILES'
+      files: Array<{ name: string; text: string }>
+      snap?: number
+    }
+
+async function handleUiMessage(msg: PluginMessage): Promise<void> {
+  switch (msg.type) {
+    case 'WITH_FILES': {
+      // @agent read: reads
+      break
+    }
+  }
+}
+  `)
+  assert.deepEqual(commands[0].params, [
+    { name: 'files', required: true, type: 'Array<{ name: string; text: string }>' },
+    { name: 'snap', required: false, type: 'number' },
+  ])
+})
+
+test('a source with no handler yields nothing rather than guessing', () => {
+  assert.deepEqual(extractUiCommands('const x = 1'), [])
+})
+
+/* ------------------------------------------------------- against the real plugin */
+
+test("every command in the plugin's own switch is classified", () => {
+  const commands = extractUiCommands(SOURCE)
+  assert.ok(commands.length >= 40, `only ${commands.length} commands extracted — the handler shape may have moved`)
+  const unclassified = commands.filter((command) => !command.classified).map((command) => command.name)
+  // Not a requirement of the mechanism — an unmarked case works — but the whole surface was
+  // classified when this landed, and a new case should be marked while it is fresh.
+  assert.deepEqual(unclassified, [], 'these cases need an `// @agent read|write|deny:` marker')
+})
+
+test('the channel is not exposed through itself', () => {
+  const commands = extractUiCommands(SOURCE)
+  for (const name of ['AGENT_SET_GATES', 'AGENT_REQUEST']) {
+    assert.equal(commands.find((command) => command.name === name)?.access, 'deny', `${name} must be denied`)
+  }
+})
+
+test('the reads really are reads, by name and by spot check', () => {
+  const commands = extractUiCommands(SOURCE)
+  const access = (name: string) => commands.find((command) => command.name === name)?.access
+
+  // Anything that writes the document, stored settings or the network is a write, however
+  // read-ish its name sounds.
+  assert.equal(access('REMAP_APPLY'), 'write')
+  assert.equal(access('REMAP_BOARD'), 'write')
+  assert.equal(access('APPLY_PALETTE'), 'write')
+  assert.equal(access('SAVE_EXPORT_OPTIONS'), 'write')
+  assert.equal(access('DELIVER'), 'write')
+  assert.equal(access('CONFIRM_EXPORT'), 'write')
+  assert.equal(access('FIX_LINT'), 'write')
+
+  assert.equal(access('REMAP_SCAN'), 'read')
+  assert.equal(access('REMAP_PREVIEW'), 'read')
+  assert.equal(access('READ_VARIABLES'), 'read')
+  assert.equal(access('PREVIEW_PALETTE'), 'read')
+})
+
+test('the remap stage is reachable end to end, with its params', () => {
+  // The reason this mechanism exists: the plugin's colour mapping and its standardised board,
+  // driven from the agent side without an op per step.
+  const commands = extractUiCommands(SOURCE)
+  for (const name of ['REMAP_SCAN', 'REMAP_PREVIEW', 'REMAP_APPLY', 'REMAP_BOARD', 'REMAP_EXPORT_MAPPING', 'REMAP_REVERT']) {
+    assert.ok(commands.some((command) => command.name === name), `${name} is missing from the table`)
+  }
+  const preview = commands.find((command) => command.name === 'REMAP_PREVIEW')!
+  assert.deepEqual(
+    preview.params.filter((param) => param.required).map((param) => param.name),
+    ['source']
+  )
+})

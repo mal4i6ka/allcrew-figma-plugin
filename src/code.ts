@@ -85,6 +85,8 @@ import { buildComponentsMd, COMPONENTS_FILE, type ComponentDoc, type ComponentPr
 import { buildTokenEntries } from './targets/design-md/model'
 import { deliverPackage } from './delivery'
 import { agentManifest, handleAgentRequest, setGates } from './agent/listener.ts'
+import { setUiMessageRunner } from './agent/plugin-ops.ts'
+import { UI_COMMANDS } from './agent/ui-commands.ts'
 
 /* ------------------------------------------------------------------ types */
 
@@ -920,10 +922,23 @@ figma.on('selectionchange', postSelectionToUi)
 
 /* ------------------------------------------------------------------ message handler */
 
-figma.ui.onmessage = async (msg: PluginMessage) => {
+/**
+ * One switch, and every feature this plugin has hangs off it.
+ *
+ * A named function rather than an inline arrow because it has two callers now: the panel, and
+ * the agent channel — `plugin.call` runs a command by handing this the very message a click
+ * would have sent, which is what stops the listener from being a permanent subset of the
+ * plugin (see `agent/plugin-ops.ts`).
+ *
+ * Each case carries an `@agent read|write|deny:` marker. It is the one line to write when
+ * adding a command: `build.mjs` extracts it into the table the channel authorises against, and
+ * a case that ships without one is treated as a write.
+ */
+async function handleUiMessage(msg: PluginMessage): Promise<void> {
   switch (msg.type) {
     /* ---- design-tokens target ---- */
     case 'SCAN_TOKENS': {
+      // @agent read: build the design-token package (tokens, DESIGN.md, component docs) and hand back the files
       try {
         const graph = await readGraph()
         const stored = await figma.clientStorage.getAsync('exportOptions')
@@ -955,6 +970,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'DELIVER': {
+      // @agent write: POST a built package to the configured delivery endpoint — it leaves this machine
       try {
         const stored = await figma.clientStorage.getAsync('exportOptions')
         const options = normalizeExportOptions(stored)
@@ -974,6 +990,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'GENERATE_TYPOGRAPHY': {
+      // @agent write: create typography variables and bind text styles to them
       try {
         const stored = await figma.clientStorage.getAsync('exportOptions')
         const report = await generateTypographyVariables(normalizeExportOptions(stored))
@@ -989,17 +1006,20 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
 
     /* ---- DS Tools target ---- */
     case 'PREVIEW_PALETTE': {
+      // @agent read: recompute a palette from settings — pure maths, nothing is written
       // Pure math, so it answers immediately — the UI redraws its preview on every edit.
       const settings = normalizePaletteSettings(msg.settings)
       figma.ui.postMessage({ type: 'PALETTE_PREVIEW', palette: generatePalette(settings), settings })
       break
     }
     case 'SUGGEST_SPECTRUM': {
+      // @agent read: suggest a harmonious spectrum for the current settings
       const settings = normalizePaletteSettings(msg.settings)
       figma.ui.postMessage({ type: 'SPECTRUM_SUGGESTED', spectrum: suggestHarmoniousSpectrum(settings) })
       break
     }
     case 'FIX_PALETTE': {
+      // @agent write: apply one palette fix and store the corrected settings
       const fix = normalizePaletteFix(msg.fix)
       if (!fix) break
       const settings = applyPaletteFix(normalizePaletteSettings(msg.settings), fix)
@@ -1009,10 +1029,12 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'SAVE_PALETTE_SETTINGS': {
+      // @agent write: store palette settings in clientStorage
       await figma.clientStorage.setAsync('paletteSettings', normalizePaletteSettings(msg.settings))
       break
     }
     case 'APPLY_PALETTE': {
+      // @agent write: write a generated palette into the document as variables, theme roles and swatches
       try {
         const settings = normalizePaletteSettings(msg.settings)
         if (settings.spectra.length === 0) {
@@ -1037,6 +1059,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
 
     /* ---- DS Tools: color token remapping ---- */
     case 'REMAP_SCAN': {
+      // @agent read: inventory every colour in the document — variables, styles, gradient stops, loose paints
       try {
         remapInventory = await readRemapInventory(
           (label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }),
@@ -1059,11 +1082,13 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'REMAP_LIST_LIBRARIES': {
+      // @agent read: list the published library collections a new palette could be read from
       const result = await listLibraryCollections()
       figma.ui.postMessage({ type: 'REMAP_LIBRARIES', collections: result.collections, warnings: result.warnings })
       break
     }
     case 'REMAP_PREVIEW': {
+      // @agent read: build the old-to-new colour mapping and return the table, structurally matched
       try {
         const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         figma.ui.postMessage({ type: 'REMAP_PLAN', ...remapPlanView(plan), paletteSize: palette.length })
@@ -1073,6 +1098,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'REMAP_APPLY': {
+      // @agent write: write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot
       try {
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const options: RemapApplyOptions = { ...DEFAULT_REMAP_APPLY_OPTIONS, ...(msg.applyOptions ?? {}) }
@@ -1114,6 +1140,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'REMAP_REVERT': {
+      // @agent write: restore the values, names and paints the last remap replaced
       try {
         const report = await revertRemap((label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }))
         remapInventory = null
@@ -1125,7 +1152,11 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'REMAP_REBIND_PREVIEW':
+      // A fall-through label has no body of its own, so its marker sits between the two, which
+      // is exactly the span the extractor reads for it. The shared block below is the other's.
+      // @agent read: count what a rebind onto the reference library would move — writes nothing
     case 'REMAP_REBIND_APPLY': {
+      // @agent write: move the file's colour pointers onto the reference library
       try {
         if (msg.source.kind !== 'library') {
           throw new Error('rebinding needs the new palette read from a library — its variable keys are the destination')
@@ -1155,6 +1186,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'REMAP_REBIND_REVERT': {
+      // @agent write: undo the last rebind
       try {
         const report = await revertRebind((label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }))
         remapInventory = null
@@ -1172,6 +1204,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'REMAP_BOARD': {
+      // @agent write: draw the standardised old/new swatch board on canvas, replacing the one drawn last time
       try {
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         figma.ui.postMessage({ type: 'REMAP_PROGRESS', label: 'drawing the board…' })
@@ -1184,6 +1217,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'REMAP_UNPARK': {
+      // @agent write: give back the names this plugin parked under legacy/
       try {
         const report = await unparkLegacyNames()
         remapInventory = null
@@ -1197,6 +1231,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'REMAP_EXPORT_MAPPING': {
+      // @agent read: serialise the mapping as mapping.json or .csv for the repository side
       try {
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind })
@@ -1213,6 +1248,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     }
 
     case 'REMAP_REWRITE_FILES': {
+      // @agent read: rewrite colours in supplied file contents off the same mapping — a pure transform
       try {
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind })
@@ -1253,11 +1289,13 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
 
     /* ---- shared ---- */
     case 'READ_VARIABLES': {
+      // @agent read: the raw variable snapshot: collections, modes, values, aliases
       const data = await readAllVariables()
       figma.ui.postMessage({ type: 'VARIABLES_SNAPSHOT', data })
       break
     }
     case 'EMIT_TOKENS': {
+      // @agent read: emit tokens.json / tokens.css / _tokens.scss from the current variables
       const [snapshot, stored] = await Promise.all([
         readAllVariables(),
         figma.clientStorage.getAsync('exportOptions'),
@@ -1267,6 +1305,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'SYNC_BREAKPOINT_FRAMES': {
+      // @agent write: resize page frames whose names carry a breakpoint to that breakpoint width
       const snapshot = await readAllVariables()
       const breakpointTokens = extractBreakpointTokens(snapshot)
       const namedWidths = { desktop: 1280, tablet: 768, mobile: 375, ...Object.fromEntries(breakpointTokens) }
@@ -1284,6 +1323,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'GENERATE_BREAKPOINT_COLLECTION': {
+      // @agent write: create the breakpoint variable collection
       try {
         const result = await generateBreakpointCollection(msg.breakpoints)
         figma.ui.postMessage({ type: 'BREAKPOINT_COLLECTION_GENERATED', ...result })
@@ -1298,6 +1338,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
 
     /* ---- django target ---- */
     case 'EMIT_DJANGO': {
+      // @agent read: render the scope as one Django template plus its CSS
       const roots = rootsForScope(msg.scope)
       const [irNodes, sceneNodesById, snapshot] = await Promise.all([
         Promise.all(roots.map((root) => serializeNode(root))),
@@ -1312,6 +1353,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'EMIT_DJANGO_PROJECT': {
+      // @agent read: render the scope as a multi-page Django project and plan the regeneration
       const roots = rootsForScope(msg.scope)
       const [irNodes, sceneNodesById, snapshot] = await Promise.all([
         Promise.all(roots.map((root) => serializeNode(root))),
@@ -1370,6 +1412,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'SCAN': {
+      // @agent read: index the scope: frames, text nodes, lint findings, video assets
       const roots = rootsForScope(msg.scope)
       const index = await indexSceneNodes(roots)
       lastScanIndex = index
@@ -1405,6 +1448,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'SCAN_TOP': {
+      // @agent read: the page top-level frames, cheaply
       const frames = figma.currentPage.children
         .filter((node): node is FrameNode => node.type === 'FRAME')
         .map((node) => ({ id: node.id, name: node.name }))
@@ -1418,6 +1462,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'SCROLL_INTO_VIEW': {
+      // @agent read: scroll the designer to a node — viewport only, the document is untouched
       const node = lastScanIndex.get(msg.nodeId) ?? (await figma.getNodeByIdAsync(msg.nodeId))
       if (node && 'visible' in node) {
         const target = node as SceneNode
@@ -1427,6 +1472,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'FIX_LINT': {
+      // @agent write: apply the linter fixes named in findings
       figma.commitUndo()
       const total = msg.findings.length
       const results: LintFixResult[] = []
@@ -1465,6 +1511,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'LOAD_ANNOTATION_PANEL': {
+      // @agent read: read the annotation form state for one node
       const node = lastScanIndex.get(msg.nodeId)
       if (!node || node.type !== 'TEXT') break
       const resolved = await resolveKey(node)
@@ -1476,6 +1523,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'SET_ANNOTATION': {
+      // @agent write: write a node's annotation: export settings, docs, interaction notes
       const node = lastScanIndex.get(msg.nodeId)
       if (!node || node.type !== 'TEXT') break
       try {
@@ -1491,14 +1539,26 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'AGENT_SET_GATES': {
+      // @agent deny: the gates are the designer's switch — an agent must never set its own permissions
       const gates = setGates({ read: msg.read, write: msg.write })
       // Remembered on the way through rather than on a separate save: the gates the sandbox
       // actually holds are the only ones worth persisting.
       await rememberGates(gates)
-      figma.ui.postMessage({ type: 'AGENT_GATES', ...gates, ops: agentManifest(), file: figma.root.name, fileKey: figma.fileKey ?? null })
+      // The command table rides along with the op manifest: the skill is rendered in the UI,
+      // and a channel that can drive the whole panel should say so in the document it hands
+      // the agent rather than make it discover that by asking.
+      figma.ui.postMessage({
+        type: 'AGENT_GATES',
+        ...gates,
+        ops: agentManifest(),
+        commands: UI_COMMANDS,
+        file: figma.root.name,
+        fileKey: figma.fileKey ?? null,
+      })
       break
     }
     case 'AGENT_REQUEST': {
+      // @agent deny: this is the channel itself; routing it through itself only recurses
       // Never throws: a rejected or failed op comes back as `{ ok: false, error }` so the
       // bridge can answer the waiting CLI instead of leaving it on a timeout.
       const response = await handleAgentRequest({ id: msg.id, op: msg.op, params: msg.params })
@@ -1506,11 +1566,13 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'SAVE_EXPORT_OPTIONS': {
+      // @agent write: store export options in clientStorage
       const stored = await figma.clientStorage.getAsync('exportOptions')
       await figma.clientStorage.setAsync('exportOptions', mergeExportOptions(stored, msg.options))
       break
     }
     case 'SAVE_USER_PRESET': {
+      // @agent write: store a user preset in clientStorage
       const stored = normalizeUserPresets(await figma.clientStorage.getAsync('userPresets'))
       const updated = upsertUserPreset(stored, msg.label, msg.values)
       await figma.clientStorage.setAsync('userPresets', updated)
@@ -1518,6 +1580,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'DELETE_USER_PRESET': {
+      // @agent write: delete a stored user preset
       const stored = normalizeUserPresets(await figma.clientStorage.getAsync('userPresets'))
       const updated = stored.filter((preset) => preset.id !== msg.id)
       await figma.clientStorage.setAsync('userPresets', updated)
@@ -1525,6 +1588,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'GENERATE_KIT': {
+      // @agent write: draw the starter component kit onto the canvas
       try {
         const snapshot = await readAllVariables()
         const colorVariables = snapshot.variables
@@ -1543,6 +1607,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'IMPORT_TRANSLATIONS': {
+      // @agent write: write translated strings back into the text layers
       try {
         const roots = rootsForScope(msg.scope)
         const index = await indexSceneNodes(roots)
@@ -1568,6 +1633,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       break
     }
     case 'CONFIRM_EXPORT': {
+      // @agent write: run the full export: builds every file, saves version history and relaunch data
       const { scope, modules, cssFile } = msg
       const roots = rootsForScope(scope)
       let stage = 'scan'
@@ -1849,3 +1915,10 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     }
   }
 }
+
+figma.ui.onmessage = handleUiMessage
+
+// The agent side of the same door. Registered from here rather than imported over there: the
+// handler already imports the op registry, so the registry reaching back for the handler would
+// be a cycle — and this way the channel can only run commands this build actually has.
+setUiMessageRunner((message) => handleUiMessage(message as PluginMessage))

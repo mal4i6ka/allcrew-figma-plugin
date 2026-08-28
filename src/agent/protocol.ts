@@ -42,6 +42,12 @@ export interface OpDef {
   summary: string
   /** True when the op writes to the document. Gated separately from reads — see `authorize`. */
   mutates: boolean
+  /** For an op that is a doorway rather than an action — `plugin.call`, which runs whichever
+   * plugin command it was handed. Consulted by `authorize` with the RAW params (before
+   * validation, since the decision is what gate to demand and validation errors are the op's
+   * own business). Must answer `true` whenever it cannot prove the request is a read: this is
+   * the only thing standing between the read gate and a mutation. */
+  mutatesWhen?: (raw: unknown) => boolean
   /** One or two sentences of usage guidance for the paste-once skill. Lives ON the op so the
    * "Teach the agent" text regenerates whole: an op that ships without its own documentation
    * is an op the agent will misuse — write ops are REQUIRED to carry this (enforced by test). */
@@ -84,9 +90,9 @@ export type Authorization = { ok: true } | { ok: false; error: string }
  * disclosure, so `read` is a real switch rather than an always-on default, and `write` never
  * rides along with it.
  */
-export function authorize(op: OpDef | undefined, gates: AgentGates): Authorization {
+export function authorize(op: OpDef | undefined, gates: AgentGates, raw?: unknown): Authorization {
   if (!op) return { ok: false, error: 'unknown op' }
-  if (op.mutates) {
+  if (op.mutatesWhen ? op.mutatesWhen(raw) : op.mutates) {
     if (!gates.write) return { ok: false, error: 'writes are off — enable "Allow changes" in the plugin' }
     return { ok: true }
   }

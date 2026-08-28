@@ -277,9 +277,45 @@ touch the document.
 
 ---
 
+## The rest of the plugin: `plugin.call`
+
+The ops above are hand-written. The plugin itself is much bigger than them — the colour-token
+remap, the token and Django exporters, the palette generator, the lint batch-fix, the
+standardised old/new board — and all of it already exists as one `case` in the UI→sandbox
+switch in `src/code.ts`. Writing an op per feature would keep the channel permanently one
+step behind the panel, so it isn't done that way:
+
+```bash
+curl -s "$BASE/call" -H "x-altery-secret: $SECRET" \
+  -d '{"op":"plugin.commands"}'                                  # what exists
+curl -s "$BASE/call" -H "x-altery-secret: $SECRET" \
+  -d '{"op":"plugin.call","params":{"command":"REMAP_SCAN"}}'     # run one
+```
+
+`plugin.call` sends the message a click would have sent and returns the replies the command
+posted. Three things make that safe enough to be worth having:
+
+- **The table is extracted, not maintained.** `build.mjs` parses the switch (and the
+  `PluginMessage` union, for which params are required) into the registry the channel
+  authorises against, on every build. A `case` added tomorrow is callable the moment it ships.
+- **The gate is decided per command.** Each case carries an `// @agent read|write|deny:`
+  marker — the one line to write when adding a command. Only `read` passes on the read gate;
+  an unmarked case counts as a write, and `AGENT_*` is refused structurally so the channel
+  cannot reach its own gates.
+- **Replies are recorded, not intercepted.** The panel receives everything, so the designer
+  watches what the agent did — and UI-side work (a zip built from an export) still happens.
+  Long strings in a reply become files on disk, the same rule as the ops above.
+
+Sandbox state is shared with the panel, so multi-step features follow the panel's order:
+`REMAP_SCAN` → `REMAP_PREVIEW` → `REMAP_APPLY` / `REMAP_BOARD`.
+
+---
+
 ## Adding an op
 
-Register it in `src/agent/ops.ts`:
+Most features need no op at all — see `plugin.call` above, which reaches every panel command
+for free. Write an op when an agent needs something the panel has no button for. Register it
+in `src/agent/ops.ts`:
 
 ```ts
 {

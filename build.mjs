@@ -1,5 +1,6 @@
 import * as esbuild from "esbuild";
 import { readFileSync, writeFileSync } from "node:fs";
+import { extractUiCommands } from "./src/agent/ui-commands.ts";
 
 const watch = process.argv.includes("--watch");
 
@@ -36,11 +37,51 @@ function copyUi() {
   writeFileSync("dist/ui.html", ui);
 }
 
+/**
+ * The agent channel's view of the plugin's own commands, read off the switch that implements
+ * them (see src/agent/ui-commands.ts). Done here, on every rebuild, so a `case` added to
+ * code.ts is callable by an agent as soon as it is built — there is no registry to update and
+ * no generated file that can fall behind.
+ */
+const UI_COMMANDS_MARKER = "'__ALTERY_UI_COMMANDS__'";
+
+function injectUiCommands(source) {
+  const commands = extractUiCommands(readFileSync("src/code.ts", "utf8"));
+  if (commands.length === 0) {
+    // Loud: a silent empty table would ship a channel that reports the plugin has no features.
+    throw new Error("no UI commands extracted from src/code.ts — the message handler moved or its shape changed");
+  }
+  const occurrences = source.split(UI_COMMANDS_MARKER).length - 1;
+  if (occurrences !== 1) {
+    // Exactly one, so there is no question which literal the injection lands on.
+    throw new Error(
+      `ui-commands.ts contains ${UI_COMMANDS_MARKER} ${occurrences} time(s), expected exactly 1 — the agent channel would ship an empty or wrong command table`
+    );
+  }
+  const unclassified = commands.filter((command) => !command.classified).map((command) => command.name);
+  if (unclassified.length > 0) {
+    // Not fatal — an unmarked command still works, it just costs the write gate. Worth a line
+    // in the build log so the marker gets added while the case is fresh.
+    console.log(`[agent] ${unclassified.length} command(s) with no @agent marker, treated as writes: ${unclassified.join(", ")}`);
+  }
+  console.log(`[agent] ${commands.length} plugin commands exposed to the listener`);
+  return source.replace(UI_COMMANDS_MARKER, JSON.stringify(JSON.stringify(commands)));
+}
+
 const mainCtx = await esbuild.context({
   ...commonOptions,
   entryPoints: ["src/code.ts"],
   outfile: "dist/code.js",
   plugins: [
+    {
+      name: "inject-ui-commands",
+      setup(build) {
+        build.onLoad({ filter: /src[\\/]agent[\\/]ui-commands\.ts$/ }, (args) => ({
+          contents: injectUiCommands(readFileSync(args.path, "utf8")),
+          loader: "ts",
+        }));
+      },
+    },
     {
       name: "copy-ui-html",
       setup(build) {

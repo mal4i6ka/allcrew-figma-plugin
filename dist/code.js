@@ -17804,9 +17804,9 @@ ${renderSections(sections)}
       params: __spreadValues({}, op.params)
     }));
   }
-  function authorize(op, gates2) {
+  function authorize(op, gates2, raw) {
     if (!op) return { ok: false, error: "unknown op" };
-    if (op.mutates) {
+    if (op.mutatesWhen ? op.mutatesWhen(raw) : op.mutates) {
       if (!gates2.write) return { ok: false, error: 'writes are off \u2014 enable "Allow changes" in the plugin' };
       return { ok: true };
     }
@@ -20979,6 +20979,340 @@ ${scripts}`, "");
     ...REMOVE_OPS
   ];
 
+  // src/agent/ui-commands.ts
+  var INJECTED = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown"},{"name":"fix","required":true,"type":"unknown"}],"replies":["PALETTE_FIXED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","params":[{"name":"depth","required":false,"type":"ScanDepth"}],"replies":["REMAP_PROGRESS","REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board on canvas, replacing the one drawn last time","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"format","required":true,"type":"'json' | 'csv'"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>"},{"name":"snap","required":false,"type":"number"},{"name":"byName","required":false,"type":"boolean"},{"name":"mode","required":false,"type":"string | null"}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope"},{"name":"lintMaxDepth","required":false,"type":"number"}],"replies":["SCAN_RESULT"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":[]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":["ANNOTATION_PANEL"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string"},{"name":"form","required":true,"type":"AnnotationFormState"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean"},{"name":"write","required":true,"type":"boolean"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string"},{"name":"op","required":true,"type":"string"},{"name":"params","required":false,"type":"unknown"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string"},{"name":"values","required":true,"type":"unknown"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string"}],"replies":["USER_PRESETS"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string"},{"name":"format","required":true,"type":"ImportFormat"},{"name":"scope","required":true,"type":"ExportScope"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope"},{"name":"modules","required":true,"type":"ExportModules"},{"name":"cssFile","required":true,"type":"string"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
+  var UI_COMMANDS = (() => {
+    if (!INJECTED.startsWith("[")) return [];
+    try {
+      const parsed = JSON.parse(INJECTED);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  })();
+  var UI_COMMANDS_BY_NAME = new Map(
+    UI_COMMANDS.map((command) => [command.name, command])
+  );
+
+  // src/agent/reply-digest.ts
+  var DEFAULT_DIGEST_BUDGET = { keep: 400, maxFiles: 60, maxBytes: 4e6 };
+  var MAX_DEPTH = 5;
+  var MAX_ARRAY = 12;
+  var MAX_KEYS = 24;
+  var CHANNEL_TYPES = ["AGENT_REQUEST", "AGENT_RESPONSE", "AGENT_GATES", "AGENT_ACTIVITY"];
+  function digestReplies(replies, budget = DEFAULT_DIGEST_BUDGET) {
+    const state = { files: 0, bytes: 0, truncated: false, names: /* @__PURE__ */ new Set() };
+    const own = replies.filter((reply) => {
+      var _a;
+      return !CHANNEL_TYPES.includes((_a = typeOf(reply)) != null ? _a : "");
+    });
+    const out = [];
+    let collapsed = 0;
+    for (let index = 0; index < own.length; index++) {
+      const type = typeOf(own[index]);
+      let runEnd = index;
+      while (runEnd + 1 < own.length && type !== null && typeOf(own[runEnd + 1]) === type) runEnd++;
+      if (runEnd > index + 1) {
+        out.push(digestValue(own[index], 0, budget, state));
+        out.push({ type, repeated: runEnd - index - 1, note: "identical replies omitted" });
+        out.push(digestValue(own[runEnd], 0, budget, state));
+        collapsed += runEnd - index - 1;
+        index = runEnd;
+        continue;
+      }
+      out.push(digestValue(own[index], 0, budget, state));
+    }
+    return { replies: out, collapsed, files: state.files, truncated: state.truncated };
+  }
+  function typeOf(reply) {
+    if (typeof reply !== "object" || reply === null) return null;
+    const type = reply.type;
+    return typeof type === "string" ? type : null;
+  }
+  function digestValue(value, depth, budget, state, key = "") {
+    if (value === null || value === void 0) return value != null ? value : null;
+    if (typeof value === "number" || typeof value === "boolean") return value;
+    if (typeof value === "string") return digestString(value, budget, state, key);
+    if (typeof value === "function" || typeof value === "symbol") return `[${typeof value}]`;
+    if (value instanceof Uint8Array) {
+      state.truncated = true;
+      return { bytes: value.length, note: "binary omitted" };
+    }
+    if (Array.isArray(value)) {
+      if (depth >= MAX_DEPTH) {
+        state.truncated = true;
+        return { count: value.length, note: "nested too deep to show" };
+      }
+      if (value.length > MAX_ARRAY) {
+        state.truncated = true;
+        return {
+          count: value.length,
+          sample: value.slice(0, 3).map((entry) => digestValue(entry, depth + 1, budget, state, key)),
+          note: `showing 3 of ${value.length}`
+        };
+      }
+      return value.map((entry) => digestValue(entry, depth + 1, budget, state, key));
+    }
+    const record2 = value;
+    const keys = Object.keys(record2);
+    if (depth >= MAX_DEPTH) {
+      state.truncated = true;
+      return { keys: keys.length, note: "nested too deep to show" };
+    }
+    if (keys.length > MAX_KEYS) {
+      state.truncated = true;
+      return { keys: keys.length, names: keys.slice(0, MAX_KEYS), note: `showing ${MAX_KEYS} of ${keys.length}` };
+    }
+    const out = {};
+    for (const entry of keys) {
+      out[entry] = digestValue(record2[entry], depth + 1, budget, state, entry);
+    }
+    return out;
+  }
+  function digestString(value, budget, state, key) {
+    if (value.length <= budget.keep) return value;
+    if (state.files < budget.maxFiles && state.bytes + value.length <= budget.maxBytes) {
+      const name = fileNameFor(key, state.names);
+      if (name) {
+        state.files++;
+        state.bytes += value.length;
+        state.names.add(name);
+        return textFile(name, mimeFor(name), value);
+      }
+    }
+    state.truncated = true;
+    return { chars: value.length, head: value.slice(0, budget.keep), note: "truncated" };
+  }
+  var MIME_BY_EXT = {
+    css: "text/css",
+    csv: "text/csv",
+    html: "text/html",
+    js: "text/javascript",
+    json: "application/json",
+    md: "text/markdown",
+    po: "text/x-gettext-translation",
+    scss: "text/x-scss",
+    svg: "image/svg+xml",
+    txt: "text/plain",
+    xml: "application/xml"
+  };
+  function mimeFor(name) {
+    var _a;
+    const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+    return (_a = MIME_BY_EXT[ext]) != null ? _a : "text/plain";
+  }
+  function fileNameFor(key, taken) {
+    const dot = key.lastIndexOf(".");
+    const ext = dot > 0 ? key.slice(dot + 1).toLowerCase() : "";
+    const stem = dot > 0 ? key.slice(0, dot) : key;
+    const slug2 = stem.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80).toLowerCase();
+    const suffix = /^[a-z0-9]{1,8}$/.test(ext) ? ext : "txt";
+    let candidate = `${slug2 || "reply"}.${suffix}`;
+    for (let n = 2; taken.has(candidate); n++) candidate = `${slug2 || "reply"}-${n}.${suffix}`;
+    return isSafeFileName(candidate) ? candidate : null;
+  }
+
+  // src/agent/plugin-ops.ts
+  var runner = null;
+  function setUiMessageRunner(next) {
+    runner = next;
+  }
+  function commandNameOf(raw) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const command = raw.command;
+    return typeof command === "string" ? command : null;
+  }
+  var DEFAULT_CALL_TIMEOUT_MS = 15e4;
+  async function withCapture(run, timeoutMs) {
+    const ui = figma.ui;
+    const original = ui.postMessage;
+    if (typeof original !== "function") return { replies: [], installed: false, timedOut: false };
+    const replies = [];
+    let recording = true;
+    const spy = (message, options) => {
+      if (recording) replies.push(message);
+      original.call(figma.ui, message, options);
+    };
+    const hadOwn = Object.prototype.hasOwnProperty.call(ui, "postMessage");
+    let installed = false;
+    try {
+      ui.postMessage = spy;
+      installed = ui.postMessage === spy;
+    } catch (e) {
+      installed = false;
+    }
+    if (!installed) {
+      try {
+        Object.defineProperty(ui, "postMessage", { value: spy, configurable: true, writable: true });
+        installed = ui.postMessage === spy;
+      } catch (e) {
+        installed = false;
+      }
+    }
+    let timedOut = false;
+    let timer;
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, timeoutMs);
+    });
+    try {
+      await Promise.race([
+        run().catch((error) => {
+          if (timedOut) {
+            console.warn("[agent] plugin command failed after it was abandoned", error);
+            return;
+          }
+          throw error;
+        }),
+        deadline
+      ]);
+    } finally {
+      if (timer !== void 0) clearTimeout(timer);
+      recording = false;
+      if (installed) {
+        try {
+          if (hadOwn) ui.postMessage = original;
+          else delete ui.postMessage;
+          if (ui.postMessage !== original) ui.postMessage = original;
+        } catch (e) {
+        }
+      }
+    }
+    return { replies, installed, timedOut };
+  }
+  var queue = Promise.resolve();
+  function serialize(work) {
+    const next = queue.then(work, work);
+    queue = next.then(
+      () => void 0,
+      () => void 0
+    );
+    return next;
+  }
+  function pluginOps(commands = UI_COMMANDS) {
+    const byName = new Map(commands.map((command) => [command.name, command]));
+    const deniedReason = (command) => {
+      if (command.startsWith("AGENT_")) {
+        return "the listener's own messages are not callable through the listener \u2014 the gates are the designer's switch, and AGENT_REQUEST would only recurse";
+      }
+      const def = byName.get(command);
+      if ((def == null ? void 0 : def.access) === "deny") return def.summary || "this command is marked unavailable to agents";
+      return null;
+    };
+    const mutatesWhen = (raw) => {
+      var _a;
+      const command = commandNameOf(raw);
+      if (!command) return true;
+      if (deniedReason(command)) return true;
+      return ((_a = byName.get(command)) == null ? void 0 : _a.access) !== "read";
+    };
+    const describe = (command) => __spreadProps(__spreadValues(__spreadValues({
+      command: command.name,
+      access: deniedReason(command.name) ? "deny" : command.access
+    }, command.summary ? { summary: command.summary } : {}), command.classified ? {} : { classified: false }), {
+      params: command.params,
+      replies: command.replies
+    });
+    return [
+      {
+        name: "plugin.commands",
+        summary: "Every command the plugin's own panel can run, and which of them need the write gate.",
+        mutates: false,
+        agent: "The plugin is much bigger than this op list: colour-token remap, token export, palette generation, lint fixes, the old/new board. Call this first, then drive any of it with `plugin.call`. `params` says what each command accepts and which keys are required; `replies` the message types to expect back.",
+        params: {
+          command: {
+            type: "string",
+            description: "One command to describe, instead of the whole list."
+          }
+        },
+        async run(params) {
+          const wanted = params.command;
+          if (wanted) {
+            const def = byName.get(wanted);
+            if (!def) throw new Error(`unknown command "${wanted}" \u2014 call plugin.commands with no params for the list`);
+            return describe(def);
+          }
+          return __spreadProps(__spreadValues({
+            count: commands.length
+          }, commands.length === 0 ? { warning: "this build shipped without its command table \u2014 rebuild the plugin (npm run build)" } : {}), {
+            commands: commands.map(describe)
+          });
+        }
+      },
+      {
+        name: "plugin.call",
+        summary: "Run one of the plugin panel's own commands \u2014 the whole feature set, not just the ops.",
+        mutates: true,
+        mutatesWhen,
+        agent: 'Runs a panel command as if the designer had clicked it, and returns the replies it posted. Discover commands with `plugin.commands`; pass that command\'s own keys in `params` (e.g. {"command":"REMAP_PREVIEW","params":{"source":{"kind":"paste","text":"#0EA5E9"}}}). Multi-step features keep state in the sandbox between calls, so follow their panel order \u2014 REMAP_SCAN before REMAP_PREVIEW before REMAP_APPLY. Long strings come back as files on disk rather than inline. The designer\'s panel receives every reply too, so it redraws, and may finish UI-side work such as building a zip.',
+        params: {
+          command: {
+            type: "string",
+            required: true,
+            description: "The command name, e.g. REMAP_SCAN. See plugin.commands."
+          },
+          params: {
+            type: "json",
+            description: "The rest of the message: exactly the keys that command's `params` lists."
+          },
+          keep: {
+            type: "number",
+            default: DEFAULT_DIGEST_BUDGET.keep,
+            min: 0,
+            max: 2e4,
+            description: "Characters of a long string kept inline before it spills to a file."
+          },
+          timeoutMs: {
+            type: "number",
+            default: DEFAULT_CALL_TIMEOUT_MS,
+            min: 1e3,
+            max: 6e5,
+            description: "How long to wait for the command before answering with what it said so far."
+          }
+        },
+        async run(params) {
+          var _a, _b;
+          const command = params.command;
+          if (!runner) throw new Error("the plugin has not registered its message handler \u2014 reopen the plugin");
+          const denied = deniedReason(command);
+          if (denied) throw new Error(`"${command}" is not available through the channel: ${denied}`);
+          const def = byName.get(command);
+          if (!def && commands.length > 0) {
+            throw new Error(`unknown command "${command}" \u2014 call plugin.commands for the list`);
+          }
+          const extra = (_a = params.params) != null ? _a : {};
+          if (Array.isArray(extra)) throw new Error('param "params" must be a JSON object, not an array');
+          if ("type" in extra) throw new Error('param "params" must not carry "type" \u2014 that is what "command" is');
+          const missing = def ? def.params.filter((param) => param.required && !(param.name in extra)) : [];
+          if (missing.length > 0) {
+            throw new Error(
+              `"${command}" needs ${missing.map((param) => param.name + (param.type ? `: ${param.type}` : "")).join(", ")}`
+            );
+          }
+          const ignored = def ? Object.keys(extra).filter((key) => !def.params.some((param) => param.name === key)) : [];
+          const started = Date.now();
+          const capture = await serialize(
+            () => withCapture(() => Promise.resolve(runner(__spreadProps(__spreadValues({}, extra), { type: command }))), params.timeoutMs)
+          );
+          const digest = digestReplies(capture.replies, __spreadProps(__spreadValues({}, DEFAULT_DIGEST_BUDGET), { keep: params.keep }));
+          return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
+            command,
+            access: (_b = def == null ? void 0 : def.access) != null ? _b : "write"
+          }, def && !def.classified ? { classified: false } : {}), {
+            ms: Date.now() - started,
+            replies: digest.replies
+          }), digest.collapsed ? { collapsed: digest.collapsed } : {}), digest.files ? { files: digest.files } : {}), digest.truncated ? { truncated: true } : {}), ignored.length > 0 ? { ignoredParams: ignored } : {}), capture.timedOut ? {
+            stillRunning: true,
+            note: `stopped waiting after ${params.timeoutMs}ms \u2014 the command is still running in the plugin. Its remaining replies are no longer attributed to this call: they reach the panel, and one arriving mid-way through a later call can show up in that call's replies. Check the result with a follow-up read rather than repeating this command.`
+          } : !capture.installed ? { captured: false, note: "this runtime would not let the replies be recorded \u2014 they went to the panel only" } : digest.replies.length === 0 ? { note: "the command posted no reply \u2014 some only store a setting, and answer nothing" } : {});
+        }
+      }
+    ];
+  }
+  var PLUGIN_OPS = pluginOps();
+
   // src/agent/ops.ts
   function round22(value) {
     return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) / 100 : void 0;
@@ -22456,7 +22790,7 @@ ${scripts}`, "");
       }
     }
   ];
-  var ALL_OPS = [...READ_OPS, ...CONTEXT_OPS, ...TRANSITION_OPS, ...WRITE_OPS];
+  var ALL_OPS = [...READ_OPS, ...CONTEXT_OPS, ...TRANSITION_OPS, ...WRITE_OPS, ...PLUGIN_OPS];
   var OPS_BY_NAME = new Map(ALL_OPS.map((op) => [op.name, op]));
 
   // src/agent/listener.ts
@@ -22471,7 +22805,7 @@ ${scripts}`, "");
   async function handleAgentRequest(request) {
     const started = Date.now();
     const op = OPS_BY_NAME.get(request.op);
-    const permitted = authorize(op, gates);
+    const permitted = authorize(op, gates, request.params);
     if (!permitted.ok) {
       report(request.op, false, Date.now() - started, permitted.error);
       return { id: request.id, ok: false, error: permitted.error };
@@ -23105,7 +23439,7 @@ ${scripts}`, "");
     });
   }
   figma.on("selectionchange", postSelectionToUi);
-  figma.ui.onmessage = async (msg) => {
+  async function handleUiMessage(msg) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
@@ -23292,6 +23626,9 @@ ${scripts}`, "");
         break;
       }
       case "REMAP_REBIND_PREVIEW":
+      // A fall-through label has no body of its own, so its marker sits between the two, which
+      // is exactly the span the extractor reads for it. The shared block below is the other's.
+      // @agent read: count what a rebind onto the reference library would move — writes nothing
       case "REMAP_REBIND_APPLY": {
         try {
           if (msg.source.kind !== "library") {
@@ -23627,7 +23964,14 @@ ${scripts}`, "");
       case "AGENT_SET_GATES": {
         const gates2 = setGates({ read: msg.read, write: msg.write });
         await rememberGates(gates2);
-        figma.ui.postMessage(__spreadProps(__spreadValues({ type: "AGENT_GATES" }, gates2), { ops: agentManifest(), file: figma.root.name, fileKey: (_m = figma.fileKey) != null ? _m : null }));
+        figma.ui.postMessage(__spreadProps(__spreadValues({
+          type: "AGENT_GATES"
+        }, gates2), {
+          ops: agentManifest(),
+          commands: UI_COMMANDS,
+          file: figma.root.name,
+          fileKey: (_m = figma.fileKey) != null ? _m : null
+        }));
         break;
       }
       case "AGENT_REQUEST": {
@@ -23919,5 +24263,7 @@ ${scripts}`, "");
         break;
       }
     }
-  };
+  }
+  figma.ui.onmessage = handleUiMessage;
+  setUiMessageRunner((message) => handleUiMessage(message));
 })();

@@ -23,6 +23,7 @@ import type { OpDef } from './protocol.ts'
 import { CONTEXT_OPS } from './context-ops.ts'
 import { TRANSITION_OPS } from './transition-ops.ts'
 import { WRITE_OPS } from './write-ops.ts'
+import { PLUGIN_OPS } from './plugin-ops.ts'
 
 /* ------------------------------------------------------------- serializers */
 
@@ -2008,6 +2009,9 @@ export const READ_OPS: readonly OpDef[] = [
   },
 ]
 
-export const ALL_OPS: readonly OpDef[] = [...READ_OPS, ...CONTEXT_OPS, ...TRANSITION_OPS, ...WRITE_OPS]
+// `PLUGIN_OPS` last, and deliberately not folded into either half: it is the doorway onto the
+// plugin's own command surface, which contains reads and writes both, and decides which gate
+// it needs per call rather than per op.
+export const ALL_OPS: readonly OpDef[] = [...READ_OPS, ...CONTEXT_OPS, ...TRANSITION_OPS, ...WRITE_OPS, ...PLUGIN_OPS]
 
 export const OPS_BY_NAME: ReadonlyMap<string, OpDef> = new Map(ALL_OPS.map((op) => [op.name, op]))

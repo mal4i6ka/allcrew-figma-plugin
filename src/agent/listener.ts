@@ -48,7 +48,9 @@ export async function handleAgentRequest(request: AgentRequest): Promise<AgentRe
   const started = Date.now()
   const op = OPS_BY_NAME.get(request.op)
 
-  const permitted = authorize(op, gates)
+  // The raw params, not the validated ones: an op like `plugin.call` is a read or a write
+  // depending on what it was asked to run, and that has to be decided before anything runs.
+  const permitted = authorize(op, gates, request.params)
   if (!permitted.ok) {
     report(request.op, false, Date.now() - started, permitted.error)
     return { id: request.id, ok: false, error: permitted.error }

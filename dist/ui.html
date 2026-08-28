@@ -3208,6 +3208,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       var AGENT = {
         generation: 0,
         ops: [],
+        // The plugin's own panel commands, extracted from its message handler at build time.
+        // They are what `plugin.call` can run, so the skill lists them next to the ops.
+        commands: [],
         file: null,
         session: null,
         handle: null,
@@ -3322,6 +3325,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // the bridge serves to `altery-figma ops`, so registering it IS the handshake.
       function agentHandshake(msg) {
         AGENT.ops = msg.ops || []
+        AGENT.commands = msg.commands || []
         AGENT.file = msg.file || null
         // Kept so a reconnect re-announces the gates the *sandbox* reported, not a guess. The
         // sandbox stays the authority either way — it refuses on its own copy — but a bridge
@@ -3470,6 +3474,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           return '| ' + (op.mutates ? '**!** ' : '') + '`' + op.name + '` | ' + op.summary +
             ' | ' + (params || '—') + ' |'
         })
+        // The plugin's own panel commands, on the same terms: extracted from the source at
+        // build time, so a feature added to the panel shows up here without anyone editing this
+        // document. Denied commands are left out rather than listed as forbidden — there is
+        // nothing an agent can do with them.
+        var commandRows = (AGENT.commands || []).filter(function (command) {
+          return command.access !== 'deny'
+        }).map(function (command) {
+          var params = (command.params || []).map(function (param) {
+            return param.required ? param.name + '!' : param.name
+          }).join(', ')
+          return '| ' + (command.access === 'write' ? '**!** ' : '') + '`' + command.name + '` | ' +
+            (command.summary || '') + ' | ' + (params || '—') + ' |'
+        })
         // Guidance lives ON the ops (OpDef.agent) so this text regenerates whole — the table
         // was always live, but the how-to bullets used to be frozen prose from a 23-op era.
         var wrapNote = function (text, width) {
@@ -3555,6 +3572,45 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           '- Search by name (`node.find`) before fetching by id — names are how designers talk',
           '  about their work, ids are an implementation detail.',
         ]).concat(opNotes(false)).concat([
+          '',
+          '## The whole plugin, not just the ops',
+          '',
+          "Every button in the designer's panel is callable. `plugin.call` sends the panel's own",
+          'message and hands back what it answered, so the colour-token remap, the token and',
+          'Django exporters, the palette generator, the lint batch-fix and the standardised',
+          'old/new board need no op of their own. `plugin.commands` lists this live — it is',
+          'generated from the plugin\'s source, so it is never out of date:',
+          '',
+          '    curl -s ' + base + '/call' + auth + ' -d \'{"op":"plugin.call","params":{"command":"REMAP_SCAN"}}\'',
+          '',
+          '| command | does | params (`!` = required) |',
+          '|---------|------|-------------------------|',
+        ]).concat(commandRows.length ? commandRows : ['| _(connect the plugin to list its commands)_ | | |']).concat([
+          '',
+          'A leading **!** means the same as on an op: it needs *Allow changes*. Anything the',
+          'plugin has not classified counts as a change, so an unfamiliar command is refused on',
+          'the read gate rather than assumed harmless.',
+          '',
+          'Multi-step features keep their state in the plugin between calls, so follow the order',
+          'the panel uses. The colour mapping, end to end — the plan is built by the plugin\'s own',
+          'matcher, which is structural (family to family, then step to step) rather than nearest',
+          'colour, so prefer it over reasoning about hexes yourself:',
+          '',
+          '    REMAP_SCAN                       inventory every colour in the document',
+          '    REMAP_PREVIEW  {source}          the old-to-new table, with per-row flags',
+          '    REMAP_APPLY    {source}          write it, behind one undo step',
+          '    REMAP_BOARD    {source}          draw the old/new board on canvas',
+          '    REMAP_EXPORT_MAPPING {source, format}   mapping.json for the repository side',
+          '',
+          '`source` says where the new palette comes from, and takes one of four shapes:',
+          '`{"kind":"paste","text":"#0EA5E9 …"}`, `{"kind":"library","key":"<collection key>"}`',
+          '(`REMAP_LIST_LIBRARIES` names those), `{"kind":"selection"}` for swatches picked on the',
+          'canvas, or `{"kind":"generator","settings":{…}}` for the plugin\'s own palette generator.',
+          '',
+          'Two things to expect. A long reply (an export, a stylesheet, a mapping) comes back as a',
+          'file on disk, not inline. And the designer\'s panel receives every reply too, so they',
+          'watch what you did — and UI-side steps, such as a zip being built from an export, still',
+          'happen in their window.',
           '',
           '## Read the token, not the colour',
           '',

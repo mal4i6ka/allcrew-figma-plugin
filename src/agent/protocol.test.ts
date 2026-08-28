@@ -27,6 +27,31 @@ test('authorize does not let the write gate imply reads', () => {
   assert.equal(authorize(readOp, { read: false, write: true }).ok, false)
 })
 
+test('an op that decides its own write-ness is asked, and is asked with the raw params', () => {
+  // `plugin.call` runs whichever plugin command it was handed, so whether it mutates is a
+  // property of the request, not of the op.
+  const seen: unknown[] = []
+  const doorway: OpDef = {
+    name: 'plugin.call',
+    summary: '',
+    mutates: true,
+    mutatesWhen: (raw) => {
+      seen.push(raw)
+      return (raw as { command?: string })?.command !== 'PURE'
+    },
+    params: {},
+    run: async () => null,
+  }
+  const readOnly = { read: true, write: false }
+
+  assert.deepEqual(authorize(doorway, readOnly, { command: 'PURE' }), { ok: true })
+  assert.equal(authorize(doorway, readOnly, { command: 'DIRTY' }).ok, false)
+  assert.deepEqual(seen, [{ command: 'PURE' }, { command: 'DIRTY' }])
+
+  // With nothing to go on it must fall on the safe side of the gate.
+  assert.equal(authorize(doorway, readOnly, undefined).ok, false)
+})
+
 test('authorize reports an unknown op rather than throwing', () => {
   const verdict = authorize(undefined, { read: true, write: true })
   assert.deepEqual(verdict, { ok: false, error: 'unknown op' })
