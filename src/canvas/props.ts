@@ -180,7 +180,8 @@ export interface NetworkSpec {
 }
 
 export interface LayoutProps {
-  mode?: 'NONE' | 'HORIZONTAL' | 'VERTICAL'
+  /** `GRID` is Figma's two-dimensional auto-layout; its tracks are not authored from here yet. */
+  mode?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'GRID'
   gap?: number
   /** One number for all four, or [top, right, bottom, left]. */
   padding?: number | [number, number, number, number]
@@ -380,7 +381,7 @@ const BLEND_FREE_ENUMS: Readonly<Record<string, readonly string[]>> = {
   autoResize: ['NONE', 'WIDTH_AND_HEIGHT', 'HEIGHT', 'TRUNCATE'],
 }
 
-const LAYOUT_MODES = ['NONE', 'HORIZONTAL', 'VERTICAL']
+const LAYOUT_MODES = ['NONE', 'HORIZONTAL', 'VERTICAL', 'GRID']
 const PRIMARY_AXIS = ['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN']
 const COUNTER_AXIS = ['MIN', 'CENTER', 'MAX', 'BASELINE']
 const SIZING = ['FIXED', 'HUG', 'FILL']
@@ -963,6 +964,7 @@ const COMPARISONS: Readonly<Record<string, string>> = {
 }
 
 const DEFAULT_DURATION = 0.3
+/** Seconds, like everything else a caller says about time here. */
 const DEFAULT_TIMEOUT = 1
 
 /**
@@ -1190,14 +1192,20 @@ function planTrigger(link: Record<string, unknown>, fail: (message: string) => v
     }
   }
 
-  if (type === 'AFTER_TIMEOUT') return { type, timeout: after as number } as Trigger
+  // Seconds in, milliseconds out. Figma stores a trigger's `timeout` and `delay` in
+  // milliseconds and a transition's `duration` in seconds — its own documentation says the first
+  // and its own example shows the second (0.20000000298023224). A vocabulary that passed that
+  // inconsistency on would have callers writing 2 for two seconds in one field and 2000 in the
+  // next; here everything is seconds and the conversion happens once.
+  if (type === 'AFTER_TIMEOUT') return { type, timeout: (after as number) * 1000 } as Trigger
   if (type === 'ON_KEY_DOWN') return { type, device: 'KEYBOARD', keyCodes: link.keys as number[] } as Trigger
   if (DELAYED.includes(type)) {
-    // Just the delay. The typings put a `deprecatedVersion` flag on MOUSE_ENTER / MOUSE_LEAVE,
-    // and sending it is refused by the runtime that ships today:
+    // Just the delay, in milliseconds. The typings AND the documentation put a
+    // `deprecatedVersion` flag on MOUSE_ENTER / MOUSE_LEAVE, and the runtime that ships today
+    // refuses it outright:
     //   Unrecognized key(s) in object: 'deprecatedVersion' at [0].trigger
-    // Found by the first hover link built in Figma; the typings are ahead of the host.
-    return { type, delay: delay as number } as Trigger
+    // Found by the first hover link built in Figma. The docs are ahead of the host, not behind.
+    return { type, delay: (delay as number) * 1000 } as Trigger
   }
   return { type } as Trigger
 }
@@ -1319,9 +1327,10 @@ export async function describeLinks(
     // The wait is the whole of what a timeout link says; a bare "timeout" hides it. Same for the
     // keys of a key trigger and the delay of a mouse one.
     if (trigger) {
-      if (trigger.type === 'AFTER_TIMEOUT') on = `${on} ${seconds(trigger.timeout)}`
+      // Back to seconds on the way out, for the same reason they went in that way.
+      if (trigger.type === 'AFTER_TIMEOUT') on = `${on} ${seconds(trigger.timeout / 1000)}`
       else if (trigger.type === 'ON_KEY_DOWN') on = `${on} [${(trigger.keyCodes ?? []).join(',')}]`
-      else if ('delay' in trigger && trigger.delay) on = `${on} ${seconds(trigger.delay)}`
+      else if ('delay' in trigger && trigger.delay) on = `${on} ${seconds(trigger.delay / 1000)}`
     }
     const actions = reaction.actions ?? (reaction.action ? [reaction.action] : [])
     for (const action of actions) parts.push(`${on} → ${await describeAction(action, nameOf)}`)

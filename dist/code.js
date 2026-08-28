@@ -23481,7 +23481,7 @@ ${scripts}`, "");
     textAlign: ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"],
     autoResize: ["NONE", "WIDTH_AND_HEIGHT", "HEIGHT", "TRUNCATE"]
   };
-  var LAYOUT_MODES = ["NONE", "HORIZONTAL", "VERTICAL"];
+  var LAYOUT_MODES = ["NONE", "HORIZONTAL", "VERTICAL", "GRID"];
   var PRIMARY_AXIS = ["MIN", "CENTER", "MAX", "SPACE_BETWEEN"];
   var COUNTER_AXIS = ["MIN", "CENTER", "MAX", "BASELINE"];
   var SIZING = ["FIXED", "HUG", "FILL"];
@@ -24160,10 +24160,10 @@ ${scripts}`, "");
         return null;
       }
     }
-    if (type === "AFTER_TIMEOUT") return { type, timeout: after };
+    if (type === "AFTER_TIMEOUT") return { type, timeout: after * 1e3 };
     if (type === "ON_KEY_DOWN") return { type, device: "KEYBOARD", keyCodes: link.keys };
     if (DELAYED.includes(type)) {
-      return { type, delay };
+      return { type, delay: delay * 1e3 };
     }
     return { type };
   }
@@ -24240,9 +24240,9 @@ ${scripts}`, "");
       const trigger = reaction.trigger;
       let on = trigger ? (_a = spelling[trigger.type]) != null ? _a : trigger.type.toLowerCase() : "nothing";
       if (trigger) {
-        if (trigger.type === "AFTER_TIMEOUT") on = `${on} ${seconds(trigger.timeout)}`;
+        if (trigger.type === "AFTER_TIMEOUT") on = `${on} ${seconds(trigger.timeout / 1e3)}`;
         else if (trigger.type === "ON_KEY_DOWN") on = `${on} [${((_b = trigger.keyCodes) != null ? _b : []).join(",")}]`;
-        else if ("delay" in trigger && trigger.delay) on = `${on} ${seconds(trigger.delay)}`;
+        else if ("delay" in trigger && trigger.delay) on = `${on} ${seconds(trigger.delay / 1e3)}`;
       }
       const actions = (_c = reaction.actions) != null ? _c : reaction.action ? [reaction.action] : [];
       for (const action of actions) parts.push(`${on} \u2192 ${await describeAction(action, nameOf)}`);

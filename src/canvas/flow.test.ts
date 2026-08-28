@@ -53,8 +53,15 @@ test('back and close carry no destination, and are not case-sensitive', () => {
   assert.deepEqual(step.destinations, [], 'nothing to check for existence')
 })
 
-test('a timeout carries its seconds in the trigger', () => {
-  assert.deepEqual(only([{ on: 'timeout', after: 2.5, to: '1:2' }]).trigger, { type: 'AFTER_TIMEOUT', timeout: 2.5 })
+test('time is said in seconds and stored in milliseconds, because Figma is inconsistent about it', () => {
+  // The Trigger docs say `timeout` and `delay` are milliseconds; the Transition example shows a
+  // duration of 0.20000000298023224, which is seconds. Passing that on would have callers
+  // writing 2 in one field and 2000 in the next.
+  assert.deepEqual(only([{ on: 'timeout', after: 2.5, to: '1:2' }]).trigger, { type: 'AFTER_TIMEOUT', timeout: 2500 })
+  assert.deepEqual(only([{ on: 'mouseEnter', delay: 0.2, to: '1:2' }]).trigger, { type: 'MOUSE_ENTER', delay: 200 })
+  // A transition's duration is left alone, because that one really is seconds.
+  const action = only([{ to: '1:2', animation: 'DISSOLVE', duration: 0.4 }]).actions[0] as { transition: { duration: number } }
+  assert.equal(action.transition.duration, 0.4)
 })
 
 test('an empty list is a caller removing every link, not a mistake', () => {
@@ -185,8 +192,8 @@ test('the new triggers carry what they need', () => {
     device: 'KEYBOARD',
     keyCodes: [13],
   })
-  // No `deprecatedVersion`, whatever the typings say: the running host refuses the key outright.
-  assert.deepEqual(only([{ on: 'mouseEnter', delay: 0.2, to: '1:2' }]).trigger, { type: 'MOUSE_ENTER', delay: 0.2 })
+  // No `deprecatedVersion`, whatever the docs and typings say: the running host refuses the key.
+  assert.deepEqual(only([{ on: 'mouseEnter', delay: 0.2, to: '1:2' }]).trigger, { type: 'MOUSE_ENTER', delay: 200 })
   assert.match(planProps({ links: [{ on: 'keyDown', to: '1:2' }] }).problems[0], /keyDown needs keys/)
 })
 
@@ -261,7 +268,7 @@ test('without a lookup the id is printed rather than nothing', async () => {
 test('a timeout link says how long it waits — the wait is the whole of what it says', async () => {
   const line = await describeLinks([
     {
-      trigger: { type: 'AFTER_TIMEOUT', timeout: 3 },
+      trigger: { type: 'AFTER_TIMEOUT', timeout: 3000 },
       actions: [{ type: 'NODE', destinationId: '1:2', navigation: 'NAVIGATE', transition: null }],
     },
   ])
@@ -272,7 +279,7 @@ test('a duration read back from Figma is not printed as 32-bit noise', async () 
   // Figma stores seconds as floats: 0.6 comes back as 0.6000000238418579.
   const line = await describeLinks([
     {
-      trigger: { type: 'AFTER_TIMEOUT', timeout: 0.20000000298023224 },
+      trigger: { type: 'AFTER_TIMEOUT', timeout: 200 },
       actions: [
         {
           type: 'NODE',

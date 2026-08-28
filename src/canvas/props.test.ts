@@ -145,7 +145,9 @@ test('a number outside its range says which way', () => {
 
 test('an enum lists its options rather than saying no', () => {
   assert.match(planProps({ textAlign: 'MIDDLE' }).problems[0], /LEFT, CENTER, RIGHT, JUSTIFIED/)
-  assert.match(planProps({ layout: { mode: 'GRID' } }).problems[0], /NONE, HORIZONTAL, VERTICAL/)
+  // GRID joined the list in 2026 — Figma's two-dimensional auto-layout — so the refusal that
+  // used to name it has to name something else.
+  assert.match(planProps({ layout: { mode: 'DIAGONAL' } }).problems[0], /NONE, HORIZONTAL, VERTICAL, GRID/)
   assert.match(planProps({ layout: { sizing: { horizontal: 'STRETCH' } } }).problems[0], /FIXED, HUG, FILL/)
 })
 
