@@ -2058,7 +2058,20 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         refuse('MODULE_EXPORT', `no module "${msg.id}" is installed`)
         break
       }
-      postToUi({ type: 'MODULE_FILE', id: msg.id, file: entry.file, state: entry.state ?? null })
+      postToUi({
+        type: 'MODULE_FILE',
+        id: msg.id,
+        // The object is for the panel, which receives this message whole and builds a download
+        // from it. The text is for everyone else: a module is deeply nested by nature — steps
+        // inside buttons inside screens — and the agent channel digests a reply structurally,
+        // so an object handed over that way arrives with its steps summarised into
+        // "nested too deep to quote" and cannot be installed anywhere. A long string does not
+        // get summarised, it gets written to disk verbatim. Observed, not guessed: the first
+        // export read back through the bridge would not re-validate.
+        file: entry.file,
+        json: JSON.stringify(entry.file, null, 1),
+        state: entry.state ?? null,
+      })
       break
     }
 
