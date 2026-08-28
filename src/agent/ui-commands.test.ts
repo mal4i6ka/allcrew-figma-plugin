@@ -181,6 +181,77 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
   assert.ok(commands[1].params[0].type!.endsWith('…'), 'a cut type must say it was cut')
 })
 
+/* --------------------------------------------------- shapes, notes and cost */
+
+const SHAPED = `
+type Scope = { mode: 'page' } | { mode: 'frame'; frameId: string }
+
+export interface Form {
+  context: string
+  plural: boolean
+}
+
+type PluginMessage =
+  | { type: 'NARROW'; scope: Scope; form: Form }
+  | { type: 'LOOSE'; settings: unknown }
+
+async function handleUiMessage(msg: PluginMessage): Promise<void> {
+  switch (msg.type) {
+    case 'NARROW': {
+      // @agent read: reads
+      // @agent cost: one walk of the document — 12s over 200k nodes
+      use(msg.scope, msg.form)
+      break
+    }
+    case 'LOOSE': {
+      // @agent read: reads
+      // @agent param settings: Form — unrecognised input is replaced by defaults, not refused
+      use(msg.settings)
+      break
+    }
+  }
+}
+`
+
+test('a named type carries its own declaration, collapsed to one line', () => {
+  const [narrow] = extractUiCommands(SHAPED)
+  assert.equal(narrow.params[0].shape, "{ mode: 'page' } | { mode: 'frame'; frameId: string }")
+  // Fields separated by newlines come back separated by semicolons — flattened naively an
+  // interface reads `{ context: string plural: boolean }`, which nobody can copy.
+  assert.equal(narrow.params[1].shape, '{ context: string; plural: boolean }')
+})
+
+test('a cost marker rides on the command', () => {
+  const [narrow] = extractUiCommands(SHAPED)
+  assert.equal(narrow.cost, 'one walk of the document — 12s over 200k nodes')
+  assert.equal(extractUiCommands(SHAPED)[1].cost, undefined)
+})
+
+test('a param declared unknown takes its shape from the type its note names', () => {
+  const loose = extractUiCommands(SHAPED)[1]
+  assert.equal(loose.params[0].type, 'unknown')
+  assert.equal(loose.params[0].shape, '{ context: string; plural: boolean }')
+  assert.match(loose.params[0].note!, /replaced by defaults/)
+})
+
+test('a type declared in another file resolves from the dictionary, not from thin air', () => {
+  const source = `
+type PluginMessage = | { type: 'GO'; form: Elsewhere }
+async function handleUiMessage(msg: PluginMessage): Promise<void> {
+  switch (msg.type) {
+    case 'GO': {
+      // @agent read: reads
+      break
+    }
+  }
+}`
+  assert.equal(extractUiCommands(source)[0].params[0].shape, undefined)
+  assert.equal(
+    extractUiCommands(source, 'export interface Elsewhere { a: string }')[0].params[0].shape,
+    '{ a: string }'
+  )
+})
+
 /* ------------------------------------------------------- against the real plugin */
 
 test("every command in the plugin's own switch is classified", () => {

@@ -35,6 +35,12 @@ export interface UiCommandParam {
   /** The TypeScript annotation, verbatim and trimmed. Names a type the agent cannot resolve as
    * often as it names a literal union it can, and both beat "some value goes here". */
   type?: string
+  /** That named type's own declaration, collapsed to one line — resolved from the source, so a
+   * caller does not have to know what an `ExportScope` is to send one. */
+  shape?: string
+  /** From an `// @agent param <name>: …` marker. For what a type cannot say: that `unknown`
+   * really means a palette, or that omitting a field silently takes a default. */
+  note?: string
 }
 
 export interface UiCommandDef {
@@ -46,6 +52,10 @@ export interface UiCommandDef {
   classified: boolean
   /** From the marker. Absent on unclassified commands, which have nothing to quote. */
   summary?: string
+  /** From an `// @agent cost: …` marker. What a call actually costs, when that is surprising:
+   * this plugin has commands 180× apart in wall time over overlapping data, and nothing else
+   * in the surface says which is which. */
+  cost?: string
   /** What the message may carry, from the `PluginMessage` union that declares it — the case
    * body is scraped too, for anything the union has drifted away from. */
   params: readonly UiCommandParam[]
@@ -61,16 +71,25 @@ const HANDLER_ANCHOR = 'async function handleUiMessage'
 
 const CASE_PATTERN = /case '([A-Z][A-Z0-9_]*)':/g
 const MARKER_PATTERN = /@agent\s+(read|write|deny)\s*:\s*([^\n]*)/
+const COST_PATTERN = /@agent\s+cost\s*:\s*([^\n]*)/
+const PARAM_NOTE_PATTERN = /@agent\s+param\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*([^\n]*)/g
 const PARAM_PATTERN = /\bmsg\.([A-Za-z_$][A-Za-z0-9_$]*)/g
 /** Both spellings: the sandbox posts through `postToUi` (see `ui-post.ts`), and a call site that
  * still names the host method directly is one this should not go blind on. */
 const REPLY_PATTERN = /post(?:ToUi|Message)\(\s*\{\s*(?:\/\/[^\n]*\n\s*)*type:\s*'([A-Za-z][A-Za-z0-9_]*)'/g
 
-export function extractUiCommands(source: string): UiCommandDef[] {
+/**
+ * @param source the file that holds the handler (`src/code.ts`).
+ * @param types  where named types are looked up — every non-test source, concatenated, so a
+ *               param typed `ExportScope` can carry the shape of one. Defaults to `source`,
+ *               which resolves the types declared beside the handler and leaves the rest named.
+ */
+export function extractUiCommands(source: string, types: string = source): UiCommandDef[] {
   const start = source.indexOf(HANDLER_ANCHOR)
   if (start < 0) return []
   const handler = source.slice(start)
   const declared = extractDeclaredParams(source)
+  const shapes = typeDictionary(types)
 
   const found: Array<{ name: string; at: number; labelAt: number }> = []
   CASE_PATTERN.lastIndex = 0
@@ -84,15 +103,21 @@ export function extractUiCommands(source: string): UiCommandDef[] {
     const body = handler.slice(entry.at, index + 1 < found.length ? found[index + 1].labelAt : handler.length)
     const marker = MARKER_PATTERN.exec(body)
     const summary = marker?.[2].trim()
+    const cost = COST_PATTERN.exec(body)?.[1].trim()
 
     return {
       name: entry.name,
       access: (marker?.[1] as UiCommandAccess | undefined) ?? 'write',
       classified: marker !== null,
       ...(summary ? { summary } : {}),
-      params: mergeParams(
-        declared.get(entry.name) ?? [],
-        matchesOf(PARAM_PATTERN, body).filter((param) => param !== 'type')
+      ...(cost ? { cost } : {}),
+      params: describeParams(
+        mergeParams(
+          declared.get(entry.name) ?? [],
+          matchesOf(PARAM_PATTERN, body).filter((param) => param !== 'type')
+        ),
+        notesIn(body),
+        shapes
       ),
       replies: repliesIn(body),
       // A label with nothing but its marker between it and the next one is a fall-through: the
@@ -113,6 +138,104 @@ export function extractUiCommands(source: string): UiCommandDef[] {
 
 function stripComments(body: string): string {
   return body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+}
+
+const firstToken = (text: string): string => text.trim().split(/[\s,.;:—(]/)[0] ?? ''
+
+function notesIn(body: string): Map<string, string> {
+  const notes = new Map<string, string>()
+  PARAM_NOTE_PATTERN.lastIndex = 0
+  for (let match = PARAM_NOTE_PATTERN.exec(body); match; match = PARAM_NOTE_PATTERN.exec(body)) {
+    notes.set(match[1], match[2].trim())
+  }
+  return notes
+}
+
+/**
+ * Fills in what a param's type name does not say.
+ *
+ * Two different silences to break. A type the caller cannot look up (`ExportScope`,
+ * `AnnotationFormState`) gets its own declaration resolved from the source and collapsed to one
+ * line. A type that lies by omission — `settings: unknown`, which really means a palette, and
+ * whose missing fields are silently replaced by defaults rather than refused — gets a marker,
+ * because no type can carry that sentence.
+ */
+function describeParams(
+  params: readonly UiCommandParam[],
+  notes: ReadonlyMap<string, string>,
+  shapes: TypeDictionary
+): UiCommandParam[] {
+  return params.map((param) => {
+    const note = notes.get(param.name)
+    // A param declared `unknown` has no type to resolve, so the marker gets to name one: lead
+    // the note with `PaletteSettings — …` and the shape arrives from the dictionary anyway.
+    const shape = (param.type ? shapes.shapeOf(param.type) : undefined) ?? (note ? shapes.shapeOf(firstToken(note)) : undefined)
+    return { ...param, ...(shape ? { shape } : {}), ...(note ? { note } : {}) }
+  })
+}
+
+/**
+ * Named types, read out of the source once per build.
+ *
+ * Deliberately shallow: one level, no recursion into the names a shape itself mentions. A
+ * caller needs to know that a scope is `{ mode: 'page' } | { mode: 'frame'; frameId: string }`;
+ * inlining the whole type graph would produce something nobody reads.
+ */
+interface TypeDictionary {
+  shapeOf: (annotation: string) => string | undefined
+}
+
+function typeDictionary(source: string): TypeDictionary {
+  const cache = new Map<string, string | undefined>()
+
+  const lookup = (name: string): string | undefined => {
+    const alias = new RegExp(`\\btype ${name}\\s*=\\s*`).exec(source)
+    if (alias) {
+      const rest = source.slice(alias.index + alias[0].length)
+      // A type alias ends at the blank line, or at whatever is declared next.
+      const end = rest.search(/\n\s*\n|\n(?:export |type |interface |function |const |class |\/\*)/)
+      return collapse(end < 0 ? rest.slice(0, 400) : rest.slice(0, end))
+    }
+    const iface = new RegExp(`\\binterface ${name}\\s*\\{`).exec(source)
+    if (iface) {
+      const body = balancedFrom(source, source.indexOf('{', iface.index))
+      if (body) return collapse(body)
+    }
+    return undefined
+  }
+
+  return {
+    shapeOf(annotation) {
+      // `Partial<X>`, `X[]`, `readonly X[]` and `Array<X>` all describe X.
+      const name = /^(?:readonly\s+)?(?:Partial<|Array<)?([A-Z][A-Za-z0-9_]*)(?:>)?(?:\[\])?$/.exec(annotation.trim())?.[1]
+      if (!name) return undefined
+      if (!cache.has(name)) cache.set(name, lookup(name))
+      return cache.get(name)
+    },
+  }
+}
+
+/**
+ * One line, comments gone, bounded — a shape is a hint, not a listing.
+ *
+ * Fields separated by newlines have to become separated by something: flattened naively, an
+ * interface reads `{ tokens: boolean templates: boolean }`, which is not a type anyone can copy.
+ * A line that already ends in a separator (or whose successor opens with `|`) is joined with a
+ * space instead, so a multi-line union does not grow semicolons it never had.
+ */
+function collapse(text: string): string {
+  const lines = stripComments(text)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+
+  let flat = ''
+  for (const [index, line] of lines.entries()) {
+    if (index > 0) flat += /[{[(|,;=]$/.test(flat) || line.startsWith('|') ? ' ' : '; '
+    flat += line
+  }
+  flat = flat.replace(/\s+/g, ' ').replace(/;\s*}/g, ' }').replace(/,$/, '').trim()
+  return flat.length > 220 ? `${flat.slice(0, 219)}…` : flat
 }
 
 /** Union first (it knows what is optional), then anything the body reads that the union has

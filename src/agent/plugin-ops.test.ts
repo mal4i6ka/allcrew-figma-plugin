@@ -94,6 +94,16 @@ test('plugin.commands describes one command, and refuses a name it does not have
   await assert.rejects(() => list.run({ command: 'NOPE' }), /unknown command "NOPE"/)
 })
 
+test('what a command costs reaches the caller', async () => {
+  // Assembled field by field, so a field nobody passes through is a field nobody sees — this
+  // shipped once with the cost extracted, stored, and dropped on the way out.
+  const priced = pluginOps([
+    { name: 'SLOW', access: 'read', classified: true, summary: 'reads', cost: '80-90s on a large file', params: [], replies: [] },
+  ])
+  const one = (await priced.find((op) => op.name === 'plugin.commands')!.run({ command: 'SLOW' })) as Record<string, unknown>
+  assert.equal(one.cost, '80-90s on a large file')
+})
+
 test('a build with no command table says so instead of reporting no features', async () => {
   const empty = (await pluginOps([]).find((op) => op.name === 'plugin.commands')!.run({})) as Record<string, unknown>
   assert.equal(empty.count, 0)

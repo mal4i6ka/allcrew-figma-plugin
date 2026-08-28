@@ -1,5 +1,6 @@
 import * as esbuild from "esbuild";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { extractUiCommands } from "./src/agent/ui-commands.ts";
 
 const watch = process.argv.includes("--watch");
@@ -45,8 +46,23 @@ function copyUi() {
  */
 const UI_COMMANDS_MARKER = "'__ALTERY_UI_COMMANDS__'";
 
+/**
+ * Every non-test source, concatenated, as the dictionary the extractor resolves param types
+ * against: a command that takes an `AnnotationFormState` can then say what one is, and the type
+ * lives wherever it always lived rather than being restated for the agent's benefit.
+ */
+function typeSources(dir = "src") {
+  let text = "";
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) text += typeSources(path);
+    else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) text += `\n${readFileSync(path, "utf8")}`;
+  }
+  return text;
+}
+
 function injectUiCommands(source) {
-  const commands = extractUiCommands(readFileSync("src/code.ts", "utf8"));
+  const commands = extractUiCommands(readFileSync("src/code.ts", "utf8"), typeSources());
   if (commands.length === 0) {
     // Loud: a silent empty table would ship a channel that reports the plugin has no features.
     throw new Error("no UI commands extracted from src/code.ts — the message handler moved or its shape changed");

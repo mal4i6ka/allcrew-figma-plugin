@@ -1065,6 +1065,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     /* ---- DS Tools target ---- */
     case 'PREVIEW_PALETTE': {
       // @agent read: recompute a palette from settings — pure maths, nothing is written
+      // @agent param settings: PaletteSettings — anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error
       // Pure math, so it answers immediately — the UI redraws its preview on every edit.
       const settings = normalizePaletteSettings(msg.settings)
       postToUi({ type: 'PALETTE_PREVIEW', palette: generatePalette(settings), settings })
@@ -1072,12 +1073,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'SUGGEST_SPECTRUM': {
       // @agent read: suggest a harmonious spectrum for the current settings
+      // @agent param settings: PaletteSettings — unrecognised input is replaced by defaults rather than refused
       const settings = normalizePaletteSettings(msg.settings)
       postToUi({ type: 'SPECTRUM_SUGGESTED', spectrum: suggestHarmoniousSpectrum(settings) })
       break
     }
     case 'FIX_PALETTE': {
       // @agent write: apply one palette fix and store the corrected settings
+      // @agent param settings: PaletteSettings — unrecognised input is replaced by defaults rather than refused
       const fix = normalizePaletteFix(msg.fix)
       if (!fix) {
         refuse(
@@ -1094,11 +1097,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'SAVE_PALETTE_SETTINGS': {
       // @agent write: store palette settings in clientStorage
+      // @agent param settings: PaletteSettings — unrecognised input is replaced by defaults rather than refused
       await figma.clientStorage.setAsync('paletteSettings', normalizePaletteSettings(msg.settings))
       break
     }
     case 'APPLY_PALETTE': {
       // @agent write: write a generated palette into the document as variables, theme roles and swatches
+      // @agent param settings: PaletteSettings — unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing
       try {
         const settings = normalizePaletteSettings(msg.settings)
         if (settings.spectra.length === 0) {
@@ -1124,6 +1129,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     /* ---- DS Tools: color token remapping ---- */
     case 'REMAP_SCAN': {
       // @agent read: inventory every colour in the document — variables, styles, gradient stops, loose paints
+      // @agent cost: one walk of the whole document — 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.
       try {
         const inventory = await readInventory(msg.depth ?? 'document')
         postToUi({
@@ -1271,6 +1277,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'REMAP_BOARD': {
       // @agent write: draw the standardised old/new swatch board — from a palette, or from any mapping.json you supply
+      // @agent param mapping: MappingFile — the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere
       try {
         // Two ways in, and they are not interchangeable: a palette makes the plugin compute the
         // correspondence with its own structural matcher, a mapping means somebody else already
@@ -1331,6 +1338,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
 
     case 'REMAP_REWRITE_FILES': {
       // @agent read: rewrite colours in supplied file contents off the same mapping — a pure transform
+      // @agent param mode: names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings.
       try {
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind })
@@ -1372,12 +1380,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     /* ---- shared ---- */
     case 'READ_VARIABLES': {
       // @agent read: the raw variable snapshot: collections, modes, values, aliases
+      // @agent cost: imports every variable of every enabled library one at a time — 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.
       const data = await readAllVariables()
       postToUi({ type: 'VARIABLES_SNAPSHOT', data })
       break
     }
     case 'EMIT_TOKENS': {
       // @agent read: emit tokens.json / tokens.css / _tokens.scss from the current variables
+      // @agent cost: same library import as READ_VARIABLES — 80-90s on a large file
       const [snapshot, stored] = await Promise.all([
         readAllVariables(),
         figma.clientStorage.getAsync('exportOptions'),
@@ -1421,6 +1431,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     /* ---- django target ---- */
     case 'EMIT_DJANGO': {
       // @agent read: render the scope as one Django template plus its CSS
+      // @agent cost: reads the scope and every variable — 80s on a large file; narrow the scope to a frame
       const roots = rootsForScope(msg.scope)
       const [irNodes, sceneNodesById, snapshot] = await Promise.all([
         Promise.all(roots.map((root) => serializeNode(root))),
@@ -1436,6 +1447,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'EMIT_DJANGO_PROJECT': {
       // @agent read: render the scope as a multi-page Django project and plan the regeneration
+      // @agent cost: reads the scope and every variable — 80s on a large file; narrow the scope to a frame
       const roots = rootsForScope(msg.scope)
       const [irNodes, sceneNodesById, snapshot] = await Promise.all([
         Promise.all(roots.map((root) => serializeNode(root))),
@@ -1599,6 +1611,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'LOAD_ANNOTATION_PANEL': {
       // @agent read: read the annotation form state for one node
+      // @agent param nodeId: a TEXT node, and one the last SCAN indexed — the index is per scan, not per document
       const node = lastScanIndex.get(msg.nodeId)
       // The index is built by SCAN, so this is the same "which reading am I on" question the
       // remap inventory answers — here the dependency was not even visible.
@@ -1620,6 +1633,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'SET_ANNOTATION': {
       // @agent write: write a node's annotation: export settings, docs, interaction notes
+      // @agent param nodeId: a TEXT node, and one the last SCAN indexed — the index is per scan, not per document
       const node = lastScanIndex.get(msg.nodeId)
       // A write that answers nothing is the worst of the three: silence here was
       // indistinguishable from a write that landed.

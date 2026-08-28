@@ -3482,10 +3482,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           return command.access !== 'deny'
         }).map(function (command) {
           var params = (command.params || []).map(function (param) {
-            return param.required ? param.name + '!' : param.name
+            // A star marks a param whose shape or caveat only `plugin.commands` can carry: the
+            // table has room for names, not for a type declaration.
+            return (param.required ? param.name + '!' : param.name) + (param.shape || param.note ? '*' : '')
           }).join(', ')
           return '| ' + (command.access === 'write' ? '**!** ' : '') + '`' + command.name + '` | ' +
-            (command.summary || '') + ' | ' + (params || '—') + ' |'
+            (command.summary || '') + (command.cost ? ' _(' + command.cost + ')_' : '') +
+            ' | ' + (params || '—') + ' |'
         })
         // Guidance lives ON the ops (OpDef.agent) so this text regenerates whole — the table
         // was always live, but the how-to bullets used to be frozen prose from a 23-op era.
@@ -3590,6 +3593,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           'A leading **!** means the same as on an op: it needs *Allow changes*. Anything the',
           'plugin has not classified counts as a change, so an unfamiliar command is refused on',
           'the read gate rather than assumed harmless.',
+          '',
+          'A param marked `*` carries more than its name — `plugin.commands` gives the type\'s own',
+          'declaration (`scope` is `{"mode":"page"} | {"mode":"frame","frameId":…}`) and, where a',
+          'type cannot say it, the caveat: `settings` accepts anything and silently replaces what',
+          'it does not recognise with defaults, so `{}` returns the plugin\'s palette rather than an',
+          'error. Read that before sending a shape you inferred. A time in brackets is what the',
+          'call actually costs — some commands answer from the local graph in under a second and',
+          'others import every library variable one at a time.',
           '',
           'Multi-step features keep their state in the plugin between calls, so follow the order',
           'the panel uses. The colour mapping, end to end — the plan is built by the plugin\'s own',

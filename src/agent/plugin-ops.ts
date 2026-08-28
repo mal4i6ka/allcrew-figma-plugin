@@ -152,6 +152,9 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
     command: command.name,
     access: deniedReason(command.name) ? 'deny' : command.access,
     ...(command.summary ? { summary: command.summary } : {}),
+    // What the call costs, where that is surprising — the difference between the two paths to
+    // this plugin's variables is 0.5s and 90s, and nothing else in the surface says so.
+    ...(command.cost ? { cost: command.cost } : {}),
     ...(command.classified ? {} : { classified: false }),
     params: command.params,
     replies: command.replies,
