@@ -99,7 +99,7 @@ import {
 } from './modules/registry.ts'
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { describeLinks, planProps } from './canvas/props.ts'
-import { applyProps, describeEffects, describePaints } from './canvas/apply.ts'
+import { applyProps, describeEffects, describePaints, variableName } from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan } from './canvas/create.ts'
 import {
   bindingField,
@@ -1224,7 +1224,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   // answered `undefined` for a node whose links had just been set.
   const linked = node as SceneNode & { reactions?: readonly Reaction[] }
   if (Array.isArray(linked.reactions)) {
-    const links = describeLinks(linked.reactions)
+    const links = await describeLinks(linked.reactions, variableName)
     if (links) props.links = links
   }
   if (node.type === 'INSTANCE') {
@@ -2161,6 +2161,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param props: the whole vocabulary — name/geometry/layout/constraints; fill and stroke (a colour, {variable}, {image}, or a LIST of those for layered paints) with strokeAlign/Cap/Join/Dashes; effects: [{shadow:"drop"|"inner",…},{blur:"layer"|"background",radius}]; blendMode; text plus runs: [{match|from/to, fontName, fill, textCase, link, …}] for styling part of a layer; links: [{on,to,animation,easing,duration,matchLayers,…}] for prototype connections; scroll/fixedChildren; data for this plugin's own notes
       // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names, swap: "<id|key>" changes which component it is, reset: true drops every override first
       // @agent param props: links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: "<id>"|"back"|"close", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|…, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|… or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here.
+      // @agent param props: one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url — they run in that order before the navigation, so "remember they agreed and go on" is one interaction
       try {
         const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
         const problems: string[] = []

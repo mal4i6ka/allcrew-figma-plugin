@@ -12,11 +12,11 @@
  */
 
 import { parseHex } from '../tokens/color.ts'
-import { resolveVariableRef } from '../agent/values.ts'
+import { resolveCollection, resolveModes, resolveVariableRef } from '../agent/values.ts'
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
-import { gradientHandles, gradientTransform, resolveRanges } from './props.ts'
+import { describeLinks, gradientHandles, gradientTransform, resolveRanges } from './props.ts'
 import { styleFor } from './styles.ts'
-import type { GradientRef, ImageRef, PaintRef, PropStep, TextRun } from './props.ts'
+import type { GradientRef, ImageRef, PaintRef, PlannedAction, PropStep, TextRun } from './props.ts'
 
 export interface AppliedProp {
   property: string
@@ -290,11 +290,18 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         if (!target) throw new Error(`no node with id ${id} to link to`)
       }
 
+      const reactions: Reaction[] = []
+      for (const link of step.links) {
+        const actions: Action[] = []
+        for (const action of link.actions) actions.push(await buildAction(action))
+        reactions.push({ trigger: link.trigger, actions })
+      }
+
       // `reactions` is the property; there is no `getReactionsAsync` — only `setReactionsAsync`,
       // which is what "read-only under dynamic-page" means here.
       const had = Array.isArray(holder.reactions) ? holder.reactions.length : 0
-      if (!dry) await holder.setReactionsAsync(step.reactions)
-      return { property: 'links', before: `${had} link(s)`, after: step.summary }
+      if (!dry) await holder.setReactionsAsync(reactions)
+      return { property: 'links', before: `${had} link(s)`, after: await describeLinks(reactions, variableName) }
     }
 
     case 'data': {
@@ -493,6 +500,77 @@ function componentName(component: ComponentNode | null): string | null {
   } catch {
     return component.name
   }
+}
+
+/** One planned action, with its names turned into the ids Figma stores. */
+async function buildAction(action: PlannedAction): Promise<Action> {
+  switch (action.kind) {
+    case 'back':
+      return { type: 'BACK' }
+    case 'close':
+      return { type: 'CLOSE' }
+    case 'url':
+      return { type: 'URL', url: action.url, openInNewTab: action.newTab }
+    case 'setVariable': {
+      const variable = await resolveVariableRef(action.variable)
+      const value = action.value
+      if (typeof value === 'object' && value !== null) {
+        const other = await resolveVariableRef(value.variable)
+        if (other.resolvedType !== variable.resolvedType) {
+          throw new Error(`"${other.name}" is a ${other.resolvedType} and "${variable.name}" holds a ${variable.resolvedType}`)
+        }
+        return {
+          type: 'SET_VARIABLE',
+          variableId: variable.id,
+          variableValue: { type: 'VARIABLE_ALIAS', resolvedType: variable.resolvedType, value: { type: 'VARIABLE_ALIAS', id: other.id } },
+        }
+      }
+      // The type is checked here because Figma stores whatever it is given and the prototype
+      // simply does nothing at run time, which is the worst way to find out.
+      const held = typeof value === 'boolean' ? 'BOOLEAN' : typeof value === 'number' ? 'FLOAT' : 'STRING'
+      if (held !== variable.resolvedType) {
+        throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${JSON.stringify(value)} is a ${held}`)
+      }
+      return {
+        type: 'SET_VARIABLE',
+        variableId: variable.id,
+        variableValue: { type: held, resolvedType: variable.resolvedType, value },
+      }
+    }
+    case 'setMode': {
+      const collection = await resolveCollection(action.collection)
+      const modes = resolveModes(collection, action.mode)
+      if (modes.length !== 1) throw new Error(`"${action.mode}" must name exactly one mode of ${collection.name}`)
+      return { type: 'SET_VARIABLE_MODE', variableCollectionId: collection.id, variableModeId: modes[0].modeId }
+    }
+    default:
+      return {
+        type: 'NODE',
+        destinationId: action.destinationId,
+        navigation: action.navigation,
+        transition: action.transition,
+        ...(action.resetScroll === undefined ? {} : { resetScrollPosition: action.resetScroll }),
+        ...(action.resetVideo === undefined ? {} : { resetVideoPosition: action.resetVideo }),
+        ...(action.resetInteractive === undefined ? {} : { resetInteractiveComponents: action.resetInteractive }),
+      }
+  }
+}
+
+/**
+ * The lookup `describeLinks` needs to print a name where Figma stores an id.
+ *
+ * Three kinds of id arrive here and each is looked up differently: a mode's id means nothing
+ * without the collection that owns it, so that is asked for alongside.
+ */
+export async function variableName(id: string, withinCollection?: string): Promise<string | null> {
+  if (withinCollection) {
+    const collection = await figma.variables.getVariableCollectionByIdAsync(withinCollection).catch(() => null)
+    return collection?.modes.find((mode) => mode.modeId === id)?.name ?? null
+  }
+  if (id.startsWith('VariableCollectionId:')) {
+    return (await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null))?.name ?? null
+  }
+  return (await figma.variables.getVariableByIdAsync(id).catch(() => null))?.name ?? null
 }
 
 function byHumanName(properties: unknown): Record<string, unknown> {

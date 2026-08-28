@@ -55,6 +55,34 @@ export interface GradientRef {
   opacity?: number
 }
 
+/**
+ * A link after planning: the trigger is built, the actions are named but not yet resolved.
+ *
+ * Resolution has to wait, because a variable is looked up in the document and this module never
+ * touches it. So the plan says "set the variable called `flags/dark`" and the applier turns that
+ * into an id — the same division every other reference in this vocabulary keeps.
+ */
+export interface PlannedLink {
+  trigger: Trigger
+  actions: PlannedAction[]
+}
+
+export type PlannedAction =
+  | {
+      kind: 'node'
+      destinationId: string
+      navigation: Navigation
+      transition: Transition | null
+      resetScroll?: boolean
+      resetVideo?: boolean
+      resetInteractive?: boolean
+    }
+  | { kind: 'back' }
+  | { kind: 'close' }
+  | { kind: 'url'; url: string; newTab: boolean }
+  | { kind: 'setVariable'; variable: string; value: string | number | boolean | { variable: string } }
+  | { kind: 'setMode'; collection: string; mode: string }
+
 export interface GradientStop {
   /** 0 to 1. */
   at: number
@@ -223,6 +251,13 @@ export interface FlowLink {
   delay?: number
   /** Key codes, for `keyDown`. */
   keys?: number[]
+  /** Set a variable when this fires: the state half of a prototype. */
+  set?: { variable: string; value: string | number | boolean | { variable: string } }
+  /** Switch a collection to another mode — how a theme toggle is built. */
+  mode?: { collection: string; mode: string }
+  /** Open a link. */
+  url?: string
+  newTab?: boolean
   /** Arrive fresh rather than where the destination was left. */
   resetScroll?: boolean
   resetVideo?: boolean
@@ -252,7 +287,7 @@ export type PropStep =
   | { step: 'reset' }
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
-  | { step: 'links'; reactions: Reaction[]; destinations: string[]; summary: string }
+  | { step: 'links'; links: PlannedLink[]; destinations: string[] }
   | { step: 'data'; data: Record<string, string | null> }
 
 export interface PropPlan {
@@ -797,6 +832,10 @@ const DIRECTIONAL_ANIMATIONS = ['MOVE_IN', 'MOVE_OUT', 'PUSH', 'SLIDE_IN', 'SLID
 const DIRECTIONS = ['LEFT', 'RIGHT', 'TOP', 'BOTTOM']
 
 const LINK_KEYS = [
+  'set',
+  'mode',
+  'url',
+  'newTab',
   'on',
   'after',
   'delay',
@@ -830,7 +869,7 @@ function planLinks(raw: unknown, where: string, problems: string[]): PropStep | 
     return null
   }
 
-  const reactions: Reaction[] = []
+  const links: PlannedLink[] = []
   const destinations: string[] = []
 
   for (const [index, entry] of raw.entries()) {
@@ -845,141 +884,194 @@ function planLinks(raw: unknown, where: string, problems: string[]): PropStep | 
       if (!LINK_KEYS.includes(key)) fail(`unknown key "${key}" — accepted: ${LINK_KEYS.join(', ')}`)
     }
 
-    // The trigger words are camelCase, so they are matched without shouting at them.
-    const asked = link.on === undefined ? 'click' : link.on
-    const on =
-      typeof asked === 'string'
-        ? (Object.keys(TRIGGERS).find((word) => word.toLowerCase() === asked.toLowerCase()) ?? '')
-        : ''
-    if (on === '') {
-      fail(`on must be one of: ${Object.keys(TRIGGERS).join(', ')}`)
-      continue
-    }
-    if (typeof link.to !== 'string' || link.to.trim() === '') {
-      fail('to must be a node id, "back" or "close"')
-      continue
-    }
+    const trigger = planTrigger(link, fail)
+    if (!trigger) continue
 
-    const type = TRIGGERS[on]
-    // A wait on a click, key codes on a hover: Figma's trigger simply has no such field, so it
-    // would be dropped without a word — which is how somebody ends up believing in a delay that
-    // never existed.
-    let misplaced = false
-    if (link.after !== undefined && type !== 'AFTER_TIMEOUT') {
-      fail(`after only applies to a timeout trigger, not to ${on}`)
-      misplaced = true
-    }
-    if (link.delay !== undefined && !DELAYED.includes(type)) {
-      fail(`delay only applies to mouseEnter, mouseLeave, mouseUp and mouseDown, not to ${on}`)
-      misplaced = true
-    }
-    if (link.keys !== undefined && type !== 'ON_KEY_DOWN') {
-      fail(`keys only applies to keyDown, not to ${on}`)
-      misplaced = true
-    }
-    if (misplaced) continue
+    // One interaction, several actions: a link may set a variable, switch a mode and then
+    // navigate, which is exactly what Figma's own panel offers and what "go to the next screen
+    // and remember that they agreed" means.
+    const actions: PlannedAction[] = []
 
-    const after = link.after === undefined ? DEFAULT_TIMEOUT : link.after
-    if (on === 'timeout' && (typeof after !== 'number' || !Number.isFinite(after) || after <= 0)) {
-      fail('after must be a number of seconds greater than 0')
-      continue
-    }
-    const delay = link.delay === undefined ? 0 : link.delay
-    if (DELAYED.includes(type) && (typeof delay !== 'number' || !Number.isFinite(delay) || delay < 0)) {
-      fail('delay must be a number of seconds >= 0')
-      continue
-    }
-    if (type === 'ON_KEY_DOWN') {
-      const keys = link.keys
-      if (!Array.isArray(keys) || keys.length === 0 || keys.some((key) => typeof key !== 'number' || !Number.isInteger(key))) {
-        fail('keyDown needs keys: an array of key codes, e.g. [13] for Enter')
+    if (link.set !== undefined) {
+      const set = link.set as { variable?: unknown; value?: unknown }
+      if (typeof set?.variable !== 'string' || set.variable.trim() === '') {
+        fail('set.variable must name a variable')
         continue
       }
-    }
-
-    let trigger: Trigger
-    if (type === 'AFTER_TIMEOUT') {
-      trigger = { type, timeout: after as number } as Trigger
-    } else if (type === 'ON_KEY_DOWN') {
-      trigger = { type, device: 'KEYBOARD', keyCodes: link.keys as number[] } as Trigger
-    } else if (DELAYED.includes(type)) {
-      // Just the delay. The typings put a `deprecatedVersion` flag on MOUSE_ENTER / MOUSE_LEAVE,
-      // and sending it is refused by the runtime that ships today:
-      //   Unrecognized key(s) in object: 'deprecatedVersion' at [0].trigger
-      // Found by the first hover link built in Figma; the typings are ahead of the host.
-      trigger = { type, delay: delay as number } as Trigger
-    } else {
-      trigger = { type } as Trigger
-    }
-
-    const to = link.to.trim()
-    const target = to.toLowerCase()
-    if (target === 'back' || target === 'close') {
-      reactions.push({ trigger, actions: [{ type: target === 'back' ? 'BACK' : 'CLOSE' }] })
-      continue
-    }
-
-    const navigation = link.as === undefined ? 'NAVIGATE' : link.as
-    if (typeof navigation !== 'string' || !NAVIGATIONS.includes(normaliseEnum(navigation))) {
-      fail(`as must be one of: ${NAVIGATIONS.join(', ')}`)
-      continue
-    }
-    const duration = link.duration === undefined ? DEFAULT_DURATION : link.duration
-    if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0 || duration > 10) {
-      fail('duration must be a number of seconds between 0 and 10')
-      continue
-    }
-
-    const easing = buildEasing(link, fail)
-    if (easing === null) continue
-
-    const animation = link.animation === undefined ? 'INSTANT' : link.animation
-    if (typeof animation !== 'string') {
-      fail('animation must be a string')
-      continue
-    }
-    if (link.matchLayers !== undefined && typeof link.matchLayers !== 'boolean') {
-      fail('matchLayers must be true or false')
-      continue
-    }
-    const transition = buildTransition(normaliseEnum(animation), duration, easing, link.matchLayers === true)
-    if (transition === undefined) {
-      fail(
-        `animation must be one of: ${SIMPLE_ANIMATIONS.join(', ')}, or ` +
-          `${DIRECTIONAL_ANIMATIONS.join('/')} with _${DIRECTIONS.join('/_')}`
-      )
-      continue
-    }
-
-    let resets = true
-    for (const flag of ['resetScroll', 'resetVideo', 'resetInteractive'] as const) {
-      if (link[flag] !== undefined && typeof link[flag] !== 'boolean') {
-        fail(`${flag} must be true or false`)
-        resets = false
+      const value = set.value
+      const alias = value as { variable?: unknown } | null
+      const usable =
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean' ||
+        (typeof value === 'object' && value !== null && typeof alias?.variable === 'string')
+      if (!usable) {
+        fail('set.value must be a string, a number, a boolean, or { variable } to copy another one')
+        continue
       }
+      actions.push({
+        kind: 'setVariable',
+        variable: set.variable.trim(),
+        value: value as string | number | boolean | { variable: string },
+      })
     }
-    if (!resets) continue
 
-    destinations.push(to)
-    reactions.push({
-      trigger,
-      actions: [
-        {
-          type: 'NODE',
-          destinationId: to,
-          navigation: normaliseEnum(navigation) as Navigation,
-          transition,
-          ...(typeof link.resetScroll === 'boolean' ? { resetScrollPosition: link.resetScroll } : {}),
-          ...(typeof link.resetVideo === 'boolean' ? { resetVideoPosition: link.resetVideo } : {}),
-          ...(typeof link.resetInteractive === 'boolean' ? { resetInteractiveComponents: link.resetInteractive } : {}),
-        },
-      ],
-    })
+    if (link.mode !== undefined) {
+      const mode = link.mode as { collection?: unknown; mode?: unknown }
+      if (typeof mode?.collection !== 'string' || typeof mode?.mode !== 'string') {
+        fail('mode must be { collection: "Semantic", mode: "Dark" }')
+        continue
+      }
+      actions.push({ kind: 'setMode', collection: mode.collection.trim(), mode: mode.mode.trim() })
+    }
+
+    if (link.url !== undefined) {
+      if (typeof link.url !== 'string' || link.url.trim() === '') {
+        fail('url must be a link to open')
+        continue
+      }
+      actions.push({ kind: 'url', url: link.url.trim(), newTab: link.newTab !== false })
+    }
+
+    if (link.to !== undefined) {
+      const navigation = planNavigation(link, fail, destinations)
+      if (!navigation) continue
+      actions.push(navigation)
+    }
+
+    if (actions.length === 0) {
+      fail('a link must do something — name a `to`, a `set`, a `mode` or a `url`')
+      continue
+    }
+    links.push({ trigger, actions })
   }
 
-  // Described rather than narrated: the line a write reports and the line a read answers with
-  // are the same line, because they come from the same function.
-  return { step: 'links', reactions, destinations, summary: describeLinks(reactions) || 'none' }
+  return { step: 'links', links, destinations }
+}
+
+/** The trigger half: which gesture, and whatever that gesture carries. */
+function planTrigger(link: Record<string, unknown>, fail: (message: string) => void): Trigger | null {
+  const asked = link.on === undefined ? 'click' : link.on
+  const on =
+    typeof asked === 'string'
+      ? (Object.keys(TRIGGERS).find((word) => word.toLowerCase() === asked.toLowerCase()) ?? '')
+      : ''
+  if (on === '') {
+    fail(`on must be one of: ${Object.keys(TRIGGERS).join(', ')}`)
+    return null
+  }
+
+  const type = TRIGGERS[on]
+  // A wait on a click, key codes on a hover: Figma's trigger simply has no such field, so it
+  // would be dropped without a word — which is how somebody ends up believing in a delay that
+  // never existed.
+  if (link.after !== undefined && type !== 'AFTER_TIMEOUT') {
+    fail(`after only applies to a timeout trigger, not to ${on}`)
+    return null
+  }
+  if (link.delay !== undefined && !DELAYED.includes(type)) {
+    fail(`delay only applies to mouseEnter, mouseLeave, mouseUp and mouseDown, not to ${on}`)
+    return null
+  }
+  if (link.keys !== undefined && type !== 'ON_KEY_DOWN') {
+    fail(`keys only applies to keyDown, not to ${on}`)
+    return null
+  }
+
+  const after = link.after === undefined ? DEFAULT_TIMEOUT : link.after
+  if (type === 'AFTER_TIMEOUT' && (typeof after !== 'number' || !Number.isFinite(after) || after <= 0)) {
+    fail('after must be a number of seconds greater than 0')
+    return null
+  }
+  const delay = link.delay === undefined ? 0 : link.delay
+  if (DELAYED.includes(type) && (typeof delay !== 'number' || !Number.isFinite(delay) || delay < 0)) {
+    fail('delay must be a number of seconds >= 0')
+    return null
+  }
+  if (type === 'ON_KEY_DOWN') {
+    const keys = link.keys
+    if (!Array.isArray(keys) || keys.length === 0 || keys.some((key) => typeof key !== 'number' || !Number.isInteger(key))) {
+      fail('keyDown needs keys: an array of key codes, e.g. [13] for Enter')
+      return null
+    }
+  }
+
+  if (type === 'AFTER_TIMEOUT') return { type, timeout: after as number } as Trigger
+  if (type === 'ON_KEY_DOWN') return { type, device: 'KEYBOARD', keyCodes: link.keys as number[] } as Trigger
+  if (DELAYED.includes(type)) {
+    // Just the delay. The typings put a `deprecatedVersion` flag on MOUSE_ENTER / MOUSE_LEAVE,
+    // and sending it is refused by the runtime that ships today:
+    //   Unrecognized key(s) in object: 'deprecatedVersion' at [0].trigger
+    // Found by the first hover link built in Figma; the typings are ahead of the host.
+    return { type, delay: delay as number } as Trigger
+  }
+  return { type } as Trigger
+}
+
+/** The going-somewhere half, including the two places that are not a node. */
+function planNavigation(
+  link: Record<string, unknown>,
+  fail: (message: string) => void,
+  destinations: string[]
+): PlannedAction | null {
+  if (typeof link.to !== 'string' || link.to.trim() === '') {
+    fail('to must be a node id, "back" or "close"')
+    return null
+  }
+  const to = link.to.trim()
+  const target = to.toLowerCase()
+  if (target === 'back') return { kind: 'back' }
+  if (target === 'close') return { kind: 'close' }
+
+  const navigation = link.as === undefined ? 'NAVIGATE' : link.as
+  if (typeof navigation !== 'string' || !NAVIGATIONS.includes(normaliseEnum(navigation))) {
+    fail(`as must be one of: ${NAVIGATIONS.join(', ')}`)
+    return null
+  }
+  const duration = link.duration === undefined ? DEFAULT_DURATION : link.duration
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0 || duration > 10) {
+    fail('duration must be a number of seconds between 0 and 10')
+    return null
+  }
+
+  const easing = buildEasing(link, fail)
+  if (easing === null) return null
+
+  const animation = link.animation === undefined ? 'INSTANT' : link.animation
+  if (typeof animation !== 'string') {
+    fail('animation must be a string')
+    return null
+  }
+  if (link.matchLayers !== undefined && typeof link.matchLayers !== 'boolean') {
+    fail('matchLayers must be true or false')
+    return null
+  }
+  const transition = buildTransition(normaliseEnum(animation), duration, easing, link.matchLayers === true)
+  if (transition === undefined) {
+    fail(
+      `animation must be one of: ${SIMPLE_ANIMATIONS.join(', ')}, or ` +
+        `${DIRECTIONAL_ANIMATIONS.join('/')} with _${DIRECTIONS.join('/_')}`
+    )
+    return null
+  }
+
+  for (const flag of ['resetScroll', 'resetVideo', 'resetInteractive'] as const) {
+    if (link[flag] !== undefined && typeof link[flag] !== 'boolean') {
+      fail(`${flag} must be true or false`)
+      return null
+    }
+  }
+
+  destinations.push(to)
+  return {
+    kind: 'node',
+    destinationId: to,
+    navigation: normaliseEnum(navigation) as Navigation,
+    transition,
+    ...(typeof link.resetScroll === 'boolean' ? { resetScroll: link.resetScroll } : {}),
+    ...(typeof link.resetVideo === 'boolean' ? { resetVideo: link.resetVideo } : {}),
+    ...(typeof link.resetInteractive === 'boolean' ? { resetInteractive: link.resetInteractive } : {}),
+  }
 }
 
 /**
@@ -994,7 +1086,12 @@ function seconds(value: number): string {
   return `${Math.round(value * 1000) / 1000}s`
 }
 
-export function describeLinks(reactions: readonly Reaction[]): string {
+export async function describeLinks(
+  reactions: readonly Reaction[],
+  /** Turns an id into a name. A mode is asked for with the collection it belongs to, since its
+   * id means nothing on its own. */
+  nameOf?: (id: string, withinCollection?: string) => Promise<string | null>
+): Promise<string> {
   const spelling: Record<string, string> = {}
   for (const [word, type] of Object.entries(TRIGGERS)) spelling[type] = word
 
@@ -1013,6 +1110,29 @@ export function describeLinks(reactions: readonly Reaction[]): string {
     for (const action of actions) {
       if (action.type === 'BACK' || action.type === 'CLOSE') {
         parts.push(`${on} → ${action.type.toLowerCase()}`)
+        continue
+      }
+      if (action.type === 'URL') {
+        parts.push(`${on} → open ${action.url}`)
+        continue
+      }
+      if (action.type === 'SET_VARIABLE') {
+        // The id is no use to anyone reading a report, so the caller may hand over a lookup —
+        // the same trade the paints make.
+        const named = action.variableId && nameOf ? await nameOf(action.variableId) : null
+        const value = action.variableValue?.value
+        const shown =
+          value !== null && typeof value === 'object' && 'id' in (value as object)
+            ? `var:${(nameOf ? await nameOf((value as { id: string }).id) : null) ?? (value as { id: string }).id}`
+            : JSON.stringify(value)
+        parts.push(`${on} → set ${named ?? action.variableId} = ${shown}`)
+        continue
+      }
+      if (action.type === 'SET_VARIABLE_MODE') {
+        const collection = action.variableCollectionId
+        const named = collection && nameOf ? await nameOf(collection) : null
+        const mode = action.variableModeId && nameOf ? await nameOf(action.variableModeId, collection ?? undefined) : null
+        parts.push(`${on} → mode ${named ?? collection} = ${mode ?? action.variableModeId}`)
         continue
       }
       if (action.type !== 'NODE') {

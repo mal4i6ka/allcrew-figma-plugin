@@ -10,28 +10,28 @@ const linkStep = (links: unknown) => {
   return step as Extract<typeof step, { step: 'links' }>
 }
 
+const only = (links: unknown) => linkStep(links).links[0]
+
 /* ---------------------------------------------------------------------- links */
 
 test('a click through to a screen is the whole of what a caller has to say', () => {
   const step = linkStep([{ to: '10:20' }])
-  assert.deepEqual(step.reactions, [
+  assert.deepEqual(step.links, [
     {
       trigger: { type: 'ON_CLICK' },
-      actions: [{ type: 'NODE', destinationId: '10:20', navigation: 'NAVIGATE', transition: null }],
+      actions: [{ kind: 'node', destinationId: '10:20', navigation: 'NAVIGATE', transition: null }],
     },
   ])
   // The destination is collected so the applier can refuse a link to nothing.
   assert.deepEqual(step.destinations, ['10:20'])
-  assert.equal(step.summary, 'click → 10:20')
 })
 
 test('a direction is part of the animation name, not a fourth nested object', () => {
-  const step = linkStep([{ on: 'press', to: '1:2', animation: 'PUSH_LEFT', duration: 0.5 }])
-  assert.deepEqual(step.reactions[0], {
+  assert.deepEqual(only([{ on: 'press', to: '1:2', animation: 'PUSH_LEFT', duration: 0.5 }]), {
     trigger: { type: 'ON_PRESS' },
     actions: [
       {
-        type: 'NODE',
+        kind: 'node',
         destinationId: '1:2',
         navigation: 'NAVIGATE',
         transition: {
@@ -44,42 +44,67 @@ test('a direction is part of the animation name, not a fourth nested object', ()
       },
     ],
   })
-  assert.equal(step.summary, 'press → 1:2 PUSH_LEFT 0.5s')
-})
-
-test('dissolve is simple, and 0.3s is what it is unless someone says otherwise', () => {
-  const step = linkStep([{ to: '1:2', animation: 'DISSOLVE' }])
-  const action = step.reactions[0].actions![0] as { transition: { type: string; duration: number } }
-  assert.deepEqual(action.transition, { type: 'DISSOLVE', easing: { type: 'EASE_OUT' }, duration: 0.3 })
 })
 
 test('back and close carry no destination, and are not case-sensitive', () => {
-  assert.deepEqual(linkStep([{ to: 'back' }]).reactions[0].actions, [{ type: 'BACK' }])
+  assert.deepEqual(only([{ to: 'back' }]).actions, [{ kind: 'back' }])
   const step = linkStep([{ on: 'click', to: 'CLOSE' }])
-  assert.deepEqual(step.reactions[0].actions, [{ type: 'CLOSE' }])
+  assert.deepEqual(step.links[0].actions, [{ kind: 'close' }])
   assert.deepEqual(step.destinations, [], 'nothing to check for existence')
 })
 
 test('a timeout carries its seconds in the trigger', () => {
-  const step = linkStep([{ on: 'timeout', after: 2.5, to: '1:2' }])
-  assert.deepEqual(step.reactions[0].trigger, { type: 'AFTER_TIMEOUT', timeout: 2.5 })
-})
-
-test('a timeout link says how long it waits — the wait is the whole of what it says', () => {
-  assert.equal(linkStep([{ on: 'timeout', after: 3, to: '1:2' }]).summary, 'timeout 3s → 1:2')
-})
-
-test('an overlay says so, and the summary shows it', () => {
-  const step = linkStep([{ to: '1:2', as: 'OVERLAY' }])
-  const action = step.reactions[0].actions![0] as { navigation: string }
-  assert.equal(action.navigation, 'OVERLAY')
-  assert.equal(step.summary, 'click → 1:2 (OVERLAY)')
+  assert.deepEqual(only([{ on: 'timeout', after: 2.5, to: '1:2' }]).trigger, { type: 'AFTER_TIMEOUT', timeout: 2.5 })
 })
 
 test('an empty list is a caller removing every link, not a mistake', () => {
-  const step = linkStep([])
-  assert.deepEqual(step.reactions, [])
-  assert.equal(step.summary, 'none')
+  assert.deepEqual(linkStep([]).links, [])
+})
+
+/* ------------------------------------------------------- actions, not just going */
+
+test('one interaction may set a variable, switch a mode and then navigate', () => {
+  // Which is what "remember that they agreed and go to the next screen" means, and what Figma's
+  // own panel offers.
+  const link = only([
+    {
+      to: '1:2',
+      set: { variable: 'flags/agreed', value: true },
+      mode: { collection: 'Semantic', mode: 'Dark' },
+    },
+  ])
+  assert.deepEqual(link.actions, [
+    { kind: 'setVariable', variable: 'flags/agreed', value: true },
+    { kind: 'setMode', collection: 'Semantic', mode: 'Dark' },
+    { kind: 'node', destinationId: '1:2', navigation: 'NAVIGATE', transition: null },
+  ])
+})
+
+test('a variable may be set from another variable rather than a literal', () => {
+  assert.deepEqual(only([{ set: { variable: 'theme/current', value: { variable: 'theme/next' } } }]).actions, [
+    { kind: 'setVariable', variable: 'theme/current', value: { variable: 'theme/next' } },
+  ])
+})
+
+test('a link that goes nowhere and does nothing is refused', () => {
+  assert.match(planProps({ links: [{ on: 'click' }] }).problems[0], /must do something — name a `to`, a `set`/)
+})
+
+test('opening a link is an action too, in a new tab unless told otherwise', () => {
+  assert.deepEqual(only([{ url: 'https://altery.com' }]).actions, [
+    { kind: 'url', url: 'https://altery.com', newTab: true },
+  ])
+  assert.equal((only([{ url: 'https://altery.com', newTab: false }]).actions[0] as { newTab: boolean }).newTab, false)
+})
+
+test('every way of getting an action wrong is named', () => {
+  assert.match(planProps({ links: [{ set: { value: 1 } }] }).problems[0], /set.variable must name a variable/)
+  assert.match(
+    planProps({ links: [{ set: { variable: 'x', value: [] } }] }).problems[0],
+    /set.value must be a string, a number, a boolean, or \{ variable \}/
+  )
+  assert.match(planProps({ links: [{ mode: { collection: 'Semantic' } }] }).problems[0], /mode must be \{ collection/)
+  assert.match(planProps({ links: [{ url: '' }] }).problems[0], /url must be a link to open/)
 })
 
 /* ------------------------------------------------------------------- refusals */
@@ -87,7 +112,7 @@ test('an empty list is a caller removing every link, not a mistake', () => {
 test('every way of getting a link wrong is named, with what was accepted', () => {
   assert.match(planProps({ links: {} }).problems[0], /must be an array of \{ on, to \} links/)
   assert.match(planProps({ links: [{ to: '1:2', on: 'tap' }] }).problems[0], /on must be one of: click, hover/)
-  assert.match(planProps({ links: [{ on: 'click' }] }).problems[0], /to must be a node id/)
+  assert.match(planProps({ links: [{ to: '', on: 'click' }] }).problems[0], /to must be a node id/)
   assert.match(planProps({ links: [{ to: '1:2', as: 'GOTO' }] }).problems[0], /as must be one of: NAVIGATE/)
   assert.match(planProps({ links: [{ to: '1:2', animation: 'FADE' }] }).problems[0], /animation must be one of/)
   assert.match(planProps({ links: [{ to: '1:2', animation: 'PUSH_SIDEWAYS' }] }).problems[0], /PUSH\/SLIDE_IN/)
@@ -107,52 +132,11 @@ test('one bad link does not take the good ones with it', () => {
   assert.deepEqual(step.destinations, ['1:2', '5:6'])
 })
 
-/* --------------------------------------------------------------- reading back */
-
-test('reactions read back as the line a caller could have written', () => {
-  const step = linkStep([
-    { to: '1:2', animation: 'PUSH_LEFT' },
-    { on: 'hover', to: '3:4', as: 'OVERLAY' },
-    { to: 'back' },
-  ])
-  assert.equal(describeLinks(step.reactions), 'click → 1:2 PUSH_LEFT 0.3s · hover → 3:4 (OVERLAY) · click → back')
-})
-
-test('a reaction from Figma with the deprecated single action still reads', () => {
-  const line = describeLinks([{ trigger: { type: 'ON_CLICK' }, action: { type: 'BACK' } }])
-  assert.equal(line, 'click → back')
-})
-
-test('nothing to say reads as nothing, not as an empty structure', () => {
-  assert.equal(describeLinks([]), '')
-})
-
-/* ---------------------------------------------------------------------- data */
-
-test('plugin data is planned as given, and null is how a key is cleared', () => {
-  const plan = planProps({ data: { flow: 'onboarding', step: null } })
-  assert.deepEqual(plan.problems, [])
-  assert.deepEqual(plan.steps, [{ step: 'data', data: { flow: 'onboarding', step: null } }])
-})
-
-test('data that is not text is refused rather than stringified behind the caller', () => {
-  assert.match(planProps({ data: { n: 3 } }).problems[0], /data.n must be a string, or null to clear it/)
-  assert.match(planProps({ data: 'onboarding' }).problems[0], /data must be an object/)
-})
-
-test('links and data are set after the node looks the way it should', () => {
-  const plan = planProps({ data: { flow: 'x' }, links: [{ to: '1:2' }], name: 'Screen', width: 375 })
-  assert.deepEqual(
-    plan.steps.map((step) => (step.step === 'assign' ? step.property : step.step)),
-    ['name', 'resize', 'links', 'data']
-  )
-})
-
-/* ------------------------------------------------------------------- motion */
+/* -------------------------------------------------------------------- motion */
 
 const transitionOf = (link: Record<string, unknown>) => {
-  const step = linkStep([{ to: '1:2', animation: 'SMART_ANIMATE', ...link }])
-  return (step.reactions[0].actions![0] as { transition: Record<string, unknown> }).transition
+  const action = only([{ to: '1:2', animation: 'SMART_ANIMATE', ...link }]).actions[0]
+  return (action as { transition: Record<string, unknown> }).transition
 }
 
 test('the curve is EASE_OUT until someone says otherwise', () => {
@@ -191,33 +175,28 @@ test('naming a curve and numbers that disagree is refused rather than resolved',
   )
 })
 
-test('matching layers is a directional thing, and it shows in the line', () => {
-  const step = linkStep([{ to: '1:2', animation: 'PUSH_LEFT', matchLayers: true, easing: 'BOUNCY' }])
-  const transition = (step.reactions[0].actions![0] as { transition: Record<string, unknown> }).transition
-  assert.equal(transition.matchLayers, true)
-  assert.equal(step.summary, 'click → 1:2 PUSH_LEFT 0.3s BOUNCY +match')
+test('matching layers is a directional thing', () => {
+  assert.equal(transitionOf({ animation: 'PUSH_LEFT', matchLayers: true }).matchLayers, true)
 })
 
-test('the new triggers carry what they need, and say so when read', () => {
-  const keyed = linkStep([{ on: 'keyDown', keys: [13], to: '1:2' }])
-  assert.deepEqual(keyed.reactions[0].trigger, { type: 'ON_KEY_DOWN', device: 'KEYBOARD', keyCodes: [13] })
-  assert.equal(keyed.summary, 'keyDown [13] → 1:2')
-
-  const hovered = linkStep([{ on: 'mouseEnter', delay: 0.2, to: '1:2' }])
+test('the new triggers carry what they need', () => {
+  assert.deepEqual(only([{ on: 'keyDown', keys: [13], to: '1:2' }]).trigger, {
+    type: 'ON_KEY_DOWN',
+    device: 'KEYBOARD',
+    keyCodes: [13],
+  })
   // No `deprecatedVersion`, whatever the typings say: the running host refuses the key outright.
-  assert.deepEqual(hovered.reactions[0].trigger, { type: 'MOUSE_ENTER', delay: 0.2 })
-  assert.equal(hovered.summary, 'mouseEnter 0.2s → 1:2')
-
+  assert.deepEqual(only([{ on: 'mouseEnter', delay: 0.2, to: '1:2' }]).trigger, { type: 'MOUSE_ENTER', delay: 0.2 })
   assert.match(planProps({ links: [{ on: 'keyDown', to: '1:2' }] }).problems[0], /keyDown needs keys/)
 })
 
 test('arriving fresh is asked for per link, and only when asked', () => {
-  const plain = linkStep([{ to: '1:2' }]).reactions[0].actions![0] as Record<string, unknown>
-  assert.equal('resetScrollPosition' in plain, false)
-  const fresh = linkStep([{ to: '1:2', resetScroll: true, resetInteractive: false }]).reactions[0].actions![0] as Record<string, unknown>
-  assert.equal(fresh.resetScrollPosition, true)
-  assert.equal(fresh.resetInteractiveComponents, false)
-  assert.equal('resetVideoPosition' in fresh, false)
+  const plain = only([{ to: '1:2' }]).actions[0] as Record<string, unknown>
+  assert.equal('resetScroll' in plain, false)
+  const fresh = only([{ to: '1:2', resetScroll: true, resetInteractive: false }]).actions[0] as Record<string, unknown>
+  assert.equal(fresh.resetScroll, true)
+  assert.equal(fresh.resetInteractive, false)
+  assert.equal('resetVideo' in fresh, false)
 })
 
 test('a scrolling frame is two words', () => {
@@ -228,9 +207,70 @@ test('a scrolling frame is two words', () => {
   assert.match(planProps({ scroll: 'sideways' }).problems[0], /scroll must be one of: NONE, HORIZONTAL/)
 })
 
-test('a duration read back from Figma is not printed as 32-bit noise', () => {
+/* --------------------------------------------------------------- reading back */
+
+test('reactions read back as the line a caller could have written', async () => {
+  const line = await describeLinks([
+    {
+      trigger: { type: 'ON_CLICK' },
+      actions: [
+        {
+          type: 'NODE',
+          destinationId: '1:2',
+          navigation: 'NAVIGATE',
+          transition: { type: 'PUSH', direction: 'LEFT', matchLayers: true, easing: { type: 'BOUNCY' }, duration: 0.3 },
+        },
+      ],
+    },
+    { trigger: { type: 'ON_HOVER' }, actions: [{ type: 'NODE', destinationId: '3:4', navigation: 'OVERLAY', transition: null }] },
+    { trigger: { type: 'ON_CLICK' }, action: { type: 'BACK' } },
+  ])
+  assert.equal(line, 'click → 1:2 PUSH_LEFT 0.3s BOUNCY +match · hover → 3:4 (OVERLAY) · click → back')
+})
+
+test('a variable action reads with names when the caller offers a lookup', async () => {
+  const names: Record<string, string> = { 'VariableID:1': 'flags/agreed', 'VariableID:2': 'theme/next' }
+  const lookup = async (id: string) => names[id] ?? null
+  const line = await describeLinks(
+    [
+      {
+        trigger: { type: 'ON_CLICK' },
+        actions: [
+          { type: 'SET_VARIABLE', variableId: 'VariableID:1', variableValue: { type: 'BOOLEAN', resolvedType: 'BOOLEAN', value: true } },
+          {
+            type: 'SET_VARIABLE',
+            variableId: 'VariableID:1',
+            variableValue: { type: 'VARIABLE_ALIAS', resolvedType: 'BOOLEAN', value: { type: 'VARIABLE_ALIAS', id: 'VariableID:2' } },
+          },
+          { type: 'URL', url: 'https://altery.com' },
+        ],
+      },
+    ],
+    lookup
+  )
+  assert.equal(line, 'click → set flags/agreed = true · click → set flags/agreed = var:theme/next · click → open https://altery.com')
+})
+
+test('without a lookup the id is printed rather than nothing', async () => {
+  const line = await describeLinks([
+    { trigger: { type: 'ON_CLICK' }, actions: [{ type: 'SET_VARIABLE', variableId: 'VariableID:9', variableValue: { value: 3 } }] },
+  ])
+  assert.equal(line, 'click → set VariableID:9 = 3')
+})
+
+test('a timeout link says how long it waits — the wait is the whole of what it says', async () => {
+  const line = await describeLinks([
+    {
+      trigger: { type: 'AFTER_TIMEOUT', timeout: 3 },
+      actions: [{ type: 'NODE', destinationId: '1:2', navigation: 'NAVIGATE', transition: null }],
+    },
+  ])
+  assert.equal(line, 'timeout 3s → 1:2')
+})
+
+test('a duration read back from Figma is not printed as 32-bit noise', async () => {
   // Figma stores seconds as floats: 0.6 comes back as 0.6000000238418579.
-  const line = describeLinks([
+  const line = await describeLinks([
     {
       trigger: { type: 'AFTER_TIMEOUT', timeout: 0.20000000298023224 },
       actions: [
@@ -244,4 +284,29 @@ test('a duration read back from Figma is not printed as 32-bit noise', () => {
     },
   ])
   assert.equal(line, 'timeout 0.2s → 1:2 DISSOLVE 0.6s')
+})
+
+test('nothing to say reads as nothing, not as an empty structure', async () => {
+  assert.equal(await describeLinks([]), '')
+})
+
+/* ---------------------------------------------------------------------- data */
+
+test('plugin data is planned as given, and null is how a key is cleared', () => {
+  const plan = planProps({ data: { flow: 'onboarding', step: null } })
+  assert.deepEqual(plan.problems, [])
+  assert.deepEqual(plan.steps, [{ step: 'data', data: { flow: 'onboarding', step: null } }])
+})
+
+test('data that is not text is refused rather than stringified behind the caller', () => {
+  assert.match(planProps({ data: { n: 3 } }).problems[0], /data.n must be a string, or null to clear it/)
+  assert.match(planProps({ data: 'onboarding' }).problems[0], /data must be an object/)
+})
+
+test('links and data are set after the node looks the way it should', () => {
+  const plan = planProps({ data: { flow: 'x' }, links: [{ to: '1:2' }], name: 'Screen', width: 375 })
+  assert.deepEqual(
+    plan.steps.map((step) => (step.step === 'assign' ? step.property : step.step)),
+    ['name', 'resize', 'links', 'data']
+  )
 })
