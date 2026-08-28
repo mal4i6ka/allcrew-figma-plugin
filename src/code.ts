@@ -99,9 +99,10 @@ import {
 } from './modules/registry.ts'
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { describeLinks, planProps } from './canvas/props.ts'
-import { applyProps, describePaints } from './canvas/apply.ts'
+import { applyProps, describeEffects, describePaints } from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan } from './canvas/create.ts'
 import { collectComponents, humanPropertyName } from './canvas/components.ts'
+import { binaryFile, slugify, textFile } from './agent/files.ts'
 import { runModuleCommand } from './modules/run.ts'
 import { beginRecording, endRecording } from './agent/ui-post.ts'
 
@@ -158,6 +159,16 @@ type PluginMessage =
       limit?: number
     }
   | { type: 'NODE_CLONE'; nodes: unknown; dryRun?: boolean }
+  | { type: 'NODE_GROUP'; nodes: unknown; as?: string; props?: unknown }
+  | {
+      type: 'NODE_EXPORT'
+      nodes: unknown
+      format?: string
+      scale?: number
+      width?: number
+      height?: number
+      outlineText?: boolean
+    }
   | { type: 'PAGE_LIST' }
   | { type: 'PAGE_CREATE'; name: string; activate?: boolean }
   // User modules (see TASK-user-modules.md)
@@ -1019,6 +1030,30 @@ function postSelectionToUi(): void {
 
 figma.on('selectionchange', postSelectionToUi)
 
+const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten']
+
+const EXPORT_FORMATS = ['PNG', 'JPG', 'SVG', 'PDF']
+
+const EXPORT_MIME: Readonly<Record<string, string>> = {
+  PNG: 'image/png',
+  JPG: 'image/jpeg',
+  PDF: 'application/pdf',
+  SVG: 'image/svg+xml',
+}
+
+/** Past this a call is handing back more than anyone asked to read; what did not fit is named. */
+const EXPORT_BUDGET = 12 * 1024 * 1024
+
+/** A file name from a layer name, kept unique within one call — two layers may share a name, and
+ * the second must not overwrite the first on the way out. */
+function exportName(layer: string, extension: string, taken: Set<string>): string {
+  const stem = slugify(layer, 'node')
+  let candidate = `${stem}.${extension}`
+  for (let n = 2; taken.has(candidate); n++) candidate = `${stem}-${n}.${extension}`
+  taken.add(candidate)
+  return candidate
+}
+
 /** How far a copy is stepped aside from what it was copied from, when nobody said where to put
  * it. Wide enough that two screens do not touch, and the same 64 the copy op has always used. */
 const CLONE_GAP = 64
@@ -1053,6 +1088,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       ? { stroke: await describePaints(bag.strokes), strokeWeight: round(bag.strokeWeight) }
       : {}),
     ...(typeof bag.cornerRadius === 'number' ? { cornerRadius: round(bag.cornerRadius) } : {}),
+    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: describeEffects(bag.effects) } : {}),
+    ...(typeof bag.blendMode === 'string' && bag.blendMode !== 'PASS_THROUGH' && bag.blendMode !== 'NORMAL'
+      ? { blendMode: bag.blendMode }
+      : {}),
   }
   if ('layoutMode' in bag && bag.layoutMode !== 'NONE') {
     props.layout = {
@@ -2234,6 +2273,178 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         const message = String((error as Error)?.message || error)
         figma.notify('Copy failed: ' + message, { error: true })
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_CLONE', message })
+      }
+      break
+    }
+    case 'NODE_GROUP': {
+      // @agent write: group, ungroup, or combine nodes with a boolean operation
+      // @agent param nodes: the ids to combine — they must share one parent; for "ungroup", the single group to release
+      // @agent param as: group (default), ungroup, union, subtract, intersect, exclude, flatten
+      // @agent param props: applied to what comes out — the same vocabulary NODE_SET takes, so one call can group and name
+      try {
+        const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
+        const as = typeof msg.as === 'string' ? msg.as.trim().toLowerCase() : 'group'
+        if (!GROUPINGS.includes(as)) {
+          refuse('NODE_GROUP', `as must be one of: ${GROUPINGS.join(', ')}`)
+          break
+        }
+        const plan = planProps(msg.props, 'props')
+        if (plan.problems.length > 0) {
+          refuse('NODE_GROUP', plan.problems.join(' · '))
+          break
+        }
+
+        const nodes: SceneNode[] = []
+        let missing = ''
+        for (const id of ids) {
+          const node = await figma.getNodeByIdAsync(id)
+          if (!node || !('parent' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+            missing = id
+            break
+          }
+          nodes.push(node as SceneNode)
+        }
+        if (missing) {
+          refuse('NODE_GROUP', `no such scene node: ${missing}`)
+          break
+        }
+        if (nodes.length === 0) {
+          refuse('NODE_GROUP', 'name at least one node')
+          break
+        }
+
+        if (as === 'ungroup') {
+          if (nodes.length !== 1) {
+            refuse('NODE_GROUP', 'ungroup releases one group at a time')
+            break
+          }
+          const released = figma.ungroup(nodes[0] as GroupNode)
+          figma.commitUndo()
+          figma.notify(`Released ${released.length} node(s)`)
+          postToUi({
+            type: 'NODES_GROUPED',
+            as,
+            released: released.map((node) => ({ id: node.id, name: node.name, type: node.type })),
+          })
+          break
+        }
+
+        // Figma will not combine nodes from two parents, and the error it gives says nothing
+        // about which ones — so the check is here, where the ids are still in hand.
+        const parent = nodes[0].parent
+        if (!parent || nodes.some((node) => node.parent !== parent)) {
+          refuse('NODE_GROUP', 'every node must sit in the same parent')
+          break
+        }
+        const home = parent as BaseNode & ChildrenMixin
+
+        let made: SceneNode
+        switch (as) {
+          case 'group':
+            made = figma.group(nodes, home)
+            break
+          case 'flatten':
+            made = figma.flatten(nodes, home)
+            break
+          case 'union':
+            made = figma.union(nodes, home)
+            break
+          case 'subtract':
+            made = figma.subtract(nodes, home)
+            break
+          case 'intersect':
+            made = figma.intersect(nodes, home)
+            break
+          default:
+            made = figma.exclude(nodes, home)
+        }
+
+        const report = await applyProps(made, plan.steps, false)
+        figma.commitUndo()
+        figma.notify(`${as[0].toUpperCase()}${as.slice(1)}: ${made.name}`)
+        postToUi({
+          type: 'NODES_GROUPED',
+          as,
+          from: ids,
+          node: { id: made.id, name: made.name, type: made.type },
+          applied: report.applied,
+          failed: report.failed,
+        })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        figma.notify('Group failed: ' + message, { error: true })
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_GROUP', message })
+      }
+      break
+    }
+    case 'NODE_EXPORT': {
+      // @agent read: render nodes to PNG, JPG, SVG or PDF and hand the files back — nothing in the document changes
+      // @agent param nodes: the ids to render
+      // @agent param format: PNG (default), JPG, SVG or PDF
+      // @agent param scale: PNG/JPG only, 1 by default; or give width or height instead and the other follows
+      // @agent cost: one render each, and a large frame at 4x is megabytes — the call stops at 12 MB and says what it did not render
+      try {
+        const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
+        const format = (typeof msg.format === 'string' ? msg.format : 'PNG').trim().toUpperCase()
+        if (!EXPORT_FORMATS.includes(format)) {
+          refuse('NODE_EXPORT', `format must be one of: ${EXPORT_FORMATS.join(', ')}`)
+          break
+        }
+
+        const constraint: ExportSettingsConstraints =
+          typeof msg.width === 'number'
+            ? { type: 'WIDTH', value: msg.width }
+            : typeof msg.height === 'number'
+              ? { type: 'HEIGHT', value: msg.height }
+              : { type: 'SCALE', value: typeof msg.scale === 'number' ? msg.scale : 1 }
+
+        const files: unknown[] = []
+        const reports: Array<Record<string, unknown>> = []
+        const taken = new Set<string>()
+        let spent = 0
+
+        for (const id of ids) {
+          const node = await figma.getNodeByIdAsync(id)
+          if (!node || !('exportAsync' in node)) {
+            reports.push({ node: id, ok: false, error: 'no such exportable node' })
+            continue
+          }
+          const scene = node as SceneNode
+          try {
+            if (format === 'SVG') {
+              const svg = await scene.exportAsync({ format: 'SVG_STRING', svgOutlineText: msg.outlineText !== false })
+              spent += svg.length
+              if (spent > EXPORT_BUDGET) {
+                reports.push({ node: id, name: scene.name, ok: false, error: 'the 12 MB budget for this call was already spent' })
+                continue
+              }
+              const name = exportName(scene.name, 'svg', taken)
+              files.push(textFile(name, 'image/svg+xml', svg))
+              reports.push({ node: id, name: scene.name, ok: true, file: name, bytes: svg.length })
+              continue
+            }
+            const bytes = await scene.exportAsync(
+              format === 'PDF'
+                ? { format: 'PDF' }
+                : { format: format as 'PNG' | 'JPG', constraint }
+            )
+            spent += bytes.length
+            if (spent > EXPORT_BUDGET) {
+              reports.push({ node: id, name: scene.name, ok: false, error: 'the 12 MB budget for this call was already spent' })
+              continue
+            }
+            const ext = format.toLowerCase()
+            const name = exportName(scene.name, ext, taken)
+            files.push(binaryFile(name, EXPORT_MIME[format], bytes))
+            reports.push({ node: id, name: scene.name, ok: true, file: name, bytes: bytes.length })
+          } catch (error) {
+            reports.push({ node: id, name: scene.name, ok: false, error: String((error as Error)?.message || error) })
+          }
+        }
+
+        postToUi({ type: 'NODES_EXPORTED', format, files, nodes: reports })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_EXPORT', message: String((error as Error)?.message || error) })
       }
       break
     }

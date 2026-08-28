@@ -183,3 +183,15 @@ test('a big structure at the depth cap is still summarised', () => {
   const found = JSON.stringify(digest.replies[0])
   assert.match(found, /nested too deep to quote|all of it in the file/)
 })
+
+test('a file a command made itself crosses untouched', () => {
+  // NODE_EXPORT builds the envelope: it has already decided the name, the type and the bytes.
+  // Digesting it would spill the base64 into a file of its own and leave the bridge an envelope
+  // that is no longer one.
+  const envelope = { [FILE_ENVELOPE]: { name: 'card.png', mime: 'image/png', encoding: 'base64', data: 'x'.repeat(5000) } }
+  const digest = digestReplies([{ type: 'NODE_EXPORTED', files: [envelope] }])
+  const out = (digest.replies[0] as { files: unknown[] }).files[0]
+  assert.deepEqual(out, envelope)
+  assert.equal(digest.files, 1)
+  assert.equal(digest.truncated, false)
+})

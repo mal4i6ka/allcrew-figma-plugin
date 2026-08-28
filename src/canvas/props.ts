@@ -21,14 +21,43 @@
  *   they set the weight; the plan names what it did not understand, and the command refuses.
  */
 
+import { parseHex } from '../tokens/color.ts'
+
 /* ------------------------------------------------------------------ vocabulary */
 
-/** A colour, or a variable to bind — the two things a paint can be told to be. */
-export type PaintRef =
+/** A colour, a variable to bind, or a picture — and a list of them is a stack of layers. */
+export type PaintRef = SinglePaint | SinglePaint[] | null
+
+export type SinglePaint =
   | string
   | { color: string; opacity?: number }
   | { variable: string }
-  | null
+  | ImageRef
+
+/**
+ * A picture: one already in this document by its hash, one to fetch, or one sent as bytes.
+ *
+ * `bytes` is base64 — the only way an image can cross into the sandbox, which has no filesystem
+ * and no fetch of its own worth trusting.
+ */
+export interface ImageRef {
+  image: { hash?: string; url?: string; bytes?: string }
+  scaleMode?: 'FILL' | 'FIT' | 'CROP' | 'TILE'
+  opacity?: number
+}
+
+/** A shadow or a blur, in the terms the panel uses rather than Figma's five-field objects. */
+export type EffectSpec =
+  | {
+      shadow: 'drop' | 'inner'
+      color?: string
+      opacity?: number
+      offset?: [number, number]
+      radius?: number
+      spread?: number
+      visible?: boolean
+    }
+  | { blur: 'layer' | 'background'; radius: number; visible?: boolean }
 
 export interface LayoutProps {
   mode?: 'NONE' | 'HORIZONTAL' | 'VERTICAL'
@@ -60,6 +89,14 @@ export interface NodeProps {
   fill?: PaintRef
   stroke?: PaintRef
   strokeWeight?: number
+  strokeAlign?: 'INSIDE' | 'OUTSIDE' | 'CENTER'
+  strokeCap?: 'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'
+  strokeJoin?: 'MITER' | 'BEVEL' | 'ROUND'
+  /** A dash pattern: [dash, gap, …]. `[]` is a solid line. */
+  strokeDashes?: number[]
+  /** Shadows and blurs, in order. `[]` removes them. */
+  effects?: EffectSpec[]
+  blendMode?: string
   /** TEXT only. */
   text?: string
   fontSize?: number
@@ -78,12 +115,38 @@ export interface NodeProps {
   links?: FlowLink[]
   /** This plugin's own notes on the node, for finding it again. A null value clears a key. */
   data?: Record<string, string | null>
+  /** TEXT only: styling for parts of the text rather than all of it. */
+  runs?: TextRun[]
   /** Where the node should live. On a create this is the parent; on a change it moves it. */
   parent?: string
   index?: number
 }
 
 export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
+
+/**
+ * One styled stretch inside a text layer.
+ *
+ * Figma addresses these by character index, which is no way to say "make the price bold" — the
+ * index moves the moment anybody edits the sentence. So a run may name its `match` instead, and
+ * every occurrence of it is styled. Naming a match that is not there is an error, not a quiet
+ * no-op: a caller who thinks they emboldened a word deserves to hear that they did not.
+ */
+export interface TextRun {
+  from?: number
+  to?: number
+  /** Every occurrence of this text. Either this, or from/to. */
+  match?: string
+  fontName?: { family: string; style: string }
+  fontSize?: number
+  fill?: PaintRef
+  textDecoration?: 'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'
+  textCase?: 'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE'
+  letterSpacing?: number
+  lineHeight?: number | 'AUTO'
+  /** A URL, or null to remove the link. */
+  link?: string | null
+}
 
 /**
  * One prototype connection, in the words a person would use.
@@ -121,6 +184,9 @@ export type PropStep =
   | { step: 'constraints'; horizontal?: ConstraintKind; vertical?: ConstraintKind }
   | { step: 'reparent'; parent: string; index?: number }
   | { step: 'lineHeight'; value: number | 'AUTO' }
+  | { step: 'effects'; effects: Effect[]; summary: string }
+  | { step: 'dashes'; dashes: number[] }
+  | { step: 'runs'; runs: TextRun[] }
   | { step: 'reset' }
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
@@ -142,6 +208,31 @@ const PRIMARY_AXIS = ['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN']
 const COUNTER_AXIS = ['MIN', 'CENTER', 'MAX', 'BASELINE']
 const SIZING = ['FIXED', 'HUG', 'FILL']
 const CONSTRAINTS = ['MIN', 'CENTER', 'MAX', 'STRETCH', 'SCALE']
+const STROKE_ALIGN = ['INSIDE', 'OUTSIDE', 'CENTER']
+const STROKE_CAP = ['NONE', 'ROUND', 'SQUARE', 'ARROW_LINES', 'ARROW_EQUILATERAL']
+const STROKE_JOIN = ['MITER', 'BEVEL', 'ROUND']
+const SCALE_MODES = ['FILL', 'FIT', 'CROP', 'TILE']
+const BLEND_MODES = [
+  'PASS_THROUGH',
+  'NORMAL',
+  'DARKEN',
+  'MULTIPLY',
+  'LINEAR_BURN',
+  'COLOR_BURN',
+  'LIGHTEN',
+  'SCREEN',
+  'LINEAR_DODGE',
+  'COLOR_DODGE',
+  'OVERLAY',
+  'SOFT_LIGHT',
+  'HARD_LIGHT',
+  'DIFFERENCE',
+  'EXCLUSION',
+  'HUE',
+  'SATURATION',
+  'COLOR',
+  'LUMINOSITY',
+]
 
 /**
  * The order the plan comes out in.
@@ -173,6 +264,12 @@ const ORDER = [
   'fill',
   'stroke',
   'strokeWeight',
+  'strokeAlign',
+  'strokeCap',
+  'strokeJoin',
+  'strokeDashes',
+  'effects',
+  'blendMode',
   'fontName',
   'fontSize',
   'lineHeight',
@@ -180,6 +277,7 @@ const ORDER = [
   'textAlign',
   'autoResize',
   'text',
+  'runs',
   'links',
   'data',
   'parent',
@@ -371,6 +469,11 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         else steps.push({ step: 'paint', property: key === 'fill' ? 'fills' : 'strokes', ref })
         break
       }
+      case 'runs': {
+        const runs = planRuns(props.runs, `${where}.runs`, problems)
+        if (runs) steps.push(runs)
+        break
+      }
       case 'links': {
         const links = planLinks(props.links, `${where}.links`, problems)
         if (links) steps.push(links)
@@ -417,6 +520,35 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         }
         if (Object.keys(wanted).length > 0) steps.push({ step: 'properties', properties: wanted })
         else if (Object.keys(value as object).length === 0) fail('properties must name at least one property')
+        break
+      }
+      case 'strokeAlign':
+      case 'strokeCap':
+      case 'strokeJoin':
+      case 'blendMode': {
+        const allowed =
+          key === 'strokeAlign'
+            ? STROKE_ALIGN
+            : key === 'strokeCap'
+              ? STROKE_CAP
+              : key === 'strokeJoin'
+                ? STROKE_JOIN
+                : BLEND_MODES
+        const value = props[key]
+        if (typeof value !== 'string' || !allowed.includes(value)) fail(`${key} must be one of: ${allowed.join(', ')}`)
+        else steps.push({ step: 'assign', property: key, value })
+        break
+      }
+      case 'strokeDashes': {
+        const value = props.strokeDashes
+        if (!Array.isArray(value) || value.some((one) => typeof one !== 'number' || !Number.isFinite(one) || one < 0)) {
+          fail('strokeDashes must be an array of numbers >= 0 — [] is a solid line')
+        } else steps.push({ step: 'dashes', dashes: value as number[] })
+        break
+      }
+      case 'effects': {
+        const effects = planEffects(props.effects, `${where}.effects`, problems)
+        if (effects) steps.push(effects)
         break
       }
       case 'parent': {
@@ -608,6 +740,263 @@ function buildTransition(animation: string, duration: number): Transition | null
   }
 }
 
+const DECORATIONS = ['NONE', 'UNDERLINE', 'STRIKETHROUGH']
+const TEXT_CASES = ['ORIGINAL', 'UPPER', 'LOWER', 'TITLE']
+const RUN_KEYS = [
+  'from',
+  'to',
+  'match',
+  'fontName',
+  'fontSize',
+  'fill',
+  'textDecoration',
+  'textCase',
+  'letterSpacing',
+  'lineHeight',
+  'link',
+]
+
+/** Validates the shape of each run; which characters it covers is decided against the text
+ * itself, at apply time, by {@link resolveRanges}. */
+function planRuns(raw: unknown, where: string, problems: string[]): PropStep | null {
+  if (!Array.isArray(raw)) {
+    problems.push(`${where} must be an array of { from, to } or { match } runs`)
+    return null
+  }
+
+  const runs: TextRun[] = []
+  for (const [index, entry] of raw.entries()) {
+    const at = `${where}[${index}]`
+    const fail = (message: string) => problems.push(`${at}: ${message}`)
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      fail('must be an object')
+      continue
+    }
+    const run = entry as Record<string, unknown>
+    for (const key of Object.keys(run)) {
+      if (!RUN_KEYS.includes(key)) fail(`unknown key "${key}" — accepted: ${RUN_KEYS.join(', ')}`)
+    }
+
+    const hasRange = run.from !== undefined || run.to !== undefined
+    if (run.match !== undefined && hasRange) {
+      fail('name either a match or a from/to range, not both')
+      continue
+    }
+    if (run.match !== undefined) {
+      if (typeof run.match !== 'string' || run.match === '') {
+        fail('match must be a non-empty string')
+        continue
+      }
+    } else {
+      const from = run.from
+      const to = run.to
+      if (typeof from !== 'number' || !Number.isInteger(from) || from < 0) {
+        fail('from must be a whole number >= 0')
+        continue
+      }
+      if (typeof to !== 'number' || !Number.isInteger(to) || to <= from) {
+        fail('to must be a whole number greater than from')
+        continue
+      }
+    }
+
+    let bad = false
+    const check = (key: string, ok: boolean, message: string) => {
+      if (run[key] !== undefined && !ok) {
+        fail(message)
+        bad = true
+      }
+    }
+    check(
+      'fontName',
+      typeof run.fontName === 'object' &&
+        run.fontName !== null &&
+        typeof (run.fontName as { family?: unknown }).family === 'string' &&
+        typeof (run.fontName as { style?: unknown }).style === 'string',
+      'fontName must be { family, style }'
+    )
+    check('fontSize', typeof run.fontSize === 'number' && run.fontSize > 0, 'fontSize must be a number > 0')
+    check('letterSpacing', typeof run.letterSpacing === 'number', 'letterSpacing must be a number')
+    check(
+      'lineHeight',
+      run.lineHeight === 'AUTO' || (typeof run.lineHeight === 'number' && run.lineHeight > 0),
+      'lineHeight must be a positive number or "AUTO"'
+    )
+    check(
+      'textDecoration',
+      typeof run.textDecoration === 'string' && DECORATIONS.includes(run.textDecoration),
+      `textDecoration must be one of: ${DECORATIONS.join(', ')}`
+    )
+    check(
+      'textCase',
+      typeof run.textCase === 'string' && TEXT_CASES.includes(run.textCase),
+      `textCase must be one of: ${TEXT_CASES.join(', ')}`
+    )
+    check('link', typeof run.link === 'string' || run.link === null, 'link must be a URL, or null to remove one')
+    if (run.fill !== undefined) {
+      const problem = paintProblem(run.fill)
+      if (problem) {
+        fail(`fill: ${problem}`)
+        bad = true
+      }
+    }
+    if (bad) continue
+
+    const styling = Object.keys(run).filter((key) => !['from', 'to', 'match'].includes(key))
+    if (styling.length === 0) {
+      fail('a run that sets nothing styles nothing — say what should change')
+      continue
+    }
+
+    runs.push(run as TextRun)
+  }
+
+  return { step: 'runs', runs }
+}
+
+/**
+ * Which characters a run covers, given the text it is applied to.
+ *
+ * Pure, and separate from the applier, because this is the half that can be wrong in ways nobody
+ * would see: a range past the end of the string, a match that appears twice, a match that appears
+ * not at all.
+ */
+export function resolveRanges(characters: string, run: TextRun): { ranges: Array<[number, number]>; problem?: string } {
+  if (run.match !== undefined) {
+    const ranges: Array<[number, number]> = []
+    let at = characters.indexOf(run.match)
+    while (at !== -1) {
+      ranges.push([at, at + run.match.length])
+      at = characters.indexOf(run.match, at + run.match.length)
+    }
+    if (ranges.length === 0) return { ranges: [], problem: `"${run.match}" is not in this text` }
+    return { ranges }
+  }
+
+  const from = run.from as number
+  const to = run.to as number
+  if (from >= characters.length) {
+    return { ranges: [], problem: `from ${from} is past the end of ${characters.length} character(s)` }
+  }
+  // A `to` past the end is clamped rather than refused: "from 8 to the end" is a reasonable thing
+  // to mean, and the alternative is making every caller count characters first.
+  return { ranges: [[from, Math.min(to, characters.length)]] }
+}
+
+/**
+ * Shadows and blurs, expanded into Figma's `Effect`s.
+ *
+ * Figma spells a shadow as a colour with an alpha, a vector, a radius, a spread, a blend mode and
+ * a visibility — six fields, of which a caller means two. So the defaults are the ones a designer
+ * would reach for (black at a quarter, four down, eight of blur) and the rest is named only when
+ * it differs. `[]` removes what a node has, for the same reason `links: []` does.
+ */
+function planEffects(raw: unknown, where: string, problems: string[]): PropStep | null {
+  if (!Array.isArray(raw)) {
+    problems.push(`${where} must be an array of shadows and blurs — [] removes them`)
+    return null
+  }
+
+  const effects: Effect[] = []
+  const summary: string[] = []
+
+  for (const [index, entry] of raw.entries()) {
+    const at = `${where}[${index}]`
+    const fail = (message: string) => problems.push(`${at}: ${message}`)
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      fail('must be { shadow } or { blur }')
+      continue
+    }
+    const spec = entry as Record<string, unknown>
+
+    if (typeof spec.blur === 'string') {
+      const kind = spec.blur.toLowerCase()
+      if (kind !== 'layer' && kind !== 'background') {
+        fail('blur must be "layer" or "background"')
+        continue
+      }
+      const radius = spec.radius
+      if (typeof radius !== 'number' || !Number.isFinite(radius) || radius < 0) {
+        fail('radius must be a number >= 0')
+        continue
+      }
+      effects.push({
+        type: kind === 'layer' ? 'LAYER_BLUR' : 'BACKGROUND_BLUR',
+        blurType: 'NORMAL',
+        radius,
+        visible: spec.visible !== false,
+      } as Effect)
+      summary.push(`${kind} blur ${radius}`)
+      continue
+    }
+
+    if (typeof spec.shadow !== 'string') {
+      fail('must carry either `shadow` ("drop" / "inner") or `blur` ("layer" / "background")')
+      continue
+    }
+    const kind = spec.shadow.toLowerCase()
+    if (kind !== 'drop' && kind !== 'inner') {
+      fail('shadow must be "drop" or "inner"')
+      continue
+    }
+    for (const unknownKey of Object.keys(spec)) {
+      if (!['shadow', 'color', 'opacity', 'offset', 'radius', 'spread', 'visible'].includes(unknownKey)) {
+        fail(`unknown key "${unknownKey}" — accepted: shadow, color, opacity, offset, radius, spread, visible`)
+      }
+    }
+
+    const hex = spec.color === undefined ? '#000000' : spec.color
+    if (typeof hex !== 'string' || !HEX.test(hex)) {
+      fail(`color must be a #RRGGBB colour`)
+      continue
+    }
+    const rgb = parseHex(hex)
+    if (!rgb) {
+      fail(`"${hex}" is not a colour`)
+      continue
+    }
+    const alpha = spec.opacity === undefined ? 0.25 : spec.opacity
+    if (typeof alpha !== 'number' || alpha < 0 || alpha > 1) {
+      fail('opacity must be between 0 and 1')
+      continue
+    }
+    const offset = spec.offset === undefined ? [0, 4] : spec.offset
+    if (
+      !Array.isArray(offset) ||
+      offset.length !== 2 ||
+      offset.some((one) => typeof one !== 'number' || !Number.isFinite(one))
+    ) {
+      fail('offset must be [x, y]')
+      continue
+    }
+    const radius = spec.radius === undefined ? 8 : spec.radius
+    if (typeof radius !== 'number' || !Number.isFinite(radius) || radius < 0) {
+      fail('radius must be a number >= 0')
+      continue
+    }
+    const spread = spec.spread === undefined ? 0 : spec.spread
+    if (typeof spread !== 'number' || !Number.isFinite(spread)) {
+      fail('spread must be a number')
+      continue
+    }
+
+    effects.push({
+      type: kind === 'drop' ? 'DROP_SHADOW' : 'INNER_SHADOW',
+      color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha },
+      offset: { x: offset[0] as number, y: offset[1] as number },
+      radius,
+      spread,
+      visible: spec.visible !== false,
+      blendMode: 'NORMAL',
+    } as Effect)
+    summary.push(
+      `${kind} shadow ${hex}${alpha === 1 ? '' : ` @${alpha}`} ${offset[0]},${offset[1]} blur ${radius}${spread ? ` spread ${spread}` : ''}`
+    )
+  }
+
+  return { step: 'effects', effects, summary: summary.join(' · ') || 'none' }
+}
+
 function planLayout(raw: unknown, where: string, problems: string[]): PropStep | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     problems.push(`${where} must be an object`)
@@ -677,13 +1066,21 @@ function planLayout(raw: unknown, where: string, problems: string[]): PropStep |
 
 const HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
 
-/** Null when the reference is usable, else why not. */
+/** Null when the reference is usable, else why not. A list is a stack of layers, checked one by one. */
 export function paintProblem(ref: unknown): string | null {
+  if (Array.isArray(ref)) {
+    for (const [index, one] of ref.entries()) {
+      const problem = paintProblem(one)
+      if (problem) return `[${index}] ${problem}`
+    }
+    return null
+  }
   if (ref === null) return null
   if (typeof ref === 'string') return HEX.test(ref) ? null : `"${ref}" is not a #RRGGBB colour`
-  if (typeof ref !== 'object' || Array.isArray(ref)) return 'must be "#RRGGBB", { color }, { variable } or null'
+  if (typeof ref !== 'object') return 'must be "#RRGGBB", { color }, { variable }, { image }, a list of those, or null'
 
-  const entry = ref as { color?: unknown; opacity?: unknown; variable?: unknown }
+  const entry = ref as { color?: unknown; opacity?: unknown; variable?: unknown; image?: unknown; scaleMode?: unknown }
+  if (entry.image !== undefined) return imageProblem(entry)
   if (typeof entry.variable === 'string') return entry.variable === '' ? 'variable must be a name, id or library key' : null
   if (typeof entry.color === 'string') {
     if (!HEX.test(entry.color)) return `"${entry.color}" is not a #RRGGBB colour`
@@ -692,5 +1089,26 @@ export function paintProblem(ref: unknown): string | null {
     }
     return null
   }
-  return 'must carry either `color` or `variable`'
+  return 'must carry either `color`, `variable` or `image`'
+}
+
+function imageProblem(entry: { image?: unknown; scaleMode?: unknown; opacity?: unknown }): string | null {
+  const image = entry.image
+  if (typeof image !== 'object' || image === null || Array.isArray(image)) {
+    return 'image must be { hash }, { url } or { bytes } — bytes being base64'
+  }
+  const source = image as { hash?: unknown; url?: unknown; bytes?: unknown }
+  const named = ['hash', 'url', 'bytes'].filter((key) => source[key as 'hash'] !== undefined)
+  if (named.length === 0) return 'image must name one of hash, url or bytes'
+  if (named.length > 1) return `image names ${named.join(' and ')} — pick one`
+  if (typeof source[named[0] as 'hash'] !== 'string' || source[named[0] as 'hash'] === '') {
+    return `image.${named[0]} must be a non-empty string`
+  }
+  if (entry.scaleMode !== undefined && (typeof entry.scaleMode !== 'string' || !SCALE_MODES.includes(entry.scaleMode))) {
+    return `scaleMode must be one of: ${SCALE_MODES.join(', ')}`
+  }
+  if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
+    return 'opacity must be between 0 and 1'
+  }
+  return null
 }

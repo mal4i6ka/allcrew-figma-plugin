@@ -15,7 +15,7 @@
  * merely moved to a file.
  */
 
-import { isSafeFileName, textFile } from './files.ts'
+import { isFileEnvelope, isSafeFileName, textFile } from './files.ts'
 
 export interface DigestBudget {
   /** Strings up to this length are quoted verbatim; longer ones spill to a file. */
@@ -88,6 +88,13 @@ interface State {
 
 function digestValue(value: unknown, depth: number, budget: DigestBudget, state: State, key = ''): unknown {
   if (value === null || value === undefined) return value ?? null
+  // A command that already made a file — an export, say — has said exactly what it wants written.
+  // Walking into it would spill its own base64 into a second file and leave the bridge holding an
+  // envelope that no longer looks like one.
+  if (isFileEnvelope(value)) {
+    state.files++
+    return value
+  }
   if (typeof value === 'number' || typeof value === 'boolean') return value
   if (typeof value === 'string') return digestString(value, budget, state, key)
   if (typeof value === 'function' || typeof value === 'symbol') return `[${typeof value}]`

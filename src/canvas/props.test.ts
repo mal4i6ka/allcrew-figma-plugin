@@ -141,7 +141,7 @@ test('paintProblem accepts what a paint can be and explains what it cannot', () 
   assert.equal(paintProblem(null), null)
   assert.equal(paintProblem({ variable: 'x' }), null)
   assert.match(paintProblem('red') ?? '', /not a #RRGGBB colour/)
-  assert.match(paintProblem({}) ?? '', /must carry either `color` or `variable`/)
+  assert.match(paintProblem({}) ?? '', /must carry either `color`, `variable` or `image`/)
   assert.match(paintProblem({ color: '#000', opacity: 2 }) ?? '', /between 0 and 1/)
 })
 
@@ -201,4 +201,95 @@ test('an unknown key on a spec is named rather than ignored', () => {
   const problems: string[] = []
   planCreate({ kind: 'frame', styles: [] }, 'nodes[0]', problems)
   assert.match(problems[0], /unknown key "styles" — accepted: kind, of, props, children/)
+})
+
+/* ------------------------------------------------------------------- effects */
+
+test('a shadow is two words and the rest is what a designer would have picked', () => {
+  const steps = stepsOf({ effects: [{ shadow: 'drop' }] })
+  assert.deepEqual(steps, [
+    {
+      step: 'effects',
+      effects: [
+        {
+          type: 'DROP_SHADOW',
+          color: { r: 0, g: 0, b: 0, a: 0.25 },
+          offset: { x: 0, y: 4 },
+          radius: 8,
+          spread: 0,
+          visible: true,
+          blendMode: 'NORMAL',
+        },
+      ],
+      summary: 'drop shadow #000000 @0.25 0,4 blur 8',
+    },
+  ])
+})
+
+test('every field of a shadow can be said, and an inner one is a different type', () => {
+  const step = stepsOf({
+    effects: [{ shadow: 'inner', color: '#FF5B0A', opacity: 1, offset: [2, -2], radius: 12, spread: 3, visible: false }],
+  })[0] as Extract<(typeof stepsOf extends never ? never : ReturnType<typeof stepsOf>)[number], { step: 'effects' }>
+  assert.equal(step.effects[0].type, 'INNER_SHADOW')
+  assert.deepEqual(step.effects[0], {
+    type: 'INNER_SHADOW',
+    color: { r: 1, g: 0x5b / 255, b: 0x0a / 255, a: 1 },
+    offset: { x: 2, y: -2 },
+    radius: 12,
+    spread: 3,
+    visible: false,
+    blendMode: 'NORMAL',
+  })
+  assert.match(step.summary, /inner shadow #FF5B0A 2,-2 blur 12 spread 3/)
+})
+
+test('a blur names which kind, and carries the blurType Figma insists on', () => {
+  const step = stepsOf({ effects: [{ blur: 'background', radius: 20 }] })[0] as { effects: unknown[] }
+  assert.deepEqual(step.effects[0], { type: 'BACKGROUND_BLUR', blurType: 'NORMAL', radius: 20, visible: true })
+})
+
+test('an empty list removes what a node has, like every other whole-value property here', () => {
+  const step = stepsOf({ effects: [] })[0] as { effects: unknown[]; summary: string }
+  assert.deepEqual(step.effects, [])
+  assert.equal(step.summary, 'none')
+})
+
+test('a wrong effect is named where it sits, and the others still plan', () => {
+  const plan = planProps({ effects: [{ shadow: 'drop' }, { shadow: 'sideways' }, { blur: 'layer' }] })
+  assert.equal(plan.problems.length, 2)
+  assert.match(plan.problems[0], /effects\[1\]: shadow must be "drop" or "inner"/)
+  assert.match(plan.problems[1], /effects\[2\]: radius must be a number >= 0/)
+  assert.match(planProps({ effects: [{ shadow: 'drop', blurRadius: 4 }] }).problems[0], /unknown key "blurRadius"/)
+  assert.match(planProps({ effects: {} }).problems[0], /must be an array of shadows and blurs/)
+})
+
+/* --------------------------------------------------------------------- paint */
+
+test('a list of paints is a stack of layers', () => {
+  const plan = planProps({ fill: ['#FFFFFF', { variable: 'brand/base' }] })
+  assert.deepEqual(plan.problems, [])
+  assert.deepEqual(plan.steps[0], { step: 'paint', property: 'fills', ref: ['#FFFFFF', { variable: 'brand/base' }] })
+})
+
+test('a bad paint inside a stack says which layer', () => {
+  assert.match(planProps({ fill: ['#FFFFFF', 'chartreuse'] }).problems[0], /\[1\] "chartreuse" is not a #RRGGBB colour/)
+})
+
+test('an image names exactly one source', () => {
+  assert.equal(paintProblem({ image: { hash: 'abc' } }), null)
+  assert.equal(paintProblem({ image: { url: 'https://example.com/a.png' }, scaleMode: 'FIT' }), null)
+  assert.match(paintProblem({ image: {} }) ?? '', /must name one of hash, url or bytes/)
+  assert.match(paintProblem({ image: { url: 'x', bytes: 'y' } }) ?? '', /names url and bytes — pick one/)
+  assert.match(paintProblem({ image: { hash: 'a' }, scaleMode: 'STRETCH' }) ?? '', /scaleMode must be one of: FILL, FIT/)
+})
+
+/* -------------------------------------------------------------------- stroke */
+
+test('the rest of a stroke is plain vocabulary', () => {
+  assert.deepEqual(stepsOf({ strokeAlign: 'OUTSIDE' }), [{ step: 'assign', property: 'strokeAlign', value: 'OUTSIDE' }])
+  assert.deepEqual(stepsOf({ strokeDashes: [4, 2] }), [{ step: 'dashes', dashes: [4, 2] }])
+  assert.deepEqual(stepsOf({ strokeDashes: [] }), [{ step: 'dashes', dashes: [] }])
+  assert.match(planProps({ strokeAlign: 'MIDDLE' }).problems[0], /INSIDE, OUTSIDE, CENTER/)
+  assert.match(planProps({ blendMode: 'BURN' }).problems[0], /blendMode must be one of/)
+  assert.match(planProps({ strokeDashes: [-1] }).problems[0], /array of numbers >= 0/)
 })

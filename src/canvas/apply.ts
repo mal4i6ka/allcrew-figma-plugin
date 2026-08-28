@@ -14,7 +14,8 @@
 import { parseHex } from '../tokens/color.ts'
 import { resolveVariableRef } from '../agent/values.ts'
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
-import type { PaintRef, PropStep } from './props.ts'
+import { resolveRanges } from './props.ts'
+import type { ImageRef, PaintRef, PropStep, TextRun } from './props.ts'
 
 export interface AppliedProp {
   property: string
@@ -304,6 +305,67 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: 'data', before, after: step.data }
     }
 
+    case 'effects': {
+      if (!('effects' in bag)) throw new Error(`a ${node.type} takes no effects`)
+      const before = describeEffects(bag.effects)
+      if (!dry) bag.effects = step.effects
+      return { property: 'effects', before, after: step.summary }
+    }
+
+    case 'dashes': {
+      if (!('dashPattern' in bag)) throw new Error(`a ${node.type} has no stroke to dash`)
+      const before = bag.dashPattern
+      if (!dry) bag.dashPattern = step.dashes
+      return { property: 'strokeDashes', before, after: step.dashes }
+    }
+
+    case 'runs': {
+      if (node.type !== 'TEXT') throw new Error(`only a TEXT node has runs, not a ${node.type}`)
+      await loadNodeFont(node)
+
+      const applied: string[] = []
+      const problems: string[] = []
+      for (const run of step.runs) {
+        const { ranges, problem } = resolveRanges(node.characters, run)
+        if (problem) {
+          problems.push(problem)
+          continue
+        }
+        // The font of a run has to be in memory before the run can be written, exactly as for the
+        // whole node — and it is a different font from the one already loaded, or there would be
+        // no point setting it.
+        if (run.fontName) await figma.loadFontAsync(run.fontName)
+        const paints = run.fill === undefined ? null : await buildPaints(run.fill)
+
+        for (const [from, to] of ranges) {
+          if (dry) continue
+          if (run.fontName) node.setRangeFontName(from, to, run.fontName)
+          if (run.fontSize !== undefined) node.setRangeFontSize(from, to, run.fontSize)
+          if (paints) node.setRangeFills(from, to, paints)
+          if (run.textDecoration) node.setRangeTextDecoration(from, to, run.textDecoration)
+          if (run.textCase) node.setRangeTextCase(from, to, run.textCase)
+          if (run.letterSpacing !== undefined) {
+            node.setRangeLetterSpacing(from, to, { value: run.letterSpacing, unit: 'PIXELS' })
+          }
+          if (run.lineHeight !== undefined) {
+            node.setRangeLineHeight(from, to, run.lineHeight === 'AUTO' ? { unit: 'AUTO' } : { value: run.lineHeight, unit: 'PIXELS' })
+          }
+          if (run.link !== undefined) {
+            node.setRangeHyperlink(from, to, run.link === null ? null : { type: 'URL', value: run.link })
+          }
+        }
+        // What was styled, in the words of the text rather than in indices.
+        for (const [from, to] of ranges) applied.push(`"${node.characters.slice(from, to)}" ${describeRun(run)}`)
+      }
+
+      return {
+        property: 'runs',
+        before: `${node.characters.length} character(s)`,
+        after: applied.join(' · ') || 'nothing',
+        ...(problems.length > 0 ? { error: problems.join(' · ') } : {}),
+      }
+    }
+
     case 'reparent': {
       const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null
       const parent = step.parent === '' ? node.parent : await resolveParent(step.parent)
@@ -336,6 +398,20 @@ function byHumanName(properties: unknown): Record<string, unknown> {
     out[humanPropertyName(key)] = entry?.value
   }
   return out
+}
+
+/** What one run does, short enough to sit beside the text it did it to. */
+function describeRun(run: TextRun): string {
+  const parts: string[] = []
+  if (run.fontName) parts.push(`${run.fontName.family} ${run.fontName.style}`)
+  if (run.fontSize !== undefined) parts.push(`${run.fontSize}px`)
+  if (run.fill !== undefined) parts.push(typeof run.fill === 'string' ? run.fill : 'fill')
+  if (run.textDecoration) parts.push(run.textDecoration.toLowerCase())
+  if (run.textCase) parts.push(run.textCase.toLowerCase())
+  if (run.letterSpacing !== undefined) parts.push(`tracking ${run.letterSpacing}`)
+  if (run.lineHeight !== undefined) parts.push(`leading ${run.lineHeight}`)
+  if (run.link !== undefined) parts.push(run.link === null ? 'unlinked' : 'linked')
+  return parts.join(' ')
 }
 
 /** Instance-only vocabulary refuses by naming the type it was given, like everything else here. */
@@ -391,8 +467,15 @@ function applySizing(frame: FrameNode, axis: 'horizontal' | 'vertical', mode: 'F
 
 async function buildPaints(ref: PaintRef): Promise<Paint[]> {
   if (ref === null) return []
+  // A list is a stack of layers, bottom-up the way Figma holds them.
+  if (Array.isArray(ref)) {
+    const stack: Paint[] = []
+    for (const one of ref) stack.push(...(await buildPaints(one)))
+    return stack
+  }
 
   if (typeof ref === 'string') return [solid(ref)]
+  if ('image' in ref) return [await buildImage(ref)]
   if ('variable' in ref) {
     const variable = await resolveVariableRef(ref.variable)
     if (variable.resolvedType !== 'COLOR') {
@@ -403,6 +486,34 @@ async function buildPaints(ref: PaintRef): Promise<Paint[]> {
     return [figma.variables.setBoundVariableForPaint(base, 'color', variable)]
   }
   return [solid(ref.color, ref.opacity)]
+}
+
+/**
+ * A picture, from the three places one can come from.
+ *
+ * `hash` is one the document already holds — the cheapest, and what a read hands back, so a fill
+ * can be copied from one node to another without the bytes ever leaving Figma. `url` is fetched
+ * by Figma itself. `bytes` is base64, which is the only way an image crosses into a sandbox that
+ * has no filesystem.
+ */
+async function buildImage(ref: ImageRef): Promise<ImagePaint> {
+  const { hash, url, bytes } = ref.image
+  let imageHash: string
+  if (hash) {
+    imageHash = hash
+  } else if (url) {
+    const image = await figma.createImageAsync(url)
+    imageHash = image.hash
+  } else {
+    const image = figma.createImage(figma.base64Decode(bytes as string))
+    imageHash = image.hash
+  }
+  return {
+    type: 'IMAGE',
+    scaleMode: ref.scaleMode ?? 'FILL',
+    imageHash,
+    ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+  }
 }
 
 function solid(hex: string, opacity?: number): SolidPaint {
@@ -442,24 +553,59 @@ export async function describePaints(value: unknown): Promise<string | null> {
       parts.push(String(paint))
       continue
     }
-    const entry = paint as SolidPaint & { boundVariables?: Record<string, { id?: string }> }
+    const entry = paint as Paint & { boundVariables?: Record<string, { id?: string }> }
     const bound = entry.boundVariables?.color?.id
     if (bound) {
       const named = await figma.variables.getVariableByIdAsync(bound).catch(() => null)
       parts.push(`var:${named?.name ?? bound}`)
       continue
     }
+    if (entry.type === 'IMAGE') {
+      // The hash, because it is what puts the same picture on another node.
+      const picture = paint as ImagePaint
+      parts.push(`image:${picture.imageHash ?? '?'} ${picture.scaleMode}`)
+      continue
+    }
+    if (entry.type.startsWith('GRADIENT')) {
+      const gradient = paint as GradientPaint
+      parts.push(`${entry.type.replace('GRADIENT_', 'gradient:').toLowerCase()} (${gradient.gradientStops.length} stops)`)
+      continue
+    }
     if (entry.type !== 'SOLID') {
       parts.push(entry.type)
       continue
     }
-    const hex = `#${[entry.color.r, entry.color.g, entry.color.b]
+    const flat = entry as SolidPaint
+    const hex = `#${[flat.color.r, flat.color.g, flat.color.b]
       .map((channel) => Math.round(channel * 255).toString(16).padStart(2, '0'))
       .join('')
       .toUpperCase()}`
-    parts.push(entry.opacity !== undefined && entry.opacity < 1 ? `${hex} @${entry.opacity}` : hex)
+    parts.push(flat.opacity !== undefined && flat.opacity < 1 ? `${hex} @${flat.opacity}` : hex)
   }
   return parts.join(' + ')
+}
+
+/** Effects as one readable line, for the same reason paints are: this lands deep in a report. */
+export function describeEffects(value: unknown): string {
+  if (!Array.isArray(value)) return value === figma.mixed ? 'mixed' : 'none'
+  if (value.length === 0) return 'none'
+  const parts: string[] = []
+  for (const effect of value as Effect[]) {
+    if (effect.type === 'LAYER_BLUR' || effect.type === 'BACKGROUND_BLUR') {
+      parts.push(`${effect.type === 'LAYER_BLUR' ? 'layer' : 'background'} blur ${effect.radius}`)
+      continue
+    }
+    if (effect.type === 'DROP_SHADOW' || effect.type === 'INNER_SHADOW') {
+      const { r, g, b, a } = effect.color
+      const hex = `#${[r, g, b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`
+      const kind = effect.type === 'DROP_SHADOW' ? 'drop' : 'inner'
+      const spread = effect.spread ? ` spread ${effect.spread}` : ''
+      parts.push(`${kind} shadow ${hex}${a === 1 ? '' : ` @${round(a)}`} ${effect.offset.x},${effect.offset.y} blur ${effect.radius}${spread}`)
+      continue
+    }
+    parts.push(String((effect as { type: string }).type).toLowerCase())
+  }
+  return parts.join(' · ')
 }
 
 const describeFont = (font: FontName | typeof figma.mixed): string =>
