@@ -162,6 +162,27 @@ export type GridSpec =
 export type GridAlign = 'MIN' | 'MAX' | 'CENTER' | 'STRETCH'
 
 /**
+ * How a stroke is drawn, which since Figma Draw is a separate question from what colour it is.
+ *
+ * `'BASIC'` is the plain line every stroke used to be. A `dynamic` stroke varies its width along
+ * its length, and a brush stamps a shape along it — stretched to fit, or scattered. Figma names
+ * its brushes after film and music genres, which is charming and impossible to guess, so a wrong
+ * name is answered with the list.
+ */
+export type BrushSpec =
+  | 'BASIC'
+  | { dynamic: { frequency?: number; wiggle?: number; smoothen?: number } }
+  | {
+      scatter: string
+      gap?: number
+      wiggle?: number
+      sizeJitter?: number
+      angularJitter?: number
+      rotation?: number
+    }
+  | { stretch: string; direction?: 'FORWARD' | 'BACKWARD' }
+
+/**
  * One of Figma's animation styles, applied to a node.
  *
  * The styles are Figma's own — Position, Scale, Rotation, Size, Opacity, Path — and each has its
@@ -233,6 +254,8 @@ export interface NodeProps {
   strokeJoin?: 'MITER' | 'BEVEL' | 'ROUND'
   /** A dash pattern: [dash, gap, …]. `[]` is a solid line. */
   strokeDashes?: number[]
+  /** What the stroke is drawn WITH — Figma Draw's brushes and its variable-width stroke. */
+  brush?: BrushSpec
   /** Shadows and blurs, in order. `[]` removes them. */
   effects?: EffectSpec[]
   /** Layout grids on a frame. `[]` removes them. */
@@ -262,7 +285,8 @@ export interface NodeProps {
   data?: Record<string, string | null>
   /** Variables on the fields that are not paints: sizes, spacing, radii, text, visibility. */
   bind?: Record<string, string | null>
-  /** VECTOR only: the shape itself, as SVG path data. */
+  /** VECTOR only: the shape itself, as SVG path data — separated by SPACES, since Figma's parser
+   * refuses commas ("Failed to convert path. Invalid command"). */
   path?: string
   paths?: Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>
   /** VECTOR only: the shape as points and the lines between them, which is how a vector is edited. */
@@ -387,6 +411,7 @@ export type PropStep =
       summary: string
     }
   | { step: 'dashes'; dashes: number[] }
+  | { step: 'brush'; brush: ComplexStrokeProperties; loads: 'STRETCH' | 'SCATTER' | null; summary: string }
   | { step: 'runs'; runs: TextRun[] }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
@@ -497,6 +522,7 @@ const ORDER = [
   'strokeCap',
   'strokeJoin',
   'strokeDashes',
+  'brush',
   'effects',
   'grid',
   'animation',
@@ -731,6 +757,9 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
           break
         }
         const paths: Array<{ data: string; windingRule: 'NONZERO' | 'EVENODD' }> = []
+        // Figma's own parser refuses commas — "Failed to convert path. Invalid command at ," —
+        // though every SVG in the world writes `C 30 0, 60 80, 90 40`. Turning them into spaces
+        // costs nothing and saves a refusal nobody would predict.
         for (const [index, entry] of wanted.entries()) {
           const one = entry as { data?: unknown; windingRule?: unknown }
           if (typeof one?.data !== 'string' || one.data.trim() === '') {
@@ -742,7 +771,7 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
             fail(`paths[${index}].windingRule must be NONZERO or EVENODD`)
             continue
           }
-          paths.push({ data: one.data.trim(), windingRule: rule })
+          paths.push({ data: one.data.trim().replace(/,/g, ' '), windingRule: rule })
         }
         if (paths.length > 0) steps.push({ step: 'paths', paths })
         break
@@ -856,6 +885,11 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         if (!Array.isArray(value) || value.some((one) => typeof one !== 'number' || !Number.isFinite(one) || one < 0)) {
           fail('strokeDashes must be an array of numbers >= 0 — [] is a solid line')
         } else steps.push({ step: 'dashes', dashes: value as number[] })
+        break
+      }
+      case 'brush': {
+        const brush = planBrush(props.brush, `${where}.brush`, problems)
+        if (brush) steps.push(brush)
         break
       }
       case 'effects': {
@@ -1891,6 +1925,138 @@ function planAnimation(raw: unknown, where: string, problems: string[]): PropSte
   }
 
   return { step: 'animation', styles, summary: summary.join(' · ') || 'none' }
+}
+
+const SCATTER_BRUSHES = [
+  'BUBBLEGUM',
+  'WITCH_HOUSE',
+  'SHOEGAZE',
+  'HONKY_TONK',
+  'SCREAMO',
+  'DRONE',
+  'DOO_WOP',
+  'SPOKEN_WORD',
+  'VAPORWAVE',
+  'OI',
+]
+
+const STRETCH_BRUSHES = [
+  'HEIST',
+  'BLOCKBUSTER',
+  'GRINDHOUSE',
+  'BIOPIC',
+  'SPAGHETTI_WESTERN',
+  'SLASHER',
+  'HARDBOILED',
+  'VERITE',
+  'EPIC',
+  'MELODRAMA',
+  'NEW_WAVE',
+]
+
+/**
+ * A brush or a dynamic stroke, checked against the ranges the API documents.
+ *
+ * Every field of these is required by Figma and none of them has a documented default, so the
+ * defaults here are this vocabulary's own: the neutral end of each range, so `{ scatter: 'DRONE' }`
+ * alone gives an even scatter rather than a random one.
+ */
+function planBrush(raw: unknown, where: string, problems: string[]): PropStep | null {
+  if (raw === 'BASIC') {
+    return { step: 'brush', brush: { type: 'BASIC' }, loads: null, summary: 'basic' }
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    problems.push(`${where} must be "BASIC", { dynamic }, { scatter } or { stretch }`)
+    return null
+  }
+  const spec = raw as Record<string, unknown>
+
+  /** A number inside its documented range, or the default when it was not given. */
+  const within = (value: unknown, fallback: number, min: number, max: number, name: string): number | null => {
+    if (value === undefined) return fallback
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+      problems.push(`${where}.${name} must be a number between ${min} and ${max}`)
+      return null
+    }
+    return value
+  }
+
+  if (spec.dynamic !== undefined) {
+    if (typeof spec.dynamic !== 'object' || spec.dynamic === null) {
+      problems.push(`${where}.dynamic must be { frequency, wiggle, smoothen }`)
+      return null
+    }
+    const settings = spec.dynamic as Record<string, unknown>
+    for (const key of Object.keys(settings)) {
+      if (!['frequency', 'wiggle', 'smoothen'].includes(key)) {
+        problems.push(`${where}.dynamic: unknown key "${key}" — accepted: frequency, wiggle, smoothen`)
+        return null
+      }
+    }
+    const frequency = within(settings.frequency, 1, 0.01, 20, 'dynamic.frequency')
+    const wiggle = within(settings.wiggle, 0, 0, Number.MAX_SAFE_INTEGER, 'dynamic.wiggle')
+    const smoothen = within(settings.smoothen, 0, 0, 1, 'dynamic.smoothen')
+    if (frequency === null || wiggle === null || smoothen === null) return null
+    return {
+      step: 'brush',
+      brush: { type: 'DYNAMIC', frequency, wiggle, smoothen },
+      loads: null,
+      summary: `dynamic ${frequency}/${wiggle}/${smoothen}`,
+    }
+  }
+
+  if (spec.scatter !== undefined) {
+    const name = typeof spec.scatter === 'string' ? spec.scatter.trim().toUpperCase() : ''
+    if (!SCATTER_BRUSHES.includes(name)) {
+      problems.push(`${where}.scatter must be one of: ${SCATTER_BRUSHES.join(', ')}`)
+      return null
+    }
+    const gap = within(spec.gap, 1, 0.25, Number.MAX_SAFE_INTEGER, 'gap')
+    const wiggle = within(spec.wiggle, 0, 0, Number.MAX_SAFE_INTEGER, 'wiggle')
+    const sizeJitter = within(spec.sizeJitter, 0, 0, 3, 'sizeJitter')
+    const angularJitter = within(spec.angularJitter, 0, -180, 180, 'angularJitter')
+    const rotation = within(spec.rotation, 0, -180, 180, 'rotation')
+    if (gap === null || wiggle === null || sizeJitter === null || angularJitter === null || rotation === null) {
+      return null
+    }
+    return {
+      step: 'brush',
+      brush: {
+        type: 'BRUSH',
+        brushType: 'SCATTER',
+        brushName: name as ScatterBrushProperties['brushName'],
+        gap,
+        wiggle,
+        sizeJitter,
+        angularJitter,
+        rotation,
+      },
+      loads: 'SCATTER',
+      summary: `scatter ${name}${gap === 1 ? '' : ` gap ${gap}`}`,
+    }
+  }
+
+  if (spec.stretch !== undefined) {
+    const name = typeof spec.stretch === 'string' ? spec.stretch.trim().toUpperCase() : ''
+    if (!STRETCH_BRUSHES.includes(name)) {
+      problems.push(`${where}.stretch must be one of: ${STRETCH_BRUSHES.join(', ')}`)
+      return null
+    }
+    const direction = spec.direction === undefined ? 'FORWARD' : spec.direction
+    if (direction !== 'FORWARD' && direction !== 'BACKWARD') {
+      problems.push(`${where}.direction must be FORWARD or BACKWARD`)
+      return null
+    }
+    return {
+      step: 'brush',
+      brush: { type: 'BRUSH', brushType: 'STRETCH', brushName: name as StretchBrushProperties['brushName'], direction },
+      loads: 'STRETCH',
+      summary: `stretch ${name}${direction === 'FORWARD' ? '' : ' backward'}`,
+    }
+  }
+
+  problems.push(`${where} must name one of: dynamic, scatter, stretch — or be "BASIC"`)
+  return null
 }
 
 const STROKE_CAPS = ['NONE', 'ROUND', 'SQUARE', 'ARROW_LINES', 'ARROW_EQUILATERAL']

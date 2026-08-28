@@ -102,6 +102,7 @@ import { describeLinks, planProps } from './canvas/props.ts'
 import {
   applyProps,
   describeAnimation,
+  describeBrush,
   describeEffects,
   describeGrids,
   describePaints,
@@ -175,7 +176,7 @@ type PluginMessage =
       limit?: number
     }
   | { type: 'NODE_CLONE'; nodes: unknown; dryRun?: boolean }
-  | { type: 'NODE_GROUP'; nodes: unknown; as?: string; props?: unknown }
+  | { type: 'NODE_GROUP'; nodes: unknown; as?: string; props?: unknown; repeat?: unknown }
   | { type: 'COMPONENT_MAKE'; nodes: unknown; as?: string; name?: string; description?: string; props?: unknown }
   | {
       type: 'COMPONENT_PROPERTY'
@@ -1149,7 +1150,7 @@ function describeProperties(node: ComponentNode | ComponentSetNode): string {
   return describePropertyDefinitions(definitionsOf(node) as Record<string, { type: string; variantOptions?: readonly string[]; defaultValue?: unknown }>)
 }
 
-const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline']
+const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline', 'repeat']
 
 const EXPORT_FORMATS = ['PNG', 'JPG', 'SVG', 'PDF', 'MP4', 'GIF', 'WEBM']
 
@@ -1226,6 +1227,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
           // cannot be edited and sent back, which is the whole promise of this shape.
           ...(bag.strokeAlign !== 'INSIDE' ? { strokeAlign: bag.strokeAlign } : {}),
           ...(Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}),
+          ...(bag.complexStrokeProperties && (bag.complexStrokeProperties as { type?: string }).type !== 'BASIC'
+            ? { brush: describeBrush(bag.complexStrokeProperties) }
+            : {}),
           ...(typeof bag.strokeCap === 'string' && bag.strokeCap !== 'NONE' ? { strokeCap: bag.strokeCap } : {}),
           ...(typeof bag.strokeJoin === 'string' && bag.strokeJoin !== 'MITER' ? { strokeJoin: bag.strokeJoin } : {}),
         }
@@ -1290,7 +1294,8 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       .map(([key, entry]) => `${humanPropertyName(key)}=${String(entry?.value)}`)
     if (settings.length > 0) props.properties = settings.join(' · ')
   }
-  if (node.type === 'TEXT') {
+  // A TEXT_PATH is text too — Figma Draw gives it every text property and a different type.
+  if (node.type === 'TEXT' || node.type === 'TEXT_PATH') {
     props.text = node.characters
     props.fontSize = node.fontSize === figma.mixed ? 'mixed' : round(node.fontSize)
     props.fontName = node.fontName === figma.mixed ? 'mixed' : `${node.fontName.family} ${node.fontName.style}`
@@ -2450,7 +2455,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'NODE_GROUP': {
       // @agent write: group, ungroup, or combine nodes with a boolean operation
       // @agent param nodes: the ids to combine — they must share one parent; for "ungroup", the single group to release
-      // @agent param as: group (default), ungroup, union, subtract, intersect, exclude, flatten, or outline — outline turns each node's stroke into a filled vector of its own
+      // @agent param as: group (default), ungroup, union, subtract, intersect, exclude, flatten, outline — or repeat, which is Figma Draw's transform group
+      // @agent param repeat: for as "repeat" — { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. `offset` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre
       // @agent param props: applied to what comes out — the same vocabulary NODE_SET takes, so one call can group and name
       try {
         const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
@@ -2481,6 +2487,66 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
         if (nodes.length === 0) {
           refuse('NODE_GROUP', 'name at least one node')
+          break
+        }
+
+        if (as === 'repeat') {
+          // Figma Draw's transform group: one modifier per node, so a repeat is described once
+          // and applied to each of them.
+          const spec = (msg.repeat ?? {}) as Record<string, unknown>
+          const radial = String(spec.type ?? 'LINEAR').toUpperCase() === 'RADIAL'
+          const count = typeof spec.count === 'number' ? spec.count : 3
+          if (!Number.isInteger(count) || count < 2) {
+            refuse('NODE_GROUP', 'repeat.count must be a whole number of at least 2')
+            break
+          }
+          // `offset` is a DISTANCE, for both kinds — a radial repeat spaces its copies around the
+          // circle by itself, and the offset pushes them outward from the centre. Defaulting it
+          // to 360/count read as "degrees" and flung eight petals across four thousand pixels.
+          const offset = typeof spec.offset === 'number' ? spec.offset : radial ? 0 : 1
+          const unit = String(spec.unit ?? (radial ? 'RELATIVE' : 'RELATIVE')).toUpperCase()
+          if (unit !== 'RELATIVE' && unit !== 'PIXELS') {
+            refuse('NODE_GROUP', 'repeat.unit must be RELATIVE or PIXELS')
+            break
+          }
+          const axis = String(spec.axis ?? 'HORIZONTAL').toUpperCase()
+          if (!radial && axis !== 'HORIZONTAL' && axis !== 'VERTICAL') {
+            refuse('NODE_GROUP', 'repeat.axis must be HORIZONTAL or VERTICAL')
+            break
+          }
+          const home = nodes[0].parent
+          if (!home || !('appendChild' in home)) {
+            refuse('NODE_GROUP', 'the nodes have nowhere to be grouped into')
+            break
+          }
+          const modifier = radial
+            ? { type: 'REPEAT' as const, repeatType: 'RADIAL' as const, count, unitType: unit, offset }
+            : {
+                type: 'REPEAT' as const,
+                repeatType: 'LINEAR' as const,
+                count,
+                unitType: unit,
+                offset,
+                axis: axis as 'HORIZONTAL' | 'VERTICAL',
+              }
+          const group = figma.transformGroup(
+            nodes,
+            home as BaseNode & ChildrenMixin,
+            (home as BaseNode & ChildrenMixin).children.length,
+            nodes.map(() => modifier as TransformModifier)
+          )
+          const report = await applyProps(group, plan.steps, false)
+          figma.commitUndo()
+          figma.notify(`${radial ? 'Radial' : 'Linear'} repeat ×${count}`)
+          postToUi({
+            type: 'NODES_GROUPED',
+            as,
+            from: ids,
+            node: { id: group.id, name: group.name, type: group.type },
+            repeat: `${radial ? 'radial' : axis.toLowerCase()} ×${count} offset ${offset} ${unit.toLowerCase()}`,
+            applied: report.applied,
+            failed: report.failed,
+          })
           break
         }
 

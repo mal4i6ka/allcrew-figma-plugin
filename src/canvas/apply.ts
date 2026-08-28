@@ -97,13 +97,13 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const before = bag[step.property]
       // Text properties refuse to move until the font is loaded, whatever they are — a size
       // change on a text node whose font is unavailable throws the same way characters do.
-      if (node.type === 'TEXT' && TEXT_PROPERTIES.includes(step.property)) await loadNodeFont(node)
+      if (isText(node) && TEXT_PROPERTIES.includes(step.property)) await loadNodeFont(node)
       if (!dry) bag[step.property] = step.value
       return { property: step.property, before, after: step.value }
     }
 
     case 'font': {
-      if (node.type !== 'TEXT') throw new Error(`only a TEXT node has a font, not a ${node.type}`)
+      if (!isText(node)) throw new Error(`only a text node has a font, not a ${node.type}`)
       const before = describeFont(node.fontName)
       const font: FontName = { family: step.family, style: step.style }
       // Loaded even on a dry run: "that font is not available" is exactly the answer a dry run
@@ -114,7 +114,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     }
 
     case 'text': {
-      if (node.type !== 'TEXT') throw new Error(`only a TEXT node has characters, not a ${node.type}`)
+      if (!isText(node)) throw new Error(`only a text node has characters, not a ${node.type}`)
       await loadNodeFont(node)
       const before = node.characters
       if (!dry) node.characters = step.characters
@@ -122,7 +122,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     }
 
     case 'lineHeight': {
-      if (node.type !== 'TEXT') throw new Error(`only a TEXT node has a line height, not a ${node.type}`)
+      if (!isText(node)) throw new Error(`only a text node has a line height, not a ${node.type}`)
       await loadNodeFont(node)
       const before = node.lineHeight
       const after: LineHeight = step.value === 'AUTO' ? { unit: 'AUTO' } : { value: step.value, unit: 'PIXELS' }
@@ -427,6 +427,16 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: 'grid', before, after: step.summary }
     }
 
+    case 'brush': {
+      if (!('complexStrokeProperties' in bag)) throw new Error(`a ${node.type} has no stroke to draw with`)
+      const before = describeBrush(bag.complexStrokeProperties)
+      // A brush has to be loaded before it can be set, once per plugin run per type — Figma says
+      // so and the assignment simply fails otherwise.
+      if (step.loads) await figma.loadBrushesAsync(step.loads)
+      if (!dry) bag.complexStrokeProperties = step.brush
+      return { property: 'brush', before, after: step.summary }
+    }
+
     case 'dashes': {
       if (!('dashPattern' in bag)) throw new Error(`a ${node.type} has no stroke to dash`)
       const before = bag.dashPattern
@@ -435,7 +445,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     }
 
     case 'runs': {
-      if (node.type !== 'TEXT') throw new Error(`only a TEXT node has runs, not a ${node.type}`)
+      if (!isText(node)) throw new Error(`only a text node has runs, not a ${node.type}`)
       await loadNodeFont(node)
 
       const applied: string[] = []
@@ -767,6 +777,17 @@ const STYLE_SETTERS: Readonly<Record<string, string>> = {
   gridStyle: 'setGridStyleIdAsync',
 }
 
+/**
+ * Text on a path is still text.
+ *
+ * Figma Draw's `TEXT_PATH` carries characters, a font, runs and everything else a TEXT node has —
+ * its own documentation says so — but it is a different `type`, so every guard written as
+ * `type !== 'TEXT'` refused the very node `createTextPath` had just handed back.
+ */
+function isText(node: SceneNode): node is TextNode {
+  return node.type === 'TEXT' || node.type === 'TEXT_PATH'
+}
+
 /** Instance-only vocabulary refuses by naming the type it was given, like everything else here. */
 function asInstance(node: SceneNode, wanted: string): InstanceNode {
   if (node.type !== 'INSTANCE') throw new Error(`only an INSTANCE has ${wanted}, not a ${node.type}`)
@@ -1064,6 +1085,14 @@ function animationStyleWord(key: string | undefined): string | null {
     }
   }
   return styleWords.get(key) ?? null
+}
+
+/** What a stroke is drawn with, in the words the vocabulary takes it in. */
+export function describeBrush(value: unknown): string {
+  const brush = value as ComplexStrokeProperties | undefined
+  if (!brush || brush.type === 'BASIC') return 'basic'
+  if (brush.type === 'DYNAMIC') return `dynamic ${brush.frequency}/${brush.wiggle}/${brush.smoothen}`
+  return `${brush.brushType.toLowerCase()} ${brush.brushName}`
 }
 
 /** Layout grids as one line, in the words the vocabulary takes them in. */

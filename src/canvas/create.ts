@@ -28,6 +28,7 @@ export const NODE_KINDS = [
   'svg',
   'star',
   'polygon',
+  'textPath',
 ] as const
 
 export type NodeKind = (typeof NODE_KINDS)[number]
@@ -35,8 +36,10 @@ export type NodeKind = (typeof NODE_KINDS)[number]
 export interface CreateSpec {
   kind: NodeKind
   /** For `instance`: the component to instantiate — an id, or a published component key.
-   *  For `svg`: the markup itself. */
+   *  For `svg`: the markup itself. For `textPath`: the VECTOR the text will follow. */
   of?: string
+  /** `textPath` only: [segment, position] — where on the outline the text starts. */
+  at?: [number, number]
   props?: unknown
   children?: unknown
 }
@@ -54,6 +57,8 @@ export interface CreatedNode {
 export interface CreatePlan {
   kind: NodeKind
   of?: string
+  /** `textPath` only: which segment of the vector the text starts on, and how far along it. */
+  at?: [number, number]
   steps: PropStep[]
   children: CreatePlan[]
 }
@@ -82,9 +87,31 @@ export function planCreate(raw: unknown, where: string, problems: string[]): Cre
     problems.push(`${where}.of must be the SVG markup itself, starting with <svg`)
     return null
   }
+  if (kind === 'textPath') {
+    if (typeof spec.of !== 'string') {
+      problems.push(`${where}.of must name the VECTOR whose outline the text will follow`)
+      return null
+    }
+    if (spec.at !== undefined) {
+      const at = spec.at
+      if (
+        !Array.isArray(at) ||
+        at.length !== 2 ||
+        typeof at[0] !== 'number' ||
+        !Number.isInteger(at[0]) ||
+        at[0] < 0 ||
+        typeof at[1] !== 'number' ||
+        at[1] < 0 ||
+        at[1] > 1
+      ) {
+        problems.push(`${where}.at must be [segment, position] — a whole segment index and 0..1 along it`)
+        return null
+      }
+    }
+  }
   for (const key of Object.keys(spec)) {
-    if (!['kind', 'of', 'props', 'children'].includes(key)) {
-      problems.push(`${where}: unknown key "${key}" — accepted: kind, of, props, children`)
+    if (!['kind', 'of', 'props', 'children', 'at'].includes(key)) {
+      problems.push(`${where}: unknown key "${key}" — accepted: kind, of, props, children, at`)
     }
   }
 
@@ -105,6 +132,7 @@ export function planCreate(raw: unknown, where: string, problems: string[]): Cre
   return {
     kind: kind as NodeKind,
     ...(typeof spec.of === 'string' ? { of: spec.of } : {}),
+    ...(Array.isArray(spec.at) ? { at: spec.at as [number, number] } : {}),
     steps: plan.steps,
     children,
   }
@@ -193,6 +221,19 @@ async function make(plan: CreatePlan): Promise<SceneNode> {
       // Figma parses the markup itself and hands back a frame of real vector layers — which is
       // how an icon gets onto the canvas without anyone hand-writing a path.
       return figma.createNodeFromSvg(plan.of!)
+    case 'textPath': {
+      const outline = await figma.getNodeByIdAsync(plan.of!)
+      if (!outline || outline.type !== 'VECTOR') {
+        throw new Error(`${plan.of} is ${outline ? `a ${outline.type}` : 'not a node'}, and text follows a VECTOR`)
+      }
+      // `createTextPath` CHANGES the type of the node it is given, so the returned object is the
+      // one to keep — the original handle now describes something that no longer exists.
+      const [segment, position] = plan.at ?? [0, 0]
+      const path = figma.createTextPath(outline, segment, position)
+      const font = path.fontName
+      if (font !== figma.mixed) await figma.loadFontAsync(font as FontName)
+      return path
+    }
     case 'instance': {
       const target = await componentFor(plan.of!)
       return target.createInstance()

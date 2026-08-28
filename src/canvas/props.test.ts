@@ -221,7 +221,21 @@ test('an instance must name what it is an instance of', () => {
 test('the kinds are the ones the applier knows how to make', () => {
   assert.deepEqual(
     [...NODE_KINDS],
-    ['frame', 'text', 'rectangle', 'ellipse', 'line', 'section', 'component', 'instance', 'vector', 'svg', 'star', 'polygon']
+    [
+      'frame',
+      'text',
+      'rectangle',
+      'ellipse',
+      'line',
+      'section',
+      'component',
+      'instance',
+      'vector',
+      'svg',
+      'star',
+      'polygon',
+      'textPath',
+    ]
   )
 })
 
@@ -256,7 +270,7 @@ test('a shape is set before the paints that fill it', () => {
 test('an unknown key on a spec is named rather than ignored', () => {
   const problems: string[] = []
   planCreate({ kind: 'frame', styles: [] }, 'nodes[0]', problems)
-  assert.match(problems[0], /unknown key "styles" — accepted: kind, of, props, children/)
+  assert.match(problems[0], /unknown key "styles" — accepted: kind, of, props, children, at/)
 })
 
 /* ------------------------------------------------------------------- effects */
@@ -694,4 +708,70 @@ test('null and [] both take the animation off, and a nameless style is refused',
   assert.match(planProps({ animation: { duration: 1 } }).problems[0], /style must name one of the styles MOTION_STYLES lists/)
   assert.match(planProps({ animation: { style: 'Position', speed: 2 } }).problems[0], /unknown key "speed"/)
   assert.match(planProps({ animation: { style: 'Position', duration: -1 } }).problems[0], /duration must be a number of seconds >= 0/)
+})
+
+/* --------------------------------------------------------------- figma draw */
+
+test('a brush is named, and a wrong name is answered with the ten that exist', () => {
+  assert.deepEqual(stepsOf({ brush: 'BASIC' }), [
+    { step: 'brush', brush: { type: 'BASIC' }, loads: null, summary: 'basic' },
+  ])
+  const scattered = stepsOf({ brush: { scatter: 'DRONE', gap: 2 } })[0] as {
+    brush: Record<string, unknown>
+    loads: string
+  }
+  // Every field is required by Figma and none has a documented default, so the neutral end of
+  // each range is filled in — a scatter with no settings is even, not random.
+  assert.deepEqual(scattered.brush, {
+    type: 'BRUSH',
+    brushType: 'SCATTER',
+    brushName: 'DRONE',
+    gap: 2,
+    wiggle: 0,
+    sizeJitter: 0,
+    angularJitter: 0,
+    rotation: 0,
+  })
+  assert.equal(scattered.loads, 'SCATTER', 'the brush type has to be loaded before it can be set')
+  assert.match(planProps({ brush: { scatter: 'TECHNO' } }).problems[0], /must be one of: BUBBLEGUM, WITCH_HOUSE/)
+  assert.match(planProps({ brush: { stretch: 'TECHNO' } }).problems[0], /must be one of: HEIST, BLOCKBUSTER/)
+})
+
+test('a dynamic stroke is checked against the ranges the API documents', () => {
+  const step = stepsOf({ brush: { dynamic: { frequency: 4, smoothen: 0.5 } } })[0] as { brush: Record<string, unknown> }
+  assert.deepEqual(step.brush, { type: 'DYNAMIC', frequency: 4, wiggle: 0, smoothen: 0.5 })
+  assert.match(planProps({ brush: { dynamic: { frequency: 40 } } }).problems[0], /between 0.01 and 20/)
+  assert.match(planProps({ brush: { dynamic: { smoothen: 2 } } }).problems[0], /between 0 and 1/)
+  assert.match(planProps({ brush: { scatter: 'DRONE', sizeJitter: 9 } }).problems[0], /between 0 and 3/)
+  assert.match(planProps({ brush: { scatter: 'DRONE', gap: 0.1 } }).problems[0], /between 0.25 and/)
+  assert.match(planProps({ brush: { dynamic: { speed: 1 } } }).problems[0], /unknown key "speed"/)
+  assert.match(planProps({ brush: {} }).problems[0], /must name one of: dynamic, scatter, stretch/)
+  assert.match(planProps({ brush: 'FANCY' }).problems[0], /must be "BASIC", \{ dynamic \}/)
+})
+
+test('a brush is drawn before the shadows and after the stroke it draws', () => {
+  assert.deepEqual(
+    planProps({ effects: [], brush: 'BASIC', stroke: '#000000' }).steps.map((step) => step.step),
+    ['paint', 'brush', 'effects']
+  )
+})
+
+test('text on a path names the vector it follows, and where along it', () => {
+  const problems: string[] = []
+  const plan = planCreate({ kind: 'textPath', of: '1:2', at: [2, 0.5] }, 'n', problems)
+  assert.deepEqual(problems, [])
+  assert.deepEqual(plan?.at, [2, 0.5])
+  planCreate({ kind: 'textPath' }, 'n', problems)
+  assert.match(problems[0], /of must name the VECTOR whose outline the text will follow/)
+  const more: string[] = []
+  planCreate({ kind: 'textPath', of: '1:2', at: [0, 4] }, 'n', more)
+  assert.match(more[0], /at must be \[segment, position\]/)
+})
+
+test('commas in path data become spaces, because Figma refuses them', () => {
+  // Every SVG in the world writes `C 30 0, 60 80, 90 40`; Figma answers "Failed to convert path.
+  // Invalid command at ," — a refusal nobody would predict from an SVG they pasted.
+  assert.deepEqual(stepsOf({ path: 'M 0 40 C 30 0, 60 80, 90 40' }), [
+    { step: 'paths', paths: [{ data: 'M 0 40 C 30 0  60 80  90 40', windingRule: 'NONZERO' }] },
+  ])
 })
