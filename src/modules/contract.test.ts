@@ -256,3 +256,26 @@ test('a module with no screens at all is not a module', () => {
   assert.equal(module, null)
   assert.ok(problems.some((problem) => problem.path === 'screens'))
 })
+
+test('a value block shows a state field without offering to edit it', () => {
+  // The screens had no way to display a number a run produced: a module could finish its work
+  // and show nothing but "done".
+  const withValue = clone(MODULE)
+  withValue.screens.main.blocks.push({ block: 'value', bind: 'rows', label: 'Colours that move', hint: 'from the last plan' } as never)
+  const { module, problems } = parseUserModule(withValue, KNOWN)
+  assert.deepEqual(problems, [])
+  assert.deepEqual(module!.screens.main.blocks.at(-1), {
+    block: 'value',
+    bind: 'rows',
+    label: 'Colours that move',
+    hint: 'from the last plan',
+  })
+})
+
+test('a value block must name a declared field, like every other binding', () => {
+  const loose = clone(MODULE)
+  loose.screens.main.blocks.push({ block: 'value', bind: 'invented' } as never)
+  const { module, problems } = parseUserModule(loose, KNOWN)
+  assert.equal(module, null)
+  assert.match(problems[0].path, /\.bind$/)
+})

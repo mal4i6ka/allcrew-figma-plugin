@@ -44,6 +44,9 @@ export type ModuleBlock =
   | { block: 'heading' | 'text'; text: string }
   | { block: 'callout'; text: string; tone?: 'info' | 'warn' }
   | { block: 'field'; bind: string; label?: string; placeholder?: string }
+  /** A value to read, not to edit. The screens had no way to show a number a run produced,
+   * which is how a module could finish its work and display nothing but "done". */
+  | { block: 'value'; bind: string; label?: string; hint?: string }
   | { block: 'select'; bind: string; label?: string; options: Array<{ value: string; label?: string }> }
   | { block: 'toggle'; bind: string; label?: string }
   | { block: 'button'; label: string; steps: ModuleStep[] }
@@ -96,7 +99,7 @@ export interface ModuleCapability {
   cost?: string
 }
 
-const BLOCK_TYPES = ['heading', 'text', 'callout', 'field', 'select', 'toggle', 'button', 'table', 'spacer']
+const BLOCK_TYPES = ['heading', 'text', 'callout', 'field', 'value', 'select', 'toggle', 'button', 'table', 'spacer']
 const STATE_TYPES: StateType[] = ['string', 'number', 'boolean']
 const ID_PATTERN = /^[a-z0-9][a-z0-9.-]*$/
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/
@@ -269,6 +272,16 @@ function parseBlock(raw: unknown, path: string, context: Context): ModuleBlock |
     case 'toggle': {
       const bind = bound()
       return bind === null ? null : { block: kind, bind, ...optionalLabel(raw) }
+    }
+    case 'value': {
+      const bind = bound()
+      if (bind === null) return null
+      return {
+        block: 'value',
+        bind,
+        ...optionalLabel(raw),
+        ...(typeof raw.hint === 'string' ? { hint: raw.hint } : {}),
+      }
     }
     case 'select': {
       const bind = bound()

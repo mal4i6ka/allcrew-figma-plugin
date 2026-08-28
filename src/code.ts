@@ -382,6 +382,10 @@ function remapPlanView(plan: RemapPlan) {
       flags: entry.flags,
     })),
     families: plan.families,
+    // The count beside the list. A caller that wants the number should not have to hold the
+    // whole array to get it — a module's state holds scalars, and the digest replaces a long
+    // array with a summary before anyone downstream could count it either.
+    familyCount: plan.families.length,
     renames: plan.renames,
     unusedFamilies: plan.unusedFamilies,
     warnings: plan.warnings,
@@ -1947,29 +1951,24 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       break
     }
     case 'MODULE_VIEW': {
-      // @agent read: one module's screen as declared, with the values its fields currently hold
+      // @agent read: a module's screens as declared, with the values its fields currently hold
       const entry = userModules.find((candidate) => candidate.id === msg.id)
       if (!entry?.module) {
         refuse('MODULE_VIEW', `no usable module "${msg.id}" — MODULES_LIST says why`)
         break
       }
-      const which = msg.screen ?? 'main'
-      const screen = entry.module.screens[which]
-      if (!screen) {
-        refuse('MODULE_VIEW', `module "${msg.id}" has no ${which} screen`)
-        break
-      }
+      // Both screens in one answer. A module's `settings` screen belongs in the panel's own
+      // Settings sub-page — the same place every other target keeps its options — so the panel
+      // needs both at once, and fetching them separately only invented an ordering problem.
       postToUi({
         type: 'MODULE_SCREEN',
         id: entry.id,
-        screen: which,
-        // Which screens exist travels with the screen itself: the panel would otherwise have to
-        // stitch this together with the module list, and get it wrong whenever the two messages
-        // arrived in the other order.
-        screens: Object.keys(entry.module.screens),
         name: entry.module.name,
         summary: entry.module.summary,
-        blocks: screen.blocks,
+        screens: {
+          main: entry.module.screens.main.blocks,
+          ...(entry.module.screens.settings ? { settings: entry.module.screens.settings.blocks } : {}),
+        },
         // Declared defaults, overlaid with whatever it has kept — what a field should show.
         state: moduleStateOf(entry),
       })

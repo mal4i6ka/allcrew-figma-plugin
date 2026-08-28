@@ -463,6 +463,16 @@
   /* Taller than the panel strictly needs: a filter above the list is only worth its row if
      the list it filters did not shrink by the same amount. */
   .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: 520px; overflow-y: auto; overflow-x: hidden; }
+  /* A module's table. Borrowing .rmp-table was wrong: that is a flex column of div rows, and
+     applied to a real <table> it collapses every cell against its neighbour. Same visual
+     language — mono, faint uppercase head, thin separators — scoped to its own name, and it
+     scrolls sideways rather than pushing the panel wider. */
+  .mod-table-wrap { max-height: 320px; overflow: auto; }
+  .mod-table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 10.5px; }
+  .mod-table th { position: sticky; top: 0; background: var(--surface); color: var(--faint); font-size: 9px; font-weight: 500;
+                  letter-spacing: .05em; text-transform: uppercase; text-align: left; padding: 0 8px 4px; white-space: nowrap; }
+  .mod-table td { padding: 4px 8px; color: var(--text); border-top: 1px solid var(--border); white-space: nowrap;
+                  max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
   .rmp-label-mid { text-align: center; }
   .rmp-filter { display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box; }
   .rmp-search-wrap { position: relative; display: flex; flex: 1 1 auto; min-width: 0; width: 100%; }
@@ -975,15 +985,11 @@
          module's declared blocks, using this panel's own classes — a module ships a description
          of a screen, never markup, so it cannot draw something that does not belong here. -->
     <div id="view-module" class="view hidden">
-      <section class="card" id="mod-head">
-        <p class="label" id="mod-name">Module</p>
-        <p class="sec-hint" id="mod-summary"></p>
-        <div class="seg" id="mod-screens" role="radiogroup" aria-label="Module screen"></div>
-      </section>
       <div id="mod-blocks"></div>
       <section class="card hidden" id="mod-result">
         <p class="label">Result</p>
         <p class="sec-hint" id="mod-result-text"></p>
+        <div id="mod-result-detail"></div>
       </section>
     </div>
 
@@ -1279,13 +1285,20 @@
           <span class="deliver-status" id="deliver-status">endpoint not set</span>
         </div>
 
+        <!-- A module's own settings screen, when the picker is pointed at one: the same place
+             every other target keeps its options, rather than a second switcher in the body. -->
+        <div class="set-section hidden" id="mod-settings-head">
+          <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
+          <span id="mod-settings-name">Module</span>
+        </div>
+        <div id="mod-settings-blocks"></div>
+
         <!-- Modules a person installed, as opposed to the targets that shipped with the plugin.
              Everything here is derived from the file: what it may run comes out of its steps, not
              out of anything it claims about itself. -->
         <div class="set-section">
           <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><path d="M17.5 14v7M14 17.5h7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
           <span>Modules</span>
-          <span class="sec-hint">panels somebody wrote &middot; each one says what it may run</span>
         </div>
         <div id="mods-list"></div>
         <div class="rmp-drop" id="mods-drop">
@@ -1674,7 +1687,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         // A module's own target id is `module:<id>` — the picker's value carries which one.
         document.getElementById('view-module').classList.toggle('hidden', settings || target.slice(0, 7) !== 'module:')
         document.getElementById('view-settings').classList.toggle('hidden', !settings)
-        document.querySelector('footer').classList.toggle('hidden', settings)
+        // Hidden for Settings, and for a module: the footer is the export pipeline's own.
+        document.querySelector('footer').classList.toggle('hidden', settings || Boolean(MODULE_TARGET))
+        // A module's options live in Settings, under its own heading — and only while the
+        // picker is pointed at it.
+        var modSettings = document.getElementById('mod-settings-head')
+        if (modSettings) {
+          var hasSettings = Boolean(MODULE_TARGET && MOD.screens && MOD.screens.settings)
+          modSettings.classList.toggle('hidden', !hasSettings)
+          document.getElementById('mod-settings-blocks').classList.toggle('hidden', !hasSettings)
+        }
         document.getElementById('open-settings').classList.toggle('hidden', settings)
         document.getElementById('close-settings').classList.toggle('hidden', !settings)
         // the target picker belongs to the dashboards — hide it while Settings is open
@@ -1692,8 +1714,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         // uninstalling a module cannot leave the panel pointed at a view that no longer exists.
         if (picked.slice(0, 7) === 'module:') {
           MODULE_TARGET = picked.slice(7)
+          // Another target's chrome has no business here: the Django export footer was still
+          // sitting under a module's screen, one click away from running an export nobody asked
+          // for. Everything that belongs to a native target goes away with it.
+          document.getElementById('export-btn').classList.add('hidden')
+          document.getElementById('pipeline').classList.add('hidden')
+          document.getElementById('dt-foot').classList.add('hidden')
+          Array.prototype.forEach.call(document.querySelectorAll('[data-needs-target]'), function (el) {
+            el.classList.add('hidden')
+          })
           show(VIEW)
-          requestModuleScreen(MODULE_TARGET, 'main')
+          requestModuleScreen(MODULE_TARGET)
           return
         }
         MODULE_TARGET = null
@@ -3920,12 +3951,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
        * value; a button posts MODULE_RUN with its own index and the sandbox looks up what that
        * means. The panel never sends steps — it names which button was pressed.
        */
-      var MOD = { id: null, screen: 'main', blocks: [], state: {}, view: {}, running: false }
+      var MOD = { id: null, screens: {}, state: {}, view: {}, running: false, lastRun: null }
 
       function modEl(id) { return document.getElementById(id) }
 
-      function requestModuleScreen(id, screen) {
-        parent.postMessage({ pluginMessage: { type: 'MODULE_VIEW', id: id, screen: screen || 'main' } }, '*')
+      function requestModuleScreen(id) {
+        parent.postMessage({ pluginMessage: { type: 'MODULE_VIEW', id: id } }, '*')
       }
 
       function modText(tag, className, text) {
@@ -3948,11 +3979,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         parent.postMessage({ pluginMessage: { type: 'MODULE_STATE_SET', id: MOD.id, field: field, value: value } }, '*')
       }
 
-      function modRun(index) {
+      function modRun(screen, index) {
         if (MOD.running) return
         MOD.running = true
         modShowResult('Running…')
-        parent.postMessage({ pluginMessage: { type: 'MODULE_RUN', id: MOD.id, screen: MOD.screen, block: index } }, '*')
+        renderModuleScreen()
+        parent.postMessage({ pluginMessage: { type: 'MODULE_RUN', id: MOD.id, screen: screen, block: index } }, '*')
       }
 
       function modShowResult(text, isError) {
@@ -3963,7 +3995,68 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         line.style.color = isError ? 'var(--danger, #C4321A)' : ''
       }
 
-      function modBlockNode(block, index) {
+      /**
+       * What the run actually found, step by step.
+       *
+       * "Done · 3 steps" is a progress bar's answer, not a result: the run had just mapped 560
+       * colours and the screen said nothing about it. Every step's reply is already here — the
+       * runner keeps each one — so each is shown by the numbers it carries, and any state field
+       * the run changed is named with its new value.
+       */
+      function renderRunDetail(report, before) {
+        var host = modEl('mod-result-detail')
+        host.innerHTML = ''
+        if (!report) return
+
+        ;(report.steps || []).forEach(function (step) {
+          if (!step.call) return
+          var reply = modReplyFor(report, step)
+          var row = document.createElement('div')
+          row.className = 'set-row'
+          row.appendChild(modRowLabel(step.call, step.error || (reply ? modSummariseReply(reply) : 'no answer')))
+          if (step.error) row.style.color = 'var(--danger, #C4321A)'
+          host.appendChild(row)
+        })
+
+        Object.keys(report.state || {}).forEach(function (field) {
+          if (before && before[field] === report.state[field]) return
+          host.appendChild(modText('p', 'sec-hint', field + ' → ' + String(report.state[field])))
+        })
+      }
+
+      /** The reply a step kept, when it kept one under a name. */
+      function modReplyFor(report, step) {
+        var view = report.view || {}
+        var names = Object.keys(view)
+        for (var i = 0; i < names.length; i++) {
+          var candidate = view[names[i]]
+          if (candidate && candidate.__step === step.step) return candidate
+        }
+        // Steps are in order and so are the names they filled, so the nth call-with-a-name maps
+        // to the nth entry — enough to label a row without the runner having to number them.
+        var calls = (report.steps || []).filter(function (s) { return s.call })
+        var at = calls.indexOf(step)
+        return at >= 0 && at < names.length ? view[names[at]] : null
+      }
+
+      /** A reply in one line of numbers: whatever counts it carries, and its type as a fallback. */
+      function modSummariseReply(reply) {
+        if (!reply || typeof reply !== 'object') return String(reply)
+        var parts = []
+        Object.keys(reply).forEach(function (key) {
+          if (key === 'type' || parts.length >= 4) return
+          var value = reply[key]
+          if (typeof value === 'number' || typeof value === 'boolean') parts.push(key + ': ' + value)
+          else if (Array.isArray(value)) parts.push(key + ': ' + value.length)
+          else if (value && typeof value === 'object') {
+            var inner = Object.keys(value).filter(function (k) { return typeof value[k] === 'number' })
+            if (inner.length > 0) parts.push(key + ': ' + inner.slice(0, 3).map(function (k) { return k + ' ' + value[k] }).join(', '))
+          }
+        })
+        return parts.length > 0 ? parts.join(' · ') : String(reply.type || 'answered')
+      }
+
+      function modBlockNode(block, index, screen) {
         switch (block.block) {
           case 'heading':
             return modText('p', 'label', block.text)
@@ -4020,15 +4113,23 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             label.appendChild(wrap)
             return label
           }
+          case 'value': {
+            var vrow = document.createElement('div')
+            vrow.className = 'set-row'
+            vrow.appendChild(modRowLabel(block.label || block.bind, block.hint))
+            var shown = MOD.state[block.bind]
+            vrow.appendChild(modText('span', 'set-text', shown === undefined || shown === null ? '—' : String(shown)))
+            return vrow
+          }
           case 'button': {
             var actions = document.createElement('div')
             actions.className = 'rmp-actions'
             var button = document.createElement('button')
             button.className = 'btn primary'
             button.type = 'button'
-            button.textContent = block.label
+            button.textContent = MOD.running ? 'Working…' : block.label
             button.disabled = MOD.running
-            button.addEventListener('click', function () { modRun(index) })
+            button.addEventListener('click', function () { modRun(screen, index) })
             actions.appendChild(button)
             return actions
           }
@@ -4065,8 +4166,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
         var wrap = document.createElement('div')
         wrap.appendChild(modText('p', 'label', label + ' · ' + rows.length))
+        var scroller = document.createElement('div')
+        scroller.className = 'mod-table-wrap'
         var table = document.createElement('table')
-        table.className = 'rmp-table'
+        table.className = 'mod-table'
         var head = document.createElement('tr')
         columns.forEach(function (column) { head.appendChild(modText('th', null, column)) })
         table.appendChild(head)
@@ -4077,42 +4180,49 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           })
           table.appendChild(tr)
         })
-        wrap.appendChild(table)
+        scroller.appendChild(table)
+        wrap.appendChild(scroller)
         if (rows.length > shown.length) {
           wrap.appendChild(modText('p', 'sec-hint', 'showing ' + shown.length + ' of ' + rows.length))
         }
         return wrap
       }
 
+      /**
+       * Both screens, each into the place this panel already keeps that kind of thing: `main`
+       * into the dashboard, `settings` into the Settings sub-page under the module's own
+       * heading. A second switcher in the body was the wrong answer — the header already
+       * decides which target you are looking at, and Settings is already a sub-page.
+       */
       function renderModuleScreen() {
-        modEl('mod-name').textContent = MOD.name || MOD.id || 'Module'
-        modEl('mod-summary').textContent = MOD.summary || ''
+        renderBlocksInto(modEl('mod-blocks'), (MOD.screens || {}).main || [], 'main', MOD.name)
 
-        var tabs = modEl('mod-screens')
-        tabs.innerHTML = ''
-        // Only shown when there is a choice to make: a module with one screen has no tabs.
-        tabs.classList.toggle('hidden', (MOD.screens || ['main']).length < 2)
-        ;(MOD.screens || ['main']).forEach(function (name) {
-          var tab = document.createElement('button')
-          tab.type = 'button'
-          tab.className = 'seg' + (name === MOD.screen ? ' active' : '')
-          tab.textContent = name
-          tab.addEventListener('click', function () { requestModuleScreen(MOD.id, name) })
-          tabs.appendChild(tab)
-        })
+        var settings = (MOD.screens || {}).settings
+        modEl('mod-settings-head').classList.toggle('hidden', !settings)
+        modEl('mod-settings-name').textContent = MOD.name || MOD.id || 'Module'
+        renderBlocksInto(modEl('mod-settings-blocks'), settings || [], 'settings', null)
+      }
 
-        var host = modEl('mod-blocks')
+      /** One card per heading, so a module's screen has the rhythm of every other screen here:
+       * a titled card, then its rows. The module's name and summary title the first card, which
+       * is why a module does not need to repeat them as blocks. */
+      function renderBlocksInto(host, blocks, screen, title) {
         host.innerHTML = ''
-        // Blocks are grouped into one card per run of non-heading blocks, so a module's screen
-        // has the same rhythm as every other screen here: a titled card, then its rows.
+        if (blocks.length === 0) return
         var card = null
-        ;(MOD.blocks || []).forEach(function (block, index) {
-          if (block.block === 'heading' || card === null) {
-            card = document.createElement('section')
-            card.className = 'card'
-            host.appendChild(card)
-          }
-          card.appendChild(modBlockNode(block, index))
+        var openCard = function (heading) {
+          card = document.createElement('section')
+          card.className = 'card'
+          if (heading) card.appendChild(modText('p', 'label', heading))
+          host.appendChild(card)
+        }
+        if (title) {
+          openCard(title)
+          if (MOD.summary) card.appendChild(modText('p', 'sec-hint', MOD.summary))
+        }
+        blocks.forEach(function (block, index) {
+          if (card === null || block.block === 'heading') openCard(block.block === 'heading' ? block.text : null)
+          if (block.block !== 'heading') card.appendChild(modBlockNode(block, index, screen))
         })
       }
 
@@ -4120,20 +4230,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (msg.type === 'MODULE_SCREEN') {
           MOD = {
             id: msg.id,
-            screen: msg.screen,
-            // Carried by the message, so the tabs do not depend on the module list having
-            // arrived first — or at all.
-            screens: msg.screens || ['main'],
+            // Both screens arrive together: `main` goes to the dashboard, `settings` to the
+            // Settings sub-page, and neither depends on the other having been asked for.
+            screens: msg.screens || {},
             name: msg.name,
             summary: msg.summary,
-            blocks: msg.blocks || [],
             state: msg.state || {},
-            // A view survives a screen switch: the table a button filled is still the truth
-            // about what that button found.
+            // What a run found survives a re-read of the screens: the table a button filled is
+            // still the truth about what that button found.
             view: MOD.id === msg.id ? MOD.view : {},
+            lastRun: MOD.id === msg.id ? MOD.lastRun : null,
             running: false,
           }
           renderModuleScreen()
+          renderRunDetail(MOD.lastRun, null)
           return
         }
         if (msg.type === 'MODULE_STATE' && msg.id === MOD.id) {
@@ -4144,8 +4254,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (msg.type === 'MODULE_RUN_REPORT' && msg.id === MOD.id) {
           MOD.running = false
           var report = msg.report || {}
+          var before = MOD.state
           MOD.state = report.state || MOD.state
           MOD.view = report.view || MOD.view
+          MOD.lastRun = report
           if (report.needsConfirmation) {
             // The sandbox stopped and asked; the same call goes back with the answer, so the
             // decision is the human's and the steps are still the module's.
@@ -4159,11 +4271,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             }
             modShowResult('Cancelled — nothing ran past the confirmation.')
           } else if (report.ok) {
-            var ran = (report.steps || []).length
-            modShowResult('Done · ' + ran + ' step' + (ran === 1 ? '' : 's'))
+            // The headline is what it did, not how many steps it took to do it.
+            var calls = (report.steps || []).filter(function (step) { return step.call })
+            modShowResult(calls.map(function (step) { return step.call }).join(' → '))
           } else {
             modShowResult(report.error || 'The run stopped.', true)
           }
+          renderRunDetail(report, before)
           renderModuleScreen()
           return
         }
