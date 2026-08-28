@@ -82,6 +82,34 @@ export type PlannedAction =
   | { kind: 'url'; url: string; newTab: boolean }
   | { kind: 'setVariable'; variable: string; value: string | number | boolean | { variable: string } }
   | { kind: 'setMode'; collection: string; mode: string }
+  | { kind: 'conditional'; blocks: Array<{ condition?: PlannedCondition; actions: PlannedAction[] }> }
+
+/** A condition after planning: the comparison is resolved, the operands are still named. */
+export interface PlannedCondition {
+  fn: string
+  args: PlannedOperand[]
+}
+
+export type PlannedOperand =
+  | { kind: 'literal'; value: string | number | boolean }
+  | { kind: 'variable'; name: string }
+  | { kind: 'condition'; condition: PlannedCondition }
+
+/**
+ * One question about the state: two sides and a comparison.
+ *
+ * Either side may be a literal or `{ variable }`. Figma stores this as an expression tree of
+ * `VariableData` nodes with a function name — writable, and not something anyone would write by
+ * hand, so the vocabulary takes the sentence and builds the tree.
+ */
+export interface FlowCondition {
+  left: FlowOperand
+  /** `==`, `!=`, `<`, `<=`, `>`, `>=`, or `and` / `or` over two conditions. */
+  is: string
+  right: FlowOperand
+}
+
+export type FlowOperand = string | number | boolean | { variable: string } | FlowCondition
 
 export interface GradientStop {
   /** 0 to 1. */
@@ -251,6 +279,10 @@ export interface FlowLink {
   delay?: number
   /** Key codes, for `keyDown`. */
   keys?: number[]
+  /** Ask a question of the state, and do different things by the answer. */
+  if?: FlowCondition
+  then?: FlowLink
+  else?: FlowLink
   /** Set a variable when this fires: the state half of a prototype. */
   set?: { variable: string; value: string | number | boolean | { variable: string } }
   /** Switch a collection to another mode — how a theme toggle is built. */
@@ -832,6 +864,9 @@ const DIRECTIONAL_ANIMATIONS = ['MOVE_IN', 'MOVE_OUT', 'PUSH', 'SLIDE_IN', 'SLID
 const DIRECTIONS = ['LEFT', 'RIGHT', 'TOP', 'BOTTOM']
 
 const LINK_KEYS = [
+  'if',
+  'then',
+  'else',
   'set',
   'mode',
   'url',
@@ -852,6 +887,20 @@ const LINK_KEYS = [
   'resetVideo',
   'resetInteractive',
 ]
+
+/** The words a person writes, and the function names Figma stores. */
+const COMPARISONS: Readonly<Record<string, string>> = {
+  '==': 'EQUALS',
+  '=': 'EQUALS',
+  'is': 'EQUALS',
+  '!=': 'NOT_EQUAL',
+  '<': 'LESS_THAN',
+  '<=': 'LESS_THAN_OR_EQUAL',
+  '>': 'GREATER_THAN',
+  '>=': 'GREATER_THAN_OR_EQUAL',
+  'and': 'AND',
+  'or': 'OR',
+}
 
 const DEFAULT_DURATION = 0.3
 const DEFAULT_TIMEOUT = 1
@@ -887,66 +936,151 @@ function planLinks(raw: unknown, where: string, problems: string[]): PropStep | 
     const trigger = planTrigger(link, fail)
     if (!trigger) continue
 
-    // One interaction, several actions: a link may set a variable, switch a mode and then
-    // navigate, which is exactly what Figma's own panel offers and what "go to the next screen
-    // and remember that they agreed" means.
-    const actions: PlannedAction[] = []
-
-    if (link.set !== undefined) {
-      const set = link.set as { variable?: unknown; value?: unknown }
-      if (typeof set?.variable !== 'string' || set.variable.trim() === '') {
-        fail('set.variable must name a variable')
-        continue
-      }
-      const value = set.value
-      const alias = value as { variable?: unknown } | null
-      const usable =
-        typeof value === 'string' ||
-        typeof value === 'number' ||
-        typeof value === 'boolean' ||
-        (typeof value === 'object' && value !== null && typeof alias?.variable === 'string')
-      if (!usable) {
-        fail('set.value must be a string, a number, a boolean, or { variable } to copy another one')
-        continue
-      }
-      actions.push({
-        kind: 'setVariable',
-        variable: set.variable.trim(),
-        value: value as string | number | boolean | { variable: string },
-      })
-    }
-
-    if (link.mode !== undefined) {
-      const mode = link.mode as { collection?: unknown; mode?: unknown }
-      if (typeof mode?.collection !== 'string' || typeof mode?.mode !== 'string') {
-        fail('mode must be { collection: "Semantic", mode: "Dark" }')
-        continue
-      }
-      actions.push({ kind: 'setMode', collection: mode.collection.trim(), mode: mode.mode.trim() })
-    }
-
-    if (link.url !== undefined) {
-      if (typeof link.url !== 'string' || link.url.trim() === '') {
-        fail('url must be a link to open')
-        continue
-      }
-      actions.push({ kind: 'url', url: link.url.trim(), newTab: link.newTab !== false })
-    }
-
-    if (link.to !== undefined) {
-      const navigation = planNavigation(link, fail, destinations)
-      if (!navigation) continue
-      actions.push(navigation)
-    }
-
-    if (actions.length === 0) {
-      fail('a link must do something — name a `to`, a `set`, a `mode` or a `url`')
-      continue
-    }
+    const actions = planActions(link, fail, destinations)
+    if (!actions) continue
     links.push({ trigger, actions })
   }
 
   return { step: 'links', links, destinations }
+}
+
+/**
+ * What one link (or one branch of one) does.
+ *
+ * One interaction, several actions: a link may set a variable, switch a mode and then navigate,
+ * which is exactly what Figma's own panel offers and what "go to the next screen and remember
+ * that they agreed" means. `null` when something was wrong; the problem is already recorded.
+ */
+function planActions(
+  link: Record<string, unknown>,
+  fail: (message: string) => void,
+  destinations: string[]
+): PlannedAction[] | null {
+  const actions: PlannedAction[] = []
+
+  if (link.if !== undefined) {
+  if (link.then === undefined) {
+    fail('an `if` needs a `then` — what should happen when it holds')
+    return null
+  }
+  const condition = planCondition(link.if, fail, 'if')
+  if (!condition) return null
+  const yes = planActions(link.then as Record<string, unknown>, fail, destinations)
+  if (!yes) return null
+
+  const blocks: Array<{ condition?: PlannedCondition; actions: PlannedAction[] }> = [{ condition, actions: yes }]
+  if (link.else !== undefined) {
+    // No "else if". Figma's API stores one condition and one else, and both ways of spelling a
+    // chain fail differently: three sibling blocks are accepted and SILENTLY TRUNCATED to two,
+    // with the middle condition dropped — the prototype then takes that branch unconditionally —
+    // and a conditional nested inside the else is refused outright ("Invalid enum value.
+    // Expected 'BACK' | 'CLOSE', received 'CONDITIONAL'"). Both were tried against a real file.
+    // So the chain is refused here, where the reason can be given and a way round it named.
+    if ((link.else as Record<string, unknown>)?.if !== undefined) {
+      fail(
+        'an `else` cannot ask another question — Figma stores one condition and one else. Write the ' +
+          'branches as separate links on the same trigger, with conditions that cannot both hold'
+      )
+      return null
+    }
+    const otherwise = planActions(link.else as Record<string, unknown>, fail, destinations)
+    if (!otherwise) return null
+    blocks.push({ actions: otherwise })
+  }
+  actions.push({ kind: 'conditional', blocks })
+  }
+
+  if (link.set !== undefined) {
+    const set = link.set as { variable?: string; value?: unknown }
+    if (typeof set?.variable !== 'string' || set.variable.trim() === '') {
+      fail('set.variable must name a variable')
+      return null
+    }
+    const value = set.value
+    const alias = value as { variable?: unknown } | null
+    const usable =
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean' ||
+      (typeof value === 'object' && value !== null && typeof alias?.variable === 'string')
+    if (!usable) {
+      fail('set.value must be a string, a number, a boolean, or { variable } to copy another one')
+      return null
+    }
+    actions.push({
+      kind: 'setVariable',
+      variable: set.variable.trim(),
+      value: value as string | number | boolean | { variable: string },
+    })
+  }
+
+  if (link.mode !== undefined) {
+    const mode = link.mode as { collection?: unknown; mode?: unknown }
+    if (typeof mode?.collection !== 'string' || typeof mode?.mode !== 'string') {
+      fail('mode must be { collection: "Semantic", mode: "Dark" }')
+      return null
+    }
+    actions.push({ kind: 'setMode', collection: mode.collection.trim(), mode: mode.mode.trim() })
+  }
+
+  if (link.url !== undefined) {
+    if (typeof link.url !== 'string' || link.url.trim() === '') {
+      fail('url must be a link to open')
+      return null
+    }
+    actions.push({ kind: 'url', url: link.url.trim(), newTab: link.newTab !== false })
+  }
+
+  if (link.to !== undefined) {
+  const navigation = planNavigation(link, fail, destinations)
+  if (!navigation) return null
+  actions.push(navigation)
+  }
+
+  // Checked here rather than at the top, so an empty BRANCH is caught too: `then: {}` planned a
+  // question whose answer was to do nothing — a link that silently does nothing half the time.
+  if (actions.length === 0) {
+  fail('a link must do something — name a `to`, a `set`, a `mode`, a `url` or an `if`')
+  return null
+  }
+  return actions
+}
+
+/** The question itself: two sides, a comparison, and nothing resolved yet. */
+function planCondition(raw: unknown, fail: (message: string) => void, where: string): PlannedCondition | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    fail(`${where} must be { left, is, right }`)
+    return null
+  }
+  const spec = raw as { left?: unknown; is?: unknown; right?: unknown }
+  const fn = typeof spec.is === 'string' ? COMPARISONS[spec.is.trim().toLowerCase()] : undefined
+  if (!fn) {
+    fail(`${where}.is must be one of: ${Object.keys(COMPARISONS).join(', ')}`)
+    return null
+  }
+  const left = planOperand(spec.left, fail, `${where}.left`)
+  const right = planOperand(spec.right, fail, `${where}.right`)
+  if (!left || !right) return null
+  return { fn, args: [left, right] }
+}
+
+function planOperand(raw: unknown, fail: (message: string) => void, where: string): PlannedOperand | null {
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+    return { kind: 'literal', value: raw }
+  }
+  if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+    const named = raw as { variable?: unknown; is?: unknown }
+    if (typeof named.variable === 'string' && named.variable.trim() !== '') {
+      return { kind: 'variable', name: named.variable.trim() }
+    }
+    // A side that is itself a comparison: `and` and `or` are how two questions become one.
+    if (named.is !== undefined) {
+      const nested = planCondition(raw, fail, where)
+      return nested ? { kind: 'condition', condition: nested } : null
+    }
+  }
+  fail(`${where} must be a value, { variable }, or another { left, is, right }`)
+  return null
 }
 
 /** The trigger half: which gesture, and whatever that gesture carries. */
@@ -1080,6 +1214,29 @@ function planNavigation(
  * A read that answers with Figma's own five nested objects per link is a read nobody can act on
  * — and the agent channel's digest would summarise it away long before it arrived.
  */
+/**
+ * The shape of a conditional, as the sentence somebody wrote.
+ *
+ * Figma does not keep an "else if" as a third block: it stores a two-block conditional whose
+ * else contains another conditional, and reading only the top level reported three branches back
+ * as two — a caller seeing less than they wrote and wondering what was dropped. So the walk
+ * follows that nesting and counts the branches a person would count.
+ */
+async function describeBranches(
+  blocks: readonly ConditionalBlock[],
+  nameOf?: (id: string, withinCollection?: string) => Promise<string | null>,
+  depth = 0
+): Promise<string> {
+  const parts: string[] = []
+  for (const [index, block] of blocks.entries()) {
+    const inside: string[] = []
+    for (const action of block.actions) inside.push(await describeAction(action, nameOf, depth + 1))
+    const label = block.condition ? (index === 0 && depth === 0 ? 'if' : 'else if') : 'else'
+    parts.push(`${label} {${inside.join(' · ') || 'nothing'}}`)
+  }
+  return parts.join(' ')
+}
+
 /** Figma keeps these as 32-bit floats, so a duration set to 0.6 reads back as
  * 0.6000000238418579 — noise in every line that quotes one. */
 function seconds(value: number): string {
@@ -1107,49 +1264,50 @@ export async function describeLinks(
       else if ('delay' in trigger && trigger.delay) on = `${on} ${seconds(trigger.delay)}`
     }
     const actions = reaction.actions ?? (reaction.action ? [reaction.action] : [])
-    for (const action of actions) {
-      if (action.type === 'BACK' || action.type === 'CLOSE') {
-        parts.push(`${on} → ${action.type.toLowerCase()}`)
-        continue
-      }
-      if (action.type === 'URL') {
-        parts.push(`${on} → open ${action.url}`)
-        continue
-      }
-      if (action.type === 'SET_VARIABLE') {
-        // The id is no use to anyone reading a report, so the caller may hand over a lookup —
-        // the same trade the paints make.
-        const named = action.variableId && nameOf ? await nameOf(action.variableId) : null
-        const value = action.variableValue?.value
-        const shown =
-          value !== null && typeof value === 'object' && 'id' in (value as object)
-            ? `var:${(nameOf ? await nameOf((value as { id: string }).id) : null) ?? (value as { id: string }).id}`
-            : JSON.stringify(value)
-        parts.push(`${on} → set ${named ?? action.variableId} = ${shown}`)
-        continue
-      }
-      if (action.type === 'SET_VARIABLE_MODE') {
-        const collection = action.variableCollectionId
-        const named = collection && nameOf ? await nameOf(collection) : null
-        const mode = action.variableModeId && nameOf ? await nameOf(action.variableModeId, collection ?? undefined) : null
-        parts.push(`${on} → mode ${named ?? collection} = ${mode ?? action.variableModeId}`)
-        continue
-      }
-      if (action.type !== 'NODE') {
-        parts.push(`${on} → ${action.type.toLowerCase()}`)
-        continue
-      }
-      const transition = action.transition
-      const named = transition
-        ? `${transition.type}${'direction' in transition ? `_${transition.direction}` : ''} ${seconds(transition.duration)}` +
-          `${transition.easing.type === DEFAULT_EASING ? '' : ` ${transition.easing.type}`}` +
-          `${'matchLayers' in transition && transition.matchLayers ? ' +match' : ''}`
-        : 'INSTANT'
-      const navigation = action.navigation === 'NAVIGATE' ? '' : ` (${action.navigation})`
-      parts.push(`${on} → ${action.destinationId ?? '?'}${navigation}${named === 'INSTANT' ? '' : ` ${named}`}`)
-    }
+    for (const action of actions) parts.push(`${on} → ${await describeAction(action, nameOf)}`)
   }
   return parts.join(' · ')
+}
+
+/** One action, without the trigger in front of it — so a branch reads the same way a link does. */
+async function describeAction(
+  action: Action,
+  nameOf?: (id: string, withinCollection?: string) => Promise<string | null>,
+  depth = 0
+): Promise<string> {
+  if (action.type === 'BACK' || action.type === 'CLOSE') return action.type.toLowerCase()
+  if (action.type === 'URL') return `open ${action.url}`
+
+  if (action.type === 'SET_VARIABLE') {
+    // The id is no use to anyone reading a report, so the caller may hand over a lookup — the
+    // same trade the paints make.
+    const named = action.variableId && nameOf ? await nameOf(action.variableId) : null
+    const value = action.variableValue?.value
+    const shown =
+      value !== null && typeof value === 'object' && 'id' in (value as object)
+        ? `var:${(nameOf ? await nameOf((value as { id: string }).id) : null) ?? (value as { id: string }).id}`
+        : JSON.stringify(value)
+    return `set ${named ?? action.variableId} = ${shown}`
+  }
+
+  if (action.type === 'SET_VARIABLE_MODE') {
+    const collection = action.variableCollectionId
+    const named = collection && nameOf ? await nameOf(collection) : null
+    const mode = action.variableModeId && nameOf ? await nameOf(action.variableModeId, collection ?? undefined) : null
+    return `mode ${named ?? collection} = ${mode ?? action.variableModeId}`
+  }
+
+  if (action.type === 'CONDITIONAL') return describeBranches(action.conditionalBlocks, nameOf, depth)
+  if (action.type !== 'NODE') return action.type.toLowerCase()
+
+  const transition = action.transition
+  const named = transition
+    ? `${transition.type}${'direction' in transition ? `_${transition.direction}` : ''} ${seconds(transition.duration)}` +
+      `${transition.easing.type === DEFAULT_EASING ? '' : ` ${transition.easing.type}`}` +
+      `${'matchLayers' in transition && transition.matchLayers ? ' +match' : ''}`
+    : 'INSTANT'
+  const navigation = action.navigation === 'NAVIGATE' ? '' : ` (${action.navigation})`
+  return `${action.destinationId ?? '?'}${navigation}${named === 'INSTANT' ? '' : ` ${named}`}`
 }
 
 /**

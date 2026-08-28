@@ -23943,6 +23943,9 @@ ${scripts}`, "");
   var DIRECTIONAL_ANIMATIONS = ["MOVE_IN", "MOVE_OUT", "PUSH", "SLIDE_IN", "SLIDE_OUT"];
   var DIRECTIONS = ["LEFT", "RIGHT", "TOP", "BOTTOM"];
   var LINK_KEYS = [
+    "if",
+    "then",
+    "else",
     "set",
     "mode",
     "url",
@@ -23963,6 +23966,18 @@ ${scripts}`, "");
     "resetVideo",
     "resetInteractive"
   ];
+  var COMPARISONS = {
+    "==": "EQUALS",
+    "=": "EQUALS",
+    "is": "EQUALS",
+    "!=": "NOT_EQUAL",
+    "<": "LESS_THAN",
+    "<=": "LESS_THAN_OR_EQUAL",
+    ">": "GREATER_THAN",
+    ">=": "GREATER_THAN_OR_EQUAL",
+    "and": "AND",
+    "or": "OR"
+  };
   var DEFAULT_DURATION = 0.3;
   var DEFAULT_TIMEOUT = 1;
   function planLinks(raw, where, problems) {
@@ -23985,53 +24000,115 @@ ${scripts}`, "");
       }
       const trigger = planTrigger(link, fail2);
       if (!trigger) continue;
-      const actions = [];
-      if (link.set !== void 0) {
-        const set = link.set;
-        if (typeof (set == null ? void 0 : set.variable) !== "string" || set.variable.trim() === "") {
-          fail2("set.variable must name a variable");
-          continue;
-        }
-        const value = set.value;
-        const alias = value;
-        const usable = typeof value === "string" || typeof value === "number" || typeof value === "boolean" || typeof value === "object" && value !== null && typeof (alias == null ? void 0 : alias.variable) === "string";
-        if (!usable) {
-          fail2("set.value must be a string, a number, a boolean, or { variable } to copy another one");
-          continue;
-        }
-        actions.push({
-          kind: "setVariable",
-          variable: set.variable.trim(),
-          value
-        });
-      }
-      if (link.mode !== void 0) {
-        const mode = link.mode;
-        if (typeof (mode == null ? void 0 : mode.collection) !== "string" || typeof (mode == null ? void 0 : mode.mode) !== "string") {
-          fail2('mode must be { collection: "Semantic", mode: "Dark" }');
-          continue;
-        }
-        actions.push({ kind: "setMode", collection: mode.collection.trim(), mode: mode.mode.trim() });
-      }
-      if (link.url !== void 0) {
-        if (typeof link.url !== "string" || link.url.trim() === "") {
-          fail2("url must be a link to open");
-          continue;
-        }
-        actions.push({ kind: "url", url: link.url.trim(), newTab: link.newTab !== false });
-      }
-      if (link.to !== void 0) {
-        const navigation = planNavigation(link, fail2, destinations);
-        if (!navigation) continue;
-        actions.push(navigation);
-      }
-      if (actions.length === 0) {
-        fail2("a link must do something \u2014 name a `to`, a `set`, a `mode` or a `url`");
-        continue;
-      }
+      const actions = planActions(link, fail2, destinations);
+      if (!actions) continue;
       links.push({ trigger, actions });
     }
     return { step: "links", links, destinations };
+  }
+  function planActions(link, fail2, destinations) {
+    var _a;
+    const actions = [];
+    if (link.if !== void 0) {
+      if (link.then === void 0) {
+        fail2("an `if` needs a `then` \u2014 what should happen when it holds");
+        return null;
+      }
+      const condition = planCondition(link.if, fail2, "if");
+      if (!condition) return null;
+      const yes = planActions(link.then, fail2, destinations);
+      if (!yes) return null;
+      const blocks = [{ condition, actions: yes }];
+      if (link.else !== void 0) {
+        if (((_a = link.else) == null ? void 0 : _a.if) !== void 0) {
+          fail2(
+            "an `else` cannot ask another question \u2014 Figma stores one condition and one else. Write the branches as separate links on the same trigger, with conditions that cannot both hold"
+          );
+          return null;
+        }
+        const otherwise = planActions(link.else, fail2, destinations);
+        if (!otherwise) return null;
+        blocks.push({ actions: otherwise });
+      }
+      actions.push({ kind: "conditional", blocks });
+    }
+    if (link.set !== void 0) {
+      const set = link.set;
+      if (typeof (set == null ? void 0 : set.variable) !== "string" || set.variable.trim() === "") {
+        fail2("set.variable must name a variable");
+        return null;
+      }
+      const value = set.value;
+      const alias = value;
+      const usable = typeof value === "string" || typeof value === "number" || typeof value === "boolean" || typeof value === "object" && value !== null && typeof (alias == null ? void 0 : alias.variable) === "string";
+      if (!usable) {
+        fail2("set.value must be a string, a number, a boolean, or { variable } to copy another one");
+        return null;
+      }
+      actions.push({
+        kind: "setVariable",
+        variable: set.variable.trim(),
+        value
+      });
+    }
+    if (link.mode !== void 0) {
+      const mode = link.mode;
+      if (typeof (mode == null ? void 0 : mode.collection) !== "string" || typeof (mode == null ? void 0 : mode.mode) !== "string") {
+        fail2('mode must be { collection: "Semantic", mode: "Dark" }');
+        return null;
+      }
+      actions.push({ kind: "setMode", collection: mode.collection.trim(), mode: mode.mode.trim() });
+    }
+    if (link.url !== void 0) {
+      if (typeof link.url !== "string" || link.url.trim() === "") {
+        fail2("url must be a link to open");
+        return null;
+      }
+      actions.push({ kind: "url", url: link.url.trim(), newTab: link.newTab !== false });
+    }
+    if (link.to !== void 0) {
+      const navigation = planNavigation(link, fail2, destinations);
+      if (!navigation) return null;
+      actions.push(navigation);
+    }
+    if (actions.length === 0) {
+      fail2("a link must do something \u2014 name a `to`, a `set`, a `mode`, a `url` or an `if`");
+      return null;
+    }
+    return actions;
+  }
+  function planCondition(raw, fail2, where) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      fail2(`${where} must be { left, is, right }`);
+      return null;
+    }
+    const spec = raw;
+    const fn = typeof spec.is === "string" ? COMPARISONS[spec.is.trim().toLowerCase()] : void 0;
+    if (!fn) {
+      fail2(`${where}.is must be one of: ${Object.keys(COMPARISONS).join(", ")}`);
+      return null;
+    }
+    const left = planOperand(spec.left, fail2, `${where}.left`);
+    const right = planOperand(spec.right, fail2, `${where}.right`);
+    if (!left || !right) return null;
+    return { fn, args: [left, right] };
+  }
+  function planOperand(raw, fail2, where) {
+    if (typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean") {
+      return { kind: "literal", value: raw };
+    }
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+      const named = raw;
+      if (typeof named.variable === "string" && named.variable.trim() !== "") {
+        return { kind: "variable", name: named.variable.trim() };
+      }
+      if (named.is !== void 0) {
+        const nested = planCondition(raw, fail2, where);
+        return nested ? { kind: "condition", condition: nested } : null;
+      }
+    }
+    fail2(`${where} must be a value, { variable }, or another { left, is, right }`);
+    return null;
   }
   function planTrigger(link, fail2) {
     var _a;
@@ -24129,11 +24206,21 @@ ${scripts}`, "");
       transition
     }, typeof link.resetScroll === "boolean" ? { resetScroll: link.resetScroll } : {}), typeof link.resetVideo === "boolean" ? { resetVideo: link.resetVideo } : {}), typeof link.resetInteractive === "boolean" ? { resetInteractive: link.resetInteractive } : {});
   }
+  async function describeBranches(blocks, nameOf, depth = 0) {
+    const parts = [];
+    for (const [index, block2] of blocks.entries()) {
+      const inside = [];
+      for (const action of block2.actions) inside.push(await describeAction(action, nameOf, depth + 1));
+      const label3 = block2.condition ? index === 0 && depth === 0 ? "if" : "else if" : "else";
+      parts.push(`${label3} {${inside.join(" \xB7 ") || "nothing"}}`);
+    }
+    return parts.join(" ");
+  }
   function seconds(value) {
     return `${Math.round(value * 1e3) / 1e3}s`;
   }
   async function describeLinks(reactions, nameOf) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c;
     const spelling = {};
     for (const [word, type] of Object.entries(TRIGGERS)) spelling[type] = word;
     const parts = [];
@@ -24146,40 +24233,32 @@ ${scripts}`, "");
         else if ("delay" in trigger && trigger.delay) on = `${on} ${seconds(trigger.delay)}`;
       }
       const actions = (_c = reaction.actions) != null ? _c : reaction.action ? [reaction.action] : [];
-      for (const action of actions) {
-        if (action.type === "BACK" || action.type === "CLOSE") {
-          parts.push(`${on} \u2192 ${action.type.toLowerCase()}`);
-          continue;
-        }
-        if (action.type === "URL") {
-          parts.push(`${on} \u2192 open ${action.url}`);
-          continue;
-        }
-        if (action.type === "SET_VARIABLE") {
-          const named2 = action.variableId && nameOf ? await nameOf(action.variableId) : null;
-          const value = (_d = action.variableValue) == null ? void 0 : _d.value;
-          const shown = value !== null && typeof value === "object" && "id" in value ? `var:${(_e = nameOf ? await nameOf(value.id) : null) != null ? _e : value.id}` : JSON.stringify(value);
-          parts.push(`${on} \u2192 set ${named2 != null ? named2 : action.variableId} = ${shown}`);
-          continue;
-        }
-        if (action.type === "SET_VARIABLE_MODE") {
-          const collection = action.variableCollectionId;
-          const named2 = collection && nameOf ? await nameOf(collection) : null;
-          const mode = action.variableModeId && nameOf ? await nameOf(action.variableModeId, collection != null ? collection : void 0) : null;
-          parts.push(`${on} \u2192 mode ${named2 != null ? named2 : collection} = ${mode != null ? mode : action.variableModeId}`);
-          continue;
-        }
-        if (action.type !== "NODE") {
-          parts.push(`${on} \u2192 ${action.type.toLowerCase()}`);
-          continue;
-        }
-        const transition = action.transition;
-        const named = transition ? `${transition.type}${"direction" in transition ? `_${transition.direction}` : ""} ${seconds(transition.duration)}${transition.easing.type === DEFAULT_EASING ? "" : ` ${transition.easing.type}`}${"matchLayers" in transition && transition.matchLayers ? " +match" : ""}` : "INSTANT";
-        const navigation = action.navigation === "NAVIGATE" ? "" : ` (${action.navigation})`;
-        parts.push(`${on} \u2192 ${(_f = action.destinationId) != null ? _f : "?"}${navigation}${named === "INSTANT" ? "" : ` ${named}`}`);
-      }
+      for (const action of actions) parts.push(`${on} \u2192 ${await describeAction(action, nameOf)}`);
     }
     return parts.join(" \xB7 ");
+  }
+  async function describeAction(action, nameOf, depth = 0) {
+    var _a, _b, _c;
+    if (action.type === "BACK" || action.type === "CLOSE") return action.type.toLowerCase();
+    if (action.type === "URL") return `open ${action.url}`;
+    if (action.type === "SET_VARIABLE") {
+      const named2 = action.variableId && nameOf ? await nameOf(action.variableId) : null;
+      const value = (_a = action.variableValue) == null ? void 0 : _a.value;
+      const shown = value !== null && typeof value === "object" && "id" in value ? `var:${(_b = nameOf ? await nameOf(value.id) : null) != null ? _b : value.id}` : JSON.stringify(value);
+      return `set ${named2 != null ? named2 : action.variableId} = ${shown}`;
+    }
+    if (action.type === "SET_VARIABLE_MODE") {
+      const collection = action.variableCollectionId;
+      const named2 = collection && nameOf ? await nameOf(collection) : null;
+      const mode = action.variableModeId && nameOf ? await nameOf(action.variableModeId, collection != null ? collection : void 0) : null;
+      return `mode ${named2 != null ? named2 : collection} = ${mode != null ? mode : action.variableModeId}`;
+    }
+    if (action.type === "CONDITIONAL") return describeBranches(action.conditionalBlocks, nameOf, depth);
+    if (action.type !== "NODE") return action.type.toLowerCase();
+    const transition = action.transition;
+    const named = transition ? `${transition.type}${"direction" in transition ? `_${transition.direction}` : ""} ${seconds(transition.duration)}${transition.easing.type === DEFAULT_EASING ? "" : ` ${transition.easing.type}`}${"matchLayers" in transition && transition.matchLayers ? " +match" : ""}` : "INSTANT";
+    const navigation = action.navigation === "NAVIGATE" ? "" : ` (${action.navigation})`;
+    return `${(_c = action.destinationId) != null ? _c : "?"}${navigation}${named === "INSTANT" ? "" : ` ${named}`}`;
   }
   function buildEasing(link, fail2) {
     var _a;
@@ -25302,7 +25381,8 @@ ${scripts}`, "");
         }
         const had = Array.isArray(holder.reactions) ? holder.reactions.length : 0;
         if (!dry) await holder.setReactionsAsync(reactions);
-        return { property: "links", before: `${had} link(s)`, after: await describeLinks(reactions, variableName) };
+        const stored = !dry && Array.isArray(holder.reactions) ? holder.reactions : reactions;
+        return { property: "links", before: `${had} link(s)`, after: await describeLinks(stored, variableName) };
       }
       case "data": {
         const before = {};
@@ -25504,6 +25584,15 @@ ${scripts}`, "");
         if (modes.length !== 1) throw new Error(`"${action.mode}" must name exactly one mode of ${collection.name}`);
         return { type: "SET_VARIABLE_MODE", variableCollectionId: collection.id, variableModeId: modes[0].modeId };
       }
+      case "conditional": {
+        const blocks = [];
+        for (const block2 of action.blocks) {
+          const actions = [];
+          for (const one of block2.actions) actions.push(await buildAction(one));
+          blocks.push(__spreadProps(__spreadValues({}, block2.condition ? { condition: await buildCondition(block2.condition) } : {}), { actions }));
+        }
+        return { type: "CONDITIONAL", conditionalBlocks: blocks };
+      }
       default:
         return __spreadValues(__spreadValues(__spreadValues({
           type: "NODE",
@@ -25512,6 +25601,29 @@ ${scripts}`, "");
           transition: action.transition
         }, action.resetScroll === void 0 ? {} : { resetScrollPosition: action.resetScroll }), action.resetVideo === void 0 ? {} : { resetVideoPosition: action.resetVideo }), action.resetInteractive === void 0 ? {} : { resetInteractiveComponents: action.resetInteractive });
     }
+  }
+  async function buildCondition(condition) {
+    const args = [];
+    for (const operand of condition.args) args.push(await buildOperand(operand));
+    return {
+      type: "EXPRESSION",
+      resolvedType: "BOOLEAN",
+      value: { expressionFunction: condition.fn, expressionArguments: args }
+    };
+  }
+  async function buildOperand(operand) {
+    if (operand.kind === "condition") return buildCondition(operand.condition);
+    if (operand.kind === "variable") {
+      const variable = await resolveVariableRef(operand.name);
+      return {
+        type: "VARIABLE_ALIAS",
+        resolvedType: variable.resolvedType,
+        value: { type: "VARIABLE_ALIAS", id: variable.id }
+      };
+    }
+    const value = operand.value;
+    const type = typeof value === "boolean" ? "BOOLEAN" : typeof value === "number" ? "FLOAT" : "STRING";
+    return { type, resolvedType: type, value };
   }
   async function variableName(id, withinCollection) {
     var _a, _b, _c, _d, _e, _f;

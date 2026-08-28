@@ -310,3 +310,145 @@ test('links and data are set after the node looks the way it should', () => {
     ['name', 'resize', 'links', 'data']
   )
 })
+
+/* ---------------------------------------------------------------- conditions */
+
+test('a question with two answers is one interaction with one conditional action', () => {
+  const link = only([
+    {
+      on: 'click',
+      if: { left: { variable: 'flags/agreed' }, is: '==', right: true },
+      then: { to: '1:2' },
+      else: { to: '3:4', animation: 'DISSOLVE' },
+    },
+  ])
+  assert.equal(link.actions.length, 1)
+  const conditional = link.actions[0] as Extract<(typeof link.actions)[number], { kind: 'conditional' }>
+  assert.equal(conditional.kind, 'conditional')
+  assert.deepEqual(conditional.blocks[0].condition, {
+    fn: 'EQUALS',
+    args: [
+      { kind: 'variable', name: 'flags/agreed' },
+      { kind: 'literal', value: true },
+    ],
+  })
+  assert.deepEqual(conditional.blocks[0].actions, [
+    { kind: 'node', destinationId: '1:2', navigation: 'NAVIGATE', transition: null },
+  ])
+  // The `else` block carries no condition — which is how Figma spells "otherwise".
+  assert.equal(conditional.blocks[1].condition, undefined)
+  assert.equal(conditional.blocks[1].actions.length, 1)
+})
+
+test('an else that asks another question is refused, because Figma cannot store one', () => {
+  // Both spellings were tried against a real file. Three sibling blocks are ACCEPTED and
+  // silently truncated to two with the middle condition dropped — the prototype then takes that
+  // branch unconditionally. A conditional nested inside the else is refused outright:
+  //   Invalid enum value. Expected 'BACK' | 'CLOSE', received 'CONDITIONAL'
+  // So the chain is refused here, where the reason can be given.
+  const problem = planProps({
+    links: [
+      {
+        if: { left: { variable: 'plan/tier' }, is: '==', right: 'gold' },
+        then: { to: '1:1' },
+        else: {
+          if: { left: { variable: 'plan/tier' }, is: '==', right: 'silver' },
+          then: { to: '2:2' },
+          else: { to: '3:3' },
+        },
+      },
+    ],
+  }).problems[0]
+  assert.match(problem, /an `else` cannot ask another question/)
+  assert.match(problem, /separate links on the same trigger/)
+})
+
+test('a branch may do anything a link may do, including setting state', () => {
+  const link = only([
+    {
+      if: { left: { variable: 'count' }, is: '>=', right: 3 },
+      then: { set: { variable: 'flags/limit', value: true }, to: '1:2' },
+    },
+  ])
+  const conditional = link.actions[0] as Extract<(typeof link.actions)[number], { kind: 'conditional' }>
+  assert.deepEqual(conditional.blocks[0].actions.map((one) => one.kind), ['setVariable', 'node'])
+  assert.equal(conditional.blocks[0].condition?.fn, 'GREATER_THAN_OR_EQUAL')
+})
+
+test('two questions join with and / or', () => {
+  const link = only([
+    {
+      if: {
+        left: { left: { variable: 'a' }, is: '==', right: true },
+        is: 'and',
+        right: { left: { variable: 'b' }, is: '>', right: 2 },
+      },
+      then: { to: '1:2' },
+    },
+  ])
+  const conditional = link.actions[0] as Extract<(typeof link.actions)[number], { kind: 'conditional' }>
+  assert.equal(conditional.blocks[0].condition?.fn, 'AND')
+  assert.equal(conditional.blocks[0].condition?.args[0].kind, 'condition')
+})
+
+test('every way of getting a condition wrong is named', () => {
+  assert.match(planProps({ links: [{ if: { left: 1, is: '==', right: 2 } }] }).problems[0], /an `if` needs a `then`/)
+  assert.match(
+    planProps({ links: [{ if: { left: 1, is: 'roughly', right: 2 }, then: { to: '1:2' } }] }).problems[0],
+    /is must be one of: ==/
+  )
+  assert.match(
+    planProps({ links: [{ if: { left: [], is: '==', right: 2 }, then: { to: '1:2' } }] }).problems[0],
+    /if.left must be a value, \{ variable \}, or another \{ left, is, right \}/
+  )
+  assert.match(planProps({ links: [{ if: 'agreed', then: { to: '1:2' } }] }).problems[0], /if must be \{ left, is, right \}/)
+  // A branch that does nothing is as empty as a link that does nothing.
+  assert.match(planProps({ links: [{ if: { left: 1, is: '==', right: 1 }, then: {} }] }).problems[0], /must do something/)
+})
+
+test('a conditional reads back as its shape rather than as its expression tree', async () => {
+  const line = await describeLinks([
+    {
+      trigger: { type: 'ON_CLICK' },
+      actions: [
+        {
+          type: 'CONDITIONAL',
+          conditionalBlocks: [
+            { condition: { type: 'EXPRESSION', resolvedType: 'BOOLEAN', value: { expressionFunction: 'EQUALS', expressionArguments: [] } }, actions: [] },
+            { actions: [] },
+          ],
+        },
+      ],
+    },
+  ])
+  assert.equal(line, 'click → if {nothing} else {nothing}')
+})
+
+test('an else-if that Figma stored as a nested conditional reads back as three branches', async () => {
+  // Figma does not keep a third block: it nests. Reading only the top level said "2" for a
+  // sentence that plainly had three answers.
+  const condition = { type: 'EXPRESSION', resolvedType: 'BOOLEAN', value: { expressionFunction: 'EQUALS', expressionArguments: [] } }
+  const line = await describeLinks([
+    {
+      trigger: { type: 'ON_CLICK' },
+      actions: [
+        {
+          type: 'CONDITIONAL',
+          conditionalBlocks: [
+            { condition, actions: [] },
+            {
+              actions: [
+                {
+                  type: 'CONDITIONAL',
+                  conditionalBlocks: [{ condition, actions: [] }, { actions: [] }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ])
+  // Nested or flat, it reads as the sentence somebody wrote — and each branch says what it does.
+  assert.equal(line, 'click → if {nothing} else {else if {nothing} else {nothing}}')
+})

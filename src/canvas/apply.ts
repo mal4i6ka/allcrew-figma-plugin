@@ -16,7 +16,16 @@ import { resolveCollection, resolveModes, resolveVariableRef } from '../agent/va
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
 import { describeLinks, gradientHandles, gradientTransform, resolveRanges } from './props.ts'
 import { styleFor } from './styles.ts'
-import type { GradientRef, ImageRef, PaintRef, PlannedAction, PropStep, TextRun } from './props.ts'
+import type {
+  GradientRef,
+  ImageRef,
+  PaintRef,
+  PlannedAction,
+  PlannedCondition,
+  PlannedOperand,
+  PropStep,
+  TextRun,
+} from './props.ts'
 
 export interface AppliedProp {
   property: string
@@ -301,7 +310,11 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       // which is what "read-only under dynamic-page" means here.
       const had = Array.isArray(holder.reactions) ? holder.reactions.length : 0
       if (!dry) await holder.setReactionsAsync(reactions)
-      return { property: 'links', before: `${had} link(s)`, after: await describeLinks(reactions, variableName) }
+      // Read back rather than echoed, because Figma normalises what it is given — an "else if"
+      // comes back as a nested conditional — and a report of the request would disagree with
+      // the next read of the same node.
+      const stored = !dry && Array.isArray(holder.reactions) ? holder.reactions : reactions
+      return { property: 'links', before: `${had} link(s)`, after: await describeLinks(stored, variableName) }
     }
 
     case 'data': {
@@ -543,6 +556,15 @@ async function buildAction(action: PlannedAction): Promise<Action> {
       if (modes.length !== 1) throw new Error(`"${action.mode}" must name exactly one mode of ${collection.name}`)
       return { type: 'SET_VARIABLE_MODE', variableCollectionId: collection.id, variableModeId: modes[0].modeId }
     }
+    case 'conditional': {
+      const blocks: ConditionalBlock[] = []
+      for (const block of action.blocks) {
+        const actions: Action[] = []
+        for (const one of block.actions) actions.push(await buildAction(one))
+        blocks.push({ ...(block.condition ? { condition: await buildCondition(block.condition) } : {}), actions })
+      }
+      return { type: 'CONDITIONAL', conditionalBlocks: blocks }
+    }
     default:
       return {
         type: 'NODE',
@@ -554,6 +576,38 @@ async function buildAction(action: PlannedAction): Promise<Action> {
         ...(action.resetInteractive === undefined ? {} : { resetInteractiveComponents: action.resetInteractive }),
       }
   }
+}
+
+/**
+ * One question, as the expression tree Figma stores.
+ *
+ * Each side becomes a `VariableData`: a literal carries its own type, a variable carries an
+ * alias, and a nested comparison carries another expression. The resolved type of the whole is
+ * BOOLEAN, because that is what a condition answers.
+ */
+async function buildCondition(condition: PlannedCondition): Promise<VariableData> {
+  const args: VariableData[] = []
+  for (const operand of condition.args) args.push(await buildOperand(operand))
+  return {
+    type: 'EXPRESSION',
+    resolvedType: 'BOOLEAN',
+    value: { expressionFunction: condition.fn as ExpressionFunction, expressionArguments: args },
+  }
+}
+
+async function buildOperand(operand: PlannedOperand): Promise<VariableData> {
+  if (operand.kind === 'condition') return buildCondition(operand.condition)
+  if (operand.kind === 'variable') {
+    const variable = await resolveVariableRef(operand.name)
+    return {
+      type: 'VARIABLE_ALIAS',
+      resolvedType: variable.resolvedType,
+      value: { type: 'VARIABLE_ALIAS', id: variable.id },
+    }
+  }
+  const value = operand.value
+  const type = typeof value === 'boolean' ? 'BOOLEAN' : typeof value === 'number' ? 'FLOAT' : 'STRING'
+  return { type, resolvedType: type, value }
 }
 
 /**
