@@ -23,8 +23,31 @@ test('the plan comes out in our order, not the order it was typed in', () => {
   })
   assert.deepEqual(
     steps.map((step) => (step.step === 'assign' ? step.property : step.step)),
-    ['name', 'layout', 'resize', 'font', 'text']
+    // Sizing is last of all: after the resize that would otherwise pin the axis it frees, after
+    // the text a hugging frame sizes itself to, and after any reparent, since FILL means nothing
+    // until the node is inside the parent it fills.
+    ['name', 'layout', 'resize', 'font', 'text', 'sizing']
   )
+})
+
+test('turning auto-layout on makes a frame hug, because 100x100 clips what you put in it', () => {
+  // A frame Figma hands out is 100x100 and FIXED. `{ layout: { mode: 'VERTICAL' } }` alone used
+  // to leave exactly that, so the first thing put inside it was cut off.
+  assert.deepEqual(stepsOf({ layout: { mode: 'VERTICAL' } }).at(-1), {
+    step: 'sizing',
+    horizontal: 'HUG',
+    vertical: 'HUG',
+  })
+  // A dimension the caller gave is a dimension they meant: that axis is not touched.
+  assert.deepEqual(stepsOf({ layout: { mode: 'VERTICAL' }, width: 320 }).at(-1), { step: 'sizing', vertical: 'HUG' })
+  // And an explicit sizing wins over both.
+  assert.deepEqual(stepsOf({ layout: { mode: 'HORIZONTAL', sizing: { horizontal: 'FILL' } } }).at(-1), {
+    step: 'sizing',
+    horizontal: 'FILL',
+    vertical: 'HUG',
+  })
+  // No auto-layout, no sizing: a plain frame is left alone.
+  assert.deepEqual(stepsOf({ layout: { padding: 8 } }).length, 1)
 })
 
 test('width and height become one resize, never two', () => {

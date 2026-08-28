@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { describeProperties, humanPropertyName, resolveProperties } from './components.ts'
+import { bindingField, describeProperties, humanPropertyName, planComponentProperties, resolveProperties } from './components.ts'
 import { planProps } from './props.ts'
 
 /* --------------------------------------------------------------------- names */
@@ -117,4 +117,67 @@ test('a property value that Figma could never take is refused in the plan', () =
   assert.match(planProps({ properties: {} }).problems[0], /must name at least one property/)
   assert.match(planProps({ properties: [] }).problems[0], /must be an object/)
   assert.match(planProps({ swap: '  ' }).problems[0], /swap must be a component id or a published key/)
+})
+
+/* ------------------------------------------------------------- authoring */
+
+test('a property type decides which field of a layer it drives', () => {
+  // The half everyone forgets: addComponentProperty puts a row in the panel and changes nothing
+  // until some layer points at it.
+  assert.equal(bindingField('BOOLEAN'), 'visible')
+  assert.equal(bindingField('TEXT'), 'characters')
+  assert.equal(bindingField('INSTANCE_SWAP'), 'mainComponent')
+  assert.equal(bindingField('VARIANT'), null)
+})
+
+test('an add carries its default in the type the property will hold', () => {
+  const plan = planComponentProperties({
+    add: [
+      { name: 'Label', type: 'text', default: 'Continue', bind: ['1:2'] },
+      { name: 'Icon', type: 'BOOLEAN', default: true, bind: ['1:3'] },
+    ],
+  })
+  assert.deepEqual(plan.problems, [])
+  assert.equal(plan.add[0].type, 'TEXT')
+  assert.deepEqual(plan.add[0].bind, ['1:2'])
+  assert.equal(plan.add[1].default, true)
+})
+
+test('a default of the wrong type is refused where the message can still explain', () => {
+  assert.match(
+    planComponentProperties({ add: [{ name: 'Icon', type: 'BOOLEAN', default: 'true' }] }).problems[0],
+    /default must be true or false for a BOOLEAN property/
+  )
+  assert.match(
+    planComponentProperties({ add: [{ name: 'Label', type: 'TEXT', default: 3 }] }).problems[0],
+    /default must be a string for a TEXT property/
+  )
+  assert.match(
+    planComponentProperties({ add: [{ name: 'Size', type: 'SLIDER', default: 'L' }] }).problems[0],
+    /type must be one of: BOOLEAN, TEXT, INSTANCE_SWAP, VARIANT/
+  )
+})
+
+test('a variant property cannot be bound to a layer, and says why', () => {
+  assert.match(
+    planComponentProperties({ add: [{ name: 'Size', type: 'VARIANT', default: 'L', bind: ['1:2'] }] }).problems[0],
+    /its values are the components' names/
+  )
+})
+
+test('an edit that changes nothing is refused rather than run', () => {
+  assert.match(planComponentProperties({ edit: [{ name: 'Label' }] }).problems[0], /changes nothing/)
+  assert.deepEqual(planComponentProperties({ edit: [{ name: 'Label', rename: 'Text' }] }).problems, [])
+})
+
+test('an empty request is a mistake, not a no-op', () => {
+  assert.match(planComponentProperties({}).problems[0], /nothing to do/)
+  assert.match(planComponentProperties({ add: 'Label' }).problems[0], /add must be an array/)
+  assert.match(planComponentProperties([]).problems[0], /must be an object/)
+})
+
+test('a bind on its own names the layer and the property', () => {
+  const plan = planComponentProperties({ bind: [{ node: '1:2', property: 'Label' }] })
+  assert.deepEqual(plan.bind, [{ node: '1:2', property: 'Label' }])
+  assert.match(planComponentProperties({ bind: [{ node: '1:2' }] }).problems[0], /must be \{ node: "<layer id>", property/)
 })

@@ -339,3 +339,167 @@ function pageOf(node: BaseNode): string | undefined {
   while (current && current.type !== 'PAGE') current = current.parent
   return current?.type === 'PAGE' ? current.name : undefined
 }
+
+/* ------------------------------------------------------------------ authoring */
+
+export const PROPERTY_TYPES = ['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'VARIANT'] as const
+
+export type PropertyType = (typeof PROPERTY_TYPES)[number]
+
+/**
+ * Which field of a layer a property of this type drives.
+ *
+ * This is the half everyone forgets. `addComponentProperty` puts a row in the panel and changes
+ * nothing on the canvas: a property does something only once some layer's
+ * `componentPropertyReferences` points at it. So the vocabulary takes the layers to bind and
+ * works out the field from the type, rather than asking a caller to know that a boolean drives
+ * `visible` and a text property drives `characters`.
+ *
+ * A VARIANT has no field: its values come from the names of the components in the set.
+ */
+export function bindingField(type: PropertyType): 'visible' | 'characters' | 'mainComponent' | null {
+  switch (type) {
+    case 'BOOLEAN':
+      return 'visible'
+    case 'TEXT':
+      return 'characters'
+    case 'INSTANCE_SWAP':
+      return 'mainComponent'
+    default:
+      return null
+  }
+}
+
+export interface PropertyAdd {
+  name: string
+  type: PropertyType
+  default: string | boolean
+  /** INSTANCE_SWAP only: components offered first in the swap menu, by id or published key. */
+  preferred?: string[]
+  /** Layers this property should drive. */
+  bind?: string[]
+}
+
+export interface PropertyEdit {
+  name: string
+  rename?: string
+  default?: string | boolean
+  preferred?: string[]
+}
+
+export interface PropertyPlan {
+  add: PropertyAdd[]
+  edit: PropertyEdit[]
+  remove: string[]
+  bind: Array<{ node: string; property: string }>
+  problems: string[]
+}
+
+/** Validates a property request without touching the document. */
+export function planComponentProperties(raw: unknown): PropertyPlan {
+  const plan: PropertyPlan = { add: [], edit: [], remove: [], bind: [], problems: [] }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    plan.problems.push('the request must be an object of add / edit / remove / bind')
+    return plan
+  }
+  const spec = raw as Record<string, unknown>
+
+  const list = (key: string): unknown[] | null => {
+    const value = spec[key]
+    if (value === undefined) return null
+    if (!Array.isArray(value)) {
+      plan.problems.push(`${key} must be an array`)
+      return null
+    }
+    return value
+  }
+
+  for (const [index, entry] of (list('add') ?? []).entries()) {
+    const at = `add[${index}]`
+    const one = entry as Record<string, unknown>
+    if (typeof one?.name !== 'string' || one.name.trim() === '') {
+      plan.problems.push(`${at}.name must be a non-empty string`)
+      continue
+    }
+    const type = typeof one.type === 'string' ? one.type.trim().toUpperCase() : ''
+    if (!PROPERTY_TYPES.includes(type as PropertyType)) {
+      plan.problems.push(`${at}.type must be one of: ${PROPERTY_TYPES.join(', ')}`)
+      continue
+    }
+    const fallback = one.default
+    if (type === 'BOOLEAN' ? typeof fallback !== 'boolean' : typeof fallback !== 'string') {
+      plan.problems.push(
+        `${at}.default must be ${type === 'BOOLEAN' ? 'true or false' : 'a string'} for a ${type} property`
+      )
+      continue
+    }
+    if (one.bind !== undefined && (!Array.isArray(one.bind) || one.bind.some((id) => typeof id !== 'string'))) {
+      plan.problems.push(`${at}.bind must be an array of node ids`)
+      continue
+    }
+    if (one.bind !== undefined && bindingField(type as PropertyType) === null) {
+      plan.problems.push(`${at}: a VARIANT property is not bound to layers — its values are the components' names`)
+      continue
+    }
+    if (one.preferred !== undefined && (!Array.isArray(one.preferred) || one.preferred.some((k) => typeof k !== 'string'))) {
+      plan.problems.push(`${at}.preferred must be an array of component ids or keys`)
+      continue
+    }
+    plan.add.push({
+      name: one.name.trim(),
+      type: type as PropertyType,
+      default: fallback as string | boolean,
+      ...(one.preferred ? { preferred: one.preferred as string[] } : {}),
+      ...(one.bind ? { bind: one.bind as string[] } : {}),
+    })
+  }
+
+  for (const [index, entry] of (list('edit') ?? []).entries()) {
+    const at = `edit[${index}]`
+    const one = entry as Record<string, unknown>
+    if (typeof one?.name !== 'string' || one.name.trim() === '') {
+      plan.problems.push(`${at}.name must name the property to change`)
+      continue
+    }
+    if (one.rename !== undefined && (typeof one.rename !== 'string' || one.rename.trim() === '')) {
+      plan.problems.push(`${at}.rename must be a non-empty string`)
+      continue
+    }
+    if (one.default !== undefined && typeof one.default !== 'string' && typeof one.default !== 'boolean') {
+      plan.problems.push(`${at}.default must be a string or a boolean`)
+      continue
+    }
+    if (one.rename === undefined && one.default === undefined && one.preferred === undefined) {
+      plan.problems.push(`${at} changes nothing — give a rename, a default or preferred values`)
+      continue
+    }
+    plan.edit.push({
+      name: one.name.trim(),
+      ...(one.rename ? { rename: (one.rename as string).trim() } : {}),
+      ...(one.default === undefined ? {} : { default: one.default as string | boolean }),
+      ...(one.preferred ? { preferred: one.preferred as string[] } : {}),
+    })
+  }
+
+  for (const [index, entry] of (list('remove') ?? []).entries()) {
+    if (typeof entry !== 'string' || entry.trim() === '') {
+      plan.problems.push(`remove[${index}] must be a property name`)
+      continue
+    }
+    plan.remove.push(entry.trim())
+  }
+
+  for (const [index, entry] of (list('bind') ?? []).entries()) {
+    const one = entry as Record<string, unknown>
+    if (typeof one?.node !== 'string' || typeof one?.property !== 'string') {
+      plan.problems.push(`bind[${index}] must be { node: "<layer id>", property: "<property name>" }`)
+      continue
+    }
+    plan.bind.push({ node: one.node, property: one.property })
+  }
+
+  if (plan.add.length + plan.edit.length + plan.remove.length + plan.bind.length === 0 && plan.problems.length === 0) {
+    plan.problems.push('nothing to do — give add, edit, remove or bind')
+  }
+  return plan
+}

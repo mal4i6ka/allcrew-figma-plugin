@@ -101,7 +101,15 @@ import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { describeLinks, planProps } from './canvas/props.ts'
 import { applyProps, describeEffects, describePaints } from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan } from './canvas/create.ts'
-import { collectComponents, humanPropertyName } from './canvas/components.ts'
+import {
+  bindingField,
+  collectComponents,
+  componentFor,
+  describeProperties as describePropertyDefinitions,
+  humanPropertyName,
+  planComponentProperties,
+  type PropertyType,
+} from './canvas/components.ts'
 import { binaryFile, slugify, textFile } from './agent/files.ts'
 import { runModuleCommand } from './modules/run.ts'
 import { beginRecording, endRecording } from './agent/ui-post.ts'
@@ -160,6 +168,15 @@ type PluginMessage =
     }
   | { type: 'NODE_CLONE'; nodes: unknown; dryRun?: boolean }
   | { type: 'NODE_GROUP'; nodes: unknown; as?: string; props?: unknown }
+  | { type: 'COMPONENT_MAKE'; nodes: unknown; as?: string; name?: string; description?: string; props?: unknown }
+  | {
+      type: 'COMPONENT_PROPERTY'
+      component: string
+      add?: unknown
+      edit?: unknown
+      remove?: unknown
+      bind?: unknown
+    }
   | {
       type: 'NODE_EXPORT'
       nodes: unknown
@@ -1031,6 +1048,21 @@ function postSelectionToUi(): void {
 }
 
 figma.on('selectionchange', postSelectionToUi)
+
+/** A component's own property definitions, or nothing — a variant child throws rather than
+ * answering, and that must not take the whole command down. */
+function definitionsOf(node: ComponentNode | ComponentSetNode): ComponentPropertyDefinitions {
+  try {
+    return node.componentPropertyDefinitions ?? {}
+  } catch {
+    return {}
+  }
+}
+
+/** The one-line form the catalogue prints, for a node in hand. */
+function describeProperties(node: ComponentNode | ComponentSetNode): string {
+  return describePropertyDefinitions(definitionsOf(node) as Record<string, { type: string; variantOptions?: readonly string[]; defaultValue?: unknown }>)
+}
 
 const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten']
 
@@ -2393,6 +2425,231 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         const message = String((error as Error)?.message || error)
         figma.notify('Group failed: ' + message, { error: true })
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_GROUP', message })
+      }
+      break
+    }
+    case 'COMPONENT_MAKE': {
+      // @agent write: turn nodes into components, or combine components into a variant set
+      // @agent param nodes: ids, or { node: "<id>", name: "Size=L" } to name each one on the way — a variant set's axes ARE the components' names, so "Size=L, State=Default" is what makes Size and State
+      // @agent param as: component (default — each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)
+      // @agent param props: applied to what comes out, the same vocabulary NODE_SET takes
+      try {
+        const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
+        const as = typeof msg.as === 'string' ? msg.as.trim().toLowerCase() : 'component'
+        if (as !== 'component' && as !== 'set') {
+          refuse('COMPONENT_MAKE', 'as must be "component" or "set"')
+          break
+        }
+        const plan = planProps(msg.props, 'props')
+        if (plan.problems.length > 0) {
+          refuse('COMPONENT_MAKE', plan.problems.join(' · '))
+          break
+        }
+
+        const wanted: Array<{ id: string; name?: string }> = []
+        for (const [index, row] of rows.entries()) {
+          if (typeof row === 'string') {
+            wanted.push({ id: row })
+            continue
+          }
+          const entry = row as { node?: unknown; name?: unknown }
+          if (typeof entry?.node !== 'string') {
+            refuse('COMPONENT_MAKE', `nodes[${index}] must be an id or { node, name }`)
+            wanted.length = 0
+            break
+          }
+          wanted.push({ id: entry.node, ...(typeof entry.name === 'string' ? { name: entry.name } : {}) })
+        }
+        if (wanted.length === 0) break
+
+        const made: ComponentNode[] = []
+        const reports: Array<Record<string, unknown>> = []
+        for (const entry of wanted) {
+          const node = await figma.getNodeByIdAsync(entry.id)
+          if (!node || !('type' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+            reports.push({ source: entry.id, ok: false, error: 'no such scene node' })
+            continue
+          }
+          try {
+            // Already a component: taken as it is, so "combine these three" works whether they
+            // were components already or three frames a moment ago.
+            const component =
+              node.type === 'COMPONENT' ? node : figma.createComponentFromNode(node as SceneNode)
+            if (entry.name) component.name = entry.name
+            made.push(component)
+            reports.push({ source: entry.id, node: component.id, name: component.name, ok: true })
+          } catch (error) {
+            reports.push({ source: entry.id, ok: false, error: String((error as Error)?.message || error) })
+          }
+        }
+
+        let set: ComponentSetNode | null = null
+        if (as === 'set') {
+          if (made.length < 2) {
+            refuse('COMPONENT_MAKE', 'a variant set needs at least two components')
+            break
+          }
+          const home = made[0].parent
+          if (!home || !('appendChild' in home)) {
+            refuse('COMPONENT_MAKE', 'the components have nowhere to be combined into')
+            break
+          }
+          set = figma.combineAsVariants(made, home as BaseNode & ChildrenMixin)
+        }
+
+        const result = set ?? made[0]
+        if (result) {
+          if (typeof msg.name === 'string' && msg.name.trim() !== '') result.name = msg.name.trim()
+          if (typeof msg.description === 'string') result.description = msg.description
+        }
+        const applied = result && plan.steps.length > 0 ? await applyProps(result, plan.steps, false) : null
+        figma.commitUndo()
+
+        const failed = reports.filter((report) => !report.ok).length
+        figma.notify(set ? `Variant set: ${set.name}` : `${made.length} component(s)`)
+        postToUi({
+          type: 'COMPONENTS_MADE',
+          as,
+          made: made.length,
+          failed,
+          ...(set
+            ? {
+                set: {
+                  id: set.id,
+                  name: set.name,
+                  key: set.key,
+                  properties: describeProperties(set),
+                  variants: set.children.map((child) => child.name),
+                },
+              }
+            : {}),
+          nodes: reports,
+          ...(applied ? { applied: applied.applied } : {}),
+        })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        figma.notify('Component failed: ' + message, { error: true })
+        postToUi({ type: 'CANVAS_ERROR', command: 'COMPONENT_MAKE', message })
+      }
+      break
+    }
+    case 'COMPONENT_PROPERTY': {
+      // @agent write: add, rename, retype or remove a component's properties — and bind them to the layers they drive
+      // @agent param component: the COMPONENT or COMPONENT_SET to change
+      // @agent param add: [{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT, default, bind?: ["<layer id>"], preferred?: ["<component id or key>"] }]
+      // @agent param bind: [{ node, property }] — pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one "does not work"
+      try {
+        const holder = await figma.getNodeByIdAsync(msg.component)
+        if (!holder || (holder.type !== 'COMPONENT' && holder.type !== 'COMPONENT_SET')) {
+          refuse('COMPONENT_PROPERTY', `${msg.component} is not a component or a component set`)
+          break
+        }
+        const owner = holder as ComponentNode | ComponentSetNode
+        const plan = planComponentProperties({ add: msg.add, edit: msg.edit, remove: msg.remove, bind: msg.bind })
+        if (plan.problems.length > 0) {
+          refuse('COMPONENT_PROPERTY', plan.problems.join(' · '))
+          break
+        }
+
+        const done: Array<Record<string, unknown>> = []
+        const bindings: Array<{ node: string; property: string; type: PropertyType }> = []
+
+        for (const entry of plan.add) {
+          try {
+            let preferred: InstanceSwapPreferredValue[] | undefined
+            if (entry.preferred) {
+              preferred = []
+              for (const ref of entry.preferred) {
+                const component = await componentFor(ref)
+                const parent = component.parent
+                preferred.push(
+                  parent?.type === 'COMPONENT_SET'
+                    ? { type: 'COMPONENT_SET', key: (parent as ComponentSetNode).key }
+                    : { type: 'COMPONENT', key: component.key }
+                )
+              }
+            }
+            const full = owner.addComponentProperty(
+              entry.name,
+              entry.type,
+              entry.default,
+              preferred ? { preferredValues: preferred } : undefined
+            )
+            done.push({ added: full, type: entry.type })
+            for (const node of entry.bind ?? []) bindings.push({ node, property: full, type: entry.type })
+          } catch (error) {
+            done.push({ added: entry.name, ok: false, error: String((error as Error)?.message || error) })
+          }
+        }
+
+        for (const entry of plan.edit) {
+          try {
+            const full = owner.editComponentProperty(entry.name, {
+              ...(entry.rename ? { name: entry.rename } : {}),
+              ...(entry.default === undefined ? {} : { defaultValue: entry.default }),
+            })
+            done.push({ edited: full })
+          } catch (error) {
+            done.push({ edited: entry.name, ok: false, error: String((error as Error)?.message || error) })
+          }
+        }
+
+        for (const name of plan.remove) {
+          try {
+            owner.deleteComponentProperty(name)
+            done.push({ removed: name })
+          } catch (error) {
+            done.push({ removed: name, ok: false, error: String((error as Error)?.message || error) })
+          }
+        }
+
+        // Bindings named on their own carry no type, so the field comes from the definition.
+        for (const entry of plan.bind) {
+          const definitions = definitionsOf(owner)
+          const key = Object.keys(definitions).find(
+            (candidate) => candidate === entry.property || humanPropertyName(candidate) === entry.property
+          )
+          if (!key) {
+            done.push({ bound: entry.property, ok: false, error: `no such property on ${owner.name}` })
+            continue
+          }
+          bindings.push({ node: entry.node, property: key, type: definitions[key].type as PropertyType })
+        }
+
+        for (const entry of bindings) {
+          const field = bindingField(entry.type)
+          const node = await figma.getNodeByIdAsync(entry.node)
+          if (!field) {
+            done.push({ bound: entry.property, ok: false, error: 'a VARIANT property is not bound to a layer' })
+            continue
+          }
+          if (!node || !('componentPropertyReferences' in node)) {
+            done.push({ bound: entry.property, ok: false, error: `no such layer ${entry.node}` })
+            continue
+          }
+          try {
+            const layer = node as SceneNode
+            layer.componentPropertyReferences = { ...(layer.componentPropertyReferences ?? {}), [field]: entry.property }
+            done.push({ bound: entry.property, to: layer.name, drives: field })
+          } catch (error) {
+            done.push({ bound: entry.property, ok: false, error: String((error as Error)?.message || error) })
+          }
+        }
+
+        figma.commitUndo()
+        const failed = done.filter((one) => one.ok === false).length
+        figma.notify(failed > 0 ? `${failed} of ${done.length} failed` : `${done.length} change(s)`)
+        postToUi({
+          type: 'COMPONENT_PROPERTIES',
+          component: { id: owner.id, name: owner.name },
+          failed,
+          done,
+          properties: describeProperties(owner),
+        })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        figma.notify('Property failed: ' + message, { error: true })
+        postToUi({ type: 'CANVAS_ERROR', command: 'COMPONENT_PROPERTY', message })
       }
       break
     }

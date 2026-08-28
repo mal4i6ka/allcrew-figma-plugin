@@ -187,8 +187,6 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         if (layout.primaryAxis) frame.primaryAxisAlignItems = layout.primaryAxis
         if (layout.counterAxis) frame.counterAxisAlignItems = layout.counterAxis
         if (layout.wrap !== undefined) frame.layoutWrap = layout.wrap ? 'WRAP' : 'NO_WRAP'
-        if (layout.sizing?.horizontal) applySizing(frame, 'horizontal', layout.sizing.horizontal)
-        if (layout.sizing?.vertical) applySizing(frame, 'vertical', layout.sizing.vertical)
       }
       return { property: 'layout', before, after: layout }
     }
@@ -363,6 +361,29 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         before: `${node.characters.length} character(s)`,
         after: applied.join(' · ') || 'nothing',
         ...(problems.length > 0 ? { error: problems.join(' · ') } : {}),
+      }
+    }
+
+    case 'sizing': {
+      if (!('layoutSizingHorizontal' in bag)) throw new Error(`a ${node.type} has no sizing to set`)
+      const before = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical }
+      const failures: string[] = []
+      for (const axis of ['horizontal', 'vertical'] as const) {
+        const mode = step[axis]
+        if (!mode) continue
+        try {
+          if (!dry) applySizing(node as FrameNode, axis, mode)
+        } catch (error) {
+          // FILL on a node whose parent lays nothing out, HUG on a node with no children: Figma
+          // refuses each on its own, and one refusal must not lose the other axis.
+          failures.push(`${axis}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+      return {
+        property: 'sizing',
+        before,
+        after: { horizontal: step.horizontal, vertical: step.vertical },
+        ...(failures.length > 0 ? { error: failures.join(' · ') } : {}),
       }
     }
 

@@ -234,6 +234,7 @@ export type PropStep =
   | { step: 'effects'; effects: Effect[]; summary: string }
   | { step: 'dashes'; dashes: number[] }
   | { step: 'runs'; runs: TextRun[] }
+  | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'reset' }
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
@@ -643,6 +644,23 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         break
       }
     }
+  }
+
+  // Sizing last, and on purpose. It has to come after the resize (which would otherwise pin the
+  // axis it just freed), after the text (a hugging frame sizes to what is in it) and after the
+  // reparent, because FILL means nothing until the node is inside the parent it fills.
+  const laid = steps.find((step) => step.step === 'layout') as Extract<PropStep, { step: 'layout' }> | undefined
+  if (laid) {
+    const sizing = laid.layout.sizing ?? {}
+    // A frame Figma hands out is 100×100 and FIXED, so `{ layout: { mode: 'VERTICAL' } }` alone
+    // makes a box that clips whatever is put in it — which is not what anyone means by turning
+    // auto-layout on. Each axis hugs unless the caller pinned it with a size or said otherwise.
+    const horizontal = sizing.horizontal ?? (laid.layout.mode && laid.layout.mode !== 'NONE' && !('width' in props) ? 'HUG' : undefined)
+    const vertical = sizing.vertical ?? (laid.layout.mode && laid.layout.mode !== 'NONE' && !('height' in props) ? 'HUG' : undefined)
+    if (horizontal || vertical) {
+      steps.push({ step: 'sizing', ...(horizontal ? { horizontal } : {}), ...(vertical ? { vertical } : {}) })
+    }
+    delete laid.layout.sizing
   }
 
   return { steps, problems }
