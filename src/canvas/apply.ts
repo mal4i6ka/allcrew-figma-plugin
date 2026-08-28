@@ -183,10 +183,10 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
 
     case 'paint': {
       if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
-      const before = describePaints(bag[step.property])
+      const before = await describePaints(bag[step.property])
       const paints = await buildPaints(step.ref)
       if (!dry) bag[step.property] = paints
-      return { property: step.property, before, after: describePaints(paints) }
+      return { property: step.property, before, after: await describePaints(paints) }
     }
 
     case 'reparent': {
@@ -282,22 +282,44 @@ async function resolveParent(id: string): Promise<BaseNode | null> {
   return node
 }
 
-/** Paints as a caller can read them back: the token if there is one, the colour otherwise. */
-export function describePaints(value: unknown): unknown {
+/**
+ * Paints as one readable line: the token's NAME if there is one, the colour otherwise.
+ *
+ * A string, not a structure, and deliberately. This lands in a report five levels down —
+ * `replies[].nodes[].applied[].before` — where the agent channel's digest summarises anything
+ * nested into "nested too deep to quote", so a shape here is a shape nobody downstream can read.
+ * The id a bound paint carries is no use to a human either; the name costs one lookup per paint
+ * and is the thing worth reporting.
+ */
+export async function describePaints(value: unknown): Promise<string | null> {
   if (value === figma.mixed) return 'mixed'
-  if (!Array.isArray(value)) return value ?? null
-  return value.map((paint) => {
-    if (typeof paint !== 'object' || paint === null) return paint
+  if (!Array.isArray(value)) return value === undefined ? null : String(value)
+  if (value.length === 0) return 'none'
+
+  const parts: string[] = []
+  for (const paint of value) {
+    if (typeof paint !== 'object' || paint === null) {
+      parts.push(String(paint))
+      continue
+    }
     const entry = paint as SolidPaint & { boundVariables?: Record<string, { id?: string }> }
     const bound = entry.boundVariables?.color?.id
-    if (bound) return { variable: bound }
-    if (entry.type !== 'SOLID') return { type: entry.type }
+    if (bound) {
+      const named = await figma.variables.getVariableByIdAsync(bound).catch(() => null)
+      parts.push(`var:${named?.name ?? bound}`)
+      continue
+    }
+    if (entry.type !== 'SOLID') {
+      parts.push(entry.type)
+      continue
+    }
     const hex = `#${[entry.color.r, entry.color.g, entry.color.b]
       .map((channel) => Math.round(channel * 255).toString(16).padStart(2, '0'))
       .join('')
       .toUpperCase()}`
-    return entry.opacity !== undefined && entry.opacity < 1 ? { color: hex, opacity: entry.opacity } : hex
-  })
+    parts.push(entry.opacity !== undefined && entry.opacity < 1 ? `${hex} @${entry.opacity}` : hex)
+  }
+  return parts.join(' + ')
 }
 
 const describeFont = (font: FontName | typeof figma.mixed): string =>

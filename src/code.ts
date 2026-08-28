@@ -137,7 +137,7 @@ type PluginMessage =
   // The generic canvas primitives — see src/canvas/
   | { type: 'NODE_CREATE'; nodes: unknown; parent?: string; dryRun?: boolean }
   | { type: 'NODE_SET'; nodes: unknown; dryRun?: boolean }
-  | { type: 'NODE_QUERY'; name?: string; types?: string[]; nodeId?: string; pageId?: string; limit?: number; props?: boolean }
+  | { type: 'NODE_QUERY'; name?: string; types?: string[]; nodeId?: string; within?: string; pageId?: string; limit?: number; props?: boolean }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
   | { type: 'MODULE_INSPECT'; file: unknown }
@@ -1003,7 +1003,7 @@ figma.on('selectionchange', postSelectionToUi)
  * A node as a caller can act on it: the ids and names to aim at, and — asked for — the same
  * property vocabulary `NODE_SET` accepts, so a read can be edited and sent back.
  */
-function describeNode(node: SceneNode, withProps: boolean): Record<string, unknown> {
+async function describeNode(node: SceneNode, withProps: boolean): Promise<Record<string, unknown>> {
   const base: Record<string, unknown> = {
     id: node.id,
     name: node.name,
@@ -1022,9 +1022,9 @@ function describeNode(node: SceneNode, withProps: boolean): Record<string, unkno
     height: round(bag.height),
     ...(bag.visible === false ? { visible: false } : {}),
     ...(typeof bag.opacity === 'number' && bag.opacity < 1 ? { opacity: round(bag.opacity) } : {}),
-    ...('fills' in bag ? { fill: describePaints(bag.fills) } : {}),
+    ...('fills' in bag ? { fill: await describePaints(bag.fills) } : {}),
     ...('strokes' in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0
-      ? { stroke: describePaints(bag.strokes), strokeWeight: round(bag.strokeWeight) }
+      ? { stroke: await describePaints(bag.strokes), strokeWeight: round(bag.strokeWeight) }
       : {}),
     ...(typeof bag.cornerRadius === 'number' ? { cornerRadius: round(bag.cornerRadius) } : {}),
   }
@@ -1990,8 +1990,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       break
     }
     case 'NODE_QUERY': {
-      // @agent read: find nodes by name and type, or read one by id — the reader a module needs to aim a write
+      // @agent read: find nodes by name and type, read one by id, or list what is inside another
       // @agent param types: Figma node types to keep, e.g. ["FRAME","TEXT"]; omitted means any
+      // @agent param within: search inside this node's subtree instead of the whole page — how you reach the children of something you just made
       // @agent param props: true adds each node's readable properties — geometry, layout, paints, text
       try {
         const wantProps = msg.props === true
@@ -2003,20 +2004,33 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             refuse('NODE_QUERY', `no node with id ${msg.nodeId}`)
             break
           }
-          postToUi({ type: 'NODES_FOUND', total: 1, nodes: [describeNode(node as SceneNode, wantProps)] })
+          postToUi({ type: 'NODES_FOUND', total: 1, nodes: [await describeNode(node as SceneNode, wantProps)] })
           break
         }
 
-        const page = msg.pageId ? await figma.getNodeByIdAsync(msg.pageId) : figma.currentPage
-        if (!page || page.type !== 'PAGE') {
-          refuse('NODE_QUERY', `no page with id ${msg.pageId}`)
-          break
+        // Inside one node, or across a page. Without the first, a caller could not reach the
+        // children of a node it had just created — which is most of what a second call is for.
+        let root: BaseNode
+        if (msg.within) {
+          const holder = await figma.getNodeByIdAsync(msg.within)
+          if (!holder || !('children' in holder)) {
+            refuse('NODE_QUERY', `no node with id ${msg.within}, or it cannot hold children`)
+            break
+          }
+          root = holder
+        } else {
+          const page = msg.pageId ? await figma.getNodeByIdAsync(msg.pageId) : figma.currentPage
+          if (!page || page.type !== 'PAGE') {
+            refuse('NODE_QUERY', `no page with id ${msg.pageId}`)
+            break
+          }
+          await (page as PageNode).loadAsync()
+          root = page
         }
-        await (page as PageNode).loadAsync()
         const types = Array.isArray(msg.types) ? msg.types : null
         const wanted = typeof msg.name === 'string' ? msg.name.toLowerCase() : null
         const found: SceneNode[] = []
-        await walkSceneNodes(page as PageNode, (node) => {
+        await walkSceneNodes(root, (node) => {
           if (found.length >= limit) return
           if (types && !types.includes(node.type)) return
           if (wanted && !node.name.toLowerCase().includes(wanted)) return
@@ -2026,7 +2040,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           type: 'NODES_FOUND',
           total: found.length,
           truncated: found.length >= limit,
-          nodes: found.map((node) => describeNode(node, wantProps)),
+          nodes: await Promise.all(found.map((node) => describeNode(node, wantProps))),
         })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_QUERY', message: String((error as Error)?.message || error) })

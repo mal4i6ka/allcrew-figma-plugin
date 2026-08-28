@@ -99,6 +99,8 @@ function digestValue(value: unknown, depth: number, budget: DigestBudget, state:
 
   if (Array.isArray(value)) {
     if (depth >= MAX_DEPTH) {
+      const small = smallEnoughToShow(value)
+      if (small !== null) return small
       return oversized(value, { count: value.length }, 'nested too deep to quote', budget, state, key)
     }
     if (value.length > MAX_ARRAY) {
@@ -117,6 +119,8 @@ function digestValue(value: unknown, depth: number, budget: DigestBudget, state:
   const record = value as Record<string, unknown>
   const keys = Object.keys(record)
   if (depth >= MAX_DEPTH) {
+    const small = smallEnoughToShow(record)
+    if (small !== null) return small
     return oversized(record, { keys: keys.length }, 'nested too deep to quote', budget, state, key)
   }
   if (keys.length > MAX_KEYS) {
@@ -179,6 +183,22 @@ function oversized(
   state.truncated = true
   return { ...shape, note }
 }
+
+/**
+ * A structure at the depth cap that is simply small.
+ *
+ * The cap exists to stop an unbounded walk, not to hide four numbers: a report's
+ * `padding: [12,12,12,12]` was arriving as `{ count: 4, note: "nested too deep to quote" }`,
+ * which is longer than the thing it refused to print. Recursion still stops here — the value is
+ * taken whole — so nothing unbounded gets through.
+ */
+function smallEnoughToShow(value: unknown): unknown | null {
+  const json = safeJson(value)
+  return json !== null && json.length <= SHOW_ANYWAY_BYTES ? value : null
+}
+
+/** Small enough that printing it costs less than explaining its absence. */
+const SHOW_ANYWAY_BYTES = 200
 
 /** Below this a file costs more than it explains, and the shape already carries the answer. */
 const MIN_SPILL_BYTES = 120

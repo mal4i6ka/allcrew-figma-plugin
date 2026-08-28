@@ -155,10 +155,31 @@ test('binary is reported by size, never inlined', () => {
   assert.deepEqual(digest.replies[0], { type: 'PNG', bytes: { bytes: 2048, note: 'binary omitted' } })
 })
 
-test('a reply nested past the depth cap is counted, not walked forever', () => {
+test('a deep but tiny chain is taken whole, and the walk still stops', () => {
+  // Twelve levels of one key each: past the cap, and small enough that printing it costs less
+  // than explaining its absence. The guarantee that matters is that recursion ends — the value
+  // is taken as it is rather than descended into.
   let deep: unknown = 'leaf'
   for (let index = 0; index < 12; index++) deep = { level: deep }
   const digest = digestReplies([{ type: 'DEEP', tree: deep }])
-  assert.equal(digest.truncated, true)
-  assert.equal(JSON.stringify(digest.replies).includes('nested too deep'), true)
+  assert.equal(digest.truncated, false)
+  assert.match(JSON.stringify(digest.replies), /"leaf"/)
+})
+
+test('a small structure at the depth cap is shown, not explained away', () => {
+  // `padding: [12,12,12,12]` five levels down was arriving as
+  // `{ count: 4, note: "nested too deep to quote" }` — longer than the thing it refused to print.
+  const deep = { a: { b: { c: { d: { padding: [12, 12, 12, 12], corners: { topLeft: 8 } } } } } }
+  const digest = digestReplies([{ type: 'DEEP', ...deep }])
+  const found = JSON.stringify(digest.replies[0])
+  assert.match(found, /\[12,12,12,12\]/)
+  assert.match(found, /"topLeft":8/)
+  assert.equal(digest.truncated, false)
+})
+
+test('a big structure at the depth cap is still summarised', () => {
+  const wide = Array.from({ length: 200 }, (_, index) => ({ id: index, name: `row ${index}` }))
+  const digest = digestReplies([{ type: 'DEEP', a: { b: { c: { d: { rows: wide } } } } }])
+  const found = JSON.stringify(digest.replies[0])
+  assert.match(found, /nested too deep to quote|all of it in the file/)
 })
