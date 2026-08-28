@@ -26068,11 +26068,24 @@ ${scripts}`, "");
           }
           const dry = msg.dryRun === true;
           const made = [];
-          for (const plan of plans) made.push(await createNode(plan, parent, dry));
+          const refused = [];
+          for (const plan of plans) {
+            try {
+              made.push(await createNode(plan, parent, dry));
+            } catch (error) {
+              refused.push({ kind: plan.kind, error: String((error == null ? void 0 : error.message) || error) });
+            }
+          }
           if (!dry) figma.commitUndo();
-          const failed = made.reduce((total, node) => total + node.failed, 0);
+          const failed = made.reduce((total, node) => total + node.failed, 0) + refused.length;
           figma.notify(dry ? `Would create ${made.length} node(s)` : `Created ${made.length} node(s)`);
-          postToUi({ type: "NODES_CREATED", dryRun: dry, created: made.length, failed, nodes: made });
+          postToUi(__spreadValues({
+            type: "NODES_CREATED",
+            dryRun: dry,
+            created: made.length,
+            failed,
+            nodes: made
+          }, refused.length > 0 ? { refused } : {}));
         } catch (error) {
           const message = String((error == null ? void 0 : error.message) || error);
           figma.notify("Create failed: " + message, { error: true });
@@ -26238,7 +26251,13 @@ ${scripts}`, "");
               reports.push({ source: entry.id, name: source.name, type: source.type, ok: true, dryRun: true });
               continue;
             }
-            const copy = source.clone();
+            let copy;
+            try {
+              copy = source.clone();
+            } catch (error) {
+              reports.push({ source: entry.id, name: source.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
+              continue;
+            }
             const placedByCaller = entry.steps.some((step) => step.step === "reparent" && step.parent !== "");
             const home = source.parent;
             if (!placedByCaller && home && "appendChild" in home) home.appendChild(copy);

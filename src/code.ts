@@ -1971,12 +1971,29 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
         const dry = msg.dryRun === true
         const made = []
-        for (const plan of plans) made.push(await createNode(plan, parent as BaseNode & ChildrenMixin, dry))
+        const refused: Array<{ kind: string; error: string }> = []
+        for (const plan of plans) {
+          try {
+            made.push(await createNode(plan, parent as BaseNode & ChildrenMixin, dry))
+          } catch (error) {
+            // The plan was read whole, but making can still fail — a component that will not
+            // import, a font that is not there. Whatever was made before it is already on the
+            // canvas, so the answer has to name both halves rather than throwing them away.
+            refused.push({ kind: plan.kind, error: String((error as Error)?.message || error) })
+          }
+        }
         if (!dry) figma.commitUndo()
 
-        const failed = made.reduce((total, node) => total + node.failed, 0)
+        const failed = made.reduce((total, node) => total + node.failed, 0) + refused.length
         figma.notify(dry ? `Would create ${made.length} node(s)` : `Created ${made.length} node(s)`)
-        postToUi({ type: 'NODES_CREATED', dryRun: dry, created: made.length, failed, nodes: made })
+        postToUi({
+          type: 'NODES_CREATED',
+          dryRun: dry,
+          created: made.length,
+          failed,
+          nodes: made,
+          ...(refused.length > 0 ? { refused } : {}),
+        })
       } catch (error) {
         const message = String((error as Error)?.message || error)
         figma.notify('Create failed: ' + message, { error: true })
@@ -2172,7 +2189,15 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             continue
           }
 
-          const copy = source.clone()
+          let copy: SceneNode
+          try {
+            copy = source.clone()
+          } catch (error) {
+            // A node inside an instance cannot be copied, among other refusals — one of them must
+            // not cost the caller the copies that did work.
+            reports.push({ source: entry.id, name: source.name, ok: false, error: String((error as Error)?.message || error) })
+            continue
+          }
           // `clone()` documents a parent of its own and does not always agree with where the
           // original lives, so the copy is placed explicitly: beside its source unless the caller
           // said otherwise, and stepped aside so it is not hidden exactly on top of it.
