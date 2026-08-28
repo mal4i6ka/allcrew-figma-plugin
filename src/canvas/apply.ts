@@ -340,7 +340,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       // Same rule as a shader paint: the file has to hold the shader before an effect can name it.
       for (const effect of effects) {
         if ((effect as { type?: string }).type === 'SHADER') {
-          await figma.importShaderById((effect as unknown as ShaderEffect).id)
+          await figma.importShaderById((effect as unknown as ShaderEffect).id).catch(() => undefined)
         }
       }
       for (const binding of step.bind) {
@@ -880,7 +880,11 @@ async function buildPaints(ref: PaintRef): Promise<Paint[]> {
  * way in, it is idempotent, and it has to happen before a paint can name the shader.
  */
 async function buildShader(ref: ShaderRef): Promise<ShaderPaint> {
-  await figma.importShaderById(ref.shader)
+  // An attempt, not a condition. `importShaderById` only accepts ids that
+  // `listAvailableShaders()` returned, and that list comes back EMPTY on a file that plainly has
+  // a shader on a layer — so insisting on the import refused a shader the file already holds.
+  // Figma still validates the paint itself, which is the check that matters.
+  await figma.importShaderById(ref.shader).catch(() => undefined)
   return {
     type: 'SHADER',
     id: ref.shader,
@@ -1007,7 +1011,12 @@ export async function describePaints(value: unknown): Promise<string | null> {
       continue
     }
     if (entry.type === 'SHADER') {
-      parts.push(`shader:${(paint as ShaderPaint).id}`)
+      // The settings by name, because `listAvailableShaders()` — where the definitions live —
+      // comes back empty even on a file that has a shader on a layer. Reading them off a paint
+      // that already exists is the only way to learn what a shader takes.
+      const shader = paint as ShaderPaint
+      const settings = Object.keys(shader.properties ?? {})
+      parts.push(`shader:${shader.id}${settings.length > 0 ? ` (${settings.join(', ')})` : ''}`)
       continue
     }
     if (entry.type === 'IMAGE') {

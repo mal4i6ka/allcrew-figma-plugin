@@ -26027,7 +26027,7 @@ ${scripts}`, "");
         const failures = [];
         for (const effect of effects) {
           if (effect.type === "SHADER") {
-            await figma.importShaderById(effect.id);
+            await figma.importShaderById(effect.id).catch(() => void 0);
           }
         }
         for (const binding of step.bind) {
@@ -26445,7 +26445,7 @@ ${scripts}`, "");
     return [solid5(ref.color, ref.opacity)];
   }
   async function buildShader(ref) {
-    await figma.importShaderById(ref.shader);
+    await figma.importShaderById(ref.shader).catch(() => void 0);
     return __spreadValues(__spreadValues(__spreadValues({
       type: "SHADER",
       id: ref.shader
@@ -26516,7 +26516,7 @@ ${scripts}`, "");
     return node;
   }
   async function describePaints2(value) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     if (value === figma.mixed) return "mixed";
     if (!Array.isArray(value)) return value === void 0 ? null : String(value);
     if (value.length === 0) return "none";
@@ -26534,22 +26534,24 @@ ${scripts}`, "");
         continue;
       }
       if (entry.type === "SHADER") {
-        parts.push(`shader:${paint.id}`);
+        const shader = paint;
+        const settings = Object.keys((_d = shader.properties) != null ? _d : {});
+        parts.push(`shader:${shader.id}${settings.length > 0 ? ` (${settings.join(", ")})` : ""}`);
         continue;
       }
       if (entry.type === "IMAGE") {
         const picture = paint;
-        parts.push(`image:${(_d = picture.imageHash) != null ? _d : "?"} ${picture.scaleMode}`);
+        parts.push(`image:${(_e = picture.imageHash) != null ? _e : "?"} ${picture.scaleMode}`);
         continue;
       }
       if (entry.type.startsWith("GRADIENT")) {
         const gradient = paint;
         const colours = [];
         for (const stop of gradient.gradientStops) {
-          const bound2 = (_f = (_e = stop.boundVariables) == null ? void 0 : _e.color) == null ? void 0 : _f.id;
+          const bound2 = (_g = (_f = stop.boundVariables) == null ? void 0 : _f.color) == null ? void 0 : _g.id;
           if (bound2) {
             const named = await figma.variables.getVariableByIdAsync(bound2).catch(() => null);
-            colours.push(`var:${(_g = named == null ? void 0 : named.name) != null ? _g : bound2}`);
+            colours.push(`var:${(_h = named == null ? void 0 : named.name) != null ? _h : bound2}`);
             continue;
           }
           colours.push(hexOf2(stop.color));
