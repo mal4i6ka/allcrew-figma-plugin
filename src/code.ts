@@ -99,7 +99,14 @@ import {
 } from './modules/registry.ts'
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { describeLinks, planProps } from './canvas/props.ts'
-import { applyProps, describeEffects, describeGrids, describePaints, variableName } from './canvas/apply.ts'
+import {
+  applyProps,
+  describeAnimation,
+  describeEffects,
+  describeGrids,
+  describePaints,
+  variableName,
+} from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan } from './canvas/create.ts'
 import {
   bindingField,
@@ -190,6 +197,7 @@ type PluginMessage =
       quality?: string
       loop?: number
     }
+  | { type: 'MOTION_STYLES' }
   | { type: 'STYLE_LIST'; kind?: string; query?: string; limit?: number }
   | {
       type: 'STYLE_MAKE'
@@ -1225,6 +1233,12 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(typeof bag.cornerRadius === 'number' ? { cornerRadius: round(bag.cornerRadius) } : {}),
     ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}),
     ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}),
+    ...(Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0
+      ? { animation: describeAnimation(bag.animationStyles) }
+      : {}),
+    ...(Array.isArray(bag.timelines) && bag.timelines.length > 0
+      ? { timelines: (bag.timelines as Timeline[]).map((one) => `${one.id} ${one.duration}s`).join(' · ') }
+      : {}),
     ...(await describeBindings(bag.boundVariables)),
     ...(typeof bag.overflowDirection === 'string' && bag.overflowDirection !== 'NONE'
       ? { scroll: bag.overflowDirection }
@@ -2908,6 +2922,21 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         postToUi({ type: 'NODES_EXPORTED', format, files, nodes: reports })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_EXPORT', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'MOTION_STYLES': {
+      // @agent read: the animation styles Figma offers, with the settings each one takes — what you have to know before applying one
+      try {
+        const styles = figma.motion.figmaAnimationStyles().map((style) => ({
+          styleId: style.styleId,
+          name: style.name,
+          ...(style.description ? { description: style.description } : {}),
+          ...(style.props ? { props: style.props } : {}),
+        }))
+        postToUi({ type: 'MOTION_STYLES', total: styles.length, styles })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'MOTION_STYLES', message: String((error as Error)?.message || error) })
       }
       break
     }

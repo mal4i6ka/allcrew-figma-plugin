@@ -363,6 +363,63 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       }
     }
 
+    case 'animation': {
+      const holder = node as SceneNode & {
+        animationStyles?: ReadonlyArray<{ id: string; styleId: string }>
+        applyAnimationStyle?: (styleId: string, data?: AnimationStyleConfiguration) => string
+        removeAnimationStyle?: (id: string) => void
+      }
+      if (typeof holder.applyAnimationStyle !== 'function') {
+        throw new Error(`a ${node.type} takes no animation styles`)
+      }
+      const held = holder.animationStyles ?? []
+      const before = held.map((one) => one.styleId).join(', ') || 'none'
+
+      // Checked against the styles Figma actually has BEFORE anything is removed. The list is
+      // replaced whole, so a typo used to take the node's existing animation with it — and the
+      // catalogue that would have caught it was one call away.
+      const available = figma.motion.figmaAnimationStyles().map((style) => style.styleId)
+      const unknown = step.styles.map((one) => one.style).filter((name) => !available.includes(name))
+      if (unknown.length > 0) {
+        throw new Error(`no animation style called ${unknown.join(', ')} — Figma has ${available.join(', ')}`)
+      }
+
+      const failures: string[] = []
+      if (!dry) {
+        // Replaced whole, like links and effects: the list is what the node has, and there is no
+        // way to say "remove that one" in a vocabulary that only describes the end state.
+        for (const applied of [...held]) holder.removeAnimationStyle?.(applied.id)
+        for (const one of step.styles) {
+          try {
+            const settings: Record<string, unknown> = {}
+            for (const [name, value] of Object.entries(one.props)) {
+              const named = value as { variable?: string }
+              if (named && typeof named === 'object' && typeof named.variable === 'string') {
+                const variable = await resolveVariableRef(named.variable)
+                settings[name] = { type: 'VARIABLE_ALIAS', id: variable.id }
+                continue
+              }
+              settings[name] = value
+            }
+            holder.applyAnimationStyle(one.style, {
+              ...(one.duration === undefined ? {} : { duration: one.duration }),
+              ...(one.offset === undefined ? {} : { timelineOffset: one.offset }),
+              ...(Object.keys(settings).length > 0 ? { props: settings as AnimationStyleConfiguration['props'] } : {}),
+            })
+          } catch (error) {
+            failures.push(`${one.style}: ${String((error as Error)?.message || error)}`)
+          }
+        }
+      }
+
+      return {
+        property: 'animation',
+        before,
+        after: step.summary,
+        ...(failures.length > 0 ? { error: failures.join(' · ') } : {}),
+      }
+    }
+
     case 'grid': {
       if (!('layoutGrids' in bag)) throw new Error(`a ${node.type} takes no layout grids`)
       const before = Array.isArray(bag.layoutGrids) ? `${(bag.layoutGrids as unknown[]).length} grid(s)` : 'none'
@@ -940,6 +997,55 @@ function hexOf(color: { r: number; g: number; b: number; a?: number }): string {
     .join('')
     .toUpperCase()}`
   return color.a !== undefined && color.a < 1 ? `${hex} @${round(color.a)}` : hex
+}
+
+/** Applied animation styles as one line, in the words the vocabulary takes them in. */
+export function describeAnimation(value: unknown): string {
+  if (!Array.isArray(value) || value.length === 0) return 'none'
+  return (value as AppliedAnimationStyle[])
+    .map((style) => {
+      // Figma answers with every setting the style has, defaults and all — eleven of them for
+      // Position — which turned one line into a file. The first few are the ones a caller set or
+      // would recognise; the rest are counted.
+      const entries = Object.entries(style.props ?? {})
+      const shown = entries
+        .slice(0, MAX_ANIMATION_PROPS)
+        .map(([name, held]) => `${name}=${typeof held === 'object' ? JSON.stringify(held) : held}`)
+        .join(', ')
+      const rest = entries.length > MAX_ANIMATION_PROPS ? `, +${entries.length - MAX_ANIMATION_PROPS} more` : ''
+      // An applied style carries a per-instance CodeComponentId and a localisation key
+      // (`motion.preset_name.position`) — neither is the word a caller writes. The catalogue has
+      // both halves, so it is asked for the word.
+      const called = animationStyleWord(style.name) ?? animationStyleWord(style.styleId) ?? style.name ?? style.styleId
+      const seconds = style.duration === undefined ? '' : ` ${Math.round(style.duration * 1000) / 1000}s`
+      return `${called}${seconds}${shown ? ` (${shown}${rest})` : ''}`
+    })
+    .join(' · ')
+}
+
+const MAX_ANIMATION_PROPS = 5
+
+/**
+ * The word the catalogue calls a style, from either of the two names an applied one carries.
+ *
+ * Read once: the list is Figma's own six presets and does not change while a plugin runs.
+ */
+let styleWords: Map<string, string> | null = null
+
+function animationStyleWord(key: string | undefined): string | null {
+  if (!key) return null
+  if (!styleWords) {
+    styleWords = new Map()
+    try {
+      for (const style of figma.motion.figmaAnimationStyles()) {
+        styleWords.set(style.styleId, style.styleId)
+        if (style.name) styleWords.set(style.name, style.styleId)
+      }
+    } catch {
+      /* an older host without Motion — the raw name is all there is */
+    }
+  }
+  return styleWords.get(key) ?? null
 }
 
 /** Layout grids as one line, in the words the vocabulary takes them in. */

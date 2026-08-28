@@ -162,6 +162,24 @@ export type GridSpec =
 export type GridAlign = 'MIN' | 'MAX' | 'CENTER' | 'STRETCH'
 
 /**
+ * One of Figma's animation styles, applied to a node.
+ *
+ * The styles are Figma's own — Position, Scale, Rotation, Size, Opacity, Path — and each has its
+ * own settings, which MOTION_STYLES lists with their types and defaults. So `props` is passed
+ * through rather than second-guessed: this vocabulary cannot know what `wStartWithDivider` means
+ * and should not pretend to. What it does insist on is that a value is something Figma can hold.
+ */
+export interface AnimationSpec {
+  /** The styleId, which is a plain word: `Position`, `Scale`, `Opacity`, … */
+  style: string
+  /** Seconds. */
+  duration?: number
+  /** Seconds into the timeline. */
+  offset?: number
+  props?: Record<string, unknown>
+}
+
+/**
  * A vector as Figma actually holds one: points, the segments joining them, and the loops those
  * segments close into.
  *
@@ -219,6 +237,8 @@ export interface NodeProps {
   effects?: EffectSpec[]
   /** Layout grids on a frame. `[]` removes them. */
   grid?: GridSpec[]
+  /** Figma Motion animation styles on this node. `null` or `[]` removes what it has. */
+  animation?: AnimationSpec | AnimationSpec[] | null
   blendMode?: string
   /** TEXT only. */
   text?: string
@@ -358,6 +378,11 @@ export type PropStep =
       bind: Array<{ index: number; field: string; variable: string }>
     }
   | { step: 'grid'; grids: LayoutGrid[]; summary: string }
+  | {
+      step: 'animation'
+      styles: Array<{ style: string; duration?: number; offset?: number; props: Record<string, unknown> }>
+      summary: string
+    }
   | { step: 'dashes'; dashes: number[] }
   | { step: 'runs'; runs: TextRun[] }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
@@ -463,6 +488,7 @@ const ORDER = [
   'strokeDashes',
   'effects',
   'grid',
+  'animation',
   'blendMode',
   'fontName',
   'fontSize',
@@ -827,6 +853,11 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
       case 'grid': {
         const grid = planGrids(props.grid, `${where}.grid`, problems)
         if (grid) steps.push(grid)
+        break
+      }
+      case 'animation': {
+        const animation = planAnimation(props.animation, `${where}.animation`, problems)
+        if (animation) steps.push(animation)
         break
       }
       case 'parent': {
@@ -1741,6 +1772,100 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
   }
 
   return { step: 'effects', effects, bind, summary: summary.join(' · ') || 'none' }
+}
+
+/**
+ * Animation styles, checked as far as they can be and no further.
+ *
+ * Which settings a style takes is Figma's business and it says so in MOTION_STYLES — a prop is
+ * accepted if it is something Figma can hold: a string, a number, a boolean, `{ variable }` to
+ * follow a token, or, for the one prop every style calls `easing`, the same curve vocabulary the
+ * prototype links use.
+ */
+function planAnimation(raw: unknown, where: string, problems: string[]): PropStep | null {
+  // `null` and `[]` both mean "take the animation off", the way they do for links and effects.
+  const wanted = raw === null ? [] : Array.isArray(raw) ? raw : [raw]
+
+  const styles: Array<{ style: string; duration?: number; offset?: number; props: Record<string, unknown> }> = []
+  const summary: string[] = []
+
+  for (const [index, entry] of wanted.entries()) {
+    const at = `${where}[${index}]`
+    const fail = (message: string) => problems.push(`${at}: ${message}`)
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      fail('must be { style, duration?, offset?, props? }')
+      continue
+    }
+    const spec = entry as Record<string, unknown>
+    for (const key of Object.keys(spec)) {
+      if (!['style', 'duration', 'offset', 'props'].includes(key)) {
+        fail(`unknown key "${key}" — accepted: style, duration, offset, props`)
+      }
+    }
+    if (typeof spec.style !== 'string' || spec.style.trim() === '') {
+      fail('style must name one of the styles MOTION_STYLES lists, e.g. "Position"')
+      continue
+    }
+    let wrong = false
+    for (const seconds of ['duration', 'offset'] as const) {
+      const value = spec[seconds]
+      if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+        fail(`${seconds} must be a number of seconds >= 0`)
+        wrong = true
+      }
+    }
+    if (wrong) continue
+
+    const settings: Record<string, unknown> = {}
+    if (spec.props !== undefined) {
+      if (typeof spec.props !== 'object' || spec.props === null || Array.isArray(spec.props)) {
+        fail('props must be an object of the settings that style takes')
+        continue
+      }
+      for (const [name, value] of Object.entries(spec.props as Record<string, unknown>)) {
+        if (name === 'easing') {
+          const easing = buildEasing(
+            typeof value === 'string' ? { easing: value } : (value as Record<string, unknown>),
+            (message) => fail(`props.easing: ${message}`)
+          )
+          if (!easing) {
+            wrong = true
+            break
+          }
+          settings.easing = easing
+          continue
+        }
+        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+          settings[name] = value
+          continue
+        }
+        const named = value as { variable?: unknown }
+        if (typeof named?.variable === 'string' && named.variable.trim() !== '') {
+          settings[name] = { variable: named.variable.trim() }
+          continue
+        }
+        fail(`props.${name} must be a string, a number, a boolean or { variable }`)
+        wrong = true
+        break
+      }
+    }
+    if (wrong) continue
+
+    styles.push({
+      style: spec.style.trim(),
+      ...(spec.duration === undefined ? {} : { duration: spec.duration as number }),
+      ...(spec.offset === undefined ? {} : { offset: spec.offset as number }),
+      props: settings,
+    })
+    const said = Object.entries(settings)
+      .map(([name, value]) => `${name}=${typeof value === 'object' ? JSON.stringify(value) : value}`)
+      .join(', ')
+    summary.push(
+      `${spec.style.trim()}${spec.duration === undefined ? '' : ` ${spec.duration}s`}${said ? ` (${said})` : ''}`
+    )
+  }
+
+  return { step: 'animation', styles, summary: summary.join(' · ') || 'none' }
 }
 
 const STROKE_CAPS = ['NONE', 'ROUND', 'SQUARE', 'ARROW_LINES', 'ARROW_EQUILATERAL']

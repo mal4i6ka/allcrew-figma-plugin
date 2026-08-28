@@ -649,3 +649,49 @@ test('a network is set before the paints, like every other shape', () => {
     ['network', 'paint']
   )
 })
+
+/* ------------------------------------------------------------------- motion */
+
+test('an animation names a style and whatever settings that style takes', () => {
+  const step = stepsOf({
+    animation: { style: 'Position', duration: 0.4, props: { direction: 'right', distance: 120 } },
+  })[0] as { styles: unknown[]; summary: string }
+  assert.deepEqual(step.styles, [
+    { style: 'Position', duration: 0.4, props: { direction: 'right', distance: 120 } },
+  ])
+  assert.equal(step.summary, 'Position 0.4s (direction=right, distance=120)')
+})
+
+test('the one prop every style calls easing takes the link vocabulary', () => {
+  const step = stepsOf({ animation: { style: 'Position', props: { easing: 'BOUNCY' } } })[0] as {
+    styles: Array<{ props: Record<string, unknown> }>
+  }
+  assert.deepEqual(step.styles[0].props.easing, { type: 'BOUNCY' })
+  const bent = stepsOf({ animation: { style: 'Position', props: { easing: { bezier: [0.2, 0, 0, 1] } } } })[0] as {
+    styles: Array<{ props: Record<string, unknown> }>
+  }
+  assert.deepEqual(bent.styles[0].props.easing, {
+    type: 'CUSTOM_CUBIC_BEZIER',
+    easingFunctionCubicBezier: { x1: 0.2, y1: 0, x2: 0, y2: 1 },
+  })
+  assert.match(planProps({ animation: { style: 'Position', props: { easing: 'WOBBLY' } } }).problems[0], /easing must be one of/)
+})
+
+test('a prop may follow a variable, and anything Figma cannot hold is refused', () => {
+  const step = stepsOf({ animation: { style: 'Position', props: { distance: { variable: 'scale/16' } } } })[0] as {
+    styles: Array<{ props: Record<string, unknown> }>
+  }
+  assert.deepEqual(step.styles[0].props.distance, { variable: 'scale/16' })
+  assert.match(
+    planProps({ animation: { style: 'Position', props: { distance: [1, 2] } } }).problems[0],
+    /props.distance must be a string, a number, a boolean or \{ variable \}/
+  )
+})
+
+test('null and [] both take the animation off, and a nameless style is refused', () => {
+  assert.deepEqual((stepsOf({ animation: null })[0] as { styles: unknown[]; summary: string }).styles, [])
+  assert.equal((stepsOf({ animation: [] })[0] as { summary: string }).summary, 'none')
+  assert.match(planProps({ animation: { duration: 1 } }).problems[0], /style must name one of the styles MOTION_STYLES lists/)
+  assert.match(planProps({ animation: { style: 'Position', speed: 2 } }).problems[0], /unknown key "speed"/)
+  assert.match(planProps({ animation: { style: 'Position', duration: -1 } }).problems[0], /duration must be a number of seconds >= 0/)
+})
