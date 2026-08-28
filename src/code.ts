@@ -22,7 +22,7 @@ import { collectReactionDestinationIds } from './targets/django/interactions'
 import { matchBootstrapComponent } from './targets/django/bootstrap/components'
 import { scaleBorderRadius } from './targets/django/css-emitter'
 import type { ThemableSetData, ThemableVariantData } from './targets/django/bootstrap/theme'
-import { findAllWithCriteria, yieldToHost } from './utils/tree'
+import { findAllWithCriteria, walkSceneNodes, yieldToHost } from './utils/tree'
 import { extractStrings, type ExtractedEntry } from './targets/django/i18n/extract'
 import { translationKey } from './targets/django/i18n/normalize'
 import { emitPo } from './targets/django/i18n/po'
@@ -98,6 +98,9 @@ import {
   type StoredModule,
 } from './modules/registry.ts'
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
+import { planProps } from './canvas/props.ts'
+import { applyProps, describePaints } from './canvas/apply.ts'
+import { createNode, planCreate, type CreatePlan } from './canvas/create.ts'
 import { runModuleCommand } from './modules/run.ts'
 import { beginRecording, endRecording } from './agent/ui-post.ts'
 
@@ -131,6 +134,10 @@ type PluginMessage =
   | { type: 'DELETE_USER_PRESET'; id: string }
   | { type: 'GENERATE_BREAKPOINT_COLLECTION'; breakpoints?: Record<string, number> }
   | { type: 'GENERATE_KIT' }
+  // The generic canvas primitives — see src/canvas/
+  | { type: 'NODE_CREATE'; nodes: unknown; parent?: string; dryRun?: boolean }
+  | { type: 'NODE_SET'; nodes: unknown; dryRun?: boolean }
+  | { type: 'NODE_QUERY'; name?: string; types?: string[]; nodeId?: string; pageId?: string; limit?: number; props?: boolean }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
   | { type: 'MODULE_INSPECT'; file: unknown }
@@ -990,6 +997,55 @@ function postSelectionToUi(): void {
 
 figma.on('selectionchange', postSelectionToUi)
 
+/* ------------------------------------------------------------------ canvas reads */
+
+/**
+ * A node as a caller can act on it: the ids and names to aim at, and — asked for — the same
+ * property vocabulary `NODE_SET` accepts, so a read can be edited and sent back.
+ */
+function describeNode(node: SceneNode, withProps: boolean): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    ...(node.parent ? { parent: { id: node.parent.id, name: node.parent.name } } : {}),
+    ...('children' in node ? { childCount: node.children.length } : {}),
+  }
+  if (!withProps) return base
+
+  const bag = node as unknown as Record<string, unknown>
+  const round = (value: unknown) => (typeof value === 'number' ? Math.round(value * 100) / 100 : value)
+  const props: Record<string, unknown> = {
+    x: round(bag.x),
+    y: round(bag.y),
+    width: round(bag.width),
+    height: round(bag.height),
+    ...(bag.visible === false ? { visible: false } : {}),
+    ...(typeof bag.opacity === 'number' && bag.opacity < 1 ? { opacity: round(bag.opacity) } : {}),
+    ...('fills' in bag ? { fill: describePaints(bag.fills) } : {}),
+    ...('strokes' in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0
+      ? { stroke: describePaints(bag.strokes), strokeWeight: round(bag.strokeWeight) }
+      : {}),
+    ...(typeof bag.cornerRadius === 'number' ? { cornerRadius: round(bag.cornerRadius) } : {}),
+  }
+  if ('layoutMode' in bag && bag.layoutMode !== 'NONE') {
+    props.layout = {
+      mode: bag.layoutMode,
+      gap: round(bag.itemSpacing),
+      padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round),
+      primaryAxis: bag.primaryAxisAlignItems,
+      counterAxis: bag.counterAxisAlignItems,
+    }
+  }
+  if (node.type === 'TEXT') {
+    props.text = node.characters
+    props.fontSize = node.fontSize === figma.mixed ? 'mixed' : round(node.fontSize)
+    props.fontName = node.fontName === figma.mixed ? 'mixed' : `${node.fontName.family} ${node.fontName.style}`
+    props.textAlign = node.textAlignHorizontal
+  }
+  return { ...base, props }
+}
+
 /* ------------------------------------------------------------------ user modules */
 
 /**
@@ -1837,6 +1893,147 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       postToUi({ type: 'USER_PRESETS', userPresets: updated })
       break
     }
+    /* ---- the generic canvas primitives ---- */
+    case 'NODE_CREATE': {
+      // @agent write: make nodes from a description — frames, text, shapes, sections, components, instances — nested
+      // @agent param nodes: an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance
+      // @agent param props: the same property vocabulary NODE_SET takes — name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints
+      // @agent cost: proportional to what you ask for; one call is one undo step for the designer
+      try {
+        const specs = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
+        const problems: string[] = []
+        const plans: CreatePlan[] = []
+        for (const [index, spec] of specs.entries()) {
+          const plan = planCreate(spec, `nodes[${index}]`, problems)
+          if (plan) plans.push(plan)
+        }
+        // Read whole before anything is made: one bad grandchild should not leave half a card on
+        // the canvas for someone to find later.
+        if (problems.length > 0) {
+          refuse('NODE_CREATE', `${problems.length} problem(s): ${problems.slice(0, 4).join(' · ')}`)
+          break
+        }
+
+        const parent = msg.parent && msg.parent !== 'page' ? await figma.getNodeByIdAsync(msg.parent) : figma.currentPage
+        if (!parent || !('appendChild' in parent)) {
+          refuse('NODE_CREATE', `parent ${msg.parent ?? '(page)'} is not a container`)
+          break
+        }
+        const dry = msg.dryRun === true
+        const made = []
+        for (const plan of plans) made.push(await createNode(plan, parent as BaseNode & ChildrenMixin, dry))
+        if (!dry) figma.commitUndo()
+
+        const failed = made.reduce((total, node) => total + node.failed, 0)
+        figma.notify(dry ? `Would create ${made.length} node(s)` : `Created ${made.length} node(s)`)
+        postToUi({ type: 'NODES_CREATED', dryRun: dry, created: made.length, failed, nodes: made })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        figma.notify('Create failed: ' + message, { error: true })
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_CREATE', message })
+      }
+      break
+    }
+    case 'NODE_SET': {
+      // @agent write: set properties on existing nodes, in batch, with per-property before/after
+      // @agent param nodes: an array of { node: "<id>", props: {…} } — the same vocabulary NODE_CREATE takes
+      try {
+        const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
+        const problems: string[] = []
+        const planned: Array<{ id: string; steps: ReturnType<typeof planProps>['steps'] }> = []
+        for (const [index, row] of rows.entries()) {
+          if (typeof row !== 'object' || row === null) {
+            problems.push(`nodes[${index}] must be { node, props }`)
+            continue
+          }
+          const entry = row as { node?: unknown; props?: unknown }
+          if (typeof entry.node !== 'string' || entry.node === '') {
+            problems.push(`nodes[${index}].node must be a node id`)
+            continue
+          }
+          const plan = planProps(entry.props, `nodes[${index}].props`)
+          problems.push(...plan.problems)
+          if (plan.steps.length === 0) problems.push(`nodes[${index}].props sets nothing`)
+          planned.push({ id: entry.node, steps: plan.steps })
+        }
+        if (problems.length > 0) {
+          refuse('NODE_SET', `${problems.length} problem(s): ${problems.slice(0, 4).join(' · ')}`)
+          break
+        }
+
+        const dry = msg.dryRun === true
+        const reports = []
+        for (const entry of planned) {
+          const node = await figma.getNodeByIdAsync(entry.id)
+          if (!node || !('type' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+            reports.push({ node: entry.id, ok: false, error: 'no such scene node' })
+            continue
+          }
+          const report = await applyProps(node as SceneNode, entry.steps, dry)
+          reports.push({
+            node: entry.id,
+            name: (node as SceneNode).name,
+            ok: report.failed === 0,
+            applied: report.applied,
+          })
+        }
+        if (!dry) figma.commitUndo()
+
+        const failed = reports.filter((report) => !report.ok).length
+        figma.notify(dry ? `Would change ${reports.length} node(s)` : `Changed ${reports.length - failed} node(s)`)
+        postToUi({ type: 'NODES_SET', dryRun: dry, changed: reports.length - failed, failed, nodes: reports })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        figma.notify('Change failed: ' + message, { error: true })
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_SET', message })
+      }
+      break
+    }
+    case 'NODE_QUERY': {
+      // @agent read: find nodes by name and type, or read one by id — the reader a module needs to aim a write
+      // @agent param types: Figma node types to keep, e.g. ["FRAME","TEXT"]; omitted means any
+      // @agent param props: true adds each node's readable properties — geometry, layout, paints, text
+      try {
+        const wantProps = msg.props === true
+        const limit = Math.min(Math.max(msg.limit ?? 50, 1), 500)
+
+        if (msg.nodeId) {
+          const node = await figma.getNodeByIdAsync(msg.nodeId)
+          if (!node || !('type' in node)) {
+            refuse('NODE_QUERY', `no node with id ${msg.nodeId}`)
+            break
+          }
+          postToUi({ type: 'NODES_FOUND', total: 1, nodes: [describeNode(node as SceneNode, wantProps)] })
+          break
+        }
+
+        const page = msg.pageId ? await figma.getNodeByIdAsync(msg.pageId) : figma.currentPage
+        if (!page || page.type !== 'PAGE') {
+          refuse('NODE_QUERY', `no page with id ${msg.pageId}`)
+          break
+        }
+        await (page as PageNode).loadAsync()
+        const types = Array.isArray(msg.types) ? msg.types : null
+        const wanted = typeof msg.name === 'string' ? msg.name.toLowerCase() : null
+        const found: SceneNode[] = []
+        await walkSceneNodes(page as PageNode, (node) => {
+          if (found.length >= limit) return
+          if (types && !types.includes(node.type)) return
+          if (wanted && !node.name.toLowerCase().includes(wanted)) return
+          found.push(node)
+        })
+        postToUi({
+          type: 'NODES_FOUND',
+          total: found.length,
+          truncated: found.length >= limit,
+          nodes: found.map((node) => describeNode(node, wantProps)),
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_QUERY', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+
     /* ---- user modules ---- */
     case 'MODULES_LIST': {
       // @agent read: the installed user modules, what each may run, and why any of them is unusable

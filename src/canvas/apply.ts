@@ -1,0 +1,306 @@
+/**
+ * Walking a property plan onto a real node.
+ *
+ * Deliberately dumb: `props.ts` decided what to do and in what order, so everything here is one
+ * `switch` and a lot of care about what Figma refuses. Each step is applied on its own and
+ * reported on its own — a node that took nine properties and refused the tenth says exactly
+ * that, rather than failing whole or claiming success.
+ *
+ * `before` is read per property rather than up front: reading the whole node costs more than the
+ * write does, and a caller wants to know what THIS write displaced, not what the node used to
+ * look like in general.
+ */
+
+import { parseHex } from '../tokens/color.ts'
+import { resolveVariableRef } from '../agent/values.ts'
+import type { PaintRef, PropStep } from './props.ts'
+
+export interface AppliedProp {
+  property: string
+  before?: unknown
+  after?: unknown
+  /** Present when this one property could not be applied — the rest still were. */
+  error?: string
+}
+
+export interface ApplyReport {
+  applied: AppliedProp[]
+  failed: number
+}
+
+/**
+ * @param dry report what each step would do, touching nothing. The `before` is real; the `after`
+ *            is what the caller asked for.
+ */
+export async function applyProps(node: SceneNode, steps: readonly PropStep[], dry = false): Promise<ApplyReport> {
+  const applied: AppliedProp[] = []
+  let failed = 0
+
+  for (const step of steps) {
+    try {
+      applied.push(await applyStep(node, step, dry))
+    } catch (error) {
+      failed++
+      applied.push({ property: propertyOf(step), error: String((error as Error)?.message || error) })
+    }
+  }
+  return { applied, failed }
+}
+
+const propertyOf = (step: PropStep): string => {
+  switch (step.step) {
+    case 'assign':
+    case 'paint':
+      return step.property
+    case 'font':
+      return 'fontName'
+    case 'text':
+      return 'characters'
+    case 'resize':
+      return 'size'
+    case 'radius':
+      return 'cornerRadius'
+    case 'reparent':
+      return 'parent'
+    // `layout`, `constraints` and `lineHeight` are named after themselves.
+    default:
+      return step.step
+  }
+}
+
+async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise<AppliedProp> {
+  const bag = node as unknown as Record<string, unknown>
+
+  switch (step.step) {
+    case 'assign': {
+      if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
+      const before = bag[step.property]
+      // Text properties refuse to move until the font is loaded, whatever they are — a size
+      // change on a text node whose font is unavailable throws the same way characters do.
+      if (node.type === 'TEXT' && TEXT_PROPERTIES.includes(step.property)) await loadNodeFont(node)
+      if (!dry) bag[step.property] = step.value
+      return { property: step.property, before, after: step.value }
+    }
+
+    case 'font': {
+      if (node.type !== 'TEXT') throw new Error(`only a TEXT node has a font, not a ${node.type}`)
+      const before = describeFont(node.fontName)
+      const font: FontName = { family: step.family, style: step.style }
+      // Loaded even on a dry run: "that font is not available" is exactly the answer a dry run
+      // exists to give, and finding out at apply time would be too late.
+      await figma.loadFontAsync(font)
+      if (!dry) node.fontName = font
+      return { property: 'fontName', before, after: `${step.family} ${step.style}` }
+    }
+
+    case 'text': {
+      if (node.type !== 'TEXT') throw new Error(`only a TEXT node has characters, not a ${node.type}`)
+      await loadNodeFont(node)
+      const before = node.characters
+      if (!dry) node.characters = step.characters
+      return { property: 'characters', before, after: step.characters }
+    }
+
+    case 'lineHeight': {
+      if (node.type !== 'TEXT') throw new Error(`only a TEXT node has a line height, not a ${node.type}`)
+      await loadNodeFont(node)
+      const before = node.lineHeight
+      const after: LineHeight = step.value === 'AUTO' ? { unit: 'AUTO' } : { value: step.value, unit: 'PIXELS' }
+      if (!dry) node.lineHeight = after
+      return { property: 'lineHeight', before, after }
+    }
+
+    case 'resize': {
+      if (typeof (node as unknown as { resize?: unknown }).resize !== 'function') {
+        throw new Error(`a ${node.type} cannot be resized`)
+      }
+      const before = { width: round(node.width), height: round(node.height) }
+      const width = step.width ?? node.width
+      const height = step.height ?? node.height
+      // resizeWithoutConstraints, not resize: a caller asking for a size means that size, not
+      // that size plus whatever the children's constraints do to it.
+      if (!dry) (node as FrameNode).resizeWithoutConstraints(width, height)
+      return { property: 'size', before, after: { width: round(width), height: round(height) } }
+    }
+
+    case 'radius': {
+      if (!('cornerRadius' in bag)) throw new Error(`a ${node.type} has no corners`)
+      const corners = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'] as const
+      const before: Record<string, unknown> = {}
+      const after: Record<string, unknown> = {}
+      for (const corner of corners) {
+        const amount = step.corners[corner]
+        if (amount === undefined) continue
+        const property = `${corner}Radius`
+        before[property] = bag[property]
+        after[property] = amount
+        if (!dry) bag[property] = amount
+      }
+      return { property: 'cornerRadius', before, after }
+    }
+
+    case 'constraints': {
+      if (!('constraints' in bag)) throw new Error(`a ${node.type} has no constraints`)
+      const before = bag.constraints
+      const current = (before ?? { horizontal: 'MIN', vertical: 'MIN' }) as Constraints
+      const after: Constraints = {
+        horizontal: (step.horizontal ?? current.horizontal) as Constraints['horizontal'],
+        vertical: (step.vertical ?? current.vertical) as Constraints['vertical'],
+      }
+      if (!dry) bag.constraints = after
+      return { property: 'constraints', before, after }
+    }
+
+    case 'layout': {
+      if (!('layoutMode' in bag)) throw new Error(`a ${node.type} has no auto-layout`)
+      const frame = node as FrameNode
+      const before = {
+        mode: frame.layoutMode,
+        gap: frame.itemSpacing,
+        padding: [frame.paddingTop, frame.paddingRight, frame.paddingBottom, frame.paddingLeft],
+      }
+      const layout = step.layout
+      if (!dry) {
+        // Mode first: on a frame with no auto-layout, everything below is ignored until it has
+        // one, and Figma reports no error about it.
+        if (layout.mode) frame.layoutMode = layout.mode
+        if (layout.gap !== undefined) frame.itemSpacing = layout.gap
+        if (layout.padding) {
+          const [top, right, bottom, left] = layout.padding as [number, number, number, number]
+          frame.paddingTop = top
+          frame.paddingRight = right
+          frame.paddingBottom = bottom
+          frame.paddingLeft = left
+        }
+        if (layout.primaryAxis) frame.primaryAxisAlignItems = layout.primaryAxis
+        if (layout.counterAxis) frame.counterAxisAlignItems = layout.counterAxis
+        if (layout.wrap !== undefined) frame.layoutWrap = layout.wrap ? 'WRAP' : 'NO_WRAP'
+        if (layout.sizing?.horizontal) applySizing(frame, 'horizontal', layout.sizing.horizontal)
+        if (layout.sizing?.vertical) applySizing(frame, 'vertical', layout.sizing.vertical)
+      }
+      return { property: 'layout', before, after: layout }
+    }
+
+    case 'paint': {
+      if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
+      const before = describePaints(bag[step.property])
+      const paints = await buildPaints(step.ref)
+      if (!dry) bag[step.property] = paints
+      return { property: step.property, before, after: describePaints(paints) }
+    }
+
+    case 'reparent': {
+      const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null
+      const parent = step.parent === '' ? node.parent : await resolveParent(step.parent)
+      if (!parent) throw new Error('the node has no parent to move within')
+      if (!('appendChild' in parent)) throw new Error(`a ${parent.type} cannot hold children`)
+      if (!dry) {
+        const container = parent as BaseNode & ChildrenMixin
+        if (step.index === undefined) container.appendChild(node)
+        else container.insertChild(Math.min(step.index, container.children.length), node)
+      }
+      return { property: 'parent', before, after: { id: parent.id, name: parent.name, index: step.index } }
+    }
+  }
+}
+
+/** The properties that a TEXT node will not let go of until its font is in memory. */
+const TEXT_PROPERTIES = [
+  'fontSize',
+  'letterSpacing',
+  'textAlignHorizontal',
+  'textAlignVertical',
+  'textAutoResize',
+  'textCase',
+  'textDecoration',
+  'paragraphSpacing',
+]
+
+/**
+ * Loads whatever the node is already using, mixed runs included.
+ *
+ * A text node with several styled runs has `fontName: figma.mixed`, and writing anything at all
+ * needs every one of those fonts loaded — so a mixed node is asked for its runs rather than
+ * refused.
+ */
+async function loadNodeFont(node: TextNode): Promise<void> {
+  if (node.fontName !== figma.mixed) {
+    await figma.loadFontAsync(node.fontName as FontName)
+    return
+  }
+  const fonts = new Set<string>()
+  const wanted: FontName[] = []
+  for (let index = 0; index < node.characters.length; index++) {
+    const font = node.getRangeFontName(index, index + 1)
+    if (font === figma.mixed) continue
+    const key = `${(font as FontName).family}|${(font as FontName).style}`
+    if (fonts.has(key)) continue
+    fonts.add(key)
+    wanted.push(font as FontName)
+  }
+  await Promise.all(wanted.map((font) => figma.loadFontAsync(font)))
+}
+
+function applySizing(frame: FrameNode, axis: 'horizontal' | 'vertical', mode: 'FIXED' | 'HUG' | 'FILL'): void {
+  // HUG and FILL are the same property in Figma's API with different names depending on whether
+  // the node is the container or the child — `layoutSizing*` covers both, and it is the one that
+  // refuses honestly when the node is not in an auto-layout parent.
+  const property = axis === 'horizontal' ? 'layoutSizingHorizontal' : 'layoutSizingVertical'
+  ;(frame as unknown as Record<string, unknown>)[property] = mode
+}
+
+async function buildPaints(ref: PaintRef): Promise<Paint[]> {
+  if (ref === null) return []
+
+  if (typeof ref === 'string') return [solid(ref)]
+  if ('variable' in ref) {
+    const variable = await resolveVariableRef(ref.variable)
+    if (variable.resolvedType !== 'COLOR') {
+      throw new Error(`"${variable.name}" is a ${variable.resolvedType} variable, not a colour`)
+    }
+    // Bound rather than painted: the point of naming a variable is that the layer follows it.
+    const base: SolidPaint = { type: 'SOLID', color: { r: 0, g: 0, b: 0 } }
+    return [figma.variables.setBoundVariableForPaint(base, 'color', variable)]
+  }
+  return [solid(ref.color, ref.opacity)]
+}
+
+function solid(hex: string, opacity?: number): SolidPaint {
+  const rgb = parseHex(hex)
+  if (!rgb) throw new Error(`"${hex}" is not a colour`)
+  return {
+    type: 'SOLID',
+    color: { r: rgb.r, g: rgb.g, b: rgb.b },
+    ...(opacity === undefined ? {} : { opacity }),
+  }
+}
+
+async function resolveParent(id: string): Promise<BaseNode | null> {
+  if (id === 'page') return figma.currentPage
+  const node = await figma.getNodeByIdAsync(id)
+  if (!node) throw new Error(`no node with id ${id}`)
+  return node
+}
+
+/** Paints as a caller can read them back: the token if there is one, the colour otherwise. */
+export function describePaints(value: unknown): unknown {
+  if (value === figma.mixed) return 'mixed'
+  if (!Array.isArray(value)) return value ?? null
+  return value.map((paint) => {
+    if (typeof paint !== 'object' || paint === null) return paint
+    const entry = paint as SolidPaint & { boundVariables?: Record<string, { id?: string }> }
+    const bound = entry.boundVariables?.color?.id
+    if (bound) return { variable: bound }
+    if (entry.type !== 'SOLID') return { type: entry.type }
+    const hex = `#${[entry.color.r, entry.color.g, entry.color.b]
+      .map((channel) => Math.round(channel * 255).toString(16).padStart(2, '0'))
+      .join('')
+      .toUpperCase()}`
+    return entry.opacity !== undefined && entry.opacity < 1 ? { color: hex, opacity: entry.opacity } : hex
+  })
+}
+
+const describeFont = (font: FontName | typeof figma.mixed): string =>
+  font === figma.mixed ? 'mixed' : `${(font as FontName).family} ${(font as FontName).style}`
+
+const round = (value: number): number => Math.round(value * 100) / 100
