@@ -1,8 +1,12 @@
 # Task: user modules (a panel anyone can design, in the canonical look)
 
-> **Stage 1 of 4 landed: the contract and its validator.** `src/modules/contract.ts` parses a
-> module file, reports every problem with the path that caused it, and derives what the module
-> can actually do. Nothing loads modules yet — that is stage 2.
+> **All four stages landed (2026-08-28).** A module file installs after showing what it may
+> run, appears in the picker under Modules, draws its screens with this panel's own components,
+> exposes its commands to an agent beside the native ones, and can be switched off, saved back
+> out as a file or removed. 49 plugin commands; the module half is five of them plus three that
+> serve the screens.
+>
+> Not yet: expressions (v2) and code (v3, the `sandbox.eval` gate). See the open questions.
 
 ## Problem
 
@@ -109,12 +113,14 @@ the cost note (the union of the costs of the commands it calls).
 | Stage | What | State |
 |-------|------|-------|
 | 1 | Contract + validator + tests, pure, no I/O | **done** |
-| 2 | Storage, import/export, merge into `plugin.commands` / `plugin.call` | next |
-| 3 | Screen rendering with the plugin's own components | |
-| 4 | Picker section, install consent, enable/disable/remove | |
+| 2 | Storage, import/export, merge into `plugin.commands` / `plugin.call` | **done** |
+| 3 | Screen rendering with the plugin's own components | **done** |
+| 4 | Picker section, install consent, enable/disable/remove | **done** |
 
-Stage 2 before stage 3 on purpose: the contract gets exercised through the listener before any
-interface is drawn against it.
+Stage 2 before stage 3 on purpose, and it paid twice: the contract was exercised through the
+listener before any interface was drawn against it, and both times the first real run found
+something the tests could not — references that resolved only at the top level of a param, and
+a declared state type that nothing enforced on write.
 
 ## What already exists and is reused
 
