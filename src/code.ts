@@ -1069,9 +1069,11 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     for (const key of keys) data[key] = node.getPluginData(key)
     props.data = data
   }
-  const linked = node as SceneNode & { getReactionsAsync?: () => Promise<readonly Reaction[]> }
-  if (typeof linked.getReactionsAsync === 'function') {
-    const links = describeLinks(await linked.getReactionsAsync())
+  // `reactions`, not a `getReactionsAsync` — that method does not exist, which is why this read
+  // answered `undefined` for a node whose links had just been set.
+  const linked = node as SceneNode & { reactions?: readonly Reaction[] }
+  if (Array.isArray(linked.reactions)) {
+    const links = describeLinks(linked.reactions)
     if (links) props.links = links
   }
   if (node.type === 'INSTANCE') {

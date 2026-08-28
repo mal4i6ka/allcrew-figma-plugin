@@ -65,6 +65,10 @@ test('a timeout carries its seconds in the trigger', () => {
   assert.deepEqual(step.reactions[0].trigger, { type: 'AFTER_TIMEOUT', timeout: 2.5 })
 })
 
+test('a timeout link says how long it waits — the wait is the whole of what it says', () => {
+  assert.equal(linkStep([{ on: 'timeout', after: 3, to: '1:2' }]).summary, 'timeout 3s → 1:2')
+})
+
 test('an overlay says so, and the summary shows it', () => {
   const step = linkStep([{ to: '1:2', as: 'OVERLAY' }])
   const action = step.reactions[0].actions![0] as { navigation: string }

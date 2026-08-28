@@ -564,7 +564,9 @@ export function describeLinks(reactions: readonly Reaction[]): string {
   const parts: string[] = []
   for (const reaction of reactions) {
     const trigger = reaction.trigger
-    const on = trigger ? spelling[trigger.type] ?? trigger.type.toLowerCase() : 'nothing'
+    let on = trigger ? spelling[trigger.type] ?? trigger.type.toLowerCase() : 'nothing'
+    // The wait is the whole of what a timeout link says; a bare "timeout" hides it.
+    if (trigger && trigger.type === 'AFTER_TIMEOUT') on = `${on} ${trigger.timeout}s`
     const actions = reaction.actions ?? (reaction.action ? [reaction.action] : [])
     for (const action of actions) {
       if (action.type === 'BACK' || action.type === 'CLOSE') {

@@ -125,7 +125,13 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       // resizeWithoutConstraints, not resize: a caller asking for a size means that size, not
       // that size plus whatever the children's constraints do to it.
       if (!dry) (node as FrameNode).resizeWithoutConstraints(width, height)
-      return { property: 'size', before, after: { width: round(width), height: round(height) } }
+      // Read back, because an auto-layout frame is not obliged to keep it: asking a hugging
+      // frame for 260 leaves it at 157, and a report that said 260 would be a report of the
+      // request rather than of the result.
+      const after = dry
+        ? { width: round(width), height: round(height) }
+        : { width: round(node.width), height: round(node.height) }
+      return { property: 'size', before, after }
     }
 
     case 'radius': {
@@ -215,9 +221,9 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     case 'swap': {
       const instance = asInstance(node, 'a component to swap')
       const target = await componentFor(step.component)
-      const before = (await instance.getMainComponentAsync())?.name ?? null
+      const before = componentName(await instance.getMainComponentAsync())
       if (!dry) instance.swapComponent(target)
-      return { property: 'swap', before, after: target.name }
+      return { property: 'swap', before, after: componentName(target) }
     }
 
     case 'properties': {
@@ -267,7 +273,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     case 'links': {
       const holder = node as SceneNode & {
         setReactionsAsync?: (reactions: Reaction[]) => Promise<void>
-        getReactionsAsync?: () => Promise<readonly Reaction[]>
+        reactions?: readonly Reaction[]
       }
       if (typeof holder.setReactionsAsync !== 'function') {
         throw new Error(`a ${node.type} cannot carry prototype links`)
@@ -280,7 +286,9 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         if (!target) throw new Error(`no node with id ${id} to link to`)
       }
 
-      const had = typeof holder.getReactionsAsync === 'function' ? (await holder.getReactionsAsync()).length : 0
+      // `reactions` is the property; there is no `getReactionsAsync` — only `setReactionsAsync`,
+      // which is what "read-only under dynamic-page" means here.
+      const had = Array.isArray(holder.reactions) ? holder.reactions.length : 0
       if (!dry) await holder.setReactionsAsync(step.reactions)
       return { property: 'links', before: `${had} link(s)`, after: step.summary }
     }
@@ -308,6 +316,17 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       }
       return { property: 'parent', before, after: { id: parent.id, name: parent.name, index: step.index } }
     }
+  }
+}
+
+/** A variant's own name is its axis values ("Type=Primary, Size=L"), which names nothing anyone
+ * can look up. The set that owns it is what the catalogue calls it. */
+function componentName(component: ComponentNode | null): string | null {
+  if (!component) return null
+  try {
+    return component.parent?.type === 'COMPONENT_SET' ? component.parent.name : component.name
+  } catch {
+    return component.name
   }
 }
 

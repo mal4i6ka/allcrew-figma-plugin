@@ -1914,13 +1914,13 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const fallback = String(prop.defaultValue).toLowerCase();
     return `${prefix}-{{ ${toVar(prop.name)}|default:'${fallback}'|lower }}`;
   }
-  function normalizedName(componentName) {
+  function normalizedName(componentName2) {
     var _a;
-    const last = (_a = componentName.split("/").pop()) != null ? _a : componentName;
+    const last = (_a = componentName2.split("/").pop()) != null ? _a : componentName2;
     return last.trim().toLowerCase();
   }
-  function matchBootstrapComponent(componentName, component, toVar) {
-    const name = normalizedName(componentName);
+  function matchBootstrapComponent(componentName2, component, toVar) {
+    const name = normalizedName(componentName2);
     if (name === "button" || name === "btn") {
       const classes = ["btn"];
       const variant2 = variantClassExpr("btn", component, VARIANT_PROP_NAMES, toVar);
@@ -2399,11 +2399,11 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     if (!parts) return null;
     return (_a = parts[partKeyForName(nodeName)]) != null ? _a : null;
   }
-  function isBootstrapComponentName(componentName) {
-    return BOOTSTRAP_COMPONENT_NAMES.includes(normalizedName(componentName));
+  function isBootstrapComponentName(componentName2) {
+    return BOOTSTRAP_COMPONENT_NAMES.includes(normalizedName(componentName2));
   }
-  function wantsVariantProp(componentName) {
-    const name = normalizedName(componentName);
+  function wantsVariantProp(componentName2) {
+    const name = normalizedName(componentName2);
     return name === "button" || name === "btn" || name === "badge" || name === "alert";
   }
   function injectTriggerAttributes(html, attributesByClass) {
@@ -23833,7 +23833,8 @@ ${scripts}`, "");
     const parts = [];
     for (const reaction of reactions) {
       const trigger = reaction.trigger;
-      const on = trigger ? (_a = spelling[trigger.type]) != null ? _a : trigger.type.toLowerCase() : "nothing";
+      let on = trigger ? (_a = spelling[trigger.type]) != null ? _a : trigger.type.toLowerCase() : "nothing";
+      if (trigger && trigger.type === "AFTER_TIMEOUT") on = `${on} ${trigger.timeout}s`;
       const actions = (_b = reaction.actions) != null ? _b : reaction.action ? [reaction.action] : [];
       for (const action of actions) {
         if (action.type === "BACK" || action.type === "CLOSE") {
@@ -24165,7 +24166,7 @@ ${scripts}`, "");
     }
   };
   async function applyStep(node, step, dry) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+    var _a, _b, _c, _d, _e, _f, _g;
     const bag = node;
     switch (step.step) {
       case "assign": {
@@ -24206,7 +24207,8 @@ ${scripts}`, "");
         const width = (_a = step.width) != null ? _a : node.width;
         const height = (_b = step.height) != null ? _b : node.height;
         if (!dry) node.resizeWithoutConstraints(width, height);
-        return { property: "size", before, after: { width: round10(width), height: round10(height) } };
+        const after = dry ? { width: round10(width), height: round10(height) } : { width: round10(node.width), height: round10(node.height) };
+        return { property: "size", before, after };
       }
       case "radius": {
         if (!("cornerRadius" in bag)) throw new Error(`a ${node.type} has no corners`);
@@ -24285,16 +24287,16 @@ ${scripts}`, "");
       case "swap": {
         const instance = asInstance(node, "a component to swap");
         const target = await componentFor(step.component);
-        const before = (_h = (_g = await instance.getMainComponentAsync()) == null ? void 0 : _g.name) != null ? _h : null;
+        const before = componentName(await instance.getMainComponentAsync());
         if (!dry) instance.swapComponent(target);
-        return { property: "swap", before, after: target.name };
+        return { property: "swap", before, after: componentName(target) };
       }
       case "properties": {
         const instance = asInstance(node, "component properties");
         const defined = instance.componentProperties;
         const { resolved, problems } = resolveProperties(step.properties, defined);
         const before = {};
-        for (const key of Object.keys(resolved)) before[humanPropertyName(key)] = (_i = defined[key]) == null ? void 0 : _i.value;
+        for (const key of Object.keys(resolved)) before[humanPropertyName(key)] = (_g = defined[key]) == null ? void 0 : _g.value;
         if (!dry && Object.keys(resolved).length > 0) {
           try {
             instance.setProperties(resolved);
@@ -24329,7 +24331,7 @@ ${scripts}`, "");
           const target = await figma.getNodeByIdAsync(id).catch(() => null);
           if (!target) throw new Error(`no node with id ${id} to link to`);
         }
-        const had = typeof holder.getReactionsAsync === "function" ? (await holder.getReactionsAsync()).length : 0;
+        const had = Array.isArray(holder.reactions) ? holder.reactions.length : 0;
         if (!dry) await holder.setReactionsAsync(step.reactions);
         return { property: "links", before: `${had} link(s)`, after: step.summary };
       }
@@ -24354,6 +24356,15 @@ ${scripts}`, "");
         }
         return { property: "parent", before, after: { id: parent.id, name: parent.name, index: step.index } };
       }
+    }
+  }
+  function componentName(component) {
+    var _a;
+    if (!component) return null;
+    try {
+      return ((_a = component.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? component.parent.name : component.name;
+    } catch (e) {
+      return component.name;
     }
   }
   function byHumanName(properties) {
@@ -25367,8 +25378,8 @@ ${scripts}`, "");
       props.data = data;
     }
     const linked = node;
-    if (typeof linked.getReactionsAsync === "function") {
-      const links = describeLinks(await linked.getReactionsAsync());
+    if (Array.isArray(linked.reactions)) {
+      const links = describeLinks(linked.reactions);
       if (links) props.links = links;
     }
     if (node.type === "INSTANCE") {
