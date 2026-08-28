@@ -24,6 +24,7 @@
 import type { OpDef } from './protocol.ts'
 import { UI_COMMANDS, type UiCommandDef } from './ui-commands.ts'
 import { DEFAULT_DIGEST_BUDGET, digestReplies } from './reply-digest.ts'
+import { beginRecording, endRecording } from './ui-post.ts'
 
 export type UiMessageRunner = (message: Record<string, unknown>) => Promise<void> | void
 
@@ -45,9 +46,6 @@ export function commandNameOf(raw: unknown): string | null {
 
 interface Capture {
   replies: unknown[]
-  /** False when this runtime would not let us wrap `postMessage` — the command still runs, the
-   * agent is just told the answer went to the panel only. */
-  installed: boolean
   /** True when we stopped waiting. The command is still running in the sandbox — we cannot
    * cancel it — but the channel is not held hostage by it. */
   timedOut: boolean
@@ -58,49 +56,20 @@ interface Capture {
 export const DEFAULT_CALL_TIMEOUT_MS = 150_000
 
 /**
- * Records what the sandbox posts to the UI while `run` is in flight, forwarding every message
- * on unchanged.
+ * Records what the sandbox posts to the UI while `run` is in flight.
  *
- * Wrapping a host method is not something to do casually, so it is done defensively: assign,
- * verify the assignment took, fall back to `defineProperty`, and give up gracefully rather
- * than fail the call. The recorder also checks a flag before recording, so even a wrapper that
- * cannot be removed afterwards degrades to a pass-through instead of leaking every future
- * message into a dead array.
+ * The recording lives in `ui-post.ts`, which every reply already goes through, because the
+ * runtime will not have its objects patched: wrapping `figma.ui.postMessage` for the duration
+ * of a call was the first design and Figma's sandbox refused it outright.
  */
 async function withCapture(run: () => Promise<void>, timeoutMs: number): Promise<Capture> {
-  const ui = figma.ui as unknown as Record<string, unknown>
-  const original = ui.postMessage
-  if (typeof original !== 'function') return { replies: [], installed: false, timedOut: false }
-
-  const replies: unknown[] = []
-  let recording = true
-  const spy = (message: unknown, options?: unknown) => {
-    if (recording) replies.push(message)
-    ;(original as (msg: unknown, options?: unknown) => void).call(figma.ui, message, options)
-  }
-
-  const hadOwn = Object.prototype.hasOwnProperty.call(ui, 'postMessage')
-  let installed = false
-  try {
-    ui.postMessage = spy
-    installed = ui.postMessage === spy
-  } catch {
-    installed = false
-  }
-  if (!installed) {
-    try {
-      Object.defineProperty(ui, 'postMessage', { value: spy, configurable: true, writable: true })
-      installed = ui.postMessage === spy
-    } catch {
-      installed = false
-    }
-  }
+  const replies = beginRecording()
 
   // A command that waits on something only a human can do would otherwise hold the one-at-a-
   // time queue for the rest of the session — every later call blocked by one wedged one. So we
   // stop waiting, hand back what was said so far, and let the orphan finish on its own: its
-  // messages still reach the panel, they are simply no longer recorded (`recording` is off) or
-  // attributed to whoever calls next.
+  // messages still reach the panel, they are simply no longer recorded, or attributed to
+  // whoever calls next.
   let timedOut = false
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<void>((resolve) => {
@@ -125,18 +94,11 @@ async function withCapture(run: () => Promise<void>, timeoutMs: number): Promise
     ])
   } finally {
     if (timer !== undefined) clearTimeout(timer)
-    recording = false
-    if (installed) {
-      try {
-        if (hadOwn) ui.postMessage = original
-        else delete ui.postMessage
-        if (ui.postMessage !== original) ui.postMessage = original
-      } catch {
-        /* The pass-through stays; it is inert now that recording is off. */
-      }
-    }
+    // Closed with the array it opened, so an abandoned call cannot silence the recording of
+    // whichever call the queue has moved on to.
+    endRecording(replies)
   }
-  return { replies, installed, timedOut }
+  return { replies, timedOut }
 }
 
 /** One call at a time. Two overlapping calls would each record the other's replies, and the
@@ -317,11 +279,9 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
                   'mid-way through a later call can show up in that call\'s replies. Check the result with a ' +
                   'follow-up read rather than repeating this command.',
               }
-            : !capture.installed
-              ? { captured: false, note: 'this runtime would not let the replies be recorded — they went to the panel only' }
-              : digest.replies.length === 0
-                ? { note: 'the command posted no reply — some only store a setting, and answer nothing' }
-                : {}),
+            : digest.replies.length === 0
+              ? { note: 'the command posted no reply — some only store a setting, and answer nothing' }
+              : {}),
         }
       },
     },

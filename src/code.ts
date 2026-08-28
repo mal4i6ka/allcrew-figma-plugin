@@ -85,6 +85,7 @@ import { buildComponentsMd, COMPONENTS_FILE, type ComponentDoc, type ComponentPr
 import { buildTokenEntries } from './targets/design-md/model'
 import { deliverPackage } from './delivery'
 import { agentManifest, handleAgentRequest, setGates } from './agent/listener.ts'
+import { postToUi } from './agent/ui-post.ts'
 import { setUiMessageRunner } from './agent/plugin-ops.ts'
 import { UI_COMMANDS } from './agent/ui-commands.ts'
 
@@ -234,13 +235,13 @@ async function readRemapSource(source: RemapSource): Promise<ResolvedPalette> {
       return { swatches: swatchesFromPalette(generatePalette(settings)), warnings: [] }
     }
     case 'selection': {
-      figma.ui.postMessage({ type: 'REMAP_PROGRESS', label: 'reading the selection…' })
+      postToUi({ type: 'REMAP_PROGRESS', label: 'reading the selection…' })
       const result = await swatchesFromSelection()
       return { swatches: result.swatches, warnings: result.warnings }
     }
     case 'library': {
       const result = await swatchesFromLibrary(source.key, source.mode ?? null, (label) =>
-        figma.ui.postMessage({ type: 'REMAP_PROGRESS', label })
+        postToUi({ type: 'REMAP_PROGRESS', label })
       )
       return { swatches: result.swatches, warnings: result.warnings }
     }
@@ -259,12 +260,12 @@ async function planRemap(
 ): Promise<{ plan: RemapPlan; palette: ReturnType<typeof parsePaletteInput>['swatches'] }> {
   if (!remapInventory) {
     remapInventory = await readRemapInventory(
-      (label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }),
+      (label) => postToUi({ type: 'REMAP_PROGRESS', label }),
       remapDepth
     )
   }
   const resolved = await resolveRemapSource(source)
-  figma.ui.postMessage({ type: 'REMAP_PROGRESS', label: `matching ${resolved.swatches.length} new colors…` })
+  postToUi({ type: 'REMAP_PROGRESS', label: `matching ${resolved.swatches.length} new colors…` })
   const plan = buildRemapPlan({
     sites: remapInventory.sites,
     palette: resolved.swatches,
@@ -714,7 +715,7 @@ async function collectComponentDocs(
 
     docs.push(doc)
     if (withPreviews) {
-      figma.ui.postMessage({ type: 'COMPONENT_PREVIEW_PROGRESS', done: docs.length, total: targets.length })
+      postToUi({ type: 'COMPONENT_PREVIEW_PROGRESS', done: docs.length, total: targets.length })
     }
     if (docs.length % 10 === 0) await yieldToHost()
   }
@@ -885,14 +886,14 @@ Promise.all([
   // Writes cannot outlive reads, the same rule the panel enforces, applied to what was stored
   // in case the two ever drift apart.
   options.agent = { ...options.agent, read: remembered.read, write: remembered.read && remembered.write }
-  figma.ui.postMessage({
+  postToUi({
     type: 'EXPORT_OPTIONS',
     options,
     presets: EXPORT_PRESETS,
     userPresets: normalizeUserPresets(storedPresets),
   })
   const paletteSettings = normalizePaletteSettings(storedPalette)
-  figma.ui.postMessage({
+  postToUi({
     type: 'PALETTE_PREVIEW',
     palette: generatePalette(paletteSettings),
     settings: paletteSettings,
@@ -910,7 +911,7 @@ function postSelectionToUi(): void {
   if (selection.length === 0) return
   const node = selection[0]
   const top = topLevelAncestorOf(node)
-  figma.ui.postMessage({
+  postToUi({
     type: 'SELECTION_CHANGED',
     nodeId: node.id,
     isText: node.type === 'TEXT',
@@ -963,9 +964,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           const reason = componentDocs.docs.find((doc) => doc.previewError)?.previewError
           artifacts.summary.previewError = reason ?? 'no components found to capture'
         }
-        figma.ui.postMessage({ type: 'TOKENS_RESULT', summary: artifacts.summary, files: artifacts.files, options })
+        postToUi({ type: 'TOKENS_RESULT', summary: artifacts.summary, files: artifacts.files, options })
       } catch (err) {
-        figma.ui.postMessage({ type: 'TOKENS_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'TOKENS_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
@@ -983,9 +984,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           onChange: false,
           onOpen: false,
         })
-        figma.ui.postMessage({ type: 'DELIVERY_RESULT', ...result })
+        postToUi({ type: 'DELIVERY_RESULT', ...result })
       } catch (err) {
-        figma.ui.postMessage({ type: 'DELIVERY_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'DELIVERY_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
@@ -995,11 +996,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         const stored = await figma.clientStorage.getAsync('exportOptions')
         const report = await generateTypographyVariables(normalizeExportOptions(stored))
         figma.notify(`Created ${report.created} variables · bound ${report.bound} field(s)` + (report.failed ? ` · ${report.failed} failed` : ''))
-        figma.ui.postMessage({ type: 'TYPOGRAPHY_GENERATED', report })
+        postToUi({ type: 'TYPOGRAPHY_GENERATED', report })
       } catch (err) {
         const message = String((err as Error)?.message || err)
         figma.notify('Generate failed: ' + message)
-        figma.ui.postMessage({ type: 'TYPOGRAPHY_ERROR', message })
+        postToUi({ type: 'TYPOGRAPHY_ERROR', message })
       }
       break
     }
@@ -1009,13 +1010,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent read: recompute a palette from settings — pure maths, nothing is written
       // Pure math, so it answers immediately — the UI redraws its preview on every edit.
       const settings = normalizePaletteSettings(msg.settings)
-      figma.ui.postMessage({ type: 'PALETTE_PREVIEW', palette: generatePalette(settings), settings })
+      postToUi({ type: 'PALETTE_PREVIEW', palette: generatePalette(settings), settings })
       break
     }
     case 'SUGGEST_SPECTRUM': {
       // @agent read: suggest a harmonious spectrum for the current settings
       const settings = normalizePaletteSettings(msg.settings)
-      figma.ui.postMessage({ type: 'SPECTRUM_SUGGESTED', spectrum: suggestHarmoniousSpectrum(settings) })
+      postToUi({ type: 'SPECTRUM_SUGGESTED', spectrum: suggestHarmoniousSpectrum(settings) })
       break
     }
     case 'FIX_PALETTE': {
@@ -1025,7 +1026,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       const settings = applyPaletteFix(normalizePaletteSettings(msg.settings), fix)
       await figma.clientStorage.setAsync('paletteSettings', settings)
       // Unlike a preview, this one carries settings the UI must adopt — the fix changed them.
-      figma.ui.postMessage({ type: 'PALETTE_FIXED', palette: generatePalette(settings), settings })
+      postToUi({ type: 'PALETTE_FIXED', palette: generatePalette(settings), settings })
       break
     }
     case 'SAVE_PALETTE_SETTINGS': {
@@ -1048,11 +1049,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         if (report.themeRoles) parts.push(`${report.themeRoles} theme roles`)
         if (report.swatches) parts.push(`${report.swatches} swatches`)
         figma.notify(parts.join(' · ') || 'Nothing selected to generate')
-        figma.ui.postMessage({ type: 'PALETTE_APPLIED', report })
+        postToUi({ type: 'PALETTE_APPLIED', report })
       } catch (err) {
         const message = String((err as Error)?.message || err)
         figma.notify('Palette failed: ' + message)
-        figma.ui.postMessage({ type: 'PALETTE_ERROR', message })
+        postToUi({ type: 'PALETTE_ERROR', message })
       }
       break
     }
@@ -1062,11 +1063,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent read: inventory every colour in the document — variables, styles, gradient stops, loose paints
       try {
         remapInventory = await readRemapInventory(
-          (label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }),
+          (label) => postToUi({ type: 'REMAP_PROGRESS', label }),
           msg.depth ?? 'document'
         )
         remapDepth = msg.depth ?? 'document'
-        figma.ui.postMessage({
+        postToUi({
           type: 'REMAP_INVENTORY',
           stats: remapInventory.stats,
           modes: remapInventory.modes,
@@ -1077,23 +1078,23 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           canRevertRebind: hasRebindSnapshot(),
         })
       } catch (err) {
-        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
     case 'REMAP_LIST_LIBRARIES': {
       // @agent read: list the published library collections a new palette could be read from
       const result = await listLibraryCollections()
-      figma.ui.postMessage({ type: 'REMAP_LIBRARIES', collections: result.collections, warnings: result.warnings })
+      postToUi({ type: 'REMAP_LIBRARIES', collections: result.collections, warnings: result.warnings })
       break
     }
     case 'REMAP_PREVIEW': {
       // @agent read: build the old-to-new colour mapping and return the table, structurally matched
       try {
         const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
-        figma.ui.postMessage({ type: 'REMAP_PLAN', ...remapPlanView(plan), paletteSize: palette.length })
+        postToUi({ type: 'REMAP_PLAN', ...remapPlanView(plan), paletteSize: palette.length })
       } catch (err) {
-        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
@@ -1106,7 +1107,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         // afterwards the old colors are gone and there is nothing left to compare against.
         const audit = remapInventory ? auditContrast(plan, remapInventory.adjacency) : { findings: [], checked: 0, improved: 0 }
         const report = await applyRemap(plan, options, (label) =>
-          figma.ui.postMessage({ type: 'REMAP_PROGRESS', label })
+          postToUi({ type: 'REMAP_PROGRESS', label })
         )
         // The document moved under the cached reading: usage counts and adjacency still hold,
         // but every value did not, so the next preview must scan again. A palette read off the
@@ -1121,7 +1122,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             .filter(Boolean)
             .join(' · ') || 'Nothing to write'
         )
-        figma.ui.postMessage({
+        postToUi({
           type: 'REMAP_APPLIED',
           report,
           audit: {
@@ -1135,19 +1136,19 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       } catch (err) {
         const message = String((err as Error)?.message || err)
         figma.notify('Remap failed: ' + message, { error: true })
-        figma.ui.postMessage({ type: 'REMAP_ERROR', message })
+        postToUi({ type: 'REMAP_ERROR', message })
       }
       break
     }
     case 'REMAP_REVERT': {
       // @agent write: restore the values, names and paints the last remap replaced
       try {
-        const report = await revertRemap((label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }))
+        const report = await revertRemap((label) => postToUi({ type: 'REMAP_PROGRESS', label }))
         remapInventory = null
         figma.notify(`Reverted ${report.values} values` + (report.names ? ` and ${report.names} names` : ''))
-        figma.ui.postMessage({ type: 'REMAP_REVERTED', report, canRevert: hasRemapSnapshot() })
+        postToUi({ type: 'REMAP_REVERTED', report, canRevert: hasRemapSnapshot() })
       } catch (err) {
-        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
@@ -1162,7 +1163,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           throw new Error('rebinding needs the new palette read from a library — its variable keys are the destination')
         }
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
-        const progress = (label: string) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label })
+        const progress = (label: string) => postToUi({ type: 'REMAP_PROGRESS', label })
         const rebindOptions = { scope: msg.scope ?? 'document' }
         const report =
           msg.type === 'REMAP_REBIND_APPLY'
@@ -1173,7 +1174,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           remapInventory = null
           figma.notify(`Rebound: ${report.summary}`)
         }
-        figma.ui.postMessage({
+        postToUi({
           type: msg.type === 'REMAP_REBIND_APPLY' ? 'REMAP_REBOUND' : 'REMAP_REBIND_PLAN',
           counts: report.counts,
           summary: report.summary,
@@ -1181,17 +1182,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           canRevertRebind: hasRebindSnapshot(),
         })
       } catch (err) {
-        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
     case 'REMAP_REBIND_REVERT': {
       // @agent write: undo the last rebind
       try {
-        const report = await revertRebind((label) => figma.ui.postMessage({ type: 'REMAP_PROGRESS', label }))
+        const report = await revertRebind((label) => postToUi({ type: 'REMAP_PROGRESS', label }))
         remapInventory = null
         figma.notify(`Rebind reverted: ${report.summary}`)
-        figma.ui.postMessage({
+        postToUi({
           type: 'REMAP_REBIND_REVERTED',
           counts: report.counts,
           summary: report.summary,
@@ -1199,7 +1200,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           canRevertRebind: hasRebindSnapshot(),
         })
       } catch (err) {
-        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
@@ -1207,12 +1208,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent write: draw the standardised old/new swatch board on canvas, replacing the one drawn last time
       try {
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
-        figma.ui.postMessage({ type: 'REMAP_PROGRESS', label: 'drawing the board…' })
+        postToUi({ type: 'REMAP_PROGRESS', label: 'drawing the board…' })
         const report = await drawRemapBoard(plan)
         figma.notify(report.rows ? `Board: ${report.rows} pairs on this page` : 'Board: nothing moves')
-        figma.ui.postMessage({ type: 'REMAP_BOARD_DRAWN', report })
+        postToUi({ type: 'REMAP_BOARD_DRAWN', report })
       } catch (err) {
-        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
@@ -1224,9 +1225,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         figma.notify(
           report.restored ? `Restored ${report.restored} name(s) from legacy/` : 'Nothing of this plugin’s to restore'
         )
-        figma.ui.postMessage({ type: 'REMAP_UNPARKED', report })
+        postToUi({ type: 'REMAP_UNPARKED', report })
       } catch (err) {
-        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
@@ -1235,14 +1236,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       try {
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind })
-        figma.ui.postMessage({
+        postToUi({
           type: 'REMAP_MAPPING',
           format: msg.format,
           name: msg.format === 'csv' ? 'mapping.csv' : 'mapping.json',
           content: msg.format === 'csv' ? toCsv(mapping) : JSON.stringify(mapping, null, 2),
         })
       } catch (err) {
-        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
@@ -1274,7 +1275,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           }
         })
 
-        figma.ui.postMessage({
+        postToUi({
           type: 'REMAP_REWRITTEN',
           files,
           replaced,
@@ -1282,7 +1283,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           warnings: [...warnings],
         })
       } catch (err) {
-        figma.ui.postMessage({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
+        postToUi({ type: 'REMAP_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
@@ -1291,7 +1292,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'READ_VARIABLES': {
       // @agent read: the raw variable snapshot: collections, modes, values, aliases
       const data = await readAllVariables()
-      figma.ui.postMessage({ type: 'VARIABLES_SNAPSHOT', data })
+      postToUi({ type: 'VARIABLES_SNAPSHOT', data })
       break
     }
     case 'EMIT_TOKENS': {
@@ -1301,7 +1302,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         figma.clientStorage.getAsync('exportOptions'),
       ])
       const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored), readRenameMap())).css
-      figma.ui.postMessage({ type: 'TOKENS_CSS', css })
+      postToUi({ type: 'TOKENS_CSS', css })
       break
     }
     case 'SYNC_BREAKPOINT_FRAMES': {
@@ -1319,16 +1320,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           resized++
         }
       }
-      figma.ui.postMessage({ type: 'BREAKPOINT_FRAMES_SYNCED', resized, tokens: Object.fromEntries(breakpointTokens) })
+      postToUi({ type: 'BREAKPOINT_FRAMES_SYNCED', resized, tokens: Object.fromEntries(breakpointTokens) })
       break
     }
     case 'GENERATE_BREAKPOINT_COLLECTION': {
       // @agent write: create the breakpoint variable collection
       try {
         const result = await generateBreakpointCollection(msg.breakpoints)
-        figma.ui.postMessage({ type: 'BREAKPOINT_COLLECTION_GENERATED', ...result })
+        postToUi({ type: 'BREAKPOINT_COLLECTION_GENERATED', ...result })
       } catch (err) {
-        figma.ui.postMessage({
+        postToUi({
           type: 'BREAKPOINT_COLLECTION_ERROR',
           message: err instanceof Error ? err.message : String(err),
         })
@@ -1349,7 +1350,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
       await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
       const { html, css } = await emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile: msg.cssFile })
-      figma.ui.postMessage({ type: 'DJANGO_TEMPLATE', html, css })
+      postToUi({ type: 'DJANGO_TEMPLATE', html, css })
       break
     }
     case 'EMIT_DJANGO_PROJECT': {
@@ -1408,7 +1409,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       }
       const staticFiles = buildRegenStaticFiles({ interactionsCss, interactionsJs, tokensCss, bootstrapTokensCss, themeCss })
 
-      figma.ui.postMessage({ type: 'DJANGO_PROJECT_PLAN', css, cssFile: msg.cssFile, plan, staticFiles })
+      postToUi({ type: 'DJANGO_PROJECT_PLAN', css, cssFile: msg.cssFile, plan, staticFiles })
       break
     }
     case 'SCAN': {
@@ -1443,7 +1444,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
       }
 
-      figma.ui.postMessage({ type: 'SCAN_RESULT', frames, textNodes, lint, nodeCount: index.size, videoAssets })
+      postToUi({ type: 'SCAN_RESULT', frames, textNodes, lint, nodeCount: index.size, videoAssets })
       postSelectionToUi()
       break
     }
@@ -1452,7 +1453,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       const frames = figma.currentPage.children
         .filter((node): node is FrameNode => node.type === 'FRAME')
         .map((node) => ({ id: node.id, name: node.name }))
-      figma.ui.postMessage({
+      postToUi({
         type: 'SCAN_TOP_RESULT',
         frames,
         topLevelCount: figma.currentPage.children.length,
@@ -1477,7 +1478,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       const total = msg.findings.length
       const results: LintFixResult[] = []
       const progress = (label?: string) =>
-        figma.ui.postMessage({ type: 'LINT_FIX_PROGRESS', done: results.length, total, label })
+        postToUi({ type: 'LINT_FIX_PROGRESS', done: results.length, total, label })
       const ctx = await buildFixContext(progress)
       // The UI stays on "Fixing…" until LINT_FIX_RESULT arrives — post it no matter what, or a
       // single unexpected throw leaves the plugin visibly stuck forever.
@@ -1506,7 +1507,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
       } finally {
         figma.commitUndo()
-        figma.ui.postMessage({ type: 'LINT_FIX_RESULT', results })
+        postToUi({ type: 'LINT_FIX_RESULT', results })
       }
       break
     }
@@ -1519,7 +1520,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       const html = renderAnnotationPanel(form, {
         boundVariableName: resolved.source === 'variable' ? resolved.variableName : undefined,
       })
-      figma.ui.postMessage({ type: 'ANNOTATION_PANEL', nodeId: msg.nodeId, html })
+      postToUi({ type: 'ANNOTATION_PANEL', nodeId: msg.nodeId, html })
       break
     }
     case 'SET_ANNOTATION': {
@@ -1528,9 +1529,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       if (!node || node.type !== 'TEXT') break
       try {
         applyAnnotationForm(node, msg.form)
-        figma.ui.postMessage({ type: 'ANNOTATION_SAVED', nodeId: msg.nodeId })
+        postToUi({ type: 'ANNOTATION_SAVED', nodeId: msg.nodeId })
       } catch (error) {
-        figma.ui.postMessage({
+        postToUi({
           type: 'ANNOTATION_ERROR',
           nodeId: msg.nodeId,
           message: error instanceof Error ? error.message : String(error),
@@ -1547,7 +1548,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // The command table rides along with the op manifest: the skill is rendered in the UI,
       // and a channel that can drive the whole panel should say so in the document it hands
       // the agent rather than make it discover that by asking.
-      figma.ui.postMessage({
+      postToUi({
         type: 'AGENT_GATES',
         ...gates,
         ops: agentManifest(),
@@ -1562,7 +1563,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // Never throws: a rejected or failed op comes back as `{ ok: false, error }` so the
       // bridge can answer the waiting CLI instead of leaving it on a timeout.
       const response = await handleAgentRequest({ id: msg.id, op: msg.op, params: msg.params })
-      figma.ui.postMessage({ type: 'AGENT_RESPONSE', ...response })
+      postToUi({ type: 'AGENT_RESPONSE', ...response })
       break
     }
     case 'SAVE_EXPORT_OPTIONS': {
@@ -1576,7 +1577,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       const stored = normalizeUserPresets(await figma.clientStorage.getAsync('userPresets'))
       const updated = upsertUserPreset(stored, msg.label, msg.values)
       await figma.clientStorage.setAsync('userPresets', updated)
-      figma.ui.postMessage({ type: 'USER_PRESETS', userPresets: updated })
+      postToUi({ type: 'USER_PRESETS', userPresets: updated })
       break
     }
     case 'DELETE_USER_PRESET': {
@@ -1584,7 +1585,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       const stored = normalizeUserPresets(await figma.clientStorage.getAsync('userPresets'))
       const updated = stored.filter((preset) => preset.id !== msg.id)
       await figma.clientStorage.setAsync('userPresets', updated)
-      figma.ui.postMessage({ type: 'USER_PRESETS', userPresets: updated })
+      postToUi({ type: 'USER_PRESETS', userPresets: updated })
       break
     }
     case 'GENERATE_KIT': {
@@ -1595,14 +1596,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           .filter((variable) => variable.resolvedType === 'COLOR')
           .map((variable) => ({ id: variable.id, name: variable.name }))
         const report = await generateDesignKit(colorVariables)
-        figma.ui.postMessage({ type: 'KIT_GENERATED', report })
+        postToUi({ type: 'KIT_GENERATED', report })
         figma.notify(
           `Kit: ${report.components} components, ${report.variants} variants` +
             (report.slots > 0 ? `, ${report.slots} slots` : '') +
             (report.bound > 0 ? ` — ${report.bound} bound to tokens` : ' — no matching tokens, using defaults')
         )
       } catch (error) {
-        figma.ui.postMessage({ type: 'KIT_ERROR', message: error instanceof Error ? error.message : String(error) })
+        postToUi({ type: 'KIT_ERROR', message: error instanceof Error ? error.message : String(error) })
       }
       break
     }
@@ -1614,7 +1615,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         const textNodes: TextNode[] = []
         for (const node of index.values()) if (node.type === 'TEXT') textNodes.push(node)
         const result = await importTranslations(msg.content, msg.format, textNodes)
-        figma.ui.postMessage({
+        postToUi({
           type: 'IMPORT_TRANSLATIONS_RESULT',
           applied: result.applied.length,
           skipped: result.skipped.map((skip) => ({ reason: skip.reason, msgid: skip.entry.msgid })),
@@ -1625,7 +1626,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             (result.overflows.length > 0 ? `, ${result.overflows.length} overflow(s)` : '')
         )
       } catch (error) {
-        figma.ui.postMessage({
+        postToUi({
           type: 'IMPORT_TRANSLATIONS_ERROR',
           message: error instanceof Error ? error.message : String(error),
         })
@@ -1638,7 +1639,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       const roots = rootsForScope(scope)
       let stage = 'scan'
       try {
-        figma.ui.postMessage({ type: 'EXPORT_PROGRESS', stage: 'scan', percent: 10 })
+        postToUi({ type: 'EXPORT_PROGRESS', stage: 'scan', percent: 10 })
         const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions'))
         const [irNodes, sceneNodesById, snapshot] = await Promise.all([
           Promise.all(roots.map((root) => serializeNode(root))),
@@ -1652,11 +1653,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         if (modules.templates) await addReactionDestinationsToScene(pageRoots, sceneNodesById)
 
         stage = 'i18n'
-        figma.ui.postMessage({ type: 'EXPORT_PROGRESS', stage: 'i18n', percent: 30 })
+        postToUi({ type: 'EXPORT_PROGRESS', stage: 'i18n', percent: 30 })
         const entries = modules.i18n ? await extractAllStrings(roots) : []
 
         stage = 'templates'
-        figma.ui.postMessage({ type: 'EXPORT_PROGRESS', stage: 'templates', percent: 55 })
+        postToUi({ type: 'EXPORT_PROGRESS', stage: 'templates', percent: 55 })
         const assetSourcesById = sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>
         if (modules.templates) await annotateVectorLeaves(nodes, assetSourcesById)
         const videoBytesById = modules.templates ? await annotateVideoFills(nodes, assetSourcesById) : undefined
@@ -1689,7 +1690,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         ])
 
         stage = 'assets'
-        figma.ui.postMessage({ type: 'EXPORT_PROGRESS', stage: 'assets', percent: 80 })
+        postToUi({ type: 'EXPORT_PROGRESS', stage: 'assets', percent: 80 })
         const po = modules.i18n && entries.length > 0 ? emitPo(entries) : undefined
 
         const files: Record<string, ExportFileContent> = project
@@ -1901,11 +1902,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           )
         } catch (error) { console.warn('[export] saveVersionHistoryAsync skipped', error) }
 
-        figma.ui.postMessage({ type: 'EXPORT_PROGRESS', stage: 'done', percent: 100 })
-        figma.ui.postMessage({ type: 'FILES_READY', files, manualAssets })
+        postToUi({ type: 'EXPORT_PROGRESS', stage: 'done', percent: 100 })
+        postToUi({ type: 'FILES_READY', files, manualAssets })
       } catch (error) {
         console.error(`[export] failed during "${stage}"`, error)
-        figma.ui.postMessage({
+        postToUi({
           type: 'EXPORT_ERROR',
           stage,
           message: error instanceof Error ? error.message : String(error),

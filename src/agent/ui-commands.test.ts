@@ -154,6 +154,33 @@ test('a source with no handler yields nothing rather than guessing', () => {
   assert.deepEqual(extractUiCommands('const x = 1'), [])
 })
 
+test('a nested object type survives whole, and an over-long one is marked as cut', () => {
+  const commands = extractUiCommands(`
+type PluginMessage =
+  | { type: 'DOCS'; docs?: { componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number } }
+  | { type: 'HUGE'; thing: { ${'a: string; '.repeat(20)}} }
+
+async function handleUiMessage(msg: PluginMessage): Promise<void> {
+  switch (msg.type) {
+    case 'DOCS': {
+      // @agent read: reads
+      break
+    }
+    case 'HUGE': {
+      // @agent read: reads
+      break
+    }
+  }
+}
+  `)
+  // A type sliced mid-way reads as a complete annotation missing its closing brace.
+  assert.equal(
+    commands[0].params[0].type,
+    '{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }'
+  )
+  assert.ok(commands[1].params[0].type!.endsWith('…'), 'a cut type must say it was cut')
+})
+
 /* ------------------------------------------------------- against the real plugin */
 
 test("every command in the plugin's own switch is classified", () => {

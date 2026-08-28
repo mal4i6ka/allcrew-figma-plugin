@@ -20980,7 +20980,7 @@ ${scripts}`, "");
   ];
 
   // src/agent/ui-commands.ts
-  var INJECTED = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown"},{"name":"fix","required":true,"type":"unknown"}],"replies":["PALETTE_FIXED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","params":[{"name":"depth","required":false,"type":"ScanDepth"}],"replies":["REMAP_PROGRESS","REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board on canvas, replacing the one drawn last time","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"format","required":true,"type":"'json' | 'csv'"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>"},{"name":"snap","required":false,"type":"number"},{"name":"byName","required":false,"type":"boolean"},{"name":"mode","required":false,"type":"string | null"}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope"},{"name":"lintMaxDepth","required":false,"type":"number"}],"replies":["SCAN_RESULT"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":[]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":["ANNOTATION_PANEL"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string"},{"name":"form","required":true,"type":"AnnotationFormState"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean"},{"name":"write","required":true,"type":"boolean"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string"},{"name":"op","required":true,"type":"string"},{"name":"params","required":false,"type":"unknown"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string"},{"name":"values","required":true,"type":"unknown"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string"}],"replies":["USER_PRESETS"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string"},{"name":"format","required":true,"type":"ImportFormat"},{"name":"scope","required":true,"type":"ExportScope"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope"},{"name":"modules","required":true,"type":"ExportModules"},{"name":"cssFile","required":true,"type":"string"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
+  var INJECTED = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }"}],"replies":[]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string"}],"replies":[]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":[]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":[]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":[]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown"},{"name":"fix","required":true,"type":"unknown"}],"replies":[]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>"}],"replies":[]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","params":[{"name":"depth","required":false,"type":"ScanDepth"}],"replies":[]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":[]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":[]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":[]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":[]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope"}],"replies":[]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope"}],"replies":[]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":[]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board on canvas, replacing the one drawn last time","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":[]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":[]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"format","required":true,"type":"'json' | 'csv'"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":[]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource"},{"name":"options","required":false,"type":"Partial<RemapOptions>"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>"},{"name":"snap","required":false,"type":"number"},{"name":"byName","required":false,"type":"boolean"},{"name":"mode","required":false,"type":"string | null"}],"replies":[]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","params":[],"replies":[]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","params":[],"replies":[]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":[]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>"}],"replies":[]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope"}],"replies":[]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":[]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope"},{"name":"lintMaxDepth","required":false,"type":"number"}],"replies":[]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":[]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":[]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]"}],"replies":[]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":[]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string"},{"name":"form","required":true,"type":"AnnotationFormState"}],"replies":[]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean"},{"name":"write","required":true,"type":"boolean"}],"replies":[]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string"},{"name":"op","required":true,"type":"string"},{"name":"params","required":false,"type":"unknown"}],"replies":[]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string"},{"name":"values","required":true,"type":"unknown"}],"replies":[]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string"}],"replies":[]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":[]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string"},{"name":"format","required":true,"type":"ImportFormat"},{"name":"scope","required":true,"type":"ExportScope"}],"replies":[]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope"},{"name":"modules","required":true,"type":"ExportModules"},{"name":"cssFile","required":true,"type":"string"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":[]}]`;
   var UI_COMMANDS = (() => {
     if (!INJECTED.startsWith("[")) return [];
     try {
@@ -21112,6 +21112,21 @@ ${scripts}`, "");
     return isSafeFileName(candidate) ? candidate : null;
   }
 
+  // src/agent/ui-post.ts
+  var recorder = null;
+  function postToUi(message, options) {
+    if (recorder) recorder.push(message);
+    figma.ui.postMessage(message, options);
+  }
+  function beginRecording() {
+    const sink = [];
+    recorder = sink;
+    return sink;
+  }
+  function endRecording(sink) {
+    if (recorder === sink) recorder = null;
+  }
+
   // src/agent/plugin-ops.ts
   var runner = null;
   function setUiMessageRunner(next) {
@@ -21124,31 +21139,7 @@ ${scripts}`, "");
   }
   var DEFAULT_CALL_TIMEOUT_MS = 15e4;
   async function withCapture(run, timeoutMs) {
-    const ui = figma.ui;
-    const original = ui.postMessage;
-    if (typeof original !== "function") return { replies: [], installed: false, timedOut: false };
-    const replies = [];
-    let recording = true;
-    const spy = (message, options) => {
-      if (recording) replies.push(message);
-      original.call(figma.ui, message, options);
-    };
-    const hadOwn = Object.prototype.hasOwnProperty.call(ui, "postMessage");
-    let installed = false;
-    try {
-      ui.postMessage = spy;
-      installed = ui.postMessage === spy;
-    } catch (e) {
-      installed = false;
-    }
-    if (!installed) {
-      try {
-        Object.defineProperty(ui, "postMessage", { value: spy, configurable: true, writable: true });
-        installed = ui.postMessage === spy;
-      } catch (e) {
-        installed = false;
-      }
-    }
+    const replies = beginRecording();
     let timedOut = false;
     let timer;
     const deadline = new Promise((resolve) => {
@@ -21170,17 +21161,9 @@ ${scripts}`, "");
       ]);
     } finally {
       if (timer !== void 0) clearTimeout(timer);
-      recording = false;
-      if (installed) {
-        try {
-          if (hadOwn) ui.postMessage = original;
-          else delete ui.postMessage;
-          if (ui.postMessage !== original) ui.postMessage = original;
-        } catch (e) {
-        }
-      }
+      endRecording(replies);
     }
-    return { replies, installed, timedOut };
+    return { replies, timedOut };
   }
   var queue = Promise.resolve();
   function serialize(work) {
@@ -21306,7 +21289,7 @@ ${scripts}`, "");
           }), digest.collapsed ? { collapsed: digest.collapsed } : {}), digest.files ? { files: digest.files } : {}), digest.truncated ? { truncated: true } : {}), ignored.length > 0 ? { ignoredParams: ignored } : {}), capture.timedOut ? {
             stillRunning: true,
             note: `stopped waiting after ${params.timeoutMs}ms \u2014 the command is still running in the plugin. Its remaining replies are no longer attributed to this call: they reach the panel, and one arriving mid-way through a later call can show up in that call's replies. Check the result with a follow-up read rather than repeating this command.`
-          } : !capture.installed ? { captured: false, note: "this runtime would not let the replies be recorded \u2014 they went to the panel only" } : digest.replies.length === 0 ? { note: "the command posted no reply \u2014 some only store a setting, and answer nothing" } : {});
+          } : digest.replies.length === 0 ? { note: "the command posted no reply \u2014 some only store a setting, and answer nothing" } : {});
         }
       }
     ];
@@ -22822,7 +22805,7 @@ ${scripts}`, "");
     }
   }
   function report(op, ok, ms, error) {
-    figma.ui.postMessage({ type: "AGENT_ACTIVITY", op, ok, ms, error });
+    postToUi({ type: "AGENT_ACTIVITY", op, ok, ms, error });
   }
 
   // src/code.ts
@@ -22861,7 +22844,7 @@ ${scripts}`, "");
         return { swatches: swatchesFromPalette(generatePalette(settings)), warnings: [] };
       }
       case "selection": {
-        figma.ui.postMessage({ type: "REMAP_PROGRESS", label: "reading the selection\u2026" });
+        postToUi({ type: "REMAP_PROGRESS", label: "reading the selection\u2026" });
         const result = await swatchesFromSelection();
         return { swatches: result.swatches, warnings: result.warnings };
       }
@@ -22869,7 +22852,7 @@ ${scripts}`, "");
         const result = await swatchesFromLibrary(
           source.key,
           (_a = source.mode) != null ? _a : null,
-          (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 })
+          (label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 })
         );
         return { swatches: result.swatches, warnings: result.warnings };
       }
@@ -22882,12 +22865,12 @@ ${scripts}`, "");
   async function planRemap(source, options, overrides, excluded) {
     if (!remapInventory) {
       remapInventory = await readRemapInventory(
-        (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }),
+        (label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 }),
         remapDepth
       );
     }
     const resolved = await resolveRemapSource(source);
-    figma.ui.postMessage({ type: "REMAP_PROGRESS", label: `matching ${resolved.swatches.length} new colors\u2026` });
+    postToUi({ type: "REMAP_PROGRESS", label: `matching ${resolved.swatches.length} new colors\u2026` });
     const plan = buildRemapPlan({
       sites: remapInventory.sites,
       palette: resolved.swatches,
@@ -23268,7 +23251,7 @@ ${scripts}`, "");
       }
       docs.push(doc);
       if (withPreviews) {
-        figma.ui.postMessage({ type: "COMPONENT_PREVIEW_PROGRESS", done: docs.length, total: targets.length });
+        postToUi({ type: "COMPONENT_PREVIEW_PROGRESS", done: docs.length, total: targets.length });
       }
       if (docs.length % 10 === 0) await yieldToHost();
     }
@@ -23408,14 +23391,14 @@ ${scripts}`, "");
     const options = normalizeExportOptions(storedOptions);
     const remembered = await gatesFor();
     options.agent = __spreadProps(__spreadValues({}, options.agent), { read: remembered.read, write: remembered.read && remembered.write });
-    figma.ui.postMessage({
+    postToUi({
       type: "EXPORT_OPTIONS",
       options,
       presets: EXPORT_PRESETS,
       userPresets: normalizeUserPresets(storedPresets)
     });
     const paletteSettings = normalizePaletteSettings(storedPalette);
-    figma.ui.postMessage({
+    postToUi({
       type: "PALETTE_PREVIEW",
       palette: generatePalette(paletteSettings),
       settings: paletteSettings
@@ -23431,7 +23414,7 @@ ${scripts}`, "");
     if (selection.length === 0) return;
     const node = selection[0];
     const top = topLevelAncestorOf(node);
-    figma.ui.postMessage({
+    postToUi({
       type: "SELECTION_CHANGED",
       nodeId: node.id,
       isText: node.type === "TEXT",
@@ -23458,9 +23441,9 @@ ${scripts}`, "");
             const reason = (_b = componentDocs.docs.find((doc) => doc.previewError)) == null ? void 0 : _b.previewError;
             artifacts.summary.previewError = reason != null ? reason : "no components found to capture";
           }
-          figma.ui.postMessage({ type: "TOKENS_RESULT", summary: artifacts.summary, files: artifacts.files, options });
+          postToUi({ type: "TOKENS_RESULT", summary: artifacts.summary, files: artifacts.files, options });
         } catch (err) {
-          figma.ui.postMessage({ type: "TOKENS_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "TOKENS_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
@@ -23477,9 +23460,9 @@ ${scripts}`, "");
             onChange: false,
             onOpen: false
           });
-          figma.ui.postMessage(__spreadValues({ type: "DELIVERY_RESULT" }, result));
+          postToUi(__spreadValues({ type: "DELIVERY_RESULT" }, result));
         } catch (err) {
-          figma.ui.postMessage({ type: "DELIVERY_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "DELIVERY_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
@@ -23488,23 +23471,23 @@ ${scripts}`, "");
           const stored = await figma.clientStorage.getAsync("exportOptions");
           const report2 = await generateTypographyVariables(normalizeExportOptions(stored));
           figma.notify(`Created ${report2.created} variables \xB7 bound ${report2.bound} field(s)` + (report2.failed ? ` \xB7 ${report2.failed} failed` : ""));
-          figma.ui.postMessage({ type: "TYPOGRAPHY_GENERATED", report: report2 });
+          postToUi({ type: "TYPOGRAPHY_GENERATED", report: report2 });
         } catch (err) {
           const message = String((err == null ? void 0 : err.message) || err);
           figma.notify("Generate failed: " + message);
-          figma.ui.postMessage({ type: "TYPOGRAPHY_ERROR", message });
+          postToUi({ type: "TYPOGRAPHY_ERROR", message });
         }
         break;
       }
       /* ---- DS Tools target ---- */
       case "PREVIEW_PALETTE": {
         const settings = normalizePaletteSettings(msg.settings);
-        figma.ui.postMessage({ type: "PALETTE_PREVIEW", palette: generatePalette(settings), settings });
+        postToUi({ type: "PALETTE_PREVIEW", palette: generatePalette(settings), settings });
         break;
       }
       case "SUGGEST_SPECTRUM": {
         const settings = normalizePaletteSettings(msg.settings);
-        figma.ui.postMessage({ type: "SPECTRUM_SUGGESTED", spectrum: suggestHarmoniousSpectrum(settings) });
+        postToUi({ type: "SPECTRUM_SUGGESTED", spectrum: suggestHarmoniousSpectrum(settings) });
         break;
       }
       case "FIX_PALETTE": {
@@ -23512,7 +23495,7 @@ ${scripts}`, "");
         if (!fix) break;
         const settings = applyPaletteFix(normalizePaletteSettings(msg.settings), fix);
         await figma.clientStorage.setAsync("paletteSettings", settings);
-        figma.ui.postMessage({ type: "PALETTE_FIXED", palette: generatePalette(settings), settings });
+        postToUi({ type: "PALETTE_FIXED", palette: generatePalette(settings), settings });
         break;
       }
       case "SAVE_PALETTE_SETTINGS": {
@@ -23533,11 +23516,11 @@ ${scripts}`, "");
           if (report2.themeRoles) parts.push(`${report2.themeRoles} theme roles`);
           if (report2.swatches) parts.push(`${report2.swatches} swatches`);
           figma.notify(parts.join(" \xB7 ") || "Nothing selected to generate");
-          figma.ui.postMessage({ type: "PALETTE_APPLIED", report: report2 });
+          postToUi({ type: "PALETTE_APPLIED", report: report2 });
         } catch (err) {
           const message = String((err == null ? void 0 : err.message) || err);
           figma.notify("Palette failed: " + message);
-          figma.ui.postMessage({ type: "PALETTE_ERROR", message });
+          postToUi({ type: "PALETTE_ERROR", message });
         }
         break;
       }
@@ -23545,11 +23528,11 @@ ${scripts}`, "");
       case "REMAP_SCAN": {
         try {
           remapInventory = await readRemapInventory(
-            (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }),
+            (label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 }),
             (_d = msg.depth) != null ? _d : "document"
           );
           remapDepth = (_e = msg.depth) != null ? _e : "document";
-          figma.ui.postMessage({
+          postToUi({
             type: "REMAP_INVENTORY",
             stats: remapInventory.stats,
             modes: remapInventory.modes,
@@ -23560,21 +23543,21 @@ ${scripts}`, "");
             canRevertRebind: hasRebindSnapshot()
           });
         } catch (err) {
-          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
       case "REMAP_LIST_LIBRARIES": {
         const result = await listLibraryCollections();
-        figma.ui.postMessage({ type: "REMAP_LIBRARIES", collections: result.collections, warnings: result.warnings });
+        postToUi({ type: "REMAP_LIBRARIES", collections: result.collections, warnings: result.warnings });
         break;
       }
       case "REMAP_PREVIEW": {
         try {
           const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
-          figma.ui.postMessage(__spreadProps(__spreadValues({ type: "REMAP_PLAN" }, remapPlanView(plan)), { paletteSize: palette.length }));
+          postToUi(__spreadProps(__spreadValues({ type: "REMAP_PLAN" }, remapPlanView(plan)), { paletteSize: palette.length }));
         } catch (err) {
-          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
@@ -23586,7 +23569,7 @@ ${scripts}`, "");
           const report2 = await applyRemap(
             plan,
             options,
-            (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 })
+            (label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 })
           );
           remapInventory = null;
           figma.notify(
@@ -23596,7 +23579,7 @@ ${scripts}`, "");
               report2.legacy ? `${report2.legacy} parked in legacy/` : ""
             ].filter(Boolean).join(" \xB7 ") || "Nothing to write"
           );
-          figma.ui.postMessage({
+          postToUi({
             type: "REMAP_APPLIED",
             report: report2,
             audit: {
@@ -23610,18 +23593,18 @@ ${scripts}`, "");
         } catch (err) {
           const message = String((err == null ? void 0 : err.message) || err);
           figma.notify("Remap failed: " + message, { error: true });
-          figma.ui.postMessage({ type: "REMAP_ERROR", message });
+          postToUi({ type: "REMAP_ERROR", message });
         }
         break;
       }
       case "REMAP_REVERT": {
         try {
-          const report2 = await revertRemap((label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }));
+          const report2 = await revertRemap((label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 }));
           remapInventory = null;
           figma.notify(`Reverted ${report2.values} values` + (report2.names ? ` and ${report2.names} names` : ""));
-          figma.ui.postMessage({ type: "REMAP_REVERTED", report: report2, canRevert: hasRemapSnapshot() });
+          postToUi({ type: "REMAP_REVERTED", report: report2, canRevert: hasRemapSnapshot() });
         } catch (err) {
-          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
@@ -23635,14 +23618,14 @@ ${scripts}`, "");
             throw new Error("rebinding needs the new palette read from a library \u2014 its variable keys are the destination");
           }
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
-          const progress2 = (label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 });
+          const progress2 = (label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 });
           const rebindOptions = { scope: (_g = msg.scope) != null ? _g : "document" };
           const report2 = msg.type === "REMAP_REBIND_APPLY" ? await applyRebind(plan, rebindOptions, progress2) : await previewRebind(plan, rebindOptions, progress2);
           if (msg.type === "REMAP_REBIND_APPLY") {
             remapInventory = null;
             figma.notify(`Rebound: ${report2.summary}`);
           }
-          figma.ui.postMessage({
+          postToUi({
             type: msg.type === "REMAP_REBIND_APPLY" ? "REMAP_REBOUND" : "REMAP_REBIND_PLAN",
             counts: report2.counts,
             summary: report2.summary,
@@ -23650,16 +23633,16 @@ ${scripts}`, "");
             canRevertRebind: hasRebindSnapshot()
           });
         } catch (err) {
-          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
       case "REMAP_REBIND_REVERT": {
         try {
-          const report2 = await revertRebind((label3) => figma.ui.postMessage({ type: "REMAP_PROGRESS", label: label3 }));
+          const report2 = await revertRebind((label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 }));
           remapInventory = null;
           figma.notify(`Rebind reverted: ${report2.summary}`);
-          figma.ui.postMessage({
+          postToUi({
             type: "REMAP_REBIND_REVERTED",
             counts: report2.counts,
             summary: report2.summary,
@@ -23667,19 +23650,19 @@ ${scripts}`, "");
             canRevertRebind: hasRebindSnapshot()
           });
         } catch (err) {
-          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
       case "REMAP_BOARD": {
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
-          figma.ui.postMessage({ type: "REMAP_PROGRESS", label: "drawing the board\u2026" });
+          postToUi({ type: "REMAP_PROGRESS", label: "drawing the board\u2026" });
           const report2 = await drawRemapBoard(plan);
           figma.notify(report2.rows ? `Board: ${report2.rows} pairs on this page` : "Board: nothing moves");
-          figma.ui.postMessage({ type: "REMAP_BOARD_DRAWN", report: report2 });
+          postToUi({ type: "REMAP_BOARD_DRAWN", report: report2 });
         } catch (err) {
-          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
@@ -23690,9 +23673,9 @@ ${scripts}`, "");
           figma.notify(
             report2.restored ? `Restored ${report2.restored} name(s) from legacy/` : "Nothing of this plugin\u2019s to restore"
           );
-          figma.ui.postMessage({ type: "REMAP_UNPARKED", report: report2 });
+          postToUi({ type: "REMAP_UNPARKED", report: report2 });
         } catch (err) {
-          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
@@ -23700,14 +23683,14 @@ ${scripts}`, "");
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind });
-          figma.ui.postMessage({
+          postToUi({
             type: "REMAP_MAPPING",
             format: msg.format,
             name: msg.format === "csv" ? "mapping.csv" : "mapping.json",
             content: msg.format === "csv" ? toCsv(mapping) : JSON.stringify(mapping, null, 2)
           });
         } catch (err) {
-          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
@@ -23732,7 +23715,7 @@ ${scripts}`, "");
               lines: result.replacements.slice(0, 40).map((entry) => `${file.name}:${entry.line}:${entry.column}  ${entry.from} \u2192 ${entry.to}` + (entry.snapped ? "  [snapped]" : "") + (entry.via === "name" ? "  [by name]" : ""))
             };
           });
-          figma.ui.postMessage({
+          postToUi({
             type: "REMAP_REWRITTEN",
             files,
             replaced,
@@ -23740,14 +23723,14 @@ ${scripts}`, "");
             warnings: [...warnings]
           });
         } catch (err) {
-          figma.ui.postMessage({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
+          postToUi({ type: "REMAP_ERROR", message: String((err == null ? void 0 : err.message) || err) });
         }
         break;
       }
       /* ---- shared ---- */
       case "READ_VARIABLES": {
         const data = await readAllVariables();
-        figma.ui.postMessage({ type: "VARIABLES_SNAPSHOT", data });
+        postToUi({ type: "VARIABLES_SNAPSHOT", data });
         break;
       }
       case "EMIT_TOKENS": {
@@ -23756,7 +23739,7 @@ ${scripts}`, "");
           figma.clientStorage.getAsync("exportOptions")
         ]);
         const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored), readRenameMap())).css;
-        figma.ui.postMessage({ type: "TOKENS_CSS", css });
+        postToUi({ type: "TOKENS_CSS", css });
         break;
       }
       case "SYNC_BREAKPOINT_FRAMES": {
@@ -23773,15 +23756,15 @@ ${scripts}`, "");
             resized++;
           }
         }
-        figma.ui.postMessage({ type: "BREAKPOINT_FRAMES_SYNCED", resized, tokens: Object.fromEntries(breakpointTokens) });
+        postToUi({ type: "BREAKPOINT_FRAMES_SYNCED", resized, tokens: Object.fromEntries(breakpointTokens) });
         break;
       }
       case "GENERATE_BREAKPOINT_COLLECTION": {
         try {
           const result = await generateBreakpointCollection(msg.breakpoints);
-          figma.ui.postMessage(__spreadValues({ type: "BREAKPOINT_COLLECTION_GENERATED" }, result));
+          postToUi(__spreadValues({ type: "BREAKPOINT_COLLECTION_GENERATED" }, result));
         } catch (err) {
-          figma.ui.postMessage({
+          postToUi({
             type: "BREAKPOINT_COLLECTION_ERROR",
             message: err instanceof Error ? err.message : String(err)
           });
@@ -23800,7 +23783,7 @@ ${scripts}`, "");
         const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]));
         await annotateVectorLeaves(nodes, sceneNodesById);
         const { html, css } = await emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile: msg.cssFile });
-        figma.ui.postMessage({ type: "DJANGO_TEMPLATE", html, css });
+        postToUi({ type: "DJANGO_TEMPLATE", html, css });
         break;
       }
       case "EMIT_DJANGO_PROJECT": {
@@ -23854,7 +23837,7 @@ ${scripts}`, "");
           }
         }
         const staticFiles = buildRegenStaticFiles({ interactionsCss, interactionsJs, tokensCss, bootstrapTokensCss, themeCss });
-        figma.ui.postMessage({ type: "DJANGO_PROJECT_PLAN", css, cssFile: msg.cssFile, plan, staticFiles });
+        postToUi({ type: "DJANGO_PROJECT_PLAN", css, cssFile: msg.cssFile, plan, staticFiles });
         break;
       }
       case "SCAN": {
@@ -23878,13 +23861,13 @@ ${scripts}`, "");
             videoAssets.push({ nodeId: node.id, name: node.name, assetSrc: `img/${videoFilename(node.id, node.name)}` });
           }
         }
-        figma.ui.postMessage({ type: "SCAN_RESULT", frames, textNodes, lint, nodeCount: index.size, videoAssets });
+        postToUi({ type: "SCAN_RESULT", frames, textNodes, lint, nodeCount: index.size, videoAssets });
         postSelectionToUi();
         break;
       }
       case "SCAN_TOP": {
         const frames = figma.currentPage.children.filter((node) => node.type === "FRAME").map((node) => ({ id: node.id, name: node.name }));
-        figma.ui.postMessage({
+        postToUi({
           type: "SCAN_TOP_RESULT",
           frames,
           topLevelCount: figma.currentPage.children.length,
@@ -23909,7 +23892,7 @@ ${scripts}`, "");
         figma.commitUndo();
         const total = msg.findings.length;
         const results = [];
-        const progress2 = (label3) => figma.ui.postMessage({ type: "LINT_FIX_PROGRESS", done: results.length, total, label: label3 });
+        const progress2 = (label3) => postToUi({ type: "LINT_FIX_PROGRESS", done: results.length, total, label: label3 });
         const ctx = await buildFixContext(progress2);
         try {
           for (const request of msg.findings) {
@@ -23931,7 +23914,7 @@ ${scripts}`, "");
           }
         } finally {
           figma.commitUndo();
-          figma.ui.postMessage({ type: "LINT_FIX_RESULT", results });
+          postToUi({ type: "LINT_FIX_RESULT", results });
         }
         break;
       }
@@ -23943,7 +23926,7 @@ ${scripts}`, "");
         const html = renderAnnotationPanel(form, {
           boundVariableName: resolved.source === "variable" ? resolved.variableName : void 0
         });
-        figma.ui.postMessage({ type: "ANNOTATION_PANEL", nodeId: msg.nodeId, html });
+        postToUi({ type: "ANNOTATION_PANEL", nodeId: msg.nodeId, html });
         break;
       }
       case "SET_ANNOTATION": {
@@ -23951,9 +23934,9 @@ ${scripts}`, "");
         if (!node || node.type !== "TEXT") break;
         try {
           applyAnnotationForm(node, msg.form);
-          figma.ui.postMessage({ type: "ANNOTATION_SAVED", nodeId: msg.nodeId });
+          postToUi({ type: "ANNOTATION_SAVED", nodeId: msg.nodeId });
         } catch (error) {
-          figma.ui.postMessage({
+          postToUi({
             type: "ANNOTATION_ERROR",
             nodeId: msg.nodeId,
             message: error instanceof Error ? error.message : String(error)
@@ -23964,7 +23947,7 @@ ${scripts}`, "");
       case "AGENT_SET_GATES": {
         const gates2 = setGates({ read: msg.read, write: msg.write });
         await rememberGates(gates2);
-        figma.ui.postMessage(__spreadProps(__spreadValues({
+        postToUi(__spreadProps(__spreadValues({
           type: "AGENT_GATES"
         }, gates2), {
           ops: agentManifest(),
@@ -23976,7 +23959,7 @@ ${scripts}`, "");
       }
       case "AGENT_REQUEST": {
         const response = await handleAgentRequest({ id: msg.id, op: msg.op, params: msg.params });
-        figma.ui.postMessage(__spreadValues({ type: "AGENT_RESPONSE" }, response));
+        postToUi(__spreadValues({ type: "AGENT_RESPONSE" }, response));
         break;
       }
       case "SAVE_EXPORT_OPTIONS": {
@@ -23988,14 +23971,14 @@ ${scripts}`, "");
         const stored = normalizeUserPresets(await figma.clientStorage.getAsync("userPresets"));
         const updated = upsertUserPreset(stored, msg.label, msg.values);
         await figma.clientStorage.setAsync("userPresets", updated);
-        figma.ui.postMessage({ type: "USER_PRESETS", userPresets: updated });
+        postToUi({ type: "USER_PRESETS", userPresets: updated });
         break;
       }
       case "DELETE_USER_PRESET": {
         const stored = normalizeUserPresets(await figma.clientStorage.getAsync("userPresets"));
         const updated = stored.filter((preset) => preset.id !== msg.id);
         await figma.clientStorage.setAsync("userPresets", updated);
-        figma.ui.postMessage({ type: "USER_PRESETS", userPresets: updated });
+        postToUi({ type: "USER_PRESETS", userPresets: updated });
         break;
       }
       case "GENERATE_KIT": {
@@ -24003,12 +23986,12 @@ ${scripts}`, "");
           const snapshot = await readAllVariables();
           const colorVariables = snapshot.variables.filter((variable) => variable.resolvedType === "COLOR").map((variable) => ({ id: variable.id, name: variable.name }));
           const report2 = await generateDesignKit(colorVariables);
-          figma.ui.postMessage({ type: "KIT_GENERATED", report: report2 });
+          postToUi({ type: "KIT_GENERATED", report: report2 });
           figma.notify(
             `Kit: ${report2.components} components, ${report2.variants} variants` + (report2.slots > 0 ? `, ${report2.slots} slots` : "") + (report2.bound > 0 ? ` \u2014 ${report2.bound} bound to tokens` : " \u2014 no matching tokens, using defaults")
           );
         } catch (error) {
-          figma.ui.postMessage({ type: "KIT_ERROR", message: error instanceof Error ? error.message : String(error) });
+          postToUi({ type: "KIT_ERROR", message: error instanceof Error ? error.message : String(error) });
         }
         break;
       }
@@ -24019,7 +24002,7 @@ ${scripts}`, "");
           const textNodes = [];
           for (const node of index.values()) if (node.type === "TEXT") textNodes.push(node);
           const result = await importTranslations(msg.content, msg.format, textNodes);
-          figma.ui.postMessage({
+          postToUi({
             type: "IMPORT_TRANSLATIONS_RESULT",
             applied: result.applied.length,
             skipped: result.skipped.map((skip) => ({ reason: skip.reason, msgid: skip.entry.msgid })),
@@ -24029,7 +24012,7 @@ ${scripts}`, "");
             `Translations: ${result.applied.length} applied, ${result.skipped.length} skipped` + (result.overflows.length > 0 ? `, ${result.overflows.length} overflow(s)` : "")
           );
         } catch (error) {
-          figma.ui.postMessage({
+          postToUi({
             type: "IMPORT_TRANSLATIONS_ERROR",
             message: error instanceof Error ? error.message : String(error)
           });
@@ -24041,7 +24024,7 @@ ${scripts}`, "");
         const roots = rootsForScope(scope);
         let stage = "scan";
         try {
-          figma.ui.postMessage({ type: "EXPORT_PROGRESS", stage: "scan", percent: 10 });
+          postToUi({ type: "EXPORT_PROGRESS", stage: "scan", percent: 10 });
           const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions"));
           const [irNodes, sceneNodesById, snapshot] = await Promise.all([
             Promise.all(roots.map((root) => serializeNode(root))),
@@ -24054,10 +24037,10 @@ ${scripts}`, "");
           const motionExport = buildMotionExport(sceneNodesById, modules);
           if (modules.templates) await addReactionDestinationsToScene(pageRoots, sceneNodesById);
           stage = "i18n";
-          figma.ui.postMessage({ type: "EXPORT_PROGRESS", stage: "i18n", percent: 30 });
+          postToUi({ type: "EXPORT_PROGRESS", stage: "i18n", percent: 30 });
           const entries = modules.i18n ? await extractAllStrings(roots) : [];
           stage = "templates";
-          figma.ui.postMessage({ type: "EXPORT_PROGRESS", stage: "templates", percent: 55 });
+          postToUi({ type: "EXPORT_PROGRESS", stage: "templates", percent: 55 });
           const assetSourcesById = sceneNodesById;
           if (modules.templates) await annotateVectorLeaves(nodes, assetSourcesById);
           const videoBytesById = modules.templates ? await annotateVideoFills(nodes, assetSourcesById) : void 0;
@@ -24082,7 +24065,7 @@ ${scripts}`, "");
             modules.templates ? collectExportAssets(nodes, assetSourcesById, (hash) => figma.getImageByHash(hash), videoBytesById) : []
           ]);
           stage = "assets";
-          figma.ui.postMessage({ type: "EXPORT_PROGRESS", stage: "assets", percent: 80 });
+          postToUi({ type: "EXPORT_PROGRESS", stage: "assets", percent: 80 });
           const po = modules.i18n && entries.length > 0 ? emitPo(entries) : void 0;
           const files = project ? buildExportTree({ project, tokensCss: "", cssFile, po, assets, animation: motionExport.animation }) : {};
           if (!project) {
@@ -24250,11 +24233,11 @@ ${scripts}`, "");
           } catch (error) {
             console.warn("[export] saveVersionHistoryAsync skipped", error);
           }
-          figma.ui.postMessage({ type: "EXPORT_PROGRESS", stage: "done", percent: 100 });
-          figma.ui.postMessage({ type: "FILES_READY", files, manualAssets });
+          postToUi({ type: "EXPORT_PROGRESS", stage: "done", percent: 100 });
+          postToUi({ type: "FILES_READY", files, manualAssets });
         } catch (error) {
           console.error(`[export] failed during "${stage}"`, error);
-          figma.ui.postMessage({
+          postToUi({
             type: "EXPORT_ERROR",
             stage,
             message: error instanceof Error ? error.message : String(error)

@@ -177,7 +177,10 @@ function fieldsOf(member: string): UiCommandParam[] {
     const match = /^\s*(\w+)(\?)?\s*:\s*([\s\S]+?)\s*$/.exec(segment)
     segment = ''
     if (!match || match[1] === 'type') return
-    const type = match[3].replace(/\s+/g, ' ').slice(0, 80)
+    // Cut types that run long, but say so: a nested object type sliced mid-way reads as a
+    // complete annotation that happens to be missing its closing brace.
+    const full = match[3].replace(/\s+/g, ' ')
+    const type = full.length > 120 ? `${full.slice(0, 119)}…` : full
     fields.push({ name: match[1], required: match[2] !== '?', ...(type ? { type } : {}) })
   }
   for (const char of inner) {

@@ -1,9 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-/* `figma.ui.postMessage` is what a command answers on, and what the capture wraps. The stub
- * records what the panel would have received, so a test can assert the designer still sees
- * everything the agent triggered. */
+/* The stub stands in for the panel: `postToUi` forwards to it, so a test can assert the
+ * designer still sees everything the agent triggered. */
 const panel: unknown[] = []
 ;(globalThis as { figma?: unknown }).figma = {
   ui: {
@@ -14,6 +13,7 @@ const panel: unknown[] = []
 }
 
 const { pluginOps, setUiMessageRunner, commandNameOf } = await import('./plugin-ops.ts')
+const { postToUi, isRecording } = await import('./ui-post.ts')
 const { authorize } = await import('./protocol.ts')
 import type { UiCommandDef } from './ui-commands.ts'
 
@@ -58,7 +58,7 @@ const list = OPS.find((op) => op.name === 'plugin.commands')!
 function runner(handled: Array<Record<string, unknown>>, replies: unknown[] = []) {
   return async (message: Record<string, unknown>) => {
     handled.push(message)
-    for (const reply of replies) figma.ui.postMessage(reply)
+    for (const reply of replies) postToUi(reply)
   }
 }
 
@@ -203,20 +203,23 @@ test('the designer sees every reply the agent caused', async () => {
   assert.deepEqual(panel, [{ type: 'PURE_ANSWER', value: 1 }, { type: 'PURE_ANSWER', value: 2 }])
 })
 
-test('postMessage is put back after the call, wrapper and all', async () => {
+test('the host method is never touched — the runtime refuses to have it patched', async () => {
+  // The first design wrapped `figma.ui.postMessage` for the duration of a call. Figma's
+  // sandbox refused both the assignment and defineProperty, so the recording moved into
+  // `ui-post.ts`, which every reply already goes through.
   const before = figma.ui.postMessage
   setUiMessageRunner(runner([], [{ type: 'PURE_ANSWER' }]))
   await call.run({ command: 'PURE_READ', keep: 400 })
   assert.equal(figma.ui.postMessage, before)
 })
 
-test('postMessage is put back even when the command throws', async () => {
-  const before = figma.ui.postMessage
+test('the recording is closed even when the command throws', async () => {
   setUiMessageRunner(async () => {
     throw new Error('the command blew up')
   })
   await assert.rejects(() => call.run({ command: 'PURE_READ', keep: 400 }), /the command blew up/)
-  assert.equal(figma.ui.postMessage, before)
+  // Left open, every later reply in the session would pile into a dead array.
+  assert.equal(isRecording(), false)
 })
 
 test('a reply the command posts after it throws is not attributed to the next call', async () => {
@@ -260,7 +263,7 @@ test('two calls do not record each other — one runs at a time', async () => {
         release = resolve
       })
     }
-    figma.ui.postMessage({ type: 'PURE_ANSWER', from: message.type })
+    postToUi({ type: 'PURE_ANSWER', from: message.type })
   })
 
   const first = call.run({ command: 'PURE_READ', keep: 400 }) as Promise<{ replies: unknown[] }>
@@ -286,11 +289,11 @@ test('a long reply crosses as a file, and the count says how many', async () => 
 test('a command that never finishes answers anyway, and does not keep the channel', async () => {
   let stuck: (() => void) | null = null
   setUiMessageRunner(async () => {
-    figma.ui.postMessage({ type: 'PURE_ANSWER', stage: 'started' })
+    postToUi({ type: 'PURE_ANSWER', stage: 'started' })
     await new Promise<void>((resolve) => {
       stuck = resolve
     })
-    figma.ui.postMessage({ type: 'PURE_ANSWER', stage: 'far too late' })
+    postToUi({ type: 'PURE_ANSWER', stage: 'far too late' })
   })
 
   const wedged = (await call.run({ command: 'PURE_READ', keep: 400, timeoutMs: 1000 })) as Record<string, unknown>

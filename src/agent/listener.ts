@@ -9,6 +9,7 @@
 
 import { authorize, toManifest, validateParams, type AgentGates, type OpManifestEntry } from './protocol.ts'
 import { ALL_OPS, OPS_BY_NAME } from './ops.ts'
+import { postToUi } from './ui-post.ts'
 
 export interface AgentRequest {
   id: string
@@ -71,5 +72,5 @@ export async function handleAgentRequest(request: AgentRequest): Promise<AgentRe
 /** Every agent call shows up in the plugin window. A channel a designer can't watch is a
  * channel they can't sensibly consent to. */
 function report(op: string, ok: boolean, ms: number, error?: string): void {
-  figma.ui.postMessage({ type: 'AGENT_ACTIVITY', op, ok, ms, error })
+  postToUi({ type: 'AGENT_ACTIVITY', op, ok, ms, error })
 }
