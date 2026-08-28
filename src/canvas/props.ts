@@ -143,6 +143,8 @@ export interface NodeProps {
   links?: FlowLink[]
   /** This plugin's own notes on the node, for finding it again. A null value clears a key. */
   data?: Record<string, string | null>
+  /** Variables on the fields that are not paints: sizes, spacing, radii, text, visibility. */
+  bind?: Record<string, string | null>
   /** A frame that scrolls in the prototype, and how many of its children stay put while it does. */
   scroll?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'
   fixedChildren?: number
@@ -235,6 +237,7 @@ export type PropStep =
   | { step: 'dashes'; dashes: number[] }
   | { step: 'runs'; runs: TextRun[] }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
+  | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
   | { step: 'reset' }
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
@@ -330,6 +333,7 @@ const ORDER = [
   'autoResize',
   'text',
   'runs',
+  'bind',
   'scroll',
   'fixedChildren',
   'links',
@@ -537,6 +541,11 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
       case 'runs': {
         const runs = planRuns(props.runs, `${where}.runs`, problems)
         if (runs) steps.push(runs)
+        break
+      }
+      case 'bind': {
+        const bind = planBindings(props.bind, `${where}.bind`, problems)
+        if (bind) steps.push(bind)
         break
       }
       case 'scroll': {
@@ -1369,6 +1378,107 @@ function planLayout(raw: unknown, where: string, problems: string[]): PropStep |
 }
 
 const HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
+
+/**
+ * Which variable type each bindable field expects.
+ *
+ * Figma answers a mismatch with a message about the field, never about the variable, so the
+ * check lives here where it can say "space/8 is a FLOAT and `visible` wants a BOOLEAN".
+ */
+const BINDABLE: Readonly<Record<string, 'FLOAT' | 'STRING' | 'BOOLEAN'>> = {
+  width: 'FLOAT',
+  height: 'FLOAT',
+  minWidth: 'FLOAT',
+  maxWidth: 'FLOAT',
+  minHeight: 'FLOAT',
+  maxHeight: 'FLOAT',
+  itemSpacing: 'FLOAT',
+  counterAxisSpacing: 'FLOAT',
+  gridRowGap: 'FLOAT',
+  gridColumnGap: 'FLOAT',
+  paddingLeft: 'FLOAT',
+  paddingRight: 'FLOAT',
+  paddingTop: 'FLOAT',
+  paddingBottom: 'FLOAT',
+  cornerRadius: 'FLOAT',
+  topLeftRadius: 'FLOAT',
+  topRightRadius: 'FLOAT',
+  bottomLeftRadius: 'FLOAT',
+  bottomRightRadius: 'FLOAT',
+  strokeWeight: 'FLOAT',
+  strokeTopWeight: 'FLOAT',
+  strokeRightWeight: 'FLOAT',
+  strokeBottomWeight: 'FLOAT',
+  strokeLeftWeight: 'FLOAT',
+  opacity: 'FLOAT',
+  fontSize: 'FLOAT',
+  letterSpacing: 'FLOAT',
+  lineHeight: 'FLOAT',
+  paragraphSpacing: 'FLOAT',
+  paragraphIndent: 'FLOAT',
+  fontWeight: 'FLOAT',
+  characters: 'STRING',
+  fontFamily: 'STRING',
+  fontStyle: 'STRING',
+  visible: 'BOOLEAN',
+}
+
+/**
+ * The words this vocabulary already uses, pointed at the fields Figma calls them.
+ *
+ * `padding` is one word for four fields, because a caller who binds the padding to a spacing
+ * token means all of it — and having to write four lines to say so is how people stop using
+ * tokens.
+ */
+const BIND_ALIASES: Readonly<Record<string, string[]>> = {
+  text: ['characters'],
+  gap: ['itemSpacing'],
+  padding: ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'],
+  radius: ['cornerRadius'],
+  strokeWeights: ['strokeTopWeight', 'strokeRightWeight', 'strokeBottomWeight', 'strokeLeftWeight'],
+}
+
+/** Fields that ARE bindable, but not through here. */
+const BOUND_ELSEWHERE: Readonly<Record<string, string>> = {
+  fill: 'fill: { variable: "…" } paints and binds in one go',
+  fills: 'fill: { variable: "…" } paints and binds in one go',
+  stroke: 'stroke: { variable: "…" } paints and binds in one go',
+  strokes: 'stroke: { variable: "…" } paints and binds in one go',
+  effects: 'an effect variable has to be bound on the effect itself, which this vocabulary does not reach yet',
+}
+
+function planBindings(raw: unknown, where: string, problems: string[]): PropStep | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    problems.push(`${where} must be an object of { field: "variable name" } — null unbinds`)
+    return null
+  }
+
+  const bindings: Array<{ field: string; variable: string | null; wants: string }> = []
+  for (const [asked, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (BOUND_ELSEWHERE[asked]) {
+      problems.push(`${where}.${asked}: ${BOUND_ELSEWHERE[asked]}`)
+      continue
+    }
+    const fields = BIND_ALIASES[asked] ?? (BINDABLE[asked] ? [asked] : null)
+    if (!fields) {
+      problems.push(
+        `${where}: "${asked}" is not a bindable field — accepted: ${[...Object.keys(BIND_ALIASES), ...Object.keys(BINDABLE)].join(', ')}`
+      )
+      continue
+    }
+    if (value !== null && (typeof value !== 'string' || value.trim() === '')) {
+      problems.push(`${where}.${asked} must be a variable name, id or key — or null to unbind`)
+      continue
+    }
+    for (const field of fields) bindings.push({ field, variable: value === null ? null : (value as string).trim(), wants: BINDABLE[field] })
+  }
+
+  if (bindings.length === 0 && problems.length === 0) {
+    problems.push(`${where} names nothing to bind`)
+    return null
+  }
+  return { step: 'bind', bindings }
+}
 
 /**
  * The two handles a gradient runs between, in the layer's own 0..1 space.

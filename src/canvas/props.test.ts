@@ -404,3 +404,52 @@ test('an angle turns a radial radius rather than moving its centre', () => {
   assert.deepEqual(turned.from, [0.5, 0.5])
   assert.deepEqual(turned.to.map((n) => Math.round(n * 1e6) / 1e6), [0.5, 1])
 })
+
+/* ------------------------------------------------------------------ binding */
+
+const bindingsOf = (bind: unknown) => {
+  const plan = planProps({ bind })
+  assert.deepEqual(plan.problems, [], `unexpected problems: ${plan.problems.join(' · ')}`)
+  return (plan.steps[0] as { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> })
+    .bindings
+}
+
+test('one word for the padding binds all four sides, because that is what it means', () => {
+  // Making somebody write four lines to say "the padding follows the spacing token" is how
+  // people stop using tokens.
+  assert.deepEqual(bindingsOf({ padding: 'space/16' }), [
+    { field: 'paddingTop', variable: 'space/16', wants: 'FLOAT' },
+    { field: 'paddingRight', variable: 'space/16', wants: 'FLOAT' },
+    { field: 'paddingBottom', variable: 'space/16', wants: 'FLOAT' },
+    { field: 'paddingLeft', variable: 'space/16', wants: 'FLOAT' },
+  ])
+})
+
+test('this vocabulary keeps its own words, and Figma’s are accepted too', () => {
+  assert.deepEqual(bindingsOf({ gap: 'space/8' }), [{ field: 'itemSpacing', variable: 'space/8', wants: 'FLOAT' }])
+  assert.deepEqual(bindingsOf({ text: 'copy/cta' }), [{ field: 'characters', variable: 'copy/cta', wants: 'STRING' }])
+  assert.deepEqual(bindingsOf({ itemSpacing: 'space/8' }), [{ field: 'itemSpacing', variable: 'space/8', wants: 'FLOAT' }])
+  assert.deepEqual(bindingsOf({ visible: 'flag/promo' }), [{ field: 'visible', variable: 'flag/promo', wants: 'BOOLEAN' }])
+})
+
+test('null unbinds, and it is a value not an absence', () => {
+  assert.deepEqual(bindingsOf({ width: null }), [{ field: 'width', variable: null, wants: 'FLOAT' }])
+})
+
+test('a paint says where paints are bound instead of failing obscurely', () => {
+  assert.match(planProps({ bind: { fill: 'brand/base' } }).problems[0], /fill: \{ variable: "…" \} paints and binds in one go/)
+})
+
+test('a field that cannot be bound is named against the ones that can', () => {
+  const problem = planProps({ bind: { shadow: 'x' } }).problems[0]
+  assert.match(problem, /"shadow" is not a bindable field/)
+  assert.match(problem, /padding/)
+  assert.match(planProps({ bind: { width: 4 } }).problems[0], /must be a variable name, id or key — or null/)
+  assert.match(planProps({ bind: [] }).problems[0], /must be an object of \{ field: "variable name" \}/)
+  assert.match(planProps({ bind: {} }).problems[0], /names nothing to bind/)
+})
+
+test('the expected variable type travels with the field, so the applier can say which is wrong', () => {
+  assert.equal(bindingsOf({ cornerRadius: 'radius/md' })[0].wants, 'FLOAT')
+  assert.equal(bindingsOf({ fontFamily: 'type/family' })[0].wants, 'STRING')
+})

@@ -1049,6 +1049,33 @@ function postSelectionToUi(): void {
 
 figma.on('selectionchange', postSelectionToUi)
 
+/**
+ * Which variables a node's fields follow, as one line.
+ *
+ * Paints are left out: `fill` and `stroke` already report `var:<name>` themselves, and repeating
+ * them here would say the same thing twice in a reply that is read by eye.
+ */
+async function describeBindings(value: unknown): Promise<{ bind?: string }> {
+  if (typeof value !== 'object' || value === null) return {}
+  const parts: string[] = []
+  for (const [field, alias] of Object.entries(value as Record<string, unknown>)) {
+    if (['fills', 'strokes', 'effects', 'componentProperties'].includes(field)) continue
+    // A text field is bound per range, so Figma keeps a list even when the whole layer follows
+    // one variable — and reading only the single form left a binding that had plainly worked
+    // reported as absent.
+    const aliases = Array.isArray(alias) ? alias : [alias]
+    const seen = new Set<string>()
+    for (const one of aliases as Array<{ id?: string }>) {
+      const id = one?.id
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
+      parts.push(`${field}=var:${variable?.name ?? id}`)
+    }
+  }
+  return parts.length > 0 ? { bind: parts.join(' · ') } : {}
+}
+
 /** A component's own property definitions, or nothing — a variant child throws rather than
  * answering, and that must not take the whole command down. */
 function definitionsOf(node: ComponentNode | ComponentSetNode): ComponentPropertyDefinitions {
@@ -1132,6 +1159,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       : {}),
     ...(typeof bag.cornerRadius === 'number' ? { cornerRadius: round(bag.cornerRadius) } : {}),
     ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: describeEffects(bag.effects) } : {}),
+    ...(await describeBindings(bag.boundVariables)),
     ...(typeof bag.overflowDirection === 'string' && bag.overflowDirection !== 'NONE'
       ? { scroll: bag.overflowDirection }
       : {}),

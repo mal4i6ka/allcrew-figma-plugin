@@ -387,6 +387,50 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       }
     }
 
+    case 'bind': {
+      const holder = node as SceneNode & {
+        setBoundVariable?: (field: string, variable: Variable | null) => void
+      }
+      if (typeof holder.setBoundVariable !== 'function') throw new Error(`a ${node.type} binds no variables`)
+
+      const before: Record<string, unknown> = {}
+      const after: Record<string, unknown> = {}
+      const failures: string[] = []
+      const bound = (node as unknown as { boundVariables?: Record<string, { id?: string }> }).boundVariables ?? {}
+
+      for (const entry of step.bindings) {
+        try {
+          const held = bound[entry.field]?.id
+          if (held) {
+            const was = await figma.variables.getVariableByIdAsync(held).catch(() => null)
+            before[entry.field] = `var:${was?.name ?? held}`
+          }
+          if (entry.variable === null) {
+            if (!dry) holder.setBoundVariable(entry.field, null)
+            after[entry.field] = 'unbound'
+            continue
+          }
+          const variable = await resolveVariableRef(entry.variable)
+          // Figma answers a type mismatch by naming the field, never the variable, so the
+          // sentence that would actually help is written here.
+          if (variable.resolvedType !== entry.wants) {
+            throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${entry.field} wants a ${entry.wants}`)
+          }
+          if (!dry) holder.setBoundVariable(entry.field, variable)
+          after[entry.field] = `var:${variable.name}`
+        } catch (error) {
+          failures.push(`${entry.field}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+
+      return {
+        property: 'bind',
+        before,
+        after,
+        ...(failures.length > 0 ? { error: failures.join(' · ') } : {}),
+      }
+    }
+
     case 'reparent': {
       const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null
       const parent = step.parent === '' ? node.parent : await resolveParent(step.parent)

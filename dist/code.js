@@ -23549,6 +23549,7 @@ ${scripts}`, "");
     "autoResize",
     "text",
     "runs",
+    "bind",
     "scroll",
     "fixedChildren",
     "links",
@@ -23732,6 +23733,11 @@ ${scripts}`, "");
         case "runs": {
           const runs = planRuns(props.runs, `${where}.runs`, problems);
           if (runs) steps.push(runs);
+          break;
+        }
+        case "bind": {
+          const bind = planBindings(props.bind, `${where}.bind`, problems);
+          if (bind) steps.push(bind);
           break;
         }
         case "scroll": {
@@ -24400,6 +24406,88 @@ ${scripts}`, "");
     return { step: "layout", layout };
   }
   var HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+  var BINDABLE = {
+    width: "FLOAT",
+    height: "FLOAT",
+    minWidth: "FLOAT",
+    maxWidth: "FLOAT",
+    minHeight: "FLOAT",
+    maxHeight: "FLOAT",
+    itemSpacing: "FLOAT",
+    counterAxisSpacing: "FLOAT",
+    gridRowGap: "FLOAT",
+    gridColumnGap: "FLOAT",
+    paddingLeft: "FLOAT",
+    paddingRight: "FLOAT",
+    paddingTop: "FLOAT",
+    paddingBottom: "FLOAT",
+    cornerRadius: "FLOAT",
+    topLeftRadius: "FLOAT",
+    topRightRadius: "FLOAT",
+    bottomLeftRadius: "FLOAT",
+    bottomRightRadius: "FLOAT",
+    strokeWeight: "FLOAT",
+    strokeTopWeight: "FLOAT",
+    strokeRightWeight: "FLOAT",
+    strokeBottomWeight: "FLOAT",
+    strokeLeftWeight: "FLOAT",
+    opacity: "FLOAT",
+    fontSize: "FLOAT",
+    letterSpacing: "FLOAT",
+    lineHeight: "FLOAT",
+    paragraphSpacing: "FLOAT",
+    paragraphIndent: "FLOAT",
+    fontWeight: "FLOAT",
+    characters: "STRING",
+    fontFamily: "STRING",
+    fontStyle: "STRING",
+    visible: "BOOLEAN"
+  };
+  var BIND_ALIASES = {
+    text: ["characters"],
+    gap: ["itemSpacing"],
+    padding: ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"],
+    radius: ["cornerRadius"],
+    strokeWeights: ["strokeTopWeight", "strokeRightWeight", "strokeBottomWeight", "strokeLeftWeight"]
+  };
+  var BOUND_ELSEWHERE = {
+    fill: 'fill: { variable: "\u2026" } paints and binds in one go',
+    fills: 'fill: { variable: "\u2026" } paints and binds in one go',
+    stroke: 'stroke: { variable: "\u2026" } paints and binds in one go',
+    strokes: 'stroke: { variable: "\u2026" } paints and binds in one go',
+    effects: "an effect variable has to be bound on the effect itself, which this vocabulary does not reach yet"
+  };
+  function planBindings(raw, where, problems) {
+    var _a;
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      problems.push(`${where} must be an object of { field: "variable name" } \u2014 null unbinds`);
+      return null;
+    }
+    const bindings = [];
+    for (const [asked, value] of Object.entries(raw)) {
+      if (BOUND_ELSEWHERE[asked]) {
+        problems.push(`${where}.${asked}: ${BOUND_ELSEWHERE[asked]}`);
+        continue;
+      }
+      const fields = (_a = BIND_ALIASES[asked]) != null ? _a : BINDABLE[asked] ? [asked] : null;
+      if (!fields) {
+        problems.push(
+          `${where}: "${asked}" is not a bindable field \u2014 accepted: ${[...Object.keys(BIND_ALIASES), ...Object.keys(BINDABLE)].join(", ")}`
+        );
+        continue;
+      }
+      if (value !== null && (typeof value !== "string" || value.trim() === "")) {
+        problems.push(`${where}.${asked} must be a variable name, id or key \u2014 or null to unbind`);
+        continue;
+      }
+      for (const field of fields) bindings.push({ field, variable: value === null ? null : value.trim(), wants: BINDABLE[field] });
+    }
+    if (bindings.length === 0 && problems.length === 0) {
+      problems.push(`${where} names nothing to bind`);
+      return null;
+    }
+    return { step: "bind", bindings };
+  }
   function gradientHandles(ref) {
     var _a;
     if (ref.from && ref.to) return { from: ref.from, to: ref.to };
@@ -24851,7 +24939,7 @@ ${scripts}`, "");
     }
   };
   async function applyStep(node, step, dry) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const bag = node;
     switch (step.step) {
       case "assign": {
@@ -25094,6 +25182,41 @@ ${scripts}`, "");
           property: "sizing",
           before,
           after: { horizontal: step.horizontal, vertical: step.vertical }
+        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
+      }
+      case "bind": {
+        const holder = node;
+        if (typeof holder.setBoundVariable !== "function") throw new Error(`a ${node.type} binds no variables`);
+        const before = {};
+        const after = {};
+        const failures = [];
+        const bound = (_f = node.boundVariables) != null ? _f : {};
+        for (const entry of step.bindings) {
+          try {
+            const held = (_g = bound[entry.field]) == null ? void 0 : _g.id;
+            if (held) {
+              const was = await figma.variables.getVariableByIdAsync(held).catch(() => null);
+              before[entry.field] = `var:${(_h = was == null ? void 0 : was.name) != null ? _h : held}`;
+            }
+            if (entry.variable === null) {
+              if (!dry) holder.setBoundVariable(entry.field, null);
+              after[entry.field] = "unbound";
+              continue;
+            }
+            const variable = await resolveVariableRef(entry.variable);
+            if (variable.resolvedType !== entry.wants) {
+              throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${entry.field} wants a ${entry.wants}`);
+            }
+            if (!dry) holder.setBoundVariable(entry.field, variable);
+            after[entry.field] = `var:${variable.name}`;
+          } catch (error) {
+            failures.push(`${entry.field}: ${String((error == null ? void 0 : error.message) || error)}`);
+          }
+        }
+        return __spreadValues({
+          property: "bind",
+          before,
+          after
         }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
       }
       case "reparent": {
@@ -26214,6 +26337,24 @@ ${scripts}`, "");
     });
   }
   figma.on("selectionchange", postSelectionToUi);
+  async function describeBindings2(value) {
+    var _a;
+    if (typeof value !== "object" || value === null) return {};
+    const parts = [];
+    for (const [field, alias] of Object.entries(value)) {
+      if (["fills", "strokes", "effects", "componentProperties"].includes(field)) continue;
+      const aliases = Array.isArray(alias) ? alias : [alias];
+      const seen = /* @__PURE__ */ new Set();
+      for (const one of aliases) {
+        const id = one == null ? void 0 : one.id;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
+        parts.push(`${field}=var:${(_a = variable == null ? void 0 : variable.name) != null ? _a : id}`);
+      }
+    }
+    return parts.length > 0 ? { bind: parts.join(" \xB7 ") } : {};
+  }
   function definitionsOf(node) {
     var _a;
     try {
@@ -26252,7 +26393,7 @@ ${scripts}`, "");
     if (!withProps) return base;
     const bag = node;
     const round11 = (value) => typeof value === "number" ? Math.round(value * 100) / 100 : value;
-    const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+    const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
       x: round11(bag.x),
       y: round11(bag.y),
       width: round11(bag.width),
@@ -26260,7 +26401,7 @@ ${scripts}`, "");
     }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round11(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints2(bag.fills) } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues({
       stroke: await describePaints2(bag.strokes),
       strokeWeight: round11(bag.strokeWeight)
-    }, bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: describeEffects(bag.effects) } : {}), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
+    }, bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: describeEffects(bag.effects) } : {}), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
       props.layout = {
         mode: bag.layoutMode,
