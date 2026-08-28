@@ -1085,7 +1085,16 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(typeof bag.opacity === 'number' && bag.opacity < 1 ? { opacity: round(bag.opacity) } : {}),
     ...('fills' in bag ? { fill: await describePaints(bag.fills) } : {}),
     ...('strokes' in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0
-      ? { stroke: await describePaints(bag.strokes), strokeWeight: round(bag.strokeWeight) }
+      ? {
+          stroke: await describePaints(bag.strokes),
+          strokeWeight: round(bag.strokeWeight),
+          // The rest of the stroke, when it is not the default — a read that omits the dashes
+          // cannot be edited and sent back, which is the whole promise of this shape.
+          ...(bag.strokeAlign !== 'INSIDE' ? { strokeAlign: bag.strokeAlign } : {}),
+          ...(Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}),
+          ...(typeof bag.strokeCap === 'string' && bag.strokeCap !== 'NONE' ? { strokeCap: bag.strokeCap } : {}),
+          ...(typeof bag.strokeJoin === 'string' && bag.strokeJoin !== 'MITER' ? { strokeJoin: bag.strokeJoin } : {}),
+        }
       : {}),
     ...(typeof bag.cornerRadius === 'number' ? { cornerRadius: round(bag.cornerRadius) } : {}),
     ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: describeEffects(bag.effects) } : {}),

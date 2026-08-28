@@ -25807,7 +25807,10 @@ ${scripts}`, "");
       y: round11(bag.y),
       width: round11(bag.width),
       height: round11(bag.height)
-    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round11(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints2(bag.fills) } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? { stroke: await describePaints2(bag.strokes), strokeWeight: round11(bag.strokeWeight) } : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: describeEffects(bag.effects) } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
+    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round11(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints2(bag.fills) } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues({
+      stroke: await describePaints2(bag.strokes),
+      strokeWeight: round11(bag.strokeWeight)
+    }, bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: describeEffects(bag.effects) } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
       props.layout = {
         mode: bag.layoutMode,
