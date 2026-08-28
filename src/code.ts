@@ -1612,6 +1612,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     /* ---- design-tokens target ---- */
     case 'SCAN_TOKENS': {
       // @agent read: build the design-token package (tokens, DESIGN.md, component docs) and hand back the files
+      // @agent param docs: what goes into the documentation half — { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide
       try {
         const graph = await readGraph()
         const stored = await figma.clientStorage.getAsync('exportOptions')
@@ -1644,6 +1645,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'DELIVER': {
       // @agent write: POST a built package to the configured delivery endpoint — it leaves this machine
+      // @agent param zipBase64: the package itself, base64 — the bytes CONFIRM_EXPORT handed back
       try {
         const stored = await figma.clientStorage.getAsync('exportOptions')
         const options = normalizeExportOptions(stored)
@@ -1695,6 +1697,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'FIX_PALETTE': {
       // @agent write: apply one palette fix and store the corrected settings
+      // @agent param fix: which repair to make — { kind: "anchor-step", spectrumId, step } to pin one ramp, or { kind: "reset-steps" | "rename-duplicates" | "split-dark-theme" }
       // @agent param settings: PaletteSettings — unrecognised input is replaced by defaults rather than refused
       const fix = normalizePaletteFix(msg.fix)
       if (!fix) {
@@ -1719,6 +1722,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'APPLY_PALETTE': {
       // @agent write: write a generated palette into the document as variables, theme roles and swatches
       // @agent param settings: PaletteSettings — unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing
+      // @agent param applyOptions: which halves are written — { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }
       try {
         const settings = normalizePaletteSettings(msg.settings)
         if (settings.spectra.length === 0) {
@@ -1745,6 +1749,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'REMAP_SCAN': {
       // @agent read: inventory every colour in the document — variables, styles, gradient stops, loose paints
       // @agent cost: one walk of the whole document — 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.
+      // @agent param depth: how far the walk goes — "document" (default, the honest answer), "page", or "tokens" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive
       try {
         const inventory = await readInventory(msg.depth ?? 'document')
         postToUi({
@@ -1771,6 +1776,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'REMAP_PREVIEW': {
       // @agent read: build the old-to-new colour mapping and return the table, structurally matched
+      // @agent param source: where the new palette comes from — { kind: "paste", text } for hexes or CSS, { kind: "library", key, mode? } for a published collection, { kind: "generator", settings }, or { kind: "selection" } to read the swatches on canvas
+      // @agent param options: how the plan is built — { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }
+      // @agent param overrides: site id → forced "#RRGGBB", the rows a human changed in the approval table; the plan keeps them and marks them manual
+      // @agent param excluded: site ids to leave out of the plan entirely — the rows nobody wants touched
       try {
         const { plan, palette } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         postToUi({
@@ -1786,6 +1795,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'REMAP_APPLY': {
       // @agent write: write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot
+      // @agent param source: where the new palette comes from — { kind: "paste", text } for hexes or CSS, { kind: "library", key, mode? } for a published collection, { kind: "generator", settings }, or { kind: "selection" } to read the swatches on canvas
+      // @agent param options: how the plan is built — { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }
+      // @agent param applyOptions: which halves of the write happen — { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default
+      // @agent param overrides: site id → forced "#RRGGBB", the rows a human changed in the approval table; the plan keeps them and marks them manual
+      // @agent param excluded: site ids to leave out of the plan entirely — the rows nobody wants touched
       try {
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const options: RemapApplyOptions = { ...DEFAULT_REMAP_APPLY_OPTIONS, ...(msg.applyOptions ?? {}) }
@@ -1842,8 +1856,18 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // A fall-through label has no body of its own, so its marker sits between the two, which
       // is exactly the span the extractor reads for it. The shared block below is the other's.
       // @agent read: count what a rebind onto the reference library would move — writes nothing
+      // @agent param source: where the new palette comes from — { kind: "paste", text } for hexes or CSS, { kind: "library", key, mode? } for a published collection, { kind: "generator", settings }, or { kind: "selection" } to read the swatches on canvas
+      // @agent param options: how the plan is built — { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }
+      // @agent param overrides: site id → forced "#RRGGBB", the rows a human changed in the approval table; the plan keeps them and marks them manual
+      // @agent param excluded: site ids to leave out of the plan entirely — the rows nobody wants touched
+      // @agent param scope: how much of the file is rebound — document (default), page, or selection
     case 'REMAP_REBIND_APPLY': {
       // @agent write: move the file's colour pointers onto the reference library
+      // @agent param source: where the new palette comes from — { kind: "paste", text } for hexes or CSS, { kind: "library", key, mode? } for a published collection, { kind: "generator", settings }, or { kind: "selection" } to read the swatches on canvas
+      // @agent param options: how the plan is built — { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }
+      // @agent param overrides: site id → forced "#RRGGBB", the rows a human changed in the approval table; the plan keeps them and marks them manual
+      // @agent param excluded: site ids to leave out of the plan entirely — the rows nobody wants touched
+      // @agent param scope: how much of the file is rebound — document (default), page, or selection
       try {
         if (msg.source.kind !== 'library') {
           throw new Error('rebinding needs the new palette read from a library — its variable keys are the destination')
@@ -1893,6 +1917,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'REMAP_BOARD': {
       // @agent write: draw the standardised old/new swatch board — from a palette, or from any mapping.json you supply
       // @agent param mapping: MappingFile — the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere
+      // @agent param source: where the new palette comes from — { kind: "paste", text } for hexes or CSS, { kind: "library", key, mode? } for a published collection, { kind: "generator", settings }, or { kind: "selection" } to read the swatches on canvas
+      // @agent param title: what the board is called on the canvas
+      // @agent param options: how the plan is built — { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }
+      // @agent param overrides: site id → forced "#RRGGBB", the rows a human changed in the approval table; the plan keeps them and marks them manual
+      // @agent param excluded: site ids to leave out of the plan entirely — the rows nobody wants touched
       try {
         // Two ways in, and they are not interchangeable: a palette makes the plugin compute the
         // correspondence with its own structural matcher, a mapping means somebody else already
@@ -1936,6 +1965,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'REMAP_EXPORT_MAPPING': {
       // @agent read: serialise the mapping as mapping.json or .csv for the repository side
+      // @agent param source: where the new palette comes from — { kind: "paste", text } for hexes or CSS, { kind: "library", key, mode? } for a published collection, { kind: "generator", settings }, or { kind: "selection" } to read the swatches on canvas
+      // @agent param options: how the plan is built — { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }
+      // @agent param format: "json" for the mapping document the rewriter reads, "csv" for a spreadsheet
+      // @agent param overrides: site id → forced "#RRGGBB", the rows a human changed in the approval table; the plan keeps them and marks them manual
+      // @agent param excluded: site ids to leave out of the plan entirely — the rows nobody wants touched
       try {
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind })
@@ -1954,6 +1988,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'REMAP_REWRITE_FILES': {
       // @agent read: rewrite colours in supplied file contents off the same mapping — a pure transform
       // @agent param mode: names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings.
+      // @agent param source: where the new palette comes from — { kind: "paste", text } for hexes or CSS, { kind: "library", key, mode? } for a published collection, { kind: "generator", settings }, or { kind: "selection" } to read the swatches on canvas
+      // @agent param options: how the plan is built — { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }
+      // @agent param overrides: site id → forced "#RRGGBB", the rows a human changed in the approval table; the plan keeps them and marks them manual
+      // @agent param excluded: site ids to leave out of the plan entirely — the rows nobody wants touched
+      // @agent param files: [{ name, text }] — the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply
+      // @agent param snap: how far a literal may be from a token colour and still count as it, on the ΔE scale — 2 by default, 0 for exact matches only
+      // @agent param byName: also rewrite declarations whose key is a token name, whatever value they hold
       try {
         const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded)
         const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind })
@@ -2031,6 +2072,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'GENERATE_BREAKPOINT_COLLECTION': {
       // @agent write: create the breakpoint variable collection
+      // @agent param breakpoints: { name: width } — e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry
       try {
         const result = await generateBreakpointCollection(msg.breakpoints)
         postToUi({ type: 'BREAKPOINT_COLLECTION_GENERATED', ...result })
@@ -2046,6 +2088,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     /* ---- django target ---- */
     case 'EMIT_DJANGO': {
       // @agent read: render the scope as one Django template plus its CSS
+      // @agent param cssFile: the name the stylesheet is written and linked as, e.g. "tokens.css"
+      // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
       // @agent cost: reads the scope and every variable — 80s on a large file; narrow the scope to a frame
       const roots = rootsForScope(msg.scope)
       const [irNodes, sceneNodesById, snapshot] = await Promise.all([
@@ -2062,6 +2106,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'EMIT_DJANGO_PROJECT': {
       // @agent read: render the scope as a multi-page Django project and plan the regeneration
+      // @agent param cssFile: the name the stylesheet is written and linked as, e.g. "tokens.css"
+      // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
+      // @agent param existingFiles: what the repository already holds, as { path: contents } — the plan compares against it and reports what would change rather than overwriting blindly
       // @agent cost: reads the scope and every variable — 80s on a large file; narrow the scope to a frame
       const roots = rootsForScope(msg.scope)
       const [irNodes, sceneNodesById, snapshot] = await Promise.all([
@@ -2122,6 +2169,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'SCAN': {
       // @agent read: index the scope: frames, text nodes, lint findings, video assets
+      // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
+      // @agent param lintMaxDepth: how deep the lint walk goes under each root — deeper finds more and costs more
       const roots = rootsForScope(msg.scope)
       const index = await indexSceneNodes(roots)
       lastScanIndex = index
@@ -2172,6 +2221,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'SCROLL_INTO_VIEW': {
       // @agent read: scroll the designer to a node — viewport only, the document is untouched
+      // @agent param nodeId: the node to bring into view
       const node = lastScanIndex.get(msg.nodeId) ?? (await figma.getNodeByIdAsync(msg.nodeId))
       if (!node || !('visible' in node)) {
         refuse('SCROLL_INTO_VIEW', `no scene node with id ${msg.nodeId} — it may have been removed, or live on a page this session has not loaded`)
@@ -2187,6 +2237,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'FIX_LINT': {
       // @agent write: apply the linter fixes named in findings
+      // @agent param findings: [{ nodeId, rule }] — the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted
       figma.commitUndo()
       const total = msg.findings.length
       const results: LintFixResult[] = []
@@ -2249,6 +2300,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'SET_ANNOTATION': {
       // @agent write: write a node's annotation: export settings, docs, interaction notes
       // @agent param nodeId: a TEXT node, and one the last SCAN indexed — the index is per scan, not per document
+      // @agent param form: the annotation as the panel holds it — { context, pluralEnabled, pluralOne, pluralOther, placeholders }
       const node = lastScanIndex.get(msg.nodeId)
       // A write that answers nothing is the worst of the three: silence here was
       // indistinguishable from a write that landed.
@@ -2274,6 +2326,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'AGENT_SET_GATES': {
       // @agent deny: the gates are the designer's switch — an agent must never set its own permissions
+      // @agent param read: the channel's read gate — the panel's own switch, not something an agent sets for itself
+      // @agent param write: the channel's write gate, likewise
       const gates = setGates({ read: msg.read, write: msg.write })
       // Remembered on the way through rather than on a separate save: the gates the sandbox
       // actually holds are the only ones worth persisting.
@@ -2293,6 +2347,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'AGENT_REQUEST': {
       // @agent deny: this is the channel itself; routing it through itself only recurses
+      // @agent param id: the request's own id, echoed back on the response
+      // @agent param op: the channel operation being asked for
+      // @agent param params: that operation's parameters
       // Never throws: a rejected or failed op comes back as `{ ok: false, error }` so the
       // bridge can answer the waiting CLI instead of leaving it on a timeout.
       const response = await handleAgentRequest({ id: msg.id, op: msg.op, params: msg.params })
@@ -2301,12 +2358,15 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'SAVE_EXPORT_OPTIONS': {
       // @agent write: store export options in clientStorage
+      // @agent param options: the export settings to store, in part or whole — target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs
       const stored = await figma.clientStorage.getAsync('exportOptions')
       await figma.clientStorage.setAsync('exportOptions', mergeExportOptions(stored, msg.options))
       break
     }
     case 'SAVE_USER_PRESET': {
       // @agent write: store a user preset in clientStorage
+      // @agent param label: what the preset is called in the list
+      // @agent param values: the settings it holds
       const stored = normalizeUserPresets(await figma.clientStorage.getAsync('userPresets'))
       const updated = upsertUserPreset(stored, msg.label, msg.values)
       await figma.clientStorage.setAsync('userPresets', updated)
@@ -2315,6 +2375,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'DELETE_USER_PRESET': {
       // @agent write: delete a stored user preset
+      // @agent param id: the preset to delete, as the preset list gives it
       const stored = normalizeUserPresets(await figma.clientStorage.getAsync('userPresets'))
       const updated = stored.filter((preset) => preset.id !== msg.id)
       await figma.clientStorage.setAsync('userPresets', updated)
@@ -2330,6 +2391,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param of: for kind "instance", the component to make — the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures
       // @agent param parent: the node the new nodes go inside — omitted, they land on the current page. This is how a card is built into a screen rather than beside it
       // @agent cost: proportional to what you ask for; one call is one undo step for the designer
+      // @agent param dryRun: true answers with what it would do and changes nothing — the way to see a plan before it lands
       try {
         const specs = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
         const problems: string[] = []
@@ -2370,7 +2432,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         postToUi({
           type: 'NODES_CREATED',
           dryRun: dry,
-          created: made.length,
+          // The notice already said "Would create"; the reply went on saying `created` for a run
+          // that created nothing, which is the one word an agent counts.
+          ...(dry ? { wouldCreate: made.length } : { created: made.length }),
           failed,
           nodes: made,
           ...(refused.length > 0 ? { refused } : {}),
@@ -2389,6 +2453,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names, swap: "<id|key>" changes which component it is, reset: true drops every override first
       // @agent param props: links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: "<id>"|"back"|"close", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|…, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|… or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here.
       // @agent param props: one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url — they run in that order before the navigation, so "remember they agreed and go on" is one interaction
+      // @agent param dryRun: true answers with what it would do and changes nothing — the way to see a plan before it lands
       try {
         const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
         const problems: string[] = []
@@ -2439,7 +2504,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
 
         const failed = reports.filter((report) => !report.ok).length
         figma.notify(dry ? `Would change ${reports.length} node(s)` : `Changed ${reports.length - failed} node(s)`)
-        postToUi({ type: 'NODES_SET', dryRun: dry, changed: reports.length - failed, failed, nodes: reports })
+        const touched = reports.length - failed
+        postToUi({
+          type: 'NODES_SET',
+          dryRun: dry,
+          ...(dry ? { wouldChange: touched } : { changed: touched }),
+          failed,
+          nodes: reports,
+        })
       } catch (error) {
         const message = String((error as Error)?.message || error)
         figma.notify('Change failed: ' + message, { error: true })
@@ -2523,6 +2595,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param scope: page (default) or document — the page is what a caller building a flow is working on, and loading every page is the expensive half
       // @agent param usage: false skips the instance census — quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents
       // @agent cost: the current page is quick; scope "document" loads every page first and can take a minute or more on a large file — the older components.list op times out at 180s doing that on Altery Mobile DS
+
+      // @agent param limit: how many components come back — 100 by default, 500 at most; the reply says when it had more
       try {
         const catalog = await collectComponents({
           query: typeof msg.query === 'string' ? msg.query : undefined,
@@ -2546,6 +2620,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent write: copy nodes, and change the copies in the same call — the quickest way to a consistent screen is another screen
       // @agent param nodes: an array of { node: "<id>", props?: {…} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it
       // @agent cost: a copy of everything inside the node; one call is one undo step
+
+      // @agent param dryRun: true answers with what it would do and changes nothing — the way to see a plan before it lands
       try {
         const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
         const problems: string[] = []
@@ -2621,7 +2697,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
 
         const failed = reports.filter((report) => !report.ok).length
         figma.notify(dry ? `Would copy ${reports.length} node(s)` : `Copied ${reports.length - failed} node(s)`)
-        postToUi({ type: 'NODES_CLONED', dryRun: dry, copied: reports.length - failed, failed, nodes: reports })
+        const made = reports.length - failed
+        postToUi({
+          type: 'NODES_CLONED',
+          dryRun: dry,
+          ...(dry ? { wouldCopy: made } : { copied: made }),
+          failed,
+          nodes: reports,
+        })
       } catch (error) {
         const message = String((error as Error)?.message || error)
         figma.notify('Copy failed: ' + message, { error: true })
@@ -3148,6 +3231,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'NODE_EXPORT': {
       // @agent read: render nodes to PNG, JPG, SVG or PDF and hand the files back — nothing in the document changes
       // @agent param nodes: the ids to render
+      // @agent param width: render to this width in pixels and let the height follow — instead of scale, not beside it
+      // @agent param height: render to this height in pixels and let the width follow
+      // @agent param outlineText: SVG only — true (the default) turns text into paths, so the file needs no font; false keeps it as text
       // @agent param format: PNG (default), JPG, SVG, PDF — or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance
       // @agent param scale: 1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between
       // @agent param fps: video only — MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30
@@ -3307,6 +3393,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent read: the file's own styles — paint, text, effect and grid — with what each one holds
       // @agent param kind: paint, text, effect or grid; omitted means all four
       // @agent param query: a name substring
+      // @agent param limit: how many styles come back — 100 by default, 500 at most
       try {
         const kinds = typeof msg.kind === 'string' ? [msg.kind.trim().toLowerCase() as StyleKind] : [...STYLE_KINDS]
         const unknown = kinds.filter((kind) => !STYLE_KINDS.includes(kind))
@@ -3350,6 +3437,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param text: for a text style, { fontName: { family, style }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? }
       // @agent param effects: for an effect style, the same effects vocabulary NODE_SET takes
       // @agent param grid: for a grid style, the same grid vocabulary NODE_SET takes — [{ columns: 12, gutter: 16, margin: 24 }]
+      // @agent param name: what the style is called — an existing style of the same name and kind is updated rather than duplicated
+      // @agent param description: the style's description, which is what a designer reads in the panel
       try {
           const kind = typeof msg.as === 'string' ? (msg.as.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
         if (!STYLE_KINDS.includes(kind)) {
@@ -3469,6 +3558,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'STYLE_REMOVE': {
       // @agent write: delete a local style. Layers that followed it keep the values it gave them
       // @agent param name: its name, id or key — the same way every other style is named here
+      // @agent param kind: paint, text, effect or grid — a name alone is ambiguous across kinds
       try {
         const kind = typeof msg.kind === 'string' ? (msg.kind.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
         if (!STYLE_KINDS.includes(kind)) {
@@ -3493,6 +3583,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'FLOW_LIST': {
       // @agent read: the prototype's starting points on a page — the named flows a designer sees in the Prototype panel
+      // @agent param pageId: the page to read instead of the current one
       try {
         const page = msg.pageId ? await figma.getNodeByIdAsync(msg.pageId) : figma.currentPage
         if (!page || page.type !== 'PAGE') {
@@ -3514,6 +3605,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'FLOW_SET': {
       // @agent write: name the prototype's starting points on a page — this is what makes a set of frames read as "Onboarding" in the Prototype panel
       // @agent param flows: an array of { node: "<frame id>", name: "Onboarding" }, in order; the first is the one the play button opens. [] removes them all
+      // @agent param pageId: the page the flow belongs to, when it is not the current one
       try {
         const rows = Array.isArray(msg.flows) ? msg.flows : null
         if (!rows) {
@@ -3580,6 +3672,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'PAGE_CREATE': {
       // @agent write: add a page — where a new flow goes
       // @agent param activate: true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: "<id>"
+      // @agent param name: what the new page is called
       const name = typeof msg.name === 'string' ? msg.name.trim() : ''
       if (name === '') {
         refuse('PAGE_CREATE', 'name must be a non-empty string')
@@ -3634,6 +3727,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'MODULE_INSTALL': {
       // @agent write: validate a module file and install it — refused whole if anything in it does not check out
       // @agent param file: the module document itself (see TASK-user-modules.md), object or JSON text
+      // @agent param replace: true overwrites a module already installed under the same id; without it a clash is refused
       try {
         const size = JSON.stringify(msg.file ?? null).length
         if (size > MODULE_SIZE_LIMIT) {
@@ -3684,6 +3778,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'MODULE_REMOVE': {
       // @agent write: uninstall a module, and forget what it stored
+      // @agent param id: the module to uninstall, as MODULES_LIST names it
       const stored = await readStoredModules()
       if (!(msg.id in stored)) {
         refuse('MODULE_REMOVE', `no module "${msg.id}" is installed`)
@@ -3697,6 +3792,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'MODULE_ENABLE': {
       // @agent write: switch a module on or off without uninstalling it
+      // @agent param id: the module, as MODULES_LIST names it
+      // @agent param enabled: true to switch it on, false to leave it installed and inert
       const stored = await readStoredModules()
       const entry = stored[msg.id]
       if (!entry) {
@@ -3709,6 +3806,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'MODULE_VIEW': {
       // @agent read: a module's screens as declared, with the values its fields currently hold
+      // @agent param id: the module, as MODULES_LIST names it
+      // @agent param screen: "main" or "settings"
       const entry = userModules.find((candidate) => candidate.id === msg.id)
       if (!entry?.module) {
         refuse('MODULE_VIEW', `no usable module "${msg.id}" — MODULES_LIST says why`)
@@ -3733,6 +3832,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'MODULE_STATE_SET': {
       // @agent write: set one field of a module's own state, checked against the type it declared
+      // @agent param id: the module, as MODULES_LIST names it
+      // @agent param field: the state field it declared
+      // @agent param value: the new value, checked against the type the module declared for that field
       const entry = userModules.find((candidate) => candidate.id === msg.id)
       const declared = entry?.module?.state[msg.field]
       if (!entry?.module || !declared) {
@@ -3759,6 +3861,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'MODULE_RUN': {
       // @agent write: run one button of a module's screen — write-gated because the button may be
       // @agent param block: the index of the button in that screen's blocks, as MODULE_VIEW numbers them
+      // @agent param id: the module, as MODULES_LIST names it
+      // @agent param screen: "main" or "settings" — which screen the button is on
+      // @agent param confirm: true gets past a `confirm` step the module put in the way; without it the run stops there and says so
       const entry = userModules.find((candidate) => candidate.id === msg.id)
       const screen = entry?.module?.screens[msg.screen]
       const block = screen?.blocks[msg.block]
@@ -3808,6 +3913,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'MODULE_EXPORT': {
       // @agent read: hand back a module's file exactly as it was installed, to save or pass on
+      // @agent param id: the module to hand back as its manifest
       const stored = await readStoredModules()
       const entry = stored[msg.id]
       if (!entry) {
@@ -3852,6 +3958,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'IMPORT_TRANSLATIONS': {
       // @agent write: write translated strings back into the text layers
+      // @agent param content: the file itself, as text
+      // @agent param format: "po" or "json"
+      // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
       try {
         const roots = rootsForScope(msg.scope)
         const index = await indexSceneNodes(roots)
@@ -3878,6 +3987,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'CONFIRM_EXPORT': {
       // @agent write: run the full export: builds every file, saves version history and relaunch data
+      // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
+      // @agent param modules: which halves of the package are built — { tokens, templates, i18n, animation }
+      // @agent param cssFile: the name the stylesheet is written and linked as, e.g. "tokens.css"
+      // @agent param existingFiles: what the repository already holds, as { path: contents } — the plan compares against it rather than overwriting blindly
       const { scope, modules, cssFile } = msg
       const roots = rootsForScope(scope)
       let stage = 'scan'

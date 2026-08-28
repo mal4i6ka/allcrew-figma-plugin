@@ -263,6 +263,25 @@ test("every command in the plugin's own switch is classified", () => {
   assert.deepEqual(unclassified, [], 'these cases need an `// @agent read|write|deny:` marker')
 })
 
+test('every parameter of every command says what it is for', () => {
+  // The table exposes each field of a command's message type whether or not anyone wrote a
+  // sentence for it, so an undocumented parameter is not missing from the surface — it is present
+  // and mute. NODE_CREATE's `parent`, the only way to build inside a node rather than beside it,
+  // sat there unmentioned until somebody read the source. 95 of 159 were like that.
+  //
+  // The node vocabulary has had this guarantee since it was extracted; this is the same one for
+  // the commands, and it is why there is no allow-list: `dryRun` means something slightly
+  // different in each command that takes it, and a sentence is one line.
+  const commands = extractUiCommands(SOURCE)
+  const mute: string[] = []
+  for (const command of commands) {
+    for (const param of command.params) {
+      if (!param.note?.trim()) mute.push(`${command.name}.${param.name}`)
+    }
+  }
+  assert.deepEqual(mute, [], 'these parameters need an `// @agent param <name>:` sentence')
+})
+
 test('the channel is not exposed through itself', () => {
   const commands = extractUiCommands(SOURCE)
   for (const name of ['AGENT_SET_GATES', 'AGENT_REQUEST']) {
