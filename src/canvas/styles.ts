@@ -86,7 +86,8 @@ export async function styleFor(ref: string, kind: StyleKind): Promise<BaseStyle>
 export async function describeStyle(
   style: BaseStyle,
   paints: (value: unknown) => Promise<string | null>,
-  effects: (value: unknown) => string
+  effects: (value: unknown) => Promise<string>,
+  grids: (value: unknown) => string
 ): Promise<string> {
   switch (style.type) {
     case 'PAINT':
@@ -106,6 +107,6 @@ export async function describeStyle(
       return `${text.fontName.family} ${text.fontName.style} ${text.fontSize}/${height}${spacing}`
     }
     default:
-      return `${(style as GridStyle).layoutGrids.length} grid(s)`
+      return grids((style as GridStyle).layoutGrids)
   }
 }

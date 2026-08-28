@@ -99,7 +99,7 @@ import {
 } from './modules/registry.ts'
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { describeLinks, planProps } from './canvas/props.ts'
-import { applyProps, describeEffects, describePaints, variableName } from './canvas/apply.ts'
+import { applyProps, describeEffects, describeGrids, describePaints, variableName } from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan } from './canvas/create.ts'
 import {
   bindingField,
@@ -197,6 +197,7 @@ type PluginMessage =
       paints?: unknown
       effects?: unknown
       text?: unknown
+      grid?: unknown
     }
   | { type: 'STYLE_REMOVE'; kind: string; name: string }
   | { type: 'PAGE_LIST' }
@@ -1096,16 +1097,27 @@ async function describeBindings(value: unknown): Promise<{ bind?: string }> {
  * and it needs a node to do it on. So a rectangle is made, written to, read back and removed —
  * cheaper than a duplicate of that logic, and it cannot drift from it.
  */
-async function applyToScratch(spec: unknown, as: 'paints' | 'effects'): Promise<{ fills: Paint[]; effects: Effect[] }> {
-  const plan = planProps(as === 'paints' ? { fill: spec } : { effects: spec }, as)
+async function applyToScratch(
+  spec: unknown,
+  as: 'paints' | 'effects' | 'grid'
+): Promise<{ fills: Paint[]; effects: Effect[]; grids: LayoutGrid[] }> {
+  const plan = planProps(
+    as === 'paints' ? { fill: spec } : as === 'effects' ? { effects: spec } : { grid: spec },
+    as
+  )
   if (plan.problems.length > 0) throw new Error(plan.problems.join(' · '))
 
-  const scratch = figma.createRectangle()
+  // A frame rather than a rectangle when grids are wanted: only a frame has layoutGrids.
+  const scratch = as === 'grid' ? figma.createFrame() : figma.createRectangle()
   try {
     const report = await applyProps(scratch, plan.steps, false)
     const failed = report.applied.filter((one) => one.error)
     if (failed.length > 0) throw new Error(failed.map((one) => `${one.property}: ${one.error}`).join(' · '))
-    return { fills: scratch.fills as Paint[], effects: scratch.effects as Effect[] }
+    return {
+      fills: scratch.fills as Paint[],
+      effects: scratch.effects as Effect[],
+      grids: (scratch as unknown as { layoutGrids?: LayoutGrid[] }).layoutGrids ?? [],
+    }
   } finally {
     scratch.remove()
   }
@@ -1193,7 +1205,8 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
         }
       : {}),
     ...(typeof bag.cornerRadius === 'number' ? { cornerRadius: round(bag.cornerRadius) } : {}),
-    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: describeEffects(bag.effects) } : {}),
+    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}),
+    ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}),
     ...(await describeBindings(bag.boundVariables)),
     ...(typeof bag.overflowDirection === 'string' && bag.overflowDirection !== 'NONE'
       ? { scroll: bag.overflowDirection }
@@ -2837,7 +2850,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               key: style.key,
               name: style.name,
               kind,
-              holds: await describeStyle(style, describePaints, describeEffects),
+              holds: await describeStyle(style, describePaints, describeEffects, describeGrids),
               ...(style.description ? { description: style.description } : {}),
             })
           }
@@ -2855,15 +2868,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'STYLE_MAKE': {
       // @agent write: create a style, or update one of the same name
-      // @agent param as: paint, text or effect
+      // @agent param as: paint, text, effect or grid
       // @agent param from: read what the style should hold off this node — the usual way one is made, since the layer is already right
       // @agent param paints: for a paint style, the same fill vocabulary NODE_SET takes: "#RRGGBB", { variable }, { gradient }, { image }, or a list
       // @agent param text: for a text style, { fontName: { family, style }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? }
       // @agent param effects: for an effect style, the same effects vocabulary NODE_SET takes
+      // @agent param grid: for a grid style, the same grid vocabulary NODE_SET takes — [{ columns: 12, gutter: 16, margin: 24 }]
       try {
-        const kind = typeof msg.as === 'string' ? (msg.as.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
-        if (kind !== 'paint' && kind !== 'text' && kind !== 'effect') {
-          refuse('STYLE_MAKE', 'as must be paint, text or effect')
+          const kind = typeof msg.as === 'string' ? (msg.as.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
+        if (!STYLE_KINDS.includes(kind)) {
+          refuse('STYLE_MAKE', `as must be one of: ${STYLE_KINDS.join(', ')}`)
           break
         }
         const name = typeof msg.name === 'string' ? msg.name.trim() : ''
@@ -2886,7 +2900,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         const existing = (await localStyles(kind)).find((style) => style.name === name) ?? null
         const style =
           existing ??
-          (kind === 'paint' ? figma.createPaintStyle() : kind === 'text' ? figma.createTextStyle() : figma.createEffectStyle())
+          (kind === 'paint'
+            ? figma.createPaintStyle()
+            : kind === 'text'
+              ? figma.createTextStyle()
+              : kind === 'effect'
+                ? figma.createEffectStyle()
+                : figma.createGridStyle())
         style.name = name
         if (typeof msg.description === 'string') style.description = msg.description
 
@@ -2900,6 +2920,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             ? ((source as unknown as { effects?: Effect[] }).effects ?? [])
             : (await applyToScratch(msg.effects, 'effects')).effects
           ;(style as EffectStyle).effects = effects as Effect[]
+        } else if (kind === 'grid') {
+          const grids = source
+            ? ((source as unknown as { layoutGrids?: LayoutGrid[] }).layoutGrids ?? [])
+            : (await applyToScratch(msg.grid, 'grid')).grids
+          ;(style as GridStyle).layoutGrids = grids as LayoutGrid[]
         } else {
           const from = source?.type === 'TEXT' ? source : null
           if (!from && msg.text === undefined) {
@@ -2955,7 +2980,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             key: style.key,
             name: style.name,
             kind,
-            holds: await describeStyle(style, describePaints, describeEffects),
+            holds: await describeStyle(style, describePaints, describeEffects, describeGrids),
           },
         })
       } catch (error) {

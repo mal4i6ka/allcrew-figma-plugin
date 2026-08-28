@@ -264,6 +264,7 @@ test('a shadow is two words and the rest is what a designer would have picked', 
   assert.deepEqual(steps, [
     {
       step: 'effects',
+      bind: [],
       effects: [
         {
           type: 'DROP_SHADOW',
@@ -511,4 +512,68 @@ test('a style is followed before the paints that override it', () => {
     plan.steps.map((step) => (step.step === 'assign' ? step.property : step.step === 'style' ? step.slot : step.step)),
     ['name', 'fillStyle', 'paint']
   )
+})
+
+/* --------------------------------------------------------------------- grids */
+
+test('a column grid is said the way a designer says it', () => {
+  const step = stepsOf({ grid: [{ columns: 12, gutter: 16, margin: 24 }] })[0] as {
+    grids: unknown[]
+    summary: string
+  }
+  assert.deepEqual(step.grids[0], {
+    pattern: 'COLUMNS',
+    // A margin only means anything when the sections stretch into what is left of the frame.
+    alignment: 'STRETCH',
+    gutterSize: 16,
+    count: 12,
+    offset: 24,
+    visible: true,
+  })
+  assert.equal(step.summary, '12 column(s) stretch gutter 16 margin 24')
+})
+
+test('naming a width pins the columns instead of stretching them', () => {
+  const step = stepsOf({ grid: [{ columns: 4, width: 80, gutter: 8 }] })[0] as { grids: Array<Record<string, unknown>> }
+  assert.equal(step.grids[0].alignment, 'MIN')
+  assert.equal(step.grids[0].sectionSize, 80)
+})
+
+test('rows and the square grid are the same vocabulary', () => {
+  assert.equal((stepsOf({ grid: [{ rows: 5, height: 40 }] })[0] as { grids: Array<Record<string, unknown>> }).grids[0].pattern, 'ROWS')
+  assert.deepEqual((stepsOf({ grid: [{ square: 8 }] })[0] as { grids: unknown[] }).grids[0], {
+    pattern: 'GRID',
+    sectionSize: 8,
+    visible: true,
+  })
+})
+
+test('an empty list removes the grids, and every mistake is named', () => {
+  assert.deepEqual((stepsOf({ grid: [] })[0] as { grids: unknown[] }).grids, [])
+  assert.match(planProps({ grid: [{ columns: 0 }] }).problems[0], /columns must be a whole number of at least 1/)
+  assert.match(planProps({ grid: [{ columns: 12, align: 'MIDDLE' }] }).problems[0], /align must be one of: MIN, MAX/)
+  assert.match(planProps({ grid: [{ columns: 12, gap: 8 }] }).problems[0], /unknown key "gap"/)
+  assert.match(planProps({ grid: [{}] }).problems[0], /must be \{ columns \}, \{ rows \} or \{ square \}/)
+  assert.match(planProps({ grid: {} }).problems[0], /must be an array of grids/)
+})
+
+/* ------------------------------------------------- effects that follow a token */
+
+test('an effect field may name a variable, and the binding travels beside the effect', () => {
+  const step = stepsOf({
+    effects: [{ shadow: 'drop', color: { variable: 'shadow/ambient' }, radius: { variable: 'scale/16' }, offset: [0, { variable: 'scale/4' }] }],
+  })[0] as { effects: Array<Record<string, unknown>>; bind: unknown[] }
+  assert.deepEqual(step.bind, [
+    { index: 0, field: 'color', variable: 'shadow/ambient' },
+    { index: 0, field: 'offsetY', variable: 'scale/4' },
+    { index: 0, field: 'radius', variable: 'scale/16' },
+  ])
+  // Figma wants a number in the effect whatever happens; the binding replaces it afterwards.
+  assert.equal(step.effects[0].radius, 8)
+  assert.deepEqual(step.effects[0].offset, { x: 0, y: 4 })
+})
+
+test('a field that is neither a number nor a variable is refused', () => {
+  assert.match(planProps({ effects: [{ shadow: 'drop', radius: 'big' }] }).problems[0], /radius must be a number or \{ variable \}/)
+  assert.match(planProps({ effects: [{ shadow: 'drop', color: 42 }] }).problems[0], /color must be a #RRGGBB colour or \{ variable \}/)
 })

@@ -330,9 +330,44 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
 
     case 'effects': {
       if (!('effects' in bag)) throw new Error(`a ${node.type} takes no effects`)
-      const before = describeEffects(bag.effects)
-      if (!dry) bag.effects = step.effects
-      return { property: 'effects', before, after: step.summary }
+      const before = await describeEffects(bag.effects)
+
+      // A bound field is bound on the effect object, not on the node: `setBoundVariableForEffect`
+      // hands back a NEW effect, so each binding is folded into the list before the list is set.
+      let effects = step.effects
+      const failures: string[] = []
+      for (const binding of step.bind) {
+        try {
+          const variable = await resolveVariableRef(binding.variable)
+          const wants = binding.field === 'color' ? 'COLOR' : 'FLOAT'
+          if (variable.resolvedType !== wants) {
+            throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${binding.field} wants a ${wants}`)
+          }
+          const bound = figma.variables.setBoundVariableForEffect(
+            effects[binding.index],
+            binding.field as VariableBindableEffectField,
+            variable
+          )
+          effects = effects.map((effect, index) => (index === binding.index ? bound : effect))
+        } catch (error) {
+          failures.push(`${binding.field}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+
+      if (!dry) bag.effects = effects
+      return {
+        property: 'effects',
+        before,
+        after: step.summary,
+        ...(failures.length > 0 ? { error: failures.join(' · ') } : {}),
+      }
+    }
+
+    case 'grid': {
+      if (!('layoutGrids' in bag)) throw new Error(`a ${node.type} takes no layout grids`)
+      const before = Array.isArray(bag.layoutGrids) ? `${(bag.layoutGrids as unknown[]).length} grid(s)` : 'none'
+      if (!dry) bag.layoutGrids = step.grids
+      return { property: 'grid', before, after: step.summary }
     }
 
     case 'dashes': {
@@ -891,22 +926,58 @@ function hexOf(color: { r: number; g: number; b: number; a?: number }): string {
   return color.a !== undefined && color.a < 1 ? `${hex} @${round(color.a)}` : hex
 }
 
+/** Layout grids as one line, in the words the vocabulary takes them in. */
+export function describeGrids(value: unknown): string {
+  if (!Array.isArray(value) || value.length === 0) return 'none'
+  const parts: string[] = []
+  for (const grid of value as LayoutGrid[]) {
+    if (grid.pattern === 'GRID') {
+      parts.push(`square ${grid.sectionSize}`)
+      continue
+    }
+    const rows = grid as RowsColsLayoutGrid
+    const kind = rows.pattern === 'COLUMNS' ? 'column' : 'row'
+    parts.push(
+      `${rows.count} ${kind}(s) ${rows.alignment.toLowerCase()}` +
+        `${rows.gutterSize ? ` gutter ${rows.gutterSize}` : ''}` +
+        `${rows.offset ? ` margin ${rows.offset}` : ''}` +
+        `${rows.sectionSize ? ` at ${rows.sectionSize}` : ''}`
+    )
+  }
+  return parts.join(' · ')
+}
+
 /** Effects as one readable line, for the same reason paints are: this lands deep in a report. */
-export function describeEffects(value: unknown): string {
+export async function describeEffects(value: unknown): Promise<string> {
   if (!Array.isArray(value)) return value === figma.mixed ? 'mixed' : 'none'
   if (value.length === 0) return 'none'
+
   const parts: string[] = []
   for (const effect of value as Effect[]) {
+    // A bound field is bound on the effect, not on the node, so it does not show up in the
+    // node's `boundVariables` and a read that ignored it reported a token-driven elevation as
+    // four loose numbers.
+    const bound = (effect as { boundVariables?: Record<string, { id?: string }> }).boundVariables ?? {}
+    const named = async (field: string, fallback: string | number): Promise<string> => {
+      const id = bound[field]?.id
+      if (!id) return String(fallback)
+      const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
+      return `var:${variable?.name ?? id}`
+    }
+
     if (effect.type === 'LAYER_BLUR' || effect.type === 'BACKGROUND_BLUR') {
-      parts.push(`${effect.type === 'LAYER_BLUR' ? 'layer' : 'background'} blur ${effect.radius}`)
+      parts.push(`${effect.type === 'LAYER_BLUR' ? 'layer' : 'background'} blur ${await named('radius', effect.radius)}`)
       continue
     }
     if (effect.type === 'DROP_SHADOW' || effect.type === 'INNER_SHADOW') {
       const { r, g, b, a } = effect.color
       const hex = `#${[r, g, b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`
+      const colour = await named('color', `${hex}${a === 1 ? '' : ` @${round(a)}`}`)
       const kind = effect.type === 'DROP_SHADOW' ? 'drop' : 'inner'
-      const spread = effect.spread ? ` spread ${effect.spread}` : ''
-      parts.push(`${kind} shadow ${hex}${a === 1 ? '' : ` @${round(a)}`} ${effect.offset.x},${effect.offset.y} blur ${effect.radius}${spread}`)
+      const spread = effect.spread || bound.spread ? ` spread ${await named('spread', effect.spread ?? 0)}` : ''
+      const x = await named('offsetX', effect.offset.x)
+      const y = await named('offsetY', effect.offset.y)
+      parts.push(`${kind} shadow ${colour} ${x},${y} blur ${await named('radius', effect.radius)}${spread}`)
       continue
     }
     parts.push(String((effect as { type: string }).type).toLowerCase())

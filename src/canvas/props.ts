@@ -130,18 +130,36 @@ export interface ImageRef {
   opacity?: number
 }
 
-/** A shadow or a blur, in the terms the panel uses rather than Figma's five-field objects. */
+/**
+ * A shadow or a blur, in the terms the panel uses rather than Figma's five-field objects.
+ *
+ * Any of the numbers, and the colour, may name a variable instead — which is how an elevation
+ * token stays a token once it is on a layer rather than becoming four loose numbers.
+ */
 export type EffectSpec =
   | {
       shadow: 'drop' | 'inner'
-      color?: string
+      color?: string | { variable: string }
       opacity?: number
-      offset?: [number, number]
-      radius?: number
-      spread?: number
+      offset?: [number | { variable: string }, number | { variable: string }]
+      radius?: number | { variable: string }
+      spread?: number | { variable: string }
       visible?: boolean
     }
-  | { blur: 'layer' | 'background'; radius: number; visible?: boolean }
+  | { blur: 'layer' | 'background'; radius: number | { variable: string }; visible?: boolean }
+
+/**
+ * A layout grid: columns, rows, or the square grid.
+ *
+ * Figma spells each as a pattern with an alignment, a gutter, a count and sometimes a width; a
+ * person says "12 columns, 16 apart, 24 in from each side".
+ */
+export type GridSpec =
+  | { columns: number; gutter?: number; margin?: number; width?: number; align?: GridAlign; color?: string; opacity?: number; visible?: boolean }
+  | { rows: number; gutter?: number; margin?: number; height?: number; align?: GridAlign; color?: string; opacity?: number; visible?: boolean }
+  | { square: number; color?: string; opacity?: number; visible?: boolean }
+
+export type GridAlign = 'MIN' | 'MAX' | 'CENTER' | 'STRETCH'
 
 export interface LayoutProps {
   mode?: 'NONE' | 'HORIZONTAL' | 'VERTICAL'
@@ -180,6 +198,8 @@ export interface NodeProps {
   strokeDashes?: number[]
   /** Shadows and blurs, in order. `[]` removes them. */
   effects?: EffectSpec[]
+  /** Layout grids on a frame. `[]` removes them. */
+  grid?: GridSpec[]
   blendMode?: string
   /** TEXT only. */
   text?: string
@@ -309,7 +329,14 @@ export type PropStep =
   | { step: 'constraints'; horizontal?: ConstraintKind; vertical?: ConstraintKind }
   | { step: 'reparent'; parent: string; index?: number }
   | { step: 'lineHeight'; value: number | 'AUTO' }
-  | { step: 'effects'; effects: Effect[]; summary: string }
+  | {
+      step: 'effects'
+      effects: Effect[]
+      summary: string
+      /** Variables to bind afterwards: which effect, which field, which variable. */
+      bind: Array<{ index: number; field: string; variable: string }>
+    }
+  | { step: 'grid'; grids: LayoutGrid[]; summary: string }
   | { step: 'dashes'; dashes: number[] }
   | { step: 'runs'; runs: TextRun[] }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
@@ -412,6 +439,7 @@ const ORDER = [
   'strokeJoin',
   'strokeDashes',
   'effects',
+  'grid',
   'blendMode',
   'fontName',
   'fontSize',
@@ -766,6 +794,11 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
       case 'effects': {
         const effects = planEffects(props.effects, `${where}.effects`, problems)
         if (effects) steps.push(effects)
+        break
+      }
+      case 'grid': {
+        const grid = planGrids(props.grid, `${where}.grid`, problems)
+        if (grid) steps.push(grid)
         break
       }
       case 'parent': {
@@ -1562,6 +1595,7 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
   }
 
   const effects: Effect[] = []
+  const bind: Array<{ index: number; field: string; variable: string }> = []
   const summary: string[] = []
 
   for (const [index, entry] of raw.entries()) {
@@ -1573,14 +1607,29 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
     }
     const spec = entry as Record<string, unknown>
 
+    /** A number, or the name of a variable to bind to that field afterwards. */
+    const measure = (value: unknown, fallback: number, field: string, label: string): number | null => {
+      if (value === undefined) return fallback
+      if (typeof value === 'number' && Number.isFinite(value)) return value
+      const named = value as { variable?: unknown }
+      if (typeof named?.variable === 'string' && named.variable.trim() !== '') {
+        bind.push({ index: effects.length, field, variable: named.variable.trim() })
+        // Figma wants a number in the effect whatever happens; the binding replaces it.
+        return fallback
+      }
+      fail(`${label} must be a number or { variable }`)
+      return null
+    }
+
     if (typeof spec.blur === 'string') {
       const kind = spec.blur.toLowerCase()
       if (kind !== 'layer' && kind !== 'background') {
         fail('blur must be "layer" or "background"')
         continue
       }
-      const radius = spec.radius
-      if (typeof radius !== 'number' || !Number.isFinite(radius) || radius < 0) {
+      const radius = measure(spec.radius, 0, 'radius', 'radius')
+      if (radius === null) continue
+      if (spec.radius === undefined) {
         fail('radius must be a number >= 0')
         continue
       }
@@ -1609,10 +1658,16 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
       }
     }
 
-    const hex = spec.color === undefined ? '#000000' : spec.color
-    if (typeof hex !== 'string' || !HEX.test(hex)) {
-      fail(`color must be a #RRGGBB colour`)
-      continue
+    let hex = '#000000'
+    const named = spec.color as { variable?: unknown } | undefined
+    if (typeof named?.variable === 'string' && named.variable.trim() !== '') {
+      bind.push({ index: effects.length, field: 'color', variable: named.variable.trim() })
+    } else if (spec.color !== undefined) {
+      if (typeof spec.color !== 'string' || !HEX.test(spec.color)) {
+        fail('color must be a #RRGGBB colour or { variable }')
+        continue
+      }
+      hex = spec.color
     }
     const rgb = parseHex(hex)
     if (!rgb) {
@@ -1625,40 +1680,149 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
       continue
     }
     const offset = spec.offset === undefined ? [0, 4] : spec.offset
-    if (
-      !Array.isArray(offset) ||
-      offset.length !== 2 ||
-      offset.some((one) => typeof one !== 'number' || !Number.isFinite(one))
-    ) {
+    if (!Array.isArray(offset) || offset.length !== 2) {
       fail('offset must be [x, y]')
       continue
     }
-    const radius = spec.radius === undefined ? 8 : spec.radius
-    if (typeof radius !== 'number' || !Number.isFinite(radius) || radius < 0) {
-      fail('radius must be a number >= 0')
-      continue
-    }
-    const spread = spec.spread === undefined ? 0 : spec.spread
-    if (typeof spread !== 'number' || !Number.isFinite(spread)) {
-      fail('spread must be a number')
-      continue
-    }
+    const x = measure(offset[0], 0, 'offsetX', 'offset[0]')
+    const y = measure(offset[1], 4, 'offsetY', 'offset[1]')
+    const radius = measure(spec.radius, 8, 'radius', 'radius')
+    const spread = measure(spec.spread, 0, 'spread', 'spread')
+    if (x === null || y === null || radius === null || spread === null) continue
 
     effects.push({
       type: kind === 'drop' ? 'DROP_SHADOW' : 'INNER_SHADOW',
       color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha },
-      offset: { x: offset[0] as number, y: offset[1] as number },
+      offset: { x, y },
       radius,
       spread,
       visible: spec.visible !== false,
       blendMode: 'NORMAL',
     } as Effect)
     summary.push(
-      `${kind} shadow ${hex}${alpha === 1 ? '' : ` @${alpha}`} ${offset[0]},${offset[1]} blur ${radius}${spread ? ` spread ${spread}` : ''}`
+      `${kind} shadow ${hex}${alpha === 1 ? '' : ` @${alpha}`} ${x},${y} blur ${radius}${spread ? ` spread ${spread}` : ''}`
     )
   }
 
-  return { step: 'effects', effects, summary: summary.join(' · ') || 'none' }
+  return { step: 'effects', effects, bind, summary: summary.join(' · ') || 'none' }
+}
+
+const GRID_ALIGN = ['MIN', 'MAX', 'CENTER', 'STRETCH']
+
+/**
+ * Layout grids, from the sentence a designer would say.
+ *
+ * Figma spells a column grid as a pattern, an alignment, a gutter, a count and a section size,
+ * where "24 in from each side" is an alignment of STRETCH and an offset. So `margin` sets that,
+ * and naming a `width` instead pins the columns and lets the margins fall where they will.
+ */
+function planGrids(raw: unknown, where: string, problems: string[]): PropStep | null {
+  if (!Array.isArray(raw)) {
+    problems.push(`${where} must be an array of grids — [] removes them`)
+    return null
+  }
+
+  const grids: LayoutGrid[] = []
+  const summary: string[] = []
+
+  for (const [index, entry] of raw.entries()) {
+    const at = `${where}[${index}]`
+    const fail = (message: string) => problems.push(`${at}: ${message}`)
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      fail('must be { columns }, { rows } or { square }')
+      continue
+    }
+    const spec = entry as Record<string, unknown>
+
+    const paint = (): { color?: RGBA } | null => {
+      if (spec.color === undefined) return {}
+      if (typeof spec.color !== 'string' || !HEX.test(spec.color)) {
+        fail('color must be a #RRGGBB colour')
+        return null
+      }
+      const rgb = parseHex(spec.color)
+      if (!rgb) {
+        fail(`"${spec.color}" is not a colour`)
+        return null
+      }
+      const alpha = spec.opacity === undefined ? 0.1 : spec.opacity
+      if (typeof alpha !== 'number' || alpha < 0 || alpha > 1) {
+        fail('opacity must be between 0 and 1')
+        return null
+      }
+      return { color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha } }
+    }
+
+    if (spec.square !== undefined) {
+      const size = spec.square
+      if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) {
+        fail('square must be a cell size greater than 0')
+        continue
+      }
+      const colour = paint()
+      if (!colour) continue
+      grids.push({ pattern: 'GRID', sectionSize: size, visible: spec.visible !== false, ...colour } as LayoutGrid)
+      summary.push(`square ${size}`)
+      continue
+    }
+
+    const vertical = spec.columns !== undefined
+    const count = vertical ? spec.columns : spec.rows
+    if (count === undefined) {
+      fail('must be { columns }, { rows } or { square }')
+      continue
+    }
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
+      fail(`${vertical ? 'columns' : 'rows'} must be a whole number of at least 1`)
+      continue
+    }
+    for (const key of Object.keys(spec)) {
+      if (!['columns', 'rows', 'gutter', 'margin', 'width', 'height', 'align', 'color', 'opacity', 'visible'].includes(key)) {
+        fail(`unknown key "${key}" — accepted: columns/rows, gutter, margin, width/height, align, color, opacity, visible`)
+      }
+    }
+
+    const gutter = spec.gutter === undefined ? 0 : spec.gutter
+    if (typeof gutter !== 'number' || !Number.isFinite(gutter) || gutter < 0) {
+      fail('gutter must be a number >= 0')
+      continue
+    }
+    const size = vertical ? spec.width : spec.height
+    if (size !== undefined && (typeof size !== 'number' || !Number.isFinite(size) || size <= 0)) {
+      fail(`${vertical ? 'width' : 'height'} must be a number greater than 0`)
+      continue
+    }
+    const margin = spec.margin === undefined ? 0 : spec.margin
+    if (typeof margin !== 'number' || !Number.isFinite(margin) || margin < 0) {
+      fail('margin must be a number >= 0')
+      continue
+    }
+    // A margin only means anything when the sections stretch to fill what is left of the frame,
+    // which is what STRETCH is; naming a fixed width is the other way round.
+    const align = spec.align === undefined ? (size === undefined ? 'STRETCH' : 'MIN') : spec.align
+    if (typeof align !== 'string' || !GRID_ALIGN.includes(align)) {
+      fail(`align must be one of: ${GRID_ALIGN.join(', ')}`)
+      continue
+    }
+    const colour = paint()
+    if (!colour) continue
+
+    grids.push({
+      pattern: vertical ? 'COLUMNS' : 'ROWS',
+      alignment: align as GridAlign,
+      gutterSize: gutter,
+      count,
+      ...(size === undefined ? {} : { sectionSize: size }),
+      ...(margin === 0 ? {} : { offset: margin }),
+      visible: spec.visible !== false,
+      ...colour,
+    } as LayoutGrid)
+    summary.push(
+      `${count} ${vertical ? 'column' : 'row'}(s) ${align.toLowerCase()}${gutter ? ` gutter ${gutter}` : ''}${margin ? ` margin ${margin}` : ''}${size ? ` at ${size}` : ''}`
+    )
+  }
+
+  return { step: 'grid', grids, summary: summary.join(' · ') || 'none' }
 }
 
 function planLayout(raw: unknown, where: string, problems: string[]): PropStep | null {
