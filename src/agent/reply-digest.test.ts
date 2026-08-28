@@ -79,24 +79,66 @@ test('two of a kind is not a burst — nothing is hidden to save one line', () =
   assert.equal(digest.replies.length, 2)
 })
 
-test('a long array becomes a count and a sample', () => {
-  const digest = digestReplies([{ type: 'SCAN_RESULT', lint: Array.from({ length: 50 }, (_, i) => ({ id: i })) }])
-  assert.deepEqual((digest.replies[0] as { lint: unknown }).lint, {
-    count: 50,
-    sample: [{ id: 0 }, { id: 1 }, { id: 2 }],
-    note: 'showing 3 of 50',
-  })
-  assert.equal(digest.truncated, true)
+test('a long array keeps its shape inline and all of itself in a file', () => {
+  const lint = Array.from({ length: 50 }, (_, i) => ({ id: i, message: `finding ${i}` }))
+  const digest = digestReplies([{ type: 'SCAN_RESULT', lint }])
+  const summary = (digest.replies[0] as { lint: Record<string, unknown> }).lint
+
+  assert.equal(summary.count, 50)
+  assert.deepEqual(summary.sample, [
+    { id: 0, message: 'finding 0' },
+    { id: 1, message: 'finding 1' },
+    { id: 2, message: 'finding 2' },
+  ])
+  assert.ok(isFileEnvelope(summary.full))
+  assert.deepEqual(JSON.parse(envelope(summary.full).data), lint, 'the file must hold every entry')
+  assert.equal(envelope(summary.full).name, 'lint.json')
+  // Nothing was dropped, so this is not a truncation — the flag is reserved for real loss.
+  assert.equal(digest.truncated, false)
 })
 
-test('a wide object is named, not spilled — the keys are the answer', () => {
+test('a wide object is one file, not forty', () => {
   const files: Record<string, string> = {}
   for (let index = 0; index < 40; index++) files[`page-${index}.html`] = 'x'.repeat(1000)
   const digest = digestReplies([{ type: 'FILES_READY', files }])
-  const summary = (digest.replies[0] as { files: { keys: number; names: string[] } }).files
+  const summary = (digest.replies[0] as { files: Record<string, unknown> }).files
+
   assert.equal(summary.keys, 40)
-  assert.equal(summary.names.length, 24)
-  assert.equal(digest.files, 0, 'a 40-file map must not write 40 files behind the agent')
+  assert.equal((summary.names as string[]).length, 24)
+  assert.equal(digest.files, 1, 'a 40-file map must not write 40 files behind the agent')
+  assert.deepEqual(JSON.parse(envelope(summary.full).data), files)
+})
+
+test('a structure below the file floor stays inline as a shape', () => {
+  // Thirteen small numbers do not need a file; the count and a taste are the whole answer.
+  const digest = digestReplies([{ type: 'TINY', ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] }])
+  const summary = (digest.replies[0] as { ids: Record<string, unknown> }).ids
+  assert.equal(summary.count, 13)
+  assert.equal(summary.full, undefined)
+  assert.equal(digest.truncated, true)
+})
+
+test('the shape beside a spilled structure never writes files of its own', () => {
+  // The file holds every byte already; a sample that spilled too would store the same strings
+  // twice and burn the budget doing it.
+  const rows = Array.from({ length: 30 }, (_, i) => ({ id: i, css: 'a'.repeat(2000) }))
+  const digest = digestReplies([{ type: 'BIG', rows }])
+  assert.equal(digest.files, 1)
+  const sample = (digest.replies[0] as { rows: { sample: Array<{ css: unknown }> } }).rows.sample
+  assert.equal(typeof (sample[0].css as { chars?: number }).chars, 'number', 'the sample quotes, it does not spill')
+})
+
+test('a reply that cannot be serialised falls back to its shape, and says so', () => {
+  const circular: Record<string, unknown> = { name: 'loop' }
+  circular.self = circular
+  const wide: Record<string, unknown> = {}
+  for (let index = 0; index < 30; index++) wide[`k${index}`] = circular
+  const digest = digestReplies([{ type: 'CYCLE', wide }])
+
+  const summary = (digest.replies[0] as { wide: Record<string, unknown> }).wide
+  assert.equal(summary.keys, 30)
+  assert.equal(summary.full, undefined)
+  assert.equal(digest.truncated, true)
 })
 
 test("the channel's own traffic is not part of a command's answer", () => {

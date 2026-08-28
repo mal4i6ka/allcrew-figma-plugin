@@ -18456,7 +18456,7 @@ ${scripts}`, "");
         }
         const duration = Math.max(...animated.flatMap((entry) => entry.tracks.map((track) => track.timelineDuration)));
         const backend = params.backend;
-        const preview = buildPreviewDocument({
+        const preview2 = buildPreviewDocument({
           timelineId: root.id,
           duration,
           nodes,
@@ -18466,13 +18466,13 @@ ${scripts}`, "");
         return {
           available: true,
           animated: animated.length,
-          backend: preview.backend,
-          reason: preview.reason,
+          backend: preview2.backend,
+          reason: preview2.reason,
           // A GSAP-backed preview needs the GSAP runtime inlined, and the plugin ships none —
           // `networkAccess: none` means the page cannot fetch one either. Saying so is the
           // difference between "the animation is wrong" and "nothing ran".
-          inert: preview.backend === "gsap",
-          files: [textFile(`${slugify2(root.name)}.preview.html`, "text/html", preview.html)]
+          inert: preview2.backend === "gsap",
+          files: [textFile(`${slugify2(root.name)}.preview.html`, "text/html", preview2.html)]
         };
       }
     },
@@ -21132,34 +21132,70 @@ ${scripts}`, "");
     }
     if (Array.isArray(value)) {
       if (depth >= MAX_DEPTH) {
-        state.truncated = true;
-        return { count: value.length, note: "nested too deep to show" };
+        return oversized(value, { count: value.length }, "nested too deep to quote", budget, state, key);
       }
       if (value.length > MAX_ARRAY) {
-        state.truncated = true;
-        return {
-          count: value.length,
-          sample: value.slice(0, 3).map((entry) => digestValue(entry, depth + 1, budget, state, key)),
-          note: `showing 3 of ${value.length}`
-        };
+        return oversized(
+          value,
+          { count: value.length, sample: preview(value.slice(0, 3), budget) },
+          `showing 3 of ${value.length}`,
+          budget,
+          state,
+          key
+        );
       }
       return value.map((entry) => digestValue(entry, depth + 1, budget, state, key));
     }
     const record2 = value;
     const keys = Object.keys(record2);
     if (depth >= MAX_DEPTH) {
-      state.truncated = true;
-      return { keys: keys.length, note: "nested too deep to show" };
+      return oversized(record2, { keys: keys.length }, "nested too deep to quote", budget, state, key);
     }
     if (keys.length > MAX_KEYS) {
-      state.truncated = true;
-      return { keys: keys.length, names: keys.slice(0, MAX_KEYS), note: `showing ${MAX_KEYS} of ${keys.length}` };
+      return oversized(
+        record2,
+        { keys: keys.length, names: keys.slice(0, MAX_KEYS) },
+        `showing ${MAX_KEYS} key(s) of ${keys.length}`,
+        budget,
+        state,
+        key
+      );
     }
     const out = {};
     for (const entry of keys) {
       out[entry] = digestValue(record2[entry], depth + 1, budget, state, entry);
     }
     return out;
+  }
+  function oversized(value, shape, note, budget, state, key) {
+    const json = safeJson(value);
+    if (json !== null && json.length >= MIN_SPILL_BYTES && state.files < budget.maxFiles && state.bytes + json.length <= budget.maxBytes) {
+      const name = fileNameFor(`${key || "reply"}.json`, state.names);
+      if (name) {
+        state.files++;
+        state.bytes += json.length;
+        state.names.add(name);
+        return __spreadProps(__spreadValues({}, shape), { note: `${note} \u2014 all of it in the file`, full: textFile(name, "application/json", json) });
+      }
+    }
+    state.truncated = true;
+    return __spreadProps(__spreadValues({}, shape), { note });
+  }
+  var MIN_SPILL_BYTES = 120;
+  function preview(value, budget) {
+    const sealed = { files: 0, bytes: 0, truncated: false, names: /* @__PURE__ */ new Set() };
+    return value.map((entry) => digestValue(entry, 0, __spreadProps(__spreadValues({}, budget), { maxFiles: 0 }), sealed, ""));
+  }
+  function safeJson(value) {
+    try {
+      const json = JSON.stringify(
+        value,
+        (_key, entry) => entry instanceof Uint8Array ? { bytes: entry.length, note: "binary omitted" } : entry
+      );
+      return typeof json === "string" ? json : null;
+    } catch (e) {
+      return null;
+    }
   }
   function digestString(value, budget, state, key) {
     if (value.length <= budget.keep) return value;

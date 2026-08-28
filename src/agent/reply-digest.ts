@@ -6,11 +6,13 @@
  * `SCAN_TOKENS` with the entire token package. Relaying that verbatim would spend a context
  * window on one call.
  *
- * So a reply is digested, not forwarded: scalars survive, long strings become files on the
- * agent's disk (the `__alteryFile` envelope the bridge materialises — see `files.ts`), big
- * collections become a count and a sample, and a burst of identical progress messages
- * collapses to its first and last. Everything that gets dropped says so in place, because a
- * silent truncation reads as "that's all there was".
+ * So a reply is digested, not forwarded: scalars survive, and anything too big to quote — a
+ * long string, a long array, a wide object — becomes a file on the agent's disk (the
+ * `__alteryFile` envelope the bridge materialises, see `files.ts`) with its shape left inline.
+ * A burst of identical progress messages collapses to its first and last. Everything that
+ * actually gets dropped says so in place, because a silent truncation reads as "that's all
+ * there was" — and `truncated` is reserved for exactly that, so it does not fire when the data
+ * merely moved to a file.
  */
 
 import { isSafeFileName, textFile } from './files.ts'
@@ -97,16 +99,17 @@ function digestValue(value: unknown, depth: number, budget: DigestBudget, state:
 
   if (Array.isArray(value)) {
     if (depth >= MAX_DEPTH) {
-      state.truncated = true
-      return { count: value.length, note: 'nested too deep to show' }
+      return oversized(value, { count: value.length }, 'nested too deep to quote', budget, state, key)
     }
     if (value.length > MAX_ARRAY) {
-      state.truncated = true
-      return {
-        count: value.length,
-        sample: value.slice(0, 3).map((entry) => digestValue(entry, depth + 1, budget, state, key)),
-        note: `showing 3 of ${value.length}`,
-      }
+      return oversized(
+        value,
+        { count: value.length, sample: preview(value.slice(0, 3), budget) },
+        `showing 3 of ${value.length}`,
+        budget,
+        state,
+        key
+      )
     }
     return value.map((entry) => digestValue(entry, depth + 1, budget, state, key))
   }
@@ -114,14 +117,20 @@ function digestValue(value: unknown, depth: number, budget: DigestBudget, state:
   const record = value as Record<string, unknown>
   const keys = Object.keys(record)
   if (depth >= MAX_DEPTH) {
-    state.truncated = true
-    return { keys: keys.length, note: 'nested too deep to show' }
+    return oversized(record, { keys: keys.length }, 'nested too deep to quote', budget, state, key)
   }
   if (keys.length > MAX_KEYS) {
-    // A file map (`{ 'css/tokens.css': '…' }`) lands here. Its keys are the interesting part —
-    // the agent asks for one by name afterwards — so name them and spill nothing.
-    state.truncated = true
-    return { keys: keys.length, names: keys.slice(0, MAX_KEYS), note: `showing ${MAX_KEYS} of ${keys.length}` }
+    // A file map (`{ 'css/tokens.css': '…' }`) lands here: its keys are the shape, and the
+    // contents are what the caller came for — one file with all of it, not forty files and not
+    // a list of names.
+    return oversized(
+      record,
+      { keys: keys.length, names: keys.slice(0, MAX_KEYS) },
+      `showing ${MAX_KEYS} key(s) of ${keys.length}`,
+      budget,
+      state,
+      key
+    )
   }
 
   const out: Record<string, unknown> = {}
@@ -129,6 +138,74 @@ function digestValue(value: unknown, depth: number, budget: DigestBudget, state:
     out[entry] = digestValue(record[entry], depth + 1, budget, state, entry)
   }
   return out
+}
+
+/**
+ * A structure too big to quote inline.
+ *
+ * Summarising it was the wrong instinct: `READ_VARIABLES` came back as
+ * `collections: { count: 13, sample: [ { modes: [ { keys: 2, note: 'nested too deep to show' } ] } ] }`
+ * — a reply whose entire purpose is the data, answered with the shape of the data. The caps
+ * suit a chatty progress reply and ruin a dump.
+ *
+ * So the whole of it goes to a file — the same `__alteryFile` envelope a long string uses, so
+ * the bridge writes it and hands back a path — and what stays inline is the shape: how many,
+ * which keys, a three-entry taste. Nothing is lost, so this does not count as truncation; a
+ * caller that only needed the shape never opens the file.
+ */
+function oversized(
+  value: unknown,
+  shape: Record<string, unknown>,
+  note: string,
+  budget: DigestBudget,
+  state: State,
+  key: string
+): unknown {
+  const json = safeJson(value)
+  if (
+    json !== null &&
+    json.length >= MIN_SPILL_BYTES &&
+    state.files < budget.maxFiles &&
+    state.bytes + json.length <= budget.maxBytes
+  ) {
+    const name = fileNameFor(`${key || 'reply'}.json`, state.names)
+    if (name) {
+      state.files++
+      state.bytes += json.length
+      state.names.add(name)
+      return { ...shape, note: `${note} — all of it in the file`, full: textFile(name, 'application/json', json) }
+    }
+  }
+  state.truncated = true
+  return { ...shape, note }
+}
+
+/** Below this a file costs more than it explains, and the shape already carries the answer. */
+const MIN_SPILL_BYTES = 120
+
+/**
+ * The shape hint beside a spilled structure, rendered with spilling switched off: the file
+ * already holds every byte, and a sample that wrote files of its own would store the same
+ * strings twice.
+ */
+function preview(value: unknown[], budget: DigestBudget): unknown[] {
+  const sealed: State = { files: 0, bytes: 0, truncated: false, names: new Set() }
+  // From the top, not from the depth the parent had reached: three entries can afford to be
+  // shown properly, and a sample that renders its own children as "nested too deep" reads as a
+  // second loss right next to the note saying nothing was lost.
+  return value.map((entry) => digestValue(entry, 0, { ...budget, maxFiles: 0 }, sealed, ''))
+}
+
+/** JSON or nothing: a reply can carry a cycle, and a digest must not throw over one. */
+function safeJson(value: unknown): string | null {
+  try {
+    const json = JSON.stringify(value, (_key, entry) =>
+      entry instanceof Uint8Array ? { bytes: entry.length, note: 'binary omitted' } : entry
+    )
+    return typeof json === 'string' ? json : null
+  } catch {
+    return null
+  }
 }
 
 function digestString(value: string, budget: DigestBudget, state: State, key: string): unknown {
