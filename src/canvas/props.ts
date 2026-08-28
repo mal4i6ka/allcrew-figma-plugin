@@ -161,6 +161,24 @@ export type GridSpec =
 
 export type GridAlign = 'MIN' | 'MAX' | 'CENTER' | 'STRETCH'
 
+/**
+ * A vector as Figma actually holds one: points, the segments joining them, and the loops those
+ * segments close into.
+ *
+ * Path data says "draw this outline"; a network says "these points exist and these are joined",
+ * which is the difference between describing a shape and being able to edit one. A caller who
+ * wants a triangle writes path data; a caller moving one point of an icon needs this.
+ *
+ * The short forms are the point of it: `[[0,0],[10,0]]` for vertices and `[[0,1]]` for segments,
+ * because a network written out longhand is unreadable.
+ */
+export interface NetworkSpec {
+  vertices: Array<[number, number] | { x: number; y: number; cap?: string; join?: string; cornerRadius?: number }>
+  segments: Array<[number, number] | { start: number; end: number; curve?: [number, number, number, number] }>
+  /** Each loop is a list of segment indices that closes. Without regions a network has no fill. */
+  regions?: Array<{ loops: number[][]; windingRule?: 'NONZERO' | 'EVENODD' }>
+}
+
 export interface LayoutProps {
   mode?: 'NONE' | 'HORIZONTAL' | 'VERTICAL'
   gap?: number
@@ -224,6 +242,8 @@ export interface NodeProps {
   /** VECTOR only: the shape itself, as SVG path data. */
   path?: string
   paths?: Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>
+  /** VECTOR only: the shape as points and the lines between them, which is how a vector is edited. */
+  network?: NetworkSpec
   /** Styles the layer follows, by name, id or published key. `null` detaches from one. */
   fillStyle?: string | null
   strokeStyle?: string | null
@@ -343,6 +363,7 @@ export type PropStep =
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
   | { step: 'style'; kind: 'paint' | 'text' | 'effect' | 'grid'; slot: string; ref: string | null }
   | { step: 'paths'; paths: Array<{ data: string; windingRule: 'NONZERO' | 'EVENODD' }> }
+  | { step: 'network'; network: VectorNetwork; summary: string }
   | { step: 'reset' }
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
@@ -424,6 +445,7 @@ const ORDER = [
   // Before the paints: the shape decides what there is to fill.
   'path',
   'paths',
+  'network',
   // Before the paints and the type: following a style sets the whole bundle, and a colour named
   // in the same breath is meant to override it, not to be overwritten by it.
   'fillStyle',
@@ -683,6 +705,11 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
           paths.push({ data: one.data.trim(), windingRule: rule })
         }
         if (paths.length > 0) steps.push({ step: 'paths', paths })
+        break
+      }
+      case 'network': {
+        const network = planNetwork(props.network, `${where}.network`, problems)
+        if (network) steps.push(network)
         break
       }
       case 'fillStyle':
@@ -1705,6 +1732,154 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
   }
 
   return { step: 'effects', effects, bind, summary: summary.join(' · ') || 'none' }
+}
+
+const STROKE_CAPS = ['NONE', 'ROUND', 'SQUARE', 'ARROW_LINES', 'ARROW_EQUILATERAL']
+const JOINS = ['MITER', 'BEVEL', 'ROUND']
+
+/**
+ * Points, segments and regions, checked against each other.
+ *
+ * The checks are the reason this is worth writing down: a segment naming a vertex that does not
+ * exist, or a region naming a segment that does not, is accepted by nobody and reported by
+ * Figma as a failure with no index in it. Here the index is still in hand.
+ */
+function planNetwork(raw: unknown, where: string, problems: string[]): PropStep | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    problems.push(`${where} must be { vertices, segments, regions? }`)
+    return null
+  }
+  const spec = raw as { vertices?: unknown; segments?: unknown; regions?: unknown }
+  for (const key of Object.keys(spec)) {
+    if (!['vertices', 'segments', 'regions'].includes(key)) {
+      problems.push(`${where}: unknown key "${key}" — accepted: vertices, segments, regions`)
+    }
+  }
+  if (!Array.isArray(spec.vertices) || spec.vertices.length < 2) {
+    problems.push(`${where}.vertices must be an array of at least two points`)
+    return null
+  }
+  if (!Array.isArray(spec.segments) || spec.segments.length < 1) {
+    problems.push(`${where}.segments must be an array of at least one { start, end }`)
+    return null
+  }
+
+  const vertices: VectorVertex[] = []
+  for (const [index, entry] of spec.vertices.entries()) {
+    const at = `${where}.vertices[${index}]`
+    if (Array.isArray(entry)) {
+      if (entry.length !== 2 || entry.some((one) => typeof one !== 'number' || !Number.isFinite(one))) {
+        problems.push(`${at} must be [x, y]`)
+        continue
+      }
+      vertices.push({ x: entry[0] as number, y: entry[1] as number })
+      continue
+    }
+    if (typeof entry !== 'object' || entry === null) {
+      problems.push(`${at} must be [x, y] or { x, y }`)
+      continue
+    }
+    const point = entry as Record<string, unknown>
+    if (typeof point.x !== 'number' || typeof point.y !== 'number') {
+      problems.push(`${at} must carry x and y`)
+      continue
+    }
+    if (point.cap !== undefined && (typeof point.cap !== 'string' || !STROKE_CAPS.includes(point.cap))) {
+      problems.push(`${at}.cap must be one of: ${STROKE_CAPS.join(', ')}`)
+      continue
+    }
+    if (point.join !== undefined && (typeof point.join !== 'string' || !JOINS.includes(point.join))) {
+      problems.push(`${at}.join must be one of: ${JOINS.join(', ')}`)
+      continue
+    }
+    if (point.cornerRadius !== undefined && (typeof point.cornerRadius !== 'number' || point.cornerRadius < 0)) {
+      problems.push(`${at}.cornerRadius must be a number >= 0`)
+      continue
+    }
+    vertices.push({
+      x: point.x,
+      y: point.y,
+      ...(point.cap ? { strokeCap: point.cap as StrokeCap } : {}),
+      ...(point.join ? { strokeJoin: point.join as StrokeJoin } : {}),
+      ...(point.cornerRadius === undefined ? {} : { cornerRadius: point.cornerRadius }),
+    })
+  }
+
+  const segments: VectorSegment[] = []
+  for (const [index, entry] of spec.segments.entries()) {
+    const at = `${where}.segments[${index}]`
+    const pair = Array.isArray(entry) ? { start: entry[0], end: entry[1], curve: undefined } : (entry as Record<string, unknown>)
+    if (typeof pair?.start !== 'number' || typeof pair?.end !== 'number') {
+      problems.push(`${at} must be [start, end] or { start, end }`)
+      continue
+    }
+    const ends = [pair.start, pair.end]
+    const stray = ends.find((one) => !Number.isInteger(one) || one < 0 || one >= vertices.length)
+    if (stray !== undefined) {
+      problems.push(`${at}: there is no vertex ${stray} — the network has ${vertices.length}`)
+      continue
+    }
+    if (pair.start === pair.end) {
+      problems.push(`${at}: a segment cannot start and end at the same point`)
+      continue
+    }
+    let curve: { tangentStart: Vector; tangentEnd: Vector } | null = null
+    if (pair.curve !== undefined) {
+      const bend = pair.curve
+      if (!Array.isArray(bend) || bend.length !== 4 || bend.some((one) => typeof one !== 'number')) {
+        problems.push(`${at}.curve must be [x1, y1, x2, y2] — the two tangents, each relative to its own end`)
+        continue
+      }
+      curve = {
+        tangentStart: { x: bend[0] as number, y: bend[1] as number },
+        tangentEnd: { x: bend[2] as number, y: bend[3] as number },
+      }
+    }
+    segments.push({ start: pair.start, end: pair.end, ...(curve ?? {}) })
+  }
+
+  const regions: VectorRegion[] = []
+  if (spec.regions !== undefined) {
+    if (!Array.isArray(spec.regions)) {
+      problems.push(`${where}.regions must be an array of { loops }`)
+      return null
+    }
+    for (const [index, entry] of spec.regions.entries()) {
+      const at = `${where}.regions[${index}]`
+      const region = entry as { loops?: unknown; windingRule?: unknown }
+      if (!Array.isArray(region?.loops) || region.loops.length === 0) {
+        problems.push(`${at}.loops must be an array of loops, each a list of segment indices`)
+        continue
+      }
+      const rule = region.windingRule === undefined ? 'NONZERO' : region.windingRule
+      if (rule !== 'NONZERO' && rule !== 'EVENODD') {
+        problems.push(`${at}.windingRule must be NONZERO or EVENODD`)
+        continue
+      }
+      let broken = false
+      for (const loop of region.loops) {
+        if (!Array.isArray(loop) || loop.length === 0) {
+          problems.push(`${at}: every loop must be a list of segment indices`)
+          broken = true
+          break
+        }
+        const stray = loop.find((one) => typeof one !== 'number' || !Number.isInteger(one) || one < 0 || one >= segments.length)
+        if (stray !== undefined) {
+          problems.push(`${at}: there is no segment ${stray} — the network has ${segments.length}`)
+          broken = true
+          break
+        }
+      }
+      if (broken) continue
+      regions.push({ windingRule: rule, loops: region.loops as number[][] })
+    }
+  }
+
+  return {
+    step: 'network',
+    network: { vertices, segments, ...(regions.length > 0 ? { regions } : {}) },
+    summary: `${vertices.length} point(s), ${segments.length} segment(s)${regions.length ? `, ${regions.length} region(s)` : ''}`,
+  }
 }
 
 const GRID_ALIGN = ['MIN', 'MAX', 'CENTER', 'STRETCH']

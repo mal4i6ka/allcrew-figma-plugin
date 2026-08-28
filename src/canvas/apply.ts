@@ -513,6 +513,22 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: step.slot, before: was?.name ?? null, after: style.name }
     }
 
+    case 'network': {
+      const holder = node as SceneNode & { setVectorNetworkAsync?: (network: VectorNetwork) => Promise<void> }
+      if (typeof holder.setVectorNetworkAsync !== 'function') {
+        throw new Error(`a ${node.type} has no vector network — only a vector does`)
+      }
+      const before = (node as unknown as { vectorNetwork?: VectorNetwork }).vectorNetwork
+      // Asynchronous, like everything else that writes structure under dynamic-page; the plain
+      // property is readable and does not accept a write.
+      if (!dry) await holder.setVectorNetworkAsync(step.network)
+      return {
+        property: 'network',
+        before: before ? `${before.vertices.length} point(s), ${before.segments.length} segment(s)` : 'none',
+        after: step.summary,
+      }
+    }
+
     case 'paths': {
       if (!('vectorPaths' in bag)) throw new Error(`a ${node.type} has no paths — only a vector does`)
       const before = (bag.vectorPaths as VectorPaths | undefined)?.length ?? 0

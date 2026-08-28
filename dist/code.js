@@ -23535,6 +23535,7 @@ ${scripts}`, "");
     // Before the paints: the shape decides what there is to fill.
     "path",
     "paths",
+    "network",
     // Before the paints and the type: following a style sets the whole bundle, and a colour named
     // in the same breath is meant to override it, not to be overwritten by it.
     "fillStyle",
@@ -23769,6 +23770,11 @@ ${scripts}`, "");
             paths.push({ data: one.data.trim(), windingRule: rule });
           }
           if (paths.length > 0) steps.push({ step: "paths", paths });
+          break;
+        }
+        case "network": {
+          const network = planNetwork(props.network, `${where}.network`, problems);
+          if (network) steps.push(network);
           break;
         }
         case "fillStyle":
@@ -24564,6 +24570,138 @@ ${scripts}`, "");
       );
     }
     return { step: "effects", effects, bind, summary: summary.join(" \xB7 ") || "none" };
+  }
+  var STROKE_CAPS = ["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL"];
+  var JOINS = ["MITER", "BEVEL", "ROUND"];
+  function planNetwork(raw, where, problems) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      problems.push(`${where} must be { vertices, segments, regions? }`);
+      return null;
+    }
+    const spec = raw;
+    for (const key of Object.keys(spec)) {
+      if (!["vertices", "segments", "regions"].includes(key)) {
+        problems.push(`${where}: unknown key "${key}" \u2014 accepted: vertices, segments, regions`);
+      }
+    }
+    if (!Array.isArray(spec.vertices) || spec.vertices.length < 2) {
+      problems.push(`${where}.vertices must be an array of at least two points`);
+      return null;
+    }
+    if (!Array.isArray(spec.segments) || spec.segments.length < 1) {
+      problems.push(`${where}.segments must be an array of at least one { start, end }`);
+      return null;
+    }
+    const vertices = [];
+    for (const [index, entry] of spec.vertices.entries()) {
+      const at = `${where}.vertices[${index}]`;
+      if (Array.isArray(entry)) {
+        if (entry.length !== 2 || entry.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
+          problems.push(`${at} must be [x, y]`);
+          continue;
+        }
+        vertices.push({ x: entry[0], y: entry[1] });
+        continue;
+      }
+      if (typeof entry !== "object" || entry === null) {
+        problems.push(`${at} must be [x, y] or { x, y }`);
+        continue;
+      }
+      const point = entry;
+      if (typeof point.x !== "number" || typeof point.y !== "number") {
+        problems.push(`${at} must carry x and y`);
+        continue;
+      }
+      if (point.cap !== void 0 && (typeof point.cap !== "string" || !STROKE_CAPS.includes(point.cap))) {
+        problems.push(`${at}.cap must be one of: ${STROKE_CAPS.join(", ")}`);
+        continue;
+      }
+      if (point.join !== void 0 && (typeof point.join !== "string" || !JOINS.includes(point.join))) {
+        problems.push(`${at}.join must be one of: ${JOINS.join(", ")}`);
+        continue;
+      }
+      if (point.cornerRadius !== void 0 && (typeof point.cornerRadius !== "number" || point.cornerRadius < 0)) {
+        problems.push(`${at}.cornerRadius must be a number >= 0`);
+        continue;
+      }
+      vertices.push(__spreadValues(__spreadValues(__spreadValues({
+        x: point.x,
+        y: point.y
+      }, point.cap ? { strokeCap: point.cap } : {}), point.join ? { strokeJoin: point.join } : {}), point.cornerRadius === void 0 ? {} : { cornerRadius: point.cornerRadius }));
+    }
+    const segments = [];
+    for (const [index, entry] of spec.segments.entries()) {
+      const at = `${where}.segments[${index}]`;
+      const pair2 = Array.isArray(entry) ? { start: entry[0], end: entry[1], curve: void 0 } : entry;
+      if (typeof (pair2 == null ? void 0 : pair2.start) !== "number" || typeof (pair2 == null ? void 0 : pair2.end) !== "number") {
+        problems.push(`${at} must be [start, end] or { start, end }`);
+        continue;
+      }
+      const ends = [pair2.start, pair2.end];
+      const stray = ends.find((one) => !Number.isInteger(one) || one < 0 || one >= vertices.length);
+      if (stray !== void 0) {
+        problems.push(`${at}: there is no vertex ${stray} \u2014 the network has ${vertices.length}`);
+        continue;
+      }
+      if (pair2.start === pair2.end) {
+        problems.push(`${at}: a segment cannot start and end at the same point`);
+        continue;
+      }
+      let curve = null;
+      if (pair2.curve !== void 0) {
+        const bend = pair2.curve;
+        if (!Array.isArray(bend) || bend.length !== 4 || bend.some((one) => typeof one !== "number")) {
+          problems.push(`${at}.curve must be [x1, y1, x2, y2] \u2014 the two tangents, each relative to its own end`);
+          continue;
+        }
+        curve = {
+          tangentStart: { x: bend[0], y: bend[1] },
+          tangentEnd: { x: bend[2], y: bend[3] }
+        };
+      }
+      segments.push(__spreadValues({ start: pair2.start, end: pair2.end }, curve != null ? curve : {}));
+    }
+    const regions = [];
+    if (spec.regions !== void 0) {
+      if (!Array.isArray(spec.regions)) {
+        problems.push(`${where}.regions must be an array of { loops }`);
+        return null;
+      }
+      for (const [index, entry] of spec.regions.entries()) {
+        const at = `${where}.regions[${index}]`;
+        const region = entry;
+        if (!Array.isArray(region == null ? void 0 : region.loops) || region.loops.length === 0) {
+          problems.push(`${at}.loops must be an array of loops, each a list of segment indices`);
+          continue;
+        }
+        const rule = region.windingRule === void 0 ? "NONZERO" : region.windingRule;
+        if (rule !== "NONZERO" && rule !== "EVENODD") {
+          problems.push(`${at}.windingRule must be NONZERO or EVENODD`);
+          continue;
+        }
+        let broken = false;
+        for (const loop of region.loops) {
+          if (!Array.isArray(loop) || loop.length === 0) {
+            problems.push(`${at}: every loop must be a list of segment indices`);
+            broken = true;
+            break;
+          }
+          const stray = loop.find((one) => typeof one !== "number" || !Number.isInteger(one) || one < 0 || one >= segments.length);
+          if (stray !== void 0) {
+            problems.push(`${at}: there is no segment ${stray} \u2014 the network has ${segments.length}`);
+            broken = true;
+            break;
+          }
+        }
+        if (broken) continue;
+        regions.push({ windingRule: rule, loops: region.loops });
+      }
+    }
+    return {
+      step: "network",
+      network: __spreadValues({ vertices, segments }, regions.length > 0 ? { regions } : {}),
+      summary: `${vertices.length} point(s), ${segments.length} segment(s)${regions.length ? `, ${regions.length} region(s)` : ""}`
+    };
   }
   var GRID_ALIGN = ["MIN", "MAX", "CENTER", "STRETCH"];
   function planGrids(raw, where, problems) {
@@ -25658,6 +25796,19 @@ ${scripts}`, "");
         const style = await styleFor(step.ref, step.kind);
         if (!dry) await holder[setter](style.id);
         return { property: step.slot, before: (_j = was == null ? void 0 : was.name) != null ? _j : null, after: style.name };
+      }
+      case "network": {
+        const holder = node;
+        if (typeof holder.setVectorNetworkAsync !== "function") {
+          throw new Error(`a ${node.type} has no vector network \u2014 only a vector does`);
+        }
+        const before = node.vectorNetwork;
+        if (!dry) await holder.setVectorNetworkAsync(step.network);
+        return {
+          property: "network",
+          before: before ? `${before.vertices.length} point(s), ${before.segments.length} segment(s)` : "none",
+          after: step.summary
+        };
       }
       case "paths": {
         if (!("vectorPaths" in bag)) throw new Error(`a ${node.type} has no paths \u2014 only a vector does`);
@@ -27005,7 +27156,7 @@ ${scripts}`, "");
   }
   var CLONE_GAP = 64;
   async function describeNode2(node, withProps) {
-    var _a, _b;
+    var _a, _b, _c;
     const base = __spreadValues(__spreadValues({
       id: node.id,
       name: node.name,
@@ -27043,10 +27194,14 @@ ${scripts}`, "");
       const links = await describeLinks(linked.reactions, variableName);
       if (links) props.links = links;
     }
+    const shape = bag.vectorNetwork;
+    if (shape && Array.isArray(shape.vertices) && shape.vertices.length > 0) {
+      props.network = `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${((_a = shape.regions) == null ? void 0 : _a.length) ? `, ${shape.regions.length} region(s)` : ""}`;
+    }
     if (node.type === "INSTANCE") {
       const main = await node.getMainComponentAsync().catch(() => null);
-      const owner = main && ((_a = main.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? main.parent : main;
-      props.component = (_b = owner == null ? void 0 : owner.name) != null ? _b : "(unavailable)";
+      const owner = main && ((_b = main.parent) == null ? void 0 : _b.type) === "COMPONENT_SET" ? main.parent : main;
+      props.component = (_c = owner == null ? void 0 : owner.name) != null ? _c : "(unavailable)";
       const settings = Object.entries(node.componentProperties).map(([key, entry]) => `${humanPropertyName(key)}=${String(entry == null ? void 0 : entry.value)}`);
       if (settings.length > 0) props.properties = settings.join(" \xB7 ");
     }

@@ -577,3 +577,73 @@ test('a field that is neither a number nor a variable is refused', () => {
   assert.match(planProps({ effects: [{ shadow: 'drop', radius: 'big' }] }).problems[0], /radius must be a number or \{ variable \}/)
   assert.match(planProps({ effects: [{ shadow: 'drop', color: 42 }] }).problems[0], /color must be a #RRGGBB colour or \{ variable \}/)
 })
+
+/* ------------------------------------------------------------------- network */
+
+const networkOf = (network: unknown) => {
+  const plan = planProps({ network })
+  assert.deepEqual(plan.problems, [], `unexpected problems: ${plan.problems.join(' · ')}`)
+  return plan.steps[0] as { step: 'network'; network: { vertices: unknown[]; segments: unknown[]; regions?: unknown[] }; summary: string }
+}
+
+test('the short forms are the point: pairs for points, pairs for the lines between them', () => {
+  const step = networkOf({
+    vertices: [[0, 0], [100, 0], [50, 80]],
+    segments: [[0, 1], [1, 2], [2, 0]],
+    regions: [{ loops: [[0, 1, 2]] }],
+  })
+  assert.deepEqual(step.network.vertices[0], { x: 0, y: 0 })
+  assert.deepEqual(step.network.segments[0], { start: 0, end: 1 })
+  assert.deepEqual(step.network.regions, [{ windingRule: 'NONZERO', loops: [[0, 1, 2]] }])
+  assert.equal(step.summary, '3 point(s), 3 segment(s), 1 region(s)')
+})
+
+test('a point may carry its own cap, join and rounding, and a segment its curve', () => {
+  const step = networkOf({
+    vertices: [{ x: 0, y: 0, cap: 'ROUND', cornerRadius: 4 }, { x: 10, y: 0, join: 'BEVEL' }],
+    segments: [{ start: 0, end: 1, curve: [3, 0, -3, 0] }],
+  })
+  assert.deepEqual(step.network.vertices[0], { x: 0, y: 0, strokeCap: 'ROUND', cornerRadius: 4 })
+  assert.deepEqual(step.network.segments[0], {
+    start: 0,
+    end: 1,
+    tangentStart: { x: 3, y: 0 },
+    tangentEnd: { x: -3, y: 0 },
+  })
+})
+
+test('a segment to a point that does not exist is named, with how many there are', () => {
+  // Figma reports this as a failure with no index in it; here the index is still in hand.
+  assert.match(
+    planProps({ network: { vertices: [[0, 0], [1, 1]], segments: [[0, 5]] } }).problems[0],
+    /segments\[0\]: there is no vertex 5 — the network has 2/
+  )
+  assert.match(
+    planProps({ network: { vertices: [[0, 0], [1, 1]], segments: [[1, 1]] } }).problems[0],
+    /cannot start and end at the same point/
+  )
+})
+
+test('a region pointing at a segment that does not exist is named the same way', () => {
+  assert.match(
+    planProps({ network: { vertices: [[0, 0], [1, 1]], segments: [[0, 1]], regions: [{ loops: [[0, 3]] }] } }).problems[0],
+    /there is no segment 3 — the network has 1/
+  )
+})
+
+test('a network needs points and something joining them', () => {
+  assert.match(planProps({ network: { vertices: [[0, 0]], segments: [[0, 0]] } }).problems[0], /at least two points/)
+  assert.match(planProps({ network: { vertices: [[0, 0], [1, 1]], segments: [] } }).problems[0], /at least one \{ start, end \}/)
+  assert.match(planProps({ network: 'triangle' }).problems[0], /must be \{ vertices, segments, regions\? \}/)
+  assert.match(
+    planProps({ network: { vertices: [[0, 0], [1, 1]], segments: [[0, 1]], points: [] } }).problems[0],
+    /unknown key "points"/
+  )
+})
+
+test('a network is set before the paints, like every other shape', () => {
+  assert.deepEqual(
+    planProps({ fill: '#FF5B0A', network: { vertices: [[0, 0], [1, 1]], segments: [[0, 1]] } }).steps.map((s) => s.step),
+    ['network', 'paint']
+  )
+})

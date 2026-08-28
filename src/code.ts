@@ -1240,6 +1240,12 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     const links = await describeLinks(linked.reactions, variableName)
     if (links) props.links = links
   }
+  const shape = bag.vectorNetwork as VectorNetwork | undefined
+  if (shape && Array.isArray(shape.vertices) && shape.vertices.length > 0) {
+    props.network = `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${
+      shape.regions?.length ? `, ${shape.regions.length} region(s)` : ''
+    }`
+  }
   if (node.type === 'INSTANCE') {
     // What an instance IS, in the words the catalogue uses — the question anyone asks of a screen
     // they are about to build another one like.
