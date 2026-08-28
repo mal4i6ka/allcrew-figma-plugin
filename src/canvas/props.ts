@@ -74,12 +74,39 @@ export interface NodeProps {
   swap?: string
   /** INSTANCE only: throw away every override first. */
   reset?: boolean
+  /** Prototype links out of this node. An empty array removes the ones it has. */
+  links?: FlowLink[]
+  /** This plugin's own notes on the node, for finding it again. A null value clears a key. */
+  data?: Record<string, string | null>
   /** Where the node should live. On a create this is the parent; on a change it moves it. */
   parent?: string
   index?: number
 }
 
 export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
+
+/**
+ * One prototype connection, in the words a person would use.
+ *
+ * Figma's own shape is a `Reaction` holding a `Trigger` and a list of `Action`s, with the
+ * transition spelled out as a type, a direction, an easing and a duration — five nested objects
+ * to say "push left". A caller building a flow says `{ on: 'click', to: '<screen>', animation:
+ * 'PUSH_LEFT' }` and the plan expands it.
+ */
+export interface FlowLink {
+  /** Default `click`. */
+  on?: 'click' | 'hover' | 'press' | 'drag' | 'timeout'
+  /** Seconds to wait — only for `timeout`. */
+  after?: number
+  /** A node id, or `back` / `close`. */
+  to: string
+  /** Default `NAVIGATE`. */
+  as?: 'NAVIGATE' | 'SWAP' | 'OVERLAY' | 'SCROLL_TO' | 'CHANGE_TO'
+  /** `INSTANT`, `DISSOLVE`, `SMART_ANIMATE`, or a direction: `PUSH_LEFT`, `MOVE_IN_TOP`, … */
+  animation?: string
+  /** Seconds. Default 0.3. */
+  duration?: number
+}
 
 /* ---------------------------------------------------------------------- plan */
 
@@ -97,6 +124,8 @@ export type PropStep =
   | { step: 'reset' }
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
+  | { step: 'links'; reactions: Reaction[]; destinations: string[]; summary: string }
+  | { step: 'data'; data: Record<string, string | null> }
 
 export interface PropPlan {
   steps: PropStep[]
@@ -151,6 +180,8 @@ const ORDER = [
   'textAlign',
   'autoResize',
   'text',
+  'links',
+  'data',
   'parent',
   'index',
 ] as const
@@ -340,6 +371,25 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         else steps.push({ step: 'paint', property: key === 'fill' ? 'fills' : 'strokes', ref })
         break
       }
+      case 'links': {
+        const links = planLinks(props.links, `${where}.links`, problems)
+        if (links) steps.push(links)
+        break
+      }
+      case 'data': {
+        const value = props.data
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+          fail('data must be an object of { key: "value" }')
+          break
+        }
+        const data: Record<string, string | null> = {}
+        for (const [name, note] of Object.entries(value as Record<string, unknown>)) {
+          if (typeof note === 'string' || note === null) data[name] = note
+          else fail(`data.${name} must be a string, or null to clear it`)
+        }
+        if (Object.keys(data).length > 0) steps.push({ step: 'data', data })
+        break
+      }
       case 'reset': {
         if (typeof props.reset !== 'boolean') fail('reset must be true or false')
         // `false` is not an error and not a step: it is a caller saying "keep the overrides".
@@ -389,6 +439,171 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
   }
 
   return { steps, problems }
+}
+
+const TRIGGERS: Readonly<Record<string, string>> = {
+  click: 'ON_CLICK',
+  hover: 'ON_HOVER',
+  press: 'ON_PRESS',
+  drag: 'ON_DRAG',
+  timeout: 'AFTER_TIMEOUT',
+}
+
+const NAVIGATIONS = ['NAVIGATE', 'SWAP', 'OVERLAY', 'SCROLL_TO', 'CHANGE_TO']
+const SIMPLE_ANIMATIONS = ['INSTANT', 'DISSOLVE', 'SMART_ANIMATE', 'SCROLL_ANIMATE']
+const DIRECTIONAL_ANIMATIONS = ['MOVE_IN', 'MOVE_OUT', 'PUSH', 'SLIDE_IN', 'SLIDE_OUT']
+const DIRECTIONS = ['LEFT', 'RIGHT', 'TOP', 'BOTTOM']
+
+const DEFAULT_DURATION = 0.3
+const DEFAULT_TIMEOUT = 1
+
+/**
+ * The links out of one node, expanded into Figma's `Reaction`s.
+ *
+ * Whole rather than merged: `setReactionsAsync` replaces the list, and a vocabulary that quietly
+ * added to it would leave no way to remove one. So `links: []` is a caller emptying it, and that
+ * is a legitimate thing to ask for rather than a mistake to refuse.
+ */
+function planLinks(raw: unknown, where: string, problems: string[]): PropStep | null {
+  if (!Array.isArray(raw)) {
+    problems.push(`${where} must be an array of { on, to } links — [] removes every link`)
+    return null
+  }
+
+  const reactions: Reaction[] = []
+  const destinations: string[] = []
+
+  for (const [index, entry] of raw.entries()) {
+    const at = `${where}[${index}]`
+    const fail = (message: string) => problems.push(`${at}: ${message}`)
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      fail('must be { on, to, … }')
+      continue
+    }
+    const link = entry as Record<string, unknown>
+    for (const key of Object.keys(link)) {
+      if (!['on', 'after', 'to', 'as', 'animation', 'duration'].includes(key)) {
+        fail(`unknown key "${key}" — accepted: on, after, to, as, animation, duration`)
+      }
+    }
+
+    const on = link.on === undefined ? 'click' : link.on
+    if (typeof on !== 'string' || !(on in TRIGGERS)) {
+      fail(`on must be one of: ${Object.keys(TRIGGERS).join(', ')}`)
+      continue
+    }
+    if (typeof link.to !== 'string' || link.to.trim() === '') {
+      fail('to must be a node id, "back" or "close"')
+      continue
+    }
+
+    const after = link.after === undefined ? DEFAULT_TIMEOUT : link.after
+    if (on === 'timeout' && (typeof after !== 'number' || !Number.isFinite(after) || after <= 0)) {
+      fail('after must be a number of seconds greater than 0')
+      continue
+    }
+    const trigger =
+      on === 'timeout'
+        ? ({ type: 'AFTER_TIMEOUT', timeout: after } as Trigger)
+        : ({ type: TRIGGERS[on] } as Trigger)
+
+    const to = link.to.trim()
+    const target = to.toLowerCase()
+    if (target === 'back' || target === 'close') {
+      reactions.push({ trigger, actions: [{ type: target === 'back' ? 'BACK' : 'CLOSE' }] })
+      continue
+    }
+
+    const navigation = link.as === undefined ? 'NAVIGATE' : link.as
+    if (typeof navigation !== 'string' || !NAVIGATIONS.includes(navigation)) {
+      fail(`as must be one of: ${NAVIGATIONS.join(', ')}`)
+      continue
+    }
+    const duration = link.duration === undefined ? DEFAULT_DURATION : link.duration
+    if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0 || duration > 10) {
+      fail('duration must be a number of seconds between 0 and 10')
+      continue
+    }
+
+    const animation = link.animation === undefined ? 'INSTANT' : link.animation
+    if (typeof animation !== 'string') {
+      fail('animation must be a string')
+      continue
+    }
+    const transition = buildTransition(animation, duration)
+    if (transition === undefined) {
+      fail(
+        `animation must be one of: ${SIMPLE_ANIMATIONS.join(', ')}, or ` +
+          `${DIRECTIONAL_ANIMATIONS.join('/')} with _${DIRECTIONS.join('/_')}`
+      )
+      continue
+    }
+
+    destinations.push(to)
+    reactions.push({
+      trigger,
+      actions: [{ type: 'NODE', destinationId: to, navigation: navigation as Navigation, transition }],
+    })
+  }
+
+  // Described rather than narrated: the line a write reports and the line a read answers with
+  // are the same line, because they come from the same function.
+  return { step: 'links', reactions, destinations, summary: describeLinks(reactions) || 'none' }
+}
+
+/**
+ * The inverse: reactions as the one line a caller could have written.
+ *
+ * A read that answers with Figma's own five nested objects per link is a read nobody can act on
+ * — and the agent channel's digest would summarise it away long before it arrived.
+ */
+export function describeLinks(reactions: readonly Reaction[]): string {
+  const spelling: Record<string, string> = {}
+  for (const [word, type] of Object.entries(TRIGGERS)) spelling[type] = word
+
+  const parts: string[] = []
+  for (const reaction of reactions) {
+    const trigger = reaction.trigger
+    const on = trigger ? spelling[trigger.type] ?? trigger.type.toLowerCase() : 'nothing'
+    const actions = reaction.actions ?? (reaction.action ? [reaction.action] : [])
+    for (const action of actions) {
+      if (action.type === 'BACK' || action.type === 'CLOSE') {
+        parts.push(`${on} → ${action.type.toLowerCase()}`)
+        continue
+      }
+      if (action.type !== 'NODE') {
+        parts.push(`${on} → ${action.type.toLowerCase()}`)
+        continue
+      }
+      const transition = action.transition
+      const named = transition
+        ? `${transition.type}${'direction' in transition ? `_${transition.direction}` : ''} ${transition.duration}s`
+        : 'INSTANT'
+      const navigation = action.navigation === 'NAVIGATE' ? '' : ` (${action.navigation})`
+      parts.push(`${on} → ${action.destinationId ?? '?'}${navigation}${named === 'INSTANT' ? '' : ` ${named}`}`)
+    }
+  }
+  return parts.join(' · ')
+}
+
+/** `undefined` for a name that is not an animation at all; `null` for INSTANT, which has none. */
+function buildTransition(animation: string, duration: number): Transition | null | undefined {
+  if (animation === 'INSTANT') return null
+  const easing: Easing = { type: 'EASE_OUT' }
+  if (SIMPLE_ANIMATIONS.includes(animation)) {
+    return { type: animation as SimpleTransition['type'], easing, duration }
+  }
+  const cut = animation.lastIndexOf('_')
+  const base = cut === -1 ? '' : animation.slice(0, cut)
+  const direction = cut === -1 ? '' : animation.slice(cut + 1)
+  if (!DIRECTIONAL_ANIMATIONS.includes(base) || !DIRECTIONS.includes(direction)) return undefined
+  return {
+    type: base as DirectionalTransition['type'],
+    direction: direction as DirectionalTransition['direction'],
+    matchLayers: false,
+    easing,
+    duration,
+  }
 }
 
 function planLayout(raw: unknown, where: string, problems: string[]): PropStep | null {

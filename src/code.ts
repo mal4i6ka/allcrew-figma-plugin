@@ -98,7 +98,7 @@ import {
   type StoredModule,
 } from './modules/registry.ts'
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
-import { planProps } from './canvas/props.ts'
+import { describeLinks, planProps } from './canvas/props.ts'
 import { applyProps, describePaints } from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan } from './canvas/create.ts'
 import { collectComponents, humanPropertyName } from './canvas/components.ts'
@@ -138,8 +138,21 @@ type PluginMessage =
   // The generic canvas primitives — see src/canvas/
   | { type: 'NODE_CREATE'; nodes: unknown; parent?: string; dryRun?: boolean }
   | { type: 'NODE_SET'; nodes: unknown; dryRun?: boolean }
-  | { type: 'NODE_QUERY'; name?: string; types?: string[]; nodeId?: string; within?: string; pageId?: string; limit?: number; props?: boolean }
+  | {
+      type: 'NODE_QUERY'
+      name?: string
+      types?: string[]
+      nodeId?: string
+      within?: string
+      pageId?: string
+      data?: Record<string, string>
+      limit?: number
+      props?: boolean
+    }
   | { type: 'COMPONENT_CATALOG'; query?: string; source?: 'local' | 'library' | 'all'; usage?: boolean; limit?: number }
+  | { type: 'NODE_CLONE'; nodes: unknown; dryRun?: boolean }
+  | { type: 'PAGE_LIST' }
+  | { type: 'PAGE_CREATE'; name: string; activate?: boolean }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
   | { type: 'MODULE_INSPECT'; file: unknown }
@@ -999,6 +1012,10 @@ function postSelectionToUi(): void {
 
 figma.on('selectionchange', postSelectionToUi)
 
+/** How far a copy is stepped aside from what it was copied from, when nobody said where to put
+ * it. Wide enough that two screens do not touch, and the same 64 the copy op has always used. */
+const CLONE_GAP = 64
+
 /* ------------------------------------------------------------------ canvas reads */
 
 /**
@@ -1038,6 +1055,17 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       primaryAxis: bag.primaryAxisAlignItems,
       counterAxis: bag.counterAxisAlignItems,
     }
+  }
+  const keys = node.getPluginDataKeys()
+  if (keys.length > 0) {
+    const data: Record<string, string> = {}
+    for (const key of keys) data[key] = node.getPluginData(key)
+    props.data = data
+  }
+  const linked = node as SceneNode & { getReactionsAsync?: () => Promise<readonly Reaction[]> }
+  if (typeof linked.getReactionsAsync === 'function') {
+    const links = describeLinks(await linked.getReactionsAsync())
+    if (links) props.links = links
   }
   if (node.type === 'INSTANCE') {
     // What an instance IS, in the words the catalogue uses — the question anyone asks of a screen
@@ -2009,7 +2037,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent read: find nodes by name and type, read one by id, or list what is inside another
       // @agent param types: Figma node types to keep, e.g. ["FRAME","TEXT"]; omitted means any
       // @agent param within: search inside this node's subtree instead of the whole page — how you reach the children of something you just made
-      // @agent param props: true adds each node's readable properties — geometry, layout, paints, text
+      // @agent param props: true adds each node's readable properties — geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is
+      // @agent param data: keep only nodes carrying this plugin data, e.g. { flow: "onboarding" } — how you find what an earlier call stamped
       try {
         const wantProps = msg.props === true
         const limit = Math.min(Math.max(msg.limit ?? 50, 1), 500)
@@ -2045,11 +2074,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
         const types = Array.isArray(msg.types) ? msg.types : null
         const wanted = typeof msg.name === 'string' ? msg.name.toLowerCase() : null
+        // How a caller finds what it built last time: the stamp it left, not a name a designer
+        // may since have changed.
+        const stamped =
+          msg.data && typeof msg.data === 'object' ? Object.entries(msg.data as Record<string, string>) : null
         const found: SceneNode[] = []
         await walkSceneNodes(root, (node) => {
           if (found.length >= limit) return
           if (types && !types.includes(node.type)) return
           if (wanted && !node.name.toLowerCase().includes(wanted)) return
+          if (stamped && !stamped.every(([key, value]) => node.getPluginData(key) === value)) return
           found.push(node)
         })
         postToUi({
@@ -2085,6 +2119,115 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           message: String((error as Error)?.message || error),
         })
       }
+      break
+    }
+
+    case 'NODE_CLONE': {
+      // @agent write: copy nodes, and change the copies in the same call — the quickest way to a consistent screen is another screen
+      // @agent param nodes: an array of { node: "<id>", props?: {…} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it
+      // @agent cost: a copy of everything inside the node; one call is one undo step
+      try {
+        const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
+        const problems: string[] = []
+        const planned: Array<{ id: string; steps: ReturnType<typeof planProps>['steps'] }> = []
+        for (const [index, row] of rows.entries()) {
+          if (typeof row !== 'object' || row === null) {
+            problems.push(`nodes[${index}] must be { node, props? }`)
+            continue
+          }
+          const entry = row as { node?: unknown; props?: unknown }
+          if (typeof entry.node !== 'string' || entry.node === '') {
+            problems.push(`nodes[${index}].node must be a node id`)
+            continue
+          }
+          const plan = planProps(entry.props, `nodes[${index}].props`)
+          problems.push(...plan.problems)
+          planned.push({ id: entry.node, steps: plan.steps })
+        }
+        if (problems.length > 0) {
+          refuse('NODE_CLONE', `${problems.length} problem(s): ${problems.slice(0, 4).join(' · ')}`)
+          break
+        }
+
+        const dry = msg.dryRun === true
+        const reports = []
+        for (const entry of planned) {
+          const node = await figma.getNodeByIdAsync(entry.id)
+          if (!node || !('type' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+            reports.push({ source: entry.id, ok: false, error: 'no such scene node' })
+            continue
+          }
+          const source = node as SceneNode
+          if (dry) {
+            reports.push({ source: entry.id, name: source.name, type: source.type, ok: true, dryRun: true })
+            continue
+          }
+
+          const copy = source.clone()
+          // `clone()` documents a parent of its own and does not always agree with where the
+          // original lives, so the copy is placed explicitly: beside its source unless the caller
+          // said otherwise, and stepped aside so it is not hidden exactly on top of it.
+          const placedByCaller = entry.steps.some((step) => step.step === 'reparent' && step.parent !== '')
+          const home = source.parent
+          if (!placedByCaller && home && 'appendChild' in home) (home as BaseNode & ChildrenMixin).appendChild(copy)
+          const movedByCaller = entry.steps.some(
+            (step) => step.step === 'assign' && (step.property === 'x' || step.property === 'y')
+          )
+          const laidOut = copy.parent !== null && 'layoutMode' in copy.parent && copy.parent.layoutMode !== 'NONE'
+          if (!placedByCaller && !movedByCaller && !laidOut) {
+            copy.x = source.x + source.width + CLONE_GAP
+            copy.y = source.y
+          }
+
+          const report = await applyProps(copy, entry.steps, false)
+          reports.push({
+            source: entry.id,
+            node: copy.id,
+            name: copy.name,
+            parent: copy.parent ? { id: copy.parent.id, name: copy.parent.name } : null,
+            ok: report.failed === 0,
+            applied: report.applied,
+          })
+        }
+        if (!dry) figma.commitUndo()
+
+        const failed = reports.filter((report) => !report.ok).length
+        figma.notify(dry ? `Would copy ${reports.length} node(s)` : `Copied ${reports.length - failed} node(s)`)
+        postToUi({ type: 'NODES_CLONED', dryRun: dry, copied: reports.length - failed, failed, nodes: reports })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        figma.notify('Copy failed: ' + message, { error: true })
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_CLONE', message })
+      }
+      break
+    }
+    case 'PAGE_LIST': {
+      // @agent read: the pages of this file, and which one is open
+      postToUi({
+        type: 'PAGES',
+        current: figma.currentPage.id,
+        pages: figma.root.children.map((page) => ({
+          id: page.id,
+          name: page.name,
+          current: page.id === figma.currentPage.id,
+        })),
+      })
+      break
+    }
+    case 'PAGE_CREATE': {
+      // @agent write: add a page — where a new flow goes
+      // @agent param activate: true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: "<id>"
+      const name = typeof msg.name === 'string' ? msg.name.trim() : ''
+      if (name === '') {
+        refuse('PAGE_CREATE', 'name must be a non-empty string')
+        break
+      }
+      const page = figma.createPage()
+      page.name = name
+      if (msg.activate === true) await figma.setCurrentPageAsync(page)
+      figma.commitUndo()
+      figma.notify(`Page "${page.name}" created`)
+      postToUi({ type: 'PAGE_CREATED', page: { id: page.id, name: page.name }, current: figma.currentPage.id })
       break
     }
 

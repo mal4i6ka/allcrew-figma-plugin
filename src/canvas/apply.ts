@@ -264,6 +264,38 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       }
     }
 
+    case 'links': {
+      const holder = node as SceneNode & {
+        setReactionsAsync?: (reactions: Reaction[]) => Promise<void>
+        getReactionsAsync?: () => Promise<readonly Reaction[]>
+      }
+      if (typeof holder.setReactionsAsync !== 'function') {
+        throw new Error(`a ${node.type} cannot carry prototype links`)
+      }
+
+      // A destination that does not exist makes a link Figma accepts and the prototype ignores —
+      // a broken flow that looks built. Cheaper to find here than in a demo.
+      for (const id of step.destinations) {
+        const target = await figma.getNodeByIdAsync(id).catch(() => null)
+        if (!target) throw new Error(`no node with id ${id} to link to`)
+      }
+
+      const had = typeof holder.getReactionsAsync === 'function' ? (await holder.getReactionsAsync()).length : 0
+      if (!dry) await holder.setReactionsAsync(step.reactions)
+      return { property: 'links', before: `${had} link(s)`, after: step.summary }
+    }
+
+    case 'data': {
+      const before: Record<string, unknown> = {}
+      for (const key of Object.keys(step.data)) {
+        const held = node.getPluginData(key)
+        if (held !== '') before[key] = held
+      }
+      // Figma stores no key for an empty string, which is exactly what clearing one means.
+      if (!dry) for (const [key, value] of Object.entries(step.data)) node.setPluginData(key, value ?? '')
+      return { property: 'data', before, after: step.data }
+    }
+
     case 'reparent': {
       const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null
       const parent = step.parent === '' ? node.parent : await resolveParent(step.parent)
