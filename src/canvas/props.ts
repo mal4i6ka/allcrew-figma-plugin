@@ -68,6 +68,12 @@ export interface NodeProps {
   lineHeight?: number | 'AUTO'
   letterSpacing?: number
   autoResize?: 'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'
+  /** INSTANCE only: component properties by their catalogue names — variants, text, booleans. */
+  properties?: Record<string, string | boolean>
+  /** INSTANCE only: the component to become — an id or a published key. */
+  swap?: string
+  /** INSTANCE only: throw away every override first. */
+  reset?: boolean
   /** Where the node should live. On a create this is the parent; on a change it moves it. */
   parent?: string
   index?: number
@@ -88,6 +94,9 @@ export type PropStep =
   | { step: 'constraints'; horizontal?: ConstraintKind; vertical?: ConstraintKind }
   | { step: 'reparent'; parent: string; index?: number }
   | { step: 'lineHeight'; value: number | 'AUTO' }
+  | { step: 'reset' }
+  | { step: 'swap'; component: string }
+  | { step: 'properties'; properties: Record<string, string | boolean> }
 
 export interface PropPlan {
   steps: PropStep[]
@@ -115,6 +124,11 @@ const CONSTRAINTS = ['MIN', 'CENTER', 'MAX', 'STRETCH', 'SCALE']
  */
 const ORDER = [
   'name',
+  // What the instance *is*, before anything about how it looks: a swap brings the new
+  // component's own size and paints with it, and a variant is a different node underneath.
+  'reset',
+  'swap',
+  'properties',
   'visible',
   'locked',
   'clipsContent',
@@ -324,6 +338,35 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         const ref = props[key] as PaintRef
         if (paintProblem(ref)) fail(`${key}: ${paintProblem(ref)}`)
         else steps.push({ step: 'paint', property: key === 'fill' ? 'fills' : 'strokes', ref })
+        break
+      }
+      case 'reset': {
+        if (typeof props.reset !== 'boolean') fail('reset must be true or false')
+        // `false` is not an error and not a step: it is a caller saying "keep the overrides".
+        else if (props.reset) steps.push({ step: 'reset' })
+        break
+      }
+      case 'swap': {
+        if (typeof props.swap !== 'string' || props.swap.trim() === '') {
+          fail('swap must be a component id or a published key')
+        } else steps.push({ step: 'swap', component: props.swap.trim() })
+        break
+      }
+      case 'properties': {
+        const value = props.properties
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+          fail('properties must be an object of { propertyName: value }')
+          break
+        }
+        const wanted: Record<string, string | boolean> = {}
+        for (const [name, setting] of Object.entries(value as Record<string, unknown>)) {
+          // Which names exist depends on the component, so that is checked against the instance
+          // at apply time; the plan only insists on a value Figma could accept at all.
+          if (typeof setting === 'string' || typeof setting === 'boolean') wanted[name] = setting
+          else fail(`properties.${name} must be a string or a boolean`)
+        }
+        if (Object.keys(wanted).length > 0) steps.push({ step: 'properties', properties: wanted })
+        else if (Object.keys(value as object).length === 0) fail('properties must name at least one property')
         break
       }
       case 'parent': {

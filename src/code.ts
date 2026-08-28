@@ -101,6 +101,7 @@ import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { planProps } from './canvas/props.ts'
 import { applyProps, describePaints } from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan } from './canvas/create.ts'
+import { collectComponents, humanPropertyName } from './canvas/components.ts'
 import { runModuleCommand } from './modules/run.ts'
 import { beginRecording, endRecording } from './agent/ui-post.ts'
 
@@ -138,6 +139,7 @@ type PluginMessage =
   | { type: 'NODE_CREATE'; nodes: unknown; parent?: string; dryRun?: boolean }
   | { type: 'NODE_SET'; nodes: unknown; dryRun?: boolean }
   | { type: 'NODE_QUERY'; name?: string; types?: string[]; nodeId?: string; within?: string; pageId?: string; limit?: number; props?: boolean }
+  | { type: 'COMPONENT_CATALOG'; query?: string; source?: 'local' | 'library' | 'all'; usage?: boolean; limit?: number }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
   | { type: 'MODULE_INSPECT'; file: unknown }
@@ -1037,6 +1039,18 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       counterAxis: bag.counterAxisAlignItems,
     }
   }
+  if (node.type === 'INSTANCE') {
+    // What an instance IS, in the words the catalogue uses — the question anyone asks of a screen
+    // they are about to build another one like.
+    const main = await node.getMainComponentAsync().catch(() => null)
+    // The SET's name when there is one: that is what the catalogue calls it, and a variant's own
+    // name is the axis values ("Size=Large, State=Default"), which nobody can instantiate from.
+    const owner = main && main.parent?.type === 'COMPONENT_SET' ? main.parent : main
+    props.component = owner?.name ?? '(unavailable)'
+    const settings = Object.entries(node.componentProperties as unknown as Record<string, { value?: unknown }>)
+      .map(([key, entry]) => `${humanPropertyName(key)}=${String(entry?.value)}`)
+    if (settings.length > 0) props.properties = settings.join(' · ')
+  }
   if (node.type === 'TEXT') {
     props.text = node.characters
     props.fontSize = node.fontSize === figma.mixed ? 'mixed' : round(node.fontSize)
@@ -1897,7 +1911,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'NODE_CREATE': {
       // @agent write: make nodes from a description — frames, text, shapes, sections, components, instances — nested
       // @agent param nodes: an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance
-      // @agent param props: the same property vocabulary NODE_SET takes — name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints
+      // @agent param props: the same property vocabulary NODE_SET takes — name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset
+      // @agent param of: for kind "instance", the component to make — the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures
       // @agent cost: proportional to what you ask for; one call is one undo step for the designer
       try {
         const specs = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
@@ -1937,6 +1952,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'NODE_SET': {
       // @agent write: set properties on existing nodes, in batch, with per-property before/after
       // @agent param nodes: an array of { node: "<id>", props: {…} } — the same vocabulary NODE_CREATE takes
+      // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names, swap: "<id|key>" changes which component it is, reset: true drops every override first
       try {
         const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
         const problems: string[] = []
@@ -2044,6 +2060,30 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_QUERY', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+
+    case 'COMPONENT_CATALOG': {
+      // @agent read: what this file can build with — every local component and every library one it already uses — with variant options, descriptions and how often each is used
+      // @agent param query: a name substring; omitted means everything
+      // @agent param source: local, library or all (default all)
+      // @agent param usage: false skips the instance census — quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents
+      // @agent cost: one walk of the document, and the census reads up to 4000 instances — several seconds on a large file
+      try {
+        const catalog = await collectComponents({
+          query: typeof msg.query === 'string' ? msg.query : undefined,
+          source: msg.source,
+          usage: msg.usage,
+          limit: msg.limit,
+        })
+        postToUi({ type: 'COMPONENTS_FOUND', ...catalog })
+      } catch (error) {
+        postToUi({
+          type: 'CANVAS_ERROR',
+          command: 'COMPONENT_CATALOG',
+          message: String((error as Error)?.message || error),
+        })
       }
       break
     }

@@ -12,6 +12,7 @@
  */
 
 import { applyProps, type AppliedProp } from './apply.ts'
+import { componentFor } from './components.ts'
 import { planProps, type PropStep } from './props.ts'
 
 export const NODE_KINDS = ['frame', 'text', 'rectangle', 'ellipse', 'line', 'section', 'component', 'instance'] as const
@@ -164,18 +165,6 @@ async function make(plan: CreatePlan): Promise<SceneNode> {
       return target.createInstance()
     }
   }
-}
-
-/** An id first, then a published key — the same two-step every other op does for a component. */
-async function componentFor(ref: string): Promise<ComponentNode> {
-  const byId = await figma.getNodeByIdAsync(ref).catch(() => null)
-  if (byId) {
-    if (byId.type === 'COMPONENT') return byId
-    if (byId.type === 'COMPONENT_SET') return byId.defaultVariant
-    throw new Error(`${ref} is a ${byId.type}, not a component`)
-  }
-  const imported = await figma.importComponentByKeyAsync(ref)
-  return imported
 }
 
 const nameFrom = (plan: CreatePlan): string | null => {

@@ -98,7 +98,9 @@ test('an unknown property is named, with the list of what was accepted', () => {
   const plan = planProps({ fontWeight: 700 })
   assert.equal(plan.steps.length, 0)
   assert.match(plan.problems[0], /unknown property "fontWeight"/)
-  assert.match(plan.problems[0], /accepted: name, visible/)
+  // The whole accepted set, so a caller who guessed can see the one they meant.
+  assert.match(plan.problems[0], /accepted: name, /)
+  assert.match(plan.problems[0], /fontSize/)
 })
 
 test('a value of the wrong type is refused, and the rest of the object still plans', () => {

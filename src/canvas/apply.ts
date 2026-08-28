@@ -13,6 +13,7 @@
 
 import { parseHex } from '../tokens/color.ts'
 import { resolveVariableRef } from '../agent/values.ts'
+import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
 import type { PaintRef, PropStep } from './props.ts'
 
 export interface AppliedProp {
@@ -38,7 +39,11 @@ export async function applyProps(node: SceneNode, steps: readonly PropStep[], dr
 
   for (const step of steps) {
     try {
-      applied.push(await applyStep(node, step, dry))
+      // A step can also fail in part — `properties` sets four of five and names the fifth — so
+      // the report is what decides, not only whether something was thrown.
+      const result = await applyStep(node, step, dry)
+      if (result.error) failed++
+      applied.push(result)
     } catch (error) {
       failed++
       applied.push({ property: propertyOf(step), error: String((error as Error)?.message || error) })
@@ -189,6 +194,76 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: step.property, before, after: await describePaints(paints) }
     }
 
+    case 'reset': {
+      const instance = asInstance(node, 'overrides to reset')
+      let before: string | null = null
+      try {
+        before = `${instance.overrides.length} override(s)`
+      } catch {
+        /* the count is a courtesy; not being able to read it must not stop the reset */
+      }
+      // `removeOverrides` is the current spelling; `resetOverrides` is the deprecated one that
+      // older hosts still answer to.
+      const bag = instance as unknown as Record<string, unknown>
+      if (!dry) {
+        if (typeof bag.removeOverrides === 'function') instance.removeOverrides()
+        else instance.resetOverrides()
+      }
+      return { property: 'reset', before, after: 'whatever the main component says' }
+    }
+
+    case 'swap': {
+      const instance = asInstance(node, 'a component to swap')
+      const target = await componentFor(step.component)
+      const before = (await instance.getMainComponentAsync())?.name ?? null
+      if (!dry) instance.swapComponent(target)
+      return { property: 'swap', before, after: target.name }
+    }
+
+    case 'properties': {
+      const instance = asInstance(node, 'component properties')
+      const defined = instance.componentProperties as unknown as Record<string, { type: string; value?: unknown }>
+      const { resolved, problems } = resolveProperties(step.properties, defined)
+
+      const before: Record<string, unknown> = {}
+      for (const key of Object.keys(resolved)) before[humanPropertyName(key)] = defined[key]?.value
+
+      if (!dry && Object.keys(resolved).length > 0) {
+        try {
+          instance.setProperties(resolved)
+        } catch {
+          // One at a time, so the caller learns WHICH property Figma refused instead of losing
+          // the four that were fine. A sparse variant set is the usual reason: not every
+          // combination of axes exists.
+          for (const [key, value] of Object.entries(resolved)) {
+            try {
+              instance.setProperties({ [key]: value })
+            } catch (one) {
+              problems.push(`${humanPropertyName(key)}: ${String((one as Error)?.message || one)}`)
+            }
+          }
+        }
+      }
+
+      // Read back rather than echoed: on a sparse set Figma may land on a neighbouring variant,
+      // and the report should say where the instance actually ended up. By name and not by key,
+      // because setting a VARIANT changes the main component underneath — and with it the `#id`
+      // suffix every other property is keyed by.
+      const now: Record<string, unknown> | null = dry ? null : byHumanName(instance.componentProperties)
+      const after: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(resolved)) {
+        const name = humanPropertyName(key)
+        after[name] = now && name in now ? now[name] : value
+      }
+
+      return {
+        property: 'properties',
+        before,
+        after,
+        ...(problems.length > 0 ? { error: problems.join(' · ') } : {}),
+      }
+    }
+
     case 'reparent': {
       const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null
       const parent = step.parent === '' ? node.parent : await resolveParent(step.parent)
@@ -202,6 +277,20 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: 'parent', before, after: { id: parent.id, name: parent.name, index: step.index } }
     }
   }
+}
+
+function byHumanName(properties: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(properties as Record<string, { value?: unknown }>)) {
+    out[humanPropertyName(key)] = entry?.value
+  }
+  return out
+}
+
+/** Instance-only vocabulary refuses by naming the type it was given, like everything else here. */
+function asInstance(node: SceneNode, wanted: string): InstanceNode {
+  if (node.type !== 'INSTANCE') throw new Error(`only an INSTANCE has ${wanted}, not a ${node.type}`)
+  return node
 }
 
 /** The properties that a TEXT node will not let go of until its font is in memory. */

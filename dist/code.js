@@ -20635,7 +20635,7 @@ ${scripts}`, "");
           page.name = ref;
           return page;
         };
-        const pageOf2 = (node) => {
+        const pageOf3 = (node) => {
           let walk = node.parent;
           while (walk && walk.type !== "PAGE") walk = walk.parent;
           return walk != null ? walk : null;
@@ -20650,7 +20650,7 @@ ${scripts}`, "");
             if (!source) throw new Error(`no node with id ${id}`);
             if (source.type === "PAGE" || source.type === "DOCUMENT") throw new Error(`${source.type} cannot be copied`);
             const scene = source;
-            const home = pageOf2(scene);
+            const home = pageOf3(scene);
             if (home) await home.loadAsync();
             const wantAs = typeof entry.as === "string" ? entry.as : null;
             if (wantAs !== null && wantAs !== "instance" && wantAs !== "clone") {
@@ -21085,7 +21085,7 @@ ${scripts}`, "");
   ];
 
   // src/agent/ui-commands.ts
-  var INJECTED = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"format","required":true,"type":"'json' | 'csv'"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>"},{"name":"snap","required":false,"type":"number"},{"name":"byName","required":false,"type":"boolean"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope and every variable \u2014 80s on a large file; narrow the scope to a frame","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope and every variable \u2014 80s on a large file; narrow the scope to a frame","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }"},{"name":"lintMaxDepth","required":false,"type":"number"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean"},{"name":"write","required":true,"type":"boolean"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string"},{"name":"op","required":true,"type":"string"},{"name":"params","required":false,"type":"unknown"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportDeliveryOptions; ag\u2026"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string"},{"name":"values","required":true,"type":"unknown"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance"},{"name":"parent","required":false,"type":"string"},{"name":"dryRun","required":false,"type":"boolean"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string"},{"name":"limit","required":false,"type":"number"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the module document itself (see TASK-user-modules.md), object or JSON text"},{"name":"replace","required":false,"type":"boolean"}],"replies":["MODULE_REJECTED","MODULE_INSTALLED","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string"},{"name":"enabled","required":true,"type":"boolean"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string"},{"name":"screen","required":false,"type":"'main' | 'settings'"}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string"},{"name":"field","required":true,"type":"string"},{"name":"value","required":true,"type":"unknown"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string"},{"name":"screen","required":true,"type":"'main' | 'settings'"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'"},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }"},{"name":"cssFile","required":true,"type":"string"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
+  var INJECTED = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"format","required":true,"type":"'json' | 'csv'"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }"},{"name":"overrides","required":false,"type":"Record<string, string>"},{"name":"excluded","required":false,"type":"string[]"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>"},{"name":"snap","required":false,"type":"number"},{"name":"byName","required":false,"type":"boolean"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope and every variable \u2014 80s on a large file; narrow the scope to a frame","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope and every variable \u2014 80s on a large file; narrow the scope to a frame","params":[{"name":"cssFile","required":true,"type":"string"},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }"},{"name":"lintMaxDepth","required":false,"type":"number"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean"},{"name":"write","required":true,"type":"boolean"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string"},{"name":"op","required":true,"type":"string"},{"name":"params","required":false,"type":"unknown"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportDeliveryOptions; ag\u2026"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string"},{"name":"values","required":true,"type":"unknown"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance"},{"name":"parent","required":false,"type":"string"},{"name":"dryRun","required":false,"type":"boolean"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string"},{"name":"limit","required":false,"type":"number"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"one walk of the document, and the census reads up to 4000 instances \u2014 several seconds on a large file","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the module document itself (see TASK-user-modules.md), object or JSON text"},{"name":"replace","required":false,"type":"boolean"}],"replies":["MODULE_REJECTED","MODULE_INSTALLED","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string"},{"name":"enabled","required":true,"type":"boolean"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string"},{"name":"screen","required":false,"type":"'main' | 'settings'"}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string"},{"name":"field","required":true,"type":"string"},{"name":"value","required":true,"type":"unknown"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string"},{"name":"screen","required":true,"type":"'main' | 'settings'"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'"},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }"},{"name":"cssFile","required":true,"type":"string"},{"name":"existingFiles","required":false,"type":"Record<string, string>"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
   var UI_COMMANDS = (() => {
     if (!INJECTED.startsWith("[")) return [];
     try {
@@ -23477,6 +23477,11 @@ ${scripts}`, "");
   var CONSTRAINTS = ["MIN", "CENTER", "MAX", "STRETCH", "SCALE"];
   var ORDER = [
     "name",
+    // What the instance *is*, before anything about how it looks: a swap brings the new
+    // component's own size and paints with it, and a variant is a different node underneath.
+    "reset",
+    "swap",
+    "properties",
     "visible",
     "locked",
     "clipsContent",
@@ -23671,6 +23676,32 @@ ${scripts}`, "");
           else steps.push({ step: "paint", property: key === "fill" ? "fills" : "strokes", ref });
           break;
         }
+        case "reset": {
+          if (typeof props.reset !== "boolean") fail2("reset must be true or false");
+          else if (props.reset) steps.push({ step: "reset" });
+          break;
+        }
+        case "swap": {
+          if (typeof props.swap !== "string" || props.swap.trim() === "") {
+            fail2("swap must be a component id or a published key");
+          } else steps.push({ step: "swap", component: props.swap.trim() });
+          break;
+        }
+        case "properties": {
+          const value = props.properties;
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            fail2("properties must be an object of { propertyName: value }");
+            break;
+          }
+          const wanted = {};
+          for (const [name, setting] of Object.entries(value)) {
+            if (typeof setting === "string" || typeof setting === "boolean") wanted[name] = setting;
+            else fail2(`properties.${name} must be a string or a boolean`);
+          }
+          if (Object.keys(wanted).length > 0) steps.push({ step: "properties", properties: wanted });
+          else if (Object.keys(value).length === 0) fail2("properties must name at least one property");
+          break;
+        }
         case "parent": {
           if (typeof props.parent !== "string" || props.parent === "") fail2('parent must be a node id or "page"');
           else {
@@ -23764,13 +23795,185 @@ ${scripts}`, "");
     return "must carry either `color` or `variable`";
   }
 
+  // src/canvas/components.ts
+  function humanPropertyName(raw) {
+    const hash = raw.indexOf("#");
+    return (hash === -1 ? raw : raw.slice(0, hash)).trim();
+  }
+  var MAX_OPTIONS = 8;
+  var MAX_DEFAULT_TEXT = 24;
+  function describeProperties(definitions) {
+    const parts = [];
+    for (const [raw, definition] of Object.entries(definitions)) {
+      const name = humanPropertyName(raw);
+      const options = definition.variantOptions;
+      const fallback = describeDefault(definition.defaultValue);
+      if (options && options.length > 0) {
+        const shown = options.slice(0, MAX_OPTIONS).join("|");
+        const rest = options.length > MAX_OPTIONS ? `|\u2026+${options.length - MAX_OPTIONS}` : "";
+        parts.push(`${name}: ${shown}${rest}${fallback}`);
+      } else {
+        parts.push(`${name}: ${definition.type.toLowerCase()}${fallback}`);
+      }
+    }
+    return parts.join(" \xB7 ");
+  }
+  function describeDefault(value) {
+    if (value === void 0 || value === null || value === "") return "";
+    const text4 = String(value);
+    const short = text4.length > MAX_DEFAULT_TEXT ? `${text4.slice(0, MAX_DEFAULT_TEXT)}\u2026` : text4;
+    return ` (=${short})`;
+  }
+  function resolveProperties(wanted, defined) {
+    const resolved = {};
+    const problems = [];
+    const keys = Object.keys(defined);
+    for (const [asked, value] of Object.entries(wanted)) {
+      const exact = keys.includes(asked) ? [asked] : [];
+      const byName = exact.length > 0 ? exact : keys.filter((key2) => humanPropertyName(key2) === asked);
+      const matches = byName.length > 0 ? byName : keys.filter((key2) => humanPropertyName(key2).toLowerCase() === asked.toLowerCase());
+      if (matches.length === 0) {
+        const available = keys.map(humanPropertyName).join(", ");
+        problems.push(`"${asked}" is not a property here \u2014 this instance has: ${available || "(none)"}`);
+        continue;
+      }
+      if (matches.length > 1) {
+        problems.push(`"${asked}" matches ${matches.length} properties (${matches.join(", ")}) \u2014 name one in full`);
+        continue;
+      }
+      const key = matches[0];
+      const type = defined[key].type;
+      if (type === "BOOLEAN") {
+        if (typeof value !== "boolean") {
+          problems.push(`${humanPropertyName(key)} is a boolean property, and ${JSON.stringify(value)} is not a boolean`);
+          continue;
+        }
+      } else if (typeof value !== "string") {
+        problems.push(`${humanPropertyName(key)} is a ${type.toLowerCase()} property, so its value must be a string`);
+        continue;
+      }
+      resolved[key] = value;
+    }
+    return { resolved, problems };
+  }
+  async function componentFor(ref) {
+    const byId = await figma.getNodeByIdAsync(ref).catch(() => null);
+    if (byId) {
+      if (byId.type === "COMPONENT") return byId;
+      if (byId.type === "COMPONENT_SET") {
+        if (!byId.defaultVariant) throw new Error(`"${byId.name}" has no default variant to instantiate`);
+        return byId.defaultVariant;
+      }
+      throw new Error(`${ref} is a ${byId.type}, not a component`);
+    }
+    try {
+      return await figma.importComponentByKeyAsync(ref);
+    } catch (error) {
+      const set = await figma.importComponentSetByKeyAsync(ref).catch(() => null);
+      if (set == null ? void 0 : set.defaultVariant) return set.defaultVariant;
+      throw error;
+    }
+  }
+  var INSTANCE_CAP = 4e3;
+  var DESCRIPTION_CAP = 300;
+  function isDocumentable(node) {
+    var _a;
+    if (node.type === "COMPONENT_SET") return true;
+    return node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) !== "COMPONENT_SET";
+  }
+  async function collectComponents2(options = {}) {
+    var _a, _b, _c, _d;
+    const source = (_a = options.source) != null ? _a : "all";
+    const census = options.usage !== false;
+    const limit = Math.min(Math.max((_b = options.limit) != null ? _b : 100, 1), 500);
+    const query = ((_c = options.query) != null ? _c : "").trim().toLowerCase();
+    try {
+      await figma.loadAllPagesAsync();
+    } catch (e) {
+    }
+    const entries = /* @__PURE__ */ new Map();
+    if (source !== "library") {
+      for (const node of figma.root.findAllWithCriteria({ types: ["COMPONENT_SET", "COMPONENT"] })) {
+        if (isDocumentable(node)) entries.set(node.id, entryFor2(node, "local"));
+      }
+    }
+    let read = 0;
+    let sampled = false;
+    if (census) {
+      const instances = figma.root.findAllWithCriteria({ types: ["INSTANCE"] });
+      sampled = instances.length > INSTANCE_CAP;
+      for (const instance of instances.slice(0, INSTANCE_CAP)) {
+        read++;
+        const main = await instance.getMainComponentAsync().catch(() => null);
+        if (!main) continue;
+        const owner = ownerOf(main);
+        const known = entries.get(owner.id);
+        if (known) {
+          known.used = ((_d = known.used) != null ? _d : 0) + 1;
+          continue;
+        }
+        if (source === "local") continue;
+        entries.set(owner.id, __spreadProps(__spreadValues({}, entryFor2(owner, owner.remote ? "library" : "local")), { used: 1 }));
+      }
+    }
+    const all = [...entries.values()].filter((entry) => query === "" || entry.name.toLowerCase().includes(query));
+    all.sort((left, right) => {
+      var _a2, _b2;
+      return ((_a2 = right.used) != null ? _a2 : 0) - ((_b2 = left.used) != null ? _b2 : 0) || left.name.localeCompare(right.name);
+    });
+    return {
+      components: all.slice(0, limit),
+      total: all.length,
+      truncated: all.length > limit,
+      instances: read,
+      sampled,
+      note: census ? "Library components are those this document already uses \u2014 Figma offers plugins no way to list a library\u2019s full contents." : "Local components only: without the instance census (usage: false) a library component cannot be discovered at all."
+    };
+  }
+  function ownerOf(main) {
+    var _a;
+    try {
+      return ((_a = main.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? main.parent : main;
+    } catch (e) {
+      return main;
+    }
+  }
+  function entryFor2(node, source) {
+    var _a;
+    let definitions = {};
+    try {
+      definitions = (_a = node.componentPropertyDefinitions) != null ? _a : {};
+    } catch (e) {
+    }
+    const properties = describeProperties(definitions);
+    let description = "";
+    try {
+      description = (node.descriptionMarkdown || node.description || "").trim();
+    } catch (e) {
+    }
+    return __spreadValues(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
+      id: node.id,
+      key: node.key,
+      name: node.name
+    }, source === "local" ? { page: pageOf2(node) } : {}), {
+      source
+    }), node.type === "COMPONENT_SET" ? { variants: node.children.length } : {}), properties ? { properties } : {}), description ? { description: description.length > DESCRIPTION_CAP ? `${description.slice(0, DESCRIPTION_CAP)}\u2026` : description } : {});
+  }
+  function pageOf2(node) {
+    let current = node;
+    while (current && current.type !== "PAGE") current = current.parent;
+    return (current == null ? void 0 : current.type) === "PAGE" ? current.name : void 0;
+  }
+
   // src/canvas/apply.ts
   async function applyProps(node, steps, dry = false) {
     const applied = [];
     let failed = 0;
     for (const step of steps) {
       try {
-        applied.push(await applyStep(node, step, dry));
+        const result = await applyStep(node, step, dry);
+        if (result.error) failed++;
+        applied.push(result);
       } catch (error) {
         failed++;
         applied.push({ property: propertyOf(step), error: String((error == null ? void 0 : error.message) || error) });
@@ -23799,7 +24002,7 @@ ${scripts}`, "");
     }
   };
   async function applyStep(node, step, dry) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
     const bag = node;
     switch (step.step) {
       case "assign": {
@@ -23902,6 +24105,58 @@ ${scripts}`, "");
         if (!dry) bag[step.property] = paints2;
         return { property: step.property, before, after: await describePaints2(paints2) };
       }
+      case "reset": {
+        const instance = asInstance(node, "overrides to reset");
+        let before = null;
+        try {
+          before = `${instance.overrides.length} override(s)`;
+        } catch (e) {
+        }
+        const bag2 = instance;
+        if (!dry) {
+          if (typeof bag2.removeOverrides === "function") instance.removeOverrides();
+          else instance.resetOverrides();
+        }
+        return { property: "reset", before, after: "whatever the main component says" };
+      }
+      case "swap": {
+        const instance = asInstance(node, "a component to swap");
+        const target = await componentFor(step.component);
+        const before = (_h = (_g = await instance.getMainComponentAsync()) == null ? void 0 : _g.name) != null ? _h : null;
+        if (!dry) instance.swapComponent(target);
+        return { property: "swap", before, after: target.name };
+      }
+      case "properties": {
+        const instance = asInstance(node, "component properties");
+        const defined = instance.componentProperties;
+        const { resolved, problems } = resolveProperties(step.properties, defined);
+        const before = {};
+        for (const key of Object.keys(resolved)) before[humanPropertyName(key)] = (_i = defined[key]) == null ? void 0 : _i.value;
+        if (!dry && Object.keys(resolved).length > 0) {
+          try {
+            instance.setProperties(resolved);
+          } catch (e) {
+            for (const [key, value] of Object.entries(resolved)) {
+              try {
+                instance.setProperties({ [key]: value });
+              } catch (one) {
+                problems.push(`${humanPropertyName(key)}: ${String((one == null ? void 0 : one.message) || one)}`);
+              }
+            }
+          }
+        }
+        const now = dry ? null : byHumanName(instance.componentProperties);
+        const after = {};
+        for (const [key, value] of Object.entries(resolved)) {
+          const name = humanPropertyName(key);
+          after[name] = now && name in now ? now[name] : value;
+        }
+        return __spreadValues({
+          property: "properties",
+          before,
+          after
+        }, problems.length > 0 ? { error: problems.join(" \xB7 ") } : {});
+      }
       case "reparent": {
         const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null;
         const parent = step.parent === "" ? node.parent : await resolveParent(step.parent);
@@ -23915,6 +24170,17 @@ ${scripts}`, "");
         return { property: "parent", before, after: { id: parent.id, name: parent.name, index: step.index } };
       }
     }
+  }
+  function byHumanName(properties) {
+    const out = {};
+    for (const [key, entry] of Object.entries(properties)) {
+      out[humanPropertyName(key)] = entry == null ? void 0 : entry.value;
+    }
+    return out;
+  }
+  function asInstance(node, wanted) {
+    if (node.type !== "INSTANCE") throw new Error(`only an INSTANCE has ${wanted}, not a ${node.type}`);
+    return node;
   }
   var TEXT_PROPERTIES = [
     "fontSize",
@@ -24108,16 +24374,6 @@ ${scripts}`, "");
         return target.createInstance();
       }
     }
-  }
-  async function componentFor(ref) {
-    const byId = await figma.getNodeByIdAsync(ref).catch(() => null);
-    if (byId) {
-      if (byId.type === "COMPONENT") return byId;
-      if (byId.type === "COMPONENT_SET") return byId.defaultVariant;
-      throw new Error(`${ref} is a ${byId.type}, not a component`);
-    }
-    const imported = await figma.importComponentByKeyAsync(ref);
-    return imported;
   }
   var nameFrom = (plan) => {
     for (const step of plan.steps) if (step.step === "assign" && step.property === "name") return String(step.value);
@@ -24673,7 +24929,7 @@ ${scripts}`, "");
       targets = figma.root.findAllWithCriteria({ types: ["COMPONENT_SET", "COMPONENT"] }).filter(isDocumentableComponent);
     }
     const pageNameById = /* @__PURE__ */ new Map();
-    const pageOf2 = (node) => {
+    const pageOf3 = (node) => {
       let current = node;
       while (current && current.type !== "PAGE") current = current.parent;
       if (!current) return void 0;
@@ -24694,7 +24950,7 @@ ${scripts}`, "");
       const doc = {
         id: node.id,
         name: node.name,
-        page: pageOf2(node),
+        page: pageOf3(node),
         description,
         links,
         properties: componentPropertiesOf(node),
@@ -24894,6 +25150,7 @@ ${scripts}`, "");
   }
   figma.on("selectionchange", postSelectionToUi);
   async function describeNode2(node, withProps) {
+    var _a, _b;
     const base = __spreadValues(__spreadValues({
       id: node.id,
       name: node.name,
@@ -24916,6 +25173,13 @@ ${scripts}`, "");
         primaryAxis: bag.primaryAxisAlignItems,
         counterAxis: bag.counterAxisAlignItems
       };
+    }
+    if (node.type === "INSTANCE") {
+      const main = await node.getMainComponentAsync().catch(() => null);
+      const owner = main && ((_a = main.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? main.parent : main;
+      props.component = (_b = owner == null ? void 0 : owner.name) != null ? _b : "(unavailable)";
+      const settings = Object.entries(node.componentProperties).map(([key, entry]) => `${humanPropertyName(key)}=${String(entry == null ? void 0 : entry.value)}`);
+      if (settings.length > 0) props.properties = settings.join(" \xB7 ");
     }
     if (node.type === "TEXT") {
       props.text = node.characters;
@@ -25717,6 +25981,24 @@ ${scripts}`, "");
           });
         } catch (error) {
           postToUi({ type: "CANVAS_ERROR", command: "NODE_QUERY", message: String((error == null ? void 0 : error.message) || error) });
+        }
+        break;
+      }
+      case "COMPONENT_CATALOG": {
+        try {
+          const catalog = await collectComponents2({
+            query: typeof msg.query === "string" ? msg.query : void 0,
+            source: msg.source,
+            usage: msg.usage,
+            limit: msg.limit
+          });
+          postToUi(__spreadValues({ type: "COMPONENTS_FOUND" }, catalog));
+        } catch (error) {
+          postToUi({
+            type: "CANVAS_ERROR",
+            command: "COMPONENT_CATALOG",
+            message: String((error == null ? void 0 : error.message) || error)
+          });
         }
         break;
       }
