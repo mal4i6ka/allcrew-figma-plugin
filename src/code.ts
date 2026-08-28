@@ -149,7 +149,14 @@ type PluginMessage =
       limit?: number
       props?: boolean
     }
-  | { type: 'COMPONENT_CATALOG'; query?: string; source?: 'local' | 'library' | 'all'; usage?: boolean; limit?: number }
+  | {
+      type: 'COMPONENT_CATALOG'
+      query?: string
+      source?: 'local' | 'library' | 'all'
+      scope?: 'page' | 'document'
+      usage?: boolean
+      limit?: number
+    }
   | { type: 'NODE_CLONE'; nodes: unknown; dryRun?: boolean }
   | { type: 'PAGE_LIST' }
   | { type: 'PAGE_CREATE'; name: string; activate?: boolean }
@@ -2102,12 +2109,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent read: what this file can build with — every local component and every library one it already uses — with variant options, descriptions and how often each is used
       // @agent param query: a name substring; omitted means everything
       // @agent param source: local, library or all (default all)
+      // @agent param scope: page (default) or document — the page is what a caller building a flow is working on, and loading every page is the expensive half
       // @agent param usage: false skips the instance census — quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents
-      // @agent cost: one walk of the document, and the census reads up to 4000 instances — several seconds on a large file
+      // @agent cost: the current page is quick; scope "document" loads every page first and can take a minute or more on a large file — the older components.list op times out at 180s doing that on Altery Mobile DS
       try {
         const catalog = await collectComponents({
           query: typeof msg.query === 'string' ? msg.query : undefined,
           source: msg.source,
+          scope: msg.scope,
           usage: msg.usage,
           limit: msg.limit,
         })

@@ -12,6 +12,13 @@
  * to find. What is discoverable is what the document already uses, reached through the main
  * component behind each instance in it. That is a real limitation, and the catalogue reports it
  * rather than presenting a partial list as if it were the whole library.
+ *
+ * The agent channel has had a `components.list` op for a while, and this is not it. That one is
+ * an op: an agent can call it and a user module cannot, since a module may only call the
+ * plugin's own commands. It also lists local components only, and answers with Figma's raw
+ * `componentPropertyDefinitions`, which the reply digest flattens away exactly when a caller
+ * needs the variant values. Both stay: the op for an agent that wants the whole structure and
+ * the publish status, this for anyone who wants to know what they can build with.
  */
 
 /* ------------------------------------------------------------------ properties */
@@ -181,6 +188,8 @@ export interface CatalogEntry {
 export interface CatalogOptions {
   query?: string
   source?: 'local' | 'library' | 'all'
+  /** Default `page`. `document` loads every page first, which is the expensive half. */
+  scope?: 'page' | 'document'
   /** False skips the instance census: faster, and then no library component can be found at all. */
   usage?: boolean
   limit?: number
@@ -190,6 +199,7 @@ export interface Catalog {
   components: CatalogEntry[]
   total: number
   truncated: boolean
+  scope: 'page' | 'document'
   instances: number
   /** True when the census stopped at the cap, so `used` counts are a floor rather than a total. */
   sampled: boolean
@@ -208,43 +218,61 @@ function isDocumentable(node: SceneNode): node is ComponentSetNode | ComponentNo
 
 export async function collectComponents(options: CatalogOptions = {}): Promise<Catalog> {
   const source = options.source ?? 'all'
+  const scope = options.scope === 'document' ? 'document' : 'page'
   const census = options.usage !== false
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 500)
   const query = (options.query ?? '').trim().toLowerCase()
 
-  try {
-    await figma.loadAllPagesAsync()
-  } catch {
-    /* older host, or already loaded */
+  // The page unless asked otherwise. `components.list` over a whole document times out at 180s
+  // on the file this was built against: loading every page is the expensive half, and a caller
+  // building a flow is working on one page. `document` stays available and says what it costs.
+  let root: DocumentNode | PageNode = figma.currentPage
+  if (scope === 'document') {
+    try {
+      await figma.loadAllPagesAsync()
+      root = figma.root
+    } catch {
+      /* older host, or already loaded */
+      root = figma.root
+    }
   }
+
+  // Figma's own indexed search rather than a walk of our own, and without the mirrors of every
+  // hidden layer inside every instance.
+  const wasSkipping = figma.skipInvisibleInstanceChildren
+  figma.skipInvisibleInstanceChildren = true
 
   const entries = new Map<string, CatalogEntry>()
-  if (source !== 'library') {
-    for (const node of figma.root.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })) {
-      if (isDocumentable(node)) entries.set(node.id, entryFor(node, 'local'))
-    }
-  }
-
   let read = 0
   let sampled = false
-  if (census) {
-    const instances = figma.root.findAllWithCriteria({ types: ['INSTANCE'] })
-    sampled = instances.length > INSTANCE_CAP
-    for (const instance of instances.slice(0, INSTANCE_CAP)) {
-      read++
-      const main = await instance.getMainComponentAsync().catch(() => null)
-      if (!main) continue
-      const owner = ownerOf(main)
-      const known = entries.get(owner.id)
-      if (known) {
-        known.used = (known.used ?? 0) + 1
-        continue
+  try {
+    if (source !== 'library') {
+      for (const node of root.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })) {
+        if (isDocumentable(node)) entries.set(node.id, entryFor(node, 'local'))
       }
-      // Not local, so this is a library component — and an instance of it is the only evidence
-      // this file has that it exists.
-      if (source === 'local') continue
-      entries.set(owner.id, { ...entryFor(owner, owner.remote ? 'library' : 'local'), used: 1 })
     }
+
+    if (census) {
+      const instances = root.findAllWithCriteria({ types: ['INSTANCE'] })
+      sampled = instances.length > INSTANCE_CAP
+      for (const instance of instances.slice(0, INSTANCE_CAP)) {
+        read++
+        const main = await instance.getMainComponentAsync().catch(() => null)
+        if (!main) continue
+        const owner = ownerOf(main)
+        const known = entries.get(owner.id)
+        if (known) {
+          known.used = (known.used ?? 0) + 1
+          continue
+        }
+        // Not local, so this is a library component — and an instance of it is the only evidence
+        // this file has that it exists.
+        if (source === 'local') continue
+        entries.set(owner.id, { ...entryFor(owner, owner.remote ? 'library' : 'local'), used: 1 })
+      }
+    }
+  } finally {
+    figma.skipInvisibleInstanceChildren = wasSkipping
   }
 
   const all = [...entries.values()].filter((entry) => query === '' || entry.name.toLowerCase().includes(query))
@@ -252,15 +280,17 @@ export async function collectComponents(options: CatalogOptions = {}): Promise<C
   // designer means.
   all.sort((left, right) => (right.used ?? 0) - (left.used ?? 0) || left.name.localeCompare(right.name))
 
+  const where = scope === 'document' ? 'this document' : `the page "${figma.currentPage.name}"`
   return {
     components: all.slice(0, limit),
     total: all.length,
     truncated: all.length > limit,
+    scope,
     instances: read,
     sampled,
     note: census
-      ? 'Library components are those this document already uses — Figma offers plugins no way to list a library’s full contents.'
-      : 'Local components only: without the instance census (usage: false) a library component cannot be discovered at all.',
+      ? `Everything found in ${where}. Library components are the ones it already uses — Figma offers plugins no way to list a library’s full contents.`
+      : `Local components in ${where}: without the instance census (usage: false) a library component cannot be discovered at all.`,
   }
 }
 
