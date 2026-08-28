@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { paintProblem, planProps } from './props.ts'
+import { gradientHandles, gradientTransform, paintProblem, planProps } from './props.ts'
 import { planCreate, NODE_KINDS } from './create.ts'
 
 const stepsOf = (props: unknown) => {
@@ -292,4 +292,92 @@ test('the rest of a stroke is plain vocabulary', () => {
   assert.match(planProps({ strokeAlign: 'MIDDLE' }).problems[0], /INSIDE, OUTSIDE, CENTER/)
   assert.match(planProps({ blendMode: 'BURN' }).problems[0], /blendMode must be one of/)
   assert.match(planProps({ strokeDashes: [-1] }).problems[0], /array of numbers >= 0/)
+})
+
+/* ----------------------------------------------------------------- gradients */
+
+test('an angle is the line through the middle: 0 left to right, 90 top to bottom', () => {
+  assert.deepEqual(gradientHandles({ angle: 0 }), { from: [0, 0.5], to: [1, 0.5] })
+  const down = gradientHandles({ angle: 90 })
+  assert.deepEqual(down.from.map((n) => Math.round(n * 1e6) / 1e6), [0.5, 0])
+  assert.deepEqual(down.to.map((n) => Math.round(n * 1e6) / 1e6), [0.5, 1])
+  // Top to bottom is what Figma gives a designer who clicks "Linear", so it is the default.
+  assert.deepEqual(gradientHandles({}), gradientHandles({ angle: 90 }))
+  assert.deepEqual(gradientHandles({ from: [0, 0], to: [1, 1] }), { from: [0, 0], to: [1, 1] })
+})
+
+test('the identity matrix is a gradient running left to right — the fact the derivation is pinned to', () => {
+  assert.deepEqual(gradientTransform([0, 0], [1, 0]), [
+    [1, 0, 0],
+    [0, 1, 0],
+  ])
+})
+
+test('the matrix reads 0 at the start handle and 1 at the end, whichever way it points', () => {
+  // What the matrix is FOR: gradient-space x is the position along the gradient.
+  const along = (t: number[][], p: number[]) => t[0][0] * p[0] + t[0][1] * p[1] + t[0][2]
+  for (const [from, to] of [
+    [[0, 0.5], [1, 0.5]],
+    [[0.5, 0], [0.5, 1]],
+    [[0.2, 0.8], [0.9, 0.1]],
+  ] as Array<[number[], number[]]>) {
+    const matrix = gradientTransform(from as [number, number], to as [number, number])
+    assert.ok(Math.abs(along(matrix, from)) < 1e-9, `starts at 0 for ${from}`)
+    assert.ok(Math.abs(along(matrix, to) - 1) < 1e-9, `ends at 1 for ${to}`)
+  }
+})
+
+test('the second row is the first turned a quarter, so a circle stays a circle', () => {
+  const [[a, b], [c, d]] = gradientTransform([0.5, 0], [0.5, 1])
+  assert.ok(Math.abs(a * c + b * d) < 1e-9, 'the rows are perpendicular')
+  assert.ok(Math.abs(Math.hypot(a, b) - Math.hypot(c, d)) < 1e-9, 'and the same length')
+})
+
+test('a gradient is refused for every way of getting it wrong', () => {
+  assert.equal(paintProblem({ gradient: 'linear', stops: ['#FFFFFF', '#000000'] }), null)
+  assert.equal(paintProblem({ gradient: 'RADIAL', stops: [{ at: 0, color: { variable: 'brand/base' } }, { at: 1, color: '#000' }] }), null)
+  assert.match(paintProblem({ gradient: 'SPIRAL', stops: ['#FFF', '#000'] }) ?? '', /LINEAR, RADIAL, ANGULAR, DIAMOND/)
+  assert.match(paintProblem({ gradient: 'LINEAR', stops: ['#FFF'] }) ?? '', /at least two colours/)
+  assert.match(paintProblem({ gradient: 'LINEAR', stops: ['#FFF', 'teal'] }) ?? '', /stops\[1\]: "teal" is not a #RRGGBB/)
+  assert.match(paintProblem({ gradient: 'LINEAR', stops: [{ at: 2, color: '#FFF' }, '#000'] }) ?? '', /at must be between 0 and 1/)
+  assert.match(
+    paintProblem({ gradient: 'LINEAR', stops: ['#FFF', '#000'], angle: 45, from: [0, 0], to: [1, 1] }) ?? '',
+    /either an angle or from\/to, not both/
+  )
+  assert.match(paintProblem({ gradient: 'LINEAR', stops: ['#FFF', '#000'], from: [0, 0] }) ?? '', /from and to travel together/)
+  assert.match(paintProblem({ gradient: 'LINEAR', stops: ['#FFF', '#000'], stop: 1 }) ?? '', /unknown key "stop"/)
+})
+
+test('a radial gradient measures from the middle, not from a corner', () => {
+  // Using the linear form for a radial put the centre of every one of them on the left edge —
+  // algebraically fine, visibly wrong, and only a render said so.
+  const { from, to } = gradientHandles({ gradient: 'RADIAL' })
+  assert.deepEqual(from, [0.5, 0.5])
+  assert.deepEqual(to, [1, 0.5])
+  // The middle of the layer with a radius reaching half way IS the identity, the same way left
+  // to right is for a linear one.
+  assert.deepEqual(gradientTransform(from, to, 'RADIAL'), [
+    [1, 0, 0],
+    [0, 1, 0],
+  ])
+})
+
+test('the centred form puts the centre at the middle of gradient space and the edge half a unit off', () => {
+  const at = (t: number[][], p: number[]) => [
+    t[0][0] * p[0] + t[0][1] * p[1] + t[0][2],
+    t[1][0] * p[0] + t[1][1] * p[1] + t[1][2],
+  ]
+  const from: [number, number] = [0.3, 0.7]
+  const to: [number, number] = [0.8, 0.2]
+  const matrix = gradientTransform(from, to, 'DIAMOND')
+  const centre = at(matrix, from)
+  const edge = at(matrix, to)
+  assert.ok(Math.hypot(centre[0] - 0.5, centre[1] - 0.5) < 1e-9, 'the centre lands in the middle')
+  assert.ok(Math.abs(Math.hypot(edge[0] - centre[0], edge[1] - centre[1]) - 0.5) < 1e-9, 'the edge is half a unit out')
+})
+
+test('an angle turns a radial radius rather than moving its centre', () => {
+  const turned = gradientHandles({ gradient: 'ANGULAR', angle: 90 })
+  assert.deepEqual(turned.from, [0.5, 0.5])
+  assert.deepEqual(turned.to.map((n) => Math.round(n * 1e6) / 1e6), [0.5, 1])
 })

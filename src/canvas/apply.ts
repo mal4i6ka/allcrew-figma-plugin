@@ -14,8 +14,8 @@
 import { parseHex } from '../tokens/color.ts'
 import { resolveVariableRef } from '../agent/values.ts'
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
-import { resolveRanges } from './props.ts'
-import type { ImageRef, PaintRef, PropStep, TextRun } from './props.ts'
+import { gradientHandles, gradientTransform, resolveRanges } from './props.ts'
+import type { GradientRef, ImageRef, PaintRef, PropStep, TextRun } from './props.ts'
 
 export interface AppliedProp {
   property: string
@@ -475,6 +475,7 @@ async function buildPaints(ref: PaintRef): Promise<Paint[]> {
   }
 
   if (typeof ref === 'string') return [solid(ref)]
+  if ('gradient' in ref) return [await buildGradient(ref)]
   if ('image' in ref) return [await buildImage(ref)]
   if ('variable' in ref) {
     const variable = await resolveVariableRef(ref.variable)
@@ -486,6 +487,50 @@ async function buildPaints(ref: PaintRef): Promise<Paint[]> {
     return [figma.variables.setBoundVariableForPaint(base, 'color', variable)]
   }
   return [solid(ref.color, ref.opacity)]
+}
+
+/**
+ * A gradient, from the handles and the stops.
+ *
+ * A stop may name a variable rather than a colour — which is how a gradient token stays a token
+ * once it is on a layer. There is no `setBoundVariableForPaint` for a stop, so the binding is
+ * written into the stop itself, which is what Figma reads.
+ */
+async function buildGradient(ref: GradientRef): Promise<GradientPaint> {
+  const { from, to } = gradientHandles(ref)
+  const spread = ref.stops.length - 1
+
+  const stops: ColorStop[] = []
+  for (const [index, entry] of ref.stops.entries()) {
+    const stop = typeof entry === 'string' ? { at: spread === 0 ? 0 : index / spread, color: entry } : entry
+    const alpha = stop.opacity ?? 1
+
+    if (typeof stop.color === 'object') {
+      const variable = await resolveVariableRef(stop.color.variable)
+      if (variable.resolvedType !== 'COLOR') {
+        throw new Error(`"${variable.name}" is a ${variable.resolvedType} variable, not a colour`)
+      }
+      stops.push({
+        position: stop.at,
+        color: { r: 0, g: 0, b: 0, a: alpha },
+        boundVariables: { color: { type: 'VARIABLE_ALIAS', id: variable.id } },
+      })
+      continue
+    }
+    const rgb = parseHex(stop.color)
+    if (!rgb) throw new Error(`"${stop.color}" is not a colour`)
+    stops.push({ position: stop.at, color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha } })
+  }
+
+  // Figma reads the stops in order; a caller listing them out of order means the same gradient.
+  stops.sort((left, right) => left.position - right.position)
+
+  return {
+    type: `GRADIENT_${ref.gradient.toUpperCase()}` as GradientPaint['type'],
+    gradientTransform: gradientTransform(from, to, ref.gradient),
+    gradientStops: stops,
+    ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+  }
 }
 
 /**
@@ -568,7 +613,17 @@ export async function describePaints(value: unknown): Promise<string | null> {
     }
     if (entry.type.startsWith('GRADIENT')) {
       const gradient = paint as GradientPaint
-      parts.push(`${entry.type.replace('GRADIENT_', 'gradient:').toLowerCase()} (${gradient.gradientStops.length} stops)`)
+      const colours: string[] = []
+      for (const stop of gradient.gradientStops) {
+        const bound = stop.boundVariables?.color?.id
+        if (bound) {
+          const named = await figma.variables.getVariableByIdAsync(bound).catch(() => null)
+          colours.push(`var:${named?.name ?? bound}`)
+          continue
+        }
+        colours.push(hexOf(stop.color))
+      }
+      parts.push(`${entry.type.replace('GRADIENT_', 'gradient:').toLowerCase()} ${colours.join(' → ')}`)
       continue
     }
     if (entry.type !== 'SOLID') {
@@ -583,6 +638,14 @@ export async function describePaints(value: unknown): Promise<string | null> {
     parts.push(flat.opacity !== undefined && flat.opacity < 1 ? `${hex} @${flat.opacity}` : hex)
   }
   return parts.join(' + ')
+}
+
+function hexOf(color: { r: number; g: number; b: number; a?: number }): string {
+  const hex = `#${[color.r, color.g, color.b]
+    .map((channel) => Math.round(channel * 255).toString(16).padStart(2, '0'))
+    .join('')
+    .toUpperCase()}`
+  return color.a !== undefined && color.a < 1 ? `${hex} @${round(color.a)}` : hex
 }
 
 /** Effects as one readable line, for the same reason paints are: this lands deep in a report. */

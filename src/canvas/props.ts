@@ -33,6 +33,34 @@ export type SinglePaint =
   | { color: string; opacity?: number }
   | { variable: string }
   | ImageRef
+  | GradientRef
+
+/**
+ * A gradient, said the way a person says one: which kind, which colours, which way round.
+ *
+ * Figma stores none of that. It stores a 2×3 matrix that maps the layer onto the unit square the
+ * gradient lives in — correct, and unwritable by hand. So the vocabulary takes an `angle` (0 is
+ * left to right, 90 is top to bottom, the way the screen's y runs) or, for full control, the two
+ * handles the Figma UI itself shows: `from` and `to` in the layer's own 0..1 coordinates. For a
+ * radial or a diamond those are the centre and a point on the edge, which is exactly what the
+ * two handles mean there.
+ */
+export interface GradientRef {
+  gradient: 'LINEAR' | 'RADIAL' | 'ANGULAR' | 'DIAMOND'
+  /** `"#FFFFFF"` shorthand spreads colours evenly; the long form places each one. */
+  stops: Array<string | GradientStop>
+  angle?: number
+  from?: [number, number]
+  to?: [number, number]
+  opacity?: number
+}
+
+export interface GradientStop {
+  /** 0 to 1. */
+  at: number
+  color: string | { variable: string }
+  opacity?: number
+}
 
 /**
  * A picture: one already in this document by its hash, one to fetch, or one sent as bytes.
@@ -231,6 +259,10 @@ const STROKE_ALIGN = ['INSIDE', 'OUTSIDE', 'CENTER']
 const STROKE_CAP = ['NONE', 'ROUND', 'SQUARE', 'ARROW_LINES', 'ARROW_EQUILATERAL']
 const STROKE_JOIN = ['MITER', 'BEVEL', 'ROUND']
 const SCALE_MODES = ['FILL', 'FIT', 'CROP', 'TILE']
+const GRADIENTS = ['LINEAR', 'RADIAL', 'ANGULAR', 'DIAMOND']
+
+/** Top to bottom, because that is what Figma gives a designer who clicks "Linear". */
+const DEFAULT_GRADIENT_ANGLE = 90
 const BLEND_MODES = [
   'PASS_THROUGH',
   'NORMAL',
@@ -1320,6 +1352,77 @@ function planLayout(raw: unknown, where: string, problems: string[]): PropStep |
 
 const HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
 
+/**
+ * The two handles a gradient runs between, in the layer's own 0..1 space.
+ *
+ * They mean two different things depending on the kind, exactly as the two handles in Figma's own
+ * UI do. For a linear gradient they are the ends of the line: an `angle` draws that line through
+ * the middle of the layer, `angle` degrees round from horizontal, with y running down the screen
+ * as it does everywhere else here — 0 is left to right, 90 top to bottom, and 90 is the default
+ * because that is what Figma gives a designer who clicks "Linear".
+ *
+ * For a radial, a diamond or an angular gradient the first handle is the CENTRE and the second a
+ * point on the edge. So the default there is the middle of the layer with a radius reaching half
+ * way, and an angle only turns that radius — which is invisible on a circle and not on the other
+ * two.
+ */
+export function gradientHandles(ref: {
+  gradient?: string
+  angle?: number
+  from?: [number, number]
+  to?: [number, number]
+}): { from: [number, number]; to: [number, number] } {
+  if (ref.from && ref.to) return { from: ref.from, to: ref.to }
+
+  const centred = ref.gradient !== undefined && normaliseEnum(ref.gradient) !== 'LINEAR'
+  const radians = ((ref.angle ?? (centred ? 0 : DEFAULT_GRADIENT_ANGLE)) * Math.PI) / 180
+  const dx = Math.cos(radians) / 2
+  const dy = Math.sin(radians) / 2
+  if (centred) return { from: [0.5, 0.5], to: [0.5 + dx, 0.5 + dy] }
+  return { from: [0.5 - dx, 0.5 - dy], to: [0.5 + dx, 0.5 + dy] }
+}
+
+/**
+ * The matrix Figma actually stores, from the two handles.
+ *
+ * Figma keeps a gradient as a transform from the layer's space into the unit square the gradient
+ * is defined in — the inverse of where a designer dragged the handles, which is why nobody writes
+ * one by hand. Two facts pin the derivation, and both are visible in a render:
+ *
+ * - A LINEAR gradient reads its position off the x axis of that space, 0 at one end and 1 at the
+ *   other. So the x row is the direction vector over its own squared length, translated to put
+ *   `from` at zero — and the identity matrix comes out for (0,0) → (1,0), which is documented as
+ *   a gradient running left to right.
+ * - A RADIAL, DIAMOND or ANGULAR gradient measures from the CENTRE of that space, (0.5, 0.5),
+ *   with the edge half a unit away. Using the linear form for those put the centre of every
+ *   radial on the left edge — visible the moment one was rendered. So the scale is halved and the
+ *   translation lands the centre in the middle, which again gives the identity for the middle of
+ *   the layer with a radius reaching half way.
+ *
+ * The y row is the x row turned a quarter in both cases, so a circle stays a circle.
+ */
+export function gradientTransform(
+  from: readonly [number, number],
+  to: readonly [number, number],
+  kind: string = 'LINEAR'
+): Transform {
+  const centred = normaliseEnum(kind) !== 'LINEAR'
+  const dx = to[0] - from[0]
+  const dy = to[1] - from[1]
+  const squared = dx * dx + dy * dy || 1e-6
+  const reach = centred ? 0.5 : 1
+  const origin = centred ? 0.5 : 0
+  const a = (reach * dx) / squared
+  const b = (reach * dy) / squared
+  // `+ 0` because negating zero gives -0, which is the same number and a different thing to read
+  // in a stored matrix.
+  const zeroed = (value: number) => value + 0
+  return [
+    [zeroed(a), zeroed(b), zeroed(origin - (a * from[0] + b * from[1]))],
+    [zeroed(-b), zeroed(a), zeroed(origin - (-b * from[0] + a * from[1]))],
+  ]
+}
+
 /** Null when the reference is usable, else why not. A list is a stack of layers, checked one by one. */
 export function paintProblem(ref: unknown): string | null {
   if (Array.isArray(ref)) {
@@ -1333,7 +1436,15 @@ export function paintProblem(ref: unknown): string | null {
   if (typeof ref === 'string') return HEX.test(ref) ? null : `"${ref}" is not a #RRGGBB colour`
   if (typeof ref !== 'object') return 'must be "#RRGGBB", { color }, { variable }, { image }, a list of those, or null'
 
-  const entry = ref as { color?: unknown; opacity?: unknown; variable?: unknown; image?: unknown; scaleMode?: unknown }
+  const entry = ref as {
+    color?: unknown
+    opacity?: unknown
+    variable?: unknown
+    image?: unknown
+    scaleMode?: unknown
+    gradient?: unknown
+  }
+  if (entry.gradient !== undefined) return gradientProblem(ref as Record<string, unknown>)
   if (entry.image !== undefined) return imageProblem(entry)
   if (typeof entry.variable === 'string') return entry.variable === '' ? 'variable must be a name, id or library key' : null
   if (typeof entry.color === 'string') {
@@ -1344,6 +1455,59 @@ export function paintProblem(ref: unknown): string | null {
     return null
   }
   return 'must carry either `color`, `variable` or `image`'
+}
+
+function gradientProblem(entry: Record<string, unknown>): string | null {
+  const kind = typeof entry.gradient === 'string' ? normaliseEnum(entry.gradient) : ''
+  if (!GRADIENTS.includes(kind)) return `gradient must be one of: ${GRADIENTS.join(', ')}`
+
+  for (const key of Object.keys(entry)) {
+    if (!['gradient', 'stops', 'angle', 'from', 'to', 'opacity'].includes(key)) {
+      return `unknown key "${key}" — accepted: gradient, stops, angle, from, to, opacity`
+    }
+  }
+  if (!Array.isArray(entry.stops) || entry.stops.length < 2) {
+    return 'stops must be an array of at least two colours'
+  }
+  for (const [index, stop] of entry.stops.entries()) {
+    if (typeof stop === 'string') {
+      if (!HEX.test(stop)) return `stops[${index}]: "${stop}" is not a #RRGGBB colour`
+      continue
+    }
+    if (typeof stop !== 'object' || stop === null || Array.isArray(stop)) {
+      return `stops[${index}] must be "#RRGGBB" or { at, color }`
+    }
+    const one = stop as { at?: unknown; color?: unknown; opacity?: unknown }
+    if (typeof one.at !== 'number' || one.at < 0 || one.at > 1) return `stops[${index}].at must be between 0 and 1`
+    if (typeof one.color === 'object' && one.color !== null) {
+      const bound = one.color as { variable?: unknown }
+      if (typeof bound.variable !== 'string' || bound.variable === '') {
+        return `stops[${index}].color must be "#RRGGBB" or { variable }`
+      }
+    } else if (typeof one.color !== 'string' || !HEX.test(one.color)) {
+      return `stops[${index}].color must be "#RRGGBB" or { variable }`
+    }
+    if (one.opacity !== undefined && (typeof one.opacity !== 'number' || one.opacity < 0 || one.opacity > 1)) {
+      return `stops[${index}].opacity must be between 0 and 1`
+    }
+  }
+
+  if (entry.angle !== undefined && (typeof entry.angle !== 'number' || !Number.isFinite(entry.angle))) {
+    return 'angle must be a number of degrees'
+  }
+  for (const end of ['from', 'to'] as const) {
+    const point = entry[end]
+    if (point === undefined) continue
+    if (!Array.isArray(point) || point.length !== 2 || point.some((one) => typeof one !== 'number' || !Number.isFinite(one))) {
+      return `${end} must be [x, y] in the layer's own 0..1 coordinates`
+    }
+  }
+  if ((entry.from === undefined) !== (entry.to === undefined)) return 'from and to travel together'
+  if (entry.angle !== undefined && entry.from !== undefined) return 'name either an angle or from/to, not both'
+  if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
+    return 'opacity must be between 0 and 1'
+  }
+  return null
 }
 
 function imageProblem(entry: { image?: unknown; scaleMode?: unknown; opacity?: unknown }): string | null {

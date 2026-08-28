@@ -23490,6 +23490,8 @@ ${scripts}`, "");
   var STROKE_CAP = ["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL"];
   var STROKE_JOIN = ["MITER", "BEVEL", "ROUND"];
   var SCALE_MODES = ["FILL", "FIT", "CROP", "TILE"];
+  var GRADIENTS2 = ["LINEAR", "RADIAL", "ANGULAR", "DIAMOND"];
+  var DEFAULT_GRADIENT_ANGLE = 90;
   var BLEND_MODES = [
     "PASS_THROUGH",
     "NORMAL",
@@ -24387,6 +24389,31 @@ ${scripts}`, "");
     return { step: "layout", layout };
   }
   var HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+  function gradientHandles(ref) {
+    var _a;
+    if (ref.from && ref.to) return { from: ref.from, to: ref.to };
+    const centred = ref.gradient !== void 0 && normaliseEnum(ref.gradient) !== "LINEAR";
+    const radians = ((_a = ref.angle) != null ? _a : centred ? 0 : DEFAULT_GRADIENT_ANGLE) * Math.PI / 180;
+    const dx = Math.cos(radians) / 2;
+    const dy = Math.sin(radians) / 2;
+    if (centred) return { from: [0.5, 0.5], to: [0.5 + dx, 0.5 + dy] };
+    return { from: [0.5 - dx, 0.5 - dy], to: [0.5 + dx, 0.5 + dy] };
+  }
+  function gradientTransform(from, to, kind = "LINEAR") {
+    const centred = normaliseEnum(kind) !== "LINEAR";
+    const dx = to[0] - from[0];
+    const dy = to[1] - from[1];
+    const squared = dx * dx + dy * dy || 1e-6;
+    const reach = centred ? 0.5 : 1;
+    const origin = centred ? 0.5 : 0;
+    const a = reach * dx / squared;
+    const b = reach * dy / squared;
+    const zeroed = (value) => value + 0;
+    return [
+      [zeroed(a), zeroed(b), zeroed(origin - (a * from[0] + b * from[1]))],
+      [zeroed(-b), zeroed(a), zeroed(origin - (-b * from[0] + a * from[1]))]
+    ];
+  }
   function paintProblem(ref) {
     if (Array.isArray(ref)) {
       for (const [index, one] of ref.entries()) {
@@ -24399,6 +24426,7 @@ ${scripts}`, "");
     if (typeof ref === "string") return HEX.test(ref) ? null : `"${ref}" is not a #RRGGBB colour`;
     if (typeof ref !== "object") return 'must be "#RRGGBB", { color }, { variable }, { image }, a list of those, or null';
     const entry = ref;
+    if (entry.gradient !== void 0) return gradientProblem(ref);
     if (entry.image !== void 0) return imageProblem(entry);
     if (typeof entry.variable === "string") return entry.variable === "" ? "variable must be a name, id or library key" : null;
     if (typeof entry.color === "string") {
@@ -24409,6 +24437,56 @@ ${scripts}`, "");
       return null;
     }
     return "must carry either `color`, `variable` or `image`";
+  }
+  function gradientProblem(entry) {
+    const kind = typeof entry.gradient === "string" ? normaliseEnum(entry.gradient) : "";
+    if (!GRADIENTS2.includes(kind)) return `gradient must be one of: ${GRADIENTS2.join(", ")}`;
+    for (const key of Object.keys(entry)) {
+      if (!["gradient", "stops", "angle", "from", "to", "opacity"].includes(key)) {
+        return `unknown key "${key}" \u2014 accepted: gradient, stops, angle, from, to, opacity`;
+      }
+    }
+    if (!Array.isArray(entry.stops) || entry.stops.length < 2) {
+      return "stops must be an array of at least two colours";
+    }
+    for (const [index, stop] of entry.stops.entries()) {
+      if (typeof stop === "string") {
+        if (!HEX.test(stop)) return `stops[${index}]: "${stop}" is not a #RRGGBB colour`;
+        continue;
+      }
+      if (typeof stop !== "object" || stop === null || Array.isArray(stop)) {
+        return `stops[${index}] must be "#RRGGBB" or { at, color }`;
+      }
+      const one = stop;
+      if (typeof one.at !== "number" || one.at < 0 || one.at > 1) return `stops[${index}].at must be between 0 and 1`;
+      if (typeof one.color === "object" && one.color !== null) {
+        const bound = one.color;
+        if (typeof bound.variable !== "string" || bound.variable === "") {
+          return `stops[${index}].color must be "#RRGGBB" or { variable }`;
+        }
+      } else if (typeof one.color !== "string" || !HEX.test(one.color)) {
+        return `stops[${index}].color must be "#RRGGBB" or { variable }`;
+      }
+      if (one.opacity !== void 0 && (typeof one.opacity !== "number" || one.opacity < 0 || one.opacity > 1)) {
+        return `stops[${index}].opacity must be between 0 and 1`;
+      }
+    }
+    if (entry.angle !== void 0 && (typeof entry.angle !== "number" || !Number.isFinite(entry.angle))) {
+      return "angle must be a number of degrees";
+    }
+    for (const end of ["from", "to"]) {
+      const point = entry[end];
+      if (point === void 0) continue;
+      if (!Array.isArray(point) || point.length !== 2 || point.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
+        return `${end} must be [x, y] in the layer's own 0..1 coordinates`;
+      }
+    }
+    if (entry.from === void 0 !== (entry.to === void 0)) return "from and to travel together";
+    if (entry.angle !== void 0 && entry.from !== void 0) return "name either an angle or from/to, not both";
+    if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
+      return "opacity must be between 0 and 1";
+    }
+    return null;
   }
   function imageProblem(entry) {
     const image = entry.image;
@@ -24965,6 +25043,7 @@ ${scripts}`, "");
       return stack;
     }
     if (typeof ref === "string") return [solid5(ref)];
+    if ("gradient" in ref) return [await buildGradient(ref)];
     if ("image" in ref) return [await buildImage(ref)];
     if ("variable" in ref) {
       const variable = await resolveVariableRef(ref.variable);
@@ -24975,6 +25054,37 @@ ${scripts}`, "");
       return [figma.variables.setBoundVariableForPaint(base, "color", variable)];
     }
     return [solid5(ref.color, ref.opacity)];
+  }
+  async function buildGradient(ref) {
+    var _a;
+    const { from, to } = gradientHandles(ref);
+    const spread = ref.stops.length - 1;
+    const stops = [];
+    for (const [index, entry] of ref.stops.entries()) {
+      const stop = typeof entry === "string" ? { at: spread === 0 ? 0 : index / spread, color: entry } : entry;
+      const alpha = (_a = stop.opacity) != null ? _a : 1;
+      if (typeof stop.color === "object") {
+        const variable = await resolveVariableRef(stop.color.variable);
+        if (variable.resolvedType !== "COLOR") {
+          throw new Error(`"${variable.name}" is a ${variable.resolvedType} variable, not a colour`);
+        }
+        stops.push({
+          position: stop.at,
+          color: { r: 0, g: 0, b: 0, a: alpha },
+          boundVariables: { color: { type: "VARIABLE_ALIAS", id: variable.id } }
+        });
+        continue;
+      }
+      const rgb = parseHex(stop.color);
+      if (!rgb) throw new Error(`"${stop.color}" is not a colour`);
+      stops.push({ position: stop.at, color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha } });
+    }
+    stops.sort((left, right) => left.position - right.position);
+    return __spreadValues({
+      type: `GRADIENT_${ref.gradient.toUpperCase()}`,
+      gradientTransform: gradientTransform(from, to, ref.gradient),
+      gradientStops: stops
+    }, ref.opacity === void 0 ? {} : { opacity: ref.opacity });
   }
   async function buildImage(ref) {
     var _a;
@@ -25010,7 +25120,7 @@ ${scripts}`, "");
     return node;
   }
   async function describePaints2(value) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f, _g;
     if (value === figma.mixed) return "mixed";
     if (!Array.isArray(value)) return value === void 0 ? null : String(value);
     if (value.length === 0) return "none";
@@ -25034,7 +25144,17 @@ ${scripts}`, "");
       }
       if (entry.type.startsWith("GRADIENT")) {
         const gradient = paint;
-        parts.push(`${entry.type.replace("GRADIENT_", "gradient:").toLowerCase()} (${gradient.gradientStops.length} stops)`);
+        const colours = [];
+        for (const stop of gradient.gradientStops) {
+          const bound2 = (_f = (_e = stop.boundVariables) == null ? void 0 : _e.color) == null ? void 0 : _f.id;
+          if (bound2) {
+            const named = await figma.variables.getVariableByIdAsync(bound2).catch(() => null);
+            colours.push(`var:${(_g = named == null ? void 0 : named.name) != null ? _g : bound2}`);
+            continue;
+          }
+          colours.push(hexOf2(stop.color));
+        }
+        parts.push(`${entry.type.replace("GRADIENT_", "gradient:").toLowerCase()} ${colours.join(" \u2192 ")}`);
         continue;
       }
       if (entry.type !== "SOLID") {
@@ -25046,6 +25166,10 @@ ${scripts}`, "");
       parts.push(flat.opacity !== void 0 && flat.opacity < 1 ? `${hex} @${flat.opacity}` : hex);
     }
     return parts.join(" + ");
+  }
+  function hexOf2(color) {
+    const hex = `#${[color.r, color.g, color.b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+    return color.a !== void 0 && color.a < 1 ? `${hex} @${round10(color.a)}` : hex;
   }
   function describeEffects(value) {
     if (!Array.isArray(value)) return value === figma.mixed ? "mixed" : "none";
