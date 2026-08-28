@@ -47,6 +47,10 @@ export function setUiMessageRunner(next: UiMessageRunner | null): void {
 export interface ModuleProvider {
   commands: () => readonly UiCommandDef[]
   run: (name: string, params: Record<string, unknown>) => Promise<unknown>
+  /** Why a name that is not in `commands()` is nonetheless known — a module switched off, say.
+   * "No such command" and "that one is switched off" are different answers, and only one of
+   * them tells the caller what to do about it. */
+  unavailable?: (name: string) => string | null
 }
 
 let modules: ModuleProvider | null = null
@@ -283,7 +287,13 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
 
         const def = lookup(command)
         if (!def && commands.length > 0) {
-          throw new Error(`unknown command "${command}" — call plugin.commands for the list`)
+          let known: string | null = null
+          try {
+            known = modules?.unavailable?.(command) ?? null
+          } catch {
+            /* a registry that throws is not allowed to change the error message */
+          }
+          throw new Error(known ?? `unknown command "${command}" — call plugin.commands for the list`)
         }
 
         const extra = (params.params ?? {}) as Record<string, unknown>

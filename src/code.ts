@@ -133,6 +133,7 @@ type PluginMessage =
   | { type: 'GENERATE_KIT' }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
+  | { type: 'MODULE_INSPECT'; file: unknown }
   | { type: 'MODULE_INSTALL'; file: unknown; replace?: boolean }
   | { type: 'MODULE_REMOVE'; id: string }
   | { type: 'MODULE_ENABLE'; id: string; enabled: boolean }
@@ -1014,6 +1015,14 @@ async function loadUserModules(): Promise<void> {
   }
 }
 
+/** The version of what is stored, for telling an upgrade from a reinstall. Read off the file
+ * rather than a stored field: the file is the thing that carries a version. */
+function versionOf(entry: StoredModule | undefined): string | null {
+  const file = entry?.file
+  const version = file && typeof file === 'object' ? (file as { version?: unknown }).version : null
+  return typeof version === 'string' ? version : null
+}
+
 /** Declared defaults with whatever the module has kept laid over them — what a field shows, and
  * what a run starts from. A stored value for a field the module no longer declares is dropped
  * rather than carried forward by an upgrade. */
@@ -1041,6 +1050,10 @@ async function writeStoredModules(next: Record<string, StoredModule>): Promise<v
  */
 setModuleProvider({
   commands: () => moduleCommandDefs(userModules),
+  unavailable: (name) => {
+    const found = findModuleCommand(userModules, name)
+    return found && 'error' in found ? found.error : null
+  },
   async run(name, params) {
     const found = findModuleCommand(userModules, name)
     if (!found) throw new Error(`unknown module command "${name}"`)
@@ -1824,6 +1837,37 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'MODULES_LIST': {
       // @agent read: the installed user modules, what each may run, and why any of them is unusable
       postToUi({ type: 'MODULES', modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT })
+      break
+    }
+    case 'MODULE_INSPECT': {
+      // @agent read: what a module file would be and what it would be allowed to run — installs nothing
+      // @agent param file: the module document, object or JSON text; nothing is stored either way
+      const { module: parsed, problems } = parseUserModule(msg.file, UI_COMMANDS)
+      if (!parsed) {
+        postToUi({ type: 'MODULE_REJECTED', problems })
+        break
+      }
+      const stored = await readStoredModules()
+      postToUi({
+        type: 'MODULE_INSPECTED',
+        id: parsed.id,
+        name: parsed.name,
+        summary: parsed.summary,
+        version: parsed.version,
+        ...(parsed.author ? { author: parsed.author } : {}),
+        screens: Object.keys(parsed.screens),
+        commands: parsed.commands.map((command) => ({
+          name: command.name,
+          access: command.access,
+          summary: command.summary,
+          confirms: command.confirms,
+        })),
+        // Derived from the steps, so consent is given against what the module can actually do
+        // rather than against what it says about itself.
+        capabilities: moduleCapabilities(parsed, UI_COMMANDS),
+        installed: parsed.id in stored,
+        ...(stored[parsed.id] ? { installedVersion: versionOf(stored[parsed.id]) } : {}),
+      })
       break
     }
     case 'MODULE_INSTALL': {

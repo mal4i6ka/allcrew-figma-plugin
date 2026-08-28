@@ -362,6 +362,22 @@ test('calling a module command runs the module, not the message handler', async 
   }
 })
 
+test('a switched-off module says so, rather than reading as a name nobody has', async () => {
+  setUiMessageRunner(runner([]))
+  setModuleProvider({
+    commands: () => [],
+    run: async () => ({}),
+    unavailable: (name) => (name === 'acme.pipe.run' ? '"acme.pipe.run" belongs to module "acme.pipe", which is switched off' : null),
+  })
+  try {
+    await assert.rejects(() => call.run({ command: 'acme.pipe.run', keep: 400 }), /which is switched off/)
+    // And a name nobody has still reads that way.
+    await assert.rejects(() => call.run({ command: 'nobody.has.this', keep: 400 }), /unknown command/)
+  } finally {
+    setModuleProvider(null)
+  }
+})
+
 test('a registry that throws leaves the native surface callable', async () => {
   setUiMessageRunner(runner([], [{ type: 'PURE_ANSWER' }]))
   setModuleProvider({
