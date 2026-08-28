@@ -52,6 +52,12 @@ export interface CreatedNode {
   applied: AppliedProp[]
   children: CreatedNode[]
   failed: number
+  /**
+   * The properties that did not take, and why — beside the count rather than inside `applied`.
+   * A long `applied` list is spilled to a file by the digest, and `failed: 1` with the reason in
+   * a file the caller has to go and open is a report that hides the only line that mattered.
+   */
+  failures?: string[]
 }
 
 export interface CreatePlan {
@@ -185,14 +191,20 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
   // Now that the children are in and the node is placed, the rest can be set.
   const late = later.length > 0 ? await applyProps(node, later, false) : { applied: [], failed: 0 }
 
+  const applied = [...report.applied, ...late.applied]
+  const failures = applied
+    .filter((entry) => entry.error)
+    .map((entry) => `${entry.property}: ${entry.error}`)
+
   return {
     kind: plan.kind,
     id: node.id,
     name: node.name,
     parent: node.parent ? { id: node.parent.id, name: node.parent.name } : null,
-    applied: [...report.applied, ...late.applied],
+    applied,
     children,
     failed: report.failed + late.failed + children.reduce((total, child) => total + child.failed, 0),
+    ...(failures.length > 0 ? { failures } : {}),
   }
 }
 

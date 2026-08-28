@@ -100,13 +100,22 @@ test('a radius is one number or named corners', () => {
   })
 })
 
-test('a line height is a number of pixels or AUTO', () => {
-  assert.deepEqual(stepsOf({ lineHeight: 24 }), [{ step: 'lineHeight', value: 24 }])
+test('leading and tracking take pixels or a percentage, and carry the unit', () => {
+  // Figma stores both as { value, unit } and refuses a bare number, so the unit is decided here
+  // rather than assumed to be pixels at the far end.
+  assert.deepEqual(stepsOf({ lineHeight: 24 }), [{ step: 'lineHeight', value: 24, unit: 'PIXELS' }])
+  assert.deepEqual(stepsOf({ lineHeight: '150%' }), [{ step: 'lineHeight', value: 150, unit: 'PERCENT' }])
   assert.deepEqual(stepsOf({ lineHeight: 'AUTO' }), [{ step: 'lineHeight', value: 'AUTO' }])
+  assert.deepEqual(stepsOf({ letterSpacing: 1 }), [{ step: 'letterSpacing', value: 1, unit: 'PIXELS' }])
+  assert.deepEqual(stepsOf({ letterSpacing: '-2.5%' }), [{ step: 'letterSpacing', value: -2.5, unit: 'PERCENT' }])
+  assert.match(planProps({ letterSpacing: '5em' }).problems[0], /pixels or a percentage/)
+  assert.match(planProps({ lineHeight: 0 }).problems[0], /positive/)
 })
 
 test('textAlign and autoResize are renamed to what Figma calls them', () => {
   // The vocabulary is the caller's; the property names are Figma's.
+  // autoResize sits after the characters: set before them it freezes an empty box, and the
+  // resize that follows has nothing to hold on to.
   assert.deepEqual(stepsOf({ textAlign: 'CENTER', autoResize: 'HEIGHT' }), [
     { step: 'assign', property: 'textAlignHorizontal', value: 'CENTER' },
     { step: 'assign', property: 'textAutoResize', value: 'HEIGHT' },

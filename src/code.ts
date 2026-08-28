@@ -178,7 +178,15 @@ type PluginMessage =
     }
   | { type: 'NODE_CLONE'; nodes: unknown; dryRun?: boolean }
   | { type: 'NODE_GROUP'; nodes: unknown; as?: string; props?: unknown; repeat?: unknown }
-  | { type: 'COMPONENT_MAKE'; nodes: unknown; as?: string; name?: string; description?: string; props?: unknown }
+  | {
+      type: 'COMPONENT_MAKE'
+      nodes: unknown
+      as?: string
+      name?: string
+      description?: string
+      links?: unknown
+      props?: unknown
+    }
   | {
       type: 'COMPONENT_PROPERTY'
       component: string
@@ -1152,7 +1160,7 @@ function describeProperties(node: ComponentNode | ComponentSetNode): string {
   return describePropertyDefinitions(definitionsOf(node) as Record<string, { type: string; variantOptions?: readonly string[]; defaultValue?: unknown }>)
 }
 
-const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline', 'repeat']
+const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline', 'repeat', 'detach']
 
 const EXPORT_FORMATS = ['PNG', 'JPG', 'SVG', 'PDF', 'MP4', 'GIF', 'WEBM']
 
@@ -1201,6 +1209,18 @@ const CLONE_GAP = 64
  * A node as a caller can act on it: the ids and names to aim at, and — asked for — the same
  * property vocabulary `NODE_SET` accepts, so a read can be edited and sent back.
  */
+/** A property a run can override reads back as a symbol; that is an answer, not a value. */
+const plain = <T,>(value: T | typeof figma.mixed): T | 'mixed' => (value === figma.mixed ? 'mixed' : (value as T))
+
+/** `{ value: 150, unit: 'PERCENT' }` is how Figma stores leading and tracking, not how it reads. */
+function textMeasure(value: unknown): string {
+  if (typeof value !== 'object' || value === null || !('unit' in value)) return 'mixed'
+  const { unit, value: amount } = value as { unit: string; value?: number }
+  if (unit === 'AUTO') return 'auto'
+  const size = Math.round((amount ?? 0) * 100) / 100
+  return unit === 'PERCENT' ? `${size}%` : `${size}px`
+}
+
 async function describeNode(node: SceneNode, withProps: boolean): Promise<Record<string, unknown>> {
   const base: Record<string, unknown> = {
     id: node.id,
@@ -1324,10 +1344,54 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     props.fontSize = node.fontSize === figma.mixed ? 'mixed' : round(node.fontSize)
     props.fontName = node.fontName === figma.mixed ? 'mixed' : `${node.fontName.family} ${node.fontName.style}`
     props.textAlign = node.textAlignHorizontal
-    // A read that omits how the lines break cannot be sent back, which is the promise this shape
-    // makes everywhere else.
-    const wrap = (node as unknown as { textWrapStyle?: unknown }).textWrapStyle
-    if (typeof wrap === 'string' && wrap !== 'AUTO') props.textWrap = wrap
+    // Everything below is the promise this shape makes everywhere else: a read complete enough to
+    // be sent back as a write. The box's own behaviour is always said, since it decides what a
+    // width even means here; the rest is said when it differs from the default, so a plain
+    // paragraph still reads as four lines rather than twenty.
+    if (node.textAlignVertical !== 'TOP') props.verticalAlign = node.textAlignVertical
+    const t = node as unknown as {
+      textAutoResize?: unknown
+      textCase?: unknown
+      textDecoration?: unknown
+      letterSpacing?: unknown
+      lineHeight?: unknown
+      paragraphSpacing?: number
+      paragraphIndent?: number
+      listSpacing?: number
+      textTruncation?: unknown
+      maxLines?: number | null
+      hyperlink?: { value?: string } | null | symbol
+      hangingPunctuation?: boolean
+      hangingList?: boolean
+      leadingTrim?: unknown
+      autoRename?: boolean
+      textWrapStyle?: unknown
+    }
+    if (typeof t.textAutoResize === 'string') props.autoResize = t.textAutoResize
+    if (plain(t.textCase) !== 'ORIGINAL') props.textCase = plain(t.textCase)
+    if (plain(t.textDecoration) !== 'NONE') props.textDecoration = plain(t.textDecoration)
+    const tracking = textMeasure(t.letterSpacing)
+    if (tracking !== '0px' && tracking !== '0%') props.letterSpacing = tracking
+    const leading = textMeasure(t.lineHeight)
+    if (leading !== 'auto') props.lineHeight = leading
+    if (t.paragraphSpacing) props.paragraphSpacing = t.paragraphSpacing
+    if (t.paragraphIndent) props.paragraphIndent = t.paragraphIndent
+    if (t.listSpacing) props.listSpacing = t.listSpacing
+    // `textTruncation`, not `textTruncate`: the read asked for a property Figma does not have,
+    // so a truncated layer came back looking like a plain one.
+    if (t.textTruncation === 'ENDING') {
+      props.truncate = true
+      if (typeof t.maxLines === 'number') props.maxLines = t.maxLines
+    }
+    if (t.hyperlink) props.link = t.hyperlink === figma.mixed ? 'mixed' : ((t.hyperlink as { value?: string }).value ?? '')
+    if (t.hangingPunctuation) props.hangingPunctuation = true
+    if (t.hangingList) props.hangingList = true
+    const trim = plain(t.leadingTrim)
+    if (trim && trim !== 'NONE') props.leadingTrim = trim
+    // Only when it is on: setting characters turns it off, so `false` is the state of every layer
+    // written from here and carries no news.
+    if (t.autoRename === true) props.autoRename = true
+    if (typeof t.textWrapStyle === 'string' && t.textWrapStyle !== 'AUTO') props.textWrap = t.textWrapStyle
   }
   return { ...base, props }
 }
@@ -2279,11 +2343,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             continue
           }
           const report = await applyProps(node as SceneNode, entry.steps, dry)
+          const failures = report.applied
+            .filter((prop) => prop.error)
+            .map((prop) => `${prop.property}: ${prop.error}`)
           reports.push({
             node: entry.id,
             name: (node as SceneNode).name,
             ok: report.failed === 0,
             applied: report.applied,
+            // Beside the list rather than inside it: a long `applied` is spilled to a file, and a
+            // report that says something failed without saying what has answered nothing.
+            ...(failures.length > 0 ? { failures } : {}),
           })
         }
         if (!dry) figma.commitUndo()
@@ -2479,7 +2549,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'NODE_GROUP': {
       // @agent write: group, ungroup, or combine nodes with a boolean operation
       // @agent param nodes: the ids to combine — they must share one parent; for "ungroup", the single group to release
-      // @agent param as: group (default), ungroup, union, subtract, intersect, exclude, flatten, outline — or repeat, which is Figma Draw's transform group
+      // @agent param as: group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach — or repeat, which is Figma Draw's transform group
       // @agent param repeat: for as "repeat" — { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. `offset` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre
       // @agent param props: applied to what comes out — the same vocabulary NODE_SET takes, so one call can group and name
       try {
@@ -2571,6 +2641,30 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             applied: report.applied,
             failed: report.failed,
           })
+          break
+        }
+
+        if (as === 'detach') {
+          // Per node, like `outline`: an instance stops being one and becomes an ordinary frame,
+          // which is the only way to edit what a component would otherwise own.
+          const freed: Array<Record<string, unknown>> = []
+          for (const node of nodes) {
+            if (node.type !== 'INSTANCE') {
+              freed.push({ node: node.id, name: node.name, ok: false, error: `a ${node.type} is not an instance` })
+              continue
+            }
+            try {
+              const frame = (node as InstanceNode).detachInstance()
+              if (plan.steps.length > 0) await applyProps(frame, plan.steps, false)
+              freed.push({ node: node.id, name: node.name, ok: true, detached: frame.id })
+            } catch (error) {
+              freed.push({ node: node.id, name: node.name, ok: false, error: String((error as Error)?.message || error) })
+            }
+          }
+          figma.commitUndo()
+          const wrong = freed.filter((one) => one.ok === false).length
+          figma.notify(wrong > 0 ? `${wrong} could not be detached` : `Detached ${freed.length}`)
+          postToUi({ type: 'NODES_GROUPED', as, failed: wrong, nodes: freed })
           break
         }
 
@@ -2668,6 +2762,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param nodes: ids, or { node: "<id>", name: "Size=L" } to name each one on the way — a variant set's axes ARE the components' names, so "Size=L, State=Default" is what makes Size and State
       // @agent param as: component (default — each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)
       // @agent param props: applied to what comes out, the same vocabulary NODE_SET takes
+      // @agent param links: documentation URLs for the component — where the real spec lives
       try {
         const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
         const as = typeof msg.as === 'string' ? msg.as.trim().toLowerCase() : 'component'
@@ -2736,6 +2831,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         if (result) {
           if (typeof msg.name === 'string' && msg.name.trim() !== '') result.name = msg.name.trim()
           if (typeof msg.description === 'string') result.description = msg.description
+          // Where the real documentation lives. An agent that has it stops guessing the intent
+          // from layer names, which is why the docs export reads them too.
+          if (Array.isArray(msg.links)) {
+            result.documentationLinks = (msg.links as string[])
+              .filter((link) => typeof link === 'string' && link.trim() !== '')
+              .map((link) => ({ uri: link.trim() }))
+          }
         }
         const applied = result && plan.steps.length > 0 ? await applyProps(result, plan.steps, false) : null
         figma.commitUndo()

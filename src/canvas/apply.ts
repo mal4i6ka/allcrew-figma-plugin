@@ -14,7 +14,7 @@
 import { parseHex } from '../tokens/color.ts'
 import { resolveCollection, resolveModes, resolveVariableRef } from '../agent/values.ts'
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
-import { describeLinks, gradientHandles, gradientTransform, resolveRanges } from './props.ts'
+import { describeLinks, gradientHandles, gradientTransform, measure, resolveRanges } from './props.ts'
 import { styleFor } from './styles.ts'
 import type {
   GradientRef,
@@ -126,9 +126,19 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       if (!isText(node)) throw new Error(`only a text node has a line height, not a ${node.type}`)
       await loadNodeFont(node)
       const before = node.lineHeight
-      const after: LineHeight = step.value === 'AUTO' ? { unit: 'AUTO' } : { value: step.value, unit: 'PIXELS' }
+      const after: LineHeight =
+        step.value === 'AUTO' ? { unit: 'AUTO' } : { value: step.value, unit: step.unit ?? 'PIXELS' }
       if (!dry) node.lineHeight = after
-      return { property: 'lineHeight', before, after }
+      return { property: 'lineHeight', before: describeMeasure(before), after: describeMeasure(after) }
+    }
+
+    case 'letterSpacing': {
+      if (!isText(node)) throw new Error(`only a text node has letter spacing, not a ${node.type}`)
+      await loadNodeFont(node)
+      const before = node.letterSpacing
+      const after: LetterSpacing = { value: step.value, unit: step.unit }
+      if (!dry) node.letterSpacing = after
+      return { property: 'letterSpacing', before: describeMeasure(before), after: describeMeasure(after) }
     }
 
     case 'resize': {
@@ -467,6 +477,14 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: 'strokeDashes', before, after: step.dashes }
     }
 
+    case 'link': {
+      if (!isText(node)) throw new Error(`only a text node carries a link, not a ${node.type}`)
+      await loadNodeFont(node)
+      const before = node.hyperlink
+      if (!dry) node.hyperlink = step.url === null ? null : { type: 'URL', value: step.url }
+      return { property: 'hyperlink', before, after: step.url ?? 'none' }
+    }
+
     case 'runs': {
       if (!isText(node)) throw new Error(`only a text node has runs, not a ${node.type}`)
       await loadNodeFont(node)
@@ -494,10 +512,10 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           if (run.textCase) node.setRangeTextCase(from, to, run.textCase)
           if (run.textWrap) node.setRangeTextWrapStyle(from, to, run.textWrap)
           if (run.letterSpacing !== undefined) {
-            node.setRangeLetterSpacing(from, to, { value: run.letterSpacing, unit: 'PIXELS' })
+            node.setRangeLetterSpacing(from, to, measured(run.letterSpacing))
           }
           if (run.lineHeight !== undefined) {
-            node.setRangeLineHeight(from, to, run.lineHeight === 'AUTO' ? { unit: 'AUTO' } : { value: run.lineHeight, unit: 'PIXELS' })
+            node.setRangeLineHeight(from, to, run.lineHeight === 'AUTO' ? { unit: 'AUTO' } : measured(run.lineHeight))
           }
           if (run.link !== undefined) {
             node.setRangeHyperlink(from, to, run.link === null ? null : { type: 'URL', value: run.link })
@@ -778,6 +796,21 @@ function byHumanName(properties: unknown): Record<string, unknown> {
 }
 
 /** What one run does, short enough to sit beside the text it did it to. */
+/** Runs are validated before they reach here, so a value that will not measure is a bug. */
+function measured(value: unknown): { value: number; unit: 'PIXELS' | 'PERCENT' } {
+  const result = measure(value)
+  if (result === null) throw new Error(`${JSON.stringify(value)} is neither pixels nor a percentage`)
+  return result
+}
+
+/** `{ value: 5, unit: 'PERCENT' }` is how Figma stores tracking, and not how anyone reads it. */
+function describeMeasure(value: unknown): string {
+  if (typeof value !== 'object' || value === null || !('unit' in value)) return 'mixed'
+  const { unit, value: amount } = value as { unit: string; value?: number }
+  if (unit === 'AUTO') return 'auto'
+  return unit === 'PERCENT' ? `${round(amount ?? 0)}%` : `${round(amount ?? 0)}px`
+}
+
 function describeRun(run: TextRun): string {
   const parts: string[] = []
   if (run.fontName) parts.push(`${run.fontName.family} ${run.fontName.style}`)
@@ -820,6 +853,15 @@ function asInstance(node: SceneNode, wanted: string): InstanceNode {
 /** The properties that a TEXT node will not let go of until its font is in memory. */
 const TEXT_PROPERTIES = [
   'textWrapStyle',
+  'textAlignVertical',
+  'paragraphSpacing',
+  'paragraphIndent',
+  'listSpacing',
+  'hangingPunctuation',
+  'hangingList',
+  'leadingTrim',
+  'textTruncation',
+  'maxLines',
   'fontSize',
   'letterSpacing',
   'textAlignHorizontal',

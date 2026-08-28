@@ -341,12 +341,38 @@ export interface NodeProps {
   fontName?: { family: string; style: string }
   /** Horizontal alignment within the text box. */
   textAlign?: 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'
-  /** Pixels, or AUTO to follow the font. */
-  lineHeight?: number | 'AUTO'
-  /** Pixels between characters; negative tightens. */
-  letterSpacing?: number
+  /** Pixels, a percentage of the font size like "150%", or AUTO to follow the font. */
+  lineHeight?: number | 'AUTO' | `${number}%`
+  /** Pixels between characters, or a percentage like "5%"; negative tightens. */
+  letterSpacing?: number | `${number}%`
   /** Whether the box follows the text, and in which direction. */
   autoResize?: 'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'
+  /** Where the text sits in a box taller than itself. */
+  verticalAlign?: 'TOP' | 'CENTER' | 'BOTTOM'
+  /** Capitals, small capitals, or the letters as typed. */
+  textCase?: 'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE' | 'SMALL_CAPS' | 'SMALL_CAPS_FORCED'
+  /** A line under the words, through them, or neither. */
+  textDecoration?: 'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'
+  /** Space between paragraphs, in pixels. */
+  paragraphSpacing?: number
+  /** How far the first line of each paragraph is pushed in. */
+  paragraphIndent?: number
+  /** Cut the text with an ellipsis when it will not fit. */
+  truncate?: boolean
+  /** Stop after this many lines. `null` lets it run on. */
+  maxLines?: number | null
+  /** A link on the whole layer. `null` removes it. */
+  link?: string | null
+  /** Space between list items. */
+  listSpacing?: number
+  /** Whether punctuation may hang outside the text box. */
+  hangingPunctuation?: boolean
+  /** Whether list markers hang outside the text box. */
+  hangingList?: boolean
+  /** Trim the space a font reserves above and below its letters. */
+  leadingTrim?: 'NONE' | 'CAP_HEIGHT'
+  /** Whether the layer renames itself when the text changes. */
+  autoRename?: boolean
   /** How lines are broken: `AUTO`, `BALANCE` (even lines) or `PRETTY` (no orphans). */
   textWrap?: 'AUTO' | 'BALANCE' | 'PRETTY'
   /** INSTANCE only: component properties by their catalogue names — variants, text, booleans. */
@@ -411,8 +437,8 @@ export interface TextRun {
   textDecoration?: 'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'
   textCase?: 'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE'
   textWrap?: 'AUTO' | 'BALANCE' | 'PRETTY'
-  letterSpacing?: number
-  lineHeight?: number | 'AUTO'
+  letterSpacing?: number | `${number}%`
+  lineHeight?: number | 'AUTO' | `${number}%`
   /** A URL, or null to remove the link. */
   link?: string | null
 }
@@ -479,7 +505,8 @@ export type PropStep =
   | { step: 'paint'; property: 'fills' | 'strokes'; ref: PaintRef }
   | { step: 'constraints'; horizontal?: ConstraintKind; vertical?: ConstraintKind }
   | { step: 'reparent'; parent: string; index?: number }
-  | { step: 'lineHeight'; value: number | 'AUTO' }
+  | { step: 'lineHeight'; value: number | 'AUTO'; unit?: 'PIXELS' | 'PERCENT' }
+  | { step: 'letterSpacing'; value: number; unit: 'PIXELS' | 'PERCENT' }
   | {
       step: 'effects'
       effects: Effect[]
@@ -497,6 +524,7 @@ export type PropStep =
   | { step: 'brush'; brush: ComplexStrokeProperties; loads: 'STRETCH' | 'SCATTER' | null; summary: string }
   | { step: 'bound'; property: string; value: number | null }
   | { step: 'runs'; runs: TextRun[] }
+  | { step: 'link'; url: string | null }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
   | { step: 'style'; kind: 'paint' | 'text' | 'effect' | 'grid'; slot: string; ref: string | null }
@@ -515,15 +543,23 @@ export interface PropPlan {
 
 const BLEND_FREE_ENUMS: Readonly<Record<string, readonly string[]>> = {
   textAlign: ['LEFT', 'CENTER', 'RIGHT', 'JUSTIFIED'],
+  verticalAlign: ['TOP', 'CENTER', 'BOTTOM'],
   autoResize: ['NONE', 'WIDTH_AND_HEIGHT', 'HEIGHT', 'TRUNCATE'],
   textWrap: ['AUTO', 'BALANCE', 'PRETTY'],
+  textCase: ['ORIGINAL', 'UPPER', 'LOWER', 'TITLE', 'SMALL_CAPS', 'SMALL_CAPS_FORCED'],
+  textDecoration: ['NONE', 'UNDERLINE', 'STRIKETHROUGH'],
+  leadingTrim: ['NONE', 'CAP_HEIGHT'],
 }
 
 /** The vocabulary's words for text, against the names Figma gives the same properties. */
 const FIGMA_TEXT_NAMES: Readonly<Record<string, string>> = {
   textAlign: 'textAlignHorizontal',
+  verticalAlign: 'textAlignVertical',
   autoResize: 'textAutoResize',
   textWrap: 'textWrapStyle',
+  textCase: 'textCase',
+  textDecoration: 'textDecoration',
+  leadingTrim: 'leadingTrim',
 }
 
 const LAYOUT_MODES = ['NONE', 'HORIZONTAL', 'VERTICAL', 'GRID']
@@ -641,9 +677,28 @@ const ORDER = [
   'lineHeight',
   'letterSpacing',
   'textAlign',
-  'autoResize',
+  'verticalAlign',
   'textWrap',
+  'textCase',
+  'textDecoration',
+  'paragraphSpacing',
+  'paragraphIndent',
+  'link',
+  'listSpacing',
+  'hangingPunctuation',
+  'hangingList',
+  'leadingTrim',
+  'autoRename',
   'text',
+  // After the characters and before the resize, which is the only place it can go. Set before
+  // the text, `NONE` freezes a box that is still empty — nought pixels wide — and the resize
+  // then had nothing to hold on to; set after the resize, it undoes it.
+  'autoResize',
+  // After the characters too, and after autoResize: writing text puts truncation back to
+  // DISABLED and the line cap back to one, so a truncation set earlier was reported as applied
+  // and was gone by the time anyone looked.
+  'truncate',
+  'maxLines',
   'runs',
   'bind',
   'scroll',
@@ -832,20 +887,29 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         break
       }
       case 'letterSpacing': {
-        const value = number('letterSpacing')
-        if (value !== null) steps.push({ step: 'assign', property: 'letterSpacing', value })
+        const measured = measure(props.letterSpacing)
+        if (measured === null) fail('letterSpacing must be a number of pixels or a percentage like "5%"')
+        else steps.push({ step: 'letterSpacing', ...measured })
         break
       }
       case 'lineHeight': {
-        const value = props.lineHeight
-        if (value === 'AUTO' || (typeof value === 'number' && Number.isFinite(value) && value > 0)) {
-          steps.push({ step: 'lineHeight', value: value as number | 'AUTO' })
-        } else fail('lineHeight must be a positive number or "AUTO"')
+        if (props.lineHeight === 'AUTO') {
+          steps.push({ step: 'lineHeight', value: 'AUTO' })
+          break
+        }
+        const measured = measure(props.lineHeight)
+        if (measured === null || measured.value <= 0) {
+          fail('lineHeight must be a positive number of pixels, a percentage like "150%", or "AUTO"')
+        } else steps.push({ step: 'lineHeight', ...measured })
         break
       }
       case 'textAlign':
+      case 'verticalAlign':
       case 'autoResize':
-      case 'textWrap': {
+      case 'textWrap':
+      case 'textCase':
+      case 'textDecoration':
+      case 'leadingTrim': {
         const allowed = BLEND_FREE_ENUMS[key]
         const value = props[key]
         if (typeof value !== 'string' || !allowed.includes(value)) fail(`${key} must be one of: ${allowed.join(', ')}`)
@@ -855,6 +919,40 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
       case 'text': {
         if (typeof props.text !== 'string') fail('text must be a string')
         else steps.push({ step: 'text', characters: props.text })
+        break
+      }
+      case 'paragraphSpacing':
+      case 'paragraphIndent':
+      case 'listSpacing': {
+        const value = number(key, 0)
+        if (value !== null) steps.push({ step: 'assign', property: key, value })
+        break
+      }
+      case 'hangingPunctuation':
+      case 'hangingList':
+      case 'autoRename': {
+        if (typeof props[key] !== 'boolean') fail(`${key} must be true or false`)
+        else steps.push({ step: 'assign', property: key, value: props[key] as boolean })
+        break
+      }
+      case 'truncate': {
+        if (typeof props.truncate !== 'boolean') fail('truncate must be true or false')
+        else steps.push({ step: 'assign', property: 'textTruncation', value: props.truncate ? 'ENDING' : 'DISABLED' })
+        break
+      }
+      case 'maxLines': {
+        // `null` lets the text run on, and Figma stores exactly that.
+        if (props.maxLines === null) steps.push({ step: 'bound', property: 'maxLines', value: null })
+        else {
+          const lines = number('maxLines', 1)
+          if (lines !== null) steps.push({ step: 'bound', property: 'maxLines', value: lines })
+        }
+        break
+      }
+      case 'link': {
+        if (props.link !== null && (typeof props.link !== 'string' || props.link.trim() === '')) {
+          fail('link must be a URL, or null to remove one')
+        } else steps.push({ step: 'link', url: props.link === null ? null : (props.link as string).trim() })
         break
       }
       case 'fontName': {
@@ -1184,6 +1282,21 @@ const EASINGS = [
 ]
 
 const DEFAULT_EASING = 'EASE_OUT'
+
+/**
+ * Leading and tracking, in the two ways a designer writes them: `12` is pixels, `"150%"` is a
+ * share of the font size. Figma stores both as `{ value, unit }` and refuses a bare number —
+ * `Property "letterSpacing" failed validation: Expected object, received number` — so the
+ * conversion belongs here rather than in every caller.
+ */
+export function measure(value: unknown): { value: number; unit: 'PIXELS' | 'PERCENT' } | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return { value, unit: 'PIXELS' }
+  if (typeof value === 'string') {
+    const percent = /^(-?\d+(?:\.\d+)?)\s*%$/.exec(value.trim())
+    if (percent) return { value: Number(percent[1]), unit: 'PERCENT' }
+  }
+  return null
+}
 
 /** A prompt does not shout: `push-left`, `Push_Left` and `PUSH_LEFT` are the same word here. */
 function normaliseEnum(value: string): string {
@@ -1830,11 +1943,15 @@ function planRuns(raw: unknown, where: string, problems: string[]): PropStep | n
       'fontName must be { family, style }'
     )
     check('fontSize', typeof run.fontSize === 'number' && run.fontSize > 0, 'fontSize must be a number > 0')
-    check('letterSpacing', typeof run.letterSpacing === 'number', 'letterSpacing must be a number')
+    check(
+      'letterSpacing',
+      measure(run.letterSpacing) !== null,
+      'letterSpacing must be a number of pixels or a percentage like "5%"'
+    )
     check(
       'lineHeight',
-      run.lineHeight === 'AUTO' || (typeof run.lineHeight === 'number' && run.lineHeight > 0),
-      'lineHeight must be a positive number or "AUTO"'
+      run.lineHeight === 'AUTO' || (measure(run.lineHeight)?.value ?? 0) > 0,
+      'lineHeight must be a positive number of pixels, a percentage like "150%", or "AUTO"'
     )
     check(
       'textDecoration',
