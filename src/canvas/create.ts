@@ -13,7 +13,7 @@
 
 import { applyProps, type AppliedProp } from './apply.ts'
 import { componentFor } from './components.ts'
-import { planProps, type PropStep } from './props.ts'
+import { dependsOnChildren, planProps, type PropStep } from './props.ts'
 
 export const NODE_KINDS = ['frame', 'text', 'rectangle', 'ellipse', 'line', 'section', 'component', 'instance'] as const
 
@@ -107,7 +107,9 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
   }
 
   const node = await make(plan)
-  const report = await applyProps(node, plan.steps, false)
+  // Everything except what describes children the node does not have yet.
+  const later = plan.steps.filter(dependsOnChildren)
+  const report = await applyProps(node, plan.steps.filter((step) => !dependsOnChildren(step)), false)
 
   const children: CreatedNode[] = []
   for (const child of plan.children) {
@@ -121,6 +123,9 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
     children.push(made)
   }
 
+  // Now that the children are in, the properties that talk about them can be set.
+  const late = later.length > 0 ? await applyProps(node, later, false) : { applied: [], failed: 0 }
+
   // Placed last, and only if nothing in its own props already placed it.
   if (!plan.steps.some((step) => step.step === 'reparent') && node.parent === null) {
     fallbackParent.appendChild(node)
@@ -131,9 +136,9 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
     id: node.id,
     name: node.name,
     parent: node.parent ? { id: node.parent.id, name: node.parent.name } : null,
-    applied: report.applied,
+    applied: [...report.applied, ...late.applied],
     children,
-    failed: report.failed + children.reduce((total, child) => total + child.failed, 0),
+    failed: report.failed + late.failed + children.reduce((total, child) => total + child.failed, 0),
   }
 }
 

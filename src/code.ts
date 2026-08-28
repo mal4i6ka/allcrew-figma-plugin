@@ -170,6 +170,8 @@ type PluginMessage =
       outlineText?: boolean
     }
   | { type: 'PAGE_LIST' }
+  | { type: 'FLOW_LIST'; pageId?: string }
+  | { type: 'FLOW_SET'; flows: unknown; pageId?: string }
   | { type: 'PAGE_CREATE'; name: string; activate?: boolean }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
@@ -1098,6 +1100,12 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       : {}),
     ...(typeof bag.cornerRadius === 'number' ? { cornerRadius: round(bag.cornerRadius) } : {}),
     ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: describeEffects(bag.effects) } : {}),
+    ...(typeof bag.overflowDirection === 'string' && bag.overflowDirection !== 'NONE'
+      ? { scroll: bag.overflowDirection }
+      : {}),
+    ...(typeof bag.numberOfFixedChildren === 'number' && bag.numberOfFixedChildren > 0
+      ? { fixedChildren: bag.numberOfFixedChildren }
+      : {}),
     ...(typeof bag.blendMode === 'string' && bag.blendMode !== 'PASS_THROUGH' && bag.blendMode !== 'NORMAL'
       ? { blendMode: bag.blendMode }
       : {}),
@@ -2054,7 +2062,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'NODE_SET': {
       // @agent write: set properties on existing nodes, in batch, with per-property before/after
       // @agent param nodes: an array of { node: "<id>", props: {…} } — the same vocabulary NODE_CREATE takes
+      // @agent param props: the whole vocabulary — name/geometry/layout/constraints; fill and stroke (a colour, {variable}, {image}, or a LIST of those for layered paints) with strokeAlign/Cap/Join/Dashes; effects: [{shadow:"drop"|"inner",…},{blur:"layer"|"background",radius}]; blendMode; text plus runs: [{match|from/to, fontName, fill, textCase, link, …}] for styling part of a layer; links: [{on,to,animation,easing,duration,matchLayers,…}] for prototype connections; scroll/fixedChildren; data for this plugin's own notes
       // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names, swap: "<id|key>" changes which component it is, reset: true drops every override first
+      // @agent param props: links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: "<id>"|"back"|"close", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|…, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|… or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here.
       try {
         const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
         const problems: string[] = []
@@ -2454,6 +2464,79 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         postToUi({ type: 'NODES_EXPORTED', format, files, nodes: reports })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_EXPORT', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'FLOW_LIST': {
+      // @agent read: the prototype's starting points on a page — the named flows a designer sees in the Prototype panel
+      try {
+        const page = msg.pageId ? await figma.getNodeByIdAsync(msg.pageId) : figma.currentPage
+        if (!page || page.type !== 'PAGE') {
+          refuse('FLOW_LIST', `no page with id ${msg.pageId}`)
+          break
+        }
+        await (page as PageNode).loadAsync()
+        const flows = []
+        for (const point of (page as PageNode).flowStartingPoints) {
+          const node = await figma.getNodeByIdAsync(point.nodeId).catch(() => null)
+          flows.push({ name: point.name, node: point.nodeId, frame: node?.name ?? '(missing)' })
+        }
+        postToUi({ type: 'FLOWS', page: { id: page.id, name: page.name }, flows })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'FLOW_LIST', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'FLOW_SET': {
+      // @agent write: name the prototype's starting points on a page — this is what makes a set of frames read as "Onboarding" in the Prototype panel
+      // @agent param flows: an array of { node: "<frame id>", name: "Onboarding" }, in order; the first is the one the play button opens. [] removes them all
+      try {
+        const rows = Array.isArray(msg.flows) ? msg.flows : null
+        if (!rows) {
+          refuse('FLOW_SET', 'flows must be an array of { node, name } — [] removes every starting point')
+          break
+        }
+        const page = msg.pageId ? await figma.getNodeByIdAsync(msg.pageId) : figma.currentPage
+        if (!page || page.type !== 'PAGE') {
+          refuse('FLOW_SET', `no page with id ${msg.pageId}`)
+          break
+        }
+        await (page as PageNode).loadAsync()
+
+        const points: Array<{ nodeId: string; name: string }> = []
+        const problems: string[] = []
+        for (const [index, row] of rows.entries()) {
+          const entry = row as { node?: unknown; name?: unknown }
+          if (typeof entry?.node !== 'string' || typeof entry?.name !== 'string' || entry.name.trim() === '') {
+            problems.push(`flows[${index}] must be { node: "<id>", name: "<flow name>" }`)
+            continue
+          }
+          const node = await figma.getNodeByIdAsync(entry.node).catch(() => null)
+          // Figma takes a starting point on anything and shows it on nothing: only a top-level
+          // frame is a screen a prototype can open.
+          if (!node || node.type !== 'FRAME' || node.parent?.type !== 'PAGE') {
+            problems.push(`flows[${index}]: ${entry.node} is not a top-level frame on this page`)
+            continue
+          }
+          points.push({ nodeId: entry.node, name: entry.name.trim() })
+        }
+        if (problems.length > 0) {
+          refuse('FLOW_SET', problems.join(' · '))
+          break
+        }
+
+        const before = (page as PageNode).flowStartingPoints.map((point) => point.name)
+        ;(page as PageNode).flowStartingPoints = points
+        figma.commitUndo()
+        figma.notify(points.length === 0 ? 'Starting points cleared' : `${points.length} starting point(s)`)
+        postToUi({
+          type: 'FLOWS',
+          page: { id: page.id, name: page.name },
+          before,
+          flows: points.map((point) => ({ name: point.name, node: point.nodeId })),
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'FLOW_SET', message: String((error as Error)?.message || error) })
       }
       break
     }

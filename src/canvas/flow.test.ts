@@ -93,7 +93,11 @@ test('every way of getting a link wrong is named, with what was accepted', () =>
   assert.match(planProps({ links: [{ to: '1:2', animation: 'PUSH_SIDEWAYS' }] }).problems[0], /PUSH\/SLIDE_IN/)
   assert.match(planProps({ links: [{ to: '1:2', duration: 30 }] }).problems[0], /between 0 and 10/)
   assert.match(planProps({ links: [{ on: 'timeout', after: 0, to: '1:2' }] }).problems[0], /greater than 0/)
-  assert.match(planProps({ links: [{ to: '1:2', delay: 3 }] }).problems[0], /unknown key "delay"/)
+  assert.match(planProps({ links: [{ to: '1:2', speed: 3 }] }).problems[0], /unknown key "speed"/)
+  // A field that belongs to another trigger is not silently dropped either.
+  assert.match(planProps({ links: [{ to: '1:2', delay: 3 }] }).problems[0], /delay only applies to mouseEnter/)
+  assert.match(planProps({ links: [{ to: '1:2', keys: [13] }] }).problems[0], /keys only applies to keyDown/)
+  assert.match(planProps({ links: [{ on: 'click', after: 2, to: '1:2' }] }).problems[0], /after only applies to a timeout/)
 })
 
 test('one bad link does not take the good ones with it', () => {
@@ -142,4 +146,102 @@ test('links and data are set after the node looks the way it should', () => {
     plan.steps.map((step) => (step.step === 'assign' ? step.property : step.step)),
     ['name', 'resize', 'links', 'data']
   )
+})
+
+/* ------------------------------------------------------------------- motion */
+
+const transitionOf = (link: Record<string, unknown>) => {
+  const step = linkStep([{ to: '1:2', animation: 'SMART_ANIMATE', ...link }])
+  return (step.reactions[0].actions![0] as { transition: Record<string, unknown> }).transition
+}
+
+test('the curve is EASE_OUT until someone says otherwise', () => {
+  assert.deepEqual(transitionOf({}).easing, { type: 'EASE_OUT' })
+  assert.deepEqual(transitionOf({ easing: 'GENTLE' }).easing, { type: 'GENTLE' })
+  // A prompt does not shout.
+  assert.deepEqual(transitionOf({ easing: 'ease-in-and-out' }).easing, { type: 'EASE_IN_AND_OUT' })
+})
+
+test('a curve of your own is four numbers, a spring is three', () => {
+  assert.deepEqual(transitionOf({ bezier: [0.2, 0, 0, 1] }).easing, {
+    type: 'CUSTOM_CUBIC_BEZIER',
+    easingFunctionCubicBezier: { x1: 0.2, y1: 0, x2: 0, y2: 1 },
+  })
+  assert.deepEqual(transitionOf({ spring: { mass: 1, stiffness: 300, damping: 20 } }).easing, {
+    type: 'CUSTOM_SPRING',
+    easingFunctionSpring: { mass: 1, stiffness: 300, damping: 20, initialVelocity: 0 },
+  })
+})
+
+test('naming a curve and numbers that disagree is refused rather than resolved', () => {
+  // Which one was meant is a guess, and a wrong guess is invisible until someone plays it.
+  assert.match(
+    planProps({ links: [{ to: '1:2', animation: 'DISSOLVE', easing: 'BOUNCY', bezier: [0, 0, 1, 1] }] }).problems[0],
+    /say different things — pass one/
+  )
+  assert.match(
+    planProps({ links: [{ to: '1:2', bezier: [0, 0, 1, 1], spring: { mass: 1, stiffness: 1, damping: 1 } }] }).problems[0],
+    /either a bezier or a spring, not both/
+  )
+  assert.match(planProps({ links: [{ to: '1:2', easing: 'SPRINGY' }] }).problems[0], /easing must be one of/)
+  assert.match(planProps({ links: [{ to: '1:2', bezier: [0, 1] }] }).problems[0], /bezier must be \[x1, y1, x2, y2\]/)
+  assert.match(
+    planProps({ links: [{ to: '1:2', spring: { mass: 0, stiffness: 1, damping: 1 } }] }).problems[0],
+    /spring.mass must be a number > 0/
+  )
+})
+
+test('matching layers is a directional thing, and it shows in the line', () => {
+  const step = linkStep([{ to: '1:2', animation: 'PUSH_LEFT', matchLayers: true, easing: 'BOUNCY' }])
+  const transition = (step.reactions[0].actions![0] as { transition: Record<string, unknown> }).transition
+  assert.equal(transition.matchLayers, true)
+  assert.equal(step.summary, 'click → 1:2 PUSH_LEFT 0.3s BOUNCY +match')
+})
+
+test('the new triggers carry what they need, and say so when read', () => {
+  const keyed = linkStep([{ on: 'keyDown', keys: [13], to: '1:2' }])
+  assert.deepEqual(keyed.reactions[0].trigger, { type: 'ON_KEY_DOWN', device: 'KEYBOARD', keyCodes: [13] })
+  assert.equal(keyed.summary, 'keyDown [13] → 1:2')
+
+  const hovered = linkStep([{ on: 'mouseEnter', delay: 0.2, to: '1:2' }])
+  // No `deprecatedVersion`, whatever the typings say: the running host refuses the key outright.
+  assert.deepEqual(hovered.reactions[0].trigger, { type: 'MOUSE_ENTER', delay: 0.2 })
+  assert.equal(hovered.summary, 'mouseEnter 0.2s → 1:2')
+
+  assert.match(planProps({ links: [{ on: 'keyDown', to: '1:2' }] }).problems[0], /keyDown needs keys/)
+})
+
+test('arriving fresh is asked for per link, and only when asked', () => {
+  const plain = linkStep([{ to: '1:2' }]).reactions[0].actions![0] as Record<string, unknown>
+  assert.equal('resetScrollPosition' in plain, false)
+  const fresh = linkStep([{ to: '1:2', resetScroll: true, resetInteractive: false }]).reactions[0].actions![0] as Record<string, unknown>
+  assert.equal(fresh.resetScrollPosition, true)
+  assert.equal(fresh.resetInteractiveComponents, false)
+  assert.equal('resetVideoPosition' in fresh, false)
+})
+
+test('a scrolling frame is two words', () => {
+  assert.deepEqual(planProps({ scroll: 'vertical', fixedChildren: 1 }).steps, [
+    { step: 'assign', property: 'overflowDirection', value: 'VERTICAL' },
+    { step: 'assign', property: 'numberOfFixedChildren', value: 1 },
+  ])
+  assert.match(planProps({ scroll: 'sideways' }).problems[0], /scroll must be one of: NONE, HORIZONTAL/)
+})
+
+test('a duration read back from Figma is not printed as 32-bit noise', () => {
+  // Figma stores seconds as floats: 0.6 comes back as 0.6000000238418579.
+  const line = describeLinks([
+    {
+      trigger: { type: 'AFTER_TIMEOUT', timeout: 0.20000000298023224 },
+      actions: [
+        {
+          type: 'NODE',
+          destinationId: '1:2',
+          navigation: 'NAVIGATE',
+          transition: { type: 'DISSOLVE', easing: { type: 'EASE_OUT' }, duration: 0.6000000238418579 },
+        },
+      ],
+    },
+  ])
+  assert.equal(line, 'timeout 0.2s → 1:2 DISSOLVE 0.6s')
 })

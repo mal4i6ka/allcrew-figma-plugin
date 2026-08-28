@@ -326,3 +326,30 @@ test('the remap stage is reachable end to end, with its params', () => {
     ['source']
   )
 })
+
+test('a marker for a nested key is kept as documentation, not dropped', () => {
+  // `props` lives inside each entry of `nodes`, so it is not a top-level field — and dropping
+  // its markers took the entire node vocabulary out of the table with it.
+  const source = `
+type PluginMessage = | { type: 'NODE_SET'; nodes: unknown }
+async function handleUiMessage(msg: PluginMessage): Promise<void> {
+  switch (msg.type) {
+    case 'NODE_SET': {
+      // @agent write: set properties on nodes
+      // @agent param nodes: an array of { node, props }
+      // @agent param props: name, fill, layout
+      // @agent param props: and on an instance, properties and swap
+      postToUi({ type: 'NODES_SET' })
+      break
+    }
+  }
+}`
+  const [command] = extractUiCommands(source)
+  const props = command.params.find((param) => param.name === 'props')
+  assert.ok(props, 'the nested marker must survive')
+  assert.equal(props!.nested, true)
+  assert.equal(props!.required, false)
+  // Two markers for one name add up rather than the last one winning.
+  assert.match(props!.note!, /name, fill, layout · and on an instance/)
+  assert.equal(command.params.find((param) => param.name === 'nodes')!.nested, undefined)
+})

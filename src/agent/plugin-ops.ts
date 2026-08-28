@@ -308,7 +308,11 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
             `"${command}" needs ${missing.map((param) => param.name + (param.type ? `: ${param.type}` : '')).join(', ')}`
           )
         }
-        const ignored = def ? Object.keys(extra).filter((key) => !def.params.some((param) => param.name === key)) : []
+        // Nested entries document a key that lives inside another one (`props` inside `nodes`),
+        // so they must not make that name look like a field the command reads at the top level.
+        const ignored = def
+          ? Object.keys(extra).filter((key) => !def.params.some((param) => !param.nested && param.name === key))
+          : []
 
         const started = Date.now()
         // A module command is a pipeline over these same commands, so it runs through the same

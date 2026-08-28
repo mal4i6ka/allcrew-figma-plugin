@@ -41,6 +41,9 @@ export interface UiCommandParam {
   /** From an `// @agent param <name>: …` marker. For what a type cannot say: that `unknown`
    * really means a palette, or that omitting a field silently takes a default. */
   note?: string
+  /** True when the marker documents a key that is not a top-level field of the message — the
+   * `props` inside `nodes[]`, say. Documentation, not something to send at the top level. */
+  nested?: boolean
 }
 
 export interface UiCommandDef {
@@ -151,7 +154,11 @@ function notesIn(body: string): Map<string, string> {
   const notes = new Map<string, string>()
   PARAM_NOTE_PATTERN.lastIndex = 0
   for (let match = PARAM_NOTE_PATTERN.exec(body); match; match = PARAM_NOTE_PATTERN.exec(body)) {
-    notes.set(match[1], match[2].trim())
+    // A second marker for the same name adds to the first rather than replacing it: a big
+    // vocabulary takes more than one line to describe, and losing all but the last line is how
+    // the whole of `props` went undocumented.
+    const held = notes.get(match[1])
+    notes.set(match[1], held ? `${held} · ${match[2].trim()}` : match[2].trim())
   }
   return notes
 }
@@ -170,13 +177,23 @@ function describeParams(
   notes: ReadonlyMap<string, string>,
   shapes: TypeDictionary
 ): UiCommandParam[] {
-  return params.map((param) => {
+  const described = params.map((param) => {
     const note = notes.get(param.name)
     // A param declared `unknown` has no type to resolve, so the marker gets to name one: lead
     // the note with `PaletteSettings — …` and the shape arrives from the dictionary anyway.
     const shape = (param.type ? shapes.shapeOf(param.type) : undefined) ?? (note ? shapes.shapeOf(firstToken(note)) : undefined)
     return { ...param, ...(shape ? { shape } : {}), ...(note ? { note } : {}) }
   })
+
+  // A marker naming something that is not a top-level key — `props`, which lives inside each
+  // entry of `nodes` — used to be dropped without a word, which took the whole node vocabulary
+  // out of the table with it. It is documentation, so it is kept and labelled as nested rather
+  // than presented as a field to send.
+  for (const [name, note] of notes) {
+    if (described.some((param) => param.name === name)) continue
+    described.push({ name, required: false, nested: true, note })
+  }
+  return described
 }
 
 /**

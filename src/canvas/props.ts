@@ -115,6 +115,9 @@ export interface NodeProps {
   links?: FlowLink[]
   /** This plugin's own notes on the node, for finding it again. A null value clears a key. */
   data?: Record<string, string | null>
+  /** A frame that scrolls in the prototype, and how many of its children stay put while it does. */
+  scroll?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'
+  fixedChildren?: number
   /** TEXT only: styling for parts of the text rather than all of it. */
   runs?: TextRun[]
   /** Where the node should live. On a create this is the parent; on a change it moves it. */
@@ -169,6 +172,22 @@ export interface FlowLink {
   animation?: string
   /** Seconds. Default 0.3. */
   duration?: number
+  /** A curve or a spring preset. Default `EASE_OUT`. */
+  easing?: string
+  /** A curve of your own: [x1, y1, x2, y2]. */
+  bezier?: [number, number, number, number]
+  /** A spring of your own. */
+  spring?: { mass: number; stiffness: number; damping: number; initialVelocity?: number }
+  /** Directional transitions: carry matching layers across, rather than sliding the whole frame. */
+  matchLayers?: boolean
+  /** Seconds to wait before a mouse trigger fires. */
+  delay?: number
+  /** Key codes, for `keyDown`. */
+  keys?: number[]
+  /** Arrive fresh rather than where the destination was left. */
+  resetScroll?: boolean
+  resetVideo?: boolean
+  resetInteractive?: boolean
 }
 
 /* ---------------------------------------------------------------------- plan */
@@ -278,6 +297,8 @@ const ORDER = [
   'autoResize',
   'text',
   'runs',
+  'scroll',
+  'fixedChildren',
   'links',
   'data',
   'parent',
@@ -285,6 +306,17 @@ const ORDER = [
 ] as const
 
 const KNOWN = new Set<string>(ORDER)
+
+/**
+ * Steps that cannot be applied until the node has its children.
+ *
+ * A node is created detached and filled in before anything is appended to it — which is right for
+ * almost everything, and wrong for the handful of properties that describe the children. Figma
+ * refuses `numberOfFixedChildren = 1` on a frame with none, so that step waits.
+ */
+export function dependsOnChildren(step: PropStep): boolean {
+  return step.step === 'assign' && step.property === 'numberOfFixedChildren'
+}
 
 export function planProps(raw: unknown, where = 'props'): PropPlan {
   const problems: string[] = []
@@ -474,6 +506,17 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         if (runs) steps.push(runs)
         break
       }
+      case 'scroll': {
+        const value = typeof props.scroll === 'string' ? normaliseEnum(props.scroll) : ''
+        if (!OVERFLOW.includes(value)) fail(`scroll must be one of: ${OVERFLOW.join(', ')}`)
+        else steps.push({ step: 'assign', property: 'overflowDirection', value })
+        break
+      }
+      case 'fixedChildren': {
+        const value = number('fixedChildren', 0)
+        if (value !== null) steps.push({ step: 'assign', property: 'numberOfFixedChildren', value })
+        break
+      }
       case 'links': {
         const links = planLinks(props.links, `${where}.links`, problems)
         if (links) steps.push(links)
@@ -579,12 +622,65 @@ const TRIGGERS: Readonly<Record<string, string>> = {
   press: 'ON_PRESS',
   drag: 'ON_DRAG',
   timeout: 'AFTER_TIMEOUT',
+  keyDown: 'ON_KEY_DOWN',
+  mouseEnter: 'MOUSE_ENTER',
+  mouseLeave: 'MOUSE_LEAVE',
+  mouseUp: 'MOUSE_UP',
+  mouseDown: 'MOUSE_DOWN',
+}
+
+/** The triggers that carry a wait of their own, in seconds. */
+const DELAYED = ['MOUSE_ENTER', 'MOUSE_LEAVE', 'MOUSE_UP', 'MOUSE_DOWN']
+
+/**
+ * Figma's curves, and the four spring presets its prototype panel offers under names rather than
+ * numbers. `CUSTOM_CUBIC_BEZIER` and `CUSTOM_SPRING` are not in this list because a caller does
+ * not name them: they follow from passing `bezier` or `spring`.
+ */
+const EASINGS = [
+  'EASE_IN',
+  'EASE_OUT',
+  'EASE_IN_AND_OUT',
+  'LINEAR',
+  'EASE_IN_BACK',
+  'EASE_OUT_BACK',
+  'EASE_IN_AND_OUT_BACK',
+  'GENTLE',
+  'QUICK',
+  'BOUNCY',
+  'SLOW',
+]
+
+const DEFAULT_EASING = 'EASE_OUT'
+
+/** A prompt does not shout: `push-left`, `Push_Left` and `PUSH_LEFT` are the same word here. */
+function normaliseEnum(value: string): string {
+  return value.trim().toUpperCase().replace(/[\s-]+/g, '_')
 }
 
 const NAVIGATIONS = ['NAVIGATE', 'SWAP', 'OVERLAY', 'SCROLL_TO', 'CHANGE_TO']
+const OVERFLOW = ['NONE', 'HORIZONTAL', 'VERTICAL', 'BOTH']
 const SIMPLE_ANIMATIONS = ['INSTANT', 'DISSOLVE', 'SMART_ANIMATE', 'SCROLL_ANIMATE']
 const DIRECTIONAL_ANIMATIONS = ['MOVE_IN', 'MOVE_OUT', 'PUSH', 'SLIDE_IN', 'SLIDE_OUT']
 const DIRECTIONS = ['LEFT', 'RIGHT', 'TOP', 'BOTTOM']
+
+const LINK_KEYS = [
+  'on',
+  'after',
+  'delay',
+  'keys',
+  'to',
+  'as',
+  'animation',
+  'duration',
+  'easing',
+  'bezier',
+  'spring',
+  'matchLayers',
+  'resetScroll',
+  'resetVideo',
+  'resetInteractive',
+]
 
 const DEFAULT_DURATION = 0.3
 const DEFAULT_TIMEOUT = 1
@@ -614,13 +710,16 @@ function planLinks(raw: unknown, where: string, problems: string[]): PropStep | 
     }
     const link = entry as Record<string, unknown>
     for (const key of Object.keys(link)) {
-      if (!['on', 'after', 'to', 'as', 'animation', 'duration'].includes(key)) {
-        fail(`unknown key "${key}" — accepted: on, after, to, as, animation, duration`)
-      }
+      if (!LINK_KEYS.includes(key)) fail(`unknown key "${key}" — accepted: ${LINK_KEYS.join(', ')}`)
     }
 
-    const on = link.on === undefined ? 'click' : link.on
-    if (typeof on !== 'string' || !(on in TRIGGERS)) {
+    // The trigger words are camelCase, so they are matched without shouting at them.
+    const asked = link.on === undefined ? 'click' : link.on
+    const on =
+      typeof asked === 'string'
+        ? (Object.keys(TRIGGERS).find((word) => word.toLowerCase() === asked.toLowerCase()) ?? '')
+        : ''
+    if (on === '') {
       fail(`on must be one of: ${Object.keys(TRIGGERS).join(', ')}`)
       continue
     }
@@ -629,15 +728,57 @@ function planLinks(raw: unknown, where: string, problems: string[]): PropStep | 
       continue
     }
 
+    const type = TRIGGERS[on]
+    // A wait on a click, key codes on a hover: Figma's trigger simply has no such field, so it
+    // would be dropped without a word — which is how somebody ends up believing in a delay that
+    // never existed.
+    let misplaced = false
+    if (link.after !== undefined && type !== 'AFTER_TIMEOUT') {
+      fail(`after only applies to a timeout trigger, not to ${on}`)
+      misplaced = true
+    }
+    if (link.delay !== undefined && !DELAYED.includes(type)) {
+      fail(`delay only applies to mouseEnter, mouseLeave, mouseUp and mouseDown, not to ${on}`)
+      misplaced = true
+    }
+    if (link.keys !== undefined && type !== 'ON_KEY_DOWN') {
+      fail(`keys only applies to keyDown, not to ${on}`)
+      misplaced = true
+    }
+    if (misplaced) continue
+
     const after = link.after === undefined ? DEFAULT_TIMEOUT : link.after
     if (on === 'timeout' && (typeof after !== 'number' || !Number.isFinite(after) || after <= 0)) {
       fail('after must be a number of seconds greater than 0')
       continue
     }
-    const trigger =
-      on === 'timeout'
-        ? ({ type: 'AFTER_TIMEOUT', timeout: after } as Trigger)
-        : ({ type: TRIGGERS[on] } as Trigger)
+    const delay = link.delay === undefined ? 0 : link.delay
+    if (DELAYED.includes(type) && (typeof delay !== 'number' || !Number.isFinite(delay) || delay < 0)) {
+      fail('delay must be a number of seconds >= 0')
+      continue
+    }
+    if (type === 'ON_KEY_DOWN') {
+      const keys = link.keys
+      if (!Array.isArray(keys) || keys.length === 0 || keys.some((key) => typeof key !== 'number' || !Number.isInteger(key))) {
+        fail('keyDown needs keys: an array of key codes, e.g. [13] for Enter')
+        continue
+      }
+    }
+
+    let trigger: Trigger
+    if (type === 'AFTER_TIMEOUT') {
+      trigger = { type, timeout: after as number } as Trigger
+    } else if (type === 'ON_KEY_DOWN') {
+      trigger = { type, device: 'KEYBOARD', keyCodes: link.keys as number[] } as Trigger
+    } else if (DELAYED.includes(type)) {
+      // Just the delay. The typings put a `deprecatedVersion` flag on MOUSE_ENTER / MOUSE_LEAVE,
+      // and sending it is refused by the runtime that ships today:
+      //   Unrecognized key(s) in object: 'deprecatedVersion' at [0].trigger
+      // Found by the first hover link built in Figma; the typings are ahead of the host.
+      trigger = { type, delay: delay as number } as Trigger
+    } else {
+      trigger = { type } as Trigger
+    }
 
     const to = link.to.trim()
     const target = to.toLowerCase()
@@ -647,7 +788,7 @@ function planLinks(raw: unknown, where: string, problems: string[]): PropStep | 
     }
 
     const navigation = link.as === undefined ? 'NAVIGATE' : link.as
-    if (typeof navigation !== 'string' || !NAVIGATIONS.includes(navigation)) {
+    if (typeof navigation !== 'string' || !NAVIGATIONS.includes(normaliseEnum(navigation))) {
       fail(`as must be one of: ${NAVIGATIONS.join(', ')}`)
       continue
     }
@@ -657,12 +798,19 @@ function planLinks(raw: unknown, where: string, problems: string[]): PropStep | 
       continue
     }
 
+    const easing = buildEasing(link, fail)
+    if (easing === null) continue
+
     const animation = link.animation === undefined ? 'INSTANT' : link.animation
     if (typeof animation !== 'string') {
       fail('animation must be a string')
       continue
     }
-    const transition = buildTransition(animation, duration)
+    if (link.matchLayers !== undefined && typeof link.matchLayers !== 'boolean') {
+      fail('matchLayers must be true or false')
+      continue
+    }
+    const transition = buildTransition(normaliseEnum(animation), duration, easing, link.matchLayers === true)
     if (transition === undefined) {
       fail(
         `animation must be one of: ${SIMPLE_ANIMATIONS.join(', ')}, or ` +
@@ -671,10 +819,29 @@ function planLinks(raw: unknown, where: string, problems: string[]): PropStep | 
       continue
     }
 
+    let resets = true
+    for (const flag of ['resetScroll', 'resetVideo', 'resetInteractive'] as const) {
+      if (link[flag] !== undefined && typeof link[flag] !== 'boolean') {
+        fail(`${flag} must be true or false`)
+        resets = false
+      }
+    }
+    if (!resets) continue
+
     destinations.push(to)
     reactions.push({
       trigger,
-      actions: [{ type: 'NODE', destinationId: to, navigation: navigation as Navigation, transition }],
+      actions: [
+        {
+          type: 'NODE',
+          destinationId: to,
+          navigation: normaliseEnum(navigation) as Navigation,
+          transition,
+          ...(typeof link.resetScroll === 'boolean' ? { resetScrollPosition: link.resetScroll } : {}),
+          ...(typeof link.resetVideo === 'boolean' ? { resetVideoPosition: link.resetVideo } : {}),
+          ...(typeof link.resetInteractive === 'boolean' ? { resetInteractiveComponents: link.resetInteractive } : {}),
+        },
+      ],
     })
   }
 
@@ -689,6 +856,12 @@ function planLinks(raw: unknown, where: string, problems: string[]): PropStep | 
  * A read that answers with Figma's own five nested objects per link is a read nobody can act on
  * — and the agent channel's digest would summarise it away long before it arrived.
  */
+/** Figma keeps these as 32-bit floats, so a duration set to 0.6 reads back as
+ * 0.6000000238418579 — noise in every line that quotes one. */
+function seconds(value: number): string {
+  return `${Math.round(value * 1000) / 1000}s`
+}
+
 export function describeLinks(reactions: readonly Reaction[]): string {
   const spelling: Record<string, string> = {}
   for (const [word, type] of Object.entries(TRIGGERS)) spelling[type] = word
@@ -697,8 +870,13 @@ export function describeLinks(reactions: readonly Reaction[]): string {
   for (const reaction of reactions) {
     const trigger = reaction.trigger
     let on = trigger ? spelling[trigger.type] ?? trigger.type.toLowerCase() : 'nothing'
-    // The wait is the whole of what a timeout link says; a bare "timeout" hides it.
-    if (trigger && trigger.type === 'AFTER_TIMEOUT') on = `${on} ${trigger.timeout}s`
+    // The wait is the whole of what a timeout link says; a bare "timeout" hides it. Same for the
+    // keys of a key trigger and the delay of a mouse one.
+    if (trigger) {
+      if (trigger.type === 'AFTER_TIMEOUT') on = `${on} ${seconds(trigger.timeout)}`
+      else if (trigger.type === 'ON_KEY_DOWN') on = `${on} [${(trigger.keyCodes ?? []).join(',')}]`
+      else if ('delay' in trigger && trigger.delay) on = `${on} ${seconds(trigger.delay)}`
+    }
     const actions = reaction.actions ?? (reaction.action ? [reaction.action] : [])
     for (const action of actions) {
       if (action.type === 'BACK' || action.type === 'CLOSE') {
@@ -711,7 +889,9 @@ export function describeLinks(reactions: readonly Reaction[]): string {
       }
       const transition = action.transition
       const named = transition
-        ? `${transition.type}${'direction' in transition ? `_${transition.direction}` : ''} ${transition.duration}s`
+        ? `${transition.type}${'direction' in transition ? `_${transition.direction}` : ''} ${seconds(transition.duration)}` +
+          `${transition.easing.type === DEFAULT_EASING ? '' : ` ${transition.easing.type}`}` +
+          `${'matchLayers' in transition && transition.matchLayers ? ' +match' : ''}`
         : 'INSTANT'
       const navigation = action.navigation === 'NAVIGATE' ? '' : ` (${action.navigation})`
       parts.push(`${on} → ${action.destinationId ?? '?'}${navigation}${named === 'INSTANT' ? '' : ` ${named}`}`)
@@ -720,10 +900,84 @@ export function describeLinks(reactions: readonly Reaction[]): string {
   return parts.join(' · ')
 }
 
+/**
+ * The curve, from a name, four numbers or a spring.
+ *
+ * `null` when something was wrong — the problem has been recorded by then. Naming both a curve
+ * and numbers is refused rather than resolved: which one the caller meant is a guess, and a
+ * wrong guess here is invisible until someone plays the prototype.
+ */
+function buildEasing(link: Record<string, unknown>, fail: (message: string) => void): Easing | null {
+  const named = link.easing === undefined ? null : normaliseEnum(String(link.easing))
+  const custom = [link.bezier !== undefined ? 'bezier' : '', link.spring !== undefined ? 'spring' : ''].filter(Boolean)
+
+  if (custom.length > 1) {
+    fail('name either a bezier or a spring, not both')
+    return null
+  }
+  if (custom.length === 1 && named && named !== `CUSTOM_${custom[0].toUpperCase()}` && named !== 'CUSTOM_CUBIC_BEZIER') {
+    fail(`easing "${named}" and a ${custom[0]} say different things — pass one`)
+    return null
+  }
+
+  if (link.bezier !== undefined) {
+    const curve = link.bezier
+    if (
+      !Array.isArray(curve) ||
+      curve.length !== 4 ||
+      curve.some((one) => typeof one !== 'number' || !Number.isFinite(one))
+    ) {
+      fail('bezier must be [x1, y1, x2, y2]')
+      return null
+    }
+    const [x1, y1, x2, y2] = curve as number[]
+    return { type: 'CUSTOM_CUBIC_BEZIER', easingFunctionCubicBezier: { x1, y1, x2, y2 } }
+  }
+
+  if (link.spring !== undefined) {
+    const spring = link.spring
+    if (typeof spring !== 'object' || spring === null || Array.isArray(spring)) {
+      fail('spring must be { mass, stiffness, damping }')
+      return null
+    }
+    const values = spring as Record<string, unknown>
+    for (const field of ['mass', 'stiffness', 'damping']) {
+      if (typeof values[field] !== 'number' || !Number.isFinite(values[field] as number) || (values[field] as number) <= 0) {
+        fail(`spring.${field} must be a number > 0`)
+        return null
+      }
+    }
+    if (values.initialVelocity !== undefined && typeof values.initialVelocity !== 'number') {
+      fail('spring.initialVelocity must be a number')
+      return null
+    }
+    return {
+      type: 'CUSTOM_SPRING',
+      easingFunctionSpring: {
+        mass: values.mass as number,
+        stiffness: values.stiffness as number,
+        damping: values.damping as number,
+        initialVelocity: (values.initialVelocity as number) ?? 0,
+      },
+    }
+  }
+
+  if (named === null) return { type: DEFAULT_EASING as Easing['type'] }
+  if (!EASINGS.includes(named)) {
+    fail(`easing must be one of: ${EASINGS.join(', ')} — or pass bezier / spring`)
+    return null
+  }
+  return { type: named as Easing['type'] }
+}
+
 /** `undefined` for a name that is not an animation at all; `null` for INSTANT, which has none. */
-function buildTransition(animation: string, duration: number): Transition | null | undefined {
+function buildTransition(
+  animation: string,
+  duration: number,
+  easing: Easing,
+  matchLayers: boolean
+): Transition | null | undefined {
   if (animation === 'INSTANT') return null
-  const easing: Easing = { type: 'EASE_OUT' }
   if (SIMPLE_ANIMATIONS.includes(animation)) {
     return { type: animation as SimpleTransition['type'], easing, duration }
   }
@@ -734,7 +988,7 @@ function buildTransition(animation: string, duration: number): Transition | null
   return {
     type: base as DirectionalTransition['type'],
     direction: direction as DirectionalTransition['direction'],
-    matchLayers: false,
+    matchLayers,
     easing,
     duration,
   }
