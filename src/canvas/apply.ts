@@ -15,6 +15,7 @@ import { parseHex } from '../tokens/color.ts'
 import { resolveVariableRef } from '../agent/values.ts'
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
 import { gradientHandles, gradientTransform, resolveRanges } from './props.ts'
+import { styleFor } from './styles.ts'
 import type { GradientRef, ImageRef, PaintRef, PropStep, TextRun } from './props.ts'
 
 export interface AppliedProp {
@@ -68,6 +69,10 @@ const propertyOf = (step: PropStep): string => {
       return 'cornerRadius'
     case 'reparent':
       return 'parent'
+    // A refusal should name the slot the caller wrote, the way a success does — "style" tells
+    // them nothing about which of the five they got wrong.
+    case 'style':
+      return step.slot
     // `layout`, `constraints` and `lineHeight` are named after themselves.
     default:
       return step.step
@@ -431,6 +436,28 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       }
     }
 
+    case 'style': {
+      const setter = STYLE_SETTERS[step.slot]
+      const holder = node as unknown as Record<string, unknown>
+      if (typeof holder[setter] !== 'function') {
+        throw new Error(`a ${node.type} takes no ${step.slot}`)
+      }
+      // Readable as a plain property, writable only through the async setter — that asymmetry
+      // is what `documentAccess: "dynamic-page"` means for styles, and there is no
+      // `getFillStyleIdAsync` to pair with `setFillStyleIdAsync`.
+      const held = holder[`${step.slot}Id`]
+      const was =
+        typeof held === 'string' && held !== '' ? await figma.getStyleByIdAsync(held).catch(() => null) : null
+
+      if (step.ref === null) {
+        if (!dry) await (holder[setter] as (id: string) => Promise<void>)('')
+        return { property: step.slot, before: was?.name ?? null, after: 'detached' }
+      }
+      const style = await styleFor(step.ref, step.kind)
+      if (!dry) await (holder[setter] as (id: string) => Promise<void>)(style.id)
+      return { property: step.slot, before: was?.name ?? null, after: style.name }
+    }
+
     case 'reparent': {
       const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null
       const parent = step.parent === '' ? node.parent : await resolveParent(step.parent)
@@ -477,6 +504,14 @@ function describeRun(run: TextRun): string {
   if (run.lineHeight !== undefined) parts.push(`leading ${run.lineHeight}`)
   if (run.link !== undefined) parts.push(run.link === null ? 'unlinked' : 'linked')
   return parts.join(' ')
+}
+
+const STYLE_SETTERS: Readonly<Record<string, string>> = {
+  fillStyle: 'setFillStyleIdAsync',
+  strokeStyle: 'setStrokeStyleIdAsync',
+  textStyle: 'setTextStyleIdAsync',
+  effectStyle: 'setEffectStyleIdAsync',
+  gridStyle: 'setGridStyleIdAsync',
 }
 
 /** Instance-only vocabulary refuses by naming the type it was given, like everything else here. */

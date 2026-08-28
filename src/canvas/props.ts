@@ -145,6 +145,12 @@ export interface NodeProps {
   data?: Record<string, string | null>
   /** Variables on the fields that are not paints: sizes, spacing, radii, text, visibility. */
   bind?: Record<string, string | null>
+  /** Styles the layer follows, by name, id or published key. `null` detaches from one. */
+  fillStyle?: string | null
+  strokeStyle?: string | null
+  textStyle?: string | null
+  effectStyle?: string | null
+  gridStyle?: string | null
   /** A frame that scrolls in the prototype, and how many of its children stay put while it does. */
   scroll?: 'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'
   fixedChildren?: number
@@ -238,6 +244,7 @@ export type PropStep =
   | { step: 'runs'; runs: TextRun[] }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
+  | { step: 'style'; kind: 'paint' | 'text' | 'effect' | 'grid'; slot: string; ref: string | null }
   | { step: 'reset' }
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
@@ -316,6 +323,13 @@ const ORDER = [
   'rotation',
   'opacity',
   'cornerRadius',
+  // Before the paints and the type: following a style sets the whole bundle, and a colour named
+  // in the same breath is meant to override it, not to be overwritten by it.
+  'fillStyle',
+  'strokeStyle',
+  'textStyle',
+  'effectStyle',
+  'gridStyle',
   'fill',
   'stroke',
   'strokeWeight',
@@ -543,6 +557,24 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         if (runs) steps.push(runs)
         break
       }
+      case 'fillStyle':
+      case 'strokeStyle':
+      case 'textStyle':
+      case 'effectStyle':
+      case 'gridStyle': {
+        const value = props[key]
+        if (value !== null && (typeof value !== 'string' || value.trim() === '')) {
+          fail(`${key} must be a style name, id or key — or null to detach`)
+          break
+        }
+        steps.push({
+          step: 'style',
+          kind: STYLE_SLOTS[key],
+          slot: key,
+          ref: value === null ? null : (value as string).trim(),
+        })
+        break
+      }
       case 'bind': {
         const bind = planBindings(props.bind, `${where}.bind`, problems)
         if (bind) steps.push(bind)
@@ -719,6 +751,14 @@ function normaliseEnum(value: string): string {
 
 const NAVIGATIONS = ['NAVIGATE', 'SWAP', 'OVERLAY', 'SCROLL_TO', 'CHANGE_TO']
 const OVERFLOW = ['NONE', 'HORIZONTAL', 'VERTICAL', 'BOTH']
+
+const STYLE_SLOTS: Readonly<Record<string, 'paint' | 'text' | 'effect' | 'grid'>> = {
+  fillStyle: 'paint',
+  strokeStyle: 'paint',
+  textStyle: 'text',
+  effectStyle: 'effect',
+  gridStyle: 'grid',
+}
 const SIMPLE_ANIMATIONS = ['INSTANT', 'DISSOLVE', 'SMART_ANIMATE', 'SCROLL_ANIMATE']
 const DIRECTIONAL_ANIMATIONS = ['MOVE_IN', 'MOVE_OUT', 'PUSH', 'SLIDE_IN', 'SLIDE_OUT']
 const DIRECTIONS = ['LEFT', 'RIGHT', 'TOP', 'BOTTOM']

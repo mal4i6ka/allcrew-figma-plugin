@@ -111,6 +111,7 @@ import {
   type PropertyType,
 } from './canvas/components.ts'
 import { binaryFile, slugify, textFile } from './agent/files.ts'
+import { describeStyle, localStyles, styleFor, STYLE_KINDS, type StyleKind } from './canvas/styles.ts'
 import { runModuleCommand } from './modules/run.ts'
 import { beginRecording, endRecording } from './agent/ui-post.ts'
 
@@ -186,6 +187,18 @@ type PluginMessage =
       height?: number
       outlineText?: boolean
     }
+  | { type: 'STYLE_LIST'; kind?: string; query?: string; limit?: number }
+  | {
+      type: 'STYLE_MAKE'
+      as: string
+      name: string
+      description?: string
+      from?: string
+      paints?: unknown
+      effects?: unknown
+      text?: unknown
+    }
+  | { type: 'STYLE_REMOVE'; kind: string; name: string }
   | { type: 'PAGE_LIST' }
   | { type: 'FLOW_LIST'; pageId?: string }
   | { type: 'FLOW_SET'; flows: unknown; pageId?: string }
@@ -1074,6 +1087,28 @@ async function describeBindings(value: unknown): Promise<{ bind?: string }> {
     }
   }
   return parts.length > 0 ? { bind: parts.join(' · ') } : {}
+}
+
+/**
+ * Paints and effects for a style, built by the vocabulary rather than by a second parser.
+ *
+ * `applyProps` knows how to turn `{ gradient }` or `{ shadow: 'drop' }` into what Figma wants,
+ * and it needs a node to do it on. So a rectangle is made, written to, read back and removed —
+ * cheaper than a duplicate of that logic, and it cannot drift from it.
+ */
+async function applyToScratch(spec: unknown, as: 'paints' | 'effects'): Promise<{ fills: Paint[]; effects: Effect[] }> {
+  const plan = planProps(as === 'paints' ? { fill: spec } : { effects: spec }, as)
+  if (plan.problems.length > 0) throw new Error(plan.problems.join(' · '))
+
+  const scratch = figma.createRectangle()
+  try {
+    const report = await applyProps(scratch, plan.steps, false)
+    const failed = report.applied.filter((one) => one.error)
+    if (failed.length > 0) throw new Error(failed.map((one) => `${one.property}: ${one.error}`).join(' · '))
+    return { fills: scratch.fills as Paint[], effects: scratch.effects as Effect[] }
+  } finally {
+    scratch.remove()
+  }
 }
 
 /** A component's own property definitions, or nothing — a variant child throws rather than
@@ -2749,6 +2784,182 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         postToUi({ type: 'NODES_EXPORTED', format, files, nodes: reports })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_EXPORT', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'STYLE_LIST': {
+      // @agent read: the file's own styles — paint, text, effect and grid — with what each one holds
+      // @agent param kind: paint, text, effect or grid; omitted means all four
+      // @agent param query: a name substring
+      try {
+        const kinds = typeof msg.kind === 'string' ? [msg.kind.trim().toLowerCase() as StyleKind] : [...STYLE_KINDS]
+        const unknown = kinds.filter((kind) => !STYLE_KINDS.includes(kind))
+        if (unknown.length > 0) {
+          refuse('STYLE_LIST', `kind must be one of: ${STYLE_KINDS.join(', ')}`)
+          break
+        }
+        const query = typeof msg.query === 'string' ? msg.query.trim().toLowerCase() : ''
+        const limit = Math.min(Math.max(msg.limit ?? 100, 1), 500)
+
+        const styles: Array<Record<string, unknown>> = []
+        for (const kind of kinds) {
+          for (const style of await localStyles(kind)) {
+            if (query !== '' && !style.name.toLowerCase().includes(query)) continue
+            styles.push({
+              id: style.id,
+              key: style.key,
+              name: style.name,
+              kind,
+              holds: await describeStyle(style, describePaints, describeEffects),
+              ...(style.description ? { description: style.description } : {}),
+            })
+          }
+        }
+        postToUi({
+          type: 'STYLES',
+          total: styles.length,
+          truncated: styles.length > limit,
+          styles: styles.slice(0, limit),
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'STYLE_LIST', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'STYLE_MAKE': {
+      // @agent write: create a style, or update one of the same name
+      // @agent param as: paint, text or effect
+      // @agent param from: read what the style should hold off this node — the usual way one is made, since the layer is already right
+      // @agent param paints: for a paint style, the same fill vocabulary NODE_SET takes: "#RRGGBB", { variable }, { gradient }, { image }, or a list
+      // @agent param text: for a text style, { fontName: { family, style }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? }
+      // @agent param effects: for an effect style, the same effects vocabulary NODE_SET takes
+      try {
+        const kind = typeof msg.as === 'string' ? (msg.as.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
+        if (kind !== 'paint' && kind !== 'text' && kind !== 'effect') {
+          refuse('STYLE_MAKE', 'as must be paint, text or effect')
+          break
+        }
+        const name = typeof msg.name === 'string' ? msg.name.trim() : ''
+        if (name === '') {
+          refuse('STYLE_MAKE', 'name must be a non-empty string')
+          break
+        }
+
+        // What the style should hold: from a node, or from the vocabulary.
+        let source: SceneNode | null = null
+        if (typeof msg.from === 'string') {
+          const node = await figma.getNodeByIdAsync(msg.from)
+          if (!node || !('type' in node)) {
+            refuse('STYLE_MAKE', `no node with id ${msg.from}`)
+            break
+          }
+          source = node as SceneNode
+        }
+
+        const existing = (await localStyles(kind)).find((style) => style.name === name) ?? null
+        const style =
+          existing ??
+          (kind === 'paint' ? figma.createPaintStyle() : kind === 'text' ? figma.createTextStyle() : figma.createEffectStyle())
+        style.name = name
+        if (typeof msg.description === 'string') style.description = msg.description
+
+        if (kind === 'paint') {
+          const paints = source
+            ? ((source as unknown as { fills?: Paint[] }).fills ?? [])
+            : (await applyToScratch(msg.paints, 'paints')).fills
+          ;(style as PaintStyle).paints = paints as Paint[]
+        } else if (kind === 'effect') {
+          const effects = source
+            ? ((source as unknown as { effects?: Effect[] }).effects ?? [])
+            : (await applyToScratch(msg.effects, 'effects')).effects
+          ;(style as EffectStyle).effects = effects as Effect[]
+        } else {
+          const from = source?.type === 'TEXT' ? source : null
+          if (!from && msg.text === undefined) {
+            refuse('STYLE_MAKE', 'a text style needs `from` naming a TEXT node, or `text` describing it')
+            break
+          }
+          const text = style as TextStyle
+          if (from) {
+            if (from.fontName === figma.mixed) {
+              refuse('STYLE_MAKE', `${from.name} has more than one font — a style cannot hold mixed text`)
+              break
+            }
+            await figma.loadFontAsync(from.fontName as FontName)
+            text.fontName = from.fontName as FontName
+            text.fontSize = from.fontSize as number
+            text.lineHeight = from.lineHeight as LineHeight
+            text.letterSpacing = from.letterSpacing as LetterSpacing
+            text.textCase = from.textCase as TextCase
+            text.textDecoration = from.textDecoration as TextDecoration
+            // Mixed paragraph settings are possible on a node and impossible in a style, so
+            // only a single value is carried over.
+            if (typeof from.paragraphSpacing === 'number') text.paragraphSpacing = from.paragraphSpacing
+            if (typeof from.paragraphIndent === 'number') text.paragraphIndent = from.paragraphIndent
+          } else {
+            const wanted = msg.text as Record<string, unknown>
+            const font = wanted.fontName as FontName | undefined
+            if (!font || typeof font.family !== 'string' || typeof font.style !== 'string') {
+              refuse('STYLE_MAKE', 'text.fontName must be { family, style }')
+              break
+            }
+            await figma.loadFontAsync(font)
+            text.fontName = font
+            if (typeof wanted.fontSize === 'number') text.fontSize = wanted.fontSize
+            if (wanted.lineHeight !== undefined) {
+              text.lineHeight =
+                wanted.lineHeight === 'AUTO' ? { unit: 'AUTO' } : { value: wanted.lineHeight as number, unit: 'PIXELS' }
+            }
+            if (typeof wanted.letterSpacing === 'number') {
+              text.letterSpacing = { value: wanted.letterSpacing, unit: 'PIXELS' }
+            }
+            if (typeof wanted.textCase === 'string') text.textCase = wanted.textCase as TextCase
+            if (typeof wanted.textDecoration === 'string') text.textDecoration = wanted.textDecoration as TextDecoration
+          }
+        }
+
+        figma.commitUndo()
+        figma.notify(`${existing ? 'Updated' : 'Created'} style "${style.name}"`)
+        postToUi({
+          type: 'STYLE_MADE',
+          updated: existing !== null,
+          style: {
+            id: style.id,
+            key: style.key,
+            name: style.name,
+            kind,
+            holds: await describeStyle(style, describePaints, describeEffects),
+          },
+        })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        figma.notify('Style failed: ' + message, { error: true })
+        postToUi({ type: 'CANVAS_ERROR', command: 'STYLE_MAKE', message })
+      }
+      break
+    }
+    case 'STYLE_REMOVE': {
+      // @agent write: delete a local style. Layers that followed it keep the values it gave them
+      // @agent param name: its name, id or key — the same way every other style is named here
+      try {
+        const kind = typeof msg.kind === 'string' ? (msg.kind.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
+        if (!STYLE_KINDS.includes(kind)) {
+          refuse('STYLE_REMOVE', `kind must be one of: ${STYLE_KINDS.join(', ')}`)
+          break
+        }
+        const style = await styleFor(String(msg.name), kind)
+        if (style.remote) {
+          refuse('STYLE_REMOVE', `"${style.name}" belongs to a library — it can only be removed where it is published`)
+          break
+        }
+        const name = style.name
+        style.remove()
+        figma.commitUndo()
+        figma.notify(`Removed style "${name}"`)
+        postToUi({ type: 'STYLE_REMOVED', name, kind })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        postToUi({ type: 'CANVAS_ERROR', command: 'STYLE_REMOVE', message })
       }
       break
     }

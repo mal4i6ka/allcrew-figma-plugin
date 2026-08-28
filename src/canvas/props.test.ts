@@ -453,3 +453,31 @@ test('the expected variable type travels with the field, so the applier can say 
   assert.equal(bindingsOf({ cornerRadius: 'radius/md' })[0].wants, 'FLOAT')
   assert.equal(bindingsOf({ fontFamily: 'type/family' })[0].wants, 'STRING')
 })
+
+/* -------------------------------------------------------------------- styles */
+
+test('a style is named per slot, so nothing has to be guessed from the value', () => {
+  assert.deepEqual(stepsOf({ fillStyle: 'Surface/Card' }), [
+    { step: 'style', kind: 'paint', slot: 'fillStyle', ref: 'Surface/Card' },
+  ])
+  assert.deepEqual(stepsOf({ textStyle: 'Body/Regular' }), [
+    { step: 'style', kind: 'text', slot: 'textStyle', ref: 'Body/Regular' },
+  ])
+  // A stroke follows a paint style too — the same kind, a different slot.
+  assert.equal((stepsOf({ strokeStyle: 'Border/Subtle' })[0] as { kind: string }).kind, 'paint')
+})
+
+test('null detaches, and is a value rather than an absence', () => {
+  assert.deepEqual(stepsOf({ fillStyle: null }), [{ step: 'style', kind: 'paint', slot: 'fillStyle', ref: null }])
+  assert.match(planProps({ fillStyle: 4 }).problems[0], /must be a style name, id or key — or null to detach/)
+})
+
+test('a style is followed before the paints that override it', () => {
+  // Following a style and then setting one colour means the colour wins, which is the order
+  // anybody means by writing both.
+  const plan = planProps({ fill: '#FFFFFF', fillStyle: 'Surface/Card', name: 'Card' })
+  assert.deepEqual(
+    plan.steps.map((step) => (step.step === 'assign' ? step.property : step.step === 'style' ? step.slot : step.step)),
+    ['name', 'fillStyle', 'paint']
+  )
+})
