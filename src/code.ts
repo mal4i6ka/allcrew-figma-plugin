@@ -199,6 +199,7 @@ type PluginMessage =
       loop?: number
     }
   | { type: 'MOTION_STYLES' }
+  | { type: 'SHADER_LIST'; kind?: string }
   | { type: 'STYLE_LIST'; kind?: string; query?: string; limit?: number }
   | {
       type: 'STYLE_MAKE'
@@ -3007,6 +3008,40 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         postToUi({ type: 'MOTION_STYLES', total: styles.length, styles })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'MOTION_STYLES', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'SHADER_LIST': {
+      // @agent read: the shaders this file can use — their ids, whether they paint or filter, and the settings each one takes
+      // @agent param kind: fill or effect; omitted means both
+      try {
+        const kind = typeof msg.kind === 'string' ? msg.kind.trim().toLowerCase() : ''
+        if (kind !== '' && kind !== 'fill' && kind !== 'effect') {
+          refuse('SHADER_LIST', 'kind must be fill or effect')
+          break
+        }
+        const shaders = (await figma.listAvailableShaders())
+          .filter((shader) => kind === '' || shader.type === kind)
+          .map((shader) => ({
+            id: shader.id,
+            name: shader.name,
+            kind: shader.type,
+            imported: shader.imported,
+            // One line, like every other catalogue here: a property's own name, its type and
+            // whatever it defaults to.
+            properties: Object.entries(shader.propertyDefinitions ?? {})
+              .map(([defId, definition]) => {
+                const fallback =
+                  definition.defaultValue === undefined
+                    ? ''
+                    : ` (=${typeof definition.defaultValue === 'object' ? JSON.stringify(definition.defaultValue) : definition.defaultValue})`
+                return `${defId}: ${definition.type.toLowerCase()}${fallback}`
+              })
+              .join(' · '),
+          }))
+        postToUi({ type: 'SHADERS', total: shaders.length, shaders })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'SHADER_LIST', message: String((error as Error)?.message || error) })
       }
       break
     }

@@ -24,6 +24,7 @@ import type {
   PlannedCondition,
   PlannedOperand,
   PropStep,
+  ShaderRef,
   TextRun,
 } from './props.ts'
 
@@ -336,6 +337,12 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       // hands back a NEW effect, so each binding is folded into the list before the list is set.
       let effects = step.effects
       const failures: string[] = []
+      // Same rule as a shader paint: the file has to hold the shader before an effect can name it.
+      for (const effect of effects) {
+        if ((effect as { type?: string }).type === 'SHADER') {
+          await figma.importShaderById((effect as unknown as ShaderEffect).id)
+        }
+      }
       for (const binding of step.bind) {
         try {
           const variable = await resolveVariableRef(binding.variable)
@@ -850,6 +857,7 @@ async function buildPaints(ref: PaintRef): Promise<Paint[]> {
   }
 
   if (typeof ref === 'string') return [solid(ref)]
+  if ('shader' in ref) return [await buildShader(ref)]
   if ('gradient' in ref) return [await buildGradient(ref)]
   if ('image' in ref) return [await buildImage(ref)]
   if ('variable' in ref) {
@@ -862,6 +870,24 @@ async function buildPaints(ref: PaintRef): Promise<Paint[]> {
     return [figma.variables.setBoundVariableForPaint(base, 'color', variable)]
   }
   return [solid(ref.color, ref.opacity)]
+}
+
+/**
+ * A shader, materialised into the file first.
+ *
+ * `listAvailableShaders()` answers with what this FILE holds, which on a file that has never used
+ * one is nothing at all — the account's library is a different list. `importShaderById` is the
+ * way in, it is idempotent, and it has to happen before a paint can name the shader.
+ */
+async function buildShader(ref: ShaderRef): Promise<ShaderPaint> {
+  await figma.importShaderById(ref.shader)
+  return {
+    type: 'SHADER',
+    id: ref.shader,
+    ...(ref.properties ? { properties: ref.properties as ShaderPaint['properties'] } : {}),
+    ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+    ...(ref.visible === undefined ? {} : { visible: ref.visible }),
+  }
 }
 
 /**
@@ -978,6 +1004,10 @@ export async function describePaints(value: unknown): Promise<string | null> {
     if (bound) {
       const named = await figma.variables.getVariableByIdAsync(bound).catch(() => null)
       parts.push(`var:${named?.name ?? bound}`)
+      continue
+    }
+    if (entry.type === 'SHADER') {
+      parts.push(`shader:${(paint as ShaderPaint).id}`)
       continue
     }
     if (entry.type === 'IMAGE') {
@@ -1134,6 +1164,10 @@ export async function describeEffects(value: unknown): Promise<string> {
       return `var:${variable?.name ?? id}`
     }
 
+    if (effect.type === 'SHADER') {
+      parts.push(`shader ${(effect as ShaderEffect).id}`)
+      continue
+    }
     if (effect.type === 'LAYER_BLUR' || effect.type === 'BACKGROUND_BLUR') {
       parts.push(`${effect.type === 'LAYER_BLUR' ? 'layer' : 'background'} blur ${await named('radius', effect.radius)}`)
       continue

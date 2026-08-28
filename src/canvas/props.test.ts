@@ -775,3 +775,25 @@ test('commas in path data become spaces, because Figma refuses them', () => {
     { step: 'paths', paths: [{ data: 'M 0 40 C 30 0  60 80  90 40', windingRule: 'NONZERO' }] },
   ])
 })
+
+/* -------------------------------------------------------------------- shaders */
+
+test('a shader is a paint and an effect, named by the id SHADER_LIST gives', () => {
+  assert.equal(paintProblem({ shader: '78022e92', properties: { coverage: 0.4 } }), null)
+  assert.deepEqual(planProps({ fill: { shader: 'abc' } }).steps[0], {
+    step: 'paint',
+    property: 'fills',
+    ref: { shader: 'abc' },
+  })
+  const effect = stepsOf({ effects: [{ shader: 'abc', properties: { amount: 2 } }] })[0] as {
+    effects: Array<Record<string, unknown>>
+  }
+  assert.deepEqual(effect.effects[0], { type: 'SHADER', id: 'abc', visible: true, properties: { amount: 2 } })
+})
+
+test('every way of naming a shader wrongly is refused', () => {
+  assert.match(paintProblem({ shader: '' }) ?? '', /shader must be the id SHADER_LIST gives/)
+  assert.match(paintProblem({ shader: 'abc', props: {} }) ?? '', /unknown key "props"/)
+  assert.match(paintProblem({ shader: 'abc', properties: [] }) ?? '', /properties must be an object/)
+  assert.match(paintProblem({ shader: 'abc', opacity: 3 }) ?? '', /opacity must be between 0 and 1/)
+})

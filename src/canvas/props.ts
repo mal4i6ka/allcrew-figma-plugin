@@ -34,6 +34,21 @@ export type SinglePaint =
   | { variable: string }
   | ImageRef
   | GradientRef
+  | ShaderRef
+
+/**
+ * A shader — a program that generates the pixels, rather than a colour that describes them.
+ *
+ * The id is the one SHADER_LIST gives, and its settings are the shader's own: this vocabulary
+ * cannot know what `coverage` means to a cloud and passes the properties through, exactly as it
+ * does for an animation style.
+ */
+export interface ShaderRef {
+  shader: string
+  properties?: Record<string, unknown>
+  opacity?: number
+  visible?: boolean
+}
 
 /**
  * A gradient, said the way a person says one: which kind, which colours, which way round.
@@ -147,6 +162,7 @@ export type EffectSpec =
       visible?: boolean
     }
   | { blur: 'layer' | 'background'; radius: number | { variable: string }; visible?: boolean }
+  | { shader: string; properties?: Record<string, unknown>; visible?: boolean }
 
 /**
  * A layout grid: columns, rows, or the square grid.
@@ -1741,6 +1757,22 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
       return null
     }
 
+    if (typeof spec.shader === 'string') {
+      const problem = shaderProblem(spec)
+      if (problem) {
+        fail(problem)
+        continue
+      }
+      effects.push({
+        type: 'SHADER',
+        id: spec.shader.trim(),
+        visible: spec.visible !== false,
+        ...(spec.properties ? { properties: spec.properties as ShaderEffect['properties'] } : {}),
+      } as Effect)
+      summary.push(`shader ${spec.shader.trim()}`)
+      continue
+    }
+
     if (typeof spec.blur === 'string') {
       const kind = spec.blur.toLowerCase()
       if (kind !== 'layer' && kind !== 'background') {
@@ -2586,7 +2618,9 @@ export function paintProblem(ref: unknown): string | null {
     image?: unknown
     scaleMode?: unknown
     gradient?: unknown
+    shader?: unknown
   }
+  if (entry.shader !== undefined) return shaderProblem(ref as Record<string, unknown>)
   if (entry.gradient !== undefined) return gradientProblem(ref as Record<string, unknown>)
   if (entry.image !== undefined) return imageProblem(entry)
   if (typeof entry.variable === 'string') return entry.variable === '' ? 'variable must be a name, id or library key' : null
@@ -2598,6 +2632,25 @@ export function paintProblem(ref: unknown): string | null {
     return null
   }
   return 'must carry either `color`, `variable` or `image`'
+}
+
+function shaderProblem(entry: Record<string, unknown>): string | null {
+  if (typeof entry.shader !== 'string' || entry.shader.trim() === '') {
+    return 'shader must be the id SHADER_LIST gives'
+  }
+  for (const key of Object.keys(entry)) {
+    if (!['shader', 'properties', 'opacity', 'visible'].includes(key)) {
+      return `unknown key "${key}" — accepted: shader, properties, opacity, visible`
+    }
+  }
+  if (entry.properties !== undefined && (typeof entry.properties !== 'object' || entry.properties === null || Array.isArray(entry.properties))) {
+    return 'properties must be an object of the settings that shader takes'
+  }
+  if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
+    return 'opacity must be between 0 and 1'
+  }
+  if (entry.visible !== undefined && typeof entry.visible !== 'boolean') return 'visible must be true or false'
+  return null
 }
 
 function gradientProblem(entry: Record<string, unknown>): string | null {
