@@ -342,7 +342,7 @@ function pageOf(node: BaseNode): string | undefined {
 
 /* ------------------------------------------------------------------ authoring */
 
-export const PROPERTY_TYPES = ['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'VARIANT'] as const
+export const PROPERTY_TYPES = ['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'VARIANT', 'SLOT'] as const
 
 export type PropertyType = (typeof PROPERTY_TYPES)[number]
 
@@ -355,7 +355,8 @@ export type PropertyType = (typeof PROPERTY_TYPES)[number]
  * works out the field from the type, rather than asking a caller to know that a boolean drives
  * `visible` and a text property drives `characters`.
  *
- * A VARIANT has no field: its values come from the names of the components in the set.
+ * A VARIANT has no field: its values come from the names of the components in the set. Neither
+ * does a SLOT — creating one creates its own node, and that node is the binding.
  */
 export function bindingField(type: PropertyType): 'visible' | 'characters' | 'mainComponent' | null {
   switch (type) {
@@ -373,11 +374,22 @@ export function bindingField(type: PropertyType): 'visible' | 'characters' | 'ma
 export interface PropertyAdd {
   name: string
   type: PropertyType
-  default: string | boolean
-  /** INSTANCE_SWAP only: components offered first in the swap menu, by id or published key. */
+  /** Not for a SLOT, which has no value of its own. */
+  default?: string | boolean
+  /** INSTANCE_SWAP and SLOT: components offered first, by id or published key. */
   preferred?: string[]
   /** Layers this property should drive. */
   bind?: string[]
+  /** SLOT only: what may be dropped into it, and how much. */
+  settings?: SlotOptions
+}
+
+export interface SlotOptions {
+  stretchChildOnInsert?: boolean
+  displayEmptyByDefault?: boolean
+  minChildren?: number | null
+  maxChildren?: number | null
+  allowPreferredValuesOnly?: boolean
 }
 
 export interface PropertyEdit {
@@ -393,6 +405,27 @@ export interface PropertyPlan {
   remove: string[]
   bind: Array<{ node: string; property: string }>
   problems: string[]
+}
+
+function slotProblem(raw: unknown): string | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return 'must be an object'
+  const spec = raw as Record<string, unknown>
+  for (const key of Object.keys(spec)) {
+    if (!['stretchChildOnInsert', 'displayEmptyByDefault', 'minChildren', 'maxChildren', 'allowPreferredValuesOnly'].includes(key)) {
+      return `unknown key "${key}" — accepted: stretchChildOnInsert, displayEmptyByDefault, minChildren, maxChildren, allowPreferredValuesOnly`
+    }
+  }
+  for (const flag of ['stretchChildOnInsert', 'displayEmptyByDefault', 'allowPreferredValuesOnly']) {
+    if (spec[flag] !== undefined && typeof spec[flag] !== 'boolean') return `${flag} must be true or false`
+  }
+  for (const limit of ['minChildren', 'maxChildren']) {
+    const value = spec[limit]
+    if (value === undefined || value === null) continue
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+      return `${limit} must be a whole number >= 0, or null for no limit`
+    }
+  }
+  return null
 }
 
 /** Validates a property request without touching the document. */
@@ -427,11 +460,28 @@ export function planComponentProperties(raw: unknown): PropertyPlan {
       continue
     }
     const fallback = one.default
-    if (type === 'BOOLEAN' ? typeof fallback !== 'boolean' : typeof fallback !== 'string') {
+    if (type === 'SLOT') {
+      // A slot holds layers, not a value, and Figma makes its node and its property together.
+      if (fallback !== undefined) {
+        plan.problems.push(`${at}: a SLOT has no default — it holds whatever is put into it`)
+        continue
+      }
+    } else if (type === 'BOOLEAN' ? typeof fallback !== 'boolean' : typeof fallback !== 'string') {
       plan.problems.push(
         `${at}.default must be ${type === 'BOOLEAN' ? 'true or false' : 'a string'} for a ${type} property`
       )
       continue
+    }
+    if (one.settings !== undefined) {
+      if (type !== 'SLOT') {
+        plan.problems.push(`${at}.settings belongs to a SLOT property, not to a ${type} one`)
+        continue
+      }
+      const problem = slotProblem(one.settings)
+      if (problem) {
+        plan.problems.push(`${at}.settings: ${problem}`)
+        continue
+      }
     }
     if (one.bind !== undefined && (!Array.isArray(one.bind) || one.bind.some((id) => typeof id !== 'string'))) {
       plan.problems.push(`${at}.bind must be an array of node ids`)
@@ -448,7 +498,8 @@ export function planComponentProperties(raw: unknown): PropertyPlan {
     plan.add.push({
       name: one.name.trim(),
       type: type as PropertyType,
-      default: fallback as string | boolean,
+      ...(type === 'SLOT' ? {} : { default: fallback as string | boolean }),
+      ...(one.settings ? { settings: one.settings as SlotOptions } : {}),
       ...(one.preferred ? { preferred: one.preferred as string[] } : {}),
       ...(one.bind ? { bind: one.bind as string[] } : {}),
     })

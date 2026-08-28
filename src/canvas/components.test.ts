@@ -181,3 +181,49 @@ test('a bind on its own names the layer and the property', () => {
   assert.deepEqual(plan.bind, [{ node: '1:2', property: 'Label' }])
   assert.match(planComponentProperties({ bind: [{ node: '1:2' }] }).problems[0], /must be \{ node: "<layer id>", property/)
 })
+
+/* ---------------------------------------------------------------------- slots */
+
+test('a slot takes no default, because it holds layers rather than a value', () => {
+  const plan = planComponentProperties({
+    add: [{ name: 'Content', type: 'SLOT', settings: { minChildren: 1, maxChildren: 3 } }],
+  })
+  assert.deepEqual(plan.problems, [])
+  assert.deepEqual(plan.add[0], {
+    name: 'Content',
+    type: 'SLOT',
+    settings: { minChildren: 1, maxChildren: 3 },
+  })
+  assert.match(
+    planComponentProperties({ add: [{ name: 'Content', type: 'SLOT', default: 'x' }] }).problems[0],
+    /a SLOT has no default/
+  )
+})
+
+test('slot settings belong to a slot, and every field of them is checked', () => {
+  assert.match(
+    planComponentProperties({ add: [{ name: 'Label', type: 'TEXT', default: 'x', settings: {} }] }).problems[0],
+    /settings belongs to a SLOT property, not to a TEXT one/
+  )
+  assert.match(
+    planComponentProperties({ add: [{ name: 'C', type: 'SLOT', settings: { maxChildren: -1 } }] }).problems[0],
+    /maxChildren must be a whole number >= 0, or null for no limit/
+  )
+  assert.match(
+    planComponentProperties({ add: [{ name: 'C', type: 'SLOT', settings: { stretch: true } }] }).problems[0],
+    /unknown key "stretch"/
+  )
+  // null is how a limit is removed, and it is a value rather than an absence.
+  assert.deepEqual(
+    planComponentProperties({ add: [{ name: 'C', type: 'SLOT', settings: { maxChildren: null } }] }).problems,
+    []
+  )
+})
+
+test('a slot needs no binding, because creating one creates its node', () => {
+  assert.equal(bindingField('SLOT'), null)
+  assert.match(
+    planComponentProperties({ add: [{ name: 'C', type: 'SLOT', bind: ['1:2'] }] }).problems[0],
+    /is not bound to layers/
+  )
+})

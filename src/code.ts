@@ -186,6 +186,9 @@ type PluginMessage =
       width?: number
       height?: number
       outlineText?: boolean
+      fps?: number
+      quality?: string
+      loop?: number
     }
   | { type: 'STYLE_LIST'; kind?: string; query?: string; limit?: number }
   | {
@@ -1140,13 +1143,28 @@ function describeProperties(node: ComponentNode | ComponentSetNode): string {
 
 const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline']
 
-const EXPORT_FORMATS = ['PNG', 'JPG', 'SVG', 'PDF']
+const EXPORT_FORMATS = ['PNG', 'JPG', 'SVG', 'PDF', 'MP4', 'GIF', 'WEBM']
+
+/** The three that render time rather than a moment: a frame's animation, not its appearance. */
+const VIDEO_FORMATS = ['MP4', 'GIF', 'WEBM']
+
+/** Video export takes a scale from a fixed set rather than any number. */
+const VIDEO_SCALES = [0.5, 0.75, 1, 1.5, 2, 3, 4]
+
+const VIDEO_FPS: Readonly<Record<string, number[]>> = {
+  MP4: [12, 24, 30, 60],
+  WEBM: [12, 24, 30, 60],
+  GIF: [8, 12, 15, 24, 30],
+}
 
 const EXPORT_MIME: Readonly<Record<string, string>> = {
   PNG: 'image/png',
   JPG: 'image/jpeg',
   PDF: 'application/pdf',
   SVG: 'image/svg+xml',
+  MP4: 'video/mp4',
+  GIF: 'image/gif',
+  WEBM: 'video/webm',
 }
 
 /** Past this a call is handing back more than anyone asked to read; what did not fit is named. */
@@ -2645,7 +2663,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'COMPONENT_PROPERTY': {
       // @agent write: add, rename, retype or remove a component's properties — and bind them to the layers they drive
       // @agent param component: the COMPONENT or COMPONENT_SET to change
-      // @agent param add: [{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT, default, bind?: ["<layer id>"], preferred?: ["<component id or key>"] }]
+      // @agent param add: [{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: ["<layer id>"], preferred?: ["<component id or key>"] }]
+      // @agent param add: a SLOT takes no default and needs no binding — Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it
       // @agent param bind: [{ node, property }] — pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one "does not work"
       try {
         const holder = await figma.getNodeByIdAsync(msg.component)
@@ -2678,10 +2697,31 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
                 )
               }
             }
-            const full = owner.addComponentProperty(
+            let full: string
+            if (entry.type === 'SLOT') {
+              // A slot is not just a property: `createSlot` makes the node AND the property that
+              // drives it, which is why there is nothing to bind afterwards. Only a component can
+              // hold one — a set holds variants, and each of them has its own slots.
+              if (owner.type !== 'COMPONENT') {
+                throw new Error('a slot belongs to a component, not to a component set — add it to a variant')
+              }
+              const before = Object.keys(definitionsOf(owner))
+              const slot = (owner as ComponentNode).createSlot()
+              const made = Object.keys(definitionsOf(owner)).find((key) => !before.includes(key))
+              if (!made) throw new Error('the slot was created but Figma reported no property for it')
+              // Renamed rather than named, because `createSlot` chooses the name itself.
+              full = owner.editComponentProperty(made, {
+                name: entry.name,
+                ...(entry.settings ? { slotSettings: entry.settings as SlotSettings } : {}),
+                ...(preferred ? { preferredValues: preferred } : {}),
+              })
+              done.push({ added: full, type: entry.type, node: slot.id })
+              continue
+            }
+            full = owner.addComponentProperty(
               entry.name,
               entry.type,
-              entry.default,
+              entry.default as string | boolean,
               preferred ? { preferredValues: preferred } : undefined
             )
             done.push({ added: full, type: entry.type })
@@ -2765,9 +2805,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'NODE_EXPORT': {
       // @agent read: render nodes to PNG, JPG, SVG or PDF and hand the files back — nothing in the document changes
       // @agent param nodes: the ids to render
-      // @agent param format: PNG (default), JPG, SVG or PDF
-      // @agent param scale: PNG/JPG only, 1 by default; or give width or height instead and the other follows
-      // @agent cost: one render each, and a large frame at 4x is megabytes — the call stops at 12 MB and says what it did not render
+      // @agent param format: PNG (default), JPG, SVG, PDF — or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance
+      // @agent param scale: 1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between
+      // @agent param fps: video only — MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30
+      // @agent param quality: MP4 and WEBM only — LOW, MEDIUM or HIGH
+      // @agent param loop: GIF only — how many times it repeats; 0 is forever
+      // @agent cost: one render each, and a large frame at 4x is megabytes — the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation
       try {
         const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
         const format = (typeof msg.format === 'string' ? msg.format : 'PNG').trim().toUpperCase()
@@ -2776,12 +2819,36 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           break
         }
 
+        const scale = typeof msg.scale === 'number' ? msg.scale : 1
+        const video = VIDEO_FORMATS.includes(format)
+        if (video && typeof msg.width !== 'number' && typeof msg.height !== 'number' && !VIDEO_SCALES.includes(scale)) {
+          refuse('NODE_EXPORT', `a ${format} takes a scale of ${VIDEO_SCALES.join(', ')} — ${scale} is not one of them`)
+          break
+        }
+        const fps = msg.fps
+        if (fps !== undefined && (!video || !VIDEO_FPS[format].includes(fps))) {
+          refuse(
+            'NODE_EXPORT',
+            video ? `${format} takes ${VIDEO_FPS[format].join(', ')} frames a second` : 'fps belongs to a video format'
+          )
+          break
+        }
+        const quality = msg.quality
+        if (quality !== undefined && (format === 'GIF' || !video || !['LOW', 'MEDIUM', 'HIGH'].includes(quality))) {
+          refuse('NODE_EXPORT', 'quality is LOW, MEDIUM or HIGH, and belongs to MP4 or WEBM')
+          break
+        }
+        if (msg.loop !== undefined && format !== 'GIF') {
+          refuse('NODE_EXPORT', 'loop belongs to a GIF')
+          break
+        }
+
         const constraint: ExportSettingsConstraints =
           typeof msg.width === 'number'
             ? { type: 'WIDTH', value: msg.width }
             : typeof msg.height === 'number'
               ? { type: 'HEIGHT', value: msg.height }
-              : { type: 'SCALE', value: typeof msg.scale === 'number' ? msg.scale : 1 }
+              : { type: 'SCALE', value: scale }
 
         const files: unknown[] = []
         const reports: Array<Record<string, unknown>> = []
@@ -2808,11 +2875,22 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               reports.push({ node: id, name: scene.name, ok: true, file: name, bytes: svg.length })
               continue
             }
-            const bytes = await scene.exportAsync(
-              format === 'PDF'
-                ? { format: 'PDF' }
-                : { format: format as 'PNG' | 'JPG', constraint }
-            )
+            // Each shape of settings goes to its own overload; TypeScript will not take a union
+            // across them, and the alternative is one cast that hides all three.
+            let bytes: Uint8Array
+            if (video) {
+              bytes = await scene.exportAsync({
+                format,
+                constraint,
+                ...(fps === undefined ? {} : { fps }),
+                ...(quality === undefined ? {} : { quality }),
+                ...(msg.loop === undefined ? {} : { loopCount: msg.loop }),
+              } as ExportSettingsMP4 | ExportSettingsGIF | ExportSettingsWEBM)
+            } else if (format === 'PDF') {
+              bytes = await scene.exportAsync({ format: 'PDF' })
+            } else {
+              bytes = await scene.exportAsync({ format: format as 'PNG' | 'JPG', constraint })
+            }
             spent += bytes.length
             if (spent > EXPORT_BUDGET) {
               reports.push({ node: id, name: scene.name, ok: false, error: 'the 12 MB budget for this call was already spent' })
