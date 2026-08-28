@@ -2026,7 +2026,10 @@ export const WRITE_OPS: readonly OpDef[] = [
         default: false,
         description:
           'Delete even when references exist in THIS file. Rarely right: every such binding keeps ' +
-          'rendering its last value and quietly stops following anything.',
+          'rendering its last value and quietly stops following anything. It also SKIPS the ' +
+          'reference walk, which loads every page and reads every node — on a large file that ' +
+          'walk alone can exhaust the plugin and abort its runtime, so `force` is how to remove a ' +
+          'variable you already know is unused.',
       },
     },
     async run(params) {
@@ -2058,8 +2061,17 @@ export const WRITE_OPS: readonly OpDef[] = [
           if (Array.isArray(paint?.gradientStops)) for (const stop of paint.gradientStops) note(stop?.boundVariables?.color?.id)
         }
       }
-      await loadAllPagesAsync()
-      for (const page of figma.root.children) {
+      /* Skipped entirely under `force`, and that is not an optimisation. The walk loads every
+       * page and reads `boundVariables`, fills and strokes off every node in the document; on a
+       * file the size of a real design system it exhausts the plugin's heap and Figma aborts the
+       * runtime — "Plugin runtime aborted", the leak counter in the console, and from the outside
+       * a plugin that keeps reconnecting with a new session id. `force` already means "delete
+       * without asking what points at it", so counting first was work whose answer was thrown
+       * away. Measured on Altery Mobile DS: the counting call killed the plugin every time, a
+       * single attempt was enough, and there was nothing to report when it did. */
+      const counting = params.force !== true
+      if (counting) await loadAllPagesAsync()
+      for (const page of counting ? figma.root.children : []) {
         await walkSceneNodes(page, (node) => {
           const holder = node as unknown as Record<string, unknown>
           const bound = holder.boundVariables as Record<string, unknown> | undefined
@@ -2074,18 +2086,21 @@ export const WRITE_OPS: readonly OpDef[] = [
           scanPaints(holder.strokes)
         })
       }
-      for (const style of await figma.getLocalPaintStylesAsync()) scanPaints(style.paints)
-      for (const variable of await figma.variables.getLocalVariablesAsync()) {
-        for (const value of Object.values(variable.valuesByMode ?? {})) {
-          const alias = value as { type?: string; id?: string }
-          if (alias?.type === 'VARIABLE_ALIAS') note(alias.id)
+      if (counting) {
+        for (const style of await figma.getLocalPaintStylesAsync()) scanPaints(style.paints)
+        for (const variable of await figma.variables.getLocalVariablesAsync()) {
+          for (const value of Object.values(variable.valuesByMode ?? {})) {
+            const alias = value as { type?: string; id?: string }
+            if (alias?.type === 'VARIABLE_ALIAS') note(alias.id)
+          }
         }
       }
 
       const results = []
       for (const variable of targets.values()) {
-        const references = used.get(variable.id) ?? 0
-        if (references > 0 && params.force !== true) {
+        // Under `force` nothing was counted, so the report says so rather than claiming zero.
+        const references = counting ? (used.get(variable.id) ?? 0) : null
+        if (references !== null && references > 0 && params.force !== true) {
           results.push({ variable: variable.name, references, ok: false, deleted: false, error: 'still referenced — rebind first, or pass force' })
           continue
         }
