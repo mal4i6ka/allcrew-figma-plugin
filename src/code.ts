@@ -1156,6 +1156,44 @@ function definitionsOf(node: ComponentNode | ComponentSetNode): ComponentPropert
 }
 
 /** The one-line form the catalogue prints, for a node in hand. */
+/**
+ * A property's full name — `Label#15591:37` — from whatever the caller wrote.
+ *
+ * Every read hands back the human half, and `edit` and `remove` passed that half straight to
+ * Figma, which answered "Can only set variant property on a component set" and "Invalid component
+ * property name" — messages about something else entirely. `bind` had always resolved the name;
+ * the other two verbs simply did not.
+ */
+function propertyKey(owner: ComponentNode | ComponentSetNode, asked: string): string | null {
+  const keys = Object.keys(definitionsOf(owner))
+  return (
+    keys.find((key) => key === asked) ??
+    keys.find((key) => humanPropertyName(key) === asked) ??
+    keys.find((key) => humanPropertyName(key).toLowerCase() === asked.toLowerCase()) ??
+    null
+  )
+}
+
+const noSuchProperty = (owner: ComponentNode | ComponentSetNode, asked: string): string => {
+  const available = Object.keys(definitionsOf(owner)).map(humanPropertyName).join(', ')
+  return `"${asked}" is not a property of ${owner.name} — it has: ${available || '(none)'}`
+}
+
+/** What an INSTANCE_SWAP may be swapped for: a set is offered whole, a lone component on its own. */
+async function preferredValues(refs: readonly string[]): Promise<InstanceSwapPreferredValue[]> {
+  const values: InstanceSwapPreferredValue[] = []
+  for (const ref of refs) {
+    const component = await componentFor(ref)
+    const parent = component.parent
+    values.push(
+      parent?.type === 'COMPONENT_SET'
+        ? { type: 'COMPONENT_SET', key: (parent as ComponentSetNode).key }
+        : { type: 'COMPONENT', key: component.key }
+    )
+  }
+  return values
+}
+
 function describeProperties(node: ComponentNode | ComponentSetNode): string {
   return describePropertyDefinitions(definitionsOf(node) as Record<string, { type: string; variantOptions?: readonly string[]; defaultValue?: unknown }>)
 }
@@ -1209,6 +1247,15 @@ const CLONE_GAP = 64
  * A node as a caller can act on it: the ids and names to aim at, and — asked for — the same
  * property vocabulary `NODE_SET` accepts, so a read can be edited and sent back.
  */
+/**
+ * What an INSTANCE_SWAP is pointing at. The stored value is an id or a published key — the thing
+ * to send back, and unreadable on its own — so the name goes in front of it and both survive.
+ */
+async function describeSwap(value: string): Promise<string> {
+  const node = await figma.getNodeByIdAsync(value).catch(() => null)
+  return node && 'name' in node ? `${node.name} (${value})` : value
+}
+
 /** A property a run can override reads back as a symbol; that is an answer, not a value. */
 const plain = <T,>(value: T | typeof figma.mixed): T | 'mixed' => (value === figma.mixed ? 'mixed' : (value as T))
 
@@ -1334,9 +1381,40 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // name is the axis values ("Size=Large, State=Default"), which nobody can instantiate from.
     const owner = main && main.parent?.type === 'COMPONENT_SET' ? main.parent : main
     props.component = owner?.name ?? '(unavailable)'
-    const settings = Object.entries(node.componentProperties as unknown as Record<string, { value?: unknown }>)
-      .map(([key, entry]) => `${humanPropertyName(key)}=${String(entry?.value)}`)
+    const settings: string[] = []
+    for (const [key, entry] of Object.entries(
+      node.componentProperties as unknown as Record<string, { value?: unknown; type?: string }>
+    )) {
+      const name = humanPropertyName(key)
+      // A slot holds a node, not a value, and `Content=undefined` was the read saying so badly.
+      if (entry?.type === 'SLOT' || entry?.value === undefined) settings.push(`${name}: slot`)
+      else if (entry.type === 'INSTANCE_SWAP') settings.push(`${name}=${await describeSwap(String(entry.value))}`)
+      else settings.push(`${name}=${String(entry.value)}`)
+    }
     if (settings.length > 0) props.properties = settings.join(' · ')
+  }
+  if (node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') {
+    // Read by id, a component was indistinguishable from a frame: what it can be told, what it is
+    // for and where its documentation lives were all things only COMPONENT_CATALOG knew. An agent
+    // that has just made one and wants to check it asks here.
+    const owner = node as ComponentNode | ComponentSetNode
+    let definitions: Record<string, unknown> = {}
+    try {
+      definitions = owner.componentPropertyDefinitions as unknown as Record<string, unknown>
+    } catch {
+      /* a variant answers with a throw — the axes belong to its set, which reports them itself */
+    }
+    const line = describePropertyDefinitions(
+      (definitions ?? {}) as Parameters<typeof describePropertyDefinitions>[0]
+    )
+    if (line) props.properties = line
+    const description = (owner.description || '').trim()
+    if (description) props.description = description.length > 200 ? `${description.slice(0, 200)}…` : description
+    const documentation = (owner.documentationLinks ?? []).map((link) => link.uri)
+    if (documentation.length > 0) props.documentation = documentation
+    if (node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET') props.variantOf = node.parent.name
+    // How anyone in another file instantiates it — the one identifier that outlives this document.
+    props.key = owner.key
   }
   // A TEXT_PATH is text too — Figma Draw gives it every text property and a different type.
   if (node.type === 'TEXT' || node.type === 'TEXT_PATH') {
@@ -2250,6 +2328,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param of: for kind "svg", the markup itself — Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand
       // @agent param props: the same property vocabulary NODE_SET takes — name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset
       // @agent param of: for kind "instance", the component to make — the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures
+      // @agent param parent: the node the new nodes go inside — omitted, they land on the current page. This is how a card is built into a screen rather than beside it
       // @agent cost: proportional to what you ask for; one call is one undo step for the designer
       try {
         const specs = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
@@ -2373,6 +2452,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param types: Figma node types to keep, e.g. ["FRAME","TEXT"]; omitted means any
       // @agent param within: search inside this node's subtree instead of the whole page — how you reach the children of something you just made
       // @agent param props: true adds each node's readable properties — geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is
+      // @agent param name: keep only nodes whose name contains this, case-insensitively
+      // @agent param nodeId: read this one node and nothing else — the shortest way to check what a call just did
+      // @agent param pageId: search this page instead of the current one
+      // @agent param limit: how many nodes come back, 50 by default and 500 at most
       // @agent param data: keep only nodes carrying this plugin data, e.g. { flow: "onboarding" } — how you find what an earlier call stamped
       try {
         const wantProps = msg.props === true
@@ -2653,12 +2736,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               freed.push({ node: node.id, name: node.name, ok: false, error: `a ${node.type} is not an instance` })
               continue
             }
+            // Read before the detach, not after it: `detachInstance` destroys the instance and
+            // mints a frame in its place, so `node.name` afterwards threw "the node with id … does
+            // not exist" — and threw again inside the catch, which turned a detach that had
+            // WORKED into a command that answered with a crash.
+            const was = { node: node.id, name: node.name }
             try {
               const frame = (node as InstanceNode).detachInstance()
               if (plan.steps.length > 0) await applyProps(frame, plan.steps, false)
-              freed.push({ node: node.id, name: node.name, ok: true, detached: frame.id })
+              freed.push({ ...was, ok: true, detached: frame.id, into: frame.name })
             } catch (error) {
-              freed.push({ node: node.id, name: node.name, ok: false, error: String((error as Error)?.message || error) })
+              freed.push({ ...was, ok: false, error: String((error as Error)?.message || error) })
             }
           }
           figma.commitUndo()
@@ -2761,6 +2849,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent write: turn nodes into components, or combine components into a variant set
       // @agent param nodes: ids, or { node: "<id>", name: "Size=L" } to name each one on the way — a variant set's axes ARE the components' names, so "Size=L, State=Default" is what makes Size and State
       // @agent param as: component (default — each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)
+      // @agent param name: what the result is called — the set when as is "set", otherwise the first component
+      // @agent param description: the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names
       // @agent param props: applied to what comes out, the same vocabulary NODE_SET takes
       // @agent param links: documentation URLs for the component — where the real spec lives
       try {
@@ -2774,6 +2864,31 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         if (plan.problems.length > 0) {
           refuse('COMPONENT_MAKE', plan.problems.join(' · '))
           break
+        }
+
+        // A URL, or Figma's own `{ uri }` shape — anything else is named rather than dropped, and
+        // named BEFORE anything is made. Filtering silently meant a caller who wrote
+        // `{ name, uri }`, which is what the API itself hands back, got a component with no
+        // documentation and a reply that said it had gone well.
+        let documentation: Array<{ uri: string }> | null = null
+        if (Array.isArray(msg.links)) {
+          const uris: string[] = []
+          const wrong: string[] = []
+          for (const link of msg.links as unknown[]) {
+            const uri =
+              typeof link === 'string'
+                ? link
+                : typeof (link as { uri?: unknown })?.uri === 'string'
+                  ? String((link as { uri: string }).uri)
+                  : null
+            if (uri && uri.trim() !== '') uris.push(uri.trim())
+            else wrong.push(JSON.stringify(link))
+          }
+          if (wrong.length > 0) {
+            refuse('COMPONENT_MAKE', `links must be URLs or { uri }, not ${wrong.slice(0, 3).join(', ')}`)
+            break
+          }
+          documentation = uris.map((uri) => ({ uri }))
         }
 
         const wanted: Array<{ id: string; name?: string }> = []
@@ -2833,11 +2948,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           if (typeof msg.description === 'string') result.description = msg.description
           // Where the real documentation lives. An agent that has it stops guessing the intent
           // from layer names, which is why the docs export reads them too.
-          if (Array.isArray(msg.links)) {
-            result.documentationLinks = (msg.links as string[])
-              .filter((link) => typeof link === 'string' && link.trim() !== '')
-              .map((link) => ({ uri: link.trim() }))
-          }
+          if (documentation) result.documentationLinks = documentation
         }
         const applied = result && plan.steps.length > 0 ? await applyProps(result, plan.steps, false) : null
         figma.commitUndo()
@@ -2859,7 +2970,23 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
                   variants: set.children.map((child) => child.name),
                 },
               }
-            : {}),
+            : // The same courtesy the set already had: a reply that had just written a name, a
+              // description and a documentation link answered with none of them, so there was no
+              // way to see that they had landed short of reading the node back.
+              result
+              ? {
+                  component: {
+                    id: result.id,
+                    name: result.name,
+                    key: result.key,
+                    ...(describeProperties(result) ? { properties: describeProperties(result) } : {}),
+                    ...(result.description ? { description: result.description } : {}),
+                    ...(result.documentationLinks.length > 0
+                      ? { documentation: result.documentationLinks.map((link) => link.uri) }
+                      : {}),
+                  },
+                }
+              : {}),
           nodes: reports,
           ...(applied ? { applied: applied.applied } : {}),
         })
@@ -2876,6 +3003,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param add: [{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: ["<layer id>"], preferred?: ["<component id or key>"] }]
       // @agent param add: a SLOT takes no default and needs no binding — Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it
       // @agent param bind: [{ node, property }] — pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one "does not work"
+      // @agent param edit: [{ name, rename?, default?, preferred? }] — name the property as it stands and give at least one change
+      // @agent param remove: ["<property name>"] — the property goes, and every instance loses what it was setting
       try {
         const holder = await figma.getNodeByIdAsync(msg.component)
         if (!holder || (holder.type !== 'COMPONENT' && holder.type !== 'COMPONENT_SET')) {
@@ -2894,19 +3023,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
 
         for (const entry of plan.add) {
           try {
-            let preferred: InstanceSwapPreferredValue[] | undefined
-            if (entry.preferred) {
-              preferred = []
-              for (const ref of entry.preferred) {
-                const component = await componentFor(ref)
-                const parent = component.parent
-                preferred.push(
-                  parent?.type === 'COMPONENT_SET'
-                    ? { type: 'COMPONENT_SET', key: (parent as ComponentSetNode).key }
-                    : { type: 'COMPONENT', key: component.key }
-                )
-              }
-            }
+            const preferred = entry.preferred ? await preferredValues(entry.preferred) : undefined
             let full: string
             if (entry.type === 'SLOT') {
               // A slot is not just a property: `createSlot` makes the node AND the property that
@@ -2942,10 +3059,18 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
 
         for (const entry of plan.edit) {
+          const key = propertyKey(owner, entry.name)
+          if (!key) {
+            done.push({ edited: entry.name, ok: false, error: noSuchProperty(owner, entry.name) })
+            continue
+          }
           try {
-            const full = owner.editComponentProperty(entry.name, {
+            const full = owner.editComponentProperty(key, {
               ...(entry.rename ? { name: entry.rename } : {}),
               ...(entry.default === undefined ? {} : { defaultValue: entry.default }),
+              // Planned, validated, and then quietly left out of the call: an edit that named only
+              // preferred values changed nothing and said it had worked.
+              ...(entry.preferred ? { preferredValues: await preferredValues(entry.preferred) } : {}),
             })
             done.push({ edited: full })
           } catch (error) {
@@ -2954,9 +3079,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
 
         for (const name of plan.remove) {
+          const key = propertyKey(owner, name)
+          if (!key) {
+            done.push({ removed: name, ok: false, error: noSuchProperty(owner, name) })
+            continue
+          }
+          // A slot is a property AND a node. Figma deletes the first and leaves the second, and
+          // saying so beats letting someone find an unexplained empty frame in their component.
+          const wasSlot = definitionsOf(owner)[key]?.type === 'SLOT'
           try {
-            owner.deleteComponentProperty(name)
-            done.push({ removed: name })
+            owner.deleteComponentProperty(key)
+            done.push({ removed: key, ...(wasSlot ? { note: "the slot's own layer stays on the canvas" } : {}) })
           } catch (error) {
             done.push({ removed: name, ok: false, error: String((error as Error)?.message || error) })
           }
