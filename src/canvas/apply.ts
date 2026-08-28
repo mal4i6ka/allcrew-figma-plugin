@@ -1126,6 +1126,31 @@ function animationStyleWord(key: string | undefined): string | null {
   return styleWords.get(key) ?? null
 }
 
+/**
+ * A shader paint's settings as data rather than as a line.
+ *
+ * The one-line form can only name them, and a name is no use for the thing anyone actually wants
+ * — putting the same shader, set the same way, on another layer. Their ids are opaque and their
+ * values are structures (a number, a colour, a point, a gradient), so they are handed back
+ * exactly as Figma holds them: what comes out of a read goes straight back into `properties` on
+ * a write.
+ */
+export function describeShaderPaints(value: unknown): Array<{ id: string; properties?: Record<string, unknown> }> {
+  if (!Array.isArray(value)) return []
+  const shaders: Array<{ id: string; properties?: Record<string, unknown> }> = []
+  for (const paint of value) {
+    if ((paint as { type?: string })?.type !== 'SHADER') continue
+    const shader = paint as ShaderPaint
+    shaders.push({
+      id: shader.id,
+      ...(shader.properties && Object.keys(shader.properties).length > 0
+        ? { properties: shader.properties as Record<string, unknown> }
+        : {}),
+    })
+  }
+  return shaders
+}
+
 /** What a stroke is drawn with, in the words the vocabulary takes it in. */
 export function describeBrush(value: unknown): string {
   const brush = value as ComplexStrokeProperties | undefined

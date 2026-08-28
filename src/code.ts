@@ -103,6 +103,7 @@ import {
   applyProps,
   describeAnimation,
   describeBrush,
+  describeShaderPaints,
   describeEffects,
   describeGrids,
   describePaints,
@@ -1220,6 +1221,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(bag.visible === false ? { visible: false } : {}),
     ...(typeof bag.opacity === 'number' && bag.opacity < 1 ? { opacity: round(bag.opacity) } : {}),
     ...('fills' in bag ? { fill: await describePaints(bag.fills) } : {}),
+    // Beside the line, the settings themselves: what a read hands over is what a write takes,
+    // which is the only way to put the same shader on another layer.
+    ...(describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}),
     ...('strokes' in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0
       ? {
           stroke: await describePaints(bag.strokes),
