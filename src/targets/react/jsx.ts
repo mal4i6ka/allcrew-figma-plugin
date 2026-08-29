@@ -48,6 +48,8 @@ export interface JsxContext {
   used: Set<string>
   /** What could not be translated, in the words the comment uses. */
   gaps: string[]
+  /** Each vector's exported file, by node id — see `EmitReactOptions.assetsByNodeId`. */
+  assets?: ReadonlyMap<string, { filename: string; svg: string }>
   /** A prefix for copy keys, so two screens do not collide on `title`. */
   scope: string
 }
@@ -165,9 +167,12 @@ export function emitJsx(node: IrNode, context: JsxContext, depth = 1): string {
   }
 
   if (node.type === 'vector') {
+    // Small enough to inline is the icon in the markup; anything larger is a file beside it.
     const svg = (node as { inlineSvg?: string }).inlineSvg
     if (svg) return `${pad}<span className={${className}} dangerouslySetInnerHTML={{ __html: ${JSON.stringify(svg)} }} />`
-    context.gaps.push(`${node.name}: a vector with no inline SVG — export it as a file`)
+    const asset = context.assets?.get(node.id)
+    if (asset) return `${pad}<img className={${className}} src="/assets/${asset.filename}" alt="" />`
+    context.gaps.push(`${node.name}: a vector that would not export — draw it by hand`)
     return `${pad}<span className={${className}} />`
   }
 

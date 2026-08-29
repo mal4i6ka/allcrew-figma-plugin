@@ -43,6 +43,13 @@ export interface EmitReactOptions {
    * at all, silently, for every animated node on the screen.
    */
   motionByNodeId?: ReadonlyMap<string, MotionSnapshot>
+  /**
+   * Each vector's exported SVG, by node id.
+   *
+   * Exported by the caller for the same reason the timelines are: it needs the live node, and a
+   * target that reached for one would be a target that only runs inside the plugin.
+   */
+  assetsByNodeId?: ReadonlyMap<string, { filename: string; svg: string }>
 }
 
 /** A component as the screens use it: its markup, and every property value they ask for. */
@@ -66,9 +73,13 @@ export async function emitReact(
 
   for (const root of roots) collectComponents(root, components)
 
+  // The assets themselves, once, under a path a bundler serves as-is.
+  for (const [, asset] of options.assetsByNodeId ?? []) files[`public/assets/${asset.filename}`] = asset.svg
+
   for (const root of roots) {
     const name = componentName(options.name ?? root.name)
     const context = newContext(name.toLowerCase())
+    context.assets = options.assetsByNodeId
     const markup = emitJsx(root, context, 2)
 
     files[`src/screens/${name}.tsx`] = screenFile(name, markup, context)
@@ -92,7 +103,13 @@ export async function emitReact(
   if (Object.values(files).some((one) => one.includes("from '../copy'"))) files['src/copy.tsx'] = COPY_FILE
 
   for (const component of components.values()) {
-    const built = await componentFile(component, sceneNodesById, variableNamesById, options.motionByNodeId ?? new Map())
+    const built = await componentFile(
+      component,
+      sceneNodesById,
+      variableNamesById,
+      options.motionByNodeId ?? new Map(),
+      options.assetsByNodeId
+    )
     files[`src/components/${component.name}.tsx`] = built.tsx
     if (built.css.trim() !== '') files[`src/components/${component.name}.module.css`] = built.css
     gaps.push(...built.gaps)
@@ -203,12 +220,14 @@ async function componentFile(
   component: CollectedComponent,
   sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
   variableNamesById: ReadonlyMap<string, string>,
-  motionByNodeId: ReadonlyMap<string, MotionSnapshot>
+  motionByNodeId: ReadonlyMap<string, MotionSnapshot>,
+  assetsByNodeId: ReadonlyMap<string, { filename: string; svg: string }> | undefined
 ): Promise<{ tsx: string; css: string; gaps: string[] }> {
   const context: JsxContext = {
     ...newContext(component.name.toLowerCase()),
     insideComponent: true,
     rootId: component.body?.id,
+    assets: assetsByNodeId,
   }
   const body = component.body
     ? emitJsx({ ...(component.body as IrNode), type: 'container' } as IrNode, context, 2)

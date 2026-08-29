@@ -27550,7 +27550,7 @@ ${scripts}`, "");
     return found.filter(([layer]) => !seen.has(layer) && seen.add(layer));
   }
   function emitJsx(node, context, depth = 1) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f;
     const pad2 = INDENT.repeat(depth);
     const own = `styles[${JSON.stringify(toClassName(node.id))}]`;
     const className = node.id === context.rootId ? `[${own}, className].filter(Boolean).join(' ')` : own;
@@ -27594,10 +27594,12 @@ ${scripts}`, "");
     if (node.type === "vector") {
       const svg = node.inlineSvg;
       if (svg) return `${pad2}<span className={${className}} dangerouslySetInnerHTML={{ __html: ${JSON.stringify(svg)} }} />`;
-      context.gaps.push(`${node.name}: a vector with no inline SVG \u2014 export it as a file`);
+      const asset = (_e = context.assets) == null ? void 0 : _e.get(node.id);
+      if (asset) return `${pad2}<img className={${className}} src="/assets/${asset.filename}" alt="" />`;
+      context.gaps.push(`${node.name}: a vector that would not export \u2014 draw it by hand`);
       return `${pad2}<span className={${className}} />`;
     }
-    const children = (_e = node.children) != null ? _e : [];
+    const children = (_f = node.children) != null ? _f : [];
     const inner = children.map((child) => emitJsx(child, context, depth + 1)).join("\n");
     const tag = node.navigate ? "a" : "div";
     const href = node.navigate ? ` href={${JSON.stringify(`#${node.navigate.destinationId}`)}}` : "";
@@ -27612,17 +27614,19 @@ ${pad2}</${tag}>`;
 
   // src/targets/react/index.ts
   async function emitReact(roots, sceneNodesById, variableNamesById, options = {}) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const files = {};
     const gaps = [];
     const components = /* @__PURE__ */ new Map();
     for (const root of roots) collectComponents3(root, components);
+    for (const [, asset] of (_a = options.assetsByNodeId) != null ? _a : []) files[`public/assets/${asset.filename}`] = asset.svg;
     for (const root of roots) {
-      const name = componentName2((_a = options.name) != null ? _a : root.name);
+      const name = componentName2((_b = options.name) != null ? _b : root.name);
       const context = newContext(name.toLowerCase());
+      context.assets = options.assetsByNodeId;
       const markup = emitJsx(root, context, 2);
       files[`src/screens/${name}.tsx`] = screenFile(name, markup, context);
-      const motion = await emitMotion([root], sceneNodesById, (_b = options.motionByNodeId) != null ? _b : /* @__PURE__ */ new Map());
+      const motion = await emitMotion([root], sceneNodesById, (_c = options.motionByNodeId) != null ? _c : /* @__PURE__ */ new Map());
       files[`src/screens/${name}.module.css`] = await emitCss([root], sceneNodesById, variableNamesById, { preamble: false }) + (motion.css.trim() === "" ? "" : `
 
 ${motion.css}`);
@@ -27636,7 +27640,13 @@ ${motion.css}`);
     }
     if (Object.values(files).some((one) => one.includes("from '../copy'"))) files["src/copy.tsx"] = COPY_FILE;
     for (const component of components.values()) {
-      const built = await componentFile(component, sceneNodesById, variableNamesById, (_c = options.motionByNodeId) != null ? _c : /* @__PURE__ */ new Map());
+      const built = await componentFile(
+        component,
+        sceneNodesById,
+        variableNamesById,
+        (_d = options.motionByNodeId) != null ? _d : /* @__PURE__ */ new Map(),
+        options.assetsByNodeId
+      );
       files[`src/components/${component.name}.tsx`] = built.tsx;
       if (built.css.trim() !== "") files[`src/components/${component.name}.module.css`] = built.css;
       gaps.push(...built.gaps);
@@ -27700,11 +27710,12 @@ ${motion.css}`);
     }
     for (const child of (_d = node.children) != null ? _d : []) collectComponents3(child, into);
   }
-  async function componentFile(component, sceneNodesById, variableNamesById, motionByNodeId) {
+  async function componentFile(component, sceneNodesById, variableNamesById, motionByNodeId, assetsByNodeId) {
     var _a;
     const context = __spreadProps(__spreadValues({}, newContext(component.name.toLowerCase())), {
       insideComponent: true,
-      rootId: (_a = component.body) == null ? void 0 : _a.id
+      rootId: (_a = component.body) == null ? void 0 : _a.id,
+      assets: assetsByNodeId
     });
     const body = component.body ? emitJsx(__spreadProps(__spreadValues({}, component.body), { type: "container" }), context, 2) : "    <div />";
     const asContainer = component.body ? __spreadProps(__spreadValues({}, component.body), { type: "container" }) : null;
@@ -28648,6 +28659,26 @@ export function useCopy(): (key: string) => string {
   }
   function defaultRoots() {
     return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children;
+  }
+  async function vectorsUnder(nodes) {
+    const wanted = [];
+    const walk2 = (node) => {
+      var _a;
+      if (node.type === "vector" && !node.inlineSvg) wanted.push(node.id);
+      for (const child of (_a = node.children) != null ? _a : []) walk2(child);
+    };
+    for (const node of nodes) walk2(node);
+    const exported = /* @__PURE__ */ new Map();
+    for (const id of wanted) {
+      const node = await figma.getNodeByIdAsync(id).catch(() => null);
+      if (!node || !("exportAsync" in node)) continue;
+      try {
+        const asset = await exportVectorAsset(node, 0);
+        if (asset.kind === "file") exported.set(id, { filename: asset.filename, svg: asset.svg });
+      } catch (e) {
+      }
+    }
+    return exported;
   }
   function motionUnder(roots) {
     const found = /* @__PURE__ */ new Map();
@@ -30051,7 +30082,8 @@ export function useCopy(): (key: string) => string {
           await annotateVectorLeaves(nodes, sceneNodesById);
           const { files, gaps } = await emitReact(nodes, sceneNodesById, variableNamesById, {
             name: msg.name,
-            motionByNodeId: motionUnder(roots)
+            motionByNodeId: motionUnder(roots),
+            assetsByNodeId: await vectorsUnder(nodes)
           });
           postToUi({ type: "REACT_PROJECT", files, gaps, count: Object.keys(files).length });
         } catch (error) {

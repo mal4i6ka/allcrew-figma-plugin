@@ -101,6 +101,7 @@ import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { planProps } from './canvas/props.ts'
 import { emitReact } from './targets/react/index.ts'
 import type { MotionSnapshot } from './targets/django/motion/types.ts'
+import { exportVectorAsset } from './targets/django/assets.ts'
 import {
   applyProps,
   describeAnimation,
@@ -518,6 +519,37 @@ function frameworkLinksFrom(options: ExportOptions, tokensOn: boolean): BaseHtml
 
 function defaultRoots(): readonly SceneNode[] {
   return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children
+}
+
+/**
+ * Every vector the emitter will need as a file, exported.
+ *
+ * Only the ones `annotateVectorLeaves` did not already inline: a small icon belongs in the markup,
+ * and exporting it as well would ship the same drawing twice. A vector that will not export at all
+ * is left out and the emitter says so at the line — an icon quietly missing from a screen is the
+ * failure this target exists to avoid.
+ */
+async function vectorsUnder(nodes: readonly IrNode[]): Promise<Map<string, { filename: string; svg: string }>> {
+  const wanted: string[] = []
+  const walk = (node: IrNode) => {
+    if (node.type === 'vector' && !(node as { inlineSvg?: string }).inlineSvg) wanted.push(node.id)
+    for (const child of (node as { children?: IrNode[] }).children ?? []) walk(child)
+  }
+  for (const node of nodes) walk(node)
+
+  const exported = new Map<string, { filename: string; svg: string }>()
+  for (const id of wanted) {
+    const node = await figma.getNodeByIdAsync(id).catch(() => null)
+    if (!node || !('exportAsync' in node)) continue
+    try {
+      const asset = await exportVectorAsset(node as unknown as Parameters<typeof exportVectorAsset>[0], 0)
+      if (asset.kind === 'file') exported.set(id, { filename: asset.filename, svg: asset.svg })
+    } catch {
+      // Left out on purpose: the emitter's gap names the node, which is more use than an error
+      // about one icon stopping a whole screen from being generated.
+    }
+  }
+  return exported
 }
 
 /** Every node under these roots that carries a timeline, by id — read from the live nodes. */
@@ -2455,6 +2487,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         const { files, gaps } = await emitReact(nodes, sceneNodesById, variableNamesById, {
           name: msg.name,
           motionByNodeId: motionUnder(roots),
+          assetsByNodeId: await vectorsUnder(nodes),
         })
         postToUi({ type: 'REACT_PROJECT', files, gaps, count: Object.keys(files).length })
       } catch (error) {
