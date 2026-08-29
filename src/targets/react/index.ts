@@ -19,7 +19,11 @@
 import type { IrNode } from '../django/ir.ts'
 import { emitCss, toClassName } from '../django/css-emitter.ts'
 import type { DjangoNodeSource } from '../django/css-emitter.ts'
-import { componentName, emitJsx, newContext, propName, type JsxContext } from './jsx.ts'
+import { componentName, emitJsx, newContext, propName, type JsxContext, type PropKind } from './jsx.ts'
+
+/** A Figma property type in the words the props are typed by. */
+const kindOfProp = (type: string | undefined): PropKind =>
+  type === 'BOOLEAN' ? 'boolean' : type === 'VARIANT' ? 'variant' : 'text'
 import { alignVariants, axesOf, pairOrExplain, scopeVariantCss, variantClass, variantKey, variantKeyFromName } from './variants.ts'
 import { emitInteractions } from '../django/interactions.ts'
 import { emitNodeAnimationCss } from '../django/motion/css-emitter.ts'
@@ -40,7 +44,7 @@ export interface ReactOutput {
    * heard of and the whole thing stopped compiling. Passing the declarations along is how the two
    * halves agree.
    */
-  props: Map<string, Set<string>>
+  props: Map<string, ReadonlyMap<string, PropKind>>
 }
 
 export interface EmitReactOptions {
@@ -70,7 +74,7 @@ export interface EmitReactOptions {
    */
   fromLibrary?: ReadonlySet<string>
   /** What those library components declare, so a screen never passes one a prop it has not got. */
-  libraryProps?: ReadonlyMap<string, Set<string>>
+  libraryProps?: ReadonlyMap<string, ReadonlyMap<string, PropKind>>
 }
 
 /** A component as the screens use it: its markup, and every property value they ask for. */
@@ -105,12 +109,18 @@ export async function emitLibrary(
 ): Promise<ReactOutput> {
   const files: Record<string, string> = {}
   const gaps: string[] = []
-  const props = new Map<string, Set<string>>()
+  // Seeded with what the caller already emitted: a library run that follows another one renders
+  // its instances too, and it has to know what those answer to.
+  const props = new Map<string, ReadonlyMap<string, PropKind>>(options.libraryProps ?? [])
 
   for (const [, asset] of options.assetsByNodeId ?? []) files[`public/assets/${asset.filename}`] = asset.svg
 
   for (const root of roots) {
-    const variants = (root as { children?: IrNode[] }).children ?? []
+    // A component set has no definition of its own — its variants do — so the def is what tells
+    // the two apart. Taking the children either way emitted a plain component as its own first
+    // layer: `ListItemInTheMiddleContents` came out as the frame inside it, and everything that
+    // frame did not hold was quietly not there.
+    const variants = (root as { component?: unknown }).component ? [root] : (root as { children?: IrNode[] }).children ?? []
     // A set with one child is a component with one variant; a root with none is not a set at all.
     if (variants.length === 0) continue
     const name = componentName(root.name)
@@ -124,6 +134,19 @@ export async function emitLibrary(
       rawNames: new Map(),
     }
     for (const variant of variants) collected.variants.set(variantKeyFromName(variant.name), variant)
+
+    // And the rest of the interface, which the axes do not carry: the booleans that show a layer
+    // and the texts that fill one. Read off the component itself — Figma's own answer to what
+    // this component takes. Reading only the axes gave `ListItemInTheMiddleContents` a
+    // `subtitle?: string` named after a layer, while every screen was sending it the BOOLEAN of
+    // the same name that hides that layer.
+    for (const definition of (variants[0] as { component?: { properties?: Array<{ name: string; type: string; defaultValue: string | boolean }> } }).component?.properties ?? []) {
+      if (definition.type === 'VARIANT' || definition.type === 'INSTANCE_SWAP') continue
+      const prop = propName(definition.name)
+      collected.values.set(prop, new Set([String(definition.defaultValue)]))
+      collected.types.set(prop, definition.type)
+      collected.rawNames.set(prop, definition.name)
+    }
 
     // The props come from the axes Figma named the variants by, which is the whole truth about
     // this component rather than the part one screen happened to use.
@@ -139,7 +162,8 @@ export async function emitLibrary(
       sceneNodesById,
       variableNamesById,
       options.motionByNodeId ?? new Map(),
-      options.assetsByNodeId
+      options.assetsByNodeId,
+      props
     )
     files[`src/components/${name}.tsx`] = built.tsx
     if (built.css.trim() !== '') files[`src/components/${name}.module.css`] = built.css
@@ -148,7 +172,10 @@ export async function emitLibrary(
   }
 
   if (Object.values(files).some((one) => one.includes("from '../copy'"))) files['src/copy.tsx'] = COPY_FILE
-  return { files, gaps, props }
+  Object.assign(files, projectFiles(null))
+  // The same sentence once. A component set says a thing per variant, and a 144-variant button
+  // said one dropped prop 144 times — a report nobody reads, and megabytes of it to serialize.
+  return { files, gaps: [...new Set(gaps)], props }
 }
 
 /**
@@ -162,7 +189,7 @@ export async function emitLibrary(
  * Button that the library right beside it had just written — and a gap that is not true costs the
  * whole list its credit.
  */
-export function missingImports(files: Record<string, string>): string[] {
+export function missingImports(files: Record<string, string>, remote: ReadonlySet<string> = new Set()): string[] {
   const emitted = new Set(
     Object.keys(files)
       .filter((path) => path.startsWith('src/components/') && path.endsWith('.tsx'))
@@ -178,8 +205,14 @@ export function missingImports(files: Record<string, string>): string[] {
       missing.set(name, from)
     }
   }
-  return [...missing].map(
-    ([name, from]) => `${name} is used by ${[...from].join(', ')} and is not in this export — emit the page it lives on`
+  return [...missing].map(([name, from]) =>
+    remote.has(name)
+      ? // Not a page anyone can name: it is in the library FILE, and no export of this one will
+        // ever contain it. Telling a developer to add a page they cannot find is worse than
+        // telling them nothing.
+        `${name} is used by ${[...from].join(', ')} and comes from the design-system library — ` +
+        `import it from your component package, or run this export against that file`
+      : `${name} is used by ${[...from].join(', ')} and is not in this export — emit the page it lives on`
   )
 }
 
@@ -191,7 +224,7 @@ export async function emitReact(
 ): Promise<ReactOutput> {
   const files: Record<string, string> = {}
   const gaps: string[] = []
-  const props = new Map<string, Set<string>>(options.libraryProps ?? [])
+  const props = new Map<string, ReadonlyMap<string, PropKind>>(options.libraryProps ?? [])
   const components = new Map<string, CollectedComponent>()
 
   for (const root of roots) collectComponents(root, components)
@@ -199,11 +232,16 @@ export async function emitReact(
   // The assets themselves, once, under a path a bundler serves as-is.
   for (const [, asset] of options.assetsByNodeId ?? []) files[`public/assets/${asset.filename}`] = asset.svg
 
+  let firstScreen: string | null = null
   for (const root of roots) {
     const name = componentName(options.name ?? root.name)
+    firstScreen ??= name
     const context = newContext(name.toLowerCase())
     context.assets = options.assetsByNodeId
     context.declares = props
+    // The stylesheet first: the markup asks it which classes carry the typography.
+    const css = await emitCss([root], sceneNodesById, variableNamesById, { preamble: false })
+    context.segments = segmentsIn(css)
     const markup = emitJsx(root, context, 2)
 
     files[`src/screens/${name}.tsx`] = screenFile(name, markup, context)
@@ -211,9 +249,7 @@ export async function emitReact(
     // class names, so a global `motion.css` naming `.n15607-95548` would match nothing at all —
     // the rule and the element have to be scoped together or the animation silently never runs.
     const motion = await emitMotion([root], sceneNodesById, options.motionByNodeId ?? new Map())
-    files[`src/screens/${name}.module.css`] =
-      (await emitCss([root], sceneNodesById, variableNamesById, { preamble: false })) +
-      (motion.css.trim() === '' ? '' : `\n\n${motion.css}`)
+    files[`src/screens/${name}.module.css`] = css + (motion.css.trim() === '' ? '' : `\n\n${motion.css}`)
     gaps.push(...motion.gaps)
     if (Object.keys(context.copy).length > 0) {
       files[`src/locales/${name.toLowerCase()}.json`] = `${JSON.stringify(context.copy, null, 2)}\n`
@@ -221,6 +257,8 @@ export async function emitReact(
     if (context.props.size > 0) files[`src/screens/${name}.mock.ts`] = mockFile(name, context)
     gaps.push(...context.gaps)
   }
+
+  Object.assign(files, projectFiles(firstScreen))
 
   // The screens import it, so it is emitted: a scaffold that does not compile because the
   // generator referred to a file it never wrote is a scaffold nobody runs.
@@ -233,7 +271,8 @@ export async function emitReact(
       sceneNodesById,
       variableNamesById,
       options.motionByNodeId ?? new Map(),
-      options.assetsByNodeId
+      options.assetsByNodeId,
+      props
     )
     files[`src/components/${component.name}.tsx`] = built.tsx
     if (built.css.trim() !== '') files[`src/components/${component.name}.module.css`] = built.css
@@ -241,7 +280,9 @@ export async function emitReact(
     props.set(component.name, built.props)
   }
 
-  return { files, gaps, props }
+  // The same sentence once. A component set says a thing per variant, and a 144-variant button
+  // said one dropped prop 144 times — a report nobody reads, and megabytes of it to serialize.
+  return { files, gaps: [...new Set(gaps)], props }
 }
 
 /* ----------------------------------------------------------------------- motion */
@@ -350,13 +391,17 @@ async function componentFile(
   sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
   variableNamesById: ReadonlyMap<string, string>,
   motionByNodeId: ReadonlyMap<string, MotionSnapshot>,
-  assetsByNodeId: ReadonlyMap<string, { filename: string; svg: string }> | undefined
-): Promise<{ tsx: string; css: string; gaps: string[]; props: Set<string> }> {
+  assetsByNodeId: ReadonlyMap<string, { filename: string; svg: string }> | undefined,
+  /** What every component known so far declares. A component body renders instances too, and
+   * handing one a prop it never declared fails to compile exactly the way a screen's would. */
+  declares: ReadonlyMap<string, ReadonlyMap<string, PropKind>> | undefined
+): Promise<{ tsx: string; css: string; gaps: string[]; props: Map<string, PropKind> }> {
   const context: JsxContext = {
     ...newContext(component.name.toLowerCase()),
     insideComponent: true,
     rootId: component.body?.id,
     assets: assetsByNodeId,
+    declares,
   }
   // Every variant laid over every other: the markup is their union, and a layer only some of them
   // hold is drawn under a condition. Taking the first variant's layers alone is what made a
@@ -402,6 +447,12 @@ async function componentFile(
   // The markup is emitted after the variants are known: its root carries the variant class, and
   // asking for that class before working out whether there is one would emit a reference to
   // nothing.
+  // What this component answers to, before a word of its body is written: the text branch asks
+  // this to know whether `subtitle` is already a boolean's name and must step aside.
+  const own = new Map<string, PropKind>()
+  for (const prop of component.values.keys()) own.set(prop, kindOfProp(component.types.get(prop)))
+  context.own = own
+  context.segments = segmentsIn(baseCss)
   context.hasVariants = variantClasses.length > 0
   context.membership = laid?.membership
   context.allVariants = laid ? new Set(component.variants.keys()) : undefined
@@ -471,13 +522,16 @@ ${body}
   )
 }
 `
-  const declared = new Set([...component.values.keys(), ...context.props.keys()])
+  const declared = new Map<string, PropKind>()
+  for (const prop of component.values.keys()) declared.set(prop, kindOfProp(component.types.get(prop)))
+  for (const prop of context.props.keys()) if (!declared.has(prop)) declared.set(prop, 'text')
   return { tsx, css, gaps: [...context.gaps, ...variantGaps], props: declared }
 }
 
 /* ----------------------------------------------------------------------- files */
 
 function screenFile(name: string, markup: string, context: JsxContext): string {
+  const locale = `../locales/${name.toLowerCase()}.json`
   const imports = [...context.used].map((one) => `import { ${one} } from '../components/${one}'`).join('\n')
   const props = [...context.props.keys()]
   const signature = props.length > 0 ? `{ ${props.join(', ')} }: ${name}Props` : ''
@@ -488,9 +542,13 @@ function screenFile(name: string, markup: string, context: JsxContext): string {
 
   return `${header(name)}
 import styles from './${name}.module.css'
-${imports}${imports ? '\n' : ''}${Object.keys(context.copy).length > 0 ? "import { useCopy } from '../copy'\n" : ''}
+${imports}${imports ? '\n' : ''}${
+    Object.keys(context.copy).length > 0
+      ? `import { useCopy } from '../copy'\nimport strings from '${locale}'\n`
+      : ''
+  }
 ${declaration}export function ${name}(${signature}) {
-${Object.keys(context.copy).length > 0 ? '  const t = useCopy()\n' : ''}  return (
+${Object.keys(context.copy).length > 0 ? '  const t = useCopy(strings)\n' : ''}  return (
 ${markup}
   )
 }
@@ -525,13 +583,101 @@ const CopyContext = createContext<Copy>({})
 
 export const CopyProvider = CopyContext.Provider
 
-export function useCopy(): (key: string) => string {
+export function useCopy(fallback: Copy = {}): (key: string) => string {
   const copy = useContext(CopyContext)
+  // The screen's own locale file when no provider is mounted. Without it a fresh clone rendered
+  // \`payment.к_оплате\` where the design says "К оплате" — every string on the screen a key,
+  // which reads as broken rather than as untranslated.
   // The key itself when nothing answers to it: a missing translation should be findable on the
   // screen, not an empty box.
-  return (key: string) => copy[key] ?? key
+  return (key: string) => copy[key] ?? fallback[key] ?? key
 }
 `
+
+/**
+ * The repository around the screens: what turns a folder of components into something a developer
+ * clones and runs.
+ *
+ * The first export shipped 98 files that no tool could open — no package.json, no tsconfig, no
+ * entry point. It type-checked only because the person running it wrote those three by hand.
+ */
+function projectFiles(screen: string | null): Record<string, string> {
+  const files: Record<string, string> = {
+    'package.json': `${JSON.stringify(
+      {
+        name: 'figma-export',
+        private: true,
+        type: 'module',
+        scripts: {
+          dev: 'vite',
+          build: 'tsc --noEmit && vite build',
+          preview: 'vite preview',
+          typecheck: 'tsc --noEmit',
+        },
+        dependencies: { react: '^18.3.1', 'react-dom': '^18.3.1' },
+        devDependencies: {
+          '@types/react': '^18.3.12',
+          '@types/react-dom': '^18.3.1',
+          '@vitejs/plugin-react': '^4.3.3',
+          typescript: '^5.6.3',
+          vite: '^5.4.10',
+        },
+      },
+      null,
+      2
+    )}\n`,
+    'tsconfig.json': `${JSON.stringify(
+      {
+        compilerOptions: {
+          target: 'ES2020',
+          lib: ['ES2020', 'DOM', 'DOM.Iterable'],
+          jsx: 'react-jsx',
+          module: 'ESNext',
+          moduleResolution: 'bundler',
+          resolveJsonModule: true,
+          strict: true,
+          noEmit: true,
+          skipLibCheck: true,
+        },
+        include: ['src'],
+      },
+      null,
+      2
+    )}\n`,
+    'vite.config.ts': `import react from '@vitejs/plugin-react'\nimport { defineConfig } from 'vite'\n\nexport default defineConfig({ plugins: [react()] })\n`,
+    '.gitignore': 'node_modules\ndist\n',
+    // Figma class names are node ids, so the modules cannot be typed field by field; this is what
+    // makes `styles["n15595-92556"]` a string rather than an error.
+    'src/css-modules.d.ts': `declare module '*.module.css' {\n  const classes: Record<string, string>\n  export default classes\n}\n`,
+  }
+  if (screen) {
+    files['index.html'] =
+      `<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="utf-8" />\n` +
+      `    <meta name="viewport" content="width=device-width, initial-scale=1" />\n` +
+      `    <title>${screen}</title>\n  </head>\n  <body>\n    <div id="root"></div>\n` +
+      `    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>\n`
+    files['src/main.tsx'] =
+      `import { StrictMode } from 'react'\nimport { createRoot } from 'react-dom/client'\n` +
+      `import { ${screen} } from './screens/${screen}'\n\n` +
+      `createRoot(document.getElementById('root')!).render(\n  <StrictMode>\n    <${screen} />\n  </StrictMode>\n)\n`
+  }
+  return files
+}
+
+/**
+ * Which classes have typography rules, and how many runs each text holds.
+ *
+ * Read off the stylesheet the CSS emitter just produced rather than asked of Figma again: the two
+ * cannot then disagree about which class the markup should wear.
+ */
+function segmentsIn(css: string): Map<string, number> {
+  const found = new Map<string, number>()
+  for (const match of css.matchAll(/\.([A-Za-z0-9_-]+)--segment-(\d+)/g)) {
+    const [, base, index] = match
+    found.set(base, Math.max(found.get(base) ?? 0, Number(index) + 1))
+  }
+  return found
+}
 
 const header = (name: string): string =>
   `/* Generated from Figma — ${name}. Regenerating replaces this file; edits outside it survive. */`

@@ -9,7 +9,7 @@
  * original code.js pure functions. The Figma glue is guarded by `typeof figma`.
  */
 
-import { readAllVariables } from './variables'
+import { readAllVariables, readLocalVariables } from './variables'
 import { emitMotionTokensJs } from './targets/django/tokens'
 import { emitTokenArtifacts, tokenEmitOptionsFrom } from './tokens/index'
 import { emitBootstrapArtifacts } from './targets/django/bootstrap/map'
@@ -100,6 +100,7 @@ import {
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { planProps } from './canvas/props.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
+import { componentName as reactComponentName } from './targets/react/jsx.ts'
 import type { MotionSnapshot } from './targets/django/motion/types.ts'
 import { exportVectorAsset } from './targets/django/assets.ts'
 import {
@@ -243,7 +244,16 @@ type PluginMessage =
   | { type: 'MEASURE_LIST'; nodes?: unknown }
   | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'NODE_ROUNDTRIP'; nodes: unknown; depth?: number; keep?: boolean; ignore?: unknown }
-  | { type: 'EMIT_REACT'; scope?: ExportScope; name?: string; pageId?: string; pages?: unknown; limit?: number }
+  | {
+      type: 'EMIT_REACT'
+      scope?: ExportScope
+      name?: string
+      pageId?: string
+      pages?: unknown
+      components?: unknown
+      libraryComponents?: boolean
+      limit?: number
+    }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
   | { type: 'MODULE_INSPECT'; file: unknown }
@@ -520,6 +530,107 @@ function frameworkLinksFrom(options: ExportOptions, tokensOn: boolean): BaseHtml
 function defaultRoots(): readonly SceneNode[] {
   return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children
 }
+
+/**
+ * The components under these roots that live in another FILE, by the name the emitter gives them.
+ *
+ * A library component has no page in this document and never will: four of the six the payment
+ * screen was missing turned out to be that, and the gap was telling a developer to add a page
+ * they could not have found.
+ */
+/**
+ * Every variable this file can see, and the local ones when the library service will not answer.
+ *
+ * `readAllVariables` asks Figma's team-library service, which is a network call: when it fell over
+ * for an afternoon, an export that needed nothing but the open file failed outright with "check
+ * your internet connection". The names are a courtesy — they turn `#101010` into
+ * `var(--content-base, #101010)` — and losing them is worth a sentence in the report, not the
+ * whole render.
+ */
+async function variableNamesForExport(): Promise<{ names: Map<string, string>; gaps: string[] }> {
+  try {
+    const snapshot = await readAllVariables()
+    return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), gaps: [] }
+  } catch (error) {
+    const local = await readLocalVariables()
+    return {
+      names: new Map(local.variables.map((one) => [one.id, one.name])),
+      gaps: [
+        'the library variables could not be read (' +
+          String((error as Error)?.message || error) +
+          ') — anything bound to a library token is written as the literal value it resolves to',
+      ],
+    }
+  }
+}
+
+async function remoteComponents(roots: readonly SceneNode[]): Promise<Set<string>> {
+  const remote = new Set<string>()
+  const walk = async (node: SceneNode): Promise<void> => {
+    if (node.type === 'INSTANCE') {
+      const main = await (node as InstanceNode).getMainComponentAsync().catch(() => null)
+      if (main?.remote) {
+        const owner = main.parent?.type === 'COMPONENT_SET' ? main.parent : main
+        remote.add(reactComponentName(owner.name))
+      }
+    }
+    if ('children' in node) for (const child of (node as SceneNode & ChildrenMixin).children) await walk(child)
+  }
+  for (const root of roots) await walk(root)
+  return remote
+}
+
+/**
+ * The masters behind the library instances a screen holds, when Figma will hand them over.
+ *
+ * `remoteComponents` was the honest answer to a question nobody could act on: four components of
+ * the payment screen live in the design-system FILE, so no page of this one could supply them and
+ * the export shipped four imports pointing at nothing. But a remote master is not unreadable —
+ * Figma resolves it, children and variants and all — so it can be emitted like any other, and the
+ * scaffold compiles and runs instead of almost running.
+ *
+ * A master that will not open is not an error here: it goes back to being a named gap.
+ */
+interface LibraryMaster {
+  owner: SceneNode
+  /** The variants of it this design actually instantiates, by node id. */
+  used: Map<string, SceneNode>
+}
+
+async function readableMasters(roots: readonly SceneNode[]): Promise<LibraryMaster[]> {
+  const found = new Map<string, LibraryMaster>()
+  const walk = async (node: SceneNode): Promise<void> => {
+    if (node.type === 'INSTANCE') {
+      const main = await (node as InstanceNode).getMainComponentAsync().catch(() => null)
+      if (main?.remote) {
+        const owner = (main.parent?.type === 'COMPONENT_SET' ? main.parent : main) as SceneNode
+        try {
+          // The probe IS the read: touching the children is what a master that will not open
+          // refuses, and refusing here costs one gap rather than the whole export.
+          if ('children' in owner) void (owner as SceneNode & ChildrenMixin).children.length
+          const held = found.get(owner.id) ?? { owner, used: new Map<string, SceneNode>() }
+          held.used.set(main.id, main as unknown as SceneNode)
+          found.set(owner.id, held)
+        } catch {
+          /* left to remoteComponents, which words it as a gap */
+        }
+      }
+    }
+    if ('children' in node) for (const child of (node as SceneNode & ChildrenMixin).children) await walk(child)
+  }
+  for (const root of roots) await walk(root)
+  return [...found.values()]
+}
+
+/**
+ * A set big enough that emitting all of it is not what anybody meant.
+ *
+ * The payment screen holds a card, the card holds a country flag, and the flag's set is every
+ * country in the world: one screen came back as 350 files, nearly all of them flags. Above this
+ * many variants a set reached THROUGH something else is emitted at the size it is used, and the
+ * trim is named — the same narrowing the screen path has always done, said out loud.
+ */
+const WHOLE_SET_UP_TO = 12
 
 /**
  * The components a page holds, wherever on it they sit.
@@ -2486,6 +2597,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param name: what the screen component is called; without it, the frame's own name
       // @agent param pageId: render a whole PAGE OF COMPONENTS as the library instead of a screen — every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live
       // @agent param limit: how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident
+      // @agent param components: component or component-set ids that come out alongside the screen — how you take the two icons a screen needs without emitting a page of four hundred
+      // @agent param libraryComponents: whether the design-system components the screen instantiates are read out of the library file and emitted too — true by default, false to leave them as imports for a package you already have in code
       // @agent param pages: page ids whose components come out ALONGSIDE the screen — the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold
       // @agent cost: reads the scope and every variable, like the Django emitter — narrow the scope to a frame
       try {
@@ -2509,23 +2622,59 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           roots = rootsForScope(msg.scope)
         }
 
-        const [irNodes, sceneNodesById, snapshot] = await Promise.all([
+        const [irNodes, sceneNodesById, tokens] = await Promise.all([
           Promise.all(roots.map((root) => serializeNode(root))),
           indexSceneNodes(roots),
-          readAllVariables(),
+          variableNamesForExport(),
         ])
         const nodes = irNodes.filter((node): node is IrNode => node !== null)
         if (nodes.length === 0) {
           refuse('EMIT_REACT', 'nothing in that scope to render')
           break
         }
-        const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
+        const variableNamesById = tokens.names
         await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
         // The library the screen leans on, emitted first: its components are the real ones, with
         // every variant and every state, and the screen then imports them rather than building a
         // lookalike out of the one instance it happened to hold.
         const alongside = Array.isArray(msg.pages) ? msg.pages.map((one) => String(one)) : []
         let library: ReactOutput = { files: {}, gaps: [], props: new Map() }
+        const alongsideRoots: SceneNode[] = []
+
+        // Named components, without their page. The icons page holds four hundred of them and a
+        // screen needs two; emitting the page to reach the two took longer than the channel waits.
+        const named = Array.isArray(msg.components) ? msg.components.map((one) => String(one)) : []
+        if (named.length > 0) {
+          const picked: SceneNode[] = []
+          for (const id of named) {
+            const node = await figma.getNodeByIdAsync(id)
+            if (!node || (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET')) {
+              refuse('EMIT_REACT', `${id} is not a component or a component set`)
+              picked.length = 0
+              break
+            }
+            // A variant on its own is not a component: its set is what a screen instantiates.
+            picked.push((node.parent?.type === 'COMPONENT_SET' ? node.parent : node) as SceneNode)
+          }
+          if (picked.length > 0) {
+            const built = (await Promise.all(picked.map((one) => serializeNode(one)))).filter(
+              (node): node is IrNode => node !== null
+            )
+            const index = await indexSceneNodes(picked)
+            await annotateVectorLeaves(built, index as unknown as ReadonlyMap<string, AssetSourceNode>)
+            const one = await emitLibrary(built, index, variableNamesById, {
+              motionByNodeId: motionUnder(picked),
+              assetsByNodeId: await vectorsUnder(built),
+            })
+            library = {
+              files: { ...library.files, ...one.files },
+              gaps: [...library.gaps, ...one.gaps],
+              props: new Map([...library.props, ...one.props]),
+            }
+            alongsideRoots.push(...picked)
+          }
+        }
+
         for (const pageId of alongside) {
           const page = await figma.getNodeByIdAsync(pageId)
           if (!page || page.type !== 'PAGE') {
@@ -2549,6 +2698,93 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             gaps: [...library.gaps, ...one.gaps],
             props: new Map([...library.props, ...one.props]),
           }
+          alongsideRoots.push(...sets)
+        }
+
+        // The design-system components the screen actually instantiates, read out of the library
+        // file itself. Off by asking for it: a screen leaning on a 144-variant set pays for all
+        // 144, and a developer who has that package in code would rather keep the import.
+        if (msg.libraryComponents !== false) {
+          // A library component holds library components: the payment tile came back needing
+          // four, and those four needed four more. Discovery goes round until nothing new turns
+          // up, and the emission then runs deepest-first — a component has to know what its own
+          // children answer to before it can be told what to pass them.
+          const seen = new Set<string>()
+          const layers: LibraryMaster[][] = []
+          let frontier: SceneNode[] = [...roots, ...alongsideRoots]
+          for (let round = 0; round < 6 && frontier.length > 0; round++) {
+            const found = (await readableMasters(frontier)).filter(
+              (one) =>
+                !seen.has(one.owner.id) &&
+                !(`src/components/${reactComponentName(one.owner.name)}.tsx` in library.files)
+            )
+            for (const one of found) seen.add(one.owner.id)
+            if (found.length === 0) break
+            layers.push(found)
+            frontier = found.map((one) => one.owner)
+          }
+          const masters = layers.reverse().flat()
+          if (masters.length > 0) {
+            const built: IrNode[] = []
+            const indexed: SceneNode[] = []
+            const trims: string[] = []
+            for (const master of masters) {
+              const kids = 'children' in master.owner ? (master.owner as SceneNode & ChildrenMixin).children : []
+              const whole =
+                master.owner.type !== 'COMPONENT_SET' ||
+                kids.length <= WHOLE_SET_UP_TO ||
+                master.used.size >= kids.length
+              if (whole) {
+                const one = await serializeNode(master.owner)
+                if (one) built.push(one)
+                indexed.push(master.owner)
+                continue
+              }
+              // The set at the size it is used: the same set of variants, minus the ones nothing
+              // in this design ever asked for.
+              const parts = (await Promise.all([...master.used.values()].map((one) => serializeNode(one)))).filter(
+                (node): node is IrNode => node !== null
+              )
+              if (parts.length === 0) continue
+              built.push({
+                ...(parts[0] as IrNode),
+                id: master.owner.id,
+                name: master.owner.name,
+                type: 'container',
+                // A set, not a component: the emitter tells them apart by this, and inheriting a
+                // variant's definition here would make the set look like one of its own variants.
+                component: null,
+                children: parts,
+              } as IrNode)
+              indexed.push(...master.used.values())
+              trims.push(
+                `${reactComponentName(master.owner.name)} has ${kids.length} variants and this design uses ` +
+                  `${master.used.size} — only those were emitted; export that set on its own for the rest`
+              )
+            }
+            const index = await indexSceneNodes(indexed)
+            await annotateVectorLeaves(built, index as unknown as ReadonlyMap<string, AssetSourceNode>)
+            const one = await emitLibrary(built, index, variableNamesById, {
+              motionByNodeId: motionUnder(indexed),
+              assetsByNodeId: await vectorsUnder(built),
+              libraryProps: library.props,
+            })
+            library = {
+              files: { ...library.files, ...one.files },
+              gaps: [
+                ...library.gaps,
+                ...one.gaps,
+                ...trims,
+                ...masters.map(
+                  (master) =>
+                    `${reactComponentName(master.owner.name)} was read out of the design-system library rather than` +
+                    ' this file — swap the import for your own package when you have one'
+                ),
+              ],
+              props: new Map([...library.props, ...one.props]),
+            }
+            alongsideRoots.push(...indexed)
+          }
         }
 
         const options = {
@@ -2569,7 +2805,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         const files = { ...library.files, ...emitted.files }
         // Once, over everything: a component the screen imports may well have come from the
         // library, and each emitter asking on its own could only ever see half the answer.
-        const gaps = [...library.gaps, ...emitted.gaps, ...missingImports(files)]
+        // Everything that was emitted, not only the screen: a component from a page carries
+        // instances of its own, and one of them was a library component the gap then told a
+        // developer to go and find a page for.
+        const gaps = [
+          ...new Set([
+            ...tokens.gaps,
+            ...library.gaps,
+            ...emitted.gaps,
+            ...missingImports(files, await remoteComponents([...roots, ...alongsideRoots])),
+          ]),
+        ]
         postToUi({ type: 'REACT_PROJECT', files, gaps, count: Object.keys(files).length })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'EMIT_REACT', message: String((error as Error)?.message || error) })

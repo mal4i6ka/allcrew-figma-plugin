@@ -22,6 +22,15 @@
 import type { IrNode } from '../django/ir.ts'
 import { toClassName } from '../django/css-emitter.ts'
 
+/**
+ * What a prop IS, which is not the same question as what it is called.
+ *
+ * A component can hold a text layer named `subtitle` AND a boolean property named `Subtitle` that
+ * hides it — one name, two meanings. The screen passed `subtitle={false}` to a component that had
+ * declared `subtitle?: string`, and the export stopped compiling on a collision nobody designed.
+ */
+export type PropKind = 'text' | 'boolean' | 'variant'
+
 export interface JsxContext {
   /**
    * True while emitting a component's own body.
@@ -40,6 +49,16 @@ export interface JsxContext {
    * a component that typed perfectly and laid out wrongly.
    */
   rootId?: string
+  /** The props of the component being emitted right now, by what each of them is. */
+  own?: ReadonlyMap<string, PropKind>
+  /**
+   * Base class name → how many styled runs its text has, read off the stylesheet.
+   *
+   * Every font, size, weight and colour a text has lives in a `--segment-N` rule, and the markup
+   * that did not wear that class rendered the whole screen in the browser's default 16px. The
+   * stylesheet is emitted before the markup, so it can simply be asked.
+   */
+  segments?: ReadonlyMap<string, number>
   /** Interface copy, keyed by the key that replaces it: `{ 'pay.button': 'Оплатить' }`. */
   copy: Record<string, string>
   /** Props this subtree needs, with the value the mock should carry. */
@@ -68,7 +87,7 @@ export interface JsxContext {
    * names; where they were not, the screen passed a prop that did not exist and the export stopped
    * compiling. Only what the component declares is passed.
    */
-  declares?: ReadonlyMap<string, Set<string>>
+  declares?: ReadonlyMap<string, ReadonlyMap<string, PropKind>>
   /** Each vector's exported file, by node id — see `EmitReactOptions.assetsByNodeId`. */
   assets?: ReadonlyMap<string, { filename: string; svg: string }>
   /** A prefix for copy keys, so two screens do not collide on `title`. */
@@ -141,11 +160,39 @@ function textsInside(node: IrNode): Array<[string, string]> {
 export function emitJsx(node: IrNode, context: JsxContext, depth = 1): string {
   const drawn = emitElement(node, context, depth)
   const only = optionalIn(node, context)
-  if (!only) return drawn
+  const shown = shownBy(node, context)
+  if (!only && !shown) return drawn
   // The condition goes around the whole element, indented where the element was, so the markup
   // reads as the design does: this layer, when the variant has it.
   const pad = INDENT.repeat(depth)
-  return `${pad}{HAS[${JSON.stringify(only)}]?.has(key) && (\n${drawn}\n${pad})}`
+  const tests = [
+    only ? `HAS[${JSON.stringify(only)}]?.has(key)` : null,
+    // `!== false` rather than the prop itself: a boolean the caller did not mention keeps the
+    // default the component was drawn with, which is what Figma shows when nobody touches it.
+    shown ? `${shown} !== false` : null,
+  ].filter(Boolean)
+  return `${pad}{${tests.join(' && ')} && (\n${drawn}\n${pad})}`
+}
+
+/**
+ * The boolean prop that decides whether this layer is drawn at all.
+ *
+ * Figma binds a layer's `visible` to a BOOLEAN property, and the component that declared the
+ * property and drew the layer regardless was the worst of both: the prop existed, the screen set
+ * it, and nothing happened.
+ */
+function shownBy(node: IrNode, context: JsxContext): string | null {
+  if (!context.insideComponent) return null
+  const bound = node.componentPropertyReferences?.visible
+  if (!bound) return null
+  const prop = propName(bound)
+  return context.own?.get(prop) === 'boolean' ? prop : null
+}
+
+/** A text prop's name, moved aside when a boolean or a variant already answers to it. */
+export function textProp(prop: string, known: ReadonlyMap<string, PropKind> | undefined): string {
+  const kind = known?.get(prop)
+  return kind === 'boolean' || kind === 'variant' ? `${prop}Text` : prop
 }
 
 /** The layer's own membership name when it is not in every variant — otherwise nothing. */
@@ -173,7 +220,7 @@ function emitElement(node: IrNode, context: JsxContext, depth: number): string {
     let body: string
     if (bound) {
       // Data: the component says this text is a property, so it is one here too.
-      const prop = propName(bound)
+      const prop = textProp(propName(bound), context.own)
       context.props.set(prop, JSON.stringify(node.characters))
       body = `{${prop}}`
     } else {
@@ -181,7 +228,18 @@ function emitElement(node: IrNode, context: JsxContext, depth: number): string {
       context.copy[key] = node.characters
       body = `{t('${key}')}`
     }
-    return `${pad}<span className={${className}}>${body}</span>`
+    const base = toClassName(node.id)
+    const runs = context.segments?.get(base)
+    if (runs !== undefined && runs > 1) {
+      // One prop, one string, one style: the runs cannot survive being replaced by a value the
+      // screen passes in. Which one was kept is worth saying at the line it happened.
+      context.gaps.push(
+        `${node.name}: ${runs} differently-styled runs in one text — all of it rendered in the first one's style`
+      )
+    }
+    const typography = runs === undefined ? '' : ` + ' ' + styles[${JSON.stringify(`${base}--segment-0`)}]`
+    const worn = typography === '' ? `{${className}}` : `{${className}${typography}}`
+    return `${pad}<span className=${worn}>${body}</span>`
   }
 
   if (node.type === 'instance-ref') {
@@ -192,12 +250,35 @@ function emitElement(node: IrNode, context: JsxContext, depth: number): string {
     // body turns each of its texts into a prop; here is where each instance fills them in.
     const declared = context.declares?.get(name)
     for (const [layer, text] of textsInside(node)) {
-      const prop = propName(layer)
-      if (declared && !declared.has(prop)) continue
+      // The same rename the component made when the name was taken — asked of the same map, so
+      // the two sides cannot drift apart.
+      const prop = textProp(propName(layer), declared)
+      if (declared && declared.get(prop) !== 'text') {
+        // Dropped, and said so: a prop that quietly does not arrive is the screen rendering the
+        // component's default text and nobody being told which line to look at.
+        context.gaps.push(`${node.name}: ${name} takes no ${prop} text — "${text}" stayed in the component`)
+        continue
+      }
       props.push(`${prop}=${JSON.stringify(text)}`)
     }
     for (const [raw, value] of Object.entries(node.componentProperties ?? {})) {
       const prop = propName(raw)
+      // The same gate as the texts: a component built from one variant has the axes THAT variant
+      // has, and an instance carrying `Property 1` against a component that never declared it is
+      // the export failing to compile over a name.
+      const kind = declared?.get(prop)
+      if (declared && value.type !== 'INSTANCE_SWAP') {
+        // Not just "does it know the name" but "does it mean the same thing by it": a boolean sent
+        // where a string was declared compiles no better than a name that was never declared.
+        const wanted = value.type === 'BOOLEAN' ? 'boolean' : value.type === 'VARIANT' ? 'variant' : 'text'
+        if (kind !== wanted) {
+          context.gaps.push(
+            `${node.name}: ${name} was set ${propName(raw)}=${String(value.value)} in Figma and declares ` +
+              `${kind ? `a ${kind} of that name` : 'no such prop'} — the value was not passed`
+          )
+          continue
+        }
+      }
       if (value.type === 'BOOLEAN') props.push(value.value ? prop : `${prop}={false}`)
       else if (value.type === 'INSTANCE_SWAP') {
         // What was swapped in is a node, not a value: React takes children, and saying so beats
