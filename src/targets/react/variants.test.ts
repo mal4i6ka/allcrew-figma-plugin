@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { pairTrees, scopeVariantCss, variantClass, variantKey } from './variants.ts'
+import { pairOrExplain, pairTrees, scopeVariantCss, variantClass, variantKey } from './variants.ts'
 
 const node = (id: string, type: string, children: unknown[] = []) =>
   ({ id, type, name: id, children }) as never
@@ -40,4 +40,19 @@ test('an at-rule passes through rather than being prefixed into nonsense', () =>
   const css = '@media (prefers-reduced-motion: reduce) {\n  .n1-2 { animation: none; }\n}'
   const scoped = scopeVariantCss(css, new Map(), 'v-x')
   assert.equal(scoped.trim(), css)
+})
+
+test('a variant that does not line up says which layer, not just that it did not', () => {
+  const withIcon = node('a', 'container', [node('a1', 'text'), node('a2', 'container')])
+  const withoutIcon = node('b', 'container', [node('b1', 'text')])
+  const { pairs, why } = pairOrExplain(withoutIcon, withIcon)
+  assert.equal(pairs, null)
+  // "built differently" was said 108 times on one button without once naming the icon.
+  assert.match(why!, /holds 1 layer\(s\) in one and 2 in the other/)
+  assert.match(why!, /the extra one is a2/)
+})
+
+test('a layer that changed kind says so by kind', () => {
+  const { why } = pairOrExplain(node('a', 'container', [node('a1', 'text')]), node('b', 'container', [node('b1', 'instance-ref')]))
+  assert.match(why!, /is a text in one and a instance-ref in the other/)
 })

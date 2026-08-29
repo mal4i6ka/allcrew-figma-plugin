@@ -99,7 +99,7 @@ import {
 } from './modules/registry.ts'
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { planProps } from './canvas/props.ts'
-import { emitReact } from './targets/react/index.ts'
+import { emitLibrary, emitReact } from './targets/react/index.ts'
 import type { MotionSnapshot } from './targets/django/motion/types.ts'
 import { exportVectorAsset } from './targets/django/assets.ts'
 import {
@@ -243,7 +243,7 @@ type PluginMessage =
   | { type: 'MEASURE_LIST'; nodes?: unknown }
   | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'NODE_ROUNDTRIP'; nodes: unknown; depth?: number; keep?: boolean; ignore?: unknown }
-  | { type: 'EMIT_REACT'; scope?: ExportScope; name?: string }
+  | { type: 'EMIT_REACT'; scope?: ExportScope; name?: string; pageId?: string; limit?: number }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
   | { type: 'MODULE_INSPECT'; file: unknown }
@@ -2469,9 +2469,32 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent read: render the scope as a React repository — a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale
       // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
       // @agent param name: what the screen component is called; without it, the frame's own name
+      // @agent param pageId: render a whole PAGE OF COMPONENTS as the library instead of a screen — every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live
+      // @agent param limit: how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident
       // @agent cost: reads the scope and every variable, like the Django emitter — narrow the scope to a frame
       try {
-        const roots = rootsForScope(msg.scope)
+        // A page of components is a different shape from a screen, and it is asked for by naming
+        // the page: a library is not something to produce by accident on the way to a screen.
+        let roots: readonly SceneNode[]
+        if (msg.pageId) {
+          const page = await figma.getNodeByIdAsync(msg.pageId)
+          if (!page || page.type !== 'PAGE') {
+            refuse('EMIT_REACT', `no page with id ${msg.pageId}`)
+            break
+          }
+          await (page as PageNode).loadAsync()
+          const sets = (page as PageNode).children.filter(
+            (node) => node.type === 'COMPONENT_SET' || node.type === 'COMPONENT'
+          )
+          roots = typeof msg.limit === 'number' ? sets.slice(0, Math.max(1, msg.limit)) : sets
+          if (roots.length === 0) {
+            refuse('EMIT_REACT', `"${(page as PageNode).name}" holds no components`)
+            break
+          }
+        } else {
+          roots = rootsForScope(msg.scope)
+        }
+
         const [irNodes, sceneNodesById, snapshot] = await Promise.all([
           Promise.all(roots.map((root) => serializeNode(root))),
           indexSceneNodes(roots),
@@ -2484,11 +2507,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
         const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
         await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
-        const { files, gaps } = await emitReact(nodes, sceneNodesById, variableNamesById, {
+        const options = {
           name: msg.name,
           motionByNodeId: motionUnder(roots),
           assetsByNodeId: await vectorsUnder(nodes),
-        })
+        }
+        const { files, gaps } = msg.pageId
+          ? await emitLibrary(nodes, sceneNodesById, variableNamesById, options)
+          : await emitReact(nodes, sceneNodesById, variableNamesById, options)
         postToUi({ type: 'REACT_PROJECT', files, gaps, count: Object.keys(files).length })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'EMIT_REACT', message: String((error as Error)?.message || error) })

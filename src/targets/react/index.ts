@@ -20,7 +20,7 @@ import type { IrNode } from '../django/ir.ts'
 import { emitCss, toClassName } from '../django/css-emitter.ts'
 import type { DjangoNodeSource } from '../django/css-emitter.ts'
 import { componentName, emitJsx, newContext, propName, type JsxContext } from './jsx.ts'
-import { pairTrees, scopeVariantCss, variantClass, variantKey } from './variants.ts'
+import { axesOf, pairOrExplain, scopeVariantCss, variantClass, variantKey, variantKeyFromName } from './variants.ts'
 import { emitInteractions } from '../django/interactions.ts'
 import { emitNodeAnimationCss } from '../django/motion/css-emitter.ts'
 import type { MotionSnapshot } from '../django/motion/types.ts'
@@ -64,6 +64,69 @@ interface CollectedComponent {
   variants: Map<string, IrNode>
   /** prop name → the Figma property name it came from, which is what the variant key is built of. */
   rawNames: Map<string, string>
+}
+
+/**
+ * The design system itself, not a screen that uses it.
+ *
+ * A component page holds variant SETS, and a set's children ARE the variants — there are no
+ * instances to read them off. Everything else is the same machinery: the first variant supplies
+ * the markup, the rest supply the stylesheets that get renamed onto it and scoped to a class.
+ *
+ * This is also how the states that a screen export cannot reach arrive. A pressed state is a
+ * variant, and a variant is in the library, so a library export has it — a screen then references
+ * a component that already knows how to be pressed.
+ */
+export async function emitLibrary(
+  roots: readonly IrNode[],
+  sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
+  variableNamesById: ReadonlyMap<string, string>,
+  options: EmitReactOptions = {}
+): Promise<ReactOutput> {
+  const files: Record<string, string> = {}
+  const gaps: string[] = []
+
+  for (const [, asset] of options.assetsByNodeId ?? []) files[`public/assets/${asset.filename}`] = asset.svg
+
+  for (const root of roots) {
+    const variants = (root as { children?: IrNode[] }).children ?? []
+    // A set with one child is a component with one variant; a root with none is not a set at all.
+    if (variants.length === 0) continue
+    const name = componentName(root.name)
+
+    const collected: CollectedComponent = {
+      name,
+      body: variants[0],
+      values: new Map(),
+      types: new Map(),
+      variants: new Map(),
+      rawNames: new Map(),
+    }
+    for (const variant of variants) collected.variants.set(variantKeyFromName(variant.name), variant)
+
+    // The props come from the axes Figma named the variants by, which is the whole truth about
+    // this component rather than the part one screen happened to use.
+    for (const [axis, values] of axesOf(variants.map((one) => one.name))) {
+      const prop = propName(axis)
+      collected.values.set(prop, values)
+      collected.types.set(prop, 'VARIANT')
+      collected.rawNames.set(prop, axis)
+    }
+
+    const built = await componentFile(
+      collected,
+      sceneNodesById,
+      variableNamesById,
+      options.motionByNodeId ?? new Map(),
+      options.assetsByNodeId
+    )
+    files[`src/components/${name}.tsx`] = built.tsx
+    if (built.css.trim() !== '') files[`src/components/${name}.module.css`] = built.css
+    gaps.push(...built.gaps)
+  }
+
+  if (Object.values(files).some((one) => one.includes("from '../copy'"))) files['src/copy.tsx'] = COPY_FILE
+  return { files, gaps }
 }
 
 export async function emitReact(
@@ -249,13 +312,9 @@ async function componentFile(
   if (component.body) {
     for (const [key, instance] of component.variants) {
       if (instance.id === component.body.id || key === '') continue
-      const pairs = pairTrees(component.body, instance)
+      const { pairs, why } = pairOrExplain(component.body, instance)
       if (!pairs) {
-        variantGaps.push(
-          `${component.name}: the variant ${key} is built differently from ${variantKey(
-            (component.body as { componentProperties?: never }).componentProperties
-          ) || 'the first one'} — this file draws the first one's layers, so that variant needs writing by hand`
-        )
+        variantGaps.push(`${component.name} ${key}: ${why ?? 'built differently'} — this one needs its own markup, not a CSS rule`)
         continue
       }
       const own = await emitCss([{ ...instance, type: 'container' } as IrNode], sceneNodesById, variableNamesById, {
