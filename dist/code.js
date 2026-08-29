@@ -6,6 +6,10 @@
   var __getOwnPropSymbols = Object.getOwnPropertySymbols;
   var __hasOwnProp = Object.prototype.hasOwnProperty;
   var __propIsEnum = Object.prototype.propertyIsEnumerable;
+  var __knownSymbol = (name, symbol) => (symbol = Symbol[name]) ? symbol : /* @__PURE__ */ Symbol.for("Symbol." + name);
+  var __typeError = (msg) => {
+    throw TypeError(msg);
+  };
   var __defNormalProp = (obj2, key, value) => key in obj2 ? __defProp(obj2, key, { enumerable: true, configurable: true, writable: true, value }) : obj2[key] = value;
   var __spreadValues = (a, b) => {
     for (var prop in b || (b = {}))
@@ -31,6 +35,38 @@
           target[prop] = source[prop];
       }
     return target;
+  };
+  var __await = function(promise, isYieldStar) {
+    this[0] = promise;
+    this[1] = isYieldStar;
+  };
+  var __yieldStar = (value) => {
+    var obj2 = value[__knownSymbol("asyncIterator")], isAwait = false, method, it = {};
+    if (obj2 == null) {
+      obj2 = value[__knownSymbol("iterator")]();
+      method = (k) => it[k] = (x) => obj2[k](x);
+    } else {
+      obj2 = obj2.call(value);
+      method = (k) => it[k] = (v) => {
+        if (isAwait) {
+          isAwait = false;
+          if (k === "throw") throw v;
+          return v;
+        }
+        isAwait = true;
+        return {
+          done: false,
+          value: new __await(new Promise((resolve2) => {
+            var x = obj2[k](v);
+            if (!(x instanceof Object)) __typeError("Object expected");
+            resolve2(x);
+          }), 1)
+        };
+      };
+    }
+    return it[__knownSymbol("iterator")] = () => it, method("next"), "throw" in obj2 ? method("throw") : it.throw = (x) => {
+      throw x;
+    }, "return" in obj2 && method("return"), it;
   };
 
   // src/tokens/split-theme.ts
@@ -6676,25 +6712,25 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
   }
   function findScopeNodes(root, scopeKey) {
     const out = [];
-    const walk = (node, isRoot) => {
+    const walk2 = (node, isRoot) => {
       if (!isRoot && node.type === "instance-ref") return;
       if (!isRoot && node.type === "container" && partKeyForName(node.name) === scopeKey) {
         out.push(node);
         return;
       }
-      if ("children" in node) for (const child of node.children) walk(child, false);
+      if ("children" in node) for (const child of node.children) walk2(child, false);
     };
-    walk(root, true);
+    walk2(root, true);
     return out;
   }
   function findAllPartNodes(root, partKey) {
     const out = [];
-    const walk = (node, isRoot) => {
+    const walk2 = (node, isRoot) => {
       if (!isRoot && node.type === "instance-ref") return;
       if (!isRoot && node.type === "container" && partKeyForName(node.name) === partKey) out.push(node);
-      if ("children" in node) for (const child of node.children) walk(child, false);
+      if ("children" in node) for (const child of node.children) walk2(child, false);
     };
-    walk(root, true);
+    walk2(root, true);
     return out;
   }
   function buildCollapseWiring(map, root, spec) {
@@ -6755,7 +6791,7 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
   }
   function findAllInstanceRefs(root, registry, kind) {
     const out = [];
-    const walk = (node) => {
+    const walk2 = (node) => {
       var _a, _b;
       if (node.type === "instance-ref") {
         const main = node.componentId ? registry.nodeByComponentId.get(node.componentId) : void 0;
@@ -6763,9 +6799,9 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
         if (mkind === kind) out.push(node);
         return;
       }
-      if ("children" in node) for (const child of node.children) walk(child);
+      if ("children" in node) for (const child of node.children) walk2(child);
     };
-    for (const child of root.children) walk(child);
+    for (const child of root.children) walk2(child);
     return out;
   }
   function buildItemIdParams(map, root, spec, registry) {
@@ -7131,7 +7167,7 @@ ${indent2}</div>`;
   // src/targets/django/smart-animate/match-layers.ts
   function indexTree(root) {
     const map = /* @__PURE__ */ new Map();
-    const walk = (node, prefix) => {
+    const walk2 = (node, prefix) => {
       var _a, _b;
       const seen = /* @__PURE__ */ new Map();
       for (const child of (_a = node.children) != null ? _a : []) {
@@ -7139,10 +7175,10 @@ ${indent2}</div>`;
         seen.set(child.name, dupIndex + 1);
         const path = `${prefix}${child.name}#${dupIndex}`;
         map.set(path, child);
-        walk(child, `${path}/`);
+        walk2(child, `${path}/`);
       }
     };
-    walk(root, "");
+    walk2(root, "");
     return map;
   }
   function matchLayers(base, target) {
@@ -13955,21 +13991,21 @@ ${scrollGuards}` : project.css;
     const bound = "boundVariables" in node ? node.boundVariables : void 0;
     return Array.isArray(bound == null ? void 0 : bound[property]) ? bound[property] : [];
   };
-  function noteLoose(walk, color) {
+  function noteLoose(walk2, color) {
     const hex = hexOf(color);
     const id = looseSiteId(hex, color.a);
-    const existing = walk.loose.get(id);
+    const existing = walk2.loose.get(id);
     if (existing) existing.count++;
-    else if (walk.loose.size < MAX_LOOSE_COLORS) walk.loose.set(id, { hex, alpha: color.a, rgba: color, count: 1 });
-    else walk.looseDropped++;
-    walk.loosePlaces++;
+    else if (walk2.loose.size < MAX_LOOSE_COLORS) walk2.loose.set(id, { hex, alpha: color.a, rgba: color, count: 1 });
+    else walk2.looseDropped++;
+    walk2.loosePlaces++;
     return id;
   }
   var pairKey = (a, b, text4) => (a < b ? `${a} ${b}` : `${b} ${a}`) + (text4 ? " t" : " n");
   var EMPTY = [];
   async function walkDocument(localIds, depth, progress2) {
     var _a;
-    const walk = {
+    const walk2 = {
       usage: /* @__PURE__ */ new Map(),
       styleUsage: /* @__PURE__ */ new Map(),
       foreign: /* @__PURE__ */ new Set(),
@@ -13981,20 +14017,20 @@ ${scrollGuards}` : project.css;
       instances: 0,
       truncated: false
     };
-    if (depth === "tokens") return walk;
+    if (depth === "tokens") return walk2;
     const noteVariable = (id) => {
       var _a2;
-      walk.usage.set(id, ((_a2 = walk.usage.get(id)) != null ? _a2 : 0) + 1);
-      if (!localIds.has(id)) walk.foreign.add(id);
+      walk2.usage.set(id, ((_a2 = walk2.usage.get(id)) != null ? _a2 : 0) + 1);
+      if (!localIds.has(id)) walk2.foreign.add(id);
     };
     const notePair = (a, b, text4) => {
-      if (walk.neighbours.size >= MAX_ADJACENT_PAIRS) return;
+      if (walk2.neighbours.size >= MAX_ADJACENT_PAIRS) return;
       const key = pairKey(a, b, text4);
-      if (!walk.neighbours.has(key)) walk.neighbours.set(key, { a, b, text: text4 });
+      if (!walk2.neighbours.has(key)) walk2.neighbours.set(key, { a, b, text: text4 });
     };
     const noteStyle = (styleId) => {
       var _a2;
-      if (styleId !== "") walk.styleUsage.set(styleId, ((_a2 = walk.styleUsage.get(styleId)) != null ? _a2 : 0) + 1);
+      if (styleId !== "") walk2.styleUsage.set(styleId, ((_a2 = walk2.styleUsage.get(styleId)) != null ? _a2 : 0) + 1);
     };
     const refsOf = (paints2, nodeLevel, boundOnly) => {
       var _a2, _b;
@@ -14012,10 +14048,10 @@ ${scrollGuards}` : project.css;
         }
         if (boundOnly) continue;
         if (paint.type === "SOLID") {
-          refs.push(noteLoose(walk, __spreadProps(__spreadValues({}, paint.color), { a: (_b = paint.opacity) != null ? _b : 1 })));
+          refs.push(noteLoose(walk2, __spreadProps(__spreadValues({}, paint.color), { a: (_b = paint.opacity) != null ? _b : 1 })));
           continue;
         }
-        if (isGradient(paint)) for (const stop of paint.gradientStops) noteLoose(walk, withAlpha(stop.color));
+        if (isGradient(paint)) for (const stop of paint.gradientStops) noteLoose(walk2, withAlpha(stop.color));
       }
       return refs;
     };
@@ -14028,13 +14064,13 @@ ${scrollGuards}` : project.css;
         const roots = page.children;
         for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], behind: EMPTY });
         while (stack.length > 0) {
-          if (walk.nodes >= MAX_NODES) {
-            walk.truncated = true;
+          if (walk2.nodes >= MAX_NODES) {
+            walk2.truncated = true;
             break;
           }
           const pending = stack.pop();
           const node = pending.node;
-          walk.nodes++;
+          walk2.nodes++;
           const type = node.type;
           const record2 = node;
           const fillStyle = record2.fillStyleId;
@@ -14049,7 +14085,7 @@ ${scrollGuards}` : project.css;
           noteStyle(typeof strokeStyle === "string" ? strokeStyle : "");
           noteStyle(typeof effectStyle === "string" ? effectStyle : "");
           const isInstance = type === "INSTANCE";
-          if (isInstance) walk.instances++;
+          if (isInstance) walk2.instances++;
           const fills = typeof fillStyle === "string" && fillStyle !== "" ? EMPTY : Array.isArray(fillPaints) ? refsOf(fillPaints, Array.isArray(bound == null ? void 0 : bound.fills) ? bound.fills : [], isInstance) : EMPTY;
           const strokes = typeof strokeStyle === "string" && strokeStyle !== "" ? EMPTY : Array.isArray(strokePaints) ? refsOf(
             strokePaints,
@@ -14064,14 +14100,14 @@ ${scrollGuards}` : project.css;
                 for (const id of boundEffect) noteVariable(id);
                 continue;
               }
-              if (!isInstance) noteLoose(walk, withAlpha(effect.color));
+              if (!isInstance) noteLoose(walk2, withAlpha(effect.color));
             }
           }
           for (const ref of fills) if (!isLooseSite(ref)) noteVariable(ref);
           for (const ref of strokes) if (!isLooseSite(ref)) noteVariable(ref);
           if (isInstance) {
-            if (walk.nodes % 500 === 0) {
-              progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk.nodes} nodes`);
+            if (walk2.nodes % 500 === 0) {
+              progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk2.nodes} nodes`);
               await yieldToHost();
             }
             continue;
@@ -14087,8 +14123,8 @@ ${scrollGuards}` : project.css;
             const passes = fills.length > 0 ? fills : behind;
             for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], behind: passes });
           }
-          if (walk.nodes % 500 === 0) {
-            progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk.nodes} nodes`);
+          if (walk2.nodes % 500 === 0) {
+            progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk2.nodes} nodes`);
             await yieldToHost();
           }
         }
@@ -14096,16 +14132,16 @@ ${scrollGuards}` : project.css;
     } finally {
       figma.skipInvisibleInstanceChildren = false;
     }
-    return walk;
+    return walk2;
   }
-  async function readStyles(walk, sites) {
+  async function readStyles(walk2, sites) {
     var _a, _b, _c;
     let paintStyles = 0;
     let effectStyles = 0;
     try {
       for (const style of await figma.getLocalPaintStylesAsync()) {
         paintStyles++;
-        const usage = (_a = walk.styleUsage.get(style.id)) != null ? _a : 0;
+        const usage = (_a = walk2.styleUsage.get(style.id)) != null ? _a : 0;
         for (const [index, paint] of style.paints.entries()) {
           if (paint.visible === false) continue;
           if (paint.type === "SOLID") {
@@ -14145,7 +14181,7 @@ ${scrollGuards}` : project.css;
     try {
       for (const style of await figma.getLocalEffectStylesAsync()) {
         effectStyles++;
-        const usage = (_c = walk.styleUsage.get(style.id)) != null ? _c : 0;
+        const usage = (_c = walk2.styleUsage.get(style.id)) != null ? _c : 0;
         for (const [index, effect] of style.effects.entries()) {
           if (!isShadow(effect) || effect.visible === false) continue;
           sites.push({
@@ -14187,7 +14223,7 @@ ${scrollGuards}` : project.css;
         warnings.push("some pages could not be loaded \u2014 their colors are missing from this reading");
       }
     }
-    const walk = await walkDocument(localIds, depth, progress2);
+    const walk2 = await walkDocument(localIds, depth, progress2);
     progress2 == null ? void 0 : progress2("building the inventory\u2026");
     const sites = [];
     const modesByVariable = /* @__PURE__ */ new Map();
@@ -14196,7 +14232,7 @@ ${scrollGuards}` : project.css;
       if (!collection) continue;
       const values = Object.entries(variable.valuesByMode);
       const themed = collection.modes.length >= 2 || values.some(([, value]) => isAlias(value));
-      const usage = (_a = walk.usage.get(variable.id)) != null ? _a : 0;
+      const usage = (_a = walk2.usage.get(variable.id)) != null ? _a : 0;
       const owned = [];
       for (const mode of collection.modes) {
         const value = variable.valuesByMode[mode.modeId];
@@ -14218,7 +14254,7 @@ ${scrollGuards}` : project.css;
       if (owned.length > 0) modesByVariable.set(variable.id, owned);
     }
     let libraryVariables = 0;
-    for (const id of walk.foreign) {
+    for (const id of walk2.foreign) {
       const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
       if (!variable || variable.resolvedType !== "COLOR") continue;
       libraryVariables++;
@@ -14235,7 +14271,7 @@ ${scrollGuards}` : project.css;
           modeId: mode.modeId,
           modeName: mode.name,
           rgba: withAlpha(value),
-          usage: (_c = walk.usage.get(id)) != null ? _c : 0,
+          usage: (_c = walk2.usage.get(id)) != null ? _c : 0,
           editable: false,
           primitive: false
         });
@@ -14243,8 +14279,8 @@ ${scrollGuards}` : project.css;
       }
       if (owned.length > 0) modesByVariable.set(variable.id, owned);
     }
-    const styles = await readStyles(walk, sites);
-    for (const [id, color] of walk.loose) {
+    const styles = await readStyles(walk2, sites);
+    for (const [id, color] of walk2.loose) {
       sites.push({
         id,
         groupId: id,
@@ -14264,7 +14300,7 @@ ${scrollGuards}` : project.css;
       return isLooseSite(ref) ? [ref] : ((_a2 = modesByVariable.get(ref)) != null ? _a2 : []).map((mode) => siteId(ref, mode));
     };
     const modeOf = (site) => isLooseSite(site) ? null : site.slice(site.lastIndexOf("|") + 1);
-    for (const pair2 of walk.neighbours.values()) {
+    for (const pair2 of walk2.neighbours.values()) {
       for (const a of expand(pair2.a)) {
         for (const b of expand(pair2.b)) {
           const modeA = modeOf(a);
@@ -14286,22 +14322,22 @@ ${scrollGuards}` : project.css;
     } else if (depth === "page") {
       warnings.push(`read this page only \u2014 loose colors on other pages are not in this mapping`);
     }
-    if (walk.looseDropped > 0) {
+    if (walk2.looseDropped > 0) {
       warnings.push(
-        `${walk.looseDropped} rarely used loose color(s) beyond the first ${MAX_LOOSE_COLORS} were left out of this reading \u2014 they stay as they are`
+        `${walk2.looseDropped} rarely used loose color(s) beyond the first ${MAX_LOOSE_COLORS} were left out of this reading \u2014 they stay as they are`
       );
     }
-    if (walk.instances > 0) {
+    if (walk2.instances > 0) {
       warnings.push(
-        `${walk.instances} instance(s) were skipped \u2014 their colors belong to a main component, which is read and written on its own; a color overridden by hand on one instance stays as it is`
+        `${walk2.instances} instance(s) were skipped \u2014 their colors belong to a main component, which is read and written on its own; a color overridden by hand on one instance stays as it is`
       );
     }
-    if (walk.truncated) {
+    if (walk2.truncated) {
       warnings.push(
         `this file is larger than one pass can read (stopped at ${MAX_NODES} nodes) \u2014 variables and styles are complete, but loose colors on layers beyond that point are missing`
       );
     }
-    if (walk.neighbours.size >= MAX_ADJACENT_PAIRS) {
+    if (walk2.neighbours.size >= MAX_ADJACENT_PAIRS) {
       warnings.push(
         `this file has more touching colour pairs than one pass can hold \u2014 duplicate separation and the contrast audit ran on the first ${MAX_ADJACENT_PAIRS}`
       );
@@ -14317,10 +14353,10 @@ ${scrollGuards}` : project.css;
         collections: collections.length,
         paintStyles: styles.paints,
         effectStyles: styles.effects,
-        looseColors: walk.loose.size,
-        loosePlaces: walk.loosePlaces,
-        nodes: walk.nodes,
-        instances: walk.instances
+        looseColors: walk2.loose.size,
+        loosePlaces: walk2.loosePlaces,
+        nodes: walk2.nodes,
+        instances: walk2.instances
       },
       warnings
     };
@@ -23133,9 +23169,9 @@ ${scripts}`, "");
     }
   }
   var pageOf2 = (node) => {
-    let walk = node.parent;
-    while (walk && walk.type !== "PAGE") walk = walk.parent;
-    return walk ? walk.name : null;
+    let walk2 = node.parent;
+    while (walk2 && walk2.type !== "PAGE") walk2 = walk2.parent;
+    return walk2 ? walk2.name : null;
   };
   var REMOVE_OPS = [
     {
@@ -24599,9 +24635,9 @@ ${scripts}`, "");
           return page;
         };
         const pageOf3 = (node) => {
-          let walk = node.parent;
-          while (walk && walk.type !== "PAGE") walk = walk.parent;
-          return walk != null ? walk : null;
+          let walk2 = node.parent;
+          while (walk2 && walk2.type !== "PAGE") walk2 = walk2.parent;
+          return walk2 != null ? walk2 : null;
         };
         const results = [];
         for (const [index, raw] of rows.entries()) {
@@ -27504,12 +27540,12 @@ ${scripts}`, "");
   function textsInside(node) {
     var _a;
     const found = [];
-    const walk = (one) => {
+    const walk2 = (one) => {
       var _a2;
       if (one.type === "text") found.push([one.name, one.characters]);
-      for (const child of (_a2 = one.children) != null ? _a2 : []) walk(child);
+      for (const child of (_a2 = one.children) != null ? _a2 : []) walk2(child);
     };
-    for (const child of (_a = node.children) != null ? _a : []) walk(child);
+    for (const child of (_a = node.children) != null ? _a : []) walk2(child);
     const seen = /* @__PURE__ */ new Set();
     return found.filter(([layer]) => !seen.has(layer) && seen.add(layer));
   }
@@ -27576,7 +27612,7 @@ ${pad2}</${tag}>`;
 
   // src/targets/react/index.ts
   async function emitReact(roots, sceneNodesById, variableNamesById, options = {}) {
-    var _a;
+    var _a, _b, _c;
     const files = {};
     const gaps = [];
     const components = /* @__PURE__ */ new Map();
@@ -27586,9 +27622,11 @@ ${pad2}</${tag}>`;
       const context = newContext(name.toLowerCase());
       const markup = emitJsx(root, context, 2);
       files[`src/screens/${name}.tsx`] = screenFile(name, markup, context);
-      files[`src/screens/${name}.module.css`] = await emitCss([root], sceneNodesById, variableNamesById, {
-        preamble: false
-      });
+      const motion = await emitMotion([root], sceneNodesById, (_b = options.motionByNodeId) != null ? _b : /* @__PURE__ */ new Map());
+      files[`src/screens/${name}.module.css`] = await emitCss([root], sceneNodesById, variableNamesById, { preamble: false }) + (motion.css.trim() === "" ? "" : `
+
+${motion.css}`);
+      gaps.push(...motion.gaps);
       if (Object.keys(context.copy).length > 0) {
         files[`src/locales/${name.toLowerCase()}.json`] = `${JSON.stringify(context.copy, null, 2)}
 `;
@@ -27598,12 +27636,51 @@ ${pad2}</${tag}>`;
     }
     if (Object.values(files).some((one) => one.includes("from '../copy'"))) files["src/copy.tsx"] = COPY_FILE;
     for (const component of components.values()) {
-      const built = await componentFile(component, sceneNodesById, variableNamesById);
+      const built = await componentFile(component, sceneNodesById, variableNamesById, (_c = options.motionByNodeId) != null ? _c : /* @__PURE__ */ new Map());
       files[`src/components/${component.name}.tsx`] = built.tsx;
       if (built.css.trim() !== "") files[`src/components/${component.name}.module.css`] = built.css;
       gaps.push(...built.gaps);
     }
     return { files, gaps };
+  }
+  async function emitMotion(roots, sceneNodesById, motionByNodeId) {
+    var _a;
+    const gaps = [];
+    const parts = [];
+    const interactions = await emitInteractions(roots, sceneNodesById);
+    if (interactions.css.trim() !== "") parts.push(interactions.css);
+    for (const root of roots) {
+      for (const node of walk(root)) {
+        const snapshot = motionByNodeId.get(node.id);
+        if (!snapshot || snapshot.tracks.length === 0) continue;
+        parts.push(emitNodeAnimationCss({ selector: `.${toClassName(node.id)}`, tracks: snapshot.tracks }));
+      }
+    }
+    for (const root of roots) {
+      for (const node of walk(root)) {
+        for (const interaction of (_a = node.interactions) != null ? _a : []) {
+          if (sceneNodesById.has(interaction.destinationId)) continue;
+          const state = interaction.trigger === "ON_HOVER" ? "hover" : interaction.trigger === "ON_PRESS" ? "pressed" : "click";
+          gaps.push(
+            `${node.name}: its ${state} state is the variant ${interaction.destinationId}, which is outside this export \u2014 include the component to get the CSS, or write the state by hand`
+          );
+        }
+      }
+    }
+    for (const root of roots) {
+      for (const node of walk(root)) {
+        if (!node.navigate) continue;
+        const asked = node.navigate.transition;
+        const animation = asked ? ` \u2014 ${asked.style}${asked.direction ? ` ${asked.direction}` : ""} over ${asked.durationMs}ms, ${asked.timingFunction}` : "";
+        gaps.push(`${node.name}: goes to ${node.navigate.destinationId}${animation}. A screen transition is your router's, not CSS's`);
+      }
+    }
+    return { css: parts.join("\n\n"), js: interactions.js, gaps };
+  }
+  function* walk(node) {
+    var _a;
+    yield node;
+    for (const child of (_a = node.children) != null ? _a : []) yield* __yieldStar(walk(child));
   }
   function collectComponents3(node, into) {
     var _a, _b, _c, _d;
@@ -27623,16 +27700,18 @@ ${pad2}</${tag}>`;
     }
     for (const child of (_d = node.children) != null ? _d : []) collectComponents3(child, into);
   }
-  async function componentFile(component, sceneNodesById, variableNamesById) {
+  async function componentFile(component, sceneNodesById, variableNamesById, motionByNodeId) {
     var _a;
     const context = __spreadProps(__spreadValues({}, newContext(component.name.toLowerCase())), {
       insideComponent: true,
       rootId: (_a = component.body) == null ? void 0 : _a.id
     });
     const body = component.body ? emitJsx(__spreadProps(__spreadValues({}, component.body), { type: "container" }), context, 2) : "    <div />";
-    const css = component.body ? await emitCss([__spreadProps(__spreadValues({}, component.body), { type: "container" })], sceneNodesById, variableNamesById, {
-      preamble: false
-    }) : "";
+    const asContainer = component.body ? __spreadProps(__spreadValues({}, component.body), { type: "container" }) : null;
+    const motion = asContainer ? await emitMotion([asContainer], sceneNodesById, motionByNodeId) : { css: "", js: "", gaps: [] };
+    const css = asContainer ? await emitCss([asContainer], sceneNodesById, variableNamesById, { preamble: false }) + (motion.css.trim() === "" ? "" : `
+
+${motion.css}`) : "";
     const fields = [];
     for (const [prop, seen] of component.values) {
       const type = component.types.get(prop);
@@ -28569,6 +28648,16 @@ export function useCopy(): (key: string) => string {
   }
   function defaultRoots() {
     return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children;
+  }
+  function motionUnder(roots) {
+    const found = /* @__PURE__ */ new Map();
+    const walk2 = (node) => {
+      const snapshot = readMotionData(node);
+      if (snapshot && snapshot.tracks.length > 0) found.set(node.id, snapshot);
+      if ("children" in node) for (const child of node.children) walk2(child);
+    };
+    for (const root of roots) walk2(root);
+    return found;
   }
   function rootsForScope(scope) {
     if (!scope) return defaultRoots();
@@ -29960,7 +30049,10 @@ export function useCopy(): (key: string) => string {
           }
           const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]));
           await annotateVectorLeaves(nodes, sceneNodesById);
-          const { files, gaps } = await emitReact(nodes, sceneNodesById, variableNamesById, { name: msg.name });
+          const { files, gaps } = await emitReact(nodes, sceneNodesById, variableNamesById, {
+            name: msg.name,
+            motionByNodeId: motionUnder(roots)
+          });
           postToUi({ type: "REACT_PROJECT", files, gaps, count: Object.keys(files).length });
         } catch (error) {
           postToUi({ type: "CANVAS_ERROR", command: "EMIT_REACT", message: String((error == null ? void 0 : error.message) || error) });

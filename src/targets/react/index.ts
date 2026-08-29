@@ -20,6 +20,10 @@ import type { IrNode } from '../django/ir.ts'
 import { emitCss, toClassName } from '../django/css-emitter.ts'
 import type { DjangoNodeSource } from '../django/css-emitter.ts'
 import { componentName, emitJsx, newContext, propName, type JsxContext } from './jsx.ts'
+import { emitInteractions } from '../django/interactions.ts'
+import { emitNodeAnimationCss } from '../django/motion/css-emitter.ts'
+import type { MotionSnapshot } from '../django/motion/types.ts'
+import { toClassName as className } from '../django/css-emitter.ts'
 
 export interface ReactOutput {
   /** path → contents, ready to be written into a repository. */
@@ -31,6 +35,14 @@ export interface ReactOutput {
 export interface EmitReactOptions {
   /** What the screen component is called. Defaults to the root node's name. */
   name?: string
+  /**
+   * Each node's timeline, by node id.
+   *
+   * Read by the caller rather than here: `sceneNodesById` carries what the CSS emitter needs —
+   * a `getCSSAsync` and little else — and asking it for `manualKeyframeTracks` returned nothing
+   * at all, silently, for every animated node on the screen.
+   */
+  motionByNodeId?: ReadonlyMap<string, MotionSnapshot>
 }
 
 /** A component as the screens use it: its markup, and every property value they ask for. */
@@ -60,9 +72,14 @@ export async function emitReact(
     const markup = emitJsx(root, context, 2)
 
     files[`src/screens/${name}.tsx`] = screenFile(name, markup, context)
-    files[`src/screens/${name}.module.css`] = await emitCss([root], sceneNodesById, variableNamesById, {
-      preamble: false,
-    })
+    // The motion rules live in the same module as the node they animate. A CSS module hashes its
+    // class names, so a global `motion.css` naming `.n15607-95548` would match nothing at all —
+    // the rule and the element have to be scoped together or the animation silently never runs.
+    const motion = await emitMotion([root], sceneNodesById, options.motionByNodeId ?? new Map())
+    files[`src/screens/${name}.module.css`] =
+      (await emitCss([root], sceneNodesById, variableNamesById, { preamble: false })) +
+      (motion.css.trim() === '' ? '' : `\n\n${motion.css}`)
+    gaps.push(...motion.gaps)
     if (Object.keys(context.copy).length > 0) {
       files[`src/locales/${name.toLowerCase()}.json`] = `${JSON.stringify(context.copy, null, 2)}\n`
     }
@@ -75,13 +92,89 @@ export async function emitReact(
   if (Object.values(files).some((one) => one.includes("from '../copy'"))) files['src/copy.tsx'] = COPY_FILE
 
   for (const component of components.values()) {
-    const built = await componentFile(component, sceneNodesById, variableNamesById)
+    const built = await componentFile(component, sceneNodesById, variableNamesById, options.motionByNodeId ?? new Map())
     files[`src/components/${component.name}.tsx`] = built.tsx
     if (built.css.trim() !== '') files[`src/components/${component.name}.module.css`] = built.css
     gaps.push(...built.gaps)
   }
 
   return { files, gaps }
+}
+
+/* ----------------------------------------------------------------------- motion */
+
+/**
+ * The three places Figma keeps movement, in the one place CSS keeps it.
+ *
+ * `emitInteractions` already turns ON_HOVER/ON_PRESS CHANGE_TO reactions into `:hover`/`:active`
+ * rules that name only the properties that actually change — the Django target has done this for
+ * a year, and a second implementation would be a second set of bugs. What is added here is the
+ * timeline half: a node with manual keyframes becomes `@keyframes` plus an `animation`, with the
+ * reduced-motion guard the emitter already writes.
+ *
+ * Transitions BETWEEN screens are not CSS: they belong to whatever router the team uses, so each
+ * one leaves a gap naming the destination and the animation it asked for. Inventing a router
+ * would be inventing the half of the app that is not the design.
+ */
+async function emitMotion(
+  roots: readonly IrNode[],
+  sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
+  motionByNodeId: ReadonlyMap<string, MotionSnapshot>
+): Promise<{ css: string; js: string; gaps: string[] }> {
+  const gaps: string[] = []
+  const parts: string[] = []
+
+  const interactions = await emitInteractions(roots, sceneNodesById)
+  if (interactions.css.trim() !== '') parts.push(interactions.css)
+
+  // A timeline is per node, and the node's own class is what addresses it.
+  for (const root of roots) {
+    for (const node of walk(root)) {
+      const snapshot = motionByNodeId.get(node.id)
+      if (!snapshot || snapshot.tracks.length === 0) continue
+      parts.push(emitNodeAnimationCss({ selector: `.${className(node.id)}`, tracks: snapshot.tracks }))
+    }
+  }
+
+  // A state that could not be diffed is a state nobody will notice is missing.
+  //
+  // `emitInteractions` builds a `:hover`/`:active` rule by comparing the node's CSS against its
+  // destination variant's. When that variant lives outside the exported scope — which is the
+  // normal case, since it is a variant of a component on another page — there is nothing to
+  // compare and the emitter writes nothing at all. Silence is exactly the failure mode this
+  // whole target is built against, so it is named here instead.
+  for (const root of roots) {
+    for (const node of walk(root)) {
+      for (const interaction of node.interactions ?? []) {
+        if (sceneNodesById.has(interaction.destinationId)) continue
+        const state = interaction.trigger === 'ON_HOVER' ? 'hover' : interaction.trigger === 'ON_PRESS' ? 'pressed' : 'click'
+        gaps.push(
+          `${node.name}: its ${state} state is the variant ${interaction.destinationId}, which is outside this export — ` +
+            `include the component to get the CSS, or write the state by hand`
+        )
+      }
+    }
+  }
+
+  for (const root of roots) {
+    for (const node of walk(root)) {
+      if (!node.navigate) continue
+      const asked = node.navigate.transition
+      // The animation the designer chose travels with the gap: a router can honour
+      // `SLIDE_IN LEFT over 300ms` and cannot honour "there was a transition here".
+      const animation = asked
+        ? ` — ${asked.style}${asked.direction ? ` ${asked.direction}` : ''} over ${asked.durationMs}ms, ${asked.timingFunction}`
+        : ''
+      gaps.push(`${node.name}: goes to ${node.navigate.destinationId}${animation}. A screen transition is your router's, not CSS's`)
+    }
+  }
+
+  return { css: parts.join('\n\n'), js: interactions.js, gaps }
+}
+
+function* walk(node: IrNode): Generator<IrNode> {
+  yield node
+  for (const child of (node as { children?: IrNode[] }).children ?? []) yield* walk(child)
 }
 
 /* ------------------------------------------------------------------- components */
@@ -109,7 +202,8 @@ function collectComponents(node: IrNode, into: Map<string, CollectedComponent>):
 async function componentFile(
   component: CollectedComponent,
   sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
-  variableNamesById: ReadonlyMap<string, string>
+  variableNamesById: ReadonlyMap<string, string>,
+  motionByNodeId: ReadonlyMap<string, MotionSnapshot>
 ): Promise<{ tsx: string; css: string; gaps: string[] }> {
   const context: JsxContext = {
     ...newContext(component.name.toLowerCase()),
@@ -119,10 +213,11 @@ async function componentFile(
   const body = component.body
     ? emitJsx({ ...(component.body as IrNode), type: 'container' } as IrNode, context, 2)
     : '    <div />'
-  const css = component.body
-    ? await emitCss([{ ...(component.body as IrNode), type: 'container' } as IrNode], sceneNodesById, variableNamesById, {
-        preamble: false,
-      })
+  const asContainer = component.body ? ({ ...(component.body as IrNode), type: 'container' } as IrNode) : null
+  const motion = asContainer ? await emitMotion([asContainer], sceneNodesById, motionByNodeId) : { css: '', js: '', gaps: [] }
+  const css = asContainer
+    ? (await emitCss([asContainer], sceneNodesById, variableNamesById, { preamble: false })) +
+      (motion.css.trim() === '' ? '' : `\n\n${motion.css}`)
     : ''
 
   const fields: string[] = []

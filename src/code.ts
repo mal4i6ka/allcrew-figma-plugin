@@ -100,6 +100,7 @@ import {
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { planProps } from './canvas/props.ts'
 import { emitReact } from './targets/react/index.ts'
+import type { MotionSnapshot } from './targets/django/motion/types.ts'
 import {
   applyProps,
   describeAnimation,
@@ -517,6 +518,18 @@ function frameworkLinksFrom(options: ExportOptions, tokensOn: boolean): BaseHtml
 
 function defaultRoots(): readonly SceneNode[] {
   return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children
+}
+
+/** Every node under these roots that carries a timeline, by id — read from the live nodes. */
+function motionUnder(roots: readonly SceneNode[]): Map<string, MotionSnapshot> {
+  const found = new Map<string, MotionSnapshot>()
+  const walk = (node: SceneNode) => {
+    const snapshot = readMotionData(node)
+    if (snapshot && snapshot.tracks.length > 0) found.set(node.id, snapshot)
+    if ('children' in node) for (const child of (node as SceneNode & ChildrenMixin).children) walk(child)
+  }
+  for (const root of roots) walk(root)
+  return found
 }
 
 function rootsForScope(scope: ExportScope | undefined): readonly SceneNode[] {
@@ -2439,7 +2452,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
         const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
         await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
-        const { files, gaps } = await emitReact(nodes, sceneNodesById, variableNamesById, { name: msg.name })
+        const { files, gaps } = await emitReact(nodes, sceneNodesById, variableNamesById, {
+          name: msg.name,
+          motionByNodeId: motionUnder(roots),
+        })
         postToUi({ type: 'REACT_PROJECT', files, gaps, count: Object.keys(files).length })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'EMIT_REACT', message: String((error as Error)?.message || error) })
