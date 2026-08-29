@@ -894,3 +894,15 @@ test('an unknown layout key lists the whole set, which is now thirteen words', (
   assert.match(problem, /mode, gap, wrapGap, padding/)
   assert.match(problem, /rows, columns, autoTracks/)
 })
+
+test('a read prints `sizing` at the top of a node, so a write takes it there too', () => {
+  // The most ordinary round trip there is — read a layer, send it back — was refused over a word
+  // the read itself had chosen: only `layout.sizing` was accepted.
+  assert.deepEqual(stepsOf({ sizing: { horizontal: 'FILL' } }), [{ step: 'sizing', horizontal: 'FILL' }])
+  // And it means the same thing in both places, so the two merge rather than one winning.
+  assert.deepEqual(stepsOf({ layout: { sizing: { vertical: 'HUG' } }, sizing: { horizontal: 'FILL' } }), [
+    { step: 'sizing', horizontal: 'FILL', vertical: 'HUG' },
+  ])
+  assert.match(planProps({ sizing: { horizontal: 'STRETCH' } }).problems[0], /must be one of: FIXED, HUG, FILL/)
+  assert.match(planProps({ sizing: { across: 'FILL' } }).problems[0], /unknown axis "across"/)
+})

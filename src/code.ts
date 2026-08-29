@@ -110,6 +110,7 @@ import {
   variableName,
 } from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan } from './canvas/create.ts'
+import { styledRuns } from './canvas/text-runs.ts'
 import {
   bindingField,
   collectComponents,
@@ -1420,7 +1421,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   if (node.type === 'TEXT' || node.type === 'TEXT_PATH') {
     props.text = node.characters
     props.fontSize = node.fontSize === figma.mixed ? 'mixed' : round(node.fontSize)
-    props.fontName = node.fontName === figma.mixed ? 'mixed' : `${node.fontName.family} ${node.fontName.style}`
+    // `{ family, style }`, not "Inter Regular": the write takes the pair and refuses the string,
+    // and a font family can hold spaces ("Museo Sans 700"), so no parser could tell the two apart.
+    props.fontName = node.fontName === figma.mixed ? 'mixed' : { family: node.fontName.family, style: node.fontName.style }
     props.textAlign = node.textAlignHorizontal
     // Everything below is the promise this shape makes everywhere else: a read complete enough to
     // be sent back as a write. The box's own behaviour is always said, since it decides what a
@@ -1470,6 +1473,13 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // written from here and carries no news.
     if (t.autoRename === true) props.autoRename = true
     if (typeof t.textWrapStyle === 'string' && t.textWrapStyle !== 'AUTO') props.textWrap = t.textWrapStyle
+
+    // A paragraph with one word in another size read back as uniform: `runs` were written and
+    // never returned, so the read could not be sent. Each run carries only what DIFFERS from the
+    // layer above — the layer's own values are already in this same object — and the shape is the
+    // one `runs` takes on the way in.
+    const runs = await styledRuns(node)
+    if (runs.length > 1) props.runs = runs
   }
   return { ...base, props }
 }

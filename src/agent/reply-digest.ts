@@ -204,8 +204,15 @@ function smallEnoughToShow(value: unknown): unknown | null {
   return json !== null && json.length <= SHOW_ANYWAY_BYTES ? value : null
 }
 
-/** Small enough that printing it costs less than explaining its absence. */
-const SHOW_ANYWAY_BYTES = 200
+/**
+ * Small enough that printing it costs less than explaining its absence.
+ *
+ * The alternative is not nothing: a spilled structure costs a `note`, a shape and a file envelope
+ * with a path — about 150 bytes of its own, and then a caller who has to go and open the file. A
+ * styled text run came to 201 bytes against a cap of 200 and went to disk, which is how the one
+ * run that carried the link left the reply.
+ */
+const SHOW_ANYWAY_BYTES = 500
 
 /** Below this a file costs more than it explains, and the shape already carries the answer. */
 const MIN_SPILL_BYTES = 120

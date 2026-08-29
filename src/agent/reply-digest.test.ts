@@ -109,6 +109,17 @@ test('a wide object is one file, not forty', () => {
   assert.deepEqual(JSON.parse(envelope(summary.full).data), files)
 })
 
+test('a styled run at the depth cap is printed, not filed', () => {
+  // 201 bytes against a cap of 200 sent the one run that carried the link to disk. The cap is
+  // about unbounded walks, not about a structure smaller than the note explaining its absence.
+  const run = { from: 17, to: 27, fontName: { family: 'Inter', style: 'Regular' }, fontSize: 14,
+    fill: 'var:content/minimal', textDecoration: 'UNDERLINE', letterSpacing: '0%',
+    link: 'https://altery.com/invoice/1042' }
+  const digest = digestReplies([{ type: 'NODES_FOUND', nodes: [{ props: { runs: [run] } }] }])
+  assert.match(JSON.stringify(digest.replies), /invoice\/1042/)
+  assert.equal(digest.files, 0)
+})
+
 test('a structure below the file floor stays inline as a shape', () => {
   // Thirteen small numbers do not need a file; the count and a taste are the whole answer.
   const digest = digestReplies([{ type: 'TINY', ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] }])

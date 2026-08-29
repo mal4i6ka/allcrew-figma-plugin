@@ -273,6 +273,8 @@ export interface NodeProps {
   x?: number
   /** Position within the parent, downwards. */
   y?: number
+  /** How each axis is sized inside the parent — the same thing `layout.sizing` says, and the word a read gives back. */
+  sizing?: { horizontal?: SizingMode; vertical?: SizingMode }
   /** A size in pixels. On an auto-layout frame this pins that axis; see `layout.sizing`. */
   width?: number
   /** A height in pixels. On a hugging frame this pins it; `layout.sizing` gives it back. */
@@ -632,6 +634,9 @@ const ORDER = [
   'locked',
   'clipsContent',
   'layout',
+  // Validated in the loop, applied after it: the two sizing steps are computed from the layout and
+  // this together, and they land either side of the resize.
+  'sizing',
   'constraints',
   // Before the geometry: an absolutely-positioned child is the only kind whose x and y mean
   // anything inside an auto-layout parent.
@@ -1036,11 +1041,20 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         }
         break
       }
+      // A read prints `sizing` at the top of the node, next to width and height, because that is
+      // where a person looks for it. Only `layout.sizing` was accepted, so the most ordinary
+      // round trip there is — read a layer, send it back — was refused over a word the read
+      // itself had chosen. Both spellings mean the same thing and are merged below.
+      case 'sizing': {
+        const problem = sizingProblem(props.sizing)
+        if (problem) fail(`sizing: ${problem}`)
+        break
+      }
       case 'fill':
       case 'stroke': {
-        // "none" is the word a READ uses for a layer with no paint, and a read has to be sendable:
-        // copying `"fill": "none"` back was refused with `"none" is not a #RRGGBB colour`.
-        const ref = (props[key] === 'none' ? null : props[key]) as PaintRef
+        // The words a READ uses — `"none"` for no paint, `"var:token"` for a bound one — are taken
+        // here, because a read that cannot be sent back is not a read.
+        const ref = normalisePaint(props[key]) as PaintRef
         if (paintProblem(ref)) fail(`${key}: ${paintProblem(ref)}`)
         else steps.push({ step: 'paint', property: key === 'fill' ? 'fills' : 'strokes', ref })
         break
@@ -1239,12 +1253,13 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
   // Both are computed from the layout the caller wrote, whether or not a layout STEP came of it:
   // `{ layout: { sizing: { horizontal: 'FILL' } } }` on a text node is a child saying how it
   // fills its parent, and it emits no layout step at all.
-  if (asked) {
-    const sizing = asked.sizing ?? {}
+  const topLevel = sizingProblem(props.sizing) === null ? (props.sizing as LayoutProps['sizing']) : undefined
+  if (asked || topLevel) {
+    const sizing = { ...(asked?.sizing ?? {}), ...(topLevel ?? {}) }
     // A frame Figma hands out is 100×100 and FIXED, so `{ layout: { mode: 'VERTICAL' } }` alone
     // makes a box that clips whatever is put in it — not what anyone means by turning auto-layout
     // on. Each axis hugs unless the caller pinned it with a size or said otherwise.
-    const laidOut = asked.mode !== undefined && asked.mode !== 'NONE'
+    const laidOut = asked?.mode !== undefined && asked.mode !== 'NONE'
     const horizontal = sizing.horizontal ?? ('width' in props ? 'FIXED' : laidOut ? 'HUG' : undefined)
     const vertical = sizing.vertical ?? ('height' in props ? 'FIXED' : laidOut ? 'HUG' : undefined)
 
@@ -1989,7 +2004,7 @@ function planRuns(raw: unknown, where: string, problems: string[]): PropStep | n
     )
     check('link', typeof run.link === 'string' || run.link === null, 'link must be a URL, or null to remove one')
     if (run.fill !== undefined) {
-      const problem = paintProblem(run.fill)
+      const problem = paintProblem(normalisePaint(run.fill))
       if (problem) {
         fail(`fill: ${problem}`)
         bad = true
@@ -2003,7 +2018,9 @@ function planRuns(raw: unknown, where: string, problems: string[]): PropStep | n
       continue
     }
 
-    runs.push(run as TextRun)
+    // Copied rather than cast: the run carries the caller's own object, and normalising a paint
+    // in place would rewrite the message that was handed to us.
+    runs.push({ ...(run as TextRun), ...(run.fill === undefined ? {} : { fill: normalisePaint(run.fill) as PaintRef }) })
   }
 
   return { step: 'runs', runs }
@@ -2945,6 +2962,40 @@ export function gradientTransform(
 }
 
 /** Null when the reference is usable, else why not. A list is a stack of layers, checked one by one. */
+/**
+ * The shorthand a READ prints, turned into the shape a write takes.
+ *
+ * `describeNode` renders a bound paint as `"var:surface/l0"` — short, and the only way anyone
+ * would write it by hand after seeing one. Sending that back was refused with `"var:surface/l0"
+ * is not a #RRGGBB colour`, which broke the promise the whole vocabulary rests on: what you read
+ * you can send. The prefix is unambiguous — no colour begins with `var:` — so it is taken here,
+ * once, for layer paints and for the paints inside a styled run alike.
+ */
+/** `{ horizontal?, vertical? }` with the three modes, or a sentence saying what is wrong. */
+function sizingProblem(value: unknown): string | null {
+  if (value === undefined) return null
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'must be { horizontal?, vertical? }'
+  }
+  for (const [axis, mode] of Object.entries(value as Record<string, unknown>)) {
+    if (axis !== 'horizontal' && axis !== 'vertical') return `unknown axis "${axis}" — accepted: horizontal, vertical`
+    if (typeof mode !== 'string' || !SIZING.includes(mode)) {
+      return `${axis} must be one of: ${SIZING.join(', ')}`
+    }
+  }
+  return null
+}
+
+export function normalisePaint(ref: unknown): unknown {
+  if (Array.isArray(ref)) return ref.map(normalisePaint)
+  if (typeof ref === 'string' && ref.startsWith('var:')) {
+    const name = ref.slice(4).trim()
+    return name === '' ? ref : { variable: name }
+  }
+  if (ref === 'none') return null
+  return ref
+}
+
 export function paintProblem(ref: unknown): string | null {
   if (Array.isArray(ref)) {
     for (const [index, one] of ref.entries()) {

@@ -20,6 +20,7 @@ import { readAllVariables, readLocalVariables, resolveVariableValue } from '../v
 import { describeColor, type Rgba } from './values.ts'
 import { formatHex, parseHex, type Rgb } from '../tokens/color.ts'
 import type { OpDef } from './protocol.ts'
+import { styledRuns } from '../canvas/text-runs.ts'
 import { CONTEXT_OPS } from './context-ops.ts'
 import { TRANSITION_OPS } from './transition-ops.ts'
 import { WRITE_OPS } from './write-ops.ts'
@@ -1954,13 +1955,18 @@ export const READ_OPS: readonly OpDef[] = [
       /* Exists because three write strategies in a row "succeeded" against one invisible run and
        * the re-read said otherwise — guessing at run structure from outside cost more than one
        * read op. Newlines are escaped so a paragraph mark is visible instead of being one. */
-      const segments = (text.getStyledTextSegments(['boundVariables', 'fills']) as unknown as Array<{
+      const raw = (text.getStyledTextSegments(['boundVariables', 'fills']) as unknown as Array<{
         start: number
         end: number
         characters: string
         boundVariables?: Record<string, unknown>
         fills?: Paint[]
-      }>).map((segment) => ({
+      }>)
+      // The bindings this op exists for, and beside them the STYLE of each run in the words the
+      // write vocabulary takes — asking for two of the twenty-six fields answered "uniform" for
+      // every text that was not.
+      const styles = await styledRuns(text)
+      const segments = raw.map((segment) => ({
         start: segment.start,
         end: segment.end,
         characters: segment.characters.replace(/\n/g, '\\n'),
@@ -1977,6 +1983,8 @@ export const READ_OPS: readonly OpDef[] = [
         characters: text.characters.replace(/\n/g, '\\n'),
         nodeBound: (text as unknown as { boundVariables?: Record<string, unknown> }).boundVariables ?? {},
         segments,
+        // Sendable as it stands: this is `runs` in the shape NODE_SET takes.
+        runs: styles,
       }
     },
   },
