@@ -48,6 +48,8 @@ export interface JsxContext {
   used: Set<string>
   /** What could not be translated, in the words the comment uses. */
   gaps: string[]
+  /** True when the component has variant classes, so its root also carries the variant one. */
+  hasVariants?: boolean
   /** Each vector's exported file, by node id — see `EmitReactOptions.assetsByNodeId`. */
   assets?: ReadonlyMap<string, { filename: string; svg: string }>
   /** A prefix for copy keys, so two screens do not collide on `title`. */
@@ -118,7 +120,10 @@ export function emitJsx(node: IrNode, context: JsxContext, depth = 1): string {
   // into a hyphen, and a hyphen in a property access is a subtraction. Every line of the first
   // generated screen was a syntax error.
   const own = `styles[${JSON.stringify(toClassName(node.id))}]`
-  const className = node.id === context.rootId ? `[${own}, className].filter(Boolean).join(' ')` : own
+  const className =
+    node.id === context.rootId
+      ? `[${own}${context.hasVariants ? ', variant' : ''}, className].filter(Boolean).join(' ')`
+      : own
 
   for (const warning of node.warnings ?? []) context.gaps.push(`${node.name}: ${warning}`)
 

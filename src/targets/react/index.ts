@@ -20,6 +20,7 @@ import type { IrNode } from '../django/ir.ts'
 import { emitCss, toClassName } from '../django/css-emitter.ts'
 import type { DjangoNodeSource } from '../django/css-emitter.ts'
 import { componentName, emitJsx, newContext, propName, type JsxContext } from './jsx.ts'
+import { pairTrees, scopeVariantCss, variantClass, variantKey } from './variants.ts'
 import { emitInteractions } from '../django/interactions.ts'
 import { emitNodeAnimationCss } from '../django/motion/css-emitter.ts'
 import type { MotionSnapshot } from '../django/motion/types.ts'
@@ -59,6 +60,10 @@ interface CollectedComponent {
   /** property name → the values seen across every instance. */
   values: Map<string, Set<string>>
   types: Map<string, string>
+  /** One instance per variant — the second and later ones are what the variant CSS is built from. */
+  variants: Map<string, IrNode>
+  /** prop name → the Figma property name it came from, which is what the variant key is built of. */
+  rawNames: Map<string, string>
 }
 
 export async function emitReact(
@@ -199,16 +204,19 @@ function* walk(node: IrNode): Generator<IrNode> {
 function collectComponents(node: IrNode, into: Map<string, CollectedComponent>): void {
   if (node.type === 'instance-ref') {
     const name = componentName(node.componentSetName || node.name)
-    const held = into.get(name) ?? { name, body: null, values: new Map(), types: new Map() }
+    const held = into.get(name) ?? { name, body: null, values: new Map(), types: new Map(), variants: new Map(), rawNames: new Map() }
     // The first instance supplies the markup. A later one whose shape differs is a real
     // difference and is reported rather than reconciled.
     if (!held.body) held.body = node
+    const key = variantKey(node.componentProperties as never)
+    if (!held.variants.has(key)) held.variants.set(key, node)
     for (const [raw, value] of Object.entries(node.componentProperties ?? {})) {
       const prop = propName(raw)
       const seen = held.values.get(prop) ?? new Set<string>()
       seen.add(String(value.value))
       held.values.set(prop, seen)
       held.types.set(prop, value.type)
+      held.rawNames.set(prop, raw.replace(/#.*$/, ''))
     }
     into.set(name, held)
     return
@@ -229,14 +237,46 @@ async function componentFile(
     rootId: component.body?.id,
     assets: assetsByNodeId,
   }
-  const body = component.body
-    ? emitJsx({ ...(component.body as IrNode), type: 'container' } as IrNode, context, 2)
-    : '    <div />'
   const asContainer = component.body ? ({ ...(component.body as IrNode), type: 'container' } as IrNode) : null
   const motion = asContainer ? await emitMotion([asContainer], sceneNodesById, motionByNodeId) : { css: '', js: '', gaps: [] }
+  const variantGaps: string[] = []
+  const variantClasses: string[] = []
+  let variantCss = ''
+
+  // Every variant after the first: its own stylesheet, renamed onto the first's layers and put
+  // behind a class. Without this a secondary button was drawn in the primary's colours and looked
+  // like a screen the whole way through.
+  if (component.body) {
+    for (const [key, instance] of component.variants) {
+      if (instance.id === component.body.id || key === '') continue
+      const pairs = pairTrees(component.body, instance)
+      if (!pairs) {
+        variantGaps.push(
+          `${component.name}: the variant ${key} is built differently from ${variantKey(
+            (component.body as { componentProperties?: never }).componentProperties
+          ) || 'the first one'} — this file draws the first one's layers, so that variant needs writing by hand`
+        )
+        continue
+      }
+      const own = await emitCss([{ ...instance, type: 'container' } as IrNode], sceneNodesById, variableNamesById, {
+        preamble: false,
+      })
+      const scope = variantClass(key)
+      variantClasses.push(`${JSON.stringify(key)}: styles[${JSON.stringify(scope)}]`)
+      variantCss += `\n\n/* ${key} */\n${scopeVariantCss(own, pairs, scope)}`
+    }
+  }
+
+  // The markup is emitted after the variants are known: its root carries the variant class, and
+  // asking for that class before working out whether there is one would emit a reference to
+  // nothing.
+  context.hasVariants = variantClasses.length > 0
+  const body = asContainer ? emitJsx(asContainer, context, 2) : '    <div />'
+
   const css = asContainer
     ? (await emitCss([asContainer], sceneNodesById, variableNamesById, { preamble: false })) +
-      (motion.css.trim() === '' ? '' : `\n\n${motion.css}`)
+      (motion.css.trim() === '' ? '' : `\n\n${motion.css}`) +
+      variantCss
     : ''
 
   const fields: string[] = []
@@ -255,6 +295,21 @@ async function componentFile(
   const props = fields.length > 0 ? `\n${fields.join('\n')}\n` : '\n'
   const imports = [...context.used].filter((one) => one !== component.name)
 
+  // The component works out its own variant the way the emitter did: the same key, built from the
+  // props it was handed. A map rather than a chain of conditions — a component set with three axes
+  // has more combinations than anyone wants to read.
+  const variantProps = [...component.types.entries()].filter(([, type]) => type === 'VARIANT').map(([prop]) => prop)
+  const keyExpression =
+    variantProps.length > 0
+      ? `[${variantProps
+          .map((prop) => `\`${component.rawNames.get(prop) ?? prop}=\${${prop}}\``)
+          .join(', ')}].sort().join(',')`
+      : null
+  const variantBlock =
+    variantClasses.length > 0 && keyExpression
+      ? `\nconst VARIANTS: Record<string, string | undefined> = {\n  ${variantClasses.join(',\n  ')},\n}\n`
+      : ''
+
   const tsx = `${header(component.name)}
 import styles from './${component.name}.module.css'
 ${imports.map((one) => `import { ${one} } from './${one}'`).join('\n')}${imports.length > 0 ? '\n' : ''}${
@@ -263,15 +318,18 @@ ${imports.map((one) => `import { ${one} } from './${one}'`).join('\n')}${imports
 export interface ${component.name}Props {${props}  className?: string
 }
 
+${variantBlock}
 export function ${component.name}({ ${[...component.values.keys(), ...context.props.keys()]
     .filter((one, index, all) => all.indexOf(one) === index)
     .join(', ')}${component.values.size + context.props.size > 0 ? ', ' : ''}className }: ${component.name}Props) {
-${Object.keys(context.copy).length > 0 ? '  const t = useCopy()\n' : ''}  return (
+${Object.keys(context.copy).length > 0 ? '  const t = useCopy()\n' : ''}${
+    variantBlock ? `  const variant = VARIANTS[${keyExpression}]\n` : ''
+  }  return (
 ${body}
   )
 }
 `
-  return { tsx, css, gaps: context.gaps }
+  return { tsx, css, gaps: [...context.gaps, ...variantGaps] }
 }
 
 /* ----------------------------------------------------------------------- files */

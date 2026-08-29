@@ -27553,7 +27553,7 @@ ${scripts}`, "");
     var _a, _b, _c, _d, _e, _f;
     const pad2 = INDENT.repeat(depth);
     const own = `styles[${JSON.stringify(toClassName(node.id))}]`;
-    const className = node.id === context.rootId ? `[${own}, className].filter(Boolean).join(' ')` : own;
+    const className = node.id === context.rootId ? `[${own}${context.hasVariants ? ", variant" : ""}, className].filter(Boolean).join(' ')` : own;
     for (const warning of (_a = node.warnings) != null ? _a : []) context.gaps.push(`${node.name}: ${warning}`);
     if (node.type === "text") {
       const bound = (_c = (_b = node.componentPropertyReferences) == null ? void 0 : _b.characters) != null ? _c : context.insideComponent ? node.name : null;
@@ -27610,6 +27610,57 @@ ${scripts}`, "");
     return `${pad2}<${tag} className={${className}}${href}>
 ${inner}
 ${pad2}</${tag}>`;
+  }
+
+  // src/targets/react/variants.ts
+  function variantKey(properties) {
+    const parts = [];
+    for (const [name, value] of Object.entries(properties != null ? properties : {})) {
+      if (value.type !== "VARIANT") continue;
+      parts.push(`${name.replace(/#.*$/, "")}=${String(value.value)}`);
+    }
+    return parts.sort().join(",");
+  }
+  function variantClass(key) {
+    return `v-${key.replace(/[^A-Za-z0-9]+/g, "-").toLowerCase().replace(/^-+|-+$/g, "")}`;
+  }
+  function pairTrees(left, right) {
+    const pairs = /* @__PURE__ */ new Map();
+    const walk2 = (a, b) => {
+      var _a, _b;
+      if (a.type !== b.type) return false;
+      pairs.set(b.id, a.id);
+      const kidsA = (_a = a.children) != null ? _a : [];
+      const kidsB = (_b = b.children) != null ? _b : [];
+      if (kidsA.length !== kidsB.length) return false;
+      for (let index = 0; index < kidsA.length; index++) if (!walk2(kidsA[index], kidsB[index])) return false;
+      return true;
+    };
+    return walk2(left, right) ? pairs : null;
+  }
+  function scopeVariantCss(css, pairs, scope) {
+    let renamed = css;
+    for (const [from, to] of pairs) {
+      if (from === to) continue;
+      renamed = renamed.split(`.${toClassName(from)}`).join(`.${toClassName(to)}`);
+    }
+    const out = [];
+    for (const block2 of renamed.split(/\n\n+/)) {
+      const trimmed = block2.trim();
+      if (trimmed === "") continue;
+      if (trimmed.startsWith("@")) {
+        out.push(trimmed);
+        continue;
+      }
+      const brace = trimmed.indexOf("{");
+      if (brace === -1) {
+        out.push(trimmed);
+        continue;
+      }
+      const selectors = trimmed.slice(0, brace).split(",").map((one) => `.${scope} ${one.trim()}`).join(",\n");
+      out.push(`${selectors} ${trimmed.slice(brace)}`);
+    }
+    return out.join("\n\n");
   }
 
   // src/targets/react/index.ts
@@ -27696,14 +27747,17 @@ ${motion.css}`);
     var _a, _b, _c, _d;
     if (node.type === "instance-ref") {
       const name = componentName2(node.componentSetName || node.name);
-      const held = (_a = into.get(name)) != null ? _a : { name, body: null, values: /* @__PURE__ */ new Map(), types: /* @__PURE__ */ new Map() };
+      const held = (_a = into.get(name)) != null ? _a : { name, body: null, values: /* @__PURE__ */ new Map(), types: /* @__PURE__ */ new Map(), variants: /* @__PURE__ */ new Map(), rawNames: /* @__PURE__ */ new Map() };
       if (!held.body) held.body = node;
+      const key = variantKey(node.componentProperties);
+      if (!held.variants.has(key)) held.variants.set(key, node);
       for (const [raw, value] of Object.entries((_b = node.componentProperties) != null ? _b : {})) {
         const prop = propName(raw);
         const seen = (_c = held.values.get(prop)) != null ? _c : /* @__PURE__ */ new Set();
         seen.add(String(value.value));
         held.values.set(prop, seen);
         held.types.set(prop, value.type);
+        held.rawNames.set(prop, raw.replace(/#.*$/, ""));
       }
       into.set(name, held);
       return;
@@ -27717,12 +27771,39 @@ ${motion.css}`);
       rootId: (_a = component.body) == null ? void 0 : _a.id,
       assets: assetsByNodeId
     });
-    const body = component.body ? emitJsx(__spreadProps(__spreadValues({}, component.body), { type: "container" }), context, 2) : "    <div />";
     const asContainer = component.body ? __spreadProps(__spreadValues({}, component.body), { type: "container" }) : null;
     const motion = asContainer ? await emitMotion([asContainer], sceneNodesById, motionByNodeId) : { css: "", js: "", gaps: [] };
+    const variantGaps = [];
+    const variantClasses = [];
+    let variantCss = "";
+    if (component.body) {
+      for (const [key, instance] of component.variants) {
+        if (instance.id === component.body.id || key === "") continue;
+        const pairs = pairTrees(component.body, instance);
+        if (!pairs) {
+          variantGaps.push(
+            `${component.name}: the variant ${key} is built differently from ${variantKey(
+              component.body.componentProperties
+            ) || "the first one"} \u2014 this file draws the first one's layers, so that variant needs writing by hand`
+          );
+          continue;
+        }
+        const own = await emitCss([__spreadProps(__spreadValues({}, instance), { type: "container" })], sceneNodesById, variableNamesById, {
+          preamble: false
+        });
+        const scope = variantClass(key);
+        variantClasses.push(`${JSON.stringify(key)}: styles[${JSON.stringify(scope)}]`);
+        variantCss += `
+
+/* ${key} */
+${scopeVariantCss(own, pairs, scope)}`;
+      }
+    }
+    context.hasVariants = variantClasses.length > 0;
+    const body = asContainer ? emitJsx(asContainer, context, 2) : "    <div />";
     const css = asContainer ? await emitCss([asContainer], sceneNodesById, variableNamesById, { preamble: false }) + (motion.css.trim() === "" ? "" : `
 
-${motion.css}`) : "";
+${motion.css}`) + variantCss : "";
     const fields = [];
     for (const [prop, seen] of component.values) {
       const type = component.types.get(prop);
@@ -27736,19 +27817,31 @@ ${motion.css}`) : "";
 ${fields.join("\n")}
 ` : "\n";
     const imports = [...context.used].filter((one) => one !== component.name);
+    const variantProps2 = [...component.types.entries()].filter(([, type]) => type === "VARIANT").map(([prop]) => prop);
+    const keyExpression = variantProps2.length > 0 ? `[${variantProps2.map((prop) => {
+      var _a2;
+      return `\`${(_a2 = component.rawNames.get(prop)) != null ? _a2 : prop}=\${${prop}}\``;
+    }).join(", ")}].sort().join(',')` : null;
+    const variantBlock = variantClasses.length > 0 && keyExpression ? `
+const VARIANTS: Record<string, string | undefined> = {
+  ${variantClasses.join(",\n  ")},
+}
+` : "";
     const tsx = `${header(component.name)}
 import styles from './${component.name}.module.css'
 ${imports.map((one) => `import { ${one} } from './${one}'`).join("\n")}${imports.length > 0 ? "\n" : ""}${Object.keys(context.copy).length > 0 ? "import { useCopy } from '../copy'\n" : ""}
 export interface ${component.name}Props {${props}  className?: string
 }
 
+${variantBlock}
 export function ${component.name}({ ${[...component.values.keys(), ...context.props.keys()].filter((one, index, all) => all.indexOf(one) === index).join(", ")}${component.values.size + context.props.size > 0 ? ", " : ""}className }: ${component.name}Props) {
-${Object.keys(context.copy).length > 0 ? "  const t = useCopy()\n" : ""}  return (
+${Object.keys(context.copy).length > 0 ? "  const t = useCopy()\n" : ""}${variantBlock ? `  const variant = VARIANTS[${keyExpression}]
+` : ""}  return (
 ${body}
   )
 }
 `;
-    return { tsx, css, gaps: context.gaps };
+    return { tsx, css, gaps: [...context.gaps, ...variantGaps] };
   }
   function screenFile(name, markup, context) {
     const imports = [...context.used].map((one) => `import { ${one} } from '../components/${one}'`).join("\n");
