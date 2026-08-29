@@ -109,8 +109,9 @@ import {
   describePaints,
   variableName,
 } from './canvas/apply.ts'
-import { createNode, planCreate, type CreatePlan } from './canvas/create.ts'
+import { createNode, planCreate, type CreatePlan, type CreateSpec } from './canvas/create.ts'
 import { styledRuns } from './canvas/text-runs.ts'
+import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import {
   bindingField,
   collectComponents,
@@ -233,6 +234,7 @@ type PluginMessage =
   | { type: 'ANNOTATE'; nodes?: unknown; label?: string; properties?: unknown; category?: string; clear?: boolean }
   | { type: 'MEASURE_LIST'; nodes?: unknown }
   | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
+  | { type: 'NODE_ROUNDTRIP'; nodes: unknown; depth?: number; keep?: boolean; ignore?: unknown }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
   | { type: 'MODULE_INSPECT'; file: unknown }
@@ -1098,25 +1100,28 @@ figma.on('selectionchange', postSelectionToUi)
  * Paints are left out: `fill` and `stroke` already report `var:<name>` themselves, and repeating
  * them here would say the same thing twice in a reply that is read by eye.
  */
-async function describeBindings(value: unknown): Promise<{ bind?: string }> {
+async function describeBindings(value: unknown): Promise<{ bind?: Record<string, string> }> {
   if (typeof value !== 'object' || value === null) return {}
-  const parts: string[] = []
+  // `{ field: "variable name" }` — the shape `bind` takes on the way in. It used to render as
+  // `"itemSpacing=var:spacing/medium · paddingLeft=var:size/large"`, which reads well and could
+  // not be sent: the round trip lost every spacing binding on the node and the copy came out a
+  // hundred pixels taller. The first thing the instrument found was this.
+  const bound: Record<string, string> = {}
   for (const [field, alias] of Object.entries(value as Record<string, unknown>)) {
     if (['fills', 'strokes', 'effects', 'componentProperties'].includes(field)) continue
     // A text field is bound per range, so Figma keeps a list even when the whole layer follows
     // one variable — and reading only the single form left a binding that had plainly worked
-    // reported as absent.
+    // reported as absent. Only the first is named here: `bind` sets one variable per field, and
+    // the rest belong to the runs.
     const aliases = Array.isArray(alias) ? alias : [alias]
-    const seen = new Set<string>()
     for (const one of aliases as Array<{ id?: string }>) {
       const id = one?.id
-      if (!id || seen.has(id)) continue
-      seen.add(id)
+      if (!id || field in bound) continue
       const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
-      parts.push(`${field}=var:${variable?.name ?? id}`)
+      bound[field] = variable?.name ?? id
     }
   }
-  return parts.length > 0 ? { bind: parts.join(' · ') } : {}
+  return Object.keys(bound).length > 0 ? { bind: bound } : {}
 }
 
 /**
@@ -1423,7 +1428,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...('strokes' in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0
       ? {
           stroke: await describePaints(bag.strokes),
-          strokeWeight: round(bag.strokeWeight),
+          // Only when it is one: a stroke of mixed weights reads as nothing here, and `null` was
+          // being sent back as a weight and refused.
+          ...(typeof bag.strokeWeight === 'number' ? { strokeWeight: round(bag.strokeWeight) } : {}),
           // The rest of the stroke, when it is not the default — a read that omits the dashes
           // cannot be edited and sent back, which is the whole promise of this shape.
           ...(bag.strokeAlign !== 'INSIDE' ? { strokeAlign: bag.strokeAlign } : {}),
@@ -1510,17 +1517,21 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // name is the axis values ("Size=Large, State=Default"), which nobody can instantiate from.
     const owner = main && main.parent?.type === 'COMPONENT_SET' ? main.parent : main
     props.component = owner?.name ?? '(unavailable)'
-    const settings: string[] = []
+    // `{ name: value }` — the shape `properties` takes on the way in. It used to read as
+    // `"Label=Готово · Show dot=false"`, which is one readable line and could not be sent back.
+    const settings: Record<string, string | boolean> = {}
+    const slots: string[] = []
     for (const [key, entry] of Object.entries(
       node.componentProperties as unknown as Record<string, { value?: unknown; type?: string }>
     )) {
       const name = humanPropertyName(key)
-      // A slot holds a node, not a value, and `Content=undefined` was the read saying so badly.
-      if (entry?.type === 'SLOT' || entry?.value === undefined) settings.push(`${name}: slot`)
-      else if (entry.type === 'INSTANCE_SWAP') settings.push(`${name}=${await describeSwap(String(entry.value))}`)
-      else settings.push(`${name}=${String(entry.value)}`)
+      // A slot holds a node, not a value: there is nothing here for a write to set, so it is
+      // reported as the fact it is rather than as a property that failed to travel.
+      if (entry?.type === 'SLOT' || entry?.value === undefined) slots.push(name)
+      else settings[name] = entry.value as string | boolean
     }
-    if (settings.length > 0) props.properties = settings.join(' · ')
+    if (Object.keys(settings).length > 0) props.properties = settings
+    if (slots.length > 0) props.slots = slots
   }
   // What Dev Mode shows beside the layer: where its code lives, and what the designer wrote for
   // whoever writes it. A handoff that carries neither is the export answering half the question.
@@ -4169,6 +4180,117 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         postToUi({ type: 'MEASUREMENTS_SET', failed, done, total: page.getMeasurements().length })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'MEASURE_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+
+    case 'NODE_ROUNDTRIP': {
+      // @agent read: does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy
+      // @agent param nodes: the ids to check
+      // @agent param depth: how many levels of children to carry across — 0 is the node alone, 3 by default
+      // @agent param keep: true leaves the copy on the canvas beside the original, to look at
+      // @agent param ignore: property names to leave out of the comparison, for the ones a file legitimately changes
+      // @agent cost: one copy made and removed per node — the document is left as it was unless you keep it
+      try {
+        const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
+        const depth = Math.min(Math.max(msg.depth ?? 3, 0), 12)
+        const ignore = new Set((Array.isArray(msg.ignore) ? msg.ignore : []).map((one) => String(one)))
+
+        const reports = []
+        for (const id of ids) {
+          const node = await figma.getNodeByIdAsync(id)
+          if (!node || !('type' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+            reports.push({ node: id, ok: false, error: 'no such scene node' })
+            continue
+          }
+
+          const original = node as SceneNode
+          const dropped: RoundTripFinding[] = []
+          const notValues: string[] = []
+
+          // The reading, and the spec it amounts to. Anything the planner will not take is
+          // recorded on the way past rather than quietly left out.
+          const build = async (one: SceneNode, level: number): Promise<CreateSpec | null> => {
+            const reading = await describeNode(one, true)
+            const kids: CreateSpec[] = []
+            // Not into an instance: what is inside it belongs to its component, and copying it
+            // would compare a screen against a screen with everything in it twice.
+            if (level > 0 && 'children' in one && one.type !== 'INSTANCE') {
+              for (const child of (one as SceneNode & ChildrenMixin).children) {
+                const made = await build(child, level - 1)
+                if (made) kids.push(made)
+              }
+            }
+            const of =
+              one.type === 'INSTANCE'
+                ? ((await (one as InstanceNode).getMainComponentAsync().catch(() => null))?.id ?? null)
+                : null
+            // An instance is rebuilt from its component and its component properties. What a
+            // designer changed INSIDE it — a hidden layer, a retyped label, a row set to hug —
+            // has no vocabulary of its own and does not travel; a copy whose rows come back at
+            // their default height is that, and not a fresh defect each time.
+            if (of && level > 0) notValues.push(`${one.name} (instance overrides)`)
+            const built = specFrom(reading, kids, of)
+            if (!built) {
+              dropped.push({ property: '(node)', why: `a ${one.type} cannot be made by NODE_CREATE` })
+              return null
+            }
+            for (const entry of built.dropped) dropped.push({ ...entry, property: `${one.name}.${entry.property}` })
+            for (const key of built.notValues) notValues.push(`${one.name}.${key}`)
+            return built.spec
+          }
+
+          const spec = await build(original, depth)
+          if (!spec) {
+            reports.push({ node: id, name: original.name, ok: false, error: `a ${original.type} cannot be recreated`, dropped })
+            continue
+          }
+
+          const problems: string[] = []
+          const plan = planCreate(spec, 'copy', problems)
+          if (!plan || problems.length > 0) {
+            reports.push({ node: id, name: original.name, ok: false, error: problems.join(' · ') || 'the reading did not plan', dropped })
+            continue
+          }
+
+          // Beside the original, in the same parent: FILL, absolute positioning and hugging all
+          // mean something different in a different parent, and a copy built on the page would
+          // fail them for a reason that has nothing to do with the reading.
+          const parent = (original.parent ?? figma.currentPage) as BaseNode & ChildrenMixin
+          const copy = await createNode(plan, parent, false)
+          const made = await figma.getNodeByIdAsync(copy.id)
+          if (!made || !('type' in made)) {
+            reports.push({ node: id, name: original.name, ok: false, error: 'the copy was not made', dropped })
+            continue
+          }
+
+          const before = ((await describeNode(original, true)).props ?? {}) as Record<string, unknown>
+          const after = ((await describeNode(made as SceneNode, true)).props ?? {}) as Record<string, unknown>
+          const { same, diverged } = compare(before, after, ignore)
+          const failed = copy.failures ?? []
+
+          if (msg.keep !== true) (made as SceneNode).remove()
+          else figma.commitUndo()
+
+          reports.push({
+            node: id,
+            name: original.name,
+            type: original.type,
+            ok: diverged.length === 0 && dropped.length === 0 && failed.length === 0,
+            same: same.length,
+            ...(diverged.length > 0 ? { diverged } : {}),
+            ...(dropped.length > 0 ? { dropped } : {}),
+            ...(failed.length > 0 ? { failed } : {}),
+            ...(notValues.length > 0 ? { notValues } : {}),
+            ...(msg.keep === true ? { copy: copy.id } : {}),
+          })
+        }
+
+        const broken = reports.filter((one) => one.ok === false).length
+        figma.notify(broken > 0 ? `${broken} of ${reports.length} did not survive` : `${reports.length} survived the round trip`)
+        postToUi({ type: 'ROUNDTRIP', checked: reports.length, broken, nodes: reports })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_ROUNDTRIP', message: String((error as Error)?.message || error) })
       }
       break
     }

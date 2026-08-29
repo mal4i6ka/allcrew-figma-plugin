@@ -343,10 +343,10 @@ export interface NodeProps {
   fontName?: { family: string; style: string }
   /** Horizontal alignment within the text box. */
   textAlign?: 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'
-  /** Pixels, a percentage of the font size like "150%", or AUTO to follow the font. */
-  lineHeight?: number | 'AUTO' | `${number}%`
-  /** Pixels between characters, or a percentage like "5%"; negative tightens. */
-  letterSpacing?: number | `${number}%`
+  /** Pixels (`16` or `"16px"`), a percentage of the font size like `"150%"`, or AUTO to follow the font. */
+  lineHeight?: number | 'AUTO' | `${number}%` | `${number}px`
+  /** Pixels between characters (`1` or `"1px"`), or a percentage like `"5%"`; negative tightens. */
+  letterSpacing?: number | `${number}%` | `${number}px`
   /** Whether the box follows the text, and in which direction. */
   autoResize?: 'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'
   /** Where the text sits in a box taller than itself. */
@@ -1326,8 +1326,8 @@ const DEFAULT_EASING = 'EASE_OUT'
 export function measure(value: unknown): { value: number; unit: 'PIXELS' | 'PERCENT' } | null {
   if (typeof value === 'number' && Number.isFinite(value)) return { value, unit: 'PIXELS' }
   if (typeof value === 'string') {
-    const percent = /^(-?\d+(?:\.\d+)?)\s*%$/.exec(value.trim())
-    if (percent) return { value: Number(percent[1]), unit: 'PERCENT' }
+    const written = /^(-?\d+(?:\.\d+)?)\s*(%|px)?$/.exec(value.trim())
+    if (written) return { value: Number(written[1]), unit: written[2] === '%' ? 'PERCENT' : 'PIXELS' }
   }
   return null
 }

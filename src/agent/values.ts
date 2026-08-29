@@ -145,7 +145,56 @@ export async function resolveVariable(ref: unknown): Promise<Variable> {
       if (match) return match
     }
   }
+  // Nothing local answers to the name. It may still be a variable this file USES from a library:
+  // a node bound to the 3.0 collection reads back as `spacing/m`, which exists nowhere locally, so
+  // sending that reading back was refused for a token the file plainly holds. The libraries are
+  // searched last because it costs a round trip each, and only ever after the local answer failed.
+  const fromLibrary = await libraryVariable(ref)
+  if (fromLibrary) return fromLibrary
   throw new Error(`no variable named "${ref}"`)
+}
+
+/** A variable of that name in an enabled library, imported so it can be bound here. */
+async function libraryVariable(ref: string): Promise<Variable | null> {
+  let collections: Array<{ key: string; name: string }>
+  try {
+    collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync()
+  } catch {
+    return null
+  }
+
+  // The whole name first, in every library. A token name is full of slashes — `spacing/m` is a
+  // name, not the collection "spacing" — so reading the first slash as a qualifier searched a
+  // collection that does not exist and found nothing anywhere.
+  for (const collection of collections) {
+    const found = await inLibrary(collection.key, ref)
+    if (found) return found
+  }
+
+  // Only then as "Collection/name", which is how a local clash is spelled, so the same spelling
+  // works on both sides of the file boundary.
+  const slash = ref.indexOf('/')
+  if (slash > 0) {
+    const wantedCollection = ref.slice(0, slash).toLowerCase()
+    const name = ref.slice(slash + 1)
+    for (const collection of collections) {
+      if (collection.name.toLowerCase() !== wantedCollection) continue
+      const found = await inLibrary(collection.key, name)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+async function inLibrary(collectionKey: string, name: string): Promise<Variable | null> {
+  try {
+    const inside = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collectionKey)
+    const found = inside.find((one) => one.name === name)
+    return found ? await figma.variables.importVariableByKeyAsync(found.key) : null
+  } catch {
+    // A library that will not answer is not an error here — the next one might.
+    return null
+  }
 }
 
 async function collectionNames(variables: readonly Variable[]): Promise<string[]> {
