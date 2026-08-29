@@ -75,7 +75,7 @@ const NOT_PROPERTIES = new Set([
  * mean a copied vector comes out empty — a real limit, named here so it is counted once as a
  * known summary instead of fifteen times as a fresh defect.
  */
-const SUMMARIES = new Set(['network', 'brush', 'timelines', 'shader'])
+const SUMMARIES = new Set(['network', 'brush', 'shader'])
 
 /**
  * Where a node sits is its parent's business, so position is compared and never sent.

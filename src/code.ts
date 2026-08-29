@@ -114,6 +114,7 @@ import { styledRuns } from './canvas/text-runs.ts'
 import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
 import { addressIn, readOverrides } from './canvas/overrides.ts'
+import { readKeyframes } from './canvas/keyframes.ts'
 import {
   bindingField,
   collectComponents,
@@ -1456,9 +1457,12 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0
       ? { animation: await describeAnimation(bag.animationStyles) }
       : {}),
+    // The length of the timeline, in the word the write takes. The ids beside it were the read
+    // naming Figma's own bookkeeping — a caller can neither use them nor send them back.
     ...(Array.isArray(bag.timelines) && bag.timelines.length > 0
-      ? { timelines: (bag.timelines as Timeline[]).map((one) => `${one.id} ${one.duration}s`).join(' · ') }
+      ? { timeline: (bag.timelines as Timeline[])[0].duration }
       : {}),
+    ...(readKeyframes(bag.manualKeyframeTracks)),
     ...(await describeBindings(bag.boundVariables)),
     ...(typeof bag.overflowDirection === 'string' && bag.overflowDirection !== 'NONE'
       ? { scroll: bag.overflowDirection }

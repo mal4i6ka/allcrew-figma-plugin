@@ -909,3 +909,35 @@ test('a read prints `sizing` at the top of a node, so a write takes it there too
   assert.match(planProps({ sizing: { horizontal: 'STRETCH' } }).problems[0], /must be one of: FIXED, HUG, FILL/)
   assert.match(planProps({ sizing: { across: 'FILL' } }).problems[0], /unknown axis "across"/)
 })
+
+test('a keyframe track is planned in our words and applied in Figma\'s', () => {
+  const [step] = stepsOf({
+    keyframes: [{ field: 'y', from: 40, at: [{ time: 0, value: 40 }, { time: 0.6, value: 0, easing: 'GENTLE' }] }],
+  })
+  assert.deepEqual(step, {
+    step: 'keyframes',
+    tracks: [
+      {
+        name: 'TRANSLATION_Y',
+        track: {
+          keyframes: [
+            { timelinePosition: 0, value: { type: 'FLOAT', value: 40 } },
+            { timelinePosition: 0.6, value: { type: 'FLOAT', value: 0 }, easing: { type: 'GENTLE' } },
+          ],
+          baseValue: { type: 'FLOAT', value: 40 },
+        },
+      },
+    ],
+  })
+})
+
+test('a pair moves as a pair, and a refusal names all thirty fields', () => {
+  const [step] = stepsOf({ keyframes: [{ field: 'move', at: [{ time: 0, value: { x: 0, y: 10 } }] }] })
+  assert.equal((step as { tracks: Array<{ name: string }> }).tracks[0].name, 'TRANSLATION_XY')
+  // `STACK_COUNTER_SPACING` is not a thing anyone guesses, so the refusal carries the whole list.
+  assert.match(planProps({ keyframes: [{ field: 'wobble', at: [] }] }).problems[0], /opacity, x, y, move, rotation/)
+  assert.match(
+    planProps({ keyframes: [{ field: 'move', at: [{ time: 0, value: 5 }] }] }).problems[0],
+    /must be \{ x, y \}/
+  )
+})

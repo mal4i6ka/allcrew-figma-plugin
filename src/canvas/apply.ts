@@ -72,6 +72,10 @@ const propertyOf = (step: PropStep): string => {
       return step.property
     case 'overrides':
       return 'overrides'
+    case 'keyframes':
+      return 'keyframes'
+    case 'timeline':
+      return 'timeline'
     case 'font':
       return 'fontName'
     case 'text':
@@ -650,6 +654,48 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         before: `${before} path(s)`,
         after: step.paths.map((path) => `${path.windingRule} ${path.data}`).join(' · '),
       }
+    }
+
+    case 'keyframes': {
+      const motion = node as unknown as {
+        applyManualKeyframeTrack?: (field: unknown, track: unknown) => void
+        manualKeyframeTracks?: Record<string, unknown>
+      }
+      if (typeof motion.applyManualKeyframeTrack !== 'function') {
+        throw new Error(`a ${node.type} cannot be animated on a timeline`)
+      }
+      const applied: string[] = []
+      const failures: string[] = []
+      for (const one of step.tracks) {
+        try {
+          // Per track, not per node: a `width` track Figma refuses on a hugging frame should not
+          // take the opacity track down with it.
+          if (!dry) motion.applyManualKeyframeTrack({ type: 'PROPERTY', name: one.name }, one.track)
+          applied.push(one.name)
+        } catch (error) {
+          failures.push(`${one.name}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+      return {
+        property: 'keyframes',
+        before: `${Object.keys(motion.manualKeyframeTracks ?? {}).length} track(s)`,
+        after: applied.join(', '),
+        ...(failures.length > 0 ? { error: failures.join(' · ') } : {}),
+      }
+    }
+
+    case 'timeline': {
+      const motion = node as unknown as {
+        timelines?: ReadonlyArray<{ id: string; duration: number }>
+        setTimelineDuration?: (id: string, duration: number) => void
+      }
+      const timeline = motion.timelines?.[0]
+      if (!timeline || typeof motion.setTimelineDuration !== 'function') {
+        throw new Error(`a ${node.type} has no timeline to set the length of`)
+      }
+      const before = timeline.duration
+      if (!dry) motion.setTimelineDuration(timeline.id, step.seconds)
+      return { property: 'timeline', before: `${before}s`, after: `${step.seconds}s` }
     }
 
     case 'overrides': {

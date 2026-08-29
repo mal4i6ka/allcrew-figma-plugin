@@ -377,6 +377,10 @@ export interface NodeProps {
   autoRename?: boolean
   /** How lines are broken: `AUTO`, `BALANCE` (even lines) or `PRETTY` (no orphans). */
   textWrap?: 'AUTO' | 'BALANCE' | 'PRETTY'
+  /** Movement on a timeline: `[{ field: "opacity", from: 0, at: [{ time: 0, value: 0 }, …] }]`. */
+  keyframes?: KeyframeTrack[]
+  /** How long this node's timeline runs, in seconds. */
+  timeline?: number
   /** INSTANCE only: what the designer changed INSIDE it — `[{ at: "<child id within the instance>", props }]`. */
   overrides?: Array<{ at: string; props: unknown }>
   /** INSTANCE only: component properties by their catalogue names — variants, text, booleans. */
@@ -430,6 +434,29 @@ export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
  * every occurrence of it is styled. Naming a match that is not there is an error, not a quiet
  * no-op: a caller who thinks they emboldened a word deserves to hear that they did not.
  */
+/**
+ * One property moving over time.
+ *
+ * Figma calls it a manual keyframe track and addresses it by a name of its own — `TRANSLATION_X`,
+ * `STACK_SPACING` — while everything else in this vocabulary is spelled the way the property is:
+ * `x`, `gap`. The words here are ours, and the map to Figma's is one place, below.
+ */
+export interface KeyframeTrack {
+  /** What moves: opacity, x, y, rotation, scale, width, height, cornerRadius, gap, padding… */
+  field: string
+  /** The value before the first keyframe. Without it the node's own value stands. */
+  from?: number | { x: number; y: number }
+  /** The keyframes themselves, in seconds along the timeline. */
+  at: Array<{
+    time: number
+    value: number | { x: number; y: number }
+    /** `EASE_OUT`, `GENTLE`, `LINEAR`… the same words a prototype link takes. */
+    easing?: string
+    /** A curve of your own: [x1, y1, x2, y2]. */
+    bezier?: [number, number, number, number]
+  }>
+}
+
 export interface TextRun {
   from?: number
   to?: number
@@ -538,6 +565,8 @@ export type PropStep =
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
   | { step: 'overrides'; overrides: Array<{ at: string; steps: PropStep[] }> }
+  | { step: 'keyframes'; tracks: Array<{ name: string; track: unknown }> }
+  | { step: 'timeline'; seconds: number }
   | { step: 'links'; links: PlannedLink[]; destinations: string[] }
   | { step: 'data'; data: Record<string, string | null> }
 
@@ -682,6 +711,9 @@ const ORDER = [
   'effects',
   'grid',
   'animation',
+  // After the properties they move: a track on `width` means nothing until the width is set.
+  'timeline',
+  'keyframes',
   'blendMode',
   'fontName',
   'fontSize',
@@ -1167,6 +1199,16 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         if (typeof props.swap !== 'string' || props.swap.trim() === '') {
           fail('swap must be a component id or a published key')
         } else steps.push({ step: 'swap', component: props.swap.trim() })
+        break
+      }
+      case 'timeline': {
+        const seconds = number('timeline', 0)
+        if (seconds !== null) steps.push({ step: 'timeline', seconds })
+        break
+      }
+      case 'keyframes': {
+        const track = planKeyframes(props.keyframes, `${where}.keyframes`, problems)
+        if (track) steps.push(track)
         break
       }
       case 'overrides': {
@@ -2234,6 +2276,115 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
  * follow a token, or, for the one prop every style calls `easing`, the same curve vocabulary the
  * prototype links use.
  */
+/**
+ * Figma's names for the things that can move, against the words this vocabulary already uses for
+ * them. Anything not here is not animatable, and the refusal says so with the whole list — there
+ * are thirty and no one will guess `STACK_COUNTER_SPACING`.
+ */
+const KEYFRAME_FIELDS: Readonly<Record<string, string>> = {
+  opacity: 'OPACITY',
+  x: 'TRANSLATION_X',
+  y: 'TRANSLATION_Y',
+  move: 'TRANSLATION_XY',
+  rotation: 'ROTATION',
+  scaleX: 'SCALE_X',
+  scaleY: 'SCALE_Y',
+  scale: 'SCALE_XY',
+  width: 'WIDTH',
+  height: 'HEIGHT',
+  cornerRadius: 'CORNER_RADIUS',
+  topLeftRadius: 'RECTANGLE_TOP_LEFT_CORNER_RADIUS',
+  topRightRadius: 'RECTANGLE_TOP_RIGHT_CORNER_RADIUS',
+  bottomLeftRadius: 'RECTANGLE_BOTTOM_LEFT_CORNER_RADIUS',
+  bottomRightRadius: 'RECTANGLE_BOTTOM_RIGHT_CORNER_RADIUS',
+  strokeWeight: 'STROKE_WEIGHT',
+  strokeTop: 'BORDER_TOP_WEIGHT',
+  strokeBottom: 'BORDER_BOTTOM_WEIGHT',
+  strokeLeft: 'BORDER_LEFT_WEIGHT',
+  strokeRight: 'BORDER_RIGHT_WEIGHT',
+  gap: 'STACK_SPACING',
+  wrapGap: 'STACK_COUNTER_SPACING',
+  paddingLeft: 'STACK_PADDING_LEFT',
+  paddingTop: 'STACK_PADDING_TOP',
+  paddingRight: 'STACK_PADDING_RIGHT',
+  paddingBottom: 'STACK_PADDING_BOTTOM',
+  rowGap: 'GRID_ROW_GAP',
+  columnGap: 'GRID_COLUMN_GAP',
+  trimStart: 'PATH_TRIM_START',
+  trimEnd: 'PATH_TRIM_END',
+}
+
+/** A pair moves as a vector; everything else is one number. */
+const VECTOR_FIELDS = ['TRANSLATION_XY', 'SCALE_XY']
+
+function planKeyframes(raw: unknown, where: string, problems: string[]): PropStep | null {
+  if (!Array.isArray(raw)) {
+    problems.push(`${where} must be an array of { field, at } tracks`)
+    return null
+  }
+
+  const tracks: Array<{ name: string; track: unknown }> = []
+  for (const [index, entry] of raw.entries()) {
+    const at = `${where}[${index}]`
+    const one = entry as { field?: unknown; from?: unknown; at?: unknown }
+    const field = typeof one?.field === 'string' ? KEYFRAME_FIELDS[one.field.trim()] : undefined
+    if (!field) {
+      problems.push(`${at}.field must be one of: ${Object.keys(KEYFRAME_FIELDS).join(', ')}`)
+      continue
+    }
+    if (!Array.isArray(one.at) || one.at.length === 0) {
+      problems.push(`${at}.at must be a non-empty array of { time, value }`)
+      continue
+    }
+
+    const wantsVector = VECTOR_FIELDS.includes(field)
+    const valueOf = (value: unknown, at: string): unknown | null => {
+      if (wantsVector) {
+        const pair = value as { x?: unknown; y?: unknown }
+        if (typeof pair?.x !== 'number' || typeof pair?.y !== 'number') {
+          problems.push(`${at} must be { x, y } — ${field} moves in two directions at once`)
+          return null
+        }
+        return { type: 'VECTOR', value: { x: pair.x, y: pair.y } }
+      }
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        problems.push(`${at} must be a number`)
+        return null
+      }
+      return { type: 'FLOAT', value }
+    }
+
+    const keyframes: unknown[] = []
+    for (const [k, frame] of (one.at as unknown[]).entries()) {
+      const spot = `${at}.at[${k}]`
+      const asked = frame as { time?: unknown; value?: unknown; easing?: unknown; bezier?: unknown }
+      if (typeof asked?.time !== 'number' || !Number.isFinite(asked.time) || asked.time < 0) {
+        problems.push(`${spot}.time must be a number of seconds from the start`)
+        continue
+      }
+      const value = valueOf(asked.value, `${spot}.value`)
+      if (value === null) continue
+      const easing = asked.easing === undefined && asked.bezier === undefined
+        ? null
+        : buildEasing(asked as Record<string, unknown>, (message) => problems.push(`${spot}: ${message}`))
+      keyframes.push({
+        timelinePosition: asked.time,
+        value,
+        ...(easing ? { easing } : {}),
+      })
+    }
+    if (keyframes.length === 0) continue
+
+    const base = one.from === undefined ? null : valueOf(one.from, `${at}.from`)
+    tracks.push({
+      name: field,
+      track: { keyframes, ...(base ? { baseValue: base } : {}) },
+    })
+  }
+
+  return tracks.length > 0 ? { step: 'keyframes', tracks } : null
+}
+
 function planAnimation(raw: unknown, where: string, problems: string[]): PropStep | null {
   // `null` and `[]` both mean "take the animation off", the way they do for links and effects.
   const wanted = raw === null ? [] : Array.isArray(raw) ? raw : [raw]

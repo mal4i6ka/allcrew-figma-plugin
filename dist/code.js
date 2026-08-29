@@ -18101,6 +18101,9 @@ ${renderSections(sections)}
     "effects",
     "grid",
     "animation",
+    // After the properties they move: a track on `width` means nothing until the width is set.
+    "timeline",
+    "keyframes",
     "blendMode",
     "fontName",
     "fontSize",
@@ -18525,6 +18528,16 @@ ${renderSections(sections)}
           if (typeof props.swap !== "string" || props.swap.trim() === "") {
             fail2("swap must be a component id or a published key");
           } else steps.push({ step: "swap", component: props.swap.trim() });
+          break;
+        }
+        case "timeline": {
+          const seconds2 = number2("timeline", 0);
+          if (seconds2 !== null) steps.push({ step: "timeline", seconds: seconds2 });
+          break;
+        }
+        case "keyframes": {
+          const track = planKeyframes(props.keyframes, `${where}.keyframes`, problems);
+          if (track) steps.push(track);
           break;
         }
         case "overrides": {
@@ -19327,6 +19340,98 @@ ${renderSections(sections)}
       );
     }
     return { step: "effects", effects, bind, summary: summary.join(" \xB7 ") || "none" };
+  }
+  var KEYFRAME_FIELDS = {
+    opacity: "OPACITY",
+    x: "TRANSLATION_X",
+    y: "TRANSLATION_Y",
+    move: "TRANSLATION_XY",
+    rotation: "ROTATION",
+    scaleX: "SCALE_X",
+    scaleY: "SCALE_Y",
+    scale: "SCALE_XY",
+    width: "WIDTH",
+    height: "HEIGHT",
+    cornerRadius: "CORNER_RADIUS",
+    topLeftRadius: "RECTANGLE_TOP_LEFT_CORNER_RADIUS",
+    topRightRadius: "RECTANGLE_TOP_RIGHT_CORNER_RADIUS",
+    bottomLeftRadius: "RECTANGLE_BOTTOM_LEFT_CORNER_RADIUS",
+    bottomRightRadius: "RECTANGLE_BOTTOM_RIGHT_CORNER_RADIUS",
+    strokeWeight: "STROKE_WEIGHT",
+    strokeTop: "BORDER_TOP_WEIGHT",
+    strokeBottom: "BORDER_BOTTOM_WEIGHT",
+    strokeLeft: "BORDER_LEFT_WEIGHT",
+    strokeRight: "BORDER_RIGHT_WEIGHT",
+    gap: "STACK_SPACING",
+    wrapGap: "STACK_COUNTER_SPACING",
+    paddingLeft: "STACK_PADDING_LEFT",
+    paddingTop: "STACK_PADDING_TOP",
+    paddingRight: "STACK_PADDING_RIGHT",
+    paddingBottom: "STACK_PADDING_BOTTOM",
+    rowGap: "GRID_ROW_GAP",
+    columnGap: "GRID_COLUMN_GAP",
+    trimStart: "PATH_TRIM_START",
+    trimEnd: "PATH_TRIM_END"
+  };
+  var VECTOR_FIELDS = ["TRANSLATION_XY", "SCALE_XY"];
+  function planKeyframes(raw, where, problems) {
+    if (!Array.isArray(raw)) {
+      problems.push(`${where} must be an array of { field, at } tracks`);
+      return null;
+    }
+    const tracks = [];
+    for (const [index, entry] of raw.entries()) {
+      const at = `${where}[${index}]`;
+      const one = entry;
+      const field = typeof (one == null ? void 0 : one.field) === "string" ? KEYFRAME_FIELDS[one.field.trim()] : void 0;
+      if (!field) {
+        problems.push(`${at}.field must be one of: ${Object.keys(KEYFRAME_FIELDS).join(", ")}`);
+        continue;
+      }
+      if (!Array.isArray(one.at) || one.at.length === 0) {
+        problems.push(`${at}.at must be a non-empty array of { time, value }`);
+        continue;
+      }
+      const wantsVector = VECTOR_FIELDS.includes(field);
+      const valueOf = (value, at2) => {
+        if (wantsVector) {
+          const pair2 = value;
+          if (typeof (pair2 == null ? void 0 : pair2.x) !== "number" || typeof (pair2 == null ? void 0 : pair2.y) !== "number") {
+            problems.push(`${at2} must be { x, y } \u2014 ${field} moves in two directions at once`);
+            return null;
+          }
+          return { type: "VECTOR", value: { x: pair2.x, y: pair2.y } };
+        }
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          problems.push(`${at2} must be a number`);
+          return null;
+        }
+        return { type: "FLOAT", value };
+      };
+      const keyframes = [];
+      for (const [k, frame3] of one.at.entries()) {
+        const spot = `${at}.at[${k}]`;
+        const asked = frame3;
+        if (typeof (asked == null ? void 0 : asked.time) !== "number" || !Number.isFinite(asked.time) || asked.time < 0) {
+          problems.push(`${spot}.time must be a number of seconds from the start`);
+          continue;
+        }
+        const value = valueOf(asked.value, `${spot}.value`);
+        if (value === null) continue;
+        const easing = asked.easing === void 0 && asked.bezier === void 0 ? null : buildEasing(asked, (message) => problems.push(`${spot}: ${message}`));
+        keyframes.push(__spreadValues({
+          timelinePosition: asked.time,
+          value
+        }, easing ? { easing } : {}));
+      }
+      if (keyframes.length === 0) continue;
+      const base = one.from === void 0 ? null : valueOf(one.from, `${at}.from`);
+      tracks.push({
+        name: field,
+        track: __spreadValues({ keyframes }, base ? { baseValue: base } : {})
+      });
+    }
+    return tracks.length > 0 ? { step: "keyframes", tracks } : null;
   }
   function planAnimation(raw, where, problems) {
     const wanted = raw === null ? [] : Array.isArray(raw) ? raw : [raw];
@@ -20836,6 +20941,10 @@ ${renderSections(sections)}
         return step.property;
       case "overrides":
         return "overrides";
+      case "keyframes":
+        return "keyframes";
+      case "timeline":
+        return "timeline";
       case "font":
         return "fontName";
       case "text":
@@ -20856,7 +20965,7 @@ ${renderSections(sections)}
     }
   };
   async function applyStep(node, step, dry) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r;
     const bag = node;
     switch (step.step) {
       case "assign": {
@@ -21290,6 +21399,37 @@ ${renderSections(sections)}
           before: `${before} path(s)`,
           after: step.paths.map((path) => `${path.windingRule} ${path.data}`).join(" \xB7 ")
         };
+      }
+      case "keyframes": {
+        const motion = node;
+        if (typeof motion.applyManualKeyframeTrack !== "function") {
+          throw new Error(`a ${node.type} cannot be animated on a timeline`);
+        }
+        const applied = [];
+        const failures = [];
+        for (const one of step.tracks) {
+          try {
+            if (!dry) motion.applyManualKeyframeTrack({ type: "PROPERTY", name: one.name }, one.track);
+            applied.push(one.name);
+          } catch (error) {
+            failures.push(`${one.name}: ${String((error == null ? void 0 : error.message) || error)}`);
+          }
+        }
+        return __spreadValues({
+          property: "keyframes",
+          before: `${Object.keys((_q = motion.manualKeyframeTracks) != null ? _q : {}).length} track(s)`,
+          after: applied.join(", ")
+        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
+      }
+      case "timeline": {
+        const motion = node;
+        const timeline = (_r = motion.timelines) == null ? void 0 : _r[0];
+        if (!timeline || typeof motion.setTimelineDuration !== "function") {
+          throw new Error(`a ${node.type} has no timeline to set the length of`);
+        }
+        const before = timeline.duration;
+        if (!dry) motion.setTimelineDuration(timeline.id, step.seconds);
+        return { property: "timeline", before: `${before}s`, after: `${step.seconds}s` };
       }
       case "overrides": {
         const applied = [];
@@ -24776,7 +24916,7 @@ ${scripts}`, "");
   ];
 
   // src/agent/props-vocabulary.ts
-  var INJECTED = `[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer's mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"sizing","type":"{ horizontal?: SizingMode; vertical?: SizingMode }","note":"How each axis is sized inside the parent \u2014 the same thing \`layout.sizing\` says, and the word a read gives back."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see \`layout.sizing\`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; \`layout.sizing\` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent's auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. \`null\` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"'MIN' | 'CENTER' | 'MAX' | 'AUTO'","note":"GRID only: how the child sits in its cell."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up; \\"none\\" or null clears it."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes \`fill\` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"'INSIDE' | 'OUTSIDE' | 'CENTER'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'","note":"How an open end is finished."},{"name":"strokeJoin","type":"'MITER' | 'BEVEL' | 'ROUND'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. \`[]\` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw's brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. \`[]\` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. \`[]\` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Figma Motion animation styles on this node. \`null\` or \`[]\` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"{ family: string; style: string }","note":"Family and style together, because Figma loads them as a pair."},{"name":"textAlign","type":"'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | 'AUTO' | \`\${number}%\` | \`\${number}px\`","note":"Pixels (\`16\` or \`\\"16px\\"\`), a percentage of the font size like \`\\"150%\\"\`, or AUTO to follow the font."},{"name":"letterSpacing","type":"number | \`\${number}%\` | \`\${number}px\`","note":"Pixels between characters (\`1\` or \`\\"1px\\"\`), or a percentage like \`\\"5%\\"\`; negative tightens."},{"name":"autoResize","type":"'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'","note":"Whether the box follows the text, and in which direction."},{"name":"verticalAlign","type":"'TOP' | 'CENTER' | 'BOTTOM'","note":"Where the text sits in a box taller than itself."},{"name":"textCase","type":"'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE' | 'SMALL_CAPS' | 'SMALL_CAPS_FORCED'","note":"Capitals, small capitals, or the letters as typed."},{"name":"textDecoration","type":"'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'","note":"A line under the words, through them, or neither."},{"name":"paragraphSpacing","type":"number","note":"Space between paragraphs, in pixels."},{"name":"paragraphIndent","type":"number","note":"How far the first line of each paragraph is pushed in."},{"name":"truncate","type":"boolean","note":"Cut the text with an ellipsis when it will not fit."},{"name":"maxLines","type":"number | null","note":"Stop after this many lines. \`null\` lets it run on."},{"name":"link","type":"string | null","note":"A link on the whole layer. \`null\` removes it."},{"name":"listSpacing","type":"number","note":"Space between list items."},{"name":"hangingPunctuation","type":"boolean","note":"Whether punctuation may hang outside the text box."},{"name":"hangingList","type":"boolean","note":"Whether list markers hang outside the text box."},{"name":"leadingTrim","type":"'NONE' | 'CAP_HEIGHT'","note":"Trim the space a font reserves above and below its letters."},{"name":"autoRename","type":"boolean","note":"Whether the layer renames itself when the text changes."},{"name":"textWrap","type":"'AUTO' | 'BALANCE' | 'PRETTY'","note":"How lines are broken: \`AUTO\`, \`BALANCE\` (even lines) or \`PRETTY\` (no orphans)."},{"name":"overrides","type":"Array<{ at: string; props: unknown }>","note":"INSTANCE only: what the designer changed INSIDE it \u2014 \`[{ at: \\"<child id within the instance>\\", props }]\`."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE only: throw away every override first."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin's own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma's parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. \`null\` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame's first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent's children it sits; 0 is first."}]`;
+  var INJECTED = `[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer's mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"sizing","type":"{ horizontal?: SizingMode; vertical?: SizingMode }","note":"How each axis is sized inside the parent \u2014 the same thing \`layout.sizing\` says, and the word a read gives back."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see \`layout.sizing\`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; \`layout.sizing\` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent's auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. \`null\` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"'MIN' | 'CENTER' | 'MAX' | 'AUTO'","note":"GRID only: how the child sits in its cell."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up; \\"none\\" or null clears it."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes \`fill\` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"'INSIDE' | 'OUTSIDE' | 'CENTER'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'","note":"How an open end is finished."},{"name":"strokeJoin","type":"'MITER' | 'BEVEL' | 'ROUND'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. \`[]\` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw's brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. \`[]\` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. \`[]\` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Figma Motion animation styles on this node. \`null\` or \`[]\` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"{ family: string; style: string }","note":"Family and style together, because Figma loads them as a pair."},{"name":"textAlign","type":"'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | 'AUTO' | \`\${number}%\` | \`\${number}px\`","note":"Pixels (\`16\` or \`\\"16px\\"\`), a percentage of the font size like \`\\"150%\\"\`, or AUTO to follow the font."},{"name":"letterSpacing","type":"number | \`\${number}%\` | \`\${number}px\`","note":"Pixels between characters (\`1\` or \`\\"1px\\"\`), or a percentage like \`\\"5%\\"\`; negative tightens."},{"name":"autoResize","type":"'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'","note":"Whether the box follows the text, and in which direction."},{"name":"verticalAlign","type":"'TOP' | 'CENTER' | 'BOTTOM'","note":"Where the text sits in a box taller than itself."},{"name":"textCase","type":"'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE' | 'SMALL_CAPS' | 'SMALL_CAPS_FORCED'","note":"Capitals, small capitals, or the letters as typed."},{"name":"textDecoration","type":"'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'","note":"A line under the words, through them, or neither."},{"name":"paragraphSpacing","type":"number","note":"Space between paragraphs, in pixels."},{"name":"paragraphIndent","type":"number","note":"How far the first line of each paragraph is pushed in."},{"name":"truncate","type":"boolean","note":"Cut the text with an ellipsis when it will not fit."},{"name":"maxLines","type":"number | null","note":"Stop after this many lines. \`null\` lets it run on."},{"name":"link","type":"string | null","note":"A link on the whole layer. \`null\` removes it."},{"name":"listSpacing","type":"number","note":"Space between list items."},{"name":"hangingPunctuation","type":"boolean","note":"Whether punctuation may hang outside the text box."},{"name":"hangingList","type":"boolean","note":"Whether list markers hang outside the text box."},{"name":"leadingTrim","type":"'NONE' | 'CAP_HEIGHT'","note":"Trim the space a font reserves above and below its letters."},{"name":"autoRename","type":"boolean","note":"Whether the layer renames itself when the text changes."},{"name":"textWrap","type":"'AUTO' | 'BALANCE' | 'PRETTY'","note":"How lines are broken: \`AUTO\`, \`BALANCE\` (even lines) or \`PRETTY\` (no orphans)."},{"name":"keyframes","type":"KeyframeTrack[]","note":"Movement on a timeline: \`[{ field: \\"opacity\\", from: 0, at: [{ time: 0, value: 0 }, \u2026] }]\`."},{"name":"timeline","type":"number","note":"How long this node's timeline runs, in seconds."},{"name":"overrides","type":"Array<{ at: string; props: unknown }>","note":"INSTANCE only: what the designer changed INSIDE it \u2014 \`[{ at: \\"<child id within the instance>\\", props }]\`."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE only: throw away every override first."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin's own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma's parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. \`null\` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame's first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent's children it sits; 0 is first."}]`;
   var PROPS_VOCABULARY = (() => {
     if (!INJECTED.startsWith("[")) return [];
     try {
@@ -27405,7 +27545,7 @@ ${scripts}`, "");
     // A slot is a fact about the component, not a value this instance can be told.
     "slots"
   ]);
-  var SUMMARIES = /* @__PURE__ */ new Set(["network", "brush", "timelines", "shader"]);
+  var SUMMARIES = /* @__PURE__ */ new Set(["network", "brush", "shader"]);
   var NOT_SENT = /* @__PURE__ */ new Set(["x", "y"]);
   function sendable(props) {
     var _a, _b;
@@ -27623,6 +27763,71 @@ ${scripts}`, "");
       };
     }
     return { easing: easing.type };
+  }
+
+  // src/canvas/keyframes.ts
+  var OUR_WORDS = {
+    OPACITY: "opacity",
+    TRANSLATION_X: "x",
+    TRANSLATION_Y: "y",
+    TRANSLATION_XY: "move",
+    ROTATION: "rotation",
+    SCALE_X: "scaleX",
+    SCALE_Y: "scaleY",
+    SCALE_XY: "scale",
+    WIDTH: "width",
+    HEIGHT: "height",
+    CORNER_RADIUS: "cornerRadius",
+    RECTANGLE_TOP_LEFT_CORNER_RADIUS: "topLeftRadius",
+    RECTANGLE_TOP_RIGHT_CORNER_RADIUS: "topRightRadius",
+    RECTANGLE_BOTTOM_LEFT_CORNER_RADIUS: "bottomLeftRadius",
+    RECTANGLE_BOTTOM_RIGHT_CORNER_RADIUS: "bottomRightRadius",
+    STROKE_WEIGHT: "strokeWeight",
+    BORDER_TOP_WEIGHT: "strokeTop",
+    BORDER_BOTTOM_WEIGHT: "strokeBottom",
+    BORDER_LEFT_WEIGHT: "strokeLeft",
+    BORDER_RIGHT_WEIGHT: "strokeRight",
+    STACK_SPACING: "gap",
+    STACK_COUNTER_SPACING: "wrapGap",
+    STACK_PADDING_LEFT: "paddingLeft",
+    STACK_PADDING_TOP: "paddingTop",
+    STACK_PADDING_RIGHT: "paddingRight",
+    STACK_PADDING_BOTTOM: "paddingBottom",
+    GRID_ROW_GAP: "rowGap",
+    GRID_COLUMN_GAP: "columnGap",
+    PATH_TRIM_START: "trimStart",
+    PATH_TRIM_END: "trimEnd"
+  };
+  var plainValue = (held) => {
+    const one = held;
+    if (!one || one.value === void 0) return void 0;
+    return one.value;
+  };
+  function readKeyframes(tracks) {
+    var _a;
+    if (typeof tracks !== "object" || tracks === null) return {};
+    const out = [];
+    for (const [name, binding] of Object.entries(tracks)) {
+      const word = OUR_WORDS[name];
+      if (!word) continue;
+      const held = binding;
+      const frames = Array.isArray(held == null ? void 0 : held.keyframes) ? held.keyframes : [];
+      const at = [];
+      for (const frame3 of frames) {
+        const one = frame3;
+        if (typeof (one == null ? void 0 : one.timelinePosition) !== "number") continue;
+        const value = plainValue(one.value);
+        if (value === void 0) continue;
+        at.push(__spreadValues({
+          time: one.timelinePosition,
+          value
+        }, ((_a = one.easing) == null ? void 0 : _a.type) && one.easing.type !== "CUSTOM_CUBIC_BEZIER" ? { easing: one.easing.type } : {}));
+      }
+      if (at.length === 0) continue;
+      const from = plainValue(held == null ? void 0 : held.baseValue);
+      out.push(__spreadProps(__spreadValues({ field: word }, from === void 0 ? {} : { from }), { at }));
+    }
+    return out.length > 0 ? { keyframes: out } : {};
   }
 
   // src/modules/run.ts
@@ -28624,14 +28829,14 @@ ${scripts}`, "");
     if (!withProps) return base;
     const bag = node;
     const round11 = (value) => typeof value === "number" ? Math.round(value * 100) / 100 : value;
-    const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+    const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
       x: round11(bag.x),
       y: round11(bag.y),
       width: round11(bag.width),
       height: round11(bag.height)
     }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round11(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints(bag.fills) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
       stroke: await describePaints(bag.strokes)
-    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round11(bag.strokeWeight) } : {}), bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 ? { timelines: bag.timelines.map((one) => `${one.id} ${one.duration}s`).join(" \xB7 ") } : {}), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
+    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round11(bag.strokeWeight) } : {}), bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
       props.layout = __spreadValues(__spreadValues({
         mode: bag.layoutMode,
