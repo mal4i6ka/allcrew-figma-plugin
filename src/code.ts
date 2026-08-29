@@ -99,6 +99,7 @@ import {
 } from './modules/registry.ts'
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { planProps } from './canvas/props.ts'
+import { emitReact } from './targets/react/index.ts'
 import {
   applyProps,
   describeAnimation,
@@ -240,6 +241,7 @@ type PluginMessage =
   | { type: 'MEASURE_LIST'; nodes?: unknown }
   | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'NODE_ROUNDTRIP'; nodes: unknown; depth?: number; keep?: boolean; ignore?: unknown }
+  | { type: 'EMIT_REACT'; scope?: ExportScope; name?: string }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
   | { type: 'MODULE_INSPECT'; file: unknown }
@@ -521,7 +523,15 @@ function rootsForScope(scope: ExportScope | undefined): readonly SceneNode[] {
   if (!scope) return defaultRoots()
   switch (scope.mode) {
     case 'selection': return figma.currentPage.selection
-    case 'frame': return figma.currentPage.children.filter((node) => node.id === scope.frameId)
+    case 'frame': {
+      // Anywhere on the page, not only at the top of it: a screen inside a section is still that
+      // screen, and looking only at the page's own children answered "nothing in that scope"
+      // about a frame the caller was looking at.
+      const top = figma.currentPage.children.find((node) => node.id === scope.frameId)
+      if (top) return [top]
+      const found = figma.currentPage.findOne((node) => node.id === scope.frameId)
+      return found ? [found] : []
+    }
     case 'page': return figma.currentPage.children
   }
 }
@@ -977,7 +987,50 @@ async function generateTypographyVariables(options: unknown): Promise<Typography
   return { collection: plan.collectionName, created: plan.variables.length, bound, failed, failures, replaced }
 }
 
-figma.showUI(__html__, { width: 420, height: 660, themeColors: true })
+/**
+ * Dev Mode's codegen panel is the second entrance to the same pipeline.
+ *
+ * Not a second emitter: the designer's button and the agent's `EMIT_REACT` and this all go
+ * through `emitReact`, so a developer reading the panel and a developer reading the repository
+ * cannot be looking at different code. What the panel shows is the same screen, narrowed to what
+ * is selected.
+ *
+ * A codegen plugin has no UI — showing one here would open the export panel over Dev Mode's own.
+ */
+if (figma.mode === 'codegen') {
+  figma.codegen.on('generate', async ({ node }) => {
+    try {
+      const ir = await serializeNode(node)
+      if (!ir) return [{ title: 'React', code: `// ${node.name} (${node.type}) has nothing to render`, language: 'TYPESCRIPT' }]
+      const sceneNodesById = await indexSceneNodes([node])
+      const snapshot = await readAllVariables()
+      const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
+      await annotateVectorLeaves([ir], sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
+      const { files, gaps } = await emitReact([ir], sceneNodesById, variableNamesById, {})
+
+      const results: CodegenResult[] = []
+      for (const [path, contents] of Object.entries(files)) {
+        if (path.endsWith('.tsx')) results.push({ title: path, code: contents, language: 'TYPESCRIPT' })
+        else if (path.endsWith('.css')) results.push({ title: path, code: contents, language: 'CSS' })
+        else if (path.endsWith('.json')) results.push({ title: path, code: contents, language: 'JSON' })
+      }
+      // The gaps go in the panel too, and first: this is where a developer is looking when they
+      // wonder why something is missing.
+      if (gaps.length > 0) {
+        results.unshift({
+          title: `${gaps.length} thing(s) this could not translate`,
+          code: gaps.map((one) => `// ${one}`).join('\n'),
+          language: 'TYPESCRIPT',
+        })
+      }
+      return results
+    } catch (error) {
+      return [{ title: 'React', code: `// ${String((error as Error)?.message || error)}`, language: 'TYPESCRIPT' }]
+    }
+  })
+} else {
+  figma.showUI(__html__, { width: 420, height: 660, themeColors: true })
+}
 
 /**
  * Remembered gates, keyed by file. `figma.fileKey` is the real identity and is what a private
@@ -2365,6 +2418,32 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
       const { html, css } = await emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile: msg.cssFile })
       postToUi({ type: 'DJANGO_TEMPLATE', html, css })
+      break
+    }
+    case 'EMIT_REACT': {
+      // @agent read: render the scope as a React repository — a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale
+      // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
+      // @agent param name: what the screen component is called; without it, the frame's own name
+      // @agent cost: reads the scope and every variable, like the Django emitter — narrow the scope to a frame
+      try {
+        const roots = rootsForScope(msg.scope)
+        const [irNodes, sceneNodesById, snapshot] = await Promise.all([
+          Promise.all(roots.map((root) => serializeNode(root))),
+          indexSceneNodes(roots),
+          readAllVariables(),
+        ])
+        const nodes = irNodes.filter((node): node is IrNode => node !== null)
+        if (nodes.length === 0) {
+          refuse('EMIT_REACT', 'nothing in that scope to render')
+          break
+        }
+        const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
+        await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
+        const { files, gaps } = await emitReact(nodes, sceneNodesById, variableNamesById, { name: msg.name })
+        postToUi({ type: 'REACT_PROJECT', files, gaps, count: Object.keys(files).length })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'EMIT_REACT', message: String((error as Error)?.message || error) })
+      }
       break
     }
     case 'EMIT_DJANGO_PROJECT': {

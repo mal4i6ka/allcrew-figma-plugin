@@ -158,9 +158,10 @@ BaseNodeMixin.getTopLevelFrame, InteractiveSlideElementNode, InteractiveSlideEle
 Стало: `DEV_LINK_LIST` / `DEV_LINK_SET`, `ANNOTATE`, `MEASURE_LIST` / `MEASURE_SET`, и всё это
 читается обратно в `NODE_QUERY props:true` — `devLinks` и `annotations` на самом узле.
 
-Осталось **codegen** (`CodegenAPI`, 0 из 6): это не вызов, а режим — плагин работает генератором
-кода внутри Dev Mode и отвечает на событие `generate`. Требует записи в манифест и отдельного
-входа; берётся вместе с React-эмиттером, а не до него.
+**Codegen закрыт вместе с React-эмиттером.** Манифест объявляет `codegen`, и панель Dev Mode
+показывает то же самое, что отдаёт `EMIT_REACT` — не второй эмиттер, а второй вход в один
+конвейер: разработчик, читающий панель, и разработчик, читающий репозиторий, не могут смотреть
+на разный код.
 
 Строка `DevResourcesAPI` в таблице выше остаётся нулевой и это не ошибка: там события
 (`on`/`off`/`once`) для плагина-генератора, а узловые методы живут в `DevResourcesMixin` и
