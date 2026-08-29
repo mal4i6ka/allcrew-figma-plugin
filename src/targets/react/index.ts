@@ -31,6 +31,16 @@ export interface ReactOutput {
   files: Record<string, string>
   /** What could not be translated, gathered for the reply — the same lines are also in the code. */
   gaps: string[]
+  /**
+   * The props each emitted component declares.
+   *
+   * A screen fills a component's text props from the layer names of the instance IT holds; a
+   * library component takes its props from the layers of the variant IT was built from. Mostly
+   * the same names, and where they were not, the screen passed a prop the component had never
+   * heard of and the whole thing stopped compiling. Passing the declarations along is how the two
+   * halves agree.
+   */
+  props: Map<string, Set<string>>
 }
 
 export interface EmitReactOptions {
@@ -51,6 +61,16 @@ export interface EmitReactOptions {
    * target that reached for one would be a target that only runs inside the plugin.
    */
   assetsByNodeId?: ReadonlyMap<string, { filename: string; svg: string }>
+  /**
+   * Components another export already emitted, by name.
+   *
+   * A screen holds one instance of a Button and could build a Button out of it — one variant, no
+   * states, the right shape and a quarter of the truth. When the real one is there, the screen
+   * imports it and builds nothing.
+   */
+  fromLibrary?: ReadonlySet<string>
+  /** What those library components declare, so a screen never passes one a prop it has not got. */
+  libraryProps?: ReadonlyMap<string, Set<string>>
 }
 
 /** A component as the screens use it: its markup, and every property value they ask for. */
@@ -85,6 +105,7 @@ export async function emitLibrary(
 ): Promise<ReactOutput> {
   const files: Record<string, string> = {}
   const gaps: string[] = []
+  const props = new Map<string, Set<string>>()
 
   for (const [, asset] of options.assetsByNodeId ?? []) files[`public/assets/${asset.filename}`] = asset.svg
 
@@ -123,11 +144,11 @@ export async function emitLibrary(
     files[`src/components/${name}.tsx`] = built.tsx
     if (built.css.trim() !== '') files[`src/components/${name}.module.css`] = built.css
     gaps.push(...built.gaps)
+    props.set(name, built.props)
   }
 
   if (Object.values(files).some((one) => one.includes("from '../copy'"))) files['src/copy.tsx'] = COPY_FILE
-  gaps.push(...missingImports(files))
-  return { files, gaps }
+  return { files, gaps, props }
 }
 
 /**
@@ -136,8 +157,12 @@ export async function emitLibrary(
  * A Button holds an arrow, the arrow is a component of its own, and a Buttons-page export does
  * not reach the Icons page. The import is right and the file is not there — which TypeScript
  * would say, eventually, in a language the designer who ran the export cannot act on.
+ *
+ * Asked ONCE, of everything that was emitted. Asked per emitter it said the screen was missing a
+ * Button that the library right beside it had just written — and a gap that is not true costs the
+ * whole list its credit.
  */
-function missingImports(files: Record<string, string>): string[] {
+export function missingImports(files: Record<string, string>): string[] {
   const emitted = new Set(
     Object.keys(files)
       .filter((path) => path.startsWith('src/components/') && path.endsWith('.tsx'))
@@ -166,6 +191,7 @@ export async function emitReact(
 ): Promise<ReactOutput> {
   const files: Record<string, string> = {}
   const gaps: string[] = []
+  const props = new Map<string, Set<string>>(options.libraryProps ?? [])
   const components = new Map<string, CollectedComponent>()
 
   for (const root of roots) collectComponents(root, components)
@@ -177,6 +203,7 @@ export async function emitReact(
     const name = componentName(options.name ?? root.name)
     const context = newContext(name.toLowerCase())
     context.assets = options.assetsByNodeId
+    context.declares = props
     const markup = emitJsx(root, context, 2)
 
     files[`src/screens/${name}.tsx`] = screenFile(name, markup, context)
@@ -200,6 +227,7 @@ export async function emitReact(
   if (Object.values(files).some((one) => one.includes("from '../copy'"))) files['src/copy.tsx'] = COPY_FILE
 
   for (const component of components.values()) {
+    if (options.fromLibrary?.has(component.name)) continue
     const built = await componentFile(
       component,
       sceneNodesById,
@@ -210,10 +238,10 @@ export async function emitReact(
     files[`src/components/${component.name}.tsx`] = built.tsx
     if (built.css.trim() !== '') files[`src/components/${component.name}.module.css`] = built.css
     gaps.push(...built.gaps)
+    props.set(component.name, built.props)
   }
 
-  gaps.push(...missingImports(files))
-  return { files, gaps }
+  return { files, gaps, props }
 }
 
 /* ----------------------------------------------------------------------- motion */
@@ -323,7 +351,7 @@ async function componentFile(
   variableNamesById: ReadonlyMap<string, string>,
   motionByNodeId: ReadonlyMap<string, MotionSnapshot>,
   assetsByNodeId: ReadonlyMap<string, { filename: string; svg: string }> | undefined
-): Promise<{ tsx: string; css: string; gaps: string[] }> {
+): Promise<{ tsx: string; css: string; gaps: string[]; props: Set<string> }> {
   const context: JsxContext = {
     ...newContext(component.name.toLowerCase()),
     insideComponent: true,
@@ -443,7 +471,8 @@ ${body}
   )
 }
 `
-  return { tsx, css, gaps: [...context.gaps, ...variantGaps] }
+  const declared = new Set([...component.values.keys(), ...context.props.keys()])
+  return { tsx, css, gaps: [...context.gaps, ...variantGaps], props: declared }
 }
 
 /* ----------------------------------------------------------------------- files */

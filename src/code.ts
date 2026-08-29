@@ -99,7 +99,7 @@ import {
 } from './modules/registry.ts'
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
 import { planProps } from './canvas/props.ts'
-import { emitLibrary, emitReact } from './targets/react/index.ts'
+import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
 import type { MotionSnapshot } from './targets/django/motion/types.ts'
 import { exportVectorAsset } from './targets/django/assets.ts'
 import {
@@ -243,7 +243,7 @@ type PluginMessage =
   | { type: 'MEASURE_LIST'; nodes?: unknown }
   | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'NODE_ROUNDTRIP'; nodes: unknown; depth?: number; keep?: boolean; ignore?: unknown }
-  | { type: 'EMIT_REACT'; scope?: ExportScope; name?: string; pageId?: string; limit?: number }
+  | { type: 'EMIT_REACT'; scope?: ExportScope; name?: string; pageId?: string; pages?: unknown; limit?: number }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
   | { type: 'MODULE_INSPECT'; file: unknown }
@@ -2471,6 +2471,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param name: what the screen component is called; without it, the frame's own name
       // @agent param pageId: render a whole PAGE OF COMPONENTS as the library instead of a screen — every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live
       // @agent param limit: how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident
+      // @agent param pages: page ids whose components come out ALONGSIDE the screen — the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold
       // @agent cost: reads the scope and every variable, like the Django emitter — narrow the scope to a frame
       try {
         // A page of components is a different shape from a screen, and it is asked for by naming
@@ -2507,14 +2508,57 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
         const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
         await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
+        // The library the screen leans on, emitted first: its components are the real ones, with
+        // every variant and every state, and the screen then imports them rather than building a
+        // lookalike out of the one instance it happened to hold.
+        const alongside = Array.isArray(msg.pages) ? msg.pages.map((one) => String(one)) : []
+        let library: ReactOutput = { files: {}, gaps: [], props: new Map() }
+        for (const pageId of alongside) {
+          const page = await figma.getNodeByIdAsync(pageId)
+          if (!page || page.type !== 'PAGE') {
+            refuse('EMIT_REACT', `no page with id ${pageId}`)
+            break
+          }
+          await (page as PageNode).loadAsync()
+          const sets = (page as PageNode).children.filter(
+            (node) => node.type === 'COMPONENT_SET' || node.type === 'COMPONENT'
+          )
+          const built = (await Promise.all(sets.map((set) => serializeNode(set)))).filter(
+            (node): node is IrNode => node !== null
+          )
+          if (built.length === 0) continue
+          const index = await indexSceneNodes(sets)
+          await annotateVectorLeaves(built, index as unknown as ReadonlyMap<string, AssetSourceNode>)
+          const one = await emitLibrary(built, index, variableNamesById, {
+            motionByNodeId: motionUnder(sets),
+            assetsByNodeId: await vectorsUnder(built),
+          })
+          library = {
+            files: { ...library.files, ...one.files },
+            gaps: [...library.gaps, ...one.gaps],
+            props: new Map([...library.props, ...one.props]),
+          }
+        }
+
         const options = {
           name: msg.name,
           motionByNodeId: motionUnder(roots),
           assetsByNodeId: await vectorsUnder(nodes),
+          // Names the screen must not rebuild: the library already has them, better.
+          libraryProps: library.props,
+          fromLibrary: new Set(
+            Object.keys(library.files)
+              .filter((path) => path.startsWith('src/components/') && path.endsWith('.tsx'))
+              .map((path) => path.slice('src/components/'.length, -'.tsx'.length))
+          ),
         }
-        const { files, gaps } = msg.pageId
+        const emitted = msg.pageId
           ? await emitLibrary(nodes, sceneNodesById, variableNamesById, options)
           : await emitReact(nodes, sceneNodesById, variableNamesById, options)
+        const files = { ...library.files, ...emitted.files }
+        // Once, over everything: a component the screen imports may well have come from the
+        // library, and each emitter asking on its own could only ever see half the answer.
+        const gaps = [...library.gaps, ...emitted.gaps, ...missingImports(files)]
         postToUi({ type: 'REACT_PROJECT', files, gaps, count: Object.keys(files).length })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'EMIT_REACT', message: String((error as Error)?.message || error) })

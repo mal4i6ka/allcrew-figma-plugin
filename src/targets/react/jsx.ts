@@ -60,6 +60,15 @@ export interface JsxContext {
   membership?: ReadonlyMap<string, ReadonlySet<string>>
   /** Every variant key, so a layer that belongs to all of them needs no condition at all. */
   allVariants?: ReadonlySet<string>
+  /**
+   * What each component declares, by name.
+   *
+   * A call site fills a component's text props from the layer names of the instance IT holds, and
+   * a library component takes its props from the variant IT was built from. Mostly the same
+   * names; where they were not, the screen passed a prop that did not exist and the export stopped
+   * compiling. Only what the component declares is passed.
+   */
+  declares?: ReadonlyMap<string, Set<string>>
   /** Each vector's exported file, by node id — see `EmitReactOptions.assetsByNodeId`. */
   assets?: ReadonlyMap<string, { filename: string; svg: string }>
   /** A prefix for copy keys, so two screens do not collide on `title`. */
@@ -115,6 +124,11 @@ function textsInside(node: IrNode): Array<[string, string]> {
   const found: Array<[string, string]> = []
   const walk = (one: IrNode) => {
     if (one.type === 'text') found.push([one.name, one.characters])
+    // Not into a nested instance: its text is its own component's prop, filled in where that
+    // component is rendered. Collecting it here offered the outer component a prop it never
+    // declared — `AmountSection title="Списать с"`, where the title belongs to a List-Items-Title
+    // one level down — and the export stopped compiling on it.
+    if (one.type === 'instance-ref') return
     for (const child of (one as { children?: IrNode[] }).children ?? []) walk(child)
   }
   for (const child of (node as { children?: IrNode[] }).children ?? []) walk(child)
@@ -176,8 +190,11 @@ function emitElement(node: IrNode, context: JsxContext, depth: number): string {
     const props: string[] = []
     // What this instance says, as against what its component says by default. The component's
     // body turns each of its texts into a prop; here is where each instance fills them in.
+    const declared = context.declares?.get(name)
     for (const [layer, text] of textsInside(node)) {
-      props.push(`${propName(layer)}=${JSON.stringify(text)}`)
+      const prop = propName(layer)
+      if (declared && !declared.has(prop)) continue
+      props.push(`${prop}=${JSON.stringify(text)}`)
     }
     for (const [raw, value] of Object.entries(node.componentProperties ?? {})) {
       const prop = propName(raw)
