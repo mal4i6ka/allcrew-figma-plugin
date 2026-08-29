@@ -377,6 +377,8 @@ export interface NodeProps {
   autoRename?: boolean
   /** How lines are broken: `AUTO`, `BALANCE` (even lines) or `PRETTY` (no orphans). */
   textWrap?: 'AUTO' | 'BALANCE' | 'PRETTY'
+  /** INSTANCE only: what the designer changed INSIDE it — `[{ at: "<child id within the instance>", props }]`. */
+  overrides?: Array<{ at: string; props: unknown }>
   /** INSTANCE only: component properties by their catalogue names — variants, text, booleans. */
   properties?: Record<string, string | boolean>
   /** INSTANCE only: the component to become — an id or a published key. */
@@ -535,6 +537,7 @@ export type PropStep =
   | { step: 'reset' }
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
+  | { step: 'overrides'; overrides: Array<{ at: string; steps: PropStep[] }> }
   | { step: 'links'; links: PlannedLink[]; destinations: string[] }
   | { step: 'data'; data: Record<string, string | null> }
 
@@ -630,6 +633,9 @@ const ORDER = [
   'reset',
   'swap',
   'properties',
+  // After the properties: a variant swap replaces the children an override addresses, so the
+  // override has to be the last word.
+  'overrides',
   'visible',
   'locked',
   'clipsContent',
@@ -1161,6 +1167,28 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         if (typeof props.swap !== 'string' || props.swap.trim() === '') {
           fail('swap must be a component id or a published key')
         } else steps.push({ step: 'swap', component: props.swap.trim() })
+        break
+      }
+      case 'overrides': {
+        const asked = props.overrides
+        if (!Array.isArray(asked)) {
+          fail('overrides must be an array of { at, props }')
+          break
+        }
+        const planned: Array<{ at: string; steps: PropStep[] }> = []
+        for (const [index, entry] of asked.entries()) {
+          const one = entry as { at?: unknown; props?: unknown }
+          if (typeof one?.at !== 'string' || one.at.trim() === '') {
+            fail(`overrides[${index}].at must name a node inside the instance`)
+            continue
+          }
+          // Planned with the same planner as everything else, and its problems are reported
+          // against the child rather than the instance — "props.fill" would name the wrong node.
+          const inner = planProps(one.props, `${where}.overrides[${index}].props`)
+          problems.push(...inner.problems)
+          if (inner.steps.length > 0) planned.push({ at: one.at.trim(), steps: inner.steps })
+        }
+        if (planned.length > 0) steps.push({ step: 'overrides', overrides: planned })
         break
       }
       case 'properties': {

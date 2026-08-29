@@ -18052,6 +18052,9 @@ ${renderSections(sections)}
     "reset",
     "swap",
     "properties",
+    // After the properties: a variant swap replaces the children an override addresses, so the
+    // override has to be the last word.
+    "overrides",
     "visible",
     "locked",
     "clipsContent",
@@ -18522,6 +18525,26 @@ ${renderSections(sections)}
           if (typeof props.swap !== "string" || props.swap.trim() === "") {
             fail2("swap must be a component id or a published key");
           } else steps.push({ step: "swap", component: props.swap.trim() });
+          break;
+        }
+        case "overrides": {
+          const asked2 = props.overrides;
+          if (!Array.isArray(asked2)) {
+            fail2("overrides must be an array of { at, props }");
+            break;
+          }
+          const planned = [];
+          for (const [index, entry] of asked2.entries()) {
+            const one = entry;
+            if (typeof (one == null ? void 0 : one.at) !== "string" || one.at.trim() === "") {
+              fail2(`overrides[${index}].at must name a node inside the instance`);
+              continue;
+            }
+            const inner = planProps(one.props, `${where}.overrides[${index}].props`);
+            problems.push(...inner.problems);
+            if (inner.steps.length > 0) planned.push({ at: one.at.trim(), steps: inner.steps });
+          }
+          if (planned.length > 0) steps.push({ step: "overrides", overrides: planned });
           break;
         }
         case "properties": {
@@ -20628,6 +20651,98 @@ ${renderSections(sections)}
     return plan;
   }
 
+  // src/canvas/overrides.ts
+  var FIELD_WORDS = {
+    characters: "text",
+    visible: "visible",
+    locked: "locked",
+    name: "name",
+    opacity: "opacity",
+    fills: "fill",
+    strokes: "stroke",
+    strokeWeight: "strokeWeight",
+    cornerRadius: "cornerRadius",
+    effects: "effects",
+    fontName: "fontName",
+    fontSize: "fontSize",
+    letterSpacing: "letterSpacing",
+    lineHeight: "lineHeight",
+    textCase: "textCase",
+    textDecoration: "textDecoration",
+    textAlignHorizontal: "textAlign",
+    textAlignVertical: "verticalAlign",
+    textAutoResize: "autoResize",
+    textTruncation: "truncate",
+    maxLines: "maxLines",
+    paragraphSpacing: "paragraphSpacing",
+    paragraphIndent: "paragraphIndent",
+    width: "width",
+    height: "height",
+    layoutSizingHorizontal: "sizing",
+    layoutSizingVertical: "sizing",
+    itemSpacing: "layout",
+    paddingLeft: "layout",
+    paddingRight: "layout",
+    paddingTop: "layout",
+    paddingBottom: "layout",
+    layoutMode: "layout",
+    primaryAxisAlignItems: "layout",
+    counterAxisAlignItems: "layout",
+    componentProperties: "properties",
+    fillStyleId: "fillStyle",
+    strokeStyleId: "strokeStyle",
+    textStyleId: "textStyle",
+    effectStyleId: "effectStyle",
+    gridStyleId: "gridStyle",
+    styledTextSegments: "runs",
+    boundVariables: "bind",
+    rotation: "rotation",
+    blendMode: "blendMode",
+    constraints: "constraints",
+    reactions: "links"
+  };
+  var CLEARED = {
+    fill: "none",
+    stroke: "none",
+    effects: [],
+    link: null,
+    maxLines: null,
+    runs: []
+  };
+  async function readOverrides(instance, describe) {
+    const own = instance.id;
+    const prefix = own.startsWith("I") ? `${own};` : `I${own};`;
+    const out = [];
+    for (const entry of instance.overrides) {
+      if (entry.id === own || !entry.id.startsWith(prefix)) continue;
+      const node = await figma.getNodeByIdAsync(entry.id).catch(() => null);
+      if (!node || !("type" in node)) continue;
+      const reading = await describe(node);
+      const wanted = /* @__PURE__ */ new Set();
+      const unread = [];
+      for (const field of entry.overriddenFields) {
+        const word = FIELD_WORDS[field];
+        if (word) wanted.add(word);
+        else unread.push(field);
+      }
+      const props = {};
+      for (const word of wanted) {
+        if (reading[word] !== void 0) props[word] = reading[word];
+        else if (word in CLEARED) props[word] = CLEARED[word];
+      }
+      if (Object.keys(props).length === 0 && unread.length === 0) continue;
+      out.push(__spreadValues({
+        at: entry.id.slice(prefix.length),
+        props
+      }, unread.length > 0 ? { unread } : {}));
+    }
+    return out;
+  }
+  function addressIn(instance, at) {
+    const own = instance.id;
+    return own.startsWith("I") ? `${own};${at}` : `I${own};${at}`;
+  }
+
   // src/canvas/styles.ts
   var STYLE_KINDS = ["paint", "text", "effect", "grid"];
   var FIGMA_TYPE = {
@@ -20719,6 +20834,8 @@ ${renderSections(sections)}
       case "assign":
       case "paint":
         return step.property;
+      case "overrides":
+        return "overrides";
       case "font":
         return "fontName";
       case "text":
@@ -21173,6 +21290,27 @@ ${renderSections(sections)}
           before: `${before} path(s)`,
           after: step.paths.map((path) => `${path.windingRule} ${path.data}`).join(" \xB7 ")
         };
+      }
+      case "overrides": {
+        const applied = [];
+        const failures = [];
+        for (const one of step.overrides) {
+          const id = addressIn(node, one.at);
+          const child = await figma.getNodeByIdAsync(id).catch(() => null);
+          if (!child || !("type" in child)) {
+            failures.push(`${one.at}: no such node inside this instance`);
+            continue;
+          }
+          const report2 = await applyProps(child, one.steps, dry);
+          const wrong = report2.applied.filter((entry) => entry.error);
+          if (wrong.length > 0) failures.push(`${one.at}: ${wrong.map((entry) => `${entry.property} \u2014 ${entry.error}`).join(", ")}`);
+          applied.push(`${child.name} (${report2.applied.length - wrong.length})`);
+        }
+        return __spreadValues({
+          property: "overrides",
+          before: `${step.overrides.length} to apply`,
+          after: applied.join(" \xB7 ")
+        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
       }
       case "reparent": {
         const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null;
@@ -24638,7 +24776,7 @@ ${scripts}`, "");
   ];
 
   // src/agent/props-vocabulary.ts
-  var INJECTED = `[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer's mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"sizing","type":"{ horizontal?: SizingMode; vertical?: SizingMode }","note":"How each axis is sized inside the parent \u2014 the same thing \`layout.sizing\` says, and the word a read gives back."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see \`layout.sizing\`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; \`layout.sizing\` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent's auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. \`null\` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"'MIN' | 'CENTER' | 'MAX' | 'AUTO'","note":"GRID only: how the child sits in its cell."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up; \\"none\\" or null clears it."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes \`fill\` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"'INSIDE' | 'OUTSIDE' | 'CENTER'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'","note":"How an open end is finished."},{"name":"strokeJoin","type":"'MITER' | 'BEVEL' | 'ROUND'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. \`[]\` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw's brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. \`[]\` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. \`[]\` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Figma Motion animation styles on this node. \`null\` or \`[]\` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"{ family: string; style: string }","note":"Family and style together, because Figma loads them as a pair."},{"name":"textAlign","type":"'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | 'AUTO' | \`\${number}%\` | \`\${number}px\`","note":"Pixels (\`16\` or \`\\"16px\\"\`), a percentage of the font size like \`\\"150%\\"\`, or AUTO to follow the font."},{"name":"letterSpacing","type":"number | \`\${number}%\` | \`\${number}px\`","note":"Pixels between characters (\`1\` or \`\\"1px\\"\`), or a percentage like \`\\"5%\\"\`; negative tightens."},{"name":"autoResize","type":"'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'","note":"Whether the box follows the text, and in which direction."},{"name":"verticalAlign","type":"'TOP' | 'CENTER' | 'BOTTOM'","note":"Where the text sits in a box taller than itself."},{"name":"textCase","type":"'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE' | 'SMALL_CAPS' | 'SMALL_CAPS_FORCED'","note":"Capitals, small capitals, or the letters as typed."},{"name":"textDecoration","type":"'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'","note":"A line under the words, through them, or neither."},{"name":"paragraphSpacing","type":"number","note":"Space between paragraphs, in pixels."},{"name":"paragraphIndent","type":"number","note":"How far the first line of each paragraph is pushed in."},{"name":"truncate","type":"boolean","note":"Cut the text with an ellipsis when it will not fit."},{"name":"maxLines","type":"number | null","note":"Stop after this many lines. \`null\` lets it run on."},{"name":"link","type":"string | null","note":"A link on the whole layer. \`null\` removes it."},{"name":"listSpacing","type":"number","note":"Space between list items."},{"name":"hangingPunctuation","type":"boolean","note":"Whether punctuation may hang outside the text box."},{"name":"hangingList","type":"boolean","note":"Whether list markers hang outside the text box."},{"name":"leadingTrim","type":"'NONE' | 'CAP_HEIGHT'","note":"Trim the space a font reserves above and below its letters."},{"name":"autoRename","type":"boolean","note":"Whether the layer renames itself when the text changes."},{"name":"textWrap","type":"'AUTO' | 'BALANCE' | 'PRETTY'","note":"How lines are broken: \`AUTO\`, \`BALANCE\` (even lines) or \`PRETTY\` (no orphans)."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE only: throw away every override first."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin's own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma's parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. \`null\` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame's first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent's children it sits; 0 is first."}]`;
+  var INJECTED = `[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer's mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"sizing","type":"{ horizontal?: SizingMode; vertical?: SizingMode }","note":"How each axis is sized inside the parent \u2014 the same thing \`layout.sizing\` says, and the word a read gives back."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see \`layout.sizing\`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; \`layout.sizing\` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent's auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. \`null\` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"'MIN' | 'CENTER' | 'MAX' | 'AUTO'","note":"GRID only: how the child sits in its cell."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up; \\"none\\" or null clears it."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes \`fill\` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"'INSIDE' | 'OUTSIDE' | 'CENTER'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'","note":"How an open end is finished."},{"name":"strokeJoin","type":"'MITER' | 'BEVEL' | 'ROUND'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. \`[]\` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw's brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. \`[]\` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. \`[]\` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Figma Motion animation styles on this node. \`null\` or \`[]\` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"{ family: string; style: string }","note":"Family and style together, because Figma loads them as a pair."},{"name":"textAlign","type":"'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | 'AUTO' | \`\${number}%\` | \`\${number}px\`","note":"Pixels (\`16\` or \`\\"16px\\"\`), a percentage of the font size like \`\\"150%\\"\`, or AUTO to follow the font."},{"name":"letterSpacing","type":"number | \`\${number}%\` | \`\${number}px\`","note":"Pixels between characters (\`1\` or \`\\"1px\\"\`), or a percentage like \`\\"5%\\"\`; negative tightens."},{"name":"autoResize","type":"'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'","note":"Whether the box follows the text, and in which direction."},{"name":"verticalAlign","type":"'TOP' | 'CENTER' | 'BOTTOM'","note":"Where the text sits in a box taller than itself."},{"name":"textCase","type":"'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE' | 'SMALL_CAPS' | 'SMALL_CAPS_FORCED'","note":"Capitals, small capitals, or the letters as typed."},{"name":"textDecoration","type":"'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'","note":"A line under the words, through them, or neither."},{"name":"paragraphSpacing","type":"number","note":"Space between paragraphs, in pixels."},{"name":"paragraphIndent","type":"number","note":"How far the first line of each paragraph is pushed in."},{"name":"truncate","type":"boolean","note":"Cut the text with an ellipsis when it will not fit."},{"name":"maxLines","type":"number | null","note":"Stop after this many lines. \`null\` lets it run on."},{"name":"link","type":"string | null","note":"A link on the whole layer. \`null\` removes it."},{"name":"listSpacing","type":"number","note":"Space between list items."},{"name":"hangingPunctuation","type":"boolean","note":"Whether punctuation may hang outside the text box."},{"name":"hangingList","type":"boolean","note":"Whether list markers hang outside the text box."},{"name":"leadingTrim","type":"'NONE' | 'CAP_HEIGHT'","note":"Trim the space a font reserves above and below its letters."},{"name":"autoRename","type":"boolean","note":"Whether the layer renames itself when the text changes."},{"name":"textWrap","type":"'AUTO' | 'BALANCE' | 'PRETTY'","note":"How lines are broken: \`AUTO\`, \`BALANCE\` (even lines) or \`PRETTY\` (no orphans)."},{"name":"overrides","type":"Array<{ at: string; props: unknown }>","note":"INSTANCE only: what the designer changed INSIDE it \u2014 \`[{ at: \\"<child id within the instance>\\", props }]\`."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE only: throw away every override first."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin's own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma's parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. \`null\` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame's first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent's children it sits; 0 is first."}]`;
   var PROPS_VOCABULARY = (() => {
     if (!INJECTED.startsWith("[")) return [];
     try {
@@ -28486,12 +28624,12 @@ ${scripts}`, "");
     if (!withProps) return base;
     const bag = node;
     const round11 = (value) => typeof value === "number" ? Math.round(value * 100) / 100 : value;
-    const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+    const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
       x: round11(bag.x),
       y: round11(bag.y),
       width: round11(bag.width),
       height: round11(bag.height)
-    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round11(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints(bag.fills) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round11(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints(bag.fills) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
       stroke: await describePaints(bag.strokes)
     }, typeof bag.strokeWeight === "number" ? { strokeWeight: round11(bag.strokeWeight) } : {}), bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 ? { timelines: bag.timelines.map((one) => `${one.id} ${one.duration}s`).join(" \xB7 ") } : {}), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
@@ -28545,6 +28683,11 @@ ${scripts}`, "");
       }
       if (Object.keys(settings).length > 0) props.properties = settings;
       if (slots.length > 0) props.slots = slots;
+      const overrides = await readOverrides(node, (child) => describeNode2(child, true).then((one) => {
+        var _a2;
+        return (_a2 = one.props) != null ? _a2 : {};
+      }));
+      if (overrides.length > 0) props.overrides = overrides;
     }
     const links = await node.getDevResourcesAsync().catch(() => []);
     const own = links.filter((link) => link.nodeId === node.id);
@@ -30607,7 +30750,6 @@ ${scripts}`, "");
                 }
               }
               const of = one.type === "INSTANCE" ? (_b2 = (_a2 = await one.getMainComponentAsync().catch(() => null)) == null ? void 0 : _a2.id) != null ? _b2 : null : null;
-              if (of && level > 0) notValues.push(`${one.name} (instance overrides)`);
               const built = specFrom(reading, kids, of);
               if (!built) {
                 dropped.push({ property: "(node)", why: `a ${one.type} cannot be made by NODE_CREATE` });

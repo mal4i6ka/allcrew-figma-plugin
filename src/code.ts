@@ -113,6 +113,7 @@ import { createNode, planCreate, type CreatePlan, type CreateSpec } from './canv
 import { styledRuns } from './canvas/text-runs.ts'
 import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
+import { addressIn, readOverrides } from './canvas/overrides.ts'
 import {
   bindingField,
   collectComponents,
@@ -1426,6 +1427,12 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // Beside the line, the settings themselves: what a read hands over is what a write takes,
     // which is the only way to put the same shader on another layer.
     ...(describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}),
+    // On an INSTANCE, empty is a decision. Everywhere else a layer without a stroke is the
+    // ordinary case and saying so on every read would be noise; on an instance it is the
+    // designer having taken the component's line off, and a read that stays silent about it
+    // rebuilds the line.
+    ...(node.type === 'INSTANCE' && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: 'none' } : {}),
+    ...(node.type === 'INSTANCE' && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: 'none' } : {}),
     ...('strokes' in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0
       ? {
           stroke: await describePaints(bag.strokes),
@@ -1535,6 +1542,11 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     }
     if (Object.keys(settings).length > 0) props.properties = settings
     if (slots.length > 0) props.slots = slots
+
+    // What the designer changed INSIDE this instance. Without it a copy comes back with every
+    // row at its default height — the missing tenth that makes a screen look wrong.
+    const overrides = await readOverrides(node, (child) => describeNode(child, true).then((one) => (one.props ?? {}) as Record<string, unknown>))
+    if (overrides.length > 0) props.overrides = overrides
   }
   // What Dev Mode shows beside the layer: where its code lives, and what the designer wrote for
   // whoever writes it. A handoff that carries neither is the export answering half the question.
@@ -4228,11 +4240,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               one.type === 'INSTANCE'
                 ? ((await (one as InstanceNode).getMainComponentAsync().catch(() => null))?.id ?? null)
                 : null
-            // An instance is rebuilt from its component and its component properties. What a
-            // designer changed INSIDE it — a hidden layer, a retyped label, a row set to hug —
-            // has no vocabulary of its own and does not travel; a copy whose rows come back at
-            // their default height is that, and not a fresh defect each time.
-            if (of && level > 0) notValues.push(`${one.name} (instance overrides)`)
+
             const built = specFrom(reading, kids, of)
             if (!built) {
               dropped.push({ property: '(node)', why: `a ${one.type} cannot be made by NODE_CREATE` })

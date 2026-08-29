@@ -15,6 +15,7 @@ import { parseHex } from '../tokens/color.ts'
 import { resolveCollection, resolveModes, resolveVariableRef } from '../agent/values.ts'
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
 import { describeLinks, gradientHandles, gradientTransform, measure, resolveRanges } from './props.ts'
+import { addressIn } from './overrides.ts'
 import { styleFor } from './styles.ts'
 import type {
   GradientRef,
@@ -69,6 +70,8 @@ const propertyOf = (step: PropStep): string => {
     case 'assign':
     case 'paint':
       return step.property
+    case 'overrides':
+      return 'overrides'
     case 'font':
       return 'fontName'
     case 'text':
@@ -646,6 +649,33 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         property: 'paths',
         before: `${before} path(s)`,
         after: step.paths.map((path) => `${path.windingRule} ${path.data}`).join(' · '),
+      }
+    }
+
+    case 'overrides': {
+      // Applied by walking into the instance the same way the reading walked out of it: the
+      // address is the child's id within the instance, which is the same path in every instance
+      // of the same component. Each child is a whole little apply of its own, so one child
+      // refusing a property does not take the rest of the screen with it.
+      const applied: string[] = []
+      const failures: string[] = []
+      for (const one of step.overrides) {
+        const id = addressIn(node, one.at)
+        const child = await figma.getNodeByIdAsync(id).catch(() => null)
+        if (!child || !('type' in child)) {
+          failures.push(`${one.at}: no such node inside this instance`)
+          continue
+        }
+        const report = await applyProps(child as SceneNode, one.steps, dry)
+        const wrong = report.applied.filter((entry) => entry.error)
+        if (wrong.length > 0) failures.push(`${one.at}: ${wrong.map((entry) => `${entry.property} — ${entry.error}`).join(', ')}`)
+        applied.push(`${(child as SceneNode).name} (${report.applied.length - wrong.length})`)
+      }
+      return {
+        property: 'overrides',
+        before: `${step.overrides.length} to apply`,
+        after: applied.join(' · '),
+        ...(failures.length > 0 ? { error: failures.join(' · ') } : {}),
       }
     }
 
