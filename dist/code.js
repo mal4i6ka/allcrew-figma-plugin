@@ -20136,12 +20136,12 @@ ${renderSections(sections)}
     const slash = ref.indexOf("/");
     if (slash > 0) {
       const collectionName = ref.slice(0, slash).toLowerCase();
-      const variableName2 = ref.slice(slash + 1);
+      const variableName3 = ref.slice(slash + 1);
       const collections = await figma.variables.getLocalVariableCollectionsAsync();
       const collection = collections.find((entry) => entry.name.toLowerCase() === collectionName);
       if (collection) {
         const match = variables.find(
-          (variable) => variable.variableCollectionId === collection.id && variable.name === variableName2
+          (variable) => variable.variableCollectionId === collection.id && variable.name === variableName3
         );
         if (match) return match;
       }
@@ -27337,6 +27337,156 @@ ${scripts}`, "");
     return { same: same.sort(), diverged };
   }
 
+  // src/canvas/link-reader.ts
+  var TRIGGER_WORDS = {
+    ON_CLICK: "click",
+    ON_HOVER: "hover",
+    ON_PRESS: "press",
+    ON_DRAG: "drag",
+    AFTER_TIMEOUT: "timeout",
+    ON_KEY_DOWN: "keyDown",
+    MOUSE_ENTER: "mouseEnter",
+    MOUSE_LEAVE: "mouseLeave",
+    MOUSE_UP: "mouseUp",
+    MOUSE_DOWN: "mouseDown"
+  };
+  var SIMPLE = ["DISSOLVE", "SMART_ANIMATE", "SCROLL_ANIMATE"];
+  var inSeconds = (ms) => Math.round(ms / 1e3 * 1e3) / 1e3;
+  function sendableLinks(reactions) {
+    var _a;
+    const links = [];
+    for (const reaction of reactions) {
+      const trigger = triggerOf(reaction.trigger);
+      const actions = (_a = reaction.actions) != null ? _a : reaction.action ? [reaction.action] : [];
+      for (const action of actions) {
+        const link = actionOf(action);
+        if (link) links.push(__spreadValues(__spreadValues({}, trigger), link));
+      }
+    }
+    return links;
+  }
+  function triggerOf(trigger) {
+    var _a;
+    if (!trigger) return {};
+    const on = TRIGGER_WORDS[trigger.type];
+    if (!on) return { unread: [`trigger ${trigger.type}`] };
+    const out = { on };
+    if (trigger.type === "AFTER_TIMEOUT") out.after = inSeconds(trigger.timeout);
+    else if (trigger.type === "ON_KEY_DOWN") out.keys = [...(_a = trigger.keyCodes) != null ? _a : []];
+    else if ("delay" in trigger && trigger.delay) out.delay = inSeconds(trigger.delay);
+    return out;
+  }
+  function actionOf(action) {
+    var _a, _b, _c;
+    switch (action.type) {
+      case "BACK":
+        return { to: "back" };
+      case "CLOSE":
+        return { to: "close" };
+      case "URL":
+        return __spreadValues({ url: action.url }, action.openInNewTab === false ? { newTab: false } : {});
+      case "NODE": {
+        if (!action.destinationId) return { unread: ["a navigation with no destination"] };
+        return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+          to: action.destinationId
+        }, action.navigation && action.navigation !== "NAVIGATE" ? { as: action.navigation } : {}), transitionOf(action.transition)), action.resetScrollPosition ? { resetScroll: true } : {}), action.resetVideoPosition ? { resetVideo: true } : {}), action.resetInteractiveComponents ? { resetInteractive: true } : {});
+      }
+      case "SET_VARIABLE": {
+        if (!action.variableId) return { unread: ["a variable action with no variable"] };
+        const value = action.variableValue;
+        const resolved = value && typeof value === "object" && "type" in value && value.type === "VARIABLE_ALIAS" ? { variable: value.id } : value;
+        return { set: { variable: action.variableId, value: resolved } };
+      }
+      case "SET_VARIABLE_MODE": {
+        if (!action.variableCollectionId || !action.variableModeId) return { unread: ["a mode action with no mode"] };
+        return { mode: { collection: action.variableCollectionId, mode: action.variableModeId } };
+      }
+      case "CONDITIONAL": {
+        const blocks = (_a = action.conditionalBlocks) != null ? _a : [];
+        if (blocks.length === 0) return { unread: ["an empty conditional"] };
+        const [first, second, ...rest] = blocks;
+        const then = firstOf((_b = first.actions) != null ? _b : []);
+        if (!then) return { unread: ["a conditional whose branch does nothing the write can say"] };
+        const asked = expressionOf(first.condition);
+        if (!asked) return { unread: ["a condition the vocabulary has no words for"] };
+        const link = { if: asked, then };
+        const otherwise = second ? firstOf((_c = second.actions) != null ? _c : []) : null;
+        if (otherwise) link.else = otherwise;
+        if (rest.length > 0) link.unread = [`${rest.length} more branch(es) \u2014 Figma has no else-if and neither has this`];
+        return link;
+      }
+      default:
+        return { unread: [`action ${action.type}`] };
+    }
+  }
+  var firstOf = (actions) => {
+    for (const action of actions) {
+      const link = actionOf(action);
+      if (link && !link.unread) return link;
+    }
+    return null;
+  };
+  function expressionOf(condition) {
+    var _a;
+    const node = condition;
+    if (!(node == null ? void 0 : node.expressionFunction)) return null;
+    const args = (_a = node.expressionArguments) != null ? _a : [];
+    const is = COMPARISONS2[node.expressionFunction];
+    if (!is || args.length !== 2) return null;
+    const left = operandOf(args[0]);
+    const right = operandOf(args[1]);
+    return left === null || right === null ? null : { left, is, right };
+  }
+  function operandOf(argument) {
+    const one = argument;
+    if (!one) return null;
+    if (one.type === "VARIABLE_ALIAS") return { variable: String(one.id) };
+    if (one.type === "EXPRESSION") return expressionOf(one.value);
+    const value = one.value;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+    return null;
+  }
+  var COMPARISONS2 = {
+    EQUALS: "==",
+    NOT_EQUAL: "!=",
+    LESS_THAN: "<",
+    LESS_THAN_OR_EQUAL: "<=",
+    GREATER_THAN: ">",
+    GREATER_THAN_OR_EQUAL: ">=",
+    AND: "and",
+    OR: "or"
+  };
+  function transitionOf(transition) {
+    var _a;
+    if (!transition) return {};
+    const type = transition.type;
+    const animation = SIMPLE.includes(type) ? type : "direction" in transition ? `${type}_${transition.direction}` : type;
+    return __spreadValues(__spreadValues({
+      animation,
+      duration: inSeconds(((_a = transition.duration) != null ? _a : 0.3) * 1e3)
+    }, easingOf(transition.easing)), "matchLayers" in transition && transition.matchLayers ? { matchLayers: true } : {});
+  }
+  function easingOf(easing) {
+    if (!easing) return {};
+    if (easing.type === "CUSTOM_CUBIC_BEZIER") {
+      const curve = easing.easingFunctionCubicBezier;
+      if (!curve) return {};
+      return { bezier: [curve.x1, curve.y1, curve.x2, curve.y2] };
+    }
+    if (easing.type === "CUSTOM_SPRING") {
+      const spring = easing.easingFunctionSpring;
+      if (!spring) return {};
+      return {
+        spring: __spreadValues({
+          mass: spring.mass,
+          stiffness: spring.stiffness,
+          damping: spring.damping
+        }, spring.initialVelocity ? { initialVelocity: spring.initialVelocity } : {})
+      };
+    }
+    return { easing: easing.type };
+  }
+
   // src/modules/run.ts
   var isFailure = (reply) => {
     if (typeof reply !== "object" || reply === null) return false;
@@ -28373,9 +28523,8 @@ ${scripts}`, "");
       props.data = data;
     }
     const linked = node;
-    if (Array.isArray(linked.reactions)) {
-      const links2 = await describeLinks(linked.reactions, variableName);
-      if (links2) props.links = links2;
+    if (Array.isArray(linked.reactions) && linked.reactions.length > 0) {
+      props.links = sendableLinks(linked.reactions);
     }
     const shape = bag.vectorNetwork;
     if (shape && Array.isArray(shape.vertices) && shape.vertices.length > 0) {

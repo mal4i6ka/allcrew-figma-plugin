@@ -98,7 +98,7 @@ import {
   type StoredModule,
 } from './modules/registry.ts'
 import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
-import { describeLinks, planProps } from './canvas/props.ts'
+import { planProps } from './canvas/props.ts'
 import {
   applyProps,
   describeAnimation,
@@ -112,6 +112,7 @@ import {
 import { createNode, planCreate, type CreatePlan, type CreateSpec } from './canvas/create.ts'
 import { styledRuns } from './canvas/text-runs.ts'
 import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
+import { sendableLinks } from './canvas/link-reader.ts'
 import {
   bindingField,
   collectComponents,
@@ -1499,9 +1500,11 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   // `reactions`, not a `getReactionsAsync` — that method does not exist, which is why this read
   // answered `undefined` for a node whose links had just been set.
   const linked = node as SceneNode & { reactions?: readonly Reaction[] }
-  if (Array.isArray(linked.reactions)) {
-    const links = await describeLinks(linked.reactions, variableName)
-    if (links) props.links = links
+  if (Array.isArray(linked.reactions) && linked.reactions.length > 0) {
+    // The array `links` takes on the way in, not the sentence it used to be. The prose said
+    // everything — `"press → 570:15184 (CHANGE_TO) DISSOLVE 0.05s"` — and could be sent nowhere,
+    // so a screen with a prototype could be read and never rebuilt.
+    props.links = sendableLinks(linked.reactions)
   }
   const shape = bag.vectorNetwork as VectorNetwork | undefined
   if (shape && Array.isArray(shape.vertices) && shape.vertices.length > 0) {
