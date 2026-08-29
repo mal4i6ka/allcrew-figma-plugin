@@ -27550,6 +27550,21 @@ ${scripts}`, "");
     return found.filter(([layer]) => !seen.has(layer) && seen.add(layer));
   }
   function emitJsx(node, context, depth = 1) {
+    const drawn = emitElement(node, context, depth);
+    const only = optionalIn(node, context);
+    if (!only) return drawn;
+    const pad2 = INDENT.repeat(depth);
+    return `${pad2}{HAS[${JSON.stringify(only)}]?.has(key) && (
+${drawn}
+${pad2})}`;
+  }
+  function optionalIn(node, context) {
+    var _a;
+    const held = (_a = context.membership) == null ? void 0 : _a.get(node.id);
+    if (!held || !context.allVariants) return null;
+    return held.size === context.allVariants.size ? null : node.id;
+  }
+  function emitElement(node, context, depth) {
     var _a, _b, _c, _d, _e, _f;
     const pad2 = INDENT.repeat(depth);
     const own = `styles[${JSON.stringify(toClassName(node.id))}]`;
@@ -27665,12 +27680,68 @@ ${pad2}</${tag}>`;
     };
     return walk2(left, right, "") ? { pairs } : { pairs: null, why };
   }
-  function scopeVariantCss(css, pairs, scope) {
+  function alignVariants(variants) {
+    const membership = /* @__PURE__ */ new Map();
+    const maps = /* @__PURE__ */ new Map();
+    const unmatched = [];
+    const [first, ...rest] = variants;
+    const union = clone(first.node);
+    const belongs = (id, key) => {
+      var _a;
+      const seen = (_a = membership.get(id)) != null ? _a : /* @__PURE__ */ new Set();
+      seen.add(key);
+      membership.set(id, seen);
+    };
+    const claimAll = (node, key) => {
+      belongs(node.id, key);
+      for (const child of childrenOf(node)) claimAll(child, key);
+    };
+    claimAll(union, first.key);
+    maps.set(first.key, /* @__PURE__ */ new Map());
+    for (const variant2 of rest) {
+      const map = /* @__PURE__ */ new Map();
+      const merge = (into, from) => {
+        map.set(from.id, into.id);
+        belongs(into.id, variant2.key);
+        const existing = childrenOf(into);
+        const taken = /* @__PURE__ */ new Set();
+        for (const incoming of childrenOf(from)) {
+          let at = existing.findIndex((one, index) => !taken.has(index) && one.name === incoming.name && one.type === incoming.type);
+          if (at === -1) {
+            const added = clone(incoming);
+            existing.push(added);
+            at = existing.length - 1;
+            claimNothing(added);
+          }
+          taken.add(at);
+          merge(existing[at], incoming);
+        }
+      };
+      const claimNothing = (node) => {
+        for (const child of childrenOf(node)) claimNothing(child);
+      };
+      merge(union, variant2.node);
+      maps.set(variant2.key, map);
+    }
+    return { union, membership, maps, unmatched };
+  }
+  var childrenOf = (node) => {
+    var _a;
+    return (_a = node.children) != null ? _a : node.children = [];
+  };
+  function clone(node) {
+    const copy = __spreadValues({}, node);
+    const kids = node.children;
+    if (kids) copy.children = kids.map(clone);
+    return copy;
+  }
+  function scopeVariantCss(css, pairs, scope, base) {
     let renamed = css;
     for (const [from, to] of pairs) {
       if (from === to) continue;
       renamed = renamed.split(`.${toClassName(from)}`).join(`.${toClassName(to)}`);
     }
+    const baseRules = base ? rulesOf(base) : null;
     const out = [];
     for (const block2 of renamed.split(/\n\n+/)) {
       const trimmed = block2.trim();
@@ -27684,10 +27755,32 @@ ${pad2}</${tag}>`;
         out.push(trimmed);
         continue;
       }
-      const selectors = trimmed.slice(0, brace).split(",").map((one) => `.${scope} ${one.trim()}`).join(",\n");
-      out.push(`${selectors} ${trimmed.slice(brace)}`);
+      const selector = trimmed.slice(0, brace).trim();
+      let declarations = trimmed.slice(brace + 1).replace(/\}\s*$/, "");
+      if (baseRules) {
+        const held = baseRules.get(selector);
+        const kept2 = declarations.split(";").map((one) => one.trim()).filter((one) => one !== "" && (!held || !held.has(one)));
+        if (kept2.length === 0) continue;
+        declarations = `
+  ${kept2.join(";\n  ")};
+`;
+      }
+      const selectors = selector.split(",").map((one) => `.${scope} ${one.trim()}`).join(",\n");
+      out.push(`${selectors} {${declarations}}`);
     }
     return out.join("\n\n");
+  }
+  function rulesOf(css) {
+    const rules = /* @__PURE__ */ new Map();
+    for (const block2 of css.split(/\n\n+/)) {
+      const trimmed = block2.trim();
+      if (trimmed === "" || trimmed.startsWith("@")) continue;
+      const brace = trimmed.indexOf("{");
+      if (brace === -1) continue;
+      const declarations = trimmed.slice(brace + 1).replace(/\}\s*$/, "").split(";").map((one) => one.trim()).filter((one) => one !== "");
+      rules.set(trimmed.slice(0, brace).trim(), new Set(declarations));
+    }
+    return rules;
   }
 
   // src/targets/react/index.ts
@@ -27727,7 +27820,27 @@ ${pad2}</${tag}>`;
       gaps.push(...built.gaps);
     }
     if (Object.values(files).some((one) => one.includes("from '../copy'"))) files["src/copy.tsx"] = COPY_FILE;
+    gaps.push(...missingImports(files));
     return { files, gaps };
+  }
+  function missingImports(files) {
+    var _a, _b;
+    const emitted = new Set(
+      Object.keys(files).filter((path) => path.startsWith("src/components/") && path.endsWith(".tsx")).map((path) => path.slice("src/components/".length, -".tsx".length))
+    );
+    const missing = /* @__PURE__ */ new Map();
+    for (const [path, contents] of Object.entries(files)) {
+      for (const match of contents.matchAll(/import \{ (\w+) \} from '\.{1,2}\/(?:components\/)?\1'/g)) {
+        const name = match[1];
+        if (emitted.has(name)) continue;
+        const from = (_a = missing.get(name)) != null ? _a : /* @__PURE__ */ new Set();
+        from.add((_b = path.split("/").pop()) != null ? _b : path);
+        missing.set(name, from);
+      }
+    }
+    return [...missing].map(
+      ([name, from]) => `${name} is used by ${[...from].join(", ")} and is not in this export \u2014 emit the page it lives on`
+    );
   }
   async function emitReact(roots, sceneNodesById, variableNamesById, options = {}) {
     var _a, _b, _c, _d;
@@ -27767,6 +27880,7 @@ ${motion.css}`);
       if (built.css.trim() !== "") files[`src/components/${component.name}.module.css`] = built.css;
       gaps.push(...built.gaps);
     }
+    gaps.push(...missingImports(files));
     return { files, gaps };
   }
   async function emitMotion(roots, sceneNodesById, motionByNodeId) {
@@ -27836,17 +27950,22 @@ ${motion.css}`);
       rootId: (_a = component.body) == null ? void 0 : _a.id,
       assets: assetsByNodeId
     });
-    const asContainer = component.body ? __spreadProps(__spreadValues({}, component.body), { type: "container" }) : null;
+    const laid = component.body && component.variants.size > 1 ? alignVariants([...component.variants].map(([key, node]) => ({ key, node }))) : null;
+    const bodyNode = laid ? laid.union : component.body;
+    const asContainer = bodyNode ? __spreadProps(__spreadValues({}, bodyNode), { type: "container" }) : null;
     const motion = asContainer ? await emitMotion([asContainer], sceneNodesById, motionByNodeId) : { css: "", js: "", gaps: [] };
+    const baseCss = asContainer ? await emitCss([asContainer], sceneNodesById, variableNamesById, { preamble: false }) : "";
     const variantGaps = [];
     const variantClasses = [];
     let variantCss = "";
     if (component.body) {
+      const first = [...component.variants.keys()][0];
       for (const [key, instance] of component.variants) {
-        if (instance.id === component.body.id || key === "") continue;
-        const { pairs, why } = pairOrExplain(component.body, instance);
+        if (key === first || key === "") continue;
+        const pairs = laid ? laid.maps.get(key) : pairOrExplain(component.body, instance).pairs;
         if (!pairs) {
-          variantGaps.push(`${component.name} ${key}: ${why != null ? why : "built differently"} \u2014 this one needs its own markup, not a CSS rule`);
+          const { why } = pairOrExplain(component.body, instance);
+          variantGaps.push(`${component.name} ${key}: ${why != null ? why : "built differently"} \u2014 this one needs its own markup`);
           continue;
         }
         const own = await emitCss([__spreadProps(__spreadValues({}, instance), { type: "container" })], sceneNodesById, variableNamesById, {
@@ -27857,12 +27976,26 @@ ${motion.css}`);
         variantCss += `
 
 /* ${key} */
-${scopeVariantCss(own, pairs, scope)}`;
+${scopeVariantCss(own, pairs, scope, baseCss)}`;
       }
     }
     context.hasVariants = variantClasses.length > 0;
+    context.membership = laid == null ? void 0 : laid.membership;
+    context.allVariants = laid ? new Set(component.variants.keys()) : void 0;
     const body = asContainer ? emitJsx(asContainer, context, 2) : "    <div />";
-    const css = asContainer ? await emitCss([asContainer], sceneNodesById, variableNamesById, { preamble: false }) + (motion.css.trim() === "" ? "" : `
+    const optional = [];
+    if (laid) {
+      for (const [id, held] of laid.membership) {
+        if (held.size === component.variants.size) continue;
+        optional.push(`  ${JSON.stringify(id)}: new Set([${[...held].map((one) => JSON.stringify(one)).join(", ")}]),`);
+      }
+    }
+    const hasBlock = optional.length > 0 ? `
+const HAS: Record<string, ReadonlySet<string>> = {
+${optional.join("\n")}
+}
+` : "";
+    const css = asContainer ? baseCss + (motion.css.trim() === "" ? "" : `
 
 ${motion.css}`) + variantCss : "";
     const fields = [];
@@ -27894,10 +28027,10 @@ ${imports.map((one) => `import { ${one} } from './${one}'`).join("\n")}${imports
 export interface ${component.name}Props {${props}  className?: string
 }
 
-${variantBlock}
+${variantBlock}${hasBlock}
 export function ${component.name}({ ${[...component.values.keys(), ...context.props.keys()].filter((one, index, all) => all.indexOf(one) === index).join(", ")}${component.values.size + context.props.size > 0 ? ", " : ""}className }: ${component.name}Props) {
-${Object.keys(context.copy).length > 0 ? "  const t = useCopy()\n" : ""}${variantBlock ? `  const variant = VARIANTS[${keyExpression}]
-` : ""}  return (
+${Object.keys(context.copy).length > 0 ? "  const t = useCopy()\n" : ""}${keyExpression && (variantBlock || hasBlock) ? `  const key = ${keyExpression}
+` : ""}${variantBlock ? "  const variant = VARIANTS[key]\n" : ""}  return (
 ${body}
   )
 }

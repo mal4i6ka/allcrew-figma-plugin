@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { pairOrExplain, pairTrees, scopeVariantCss, variantClass, variantKey } from './variants.ts'
+import { alignVariants, pairOrExplain, pairTrees, scopeVariantCss, variantClass, variantKey } from './variants.ts'
 
 const node = (id: string, type: string, children: unknown[] = []) =>
   ({ id, type, name: id, children }) as never
@@ -55,4 +55,53 @@ test('a variant that does not line up says which layer, not just that it did not
 test('a layer that changed kind says so by kind', () => {
   const { why } = pairOrExplain(node('a', 'container', [node('a1', 'text')]), node('b', 'container', [node('b1', 'instance-ref')]))
   assert.match(why!, /is a text in one and a instance-ref in the other/)
+})
+
+test('variants lay over each other by layer name, not by position', () => {
+  // The button that started this: `Icon=None` holds a label, `Icon=Trailing` holds a label and an
+  // icon. By position the label lined up with the icon.
+  const none = node('a', 'container', [{ ...node('a1', 'text'), name: 'Label' } as never])
+  const trailing = node('b', 'container', [
+    { ...node('b1', 'text'), name: 'Label' } as never,
+    { ...node('b2', 'container'), name: 'Icons' } as never,
+  ])
+  const aligned = alignVariants([
+    { key: 'Icon=None', node: none },
+    { key: 'Icon=Trailing', node: trailing },
+  ])
+
+  const names = (aligned.union as { children: Array<{ name: string }> }).children.map((one) => one.name)
+  assert.deepEqual(names, ['Label', 'Icons'], 'the union holds every layer any variant has')
+  // The label is in both; the icon is only in one, and that is what becomes the condition.
+  assert.deepEqual([...aligned.membership.get('a1')!], ['Icon=None', 'Icon=Trailing'])
+  assert.deepEqual([...aligned.membership.get('b2')!], ['Icon=Trailing'])
+  // And each variant's own ids map onto the union's, so its stylesheet can be renamed.
+  assert.equal(aligned.maps.get('Icon=Trailing')!.get('b1'), 'a1')
+})
+
+test('a layer that changes kind is two layers, not one with two shapes', () => {
+  const text = node('a', 'container', [{ ...node('a1', 'text'), name: 'Label' } as never])
+  const swapped = node('b', 'container', [{ ...node('b1', 'instance-ref'), name: 'Label' } as never])
+  const aligned = alignVariants([
+    { key: 'Icon=None', node: text },
+    { key: 'Icon=Only', node: swapped },
+  ])
+  const kids = (aligned.union as { children: Array<{ id: string; type: string }> }).children
+  assert.deepEqual(kids.map((one) => one.type), ['text', 'instance-ref'])
+  assert.deepEqual([...aligned.membership.get('a1')!], ['Icon=None'])
+  assert.deepEqual([...aligned.membership.get('b1')!], ['Icon=Only'])
+})
+
+test('a variant says only what it changes, not the whole stylesheet again', () => {
+  const base = '.n1-1 {\n  display: flex;\n  background: red;\n}'
+  const variant = '.n2-1 {\n  display: flex;\n  background: blue;\n}'
+  const scoped = scopeVariantCss(variant, new Map([['2:1', '1:1']]), 'v-x', base)
+  assert.match(scoped, /background: blue/)
+  assert.doesNotMatch(scoped, /display: flex/, 'what the base already says is not worth saying twice')
+})
+
+test('a variant identical to the base emits nothing at all', () => {
+  const base = '.n1-1 {\n  background: red;\n}'
+  const same = '.n2-1 {\n  background: red;\n}'
+  assert.equal(scopeVariantCss(same, new Map([['2:1', '1:1']]), 'v-x', base).trim(), '')
 })

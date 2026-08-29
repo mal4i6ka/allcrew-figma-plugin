@@ -112,6 +112,92 @@ export function pairOrExplain(left: IrNode, right: IrNode): { pairs: Map<string,
   return walk(left, right, '') ? { pairs } : { pairs: null, why }
 }
 
+export interface Aligned {
+  /** Every layer any variant has, in the first variant's order, with the additions appended. */
+  union: IrNode
+  /** node id in the union → the variant keys that actually hold that layer. */
+  membership: Map<string, Set<string>>
+  /** variant key → (its own node id → the union node it stands for). */
+  maps: Map<string, Map<string, string>>
+  /** Variants whose layers could not be lined up at all, and why. */
+  unmatched: Array<{ key: string; why: string }>
+}
+
+/**
+ * Every variant of one component, laid over each other.
+ *
+ * Pairing by POSITION was right until it was not: a button's `Icon=Trailing` variant holds two
+ * layers where `Icon=None` holds one, and by position the label lined up with the icon. Variants
+ * keep their layer names, so the alignment is by name, and a layer only some variants have is
+ * kept with a note of which ones — that note is what becomes the condition in the markup.
+ *
+ * A layer whose KIND changes between variants — a label that is a text in one and a swapped
+ * instance in another — is not one layer with two shapes. Both are kept, each belonging to the
+ * variants that have it, and the markup renders whichever the asked-for variant carries.
+ */
+export function alignVariants(variants: ReadonlyArray<{ key: string; node: IrNode }>): Aligned {
+  const membership = new Map<string, Set<string>>()
+  const maps = new Map<string, Map<string, string>>()
+  const unmatched: Array<{ key: string; why: string }> = []
+  const [first, ...rest] = variants
+  const union = clone(first.node)
+
+  const belongs = (id: string, key: string) => {
+    const seen = membership.get(id) ?? new Set<string>()
+    seen.add(key)
+    membership.set(id, seen)
+  }
+  const claimAll = (node: IrNode, key: string) => {
+    belongs(node.id, key)
+    for (const child of childrenOf(node)) claimAll(child, key)
+  }
+  claimAll(union, first.key)
+  maps.set(first.key, new Map())
+
+  for (const variant of rest) {
+    const map = new Map<string, string>()
+    const merge = (into: IrNode, from: IrNode): void => {
+      map.set(from.id, into.id)
+      belongs(into.id, variant.key)
+
+      const existing = childrenOf(into)
+      const taken = new Set<number>()
+      for (const incoming of childrenOf(from)) {
+        // By name first, and only among the children not already claimed: two layers of one name
+        // under one parent are rare and must still not both fold into the same union node.
+        let at = existing.findIndex((one, index) => !taken.has(index) && one.name === incoming.name && one.type === incoming.type)
+        if (at === -1) {
+          // A layer this variant has and the union does not: appended, belonging to this variant
+          // alone until another turns up with it.
+          const added = clone(incoming)
+          existing.push(added)
+          at = existing.length - 1
+          claimNothing(added)
+        }
+        taken.add(at)
+        merge(existing[at], incoming)
+      }
+    }
+    const claimNothing = (node: IrNode) => {
+      for (const child of childrenOf(node)) claimNothing(child)
+    }
+    merge(union, variant.node)
+    maps.set(variant.key, map)
+  }
+
+  return { union, membership, maps, unmatched }
+}
+
+const childrenOf = (node: IrNode): IrNode[] => ((node as { children?: IrNode[] }).children ??= []) as IrNode[]
+
+/** A shallow-enough copy: the union tree grows children, and growing the caller's would be rude. */
+function clone(node: IrNode): IrNode {
+  const copy = { ...node } as IrNode
+  const kids = (node as { children?: IrNode[] }).children
+  if (kids) (copy as unknown as { children: IrNode[] }).children = kids.map(clone)
+  return copy
+}
+
 /**
  * A variant's stylesheet, renamed onto the first variant's layers and scoped to the variant.
  *
@@ -120,7 +206,13 @@ export function pairOrExplain(left: IrNode, right: IrNode): { pairs: Map<string,
  * for it to hit. Rules that name a class outside the pair map are left alone and reported by the
  * caller as unscoped.
  */
-export function scopeVariantCss(css: string, pairs: ReadonlyMap<string, string>, scope: string): string {
+export function scopeVariantCss(
+  css: string,
+  pairs: ReadonlyMap<string, string>,
+  scope: string,
+  /** The base variant's stylesheet: whatever this variant says identically is not worth saying. */
+  base?: string
+): string {
   let renamed = css
   for (const [from, to] of pairs) {
     if (from === to) continue
@@ -130,6 +222,8 @@ export function scopeVariantCss(css: string, pairs: ReadonlyMap<string, string>,
   // Each rule gets the variant class in front of it, so it only applies when the component was
   // asked for that variant. `@media` and `@keyframes` blocks pass through untouched: they carry
   // their own rules, and prefixing the at-rule itself would be nonsense.
+  const baseRules = base ? rulesOf(base) : null
+
   const out: string[] = []
   for (const block of renamed.split(/\n\n+/)) {
     const trimmed = block.trim()
@@ -143,12 +237,46 @@ export function scopeVariantCss(css: string, pairs: ReadonlyMap<string, string>,
       out.push(trimmed)
       continue
     }
-    const selectors = trimmed
-      .slice(0, brace)
+
+    const selector = trimmed.slice(0, brace).trim()
+    let declarations = trimmed.slice(brace + 1).replace(/\}\s*$/, '')
+
+    // Against the base: a variant that repeats the whole stylesheet to change one colour makes a
+    // 285KB file for one button, and buries the one line that actually differs.
+    if (baseRules) {
+      const held = baseRules.get(selector)
+      const kept = declarations
+        .split(';')
+        .map((one) => one.trim())
+        .filter((one) => one !== '' && (!held || !held.has(one)))
+      if (kept.length === 0) continue
+      declarations = `\n  ${kept.join(';\n  ')};\n`
+    }
+
+    const selectors = selector
       .split(',')
       .map((one) => `.${scope} ${one.trim()}`)
       .join(',\n')
-    out.push(`${selectors} ${trimmed.slice(brace)}`)
+    out.push(`${selectors} {${declarations}}`)
   }
   return out.join('\n\n')
+}
+
+/** selector → the declarations it holds, for comparing one stylesheet against another. */
+function rulesOf(css: string): Map<string, Set<string>> {
+  const rules = new Map<string, Set<string>>()
+  for (const block of css.split(/\n\n+/)) {
+    const trimmed = block.trim()
+    if (trimmed === '' || trimmed.startsWith('@')) continue
+    const brace = trimmed.indexOf('{')
+    if (brace === -1) continue
+    const declarations = trimmed
+      .slice(brace + 1)
+      .replace(/\}\s*$/, '')
+      .split(';')
+      .map((one) => one.trim())
+      .filter((one) => one !== '')
+    rules.set(trimmed.slice(0, brace).trim(), new Set(declarations))
+  }
+  return rules
 }

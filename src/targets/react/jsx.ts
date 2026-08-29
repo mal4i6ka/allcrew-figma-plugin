@@ -50,6 +50,16 @@ export interface JsxContext {
   gaps: string[]
   /** True when the component has variant classes, so its root also carries the variant one. */
   hasVariants?: boolean
+  /**
+   * Which variants hold each layer, when they do not all hold all of them.
+   *
+   * A layer only some variants have is wrapped in a condition rather than drawn always or left
+   * out: `Icon=Trailing` has an icon and `Icon=None` does not, and a button that always drew the
+   * icon would be as wrong as one that never did.
+   */
+  membership?: ReadonlyMap<string, ReadonlySet<string>>
+  /** Every variant key, so a layer that belongs to all of them needs no condition at all. */
+  allVariants?: ReadonlySet<string>
   /** Each vector's exported file, by node id — see `EmitReactOptions.assetsByNodeId`. */
   assets?: ReadonlyMap<string, { filename: string; svg: string }>
   /** A prefix for copy keys, so two screens do not collide on `title`. */
@@ -115,6 +125,23 @@ function textsInside(node: IrNode): Array<[string, string]> {
 }
 
 export function emitJsx(node: IrNode, context: JsxContext, depth = 1): string {
+  const drawn = emitElement(node, context, depth)
+  const only = optionalIn(node, context)
+  if (!only) return drawn
+  // The condition goes around the whole element, indented where the element was, so the markup
+  // reads as the design does: this layer, when the variant has it.
+  const pad = INDENT.repeat(depth)
+  return `${pad}{HAS[${JSON.stringify(only)}]?.has(key) && (\n${drawn}\n${pad})}`
+}
+
+/** The layer's own membership name when it is not in every variant — otherwise nothing. */
+function optionalIn(node: IrNode, context: JsxContext): string | null {
+  const held = context.membership?.get(node.id)
+  if (!held || !context.allVariants) return null
+  return held.size === context.allVariants.size ? null : node.id
+}
+
+function emitElement(node: IrNode, context: JsxContext, depth: number): string {
   const pad = INDENT.repeat(depth)
   // `styles['n1-2']`, never `styles.n1-2`: a Figma id has a colon in it, `toClassName` turns that
   // into a hyphen, and a hyphen in a property access is a subtraction. Every line of the first

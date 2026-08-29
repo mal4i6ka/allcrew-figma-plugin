@@ -20,7 +20,7 @@ import type { IrNode } from '../django/ir.ts'
 import { emitCss, toClassName } from '../django/css-emitter.ts'
 import type { DjangoNodeSource } from '../django/css-emitter.ts'
 import { componentName, emitJsx, newContext, propName, type JsxContext } from './jsx.ts'
-import { axesOf, pairOrExplain, scopeVariantCss, variantClass, variantKey, variantKeyFromName } from './variants.ts'
+import { alignVariants, axesOf, pairOrExplain, scopeVariantCss, variantClass, variantKey, variantKeyFromName } from './variants.ts'
 import { emitInteractions } from '../django/interactions.ts'
 import { emitNodeAnimationCss } from '../django/motion/css-emitter.ts'
 import type { MotionSnapshot } from '../django/motion/types.ts'
@@ -126,7 +126,36 @@ export async function emitLibrary(
   }
 
   if (Object.values(files).some((one) => one.includes("from '../copy'"))) files['src/copy.tsx'] = COPY_FILE
+  gaps.push(...missingImports(files))
   return { files, gaps }
+}
+
+/**
+ * Components the emitted files import and nobody emitted.
+ *
+ * A Button holds an arrow, the arrow is a component of its own, and a Buttons-page export does
+ * not reach the Icons page. The import is right and the file is not there — which TypeScript
+ * would say, eventually, in a language the designer who ran the export cannot act on.
+ */
+function missingImports(files: Record<string, string>): string[] {
+  const emitted = new Set(
+    Object.keys(files)
+      .filter((path) => path.startsWith('src/components/') && path.endsWith('.tsx'))
+      .map((path) => path.slice('src/components/'.length, -'.tsx'.length))
+  )
+  const missing = new Map<string, Set<string>>()
+  for (const [path, contents] of Object.entries(files)) {
+    for (const match of contents.matchAll(/import \{ (\w+) \} from '\.{1,2}\/(?:components\/)?\1'/g)) {
+      const name = match[1]
+      if (emitted.has(name)) continue
+      const from = missing.get(name) ?? new Set<string>()
+      from.add(path.split('/').pop() ?? path)
+      missing.set(name, from)
+    }
+  }
+  return [...missing].map(
+    ([name, from]) => `${name} is used by ${[...from].join(', ')} and is not in this export — emit the page it lives on`
+  )
 }
 
 export async function emitReact(
@@ -183,6 +212,7 @@ export async function emitReact(
     gaps.push(...built.gaps)
   }
 
+  gaps.push(...missingImports(files))
   return { files, gaps }
 }
 
@@ -300,8 +330,19 @@ async function componentFile(
     rootId: component.body?.id,
     assets: assetsByNodeId,
   }
-  const asContainer = component.body ? ({ ...(component.body as IrNode), type: 'container' } as IrNode) : null
+  // Every variant laid over every other: the markup is their union, and a layer only some of them
+  // hold is drawn under a condition. Taking the first variant's layers alone is what made a
+  // trailing-icon button come out with no icon at all.
+  const laid =
+    component.body && component.variants.size > 1
+      ? alignVariants([...component.variants].map(([key, node]) => ({ key, node })))
+      : null
+  const bodyNode = laid ? laid.union : component.body
+  const asContainer = bodyNode ? ({ ...(bodyNode as IrNode), type: 'container' } as IrNode) : null
   const motion = asContainer ? await emitMotion([asContainer], sceneNodesById, motionByNodeId) : { css: '', js: '', gaps: [] }
+  const baseCss = asContainer
+    ? await emitCss([asContainer], sceneNodesById, variableNamesById, { preamble: false })
+    : ''
   const variantGaps: string[] = []
   const variantClasses: string[] = []
   let variantCss = ''
@@ -310,11 +351,15 @@ async function componentFile(
   // behind a class. Without this a secondary button was drawn in the primary's colours and looked
   // like a screen the whole way through.
   if (component.body) {
+    const first = [...component.variants.keys()][0]
     for (const [key, instance] of component.variants) {
-      if (instance.id === component.body.id || key === '') continue
-      const { pairs, why } = pairOrExplain(component.body, instance)
+      if (key === first || key === '') continue
+      // The alignment already worked out which of this variant's layers is which; without it —
+      // a component with a single variant — fall back to pairing by position.
+      const pairs = laid ? laid.maps.get(key) : pairOrExplain(component.body, instance).pairs
       if (!pairs) {
-        variantGaps.push(`${component.name} ${key}: ${why ?? 'built differently'} — this one needs its own markup, not a CSS rule`)
+        const { why } = pairOrExplain(component.body, instance)
+        variantGaps.push(`${component.name} ${key}: ${why ?? 'built differently'} — this one needs its own markup`)
         continue
       }
       const own = await emitCss([{ ...instance, type: 'container' } as IrNode], sceneNodesById, variableNamesById, {
@@ -322,7 +367,7 @@ async function componentFile(
       })
       const scope = variantClass(key)
       variantClasses.push(`${JSON.stringify(key)}: styles[${JSON.stringify(scope)}]`)
-      variantCss += `\n\n/* ${key} */\n${scopeVariantCss(own, pairs, scope)}`
+      variantCss += `\n\n/* ${key} */\n${scopeVariantCss(own, pairs, scope, baseCss)}`
     }
   }
 
@@ -330,13 +375,23 @@ async function componentFile(
   // asking for that class before working out whether there is one would emit a reference to
   // nothing.
   context.hasVariants = variantClasses.length > 0
+  context.membership = laid?.membership
+  context.allVariants = laid ? new Set(component.variants.keys()) : undefined
   const body = asContainer ? emitJsx(asContainer, context, 2) : '    <div />'
 
-  const css = asContainer
-    ? (await emitCss([asContainer], sceneNodesById, variableNamesById, { preamble: false })) +
-      (motion.css.trim() === '' ? '' : `\n\n${motion.css}`) +
-      variantCss
-    : ''
+  // Only the layers that are not in every variant need a set; a component whose variants differ
+  // by colour alone carries none of this.
+  const optional: string[] = []
+  if (laid) {
+    for (const [id, held] of laid.membership) {
+      if (held.size === component.variants.size) continue
+      optional.push(`  ${JSON.stringify(id)}: new Set([${[...held].map((one) => JSON.stringify(one)).join(', ')}]),`)
+    }
+  }
+  const hasBlock =
+    optional.length > 0 ? `\nconst HAS: Record<string, ReadonlySet<string>> = {\n${optional.join('\n')}\n}\n` : ''
+
+  const css = asContainer ? baseCss + (motion.css.trim() === '' ? '' : `\n\n${motion.css}`) + variantCss : ''
 
   const fields: string[] = []
   for (const [prop, seen] of component.values) {
@@ -377,13 +432,13 @@ ${imports.map((one) => `import { ${one} } from './${one}'`).join('\n')}${imports
 export interface ${component.name}Props {${props}  className?: string
 }
 
-${variantBlock}
+${variantBlock}${hasBlock}
 export function ${component.name}({ ${[...component.values.keys(), ...context.props.keys()]
     .filter((one, index, all) => all.indexOf(one) === index)
     .join(', ')}${component.values.size + context.props.size > 0 ? ', ' : ''}className }: ${component.name}Props) {
 ${Object.keys(context.copy).length > 0 ? '  const t = useCopy()\n' : ''}${
-    variantBlock ? `  const variant = VARIANTS[${keyExpression}]\n` : ''
-  }  return (
+    keyExpression && (variantBlock || hasBlock) ? `  const key = ${keyExpression}\n` : ''
+  }${variantBlock ? '  const variant = VARIANTS[key]\n' : ''}  return (
 ${body}
   )
 }
