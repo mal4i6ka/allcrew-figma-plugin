@@ -103,6 +103,7 @@ import {
   applyProps,
   describeAnimation,
   describeBrush,
+  describeProfile,
   describeShaderPaints,
   describeEffects,
   describeGrids,
@@ -1448,11 +1449,19 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
           ...(bag.complexStrokeProperties && (bag.complexStrokeProperties as { type?: string }).type !== 'BASIC'
             ? { brush: describeBrush(bag.complexStrokeProperties) }
             : {}),
+          // How the width varies along the line — a named profile or the points themselves. A
+          // stroke drawn with a taper read back as a plain one, and the copy came out uniform.
+          ...(describeProfile(bag.variableWidthStrokeProperties)
+            ? { strokeProfile: describeProfile(bag.variableWidthStrokeProperties) }
+            : {}),
           ...(typeof bag.strokeCap === 'string' && bag.strokeCap !== 'NONE' ? { strokeCap: bag.strokeCap } : {}),
           ...(typeof bag.strokeJoin === 'string' && bag.strokeJoin !== 'MITER' ? { strokeJoin: bag.strokeJoin } : {}),
         }
       : {}),
-    ...(typeof bag.cornerRadius === 'number' ? { cornerRadius: round(bag.cornerRadius) } : {}),
+    // Zero is the absence of a corner radius, not a value: printing it on every vector and line
+    // made a reading that could not be sent back — Figma answers a radius on a VECTOR with
+    // "object is not extensible".
+    ...(typeof bag.cornerRadius === 'number' && bag.cornerRadius > 0 ? { cornerRadius: round(bag.cornerRadius) } : {}),
     // The array the write takes, not the sentence it used to be: an elevation that reads as
     // `"drop shadow #0A1F44 @0.2 0,4 blur 12"` cannot be sent back, and half a screen's design is
     // its shadows.
@@ -1463,7 +1472,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       : {}),
     // The length of the timeline, in the word the write takes. The ids beside it were the read
     // naming Figma's own bookkeeping — a caller can neither use them nor send them back.
-    ...(Array.isArray(bag.timelines) && bag.timelines.length > 0
+    // Only a timeline this node actually owns. Figma hands out a placeholder `-1:-1` to nodes
+    // that merely sit near one, and a reading of that came back as "No timeline found".
+    ...(Array.isArray(bag.timelines) && bag.timelines.length > 0 && !(bag.timelines as Timeline[])[0].id.startsWith('-1')
       ? { timeline: (bag.timelines as Timeline[])[0].duration }
       : {}),
     ...(readKeyframes(bag.manualKeyframeTracks)),

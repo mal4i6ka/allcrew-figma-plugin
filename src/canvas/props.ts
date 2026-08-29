@@ -412,6 +412,8 @@ export interface NodeProps {
   autoRename?: boolean
   /** How lines are broken: `AUTO`, `BALANCE` (even lines) or `PRETTY` (no orphans). */
   textWrap?: 'AUTO' | 'BALANCE' | 'PRETTY'
+  /** How the stroke's width varies along its length — a named profile, or points of your own. */
+  strokeProfile?: 'UNIFORM' | 'WEDGE' | 'TAPER' | 'QUARTER_TAPER' | 'EYE' | 'MIRRORED_TAPER' | Array<{ at: number; width: number }> | null
   /** Movement on a timeline: `[{ field: "opacity", from: 0, at: [{ time: 0, value: 0 }, …] }]`. */
   keyframes?: KeyframeTrack[]
   /** How long this node's timeline runs, in seconds. */
@@ -600,6 +602,7 @@ export type PropStep =
   | { step: 'swap'; component: string }
   | { step: 'properties'; properties: Record<string, string | boolean> }
   | { step: 'overrides'; overrides: Array<{ at: string; steps: PropStep[] }> }
+  | { step: 'strokeProfile'; profile: unknown }
   | { step: 'keyframes'; tracks: Array<{ name: string; track: unknown }> }
   | { step: 'timeline'; seconds: number }
   | { step: 'links'; links: PlannedLink[]; destinations: string[] }
@@ -742,6 +745,7 @@ const ORDER = [
   'strokeCap',
   'strokeJoin',
   'strokeDashes',
+  'strokeProfile',
   'brush',
   'effects',
   'grid',
@@ -839,6 +843,10 @@ export function dependsOnPlacement(step: PropStep): boolean {
   // reordered the page the node had not left yet, and the placement that followed appended it
   // last — so `index: 0` was applied, reported, and had no effect anyone could see.
   if (step.step === 'reparent' && step.parent === '') return true
+  // A node has no timeline of its own until it is inside the frame that owns one: set on the page
+  // where `figma.create*` leaves it, the step answered "only a top-level frame has one" about a
+  // node that was about to be inside exactly that.
+  if (step.step === 'timeline') return true
   return step.step === 'assign' && PLACED.includes(step.property)
 }
 
@@ -1236,6 +1244,39 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         } else steps.push({ step: 'swap', component: props.swap.trim() })
         break
       }
+      case 'strokeProfile': {
+        const asked = props.strokeProfile
+        if (asked === null) {
+          steps.push({ step: 'strokeProfile', profile: null })
+          break
+        }
+        if (typeof asked === 'string') {
+          if (!WIDTH_PROFILES.includes(asked)) fail(`strokeProfile must be one of: ${WIDTH_PROFILES.join(', ')}, a list of { at, width }, or null`)
+          else steps.push({ step: 'strokeProfile', profile: { widthProfile: asked } })
+          break
+        }
+        if (!Array.isArray(asked)) {
+          fail(`strokeProfile must be one of: ${WIDTH_PROFILES.join(', ')}, a list of { at, width }, or null`)
+          break
+        }
+        // A profile of your own is a list of points along the line: `at` from 0 to 1, and the
+        // width there. Figma calls them positions; the word here is the one a caller thinks in.
+        const points: Array<{ position: number; width: number }> = []
+        for (const [index, entry] of asked.entries()) {
+          const one = entry as { at?: unknown; width?: unknown }
+          if (typeof one?.at !== 'number' || one.at < 0 || one.at > 1) {
+            fail(`strokeProfile[${index}].at must be between 0 and 1 — where along the line the point sits`)
+            continue
+          }
+          if (typeof one.width !== 'number' || one.width < 0) {
+            fail(`strokeProfile[${index}].width must be a number >= 0`)
+            continue
+          }
+          points.push({ position: one.at, width: one.width })
+        }
+        if (points.length > 0) steps.push({ step: 'strokeProfile', profile: { widthProfile: 'CUSTOM', variableWidthPoints: points } })
+        break
+      }
       case 'timeline': {
         const seconds = number('timeline', 0)
         if (seconds !== null) steps.push({ step: 'timeline', seconds })
@@ -1452,6 +1493,9 @@ const STYLE_SLOTS: Readonly<Record<string, 'paint' | 'text' | 'effect' | 'grid'>
   effectStyle: 'effect',
   gridStyle: 'grid',
 }
+/** Figma's named width profiles, in its own spelling — there is no shorter way to say WEDGE. */
+const WIDTH_PROFILES = ['UNIFORM', 'WEDGE', 'TAPER', 'QUARTER_TAPER', 'EYE', 'MIRRORED_TAPER']
+
 const SIMPLE_ANIMATIONS = ['INSTANT', 'DISSOLVE', 'SMART_ANIMATE', 'SCROLL_ANIMATE']
 const DIRECTIONAL_ANIMATIONS = ['MOVE_IN', 'MOVE_OUT', 'PUSH', 'SLIDE_IN', 'SLIDE_OUT']
 const DIRECTIONS = ['LEFT', 'RIGHT', 'TOP', 'BOTTOM']

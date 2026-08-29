@@ -175,25 +175,37 @@ BaseNodeMixin.getTopLevelFrame, InteractiveSlideElementNode, InteractiveSlideEle
 библиотеки, 78 из 135 переменных в One не опубликованы. Расширение библиотечной коллекции —
 механизм, которым это чинится, и канал о нём не знает.
 
-### 3. Ручные ключевые кадры — 1.130, наполовину
+### 3. Ручные ключевые кадры — ЗАКРЫТО
 
 `MotionNodeMixin.applyManualKeyframeTrack`, `removeManualKeyframeTrack`, `setTimelineDuration`,
 все `ManualKeyframeTrack*`, `EffectKeyframe*`, `PaintKeyframeBinding`, `MotionAPI.playheadPosition`.
 
-Мы читаем таймлайны и применяем стили анимации, но **создать** дорожку не можем. Для обещания
-«всё ай-кенди один к одному» это дыра ровно посередине.
+`keyframes: [{ field, from?, at: [{ time, value, easing? }] }]` и `timeline: <секунды>`. Тридцать
+анимируемых полей носят те же имена, что и всё остальное в словаре — `x`, `gap`, `cornerRadius`,
+`trimStart` — против фигмовских `TRANSLATION_X`, `STACK_SPACING`, `PATH_TRIM_START`.
 
-### 4. Figma Draw — 1.123, наполовину
+Проверено: три дорожки записаны через канал, прочитаны обратно один в один, узел проходит
+прогон. GIF показывает движение.
 
-Переменная ширина обводки (`VariableWidthStrokeProperties`, профили), `transformModifiers` у
-`TransformGroupNode`, `textPathStartData`, `setFillsAsync` / `setStrokesAsync`.
+### 4. Figma Draw — переменная ширина ЗАКРЫТА
 
-### 5. Эффекты 2025 года — 1.111, 1.116
+`strokeProfile` — именованный профиль (`TAPER`, `WEDGE`, `EYE`…) или собственные точки
+`[{ at, width }]`. Проверено: линия, тонкая по краям и толстая в середине, записана, прочитана и
+пройдена прогоном начисто.
 
-`NoiseEffect` (моно/дуо/мульти), `TextureEffect`, прогрессивное размытие (`startOffset`,
-`endOffset`, `startRadius`), `GlassEffect` целиком, `PatternPaint` целиком.
+Остаются `transformModifiers` у `TransformGroupNode`, `textPathStartData` и асинхронные
+`setFillsAsync` / `setStrokesAsync` — они не про вид экрана, а про удобство редактирования.
 
-Всё это — вид экрана. Непереведённый шум или стекло — это те самые 10%, которых не видно.
+### 5. Эффекты 2025 года — ЗАКРЫТО
+
+Шум (моно/дуо/мульти), текстура, стекло и прогрессивное размытие — все в словаре, и
+**список эффектов теперь читается массивом**, а не прозой: половина дизайна экрана это его тени.
+
+Осталcя `PatternPaint` — заливка узором из другого узла; она про иллюстрации, не про экраны.
+
+Две находки на холсте: `blendMode` у шума есть в типизациях и отвергается рантаймом (второй такой
+случай за сезон), а полупрозрачная краска читалась как `"#FFFFFF @0.1"` и не принималась назад —
+это ломало прогон каждого оверлея в файле.
 
 ### 6. Диапазоны текста — ЗАКРЫТО
 

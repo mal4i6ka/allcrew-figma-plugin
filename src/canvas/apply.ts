@@ -74,6 +74,8 @@ const propertyOf = (step: PropStep): string => {
       return 'overrides'
     case 'keyframes':
       return 'keyframes'
+    case 'strokeProfile':
+      return 'strokeProfile'
     case 'timeline':
       return 'timeline'
     case 'font':
@@ -656,6 +658,13 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       }
     }
 
+    case 'strokeProfile': {
+      if (!('variableWidthStrokeProperties' in bag)) throw new Error(`a ${node.type} has no stroke to shape`)
+      const before = describeProfile(bag.variableWidthStrokeProperties)
+      if (!dry) bag.variableWidthStrokeProperties = step.profile as never
+      return { property: 'strokeProfile', before, after: describeProfile(step.profile) }
+    }
+
     case 'keyframes': {
       const motion = node as unknown as {
         applyManualKeyframeTrack?: (field: unknown, track: unknown) => void
@@ -690,8 +699,11 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         setTimelineDuration?: (id: string, duration: number) => void
       }
       const timeline = motion.timelines?.[0]
-      if (!timeline || typeof motion.setTimelineDuration !== 'function') {
-        throw new Error(`a ${node.type} has no timeline to set the length of`)
+      // `-1:-1` is the placeholder Figma hands to a node that merely sits near a timeline. Taking
+      // it for a real one answered "No timeline found with id: -1:-1", which is Figma explaining
+      // our own mistake back to us.
+      if (!timeline || timeline.id.startsWith('-1') || typeof motion.setTimelineDuration !== 'function') {
+        throw new Error(`a ${node.type} has no timeline of its own — only a top-level frame does`)
       }
       const before = timeline.duration
       if (!dry) motion.setTimelineDuration(timeline.id, step.seconds)
@@ -1283,6 +1295,16 @@ export function describeShaderPaints(value: unknown): Array<{ id: string; proper
     })
   }
   return shaders
+}
+
+/** A width profile as the vocabulary spells it: the name, or the points of your own. */
+export function describeProfile(value: unknown): string | Array<{ at: number; width: number }> | null {
+  const one = value as { widthProfile?: string; variableWidthPoints?: Array<{ position: number; width: number }> } | null
+  if (!one?.widthProfile) return null
+  if (one.widthProfile !== 'CUSTOM') return one.widthProfile
+  // Rounded, like every other number a read prints: Figma stores 0.1 as 0.10000000149011612 and
+  // a reading full of float noise is a reading nobody wants to send back.
+  return (one.variableWidthPoints ?? []).map((point) => ({ at: round(point.position), width: round(point.width) }))
 }
 
 /** What a stroke is drawn with, in the words the vocabulary takes it in. */

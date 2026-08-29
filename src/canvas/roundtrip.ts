@@ -118,6 +118,9 @@ export function sendable(props: Record<string, unknown>): {
 
   for (const [key, value] of Object.entries(props)) {
     if (NOT_PROPERTIES.has(key) || NOT_SENT.has(key)) continue
+    // A line has no height and a column no width. Sending a zero is refused — `height must be
+    // >= 0.01` — for a shape whose reading is perfectly true.
+    if ((key === 'width' || key === 'height') && value === 0) continue
     // `figma.mixed` reaches a reading as the word "mixed": an answer, not a value, and the runs
     // beside it carry what it stands for.
     if (value === 'mixed') {
@@ -191,9 +194,17 @@ export function compare(
   const same: string[] = []
   const diverged: RoundTripFinding[] = []
   const keys = new Set([...Object.keys(before), ...Object.keys(after)])
+  // A shape that could not travel takes its size with it: a vector whose `network` is a summary
+  // comes out empty, and reporting the height as a second finding says the same thing twice while
+  // hiding what a real size difference would mean.
+  const shaped = [...keys].some((key) => SUMMARIES.has(key) && before[key] !== undefined)
 
   for (const key of keys) {
     if (NOT_PROPERTIES.has(key) || ignore.has(key)) continue
+    // A summary cannot travel by design, and it is already reported as one. Comparing it too
+    // would count the same known limit twice and hide a real divergence behind it.
+    if (SUMMARIES.has(key)) continue
+    if (shaped && (key === 'width' || key === 'height')) continue
     // Where the copy sits is not what is being tested; how big it came out is.
     if (key === 'x' || key === 'y') continue
     const left = JSON.stringify(before[key] ?? null)
