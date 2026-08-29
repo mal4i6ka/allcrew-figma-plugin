@@ -132,6 +132,15 @@ test('textAlign and autoResize are renamed to what Figma calls them', () => {
   ])
 })
 
+test('a translucent colour goes back the way it was read', () => {
+  // `#FFFFFF @0.1` is what a read prints; refusing it broke the round trip of every overlay.
+  assert.deepEqual(stepsOf({ fill: '#FFFFFF @0.1' })[0], {
+    step: 'paint',
+    property: 'fills',
+    ref: { color: '#FFFFFF', opacity: 0.1 },
+  })
+})
+
 test('"none" clears a paint, because that is the word the read gives back', () => {
   assert.deepEqual(stepsOf({ fill: 'none' }), [{ step: 'paint', property: 'fills', ref: null }])
   assert.deepEqual(stepsOf({ fill: null }), [{ step: 'paint', property: 'fills', ref: null }])

@@ -10474,7 +10474,7 @@ ${frames.map(formatFrame).join("\n")}
       return name;
     }
     sampledSpring(points) {
-      const rounded = points.map((point) => round6(point, 4));
+      const rounded = points.map((point2) => round6(point2, 4));
       const key = `spring:${rounded.join(",")}`;
       const existing = this.namesByKey.get(key);
       if (existing) return existing;
@@ -19219,7 +19219,25 @@ ${renderSections(sections)}
     }
     return { ranges: [[from, Math.min(to, characters.length)]] };
   }
+  function pointOf(value, where, problems) {
+    if (value === void 0) return null;
+    if (!Array.isArray(value) || value.length !== 2 || value.some((one) => typeof one !== "number")) {
+      problems.push(`${where} must be [x, y]`);
+      return null;
+    }
+    return { x: value[0], y: value[1] };
+  }
+  function colourOf(value, fallback, where, problems) {
+    const hex = value === void 0 ? fallback : value;
+    if (typeof hex !== "string" || !HEX.test(hex)) {
+      problems.push(`${where} must be a #RRGGBB colour`);
+      return null;
+    }
+    const rgb = parseHex(hex);
+    return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b, a: 1 } : null;
+  }
   function planEffects(raw, where, problems) {
+    var _a, _b;
     if (!Array.isArray(raw)) {
       problems.push(`${where} must be an array of shadows and blurs \u2014 [] removes them`);
       return null;
@@ -19262,14 +19280,29 @@ ${renderSections(sections)}
       }
       if (typeof spec.blur === "string") {
         const kind2 = spec.blur.toLowerCase();
-        if (kind2 !== "layer" && kind2 !== "background") {
-          fail2('blur must be "layer" or "background"');
+        if (kind2 !== "layer" && kind2 !== "background" && kind2 !== "progressive") {
+          fail2('blur must be "layer", "background" or "progressive"');
           continue;
         }
         const radius2 = measure2(spec.radius, 0, "radius", "radius");
         if (radius2 === null) continue;
         if (spec.radius === void 0) {
           fail2("radius must be a number >= 0");
+          continue;
+        }
+        if (kind2 === "progressive") {
+          const from = (_a = pointOf(spec.from, `${at}.from`, problems)) != null ? _a : { x: 0, y: 0 };
+          const to = (_b = pointOf(spec.to, `${at}.to`, problems)) != null ? _b : { x: 0, y: 1 };
+          effects.push({
+            type: "LAYER_BLUR",
+            blurType: "PROGRESSIVE",
+            radius: radius2,
+            startRadius: typeof spec.startRadius === "number" ? spec.startRadius : 0,
+            startOffset: from,
+            endOffset: to,
+            visible: spec.visible !== false
+          });
+          summary.push(`progressive blur ${radius2}`);
           continue;
         }
         effects.push({
@@ -19281,8 +19314,57 @@ ${renderSections(sections)}
         summary.push(`${kind2} blur ${radius2}`);
         continue;
       }
+      if (typeof spec.noise === "string") {
+        const kinds = { mono: "MONOTONE", duo: "DUOTONE", multi: "MULTITONE" };
+        const noiseType = kinds[spec.noise.toLowerCase()];
+        if (!noiseType) {
+          fail2('noise must be "mono", "duo" or "multi"');
+          continue;
+        }
+        const colour = colourOf(spec.color, "#000000", `${at}.color`, problems);
+        if (!colour) continue;
+        const second = noiseType === "DUOTONE" ? colourOf(spec.second, "#FFFFFF", `${at}.second`, problems) : null;
+        if (noiseType === "DUOTONE" && !second) continue;
+        effects.push(__spreadProps(__spreadValues(__spreadProps(__spreadValues({
+          type: "NOISE",
+          noiseType,
+          color: colour
+        }, second ? { secondaryColor: second } : {}), {
+          noiseSize: typeof spec.size === "number" ? spec.size : 1,
+          density: typeof spec.density === "number" ? spec.density : 0.5
+        }), noiseType === "MULTITONE" ? { opacity: typeof spec.opacity === "number" ? spec.opacity : 1 } : {}), {
+          visible: spec.visible !== false
+        }));
+        summary.push(`${spec.noise} noise`);
+        continue;
+      }
+      if (typeof spec.texture === "number") {
+        effects.push({
+          type: "TEXTURE",
+          radius: spec.texture,
+          noiseSize: typeof spec.size === "number" ? spec.size : 1,
+          clipToShape: spec.clip !== false,
+          visible: spec.visible !== false
+        });
+        summary.push(`texture ${spec.texture}`);
+        continue;
+      }
+      if (typeof spec.glass === "number") {
+        effects.push({
+          type: "GLASS",
+          radius: spec.glass,
+          depth: typeof spec.depth === "number" ? spec.depth : 0,
+          refraction: typeof spec.refraction === "number" ? spec.refraction : 0,
+          dispersion: typeof spec.dispersion === "number" ? spec.dispersion : 0,
+          lightAngle: typeof spec.lightAngle === "number" ? spec.lightAngle : 0,
+          lightIntensity: typeof spec.lightIntensity === "number" ? spec.lightIntensity : 0,
+          visible: spec.visible !== false
+        });
+        summary.push(`glass ${spec.glass}`);
+        continue;
+      }
       if (typeof spec.shadow !== "string") {
-        fail2('must carry either `shadow` ("drop" / "inner") or `blur` ("layer" / "background")');
+        fail2("must carry one of: shadow, blur, noise, texture, glass, shader");
         continue;
       }
       const kind = spec.shadow.toLowerCase();
@@ -19665,27 +19747,27 @@ ${renderSections(sections)}
         problems.push(`${at} must be [x, y] or { x, y }`);
         continue;
       }
-      const point = entry;
-      if (typeof point.x !== "number" || typeof point.y !== "number") {
+      const point2 = entry;
+      if (typeof point2.x !== "number" || typeof point2.y !== "number") {
         problems.push(`${at} must carry x and y`);
         continue;
       }
-      if (point.cap !== void 0 && (typeof point.cap !== "string" || !STROKE_CAPS.includes(point.cap))) {
+      if (point2.cap !== void 0 && (typeof point2.cap !== "string" || !STROKE_CAPS.includes(point2.cap))) {
         problems.push(`${at}.cap must be one of: ${STROKE_CAPS.join(", ")}`);
         continue;
       }
-      if (point.join !== void 0 && (typeof point.join !== "string" || !JOINS.includes(point.join))) {
+      if (point2.join !== void 0 && (typeof point2.join !== "string" || !JOINS.includes(point2.join))) {
         problems.push(`${at}.join must be one of: ${JOINS.join(", ")}`);
         continue;
       }
-      if (point.cornerRadius !== void 0 && (typeof point.cornerRadius !== "number" || point.cornerRadius < 0)) {
+      if (point2.cornerRadius !== void 0 && (typeof point2.cornerRadius !== "number" || point2.cornerRadius < 0)) {
         problems.push(`${at}.cornerRadius must be a number >= 0`);
         continue;
       }
       vertices.push(__spreadValues(__spreadValues(__spreadValues({
-        x: point.x,
-        y: point.y
-      }, point.cap ? { strokeCap: point.cap } : {}), point.join ? { strokeJoin: point.join } : {}), point.cornerRadius === void 0 ? {} : { cornerRadius: point.cornerRadius }));
+        x: point2.x,
+        y: point2.y
+      }, point2.cap ? { strokeCap: point2.cap } : {}), point2.join ? { strokeJoin: point2.join } : {}), point2.cornerRadius === void 0 ? {} : { cornerRadius: point2.cornerRadius }));
     }
     const segments = [];
     for (const [index, entry] of spec.segments.entries()) {
@@ -20059,11 +20141,15 @@ ${renderSections(sections)}
   }
   function normalisePaint(ref) {
     if (Array.isArray(ref)) return ref.map(normalisePaint);
-    if (typeof ref === "string" && ref.startsWith("var:")) {
-      const name = ref.slice(4).trim();
-      return name === "" ? ref : { variable: name };
+    if (typeof ref === "string") {
+      if (ref.startsWith("var:")) {
+        const name = ref.slice(4).trim();
+        return name === "" ? ref : { variable: name };
+      }
+      if (ref === "none") return null;
+      const faded = /^(#[0-9a-fA-F]{6})\s*@\s*(\d*\.?\d+)$/.exec(ref.trim());
+      if (faded) return { color: faded[1], opacity: Math.round(Number(faded[2]) * 1e3) / 1e3 };
     }
-    if (ref === "none") return null;
     return ref;
   }
   function paintProblem(ref) {
@@ -20146,9 +20232,9 @@ ${renderSections(sections)}
       return "angle must be a number of degrees";
     }
     for (const end of ["from", "to"]) {
-      const point = entry[end];
-      if (point === void 0) continue;
-      if (!Array.isArray(point) || point.length !== 2 || point.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
+      const point2 = entry[end];
+      if (point2 === void 0) continue;
+      if (!Array.isArray(point2) || point2.length !== 2 || point2.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
         return `${end} must be [x, y] in the layer's own 0..1 coordinates`;
       }
     }
@@ -26643,9 +26729,9 @@ ${scripts}`, "");
           page: { id: page.id, name: page.name },
           // `flowStartingPoints` is the designer's own declaration of where a flow begins —
           // better ground truth than guessing from in-degree.
-          startingPoints: page.flowStartingPoints.map((point) => ({
-            nodeId: point.nodeId,
-            name: point.name
+          startingPoints: page.flowStartingPoints.map((point2) => ({
+            nodeId: point2.nodeId,
+            name: point2.name
           })),
           frames: page.children.filter((node) => node.type === "FRAME").map((node) => ({ id: node.id, name: node.name })),
           edges
@@ -27830,6 +27916,94 @@ ${scripts}`, "");
     return out.length > 0 ? { keyframes: out } : {};
   }
 
+  // src/canvas/effect-reader.ts
+  var point = (value) => value ? [round11(value.x), round11(value.y)] : void 0;
+  var round11 = (value) => Math.round(value * 100) / 100;
+  function colourWords(colour) {
+    return formatHex({ r: colour.r, g: colour.g, b: colour.b }).toUpperCase();
+  }
+  async function readEffects(value) {
+    var _a, _b, _c, _d, _e, _f;
+    if (!Array.isArray(value) || value.length === 0) return null;
+    const out = [];
+    for (const effect of value) {
+      const bound = (_a = effect.boundVariables) != null ? _a : {};
+      const field = async (name, held) => {
+        var _a2, _b2;
+        const id = (_a2 = bound[name]) == null ? void 0 : _a2.id;
+        if (!id) return held;
+        const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
+        return { variable: (_b2 = variable == null ? void 0 : variable.name) != null ? _b2 : id };
+      };
+      const hidden = effect.visible === false ? { visible: false } : {};
+      switch (effect.type) {
+        case "DROP_SHADOW":
+        case "INNER_SHADOW": {
+          const colour = ((_b = bound.color) == null ? void 0 : _b.id) ? { variable: (_d = (_c = await figma.variables.getVariableByIdAsync(bound.color.id).catch(() => null)) == null ? void 0 : _c.name) != null ? _d : bound.color.id } : colourWords(effect.color);
+          out.push(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
+            shadow: effect.type === "DROP_SHADOW" ? "drop" : "inner",
+            color: colour
+          }, effect.color.a !== 1 ? { opacity: round11(effect.color.a) } : {}), {
+            offset: [await field("offsetX", round11(effect.offset.x)), await field("offsetY", round11(effect.offset.y))],
+            radius: await field("radius", round11(effect.radius))
+          }), effect.spread ? { spread: await field("spread", round11(effect.spread)) } : {}), hidden));
+          break;
+        }
+        case "LAYER_BLUR":
+        case "BACKGROUND_BLUR": {
+          const progressive = effect.blurType === "PROGRESSIVE";
+          const one = effect;
+          out.push(__spreadValues(__spreadValues({
+            blur: progressive ? "progressive" : effect.type === "LAYER_BLUR" ? "layer" : "background",
+            radius: await field("radius", round11(effect.radius))
+          }, progressive ? {
+            startRadius: round11((_e = one.startRadius) != null ? _e : 0),
+            from: point(one.startOffset),
+            to: point(one.endOffset)
+          } : {}), hidden));
+          break;
+        }
+        case "NOISE": {
+          const one = effect;
+          const kinds = { MONOTONE: "mono", DUOTONE: "duo", MULTITONE: "multi" };
+          out.push(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
+            noise: (_f = kinds[one.noiseType]) != null ? _f : one.noiseType,
+            color: colourWords(one.color)
+          }, one.secondaryColor ? { second: colourWords(one.secondaryColor) } : {}), {
+            size: round11(one.noiseSize),
+            density: round11(one.density)
+          }), one.opacity !== void 0 ? { opacity: round11(one.opacity) } : {}), hidden));
+          break;
+        }
+        case "TEXTURE": {
+          const one = effect;
+          out.push(__spreadValues(__spreadValues({ texture: round11(one.radius), size: round11(one.noiseSize) }, one.clipToShape ? {} : { clip: false }), hidden));
+          break;
+        }
+        case "GLASS": {
+          const one = effect;
+          out.push(__spreadValues({
+            glass: round11(one.radius),
+            depth: round11(one.depth),
+            refraction: round11(one.refraction),
+            dispersion: round11(one.dispersion),
+            lightAngle: round11(one.lightAngle),
+            lightIntensity: round11(one.lightIntensity)
+          }, hidden));
+          break;
+        }
+        case "SHADER": {
+          const one = effect;
+          out.push(__spreadValues(__spreadValues({ shader: one.id }, one.properties ? { properties: one.properties } : {}), hidden));
+          break;
+        }
+        default:
+          out.push({ unread: effect.type });
+      }
+    }
+    return out;
+  }
+
   // src/modules/run.ts
   var isFailure = (reply) => {
     if (typeof reply !== "object" || reply === null) return false;
@@ -28668,7 +28842,7 @@ ${scripts}`, "");
   }
   var MEASUREMENT_SIDES = ["TOP", "RIGHT", "BOTTOM", "LEFT"];
   function describeMeasurement(one) {
-    const end = (point) => ({ node: point.node.id, name: point.node.name, side: point.side });
+    const end = (point2) => ({ node: point2.node.id, name: point2.node.name, side: point2.side });
     return __spreadValues({
       id: one.id,
       from: end(one.start),
@@ -28828,23 +29002,23 @@ ${scripts}`, "");
     }, node.parent ? { parent: { id: node.parent.id, name: node.parent.name } } : {}), "children" in node ? { childCount: node.children.length } : {});
     if (!withProps) return base;
     const bag = node;
-    const round11 = (value) => typeof value === "number" ? Math.round(value * 100) / 100 : value;
+    const round12 = (value) => typeof value === "number" ? Math.round(value * 100) / 100 : value;
     const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
-      x: round11(bag.x),
-      y: round11(bag.y),
-      width: round11(bag.width),
-      height: round11(bag.height)
-    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round11(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints(bag.fills) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+      x: round12(bag.x),
+      y: round12(bag.y),
+      width: round12(bag.width),
+      height: round12(bag.height)
+    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round12(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints(bag.fills) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
       stroke: await describePaints(bag.strokes)
-    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round11(bag.strokeWeight) } : {}), bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round11(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
+    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round12(bag.strokeWeight) } : {}), bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" ? { cornerRadius: round12(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
       props.layout = __spreadValues(__spreadValues({
         mode: bag.layoutMode,
-        gap: round11(bag.itemSpacing),
-        padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round11),
+        gap: round12(bag.itemSpacing),
+        padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round12),
         primaryAxis: bag.primaryAxisAlignItems,
         counterAxis: bag.counterAxisAlignItems
-      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round11(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? { rows: bag.gridRowCount, columns: bag.gridColumnCount, autoTracks: bag.gridAutoTracks } : {});
+      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round12(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? { rows: bag.gridRowCount, columns: bag.gridColumnCount, autoTracks: bag.gridAutoTracks } : {});
     }
     if (typeof bag.layoutSizingHorizontal === "string") {
       props.sizing = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical };
@@ -28919,7 +29093,7 @@ ${scripts}`, "");
     }
     if (node.type === "TEXT" || node.type === "TEXT_PATH") {
       props.text = node.characters;
-      props.fontSize = node.fontSize === figma.mixed ? "mixed" : round11(node.fontSize);
+      props.fontSize = node.fontSize === figma.mixed ? "mixed" : round12(node.fontSize);
       props.fontName = node.fontName === figma.mixed ? "mixed" : { family: node.fontName.family, style: node.fontName.style };
       props.textAlign = node.textAlignHorizontal;
       if (node.textAlignVertical !== "TOP") props.verticalAlign = node.textAlignVertical;
@@ -30633,9 +30807,9 @@ ${scripts}`, "");
           }
           await page.loadAsync();
           const flows = [];
-          for (const point of page.flowStartingPoints) {
-            const node = await figma.getNodeByIdAsync(point.nodeId).catch(() => null);
-            flows.push({ name: point.name, node: point.nodeId, frame: (_A = node == null ? void 0 : node.name) != null ? _A : "(missing)" });
+          for (const point2 of page.flowStartingPoints) {
+            const node = await figma.getNodeByIdAsync(point2.nodeId).catch(() => null);
+            flows.push({ name: point2.name, node: point2.nodeId, frame: (_A = node == null ? void 0 : node.name) != null ? _A : "(missing)" });
           }
           postToUi({ type: "FLOWS", page: { id: page.id, name: page.name }, flows });
         } catch (error) {
@@ -30675,7 +30849,7 @@ ${scripts}`, "");
             refuse("FLOW_SET", problems.join(" \xB7 "));
             break;
           }
-          const before = page.flowStartingPoints.map((point) => point.name);
+          const before = page.flowStartingPoints.map((point2) => point2.name);
           page.flowStartingPoints = points;
           figma.commitUndo();
           figma.notify(points.length === 0 ? "Starting points cleared" : `${points.length} starting point(s)`);
@@ -30683,7 +30857,7 @@ ${scripts}`, "");
             type: "FLOWS",
             page: { id: page.id, name: page.name },
             before,
-            flows: points.map((point) => ({ name: point.name, node: point.nodeId }))
+            flows: points.map((point2) => ({ name: point2.name, node: point2.nodeId }))
           });
         } catch (error) {
           postToUi({ type: "CANVAS_ERROR", command: "FLOW_SET", message: String((error == null ? void 0 : error.message) || error) });

@@ -115,6 +115,7 @@ import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
 import { addressIn, readOverrides } from './canvas/overrides.ts'
 import { readKeyframes } from './canvas/keyframes.ts'
+import { readEffects } from './canvas/effect-reader.ts'
 import {
   bindingField,
   collectComponents,
@@ -1452,7 +1453,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
         }
       : {}),
     ...(typeof bag.cornerRadius === 'number' ? { cornerRadius: round(bag.cornerRadius) } : {}),
-    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await describeEffects(bag.effects) } : {}),
+    // The array the write takes, not the sentence it used to be: an elevation that reads as
+    // `"drop shadow #0A1F44 @0.2 0,4 blur 12"` cannot be sent back, and half a screen's design is
+    // its shadows.
+    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}),
     ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}),
     ...(Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0
       ? { animation: await describeAnimation(bag.animationStyles) }

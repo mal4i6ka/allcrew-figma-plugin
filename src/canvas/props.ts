@@ -161,7 +161,42 @@ export type EffectSpec =
       spread?: number | { variable: string }
       visible?: boolean
     }
-  | { blur: 'layer' | 'background'; radius: number | { variable: string }; visible?: boolean }
+  | {
+      blur: 'layer' | 'background' | 'progressive'
+      radius: number | { variable: string }
+      /** `progressive` only: where the blur begins and ends, as [x, y] in the layer's own space. */
+      from?: [number, number]
+      to?: [number, number]
+      /** `progressive` only: the radius at the start, which is usually 0. */
+      startRadius?: number
+      visible?: boolean
+    }
+  | {
+      /** Film grain: one colour, two, or many. */
+      noise: 'mono' | 'duo' | 'multi'
+      color?: string | { variable: string }
+      /** `duo` only: the second colour. */
+      second?: string
+      /** Grain size in pixels. */
+      size?: number
+      /** 0 to 1. */
+      density?: number
+        /** `multi` only. */
+      opacity?: number
+      visible?: boolean
+    }
+  /** A blurred grain over the layer. The number is the blur radius; `size` is the grain. */
+  | { texture: number; size?: number; clip?: boolean; visible?: boolean }
+  /** Frosted glass. The number is the blur radius. */
+  | {
+      glass: number
+      depth?: number
+      refraction?: number
+      dispersion?: number
+      lightAngle?: number
+      lightIntensity?: number
+      visible?: boolean
+    }
   | { shader: string; properties?: Record<string, unknown>; visible?: boolean }
 
 /**
@@ -2133,6 +2168,27 @@ export function resolveRanges(characters: string, run: TextRun): { ranges: Array
  * would reach for (black at a quarter, four down, eight of blur) and the rest is named only when
  * it differs. `[]` removes what a node has, for the same reason `links: []` does.
  */
+/** `[x, y]` as Figma holds it, or nothing and a sentence saying why. */
+function pointOf(value: unknown, where: string, problems: string[]): { x: number; y: number } | null {
+  if (value === undefined) return null
+  if (!Array.isArray(value) || value.length !== 2 || value.some((one) => typeof one !== 'number')) {
+    problems.push(`${where} must be [x, y]`)
+    return null
+  }
+  return { x: value[0] as number, y: value[1] as number }
+}
+
+/** A colour with its alpha, the way an effect takes one. */
+function colourOf(value: unknown, fallback: string, where: string, problems: string[]): RGBA | null {
+  const hex = value === undefined ? fallback : value
+  if (typeof hex !== 'string' || !HEX.test(hex)) {
+    problems.push(`${where} must be a #RRGGBB colour`)
+    return null
+  }
+  const rgb = parseHex(hex)
+  return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b, a: 1 } : null
+}
+
 function planEffects(raw: unknown, where: string, problems: string[]): PropStep | null {
   if (!Array.isArray(raw)) {
     problems.push(`${where} must be an array of shadows and blurs — [] removes them`)
@@ -2184,14 +2240,31 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
 
     if (typeof spec.blur === 'string') {
       const kind = spec.blur.toLowerCase()
-      if (kind !== 'layer' && kind !== 'background') {
-        fail('blur must be "layer" or "background"')
+      if (kind !== 'layer' && kind !== 'background' && kind !== 'progressive') {
+        fail('blur must be "layer", "background" or "progressive"')
         continue
       }
       const radius = measure(spec.radius, 0, 'radius', 'radius')
       if (radius === null) continue
       if (spec.radius === undefined) {
         fail('radius must be a number >= 0')
+        continue
+      }
+      // A progressive blur fades from one point of the layer to another, so it carries the two
+      // points as well as the radius; without them Figma has nothing to fade along.
+      if (kind === 'progressive') {
+        const from = pointOf(spec.from, `${at}.from`, problems) ?? { x: 0, y: 0 }
+        const to = pointOf(spec.to, `${at}.to`, problems) ?? { x: 0, y: 1 }
+        effects.push({
+          type: 'LAYER_BLUR',
+          blurType: 'PROGRESSIVE',
+          radius,
+          startRadius: typeof spec.startRadius === 'number' ? spec.startRadius : 0,
+          startOffset: from,
+          endOffset: to,
+          visible: spec.visible !== false,
+        } as unknown as Effect)
+        summary.push(`progressive blur ${radius}`)
         continue
       }
       effects.push({
@@ -2204,8 +2277,60 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
       continue
     }
 
+    if (typeof spec.noise === 'string') {
+      const kinds: Record<string, string> = { mono: 'MONOTONE', duo: 'DUOTONE', multi: 'MULTITONE' }
+      const noiseType = kinds[spec.noise.toLowerCase()]
+      if (!noiseType) {
+        fail('noise must be "mono", "duo" or "multi"')
+        continue
+      }
+      const colour = colourOf(spec.color, '#000000', `${at}.color`, problems)
+      if (!colour) continue
+      const second = noiseType === 'DUOTONE' ? colourOf(spec.second, '#FFFFFF', `${at}.second`, problems) : null
+      if (noiseType === 'DUOTONE' && !second) continue
+      effects.push({
+        type: 'NOISE',
+        noiseType,
+        color: colour,
+        ...(second ? { secondaryColor: second } : {}),
+        noiseSize: typeof spec.size === 'number' ? spec.size : 1,
+        density: typeof spec.density === 'number' ? spec.density : 0.5,
+        ...(noiseType === 'MULTITONE' ? { opacity: typeof spec.opacity === 'number' ? spec.opacity : 1 } : {}),
+        visible: spec.visible !== false,
+      } as unknown as Effect)
+      summary.push(`${spec.noise} noise`)
+      continue
+    }
+
+    if (typeof spec.texture === 'number') {
+      effects.push({
+        type: 'TEXTURE',
+        radius: spec.texture,
+        noiseSize: typeof spec.size === 'number' ? spec.size : 1,
+        clipToShape: spec.clip !== false,
+        visible: spec.visible !== false,
+      } as unknown as Effect)
+      summary.push(`texture ${spec.texture}`)
+      continue
+    }
+
+    if (typeof spec.glass === 'number') {
+      effects.push({
+        type: 'GLASS',
+        radius: spec.glass,
+        depth: typeof spec.depth === 'number' ? spec.depth : 0,
+        refraction: typeof spec.refraction === 'number' ? spec.refraction : 0,
+        dispersion: typeof spec.dispersion === 'number' ? spec.dispersion : 0,
+        lightAngle: typeof spec.lightAngle === 'number' ? spec.lightAngle : 0,
+        lightIntensity: typeof spec.lightIntensity === 'number' ? spec.lightIntensity : 0,
+        visible: spec.visible !== false,
+      } as unknown as Effect)
+      summary.push(`glass ${spec.glass}`)
+      continue
+    }
+
     if (typeof spec.shadow !== 'string') {
-      fail('must carry either `shadow` ("drop" / "inner") or `blur` ("layer" / "background")')
+      fail('must carry one of: shadow, blur, noise, texture, glass, shader')
       continue
     }
     const kind = spec.shadow.toLowerCase()
@@ -3167,11 +3292,17 @@ function sizingProblem(value: unknown): string | null {
 
 export function normalisePaint(ref: unknown): unknown {
   if (Array.isArray(ref)) return ref.map(normalisePaint)
-  if (typeof ref === 'string' && ref.startsWith('var:')) {
-    const name = ref.slice(4).trim()
-    return name === '' ? ref : { variable: name }
+  if (typeof ref === 'string') {
+    if (ref.startsWith('var:')) {
+      const name = ref.slice(4).trim()
+      return name === '' ? ref : { variable: name }
+    }
+    if (ref === 'none') return null
+    // `#FFFFFF @0.1` — how a read spells a colour that is not fully opaque. Refusing it made the
+    // most ordinary round trip of all fail on a translucent overlay.
+    const faded = /^(#[0-9a-fA-F]{6})\s*@\s*(\d*\.?\d+)$/.exec(ref.trim())
+    if (faded) return { color: faded[1], opacity: Math.round(Number(faded[2]) * 1000) / 1000 }
   }
-  if (ref === 'none') return null
   return ref
 }
 
