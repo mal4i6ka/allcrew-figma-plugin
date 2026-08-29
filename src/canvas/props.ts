@@ -308,7 +308,7 @@ export interface NodeProps {
   /** Auto-layout: direction, spacing, padding, alignment and how each axis is sized. */
   layout?: LayoutProps
 
-  /** What the layer is painted with. A list is a stack of layers, bottom-up. */
+  /** What the layer is painted with. A list is a stack of layers, bottom-up; "none" or null clears it. */
   fill?: PaintRef
   /** What the outline is painted with — the same shapes `fill` takes. */
   stroke?: PaintRef
@@ -742,8 +742,25 @@ const PLACED = [
  * resize is undone by whatever sizing mode the parent hands the new child. Each was applied,
  * reported as applied, and then quietly lost.
  */
+/**
+ * A step that will put the node somewhere else.
+ *
+ * `index` alone is not one: it plans a reparent with an empty parent, which means "stay where you
+ * are, move to this position". Reading every reparent as a move made a create that named a parent
+ * and an index build the node on the page instead — and the FILL that followed then failed with
+ * "FILL can only be set on children of auto-layout frames", which is true and blames the wrong
+ * thing.
+ */
+export function movesToAnotherParent(step: PropStep): boolean {
+  return step.step === 'reparent' && step.parent !== ''
+}
+
 export function dependsOnPlacement(step: PropStep): boolean {
   if (step.step === 'sizing' || step.step === 'resize') return true
+  // A move WITHIN the current parent has to wait until the node is in that parent. Run early, it
+  // reordered the page the node had not left yet, and the placement that followed appended it
+  // last — so `index: 0` was applied, reported, and had no effect anyone could see.
+  if (step.step === 'reparent' && step.parent === '') return true
   return step.step === 'assign' && PLACED.includes(step.property)
 }
 
@@ -1021,7 +1038,9 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
       }
       case 'fill':
       case 'stroke': {
-        const ref = props[key] as PaintRef
+        // "none" is the word a READ uses for a layer with no paint, and a read has to be sendable:
+        // copying `"fill": "none"` back was refused with `"none" is not a #RRGGBB colour`.
+        const ref = (props[key] === 'none' ? null : props[key]) as PaintRef
         if (paintProblem(ref)) fail(`${key}: ${paintProblem(ref)}`)
         else steps.push({ step: 'paint', property: key === 'fill' ? 'fills' : 'strokes', ref })
         break

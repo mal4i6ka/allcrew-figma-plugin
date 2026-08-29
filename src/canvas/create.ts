@@ -13,7 +13,7 @@
 
 import { applyProps, type AppliedProp } from './apply.ts'
 import { componentFor } from './components.ts'
-import { dependsOnChildren, dependsOnPlacement, planProps, type PropStep } from './props.ts'
+import { dependsOnChildren, dependsOnPlacement, movesToAnotherParent, planProps, type PropStep } from './props.ts'
 
 export const NODE_KINDS = [
   'frame',
@@ -184,7 +184,14 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
   // The test is "not already there" rather than "has no parent": every `figma.create*` hands back
   // a node already parented to the current page, so a check for a null parent is never true and
   // the child would sit on the page for ever.
-  if (!plan.steps.some((step) => step.step === 'reparent') && node.parent !== fallbackParent) {
+  //
+  // "A step that names a parent", not "a reparent step": `index` alone plans a reparent with an
+  // empty parent, meaning "stay where you are, move to this position". Treating that as a move
+  // left the node wherever `figma.create*` had put it — the page — so `index: 0` inside a call
+  // that named a parent quietly built the node somewhere else, and the FILL that followed
+  // failed with "FILL can only be set on children of auto-layout frames".
+  const moves = plan.steps.some(movesToAnotherParent)
+  if (!moves && node.parent !== fallbackParent) {
     fallbackParent.appendChild(node)
   }
 

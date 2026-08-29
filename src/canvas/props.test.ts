@@ -1,6 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { gradientHandles, gradientTransform, paintProblem, planProps } from './props.ts'
+import {
+  dependsOnPlacement,
+  gradientHandles,
+  gradientTransform,
+  movesToAnotherParent,
+  paintProblem,
+  planProps,
+} from './props.ts'
 import { planCreate, NODE_KINDS } from './create.ts'
 
 const stepsOf = (props: unknown) => {
@@ -122,10 +129,26 @@ test('textAlign and autoResize are renamed to what Figma calls them', () => {
   ])
 })
 
+test('"none" clears a paint, because that is the word the read gives back', () => {
+  assert.deepEqual(stepsOf({ fill: 'none' }), [{ step: 'paint', property: 'fills', ref: null }])
+  assert.deepEqual(stepsOf({ fill: null }), [{ step: 'paint', property: 'fills', ref: null }])
+  assert.match(planProps({ fill: 'nope' }).problems[0], /not a #RRGGBB colour/)
+})
+
 test('a parent and an index travel together as one placement', () => {
   assert.deepEqual(stepsOf({ parent: '1:2', index: 0 }), [{ step: 'reparent', parent: '1:2', index: 0 }])
   // An index with no parent is a move within the parent the node already has.
   assert.deepEqual(stepsOf({ index: 3 }), [{ step: 'reparent', parent: '', index: 3 }])
+
+  // And it is NOT a move to somewhere else, which is what decides whether a new node still gets
+  // put in the parent the call named. Reading it as one built the node on the page.
+  assert.equal(movesToAnotherParent(stepsOf({ parent: '1:2' })[0]), true)
+  assert.equal(movesToAnotherParent(stepsOf({ index: 3 })[0]), false)
+  assert.equal(movesToAnotherParent(stepsOf({ name: 'x' })[0]), false)
+
+  // And the move itself waits for the placement, or it reorders a parent the node does not have.
+  assert.equal(dependsOnPlacement(stepsOf({ index: 3 })[0]), true)
+  assert.equal(dependsOnPlacement(stepsOf({ parent: '1:2' })[0]), false)
 })
 
 /* ------------------------------------------------------------------ refusals */
