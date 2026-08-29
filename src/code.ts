@@ -227,6 +227,12 @@ type PluginMessage =
   | { type: 'FLOW_LIST'; pageId?: string }
   | { type: 'FLOW_SET'; flows: unknown; pageId?: string }
   | { type: 'PAGE_CREATE'; name: string; activate?: boolean }
+  // Dev Mode: the links, notes and measurements a designer leaves for the person writing the code
+  | { type: 'DEV_LINK_LIST'; nodes?: unknown; includeChildren?: boolean }
+  | { type: 'DEV_LINK_SET'; nodes?: unknown; add?: unknown; edit?: unknown; remove?: unknown }
+  | { type: 'ANNOTATE'; nodes?: unknown; label?: string; properties?: unknown; category?: string; clear?: boolean }
+  | { type: 'MEASURE_LIST'; nodes?: unknown }
+  | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
   | { type: 'MODULE_INSPECT'; file: unknown }
@@ -1199,6 +1205,128 @@ function describeProperties(node: ComponentNode | ComponentSetNode): string {
   return describePropertyDefinitions(definitionsOf(node) as Record<string, { type: string; variantOptions?: readonly string[]; defaultValue?: unknown }>)
 }
 
+const MEASUREMENT_SIDES = ['TOP', 'RIGHT', 'BOTTOM', 'LEFT']
+
+/** A measurement in the words MEASURE_SET takes, so a reading can be sent back as a drawing. */
+function describeMeasurement(one: Measurement): Record<string, unknown> {
+  const end = (point: { node: SceneNode; side: string }) => ({ node: point.node.id, name: point.node.name, side: point.side })
+  return {
+    id: one.id,
+    from: end(one.start),
+    to: end(one.end),
+    // `{ type: 'INNER', relative }` and `{ type: 'OUTER', fixed }` are two shapes for one idea;
+    // one key each says which without anyone reading a type tag.
+    offset: one.offset.type === 'INNER' ? { inner: one.offset.relative } : { outer: one.offset.fixed },
+    ...(one.freeText ? { text: one.freeText } : {}),
+  }
+}
+
+interface MeasurementPlan {
+  add: Array<{
+    from: { node: string; side: MeasurementSide }
+    to: { node: string; side: MeasurementSide }
+    text?: string
+    offset?: MeasurementOffset
+  }>
+  edit: Array<{ id: string; text?: string; offset?: MeasurementOffset }>
+  remove: string[]
+  problems: string[]
+}
+
+function planMeasurements(msg: { add?: unknown; edit?: unknown; remove?: unknown }): MeasurementPlan {
+  const plan: MeasurementPlan = { add: [], edit: [], remove: [], problems: [] }
+  const list = (value: unknown, where: string): unknown[] => {
+    if (value === undefined) return []
+    if (!Array.isArray(value)) {
+      plan.problems.push(`${where} must be an array`)
+      return []
+    }
+    return value
+  }
+
+  const endpoint = (value: unknown, where: string): { node: string; side: MeasurementSide } | null => {
+    const one = value as { node?: unknown; side?: unknown }
+    if (typeof one?.node !== 'string') {
+      plan.problems.push(`${where} must be { node, side }`)
+      return null
+    }
+    const side = typeof one.side === 'string' ? one.side.trim().toUpperCase() : ''
+    if (!MEASUREMENT_SIDES.includes(side)) {
+      plan.problems.push(`${where}.side must be one of: ${MEASUREMENT_SIDES.join(', ')}`)
+      return null
+    }
+    return { node: one.node, side: side as MeasurementSide }
+  }
+
+  const offsetOf = (value: unknown, where: string): MeasurementOffset | undefined => {
+    if (value === undefined) return undefined
+    const one = value as { inner?: unknown; outer?: unknown }
+    if (typeof one?.inner === 'number') return { type: 'INNER', relative: one.inner }
+    if (typeof one?.outer === 'number') return { type: 'OUTER', fixed: one.outer }
+    plan.problems.push(`${where}.offset must be { inner: 0..1 } or { outer: <pixels> }`)
+    return undefined
+  }
+
+  for (const [index, entry] of list(msg.add, 'add').entries()) {
+    const one = entry as { from?: unknown; to?: unknown; text?: unknown; offset?: unknown }
+    const from = endpoint(one?.from, `add[${index}].from`)
+    const to = endpoint(one?.to, `add[${index}].to`)
+    const offset = offsetOf(one?.offset, `add[${index}]`)
+    if (from && to) {
+      plan.add.push({ from, to, ...(offset ? { offset } : {}), ...(typeof one.text === 'string' ? { text: one.text } : {}) })
+    }
+  }
+
+  for (const [index, entry] of list(msg.edit, 'edit').entries()) {
+    const one = entry as { id?: unknown; text?: unknown; offset?: unknown }
+    if (typeof one?.id !== 'string') {
+      plan.problems.push(`edit[${index}].id must name a measurement`)
+      continue
+    }
+    const offset = offsetOf(one.offset, `edit[${index}]`)
+    if (offset === undefined && typeof one.text !== 'string') {
+      plan.problems.push(`edit[${index}] changes nothing — give a text or an offset`)
+      continue
+    }
+    plan.edit.push({ id: one.id, ...(offset ? { offset } : {}), ...(typeof one.text === 'string' ? { text: one.text } : {}) })
+  }
+
+  for (const [index, entry] of list(msg.remove, 'remove').entries()) {
+    if (typeof entry !== 'string' || entry.trim() === '') plan.problems.push(`remove[${index}] must be a measurement id`)
+    else plan.remove.push(entry.trim())
+  }
+
+  if (plan.add.length + plan.edit.length + plan.remove.length === 0 && plan.problems.length === 0) {
+    plan.problems.push('nothing to do — give add, edit or remove')
+  }
+  return plan
+}
+
+/**
+ * An annotation as it reads: the category by NAME, which is also what ANNOTATE takes, so the
+ * reading can be sent back. Figma stores `"8947:0"`, which is sendable and says nothing.
+ */
+async function describeAnnotations(notes: ReadonlyArray<Annotation>): Promise<Array<Record<string, unknown>>> {
+  if (notes.length === 0) return []
+  const categories = await figma.annotations.getAnnotationCategoriesAsync().catch(() => [])
+  const named = new Map(categories.map((one) => [one.id, one.label]))
+  return notes.map((note) => ({
+    ...(note.labelMarkdown ? { label: note.labelMarkdown } : {}),
+    ...(note.categoryId ? { category: named.get(note.categoryId) ?? note.categoryId } : {}),
+    ...(note.properties?.length ? { properties: note.properties.map((entry) => entry.type) } : {}),
+  }))
+}
+
+/** Every property Dev Mode can pin beside a note — the list the API takes, in its own order. */
+const ANNOTATION_PROPERTIES = [
+  'width', 'height', 'maxWidth', 'minWidth', 'maxHeight', 'minHeight',
+  'fills', 'strokes', 'effects', 'strokeWeight', 'cornerRadius',
+  'textStyleId', 'textAlignHorizontal', 'fontFamily', 'fontStyle', 'fontSize', 'fontWeight',
+  'lineHeight', 'letterSpacing', 'itemSpacing', 'padding', 'layoutMode', 'alignItems', 'opacity',
+  'mainComponent', 'gridRowGap', 'gridColumnGap', 'gridRowCount', 'gridColumnCount',
+  'gridRowAnchorIndex', 'gridColumnAnchorIndex', 'gridRowSpan', 'gridColumnSpan',
+]
+
 const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline', 'repeat', 'detach']
 
 const EXPORT_FORMATS = ['PNG', 'JPG', 'SVG', 'PDF', 'MP4', 'GIF', 'WEBM']
@@ -1394,6 +1522,13 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     }
     if (settings.length > 0) props.properties = settings.join(' · ')
   }
+  // What Dev Mode shows beside the layer: where its code lives, and what the designer wrote for
+  // whoever writes it. A handoff that carries neither is the export answering half the question.
+  const links = await node.getDevResourcesAsync().catch(() => [])
+  const own = links.filter((link) => link.nodeId === node.id)
+  if (own.length > 0) props.devLinks = own.map((link) => ({ name: link.name, url: link.url }))
+  const notes = (node as unknown as { annotations?: ReadonlyArray<Annotation> }).annotations ?? []
+  if (notes.length > 0) props.annotations = await describeAnnotations(notes)
   if (node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') {
     // Read by id, a component was indistinguishable from a frame: what it can be told, what it is
     // for and where its documentation lives were all things only COMPONENT_CATALOG knew. An agent
@@ -1617,6 +1752,79 @@ function refuse(command: PluginMessage['type'], reason: string): void {
  * adding a command: `build.mjs` extracts it into the table the channel authorises against, and
  * a case that ships without one is treated as a write.
  */
+/**
+ * The nodes a Dev Mode command works on: the ids it was given, or what the designer has selected.
+ *
+ * Selection as the fallback is the point of these commands — a designer marks the frame they are
+ * looking at and says "link this to the code", and an agent asked to do the same reaches the same
+ * nodes without first asking which they are.
+ */
+async function nodesFrom(asked: unknown): Promise<SceneNode[]> {
+  if (asked === undefined || asked === null) return [...figma.currentPage.selection]
+  const ids = (Array.isArray(asked) ? asked : [asked]).map((id) => String(id))
+  const nodes: SceneNode[] = []
+  for (const id of ids) {
+    const node = await figma.getNodeByIdAsync(id)
+    if (!node || !('type' in node) || node.type === 'DOCUMENT') throw new Error(`no such node: ${id}`)
+    nodes.push(node as SceneNode)
+  }
+  return nodes
+}
+
+interface DevLinkPlan {
+  add: Array<{ url: string; name?: string }>
+  edit: Array<{ url: string; newUrl?: string; name?: string }>
+  remove: string[]
+  problems: string[]
+}
+
+/** Read whole before anything is written, so a bad third entry does not leave two links behind. */
+function planDevLinks(msg: { add?: unknown; edit?: unknown; remove?: unknown }): DevLinkPlan {
+  const plan: DevLinkPlan = { add: [], edit: [], remove: [], problems: [] }
+  const list = (value: unknown, where: string): unknown[] => {
+    if (value === undefined) return []
+    if (!Array.isArray(value)) {
+      plan.problems.push(`${where} must be an array`)
+      return []
+    }
+    return value
+  }
+
+  for (const [index, entry] of list(msg.add, 'add').entries()) {
+    const one = entry as { url?: unknown; name?: unknown }
+    const url = typeof one === 'string' ? one : typeof one?.url === 'string' ? one.url : null
+    if (!url || url.trim() === '') plan.problems.push(`add[${index}] must be a URL or { url, name? }`)
+    else plan.add.push({ url: url.trim(), ...(typeof one?.name === 'string' ? { name: one.name } : {}) })
+  }
+
+  for (const [index, entry] of list(msg.edit, 'edit').entries()) {
+    const one = entry as { url?: unknown; newUrl?: unknown; name?: unknown }
+    if (typeof one?.url !== 'string' || one.url.trim() === '') {
+      plan.problems.push(`edit[${index}].url must name the link as it stands`)
+      continue
+    }
+    if (typeof one.newUrl !== 'string' && typeof one.name !== 'string') {
+      plan.problems.push(`edit[${index}] changes nothing — give a newUrl or a name`)
+      continue
+    }
+    plan.edit.push({
+      url: one.url.trim(),
+      ...(typeof one.newUrl === 'string' ? { newUrl: one.newUrl.trim() } : {}),
+      ...(typeof one.name === 'string' ? { name: one.name } : {}),
+    })
+  }
+
+  for (const [index, entry] of list(msg.remove, 'remove').entries()) {
+    if (typeof entry !== 'string' || entry.trim() === '') plan.problems.push(`remove[${index}] must be a URL`)
+    else plan.remove.push(entry.trim())
+  }
+
+  if (plan.add.length + plan.edit.length + plan.remove.length === 0 && plan.problems.length === 0) {
+    plan.problems.push('nothing to do — give add, edit or remove')
+  }
+  return plan
+}
+
 async function handleUiMessage(msg: PluginMessage): Promise<void> {
   switch (msg.type) {
     /* ---- design-tokens target ---- */
@@ -3694,6 +3902,274 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       figma.commitUndo()
       figma.notify(`Page "${page.name}" created`)
       postToUi({ type: 'PAGE_CREATED', page: { id: page.id, name: page.name }, current: figma.currentPage.id })
+      break
+    }
+
+    /* ---- Dev Mode ---- */
+
+    case 'DEV_LINK_LIST': {
+      // @agent read: the links to code a designer left on nodes — what Dev Mode shows under "Links"
+      // @agent param nodes: ids to read; omitted, the current selection
+      // @agent param includeChildren: also the links on everything inside, each answered with the node it sits on
+      try {
+        const targets = await nodesFrom(msg.nodes)
+        if (targets.length === 0) {
+          refuse('DEV_LINK_LIST', 'name some nodes, or select something')
+          break
+        }
+        const rows = []
+        for (const node of targets) {
+          const links = await node.getDevResourcesAsync(
+            msg.includeChildren === true ? { includeChildren: true } : undefined
+          )
+          rows.push({
+            node: node.id,
+            name: node.name,
+            links: links.map((link) => ({
+              url: link.url,
+              name: link.name,
+              // Whose link it is: a link on a component shows up on every instance, and a caller
+              // that cannot tell them apart would try to delete one from the wrong node.
+              ...(link.nodeId !== node.id ? { on: link.nodeId } : {}),
+              ...(link.inheritedNodeId ? { inheritedFrom: link.inheritedNodeId } : {}),
+            })),
+          })
+        }
+        postToUi({ type: 'DEV_LINKS', total: rows.reduce((sum, row) => sum + row.links.length, 0), nodes: rows })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'DEV_LINK_LIST', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+
+    case 'DEV_LINK_SET': {
+      // @agent write: put a link to code on a node, rename it, or take it off — the other half of a handoff, from the design side
+      // @agent param nodes: ids to change; omitted, the current selection
+      // @agent param add: [{ url, name? }] — the URL is the identity, so adding the same URL twice is one link
+      // @agent param edit: [{ url, newUrl?, name? }] — name the link as it stands, then say what changes
+      // @agent param remove: ["<url>"] — by URL, for the same reason
+      try {
+        const targets = await nodesFrom(msg.nodes)
+        if (targets.length === 0) {
+          refuse('DEV_LINK_SET', 'name some nodes, or select something')
+          break
+        }
+        const plan = planDevLinks(msg)
+        if (plan.problems.length > 0) {
+          refuse('DEV_LINK_SET', plan.problems.join(' · '))
+          break
+        }
+
+        const rows = []
+        for (const node of targets) {
+          const done: Array<Record<string, unknown>> = []
+          for (const link of plan.add) {
+            try {
+              await node.addDevResourceAsync(link.url, link.name)
+              done.push({ added: link.url, ...(link.name ? { name: link.name } : {}) })
+            } catch (error) {
+              done.push({ added: link.url, ok: false, error: String((error as Error)?.message || error) })
+            }
+          }
+          for (const link of plan.edit) {
+            try {
+              await node.editDevResourceAsync(link.url, {
+                ...(link.newUrl ? { url: link.newUrl } : {}),
+                ...(link.name ? { name: link.name } : {}),
+              })
+              done.push({ edited: link.url, ...(link.newUrl ? { to: link.newUrl } : {}) })
+            } catch (error) {
+              done.push({ edited: link.url, ok: false, error: String((error as Error)?.message || error) })
+            }
+          }
+          for (const url of plan.remove) {
+            try {
+              await node.deleteDevResourceAsync(url)
+              done.push({ removed: url })
+            } catch (error) {
+              done.push({ removed: url, ok: false, error: String((error as Error)?.message || error) })
+            }
+          }
+          // Read back rather than reported from the request: what the node holds now is the answer.
+          const links = await node.getDevResourcesAsync()
+          rows.push({
+            node: node.id,
+            name: node.name,
+            done,
+            links: links.filter((link) => link.nodeId === node.id).map((link) => ({ url: link.url, name: link.name })),
+          })
+        }
+        figma.commitUndo()
+        const failed = rows.reduce(
+          (sum, row) => sum + row.done.filter((entry) => (entry as { ok?: boolean }).ok === false).length,
+          0
+        )
+        figma.notify(failed > 0 ? `${failed} link(s) refused` : `Links on ${rows.length} node(s)`)
+        postToUi({ type: 'DEV_LINKS_SET', failed, nodes: rows })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'DEV_LINK_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+
+    case 'ANNOTATE': {
+      // @agent write: the note Dev Mode shows on a layer — what the designer wants said about it, and which of its properties to pin beside the note
+      // @agent param nodes: ids to annotate; omitted, the current selection
+      // @agent param label: the note itself, markdown. Without properties this is the whole annotation
+      // @agent param properties: names of the node's own properties to pin beside the note — width, fills, cornerRadius, fontSize, padding, layoutMode… A refusal lists all 33
+      // @agent param category: the category by name or id, as the file defines them; the refusal names the ones there are
+      // @agent param clear: true takes every annotation off instead of adding one
+      try {
+        const targets = await nodesFrom(msg.nodes)
+        if (targets.length === 0) {
+          refuse('ANNOTATE', 'name some nodes, or select something')
+          break
+        }
+
+        const clearing = msg.clear === true
+        let annotation: Annotation | null = null
+        if (!clearing) {
+          const label = typeof msg.label === 'string' ? msg.label : ''
+          const asked = msg.properties === undefined ? [] : Array.isArray(msg.properties) ? msg.properties : [msg.properties]
+          const wrong = asked.filter((one) => typeof one !== 'string' || !ANNOTATION_PROPERTIES.includes(one))
+          if (wrong.length > 0) {
+            refuse('ANNOTATE', `unknown propert(y/ies) ${wrong.map((one) => JSON.stringify(one)).join(', ')} — accepted: ${ANNOTATION_PROPERTIES.join(', ')}`)
+            break
+          }
+          if (label.trim() === '' && asked.length === 0) {
+            refuse('ANNOTATE', 'give a label, some properties, or clear: true')
+            break
+          }
+
+          let categoryId: string | undefined
+          if (typeof msg.category === 'string' && msg.category.trim() !== '') {
+            const categories = await figma.annotations.getAnnotationCategoriesAsync()
+            const wanted = msg.category.trim()
+            const found =
+              categories.find((one) => one.id === wanted) ??
+              categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase())
+            if (!found) {
+              refuse('ANNOTATE', `no category "${wanted}" — this file has: ${categories.map((one) => one.label).join(', ') || '(none)'}`)
+              break
+            }
+            categoryId = found.id
+          }
+
+          annotation = {
+            ...(label.trim() === '' ? {} : { labelMarkdown: label }),
+            ...(asked.length > 0 ? { properties: (asked as string[]).map((type) => ({ type: type as AnnotationPropertyType })) } : {}),
+            ...(categoryId ? { categoryId } : {}),
+          }
+        }
+
+        const rows = []
+        for (const node of targets) {
+          const bag = node as unknown as { annotations?: ReadonlyArray<Annotation> }
+          if (!('annotations' in bag)) {
+            rows.push({ node: node.id, name: node.name, ok: false, error: `a ${node.type} cannot hold annotations` })
+            continue
+          }
+          try {
+            bag.annotations = clearing ? [] : [...(bag.annotations ?? []), annotation as Annotation]
+            // Read back: an annotation Figma stored differently from the one asked for is the
+            // answer, and the caller sees it here rather than in the next query.
+            rows.push({
+              node: node.id,
+              name: node.name,
+              ok: true,
+              annotations: await describeAnnotations(bag.annotations ?? []),
+            })
+          } catch (error) {
+            rows.push({ node: node.id, name: node.name, ok: false, error: String((error as Error)?.message || error) })
+          }
+        }
+        figma.commitUndo()
+        const failed = rows.filter((row) => row.ok === false).length
+        figma.notify(failed > 0 ? `${failed} node(s) refused the note` : clearing ? `Cleared ${rows.length}` : `Annotated ${rows.length}`)
+        postToUi({ type: 'ANNOTATED', cleared: clearing, failed, nodes: rows })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'ANNOTATE', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+
+    case 'MEASURE_LIST': {
+      // @agent read: the measurement lines on this page — the distances a designer drew for the person building it
+      // @agent param nodes: only the measurements touching these nodes; omitted, every one on the page
+      try {
+        const page = figma.currentPage
+        const targets = msg.nodes === undefined ? [] : await nodesFrom(msg.nodes)
+        const found =
+          targets.length > 0
+            ? targets.flatMap((node) => page.getMeasurementsForNode(node))
+            : page.getMeasurements()
+        // The same line touches two nodes, so asking about both returns it twice.
+        const seen = new Set<string>()
+        const rows = found.filter((one) => !seen.has(one.id) && seen.add(one.id)).map(describeMeasurement)
+        postToUi({ type: 'MEASUREMENTS', page: { id: page.id, name: page.name }, total: rows.length, measurements: rows })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'MEASURE_LIST', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+
+    case 'MEASURE_SET': {
+      // @agent write: draw, retitle or erase a measurement line between two nodes
+      // @agent param add: [{ from: { node, side }, to: { node, side }, text?, offset? }] — side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it
+      // @agent param edit: [{ id, text?, offset? }] — the id MEASURE_LIST gives
+      // @agent param remove: ["<id>"]
+      try {
+        const page = figma.currentPage
+        const plan = planMeasurements(msg)
+        if (plan.problems.length > 0) {
+          refuse('MEASURE_SET', plan.problems.join(' · '))
+          break
+        }
+
+        const done: Array<Record<string, unknown>> = []
+        for (const one of plan.add) {
+          try {
+            const from = await figma.getNodeByIdAsync(one.from.node)
+            const to = await figma.getNodeByIdAsync(one.to.node)
+            if (!from || !to || !('type' in from) || !('type' in to)) {
+              throw new Error(`no such node: ${!from ? one.from.node : one.to.node}`)
+            }
+            const made = page.addMeasurement(
+              { node: from as SceneNode, side: one.from.side },
+              { node: to as SceneNode, side: one.to.side },
+              { ...(one.offset ? { offset: one.offset } : {}), ...(one.text !== undefined ? { freeText: one.text } : {}) }
+            )
+            done.push({ added: describeMeasurement(made) })
+          } catch (error) {
+            done.push({ added: `${one.from.node} → ${one.to.node}`, ok: false, error: String((error as Error)?.message || error) })
+          }
+        }
+        for (const one of plan.edit) {
+          try {
+            const changed = page.editMeasurement(one.id, {
+              ...(one.offset ? { offset: one.offset } : {}),
+              ...(one.text !== undefined ? { freeText: one.text } : {}),
+            })
+            done.push({ edited: describeMeasurement(changed) })
+          } catch (error) {
+            done.push({ edited: one.id, ok: false, error: String((error as Error)?.message || error) })
+          }
+        }
+        for (const id of plan.remove) {
+          try {
+            page.deleteMeasurement(id)
+            done.push({ removed: id })
+          } catch (error) {
+            done.push({ removed: id, ok: false, error: String((error as Error)?.message || error) })
+          }
+        }
+        figma.commitUndo()
+        const failed = done.filter((entry) => (entry as { ok?: boolean }).ok === false).length
+        figma.notify(failed > 0 ? `${failed} measurement(s) refused` : `${done.length} measurement(s)`)
+        postToUi({ type: 'MEASUREMENTS_SET', failed, done, total: page.getMeasurements().length })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'MEASURE_SET', message: String((error as Error)?.message || error) })
+      }
       break
     }
 

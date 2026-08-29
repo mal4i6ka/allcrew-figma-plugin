@@ -34,7 +34,7 @@ node agent/api-coverage.mjs --releases 1.107.0
 
 | API | членов | не тронуто | что именно |
 | --- | ---: | ---: | --- |
-| AnnotationsAPI | 3 | 3 | addAnnotationCategoryAsync, getAnnotationCategoriesAsync, getAnnotationCategoryByIdAsync |
+| AnnotationsAPI | 3 | 2 | addAnnotationCategoryAsync, getAnnotationCategoryByIdAsync |
 | BuzzAPI | 7 | 7 | createFrame, createInstance, getBuzzAssetTypeForNode, getMediaContent, getTextContent, setBuzzAssetTypeForNode, smartResize |
 | ClientStorageAPI | 4 | 2 | deleteAsync, keysAsync |
 | CodegenAPI | 6 | 6 | callback, off, on, once, preferences, refresh |
@@ -138,30 +138,33 @@ GridChildrenMixin.gridChildHorizontalAlign, GridChildrenMixin.setGridChildPositi
 
 BaseNonResizableTextMixin.Pick, BaseNonResizableTextMixin.getRangeBoundVariable, BaseNonResizableTextMixin.getRangeFillStyleId, BaseNonResizableTextMixin.getRangeFills, BaseNonResizableTextMixin.getRangeFontSize, BaseNonResizableTextMixin.getRangeFontWeight, BaseNonResizableTextMixin.getRangeHyperlink, BaseNonResizableTextMixin.getRangeLetterSpacing, BaseNonResizableTextMixin.getRangeOpenTypeFeatures, BaseNonResizableTextMixin.getRangeTextCase, BaseNonResizableTextMixin.getRangeTextStyleId, BaseNonResizableTextMixin.setRangeFillStyleId, BaseNonResizableTextMixin.setRangeFillStyleIdAsync, BaseNonResizableTextMixin.setRangeTextStyleId, BlurEffectProgressive.endOffset, BlurEffectProgressive.startOffset, BlurEffectProgressive.startRadius, NoiseEffect, NoiseEffectBase.density, NoiseEffectBase.noiseSize, NoiseEffectDuotone, NoiseEffectDuotone.noiseType, NoiseEffectDuotone.secondaryColor, NoiseEffectMonotone, NoiseEffectMonotone.noiseType, NoiseEffectMultitone.noiseType, NonResizableTextPathMixin, PatternPaint.horizontalAlignment, PatternPaint.scalingFactor, PatternPaint.sourceNodeId, PatternPaint.tileType, TextPathNode.handleMirroring, TextureEffect.clipToShape, TextureEffect.noiseSize
 
-### 1.110.0 — 2025-04-17  (+15, не тронуто 9)
+### 1.110.0 — 2025-04-17  (+15, не тронуто 6)
 
-Annotation.categoryId, AnnotationCategory.isPreset, AnnotationCategory.setColor, AnnotationCategory.setLabel, AnnotationCategoryColor, AnnotationsAPI, AnnotationsAPI.addAnnotationCategoryAsync, AnnotationsAPI.getAnnotationCategoriesAsync, AnnotationsAPI.getAnnotationCategoryByIdAsync
+AnnotationCategory.isPreset, AnnotationCategory.setColor, AnnotationCategory.setLabel, AnnotationCategoryColor, AnnotationsAPI.addAnnotationCategoryAsync, AnnotationsAPI.getAnnotationCategoryByIdAsync
 
 ### 1.108.0 — 2025-02-26  (+24, не тронуто 13)
 
 BaseNodeMixin.getTopLevelFrame, InteractiveSlideElementNode, InteractiveSlideElementNode.interactiveSlideElementType, PageNode.focusedSlide, PluginAPI.createSlide, PluginAPI.createSlideRow, PluginAPI.getSlideGrid, PluginAPI.setSlideGrid, SlideGridNode, SlideNode.getSlideTransition, SlideNode.isSkippedSlide, SlideNode.setSlideTransition, ViewportAPI.slidesView
-
-
 ---
 
 ## Приоритеты — по цели выгрузки, не по дате
 
-### 1. Dev Mode — не тронут вовсе, и он ближе всех к цели
+### 1. Dev Mode — ЗАКРЫТ (кроме codegen)
 
-`DevResourcesAPI` (0 из 4), `CodegenAPI` (0 из 6), `AnnotationsAPI` (0 из 3), `Measurement` /
-`MeasurementSide` / `MeasurementOffset` — ноль вызовов. То, что в нашем исходнике зовётся
-`annotations`, — это **наши** i18n-аннотации на TEXT-узлах, а не родные аннотации Figma; имя
-совпало, покрытие нет.
+Было: ноль вызовов на всех трёх — ссылки на код, родные аннотации, измерения. То, что в нашем
+исходнике звалось `annotations`, — это **наши** i18n-аннотации на TEXT-узлах; имя совпало,
+покрытия не было.
 
-Почему первым: заготовка обязана нести обратную ссылку в макет. `setDevResourceAsync` кладёт
-ссылку на код прямо на узел — это и есть тот самый «комментарий в самом месте», только с той
-стороны. Родные аннотации и измерения — то, что дизайнер уже написал для разработчика и что
-сейчас в выгрузку не попадает.
+Стало: `DEV_LINK_LIST` / `DEV_LINK_SET`, `ANNOTATE`, `MEASURE_LIST` / `MEASURE_SET`, и всё это
+читается обратно в `NODE_QUERY props:true` — `devLinks` и `annotations` на самом узле.
+
+Осталось **codegen** (`CodegenAPI`, 0 из 6): это не вызов, а режим — плагин работает генератором
+кода внутри Dev Mode и отвечает на событие `generate`. Требует записи в манифест и отдельного
+входа; берётся вместе с React-эмиттером, а не до него.
+
+Строка `DevResourcesAPI` в таблице выше остаётся нулевой и это не ошибка: там события
+(`on`/`off`/`once`) для плагина-генератора, а узловые методы живут в `DevResourcesMixin` и
+покрыты.
 
 ### 2. Расширяемые коллекции переменных — 1.121–1.122, не тронуты
 
@@ -192,17 +195,21 @@ BaseNodeMixin.getTopLevelFrame, InteractiveSlideElementNode, InteractiveSlideEle
 
 Всё это — вид экрана. Непереведённый шум или стекло — это те самые 10%, которых не видно.
 
-### 6. Диапазоны текста читаются на два поля из пятнадцати — самое дешёвое из всего списка
+### 6. Диапазоны текста — ЗАКРЫТО
 
 `text.segments` зовёт `getStyledTextSegments(['boundVariables', 'fills'])` — и всё. Текст, у
 которого одно слово другого кегля, со ссылкой, капителью или своим текстовым стилем, читается
 как однородный: `runs` мы **пишем**, но обратно они не приходят.
 
-Это прямое нарушение условия остановки, и чинится оно списком полей в одном вызове —
-`fontSize`, `fontName`, `fontWeight`, `letterSpacing`, `lineHeight`, `textCase`,
-`textDecoration`, `hyperlink`, `textStyleId`, `openTypeFeatures`, `listOptions`,
-`indentation`, `textWrapStyle`. Отдельные `getRangeX` из 1.111 при этом не нужны вовсе: они
-дают то же самое по одному полю за вызов.
+Починено списком полей в одном вызове; отдельные `getRangeX` из 1.111 при этом не нужны вовсе —
+они дают то же самое по одному полю за раз. Попутно вскрылись ещё три разрыва round-trip, все на
+каждом слое, а не только на тексте: `fontName` читался строкой `"Inter Regular"` при записи,
+требующей `{ family, style }`; связанная краска читалась как `"var:surface/l0"` и отклонялась;
+`sizing` печатался сверху узла, а принимался только внутри `layout`.
+
+Проверено так, как просит условие остановки: текст с тремя стилевыми диапазонами прочитан,
+прочитанное отправлено обратно как `NODE_CREATE`, копия сверена с оригиналом посвойственно —
+13 из 13 совпали, вместе с `runs`.
 
 ### 7. Гриды — 1.115, 1.127
 
