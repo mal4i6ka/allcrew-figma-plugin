@@ -28956,6 +28956,13 @@ export function useCopy(): (key: string) => string {
   function defaultRoots() {
     return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children;
   }
+  function componentsOn(page) {
+    const found = page.findAllWithCriteria({ types: ["COMPONENT_SET", "COMPONENT"] });
+    return found.filter((node) => {
+      var _a;
+      return ((_a = node.parent) == null ? void 0 : _a.type) !== "COMPONENT_SET";
+    });
+  }
   async function vectorsUnder(nodes) {
     const wanted = [];
     const walk2 = (node) => {
@@ -30371,9 +30378,7 @@ export function useCopy(): (key: string) => string {
               break;
             }
             await page.loadAsync();
-            const sets = page.children.filter(
-              (node) => node.type === "COMPONENT_SET" || node.type === "COMPONENT"
-            );
+            const sets = componentsOn(page);
             roots = typeof msg.limit === "number" ? sets.slice(0, Math.max(1, msg.limit)) : sets;
             if (roots.length === 0) {
               refuse("EMIT_REACT", `"${page.name}" holds no components`);
@@ -30403,9 +30408,7 @@ export function useCopy(): (key: string) => string {
               break;
             }
             await page.loadAsync();
-            const sets = page.children.filter(
-              (node) => node.type === "COMPONENT_SET" || node.type === "COMPONENT"
-            );
+            const sets = componentsOn(page);
             const built = (await Promise.all(sets.map((set) => serializeNode(set)))).filter(
               (node) => node !== null
             );

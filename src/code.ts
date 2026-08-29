@@ -522,6 +522,21 @@ function defaultRoots(): readonly SceneNode[] {
 }
 
 /**
+ * The components a page holds, wherever on it they sit.
+ *
+ * Taking the page's own children only was the obvious reading and the wrong one: four of the six
+ * components the payment screen was missing — List-Items-Title, Exchange-Icons, To-Card-Items,
+ * the Google Pay button — are nested inside frames rather than parked at the top of their page,
+ * and naming the right page would still not have reached them.
+ *
+ * A variant is not collected on its own: it belongs to its set, which is collected whole.
+ */
+function componentsOn(page: PageNode): SceneNode[] {
+  const found = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
+  return found.filter((node) => node.parent?.type !== 'COMPONENT_SET')
+}
+
+/**
  * Every vector the emitter will need as a file, exported.
  *
  * Only the ones `annotateVectorLeaves` did not already inline: a small icon belongs in the markup,
@@ -2484,9 +2499,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             break
           }
           await (page as PageNode).loadAsync()
-          const sets = (page as PageNode).children.filter(
-            (node) => node.type === 'COMPONENT_SET' || node.type === 'COMPONENT'
-          )
+          const sets = componentsOn(page as PageNode)
           roots = typeof msg.limit === 'number' ? sets.slice(0, Math.max(1, msg.limit)) : sets
           if (roots.length === 0) {
             refuse('EMIT_REACT', `"${(page as PageNode).name}" holds no components`)
@@ -2520,9 +2533,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             break
           }
           await (page as PageNode).loadAsync()
-          const sets = (page as PageNode).children.filter(
-            (node) => node.type === 'COMPONENT_SET' || node.type === 'COMPONENT'
-          )
+          const sets = componentsOn(page as PageNode)
           const built = (await Promise.all(sets.map((set) => serializeNode(set)))).filter(
             (node): node is IrNode => node !== null
           )
