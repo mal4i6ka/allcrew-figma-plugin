@@ -529,7 +529,11 @@ function aliasTarget(value: TokenValue): string[] | null {
   return match[1].split('.').map((p) => p.trim()).filter(Boolean)
 }
 
-const UNITLESS_TOKEN = /(^|[-_])(opacity|z-?index|font-?weight|weight|line-?height|lineheight|flex|order|aspect|ratio|scale|count|columns?)([-_]|$)/i
+// `scale` was in this list and should not have been. In this system `scale/16` is sixteen
+// PIXELS — the CSS emitter says so itself, writing `calc(var(--scale-16, 16px) * 1.36)` — and a
+// unitless `16` made that calc invalid, so every radius derived from the scale silently squared
+// off. A multiplier is what `ratio` and `aspect` are for.
+const UNITLESS_TOKEN = /(^|[-_])(opacity|z-?index|font-?weight|weight|line-?height|lineheight|flex|order|aspect|ratio|count|columns?)([-_]|$)/i
 const LINE_HEIGHT_TOKEN = /(^|[-_])line-?height([-_]|$)/i
 const LINE_HEIGHT_RATIO_MAX = 4
 

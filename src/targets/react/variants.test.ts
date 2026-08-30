@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { alignVariants, pairOrExplain, pairTrees, scopeVariantCss, variantClass, variantKey } from './variants.ts'
+import { alignVariants, orderRules, pairOrExplain, pairTrees, scopeVariantCss, variantClass, variantKey } from './variants.ts'
+import type { IrNode } from '../django/ir.ts'
 
 const node = (id: string, type: string, children: unknown[] = []) =>
   ({ id, type, name: id, children }) as never
@@ -104,4 +105,34 @@ test('a variant identical to the base emits nothing at all', () => {
   const base = '.n1-1 {\n  background: red;\n}'
   const same = '.n2-1 {\n  background: red;\n}'
   assert.equal(scopeVariantCss(same, new Map([['2:1', '1:1']]), 'v-x', base).trim(), '')
+})
+
+test('a variant that holds its layers the other way round says so in CSS', () => {
+  const box = (id: string, name: string) => ({ id, name, type: 'container', children: [] }) as unknown as IrNode
+  const union = {
+    id: '1:1',
+    name: 'Row',
+    type: 'container',
+    children: [box('1:2', 'Box'), box('1:3', 'Label')],
+  } as unknown as IrNode
+  const flipped = {
+    id: '2:1',
+    name: 'Row',
+    type: 'container',
+    children: [box('2:3', 'Label'), box('2:2', 'Box')],
+  } as unknown as IrNode
+  const map = new Map([['2:1', '1:1'], ['2:2', '1:2'], ['2:3', '1:3']])
+
+  const css = orderRules(union, flipped, map, 'v-orientation-right')
+  assert.match(css, /\.v-orientation-right \.n1-3 \{\n  order: 0;/)
+  assert.match(css, /\.v-orientation-right \.n1-2 \{\n  order: 1;/)
+
+  // The same order says nothing.
+  const same = {
+    id: '3:1',
+    name: 'Row',
+    type: 'container',
+    children: [box('3:2', 'Box'), box('3:3', 'Label')],
+  } as unknown as IrNode
+  assert.equal(orderRules(union, same, new Map([['3:1', '1:1'], ['3:2', '1:2'], ['3:3', '1:3']]), 'v-x'), '')
 })

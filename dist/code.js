@@ -619,7 +619,7 @@
     if (!match) return null;
     return match[1].split(".").map((p) => p.trim()).filter(Boolean);
   }
-  var UNITLESS_TOKEN = /(^|[-_])(opacity|z-?index|font-?weight|weight|line-?height|lineheight|flex|order|aspect|ratio|scale|count|columns?)([-_]|$)/i;
+  var UNITLESS_TOKEN = /(^|[-_])(opacity|z-?index|font-?weight|weight|line-?height|lineheight|flex|order|aspect|ratio|count|columns?)([-_]|$)/i;
   var LINE_HEIGHT_TOKEN = /(^|[-_])line-?height([-_]|$)/i;
   var LINE_HEIGHT_RATIO_MAX = 4;
   function roundEmitted(value) {
@@ -5233,16 +5233,29 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       if (press) interactions = [...interactions, press];
     }
     const reactions = __spreadValues(__spreadValues(__spreadValues({}, navigate ? { navigate } : {}), interactions ? { interactions } : {}), overlays ? { overlays } : {});
-    return __spreadProps(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({}, baseProps(node, isGridChild)), await containerBackgroundImage(node)), await readStyleRefs(node)), fixedChildrenCount(node)), reactions), {
+    return __spreadProps(__spreadValues(__spreadProps(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({}, baseProps(node, isGridChild)), await containerBackgroundImage(node)), await readStyleRefs(node)), fixedChildrenCount(node)), reactions), {
       type: "instance-ref",
       layout,
       warnings,
       componentId: (_f = mainComponent == null ? void 0 : mainComponent.id) != null ? _f : null,
       componentKey: (_g = mainComponent == null ? void 0 : mainComponent.key) != null ? _g : null,
       componentSetName,
-      componentProperties: normalizeComponentProperties(readComponentProperties(node)),
+      componentProperties: normalizeComponentProperties(readComponentProperties(node))
+    }), restyledInPlace(node) ? { restyled: true } : {}), {
       children: await serializeChildren(node, isManualGridParent(node))
     });
+  }
+  var PROPERTY_FIELDS = /* @__PURE__ */ new Set(["characters"]);
+  function restyledInPlace(node) {
+    try {
+      const own = node.id;
+      const prefix = own.startsWith("I") ? `${own};` : `I${own};`;
+      return node.overrides.some(
+        (entry) => entry.id !== own && entry.id.startsWith(prefix) && entry.overriddenFields.some((field) => !PROPERTY_FIELDS.has(field))
+      );
+    } catch (e) {
+      return false;
+    }
   }
   async function serializeExportedGraphic(node, isGridChild, settingsOverride) {
     var _a, _b;
@@ -27517,7 +27530,7 @@ ${scripts}`, "");
 
   // src/targets/react/jsx.ts
   function newContext(scope) {
-    return { copy: {}, props: /* @__PURE__ */ new Map(), used: /* @__PURE__ */ new Set(), gaps: [], scope };
+    return { copy: {}, props: /* @__PURE__ */ new Map(), used: /* @__PURE__ */ new Set(), instanceRoots: /* @__PURE__ */ new Set(), gaps: [], scope };
   }
   var INDENT = "  ";
   function componentName2(name) {
@@ -27585,13 +27598,19 @@ ${pad2})}`;
     return held.size === context.allVariants.size ? null : node.id;
   }
   function emitElement(node, context, depth) {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
     const pad2 = INDENT.repeat(depth);
     const own = `styles[${JSON.stringify(toClassName(node.id))}]`;
     const className = node.id === context.rootId ? `[${own}${context.hasVariants ? ", variant" : ""}, className].filter(Boolean).join(' ')` : own;
     for (const warning of (_a = node.warnings) != null ? _a : []) context.gaps.push(`${node.name}: ${warning}`);
+    if (node.type === "instance-ref" && node.restyled) {
+      const of = (_c = node.componentId ? (_b = context.namesById) == null ? void 0 : _b.get(node.componentId) : void 0) != null ? _c : componentName2(node.componentSetName || node.name);
+      context.gaps.push(
+        `${node.name}: restyled where it sits \u2014 written out as markup rather than rendered as <${of} />`
+      );
+    }
     if (node.type === "text") {
-      const bound = (_c = (_b = node.componentPropertyReferences) == null ? void 0 : _b.characters) != null ? _c : context.insideComponent ? node.name : null;
+      const bound = (_e = (_d = node.componentPropertyReferences) == null ? void 0 : _d.characters) != null ? _e : context.insideComponent ? node.name : null;
       let body;
       if (bound) {
         const prop = textProp(propName(bound), context.own);
@@ -27603,7 +27622,7 @@ ${pad2})}`;
         body = `{t('${key}')}`;
       }
       const base = toClassName(node.id);
-      const runs = (_d = context.segments) == null ? void 0 : _d.get(base);
+      const runs = (_f = context.segments) == null ? void 0 : _f.get(base);
       if (runs !== void 0 && runs > 1) {
         context.gaps.push(
           `${node.name}: ${runs} differently-styled runs in one text \u2014 all of it rendered in the first one's style`
@@ -27613,11 +27632,12 @@ ${pad2})}`;
       const worn = typography === "" ? `{${className}}` : `{${className}${typography}}`;
       return `${pad2}<span className=${worn}>${body}</span>`;
     }
-    if (node.type === "instance-ref") {
-      const name = componentName2(node.componentSetName || node.name);
+    if (node.type === "instance-ref" && !node.restyled) {
+      const name = (_h = node.componentId ? (_g = context.namesById) == null ? void 0 : _g.get(node.componentId) : void 0) != null ? _h : componentName2(node.componentSetName || node.name);
       context.used.add(name);
+      context.instanceRoots.add(node.id);
       const props = [];
-      const declared = (_e = context.declares) == null ? void 0 : _e.get(name);
+      const declared = (_i = context.declares) == null ? void 0 : _i.get(name);
       for (const [layer, text4] of textsInside(node)) {
         const prop = textProp(propName(layer), declared);
         if (declared && declared.get(prop) !== "text") {
@@ -27626,7 +27646,7 @@ ${pad2})}`;
         }
         props.push(`${prop}=${JSON.stringify(text4)}`);
       }
-      for (const [raw, value] of Object.entries((_f = node.componentProperties) != null ? _f : {})) {
+      for (const [raw, value] of Object.entries((_j = node.componentProperties) != null ? _j : {})) {
         const prop = propName(raw);
         const kind = declared == null ? void 0 : declared.get(prop);
         if (declared && value.type !== "INSTANCE_SWAP") {
@@ -27654,12 +27674,12 @@ ${pad2})}`;
     if (node.type === "vector") {
       const svg = node.inlineSvg;
       if (svg) return `${pad2}<span className={${className}} dangerouslySetInnerHTML={{ __html: ${JSON.stringify(svg)} }} />`;
-      const asset = (_g = context.assets) == null ? void 0 : _g.get(node.id);
+      const asset = (_k = context.assets) == null ? void 0 : _k.get(node.id);
       if (asset) return `${pad2}<img className={${className}} src="/assets/${asset.filename}" alt="" />`;
       context.gaps.push(`${node.name}: a vector that would not export \u2014 draw it by hand`);
       return `${pad2}<span className={${className}} />`;
     }
-    const children = (_h = node.children) != null ? _h : [];
+    const children = (_l = node.children) != null ? _l : [];
     const inner = children.map((child) => emitJsx(child, context, depth + 1)).join("\n");
     const tag = node.navigate ? "a" : "div";
     const href = node.navigate ? ` href={${JSON.stringify(`#${node.navigate.destinationId}`)}}` : "";
@@ -27827,19 +27847,66 @@ ${pad2}</${tag}>`;
     }
     return rules;
   }
+  function orderRules(union, variant2, map, scope) {
+    const unionById = /* @__PURE__ */ new Map();
+    const index = (node) => {
+      var _a;
+      unionById.set(node.id, node);
+      for (const child of (_a = node.children) != null ? _a : []) index(child);
+    };
+    index(union);
+    const rules = [];
+    const walk2 = (node) => {
+      var _a, _b, _c;
+      const children = (_a = node.children) != null ? _a : [];
+      const here = unionById.get((_b = map.get(node.id)) != null ? _b : node.id);
+      const theirs = (_c = here == null ? void 0 : here.children) != null ? _c : [];
+      const mine = children.map((child) => {
+        var _a2;
+        return (_a2 = map.get(child.id)) != null ? _a2 : child.id;
+      });
+      const asDrawn = theirs.map((child) => child.id);
+      const shared = asDrawn.filter((id) => mine.includes(id));
+      const asHeld = mine.filter((id) => shared.includes(id));
+      if (shared.some((id, at) => asHeld[at] !== id)) {
+        mine.forEach((id, at) => {
+          rules.push(`.${scope} .${toClassName(id)} {
+  order: ${at};
+}`);
+        });
+      }
+      for (const child of children) walk2(child);
+    };
+    walk2(variant2);
+    return rules.join("\n\n");
+  }
 
   // src/targets/react/index.ts
   var kindOfProp = (type) => type === "BOOLEAN" ? "boolean" : type === "VARIANT" ? "variant" : "text";
   async function emitLibrary(roots, sceneNodesById, variableNamesById, options = {}) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const files = {};
     const gaps = [];
     const props = new Map((_a = options.libraryProps) != null ? _a : []);
-    for (const [, asset] of (_b = options.assetsByNodeId) != null ? _b : []) files[`public/assets/${asset.filename}`] = asset.svg;
+    const names = new Map((_b = options.componentNamesById) != null ? _b : []);
+    const taken = new Set(names.values());
+    for (const [, asset] of (_c = options.assetsByNodeId) != null ? _c : []) files[`public/assets/${asset.filename}`] = asset.svg;
     for (const root of roots) {
-      const variants = root.component ? [root] : (_c = root.children) != null ? _c : [];
+      const variants = root.component ? [root] : (_d = root.children) != null ? _d : [];
       if (variants.length === 0) continue;
-      const name = componentName2(root.name);
+      const wanted = componentName2(root.name);
+      let name = (_e = names.get(root.id)) != null ? _e : wanted;
+      if (!names.has(root.id)) {
+        for (let n = 2; taken.has(name); n++) name = `${wanted}${n}`;
+        if (name !== wanted) {
+          gaps.push(
+            `${wanted} is the name of two different components in this design \u2014 this one was emitted as ${name}`
+          );
+        }
+      }
+      taken.add(name);
+      names.set(root.id, name);
+      for (const variant2 of variants) names.set(variant2.id, name);
       const collected = {
         name,
         body: variants[0],
@@ -27849,7 +27916,7 @@ ${pad2}</${tag}>`;
         rawNames: /* @__PURE__ */ new Map()
       };
       for (const variant2 of variants) collected.variants.set(variantKeyFromName(variant2.name), variant2);
-      for (const definition of (_e = (_d = variants[0].component) == null ? void 0 : _d.properties) != null ? _e : []) {
+      for (const definition of (_g = (_f = variants[0].component) == null ? void 0 : _f.properties) != null ? _g : []) {
         if (definition.type === "VARIANT" || definition.type === "INSTANCE_SWAP") continue;
         const prop = propName(definition.name);
         collected.values.set(prop, /* @__PURE__ */ new Set([String(definition.defaultValue)]));
@@ -27866,7 +27933,7 @@ ${pad2}</${tag}>`;
         collected,
         sceneNodesById,
         variableNamesById,
-        (_f = options.motionByNodeId) != null ? _f : /* @__PURE__ */ new Map(),
+        (_h = options.motionByNodeId) != null ? _h : /* @__PURE__ */ new Map(),
         options.assetsByNodeId,
         props
       );
@@ -27876,8 +27943,9 @@ ${pad2}</${tag}>`;
       props.set(name, built.props);
     }
     if (Object.values(files).some((one) => one.includes("from '../copy'"))) files["src/copy.tsx"] = COPY_FILE;
-    Object.assign(files, projectFiles(null));
-    return { files, gaps: [...new Set(gaps)], props };
+    if (options.tokensCss) files["src/tokens.css"] = options.tokensCss;
+    Object.assign(files, projectFiles(null, Boolean(options.tokensCss), fontsIn(files)));
+    return { files, names, gaps: [...new Set(gaps)], props };
   }
   function missingImports(files, remote = /* @__PURE__ */ new Set()) {
     var _a, _b;
@@ -27904,40 +27972,33 @@ ${pad2}</${tag}>`;
     );
   }
   async function emitReact(roots, sceneNodesById, variableNamesById, options = {}) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const files = {};
     const gaps = [];
     const props = new Map((_a = options.libraryProps) != null ? _a : []);
+    const names = new Map((_b = options.componentNamesById) != null ? _b : []);
     const components = /* @__PURE__ */ new Map();
     for (const root of roots) collectComponents3(root, components);
-    for (const [, asset] of (_b = options.assetsByNodeId) != null ? _b : []) files[`public/assets/${asset.filename}`] = asset.svg;
-    let firstScreen = null;
-    for (const root of roots) {
-      const name = componentName2((_c = options.name) != null ? _c : root.name);
-      firstScreen != null ? firstScreen : firstScreen = name;
-      const context = newContext(name.toLowerCase());
-      context.assets = options.assetsByNodeId;
-      context.declares = props;
-      const css = await emitCss([root], sceneNodesById, variableNamesById, { preamble: false });
-      context.segments = segmentsIn(css);
-      const markup = emitJsx(root, context, 2);
-      files[`src/screens/${name}.tsx`] = screenFile(name, markup, context);
-      const motion = await emitMotion([root], sceneNodesById, (_d = options.motionByNodeId) != null ? _d : /* @__PURE__ */ new Map());
-      files[`src/screens/${name}.module.css`] = css + (motion.css.trim() === "" ? "" : `
-
-${motion.css}`);
-      gaps.push(...motion.gaps);
-      if (Object.keys(context.copy).length > 0) {
-        files[`src/locales/${name.toLowerCase()}.json`] = `${JSON.stringify(context.copy, null, 2)}
-`;
-      }
-      if (context.props.size > 0) files[`src/screens/${name}.mock.ts`] = mockFile(name, context);
-      gaps.push(...context.gaps);
-    }
-    Object.assign(files, projectFiles(firstScreen));
-    if (Object.values(files).some((one) => one.includes("from '../copy'"))) files["src/copy.tsx"] = COPY_FILE;
+    const taken = new Set(names.values());
     for (const component of components.values()) {
-      if ((_e = options.fromLibrary) == null ? void 0 : _e.has(component.name)) continue;
+      const known = component.masterId ? names.get(component.masterId) : void 0;
+      if (known) {
+        component.name = known;
+        continue;
+      }
+      let name = component.name;
+      for (let n = 2; taken.has(name); n++) name = `${component.name}${n}`;
+      if (name !== component.name) {
+        gaps.push(`${component.name} is the name of two different components in this design \u2014 this one was emitted as ${name}`);
+        component.name = name;
+      }
+      taken.add(name);
+      if (component.masterId) names.set(component.masterId, name);
+    }
+    for (const [, asset] of (_c = options.assetsByNodeId) != null ? _c : []) files[`public/assets/${asset.filename}`] = asset.svg;
+    for (const component of components.values()) {
+      if (component.masterId && ((_d = options.fromLibrary) == null ? void 0 : _d.has(component.masterId))) continue;
+      if (!component.masterId && ((_e = options.fromLibrary) == null ? void 0 : _e.has(component.name))) continue;
       const built = await componentFile(
         component,
         sceneNodesById,
@@ -27951,7 +28012,34 @@ ${motion.css}`);
       gaps.push(...built.gaps);
       props.set(component.name, built.props);
     }
-    return { files, gaps: [...new Set(gaps)], props };
+    let firstScreen = null;
+    for (const root of roots) {
+      const name = componentName2((_g = options.name) != null ? _g : root.name);
+      firstScreen != null ? firstScreen : firstScreen = name;
+      const context = newContext(name.toLowerCase());
+      context.assets = options.assetsByNodeId;
+      context.declares = props;
+      context.namesById = names;
+      const css = await emitCss([root], sceneNodesById, variableNamesById, { preamble: false });
+      context.segments = segmentsIn(css);
+      const markup = emitJsx(root, context, 2);
+      files[`src/screens/${name}.tsx`] = screenFile(name, markup, context);
+      const motion = await emitMotion([root], sceneNodesById, (_h = options.motionByNodeId) != null ? _h : /* @__PURE__ */ new Map());
+      files[`src/screens/${name}.module.css`] = raiseInstanceRoots(css, context.instanceRoots) + (motion.css.trim() === "" ? "" : `
+
+${motion.css}`);
+      gaps.push(...motion.gaps);
+      if (Object.keys(context.copy).length > 0) {
+        files[`src/locales/${name.toLowerCase()}.json`] = `${JSON.stringify(context.copy, null, 2)}
+`;
+      }
+      if (context.props.size > 0) files[`src/screens/${name}.mock.ts`] = mockFile(name, context);
+      gaps.push(...context.gaps);
+    }
+    if (options.tokensCss) files["src/tokens.css"] = options.tokensCss;
+    Object.assign(files, projectFiles(firstScreen, Boolean(options.tokensCss), fontsIn(files)));
+    if (Object.values(files).some((one) => one.includes("from '../copy'"))) files["src/copy.tsx"] = COPY_FILE;
+    return { files, names, gaps: [...new Set(gaps)], props };
   }
   async function emitMotion(roots, sceneNodesById, motionByNodeId) {
     var _a;
@@ -27993,28 +28081,37 @@ ${motion.css}`);
     for (const child of (_a = node.children) != null ? _a : []) yield* __yieldStar(walk(child));
   }
   function collectComponents3(node, into) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f;
     if (node.type === "instance-ref") {
       const name = componentName2(node.componentSetName || node.name);
-      const held = (_a = into.get(name)) != null ? _a : { name, body: null, values: /* @__PURE__ */ new Map(), types: /* @__PURE__ */ new Map(), variants: /* @__PURE__ */ new Map(), rawNames: /* @__PURE__ */ new Map() };
+      const key = (_a = node.componentId) != null ? _a : name;
+      const held = (_c = into.get(key)) != null ? _c : {
+        name,
+        masterId: (_b = node.componentId) != null ? _b : void 0,
+        body: null,
+        values: /* @__PURE__ */ new Map(),
+        types: /* @__PURE__ */ new Map(),
+        variants: /* @__PURE__ */ new Map(),
+        rawNames: /* @__PURE__ */ new Map()
+      };
       if (!held.body) held.body = node;
-      const key = variantKey(node.componentProperties);
-      if (!held.variants.has(key)) held.variants.set(key, node);
-      for (const [raw, value] of Object.entries((_b = node.componentProperties) != null ? _b : {})) {
+      const variant2 = variantKey(node.componentProperties);
+      if (!held.variants.has(variant2)) held.variants.set(variant2, node);
+      for (const [raw, value] of Object.entries((_d = node.componentProperties) != null ? _d : {})) {
         const prop = propName(raw);
-        const seen = (_c = held.values.get(prop)) != null ? _c : /* @__PURE__ */ new Set();
+        const seen = (_e = held.values.get(prop)) != null ? _e : /* @__PURE__ */ new Set();
         seen.add(String(value.value));
         held.values.set(prop, seen);
         held.types.set(prop, value.type);
         held.rawNames.set(prop, raw.replace(/#.*$/, ""));
       }
-      into.set(name, held);
-      return;
+      into.set(key, held);
+      if (!node.restyled) return;
     }
-    for (const child of (_d = node.children) != null ? _d : []) collectComponents3(child, into);
+    for (const child of (_f = node.children) != null ? _f : []) collectComponents3(child, into);
   }
   async function componentFile(component, sceneNodesById, variableNamesById, motionByNodeId, assetsByNodeId, declares) {
-    var _a;
+    var _a, _b;
     const context = __spreadProps(__spreadValues({}, newContext(component.name.toLowerCase())), {
       insideComponent: true,
       rootId: (_a = component.body) == null ? void 0 : _a.id,
@@ -28044,10 +28141,13 @@ ${motion.css}`);
         });
         const scope = variantClass(key);
         variantClasses.push(`${JSON.stringify(key)}: styles[${JSON.stringify(scope)}]`);
+        const order = laid && bodyNode ? orderRules(bodyNode, instance, pairs, scope) : "";
         variantCss += `
 
 /* ${key} */
-${scopeVariantCss(own2, pairs, scope, baseCss)}`;
+${scopeVariantCss(own2, pairs, scope, baseCss)}${order === "" ? "" : `
+
+${order}`}`;
       }
     }
     const own = /* @__PURE__ */ new Map();
@@ -28070,7 +28170,7 @@ const HAS: Record<string, ReadonlySet<string>> = {
 ${optional.join("\n")}
 }
 ` : "";
-    const css = asContainer ? baseCss + (motion.css.trim() === "" ? "" : `
+    const css = asContainer ? raiseInstanceRoots(baseCss, context.instanceRoots) + (motion.css.trim() === "" ? "" : `
 
 ${motion.css}`) + variantCss : "";
     const fields = [];
@@ -28087,6 +28187,13 @@ ${fields.join("\n")}
 ` : "\n";
     const imports = [...context.used].filter((one) => one !== component.name);
     const variantProps2 = [...component.types.entries()].filter(([, type]) => type === "VARIANT").map(([prop]) => prop);
+    const defaults = /* @__PURE__ */ new Map();
+    for (const part of ((_b = [...component.variants.keys()][0]) != null ? _b : "").split(",")) {
+      const [axis, value] = part.split("=").map((one) => one.trim());
+      if (!axis || value === void 0) continue;
+      const prop = propName(axis);
+      if (component.types.get(prop) === "VARIANT") defaults.set(prop, value);
+    }
     const keyExpression = variantProps2.length > 0 ? `[${variantProps2.map((prop) => {
       var _a2;
       return `\`${(_a2 = component.rawNames.get(prop)) != null ? _a2 : prop}=\${${prop}}\``;
@@ -28103,7 +28210,7 @@ export interface ${component.name}Props {${props}  className?: string
 }
 
 ${variantBlock}${hasBlock}
-export function ${component.name}({ ${[...component.values.keys(), ...context.props.keys()].filter((one, index, all) => all.indexOf(one) === index).join(", ")}${component.values.size + context.props.size > 0 ? ", " : ""}className }: ${component.name}Props) {
+export function ${component.name}({ ${[...component.values.keys(), ...context.props.keys()].filter((one, index, all) => all.indexOf(one) === index).map((one) => defaults.has(one) ? `${one} = ${JSON.stringify(defaults.get(one))}` : one).join(", ")}${component.values.size + context.props.size > 0 ? ", " : ""}className }: ${component.name}Props) {
 ${Object.keys(context.copy).length > 0 ? "  const t = useCopy()\n" : ""}${keyExpression && (variantBlock || hasBlock) ? `  const key = ${keyExpression}
 ` : ""}${variantBlock ? "  const variant = VARIANTS[key]\n" : ""}  return (
 ${body}
@@ -28168,8 +28275,25 @@ export function useCopy(fallback: Copy = {}): (key: string) => string {
   return (key: string) => copy[key] ?? fallback[key] ?? key
 }
 `;
-  function projectFiles(screen) {
+  function projectFiles(screen, tokens, fonts) {
     const files = {
+      // The browser's own 8px body margin made a 390-wide screen render at 374, and every row in it
+      // wrapped a line early. A scaffold that needs a reset the developer has to guess is not one.
+      "src/global.css": `/* The only opinions here are the ones a Figma frame assumes: no page margin, and sizes
+ * that mean what they say. Everything else the design brings itself. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+` + (fonts.length > 0 ? `
+/* The design is set in ${fonts.join(", ")} \u2014 install ${fonts.length > 1 ? "them" : "it"} (a webfont, or your own @font-face)
+ * or the screens fall back to the system sans and every line measures differently. */
+` : ""),
       "package.json": `${JSON.stringify(
         {
           name: "figma-export",
@@ -28243,7 +28367,9 @@ export default defineConfig({ plugins: [react()] })
 `;
       files["src/main.tsx"] = `import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ${screen} } from './screens/${screen}'
+import './global.css'
+` + (tokens ? `import './tokens.css'
+` : "") + `import { ${screen} } from './screens/${screen}'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -28262,6 +28388,25 @@ createRoot(document.getElementById('root')!).render(
       found.set(base, Math.max((_a = found.get(base)) != null ? _a : 0, Number(index) + 1));
     }
     return found;
+  }
+  function fontsIn(files) {
+    const found = /* @__PURE__ */ new Set();
+    for (const [path, contents] of Object.entries(files)) {
+      if (!path.endsWith(".css")) continue;
+      for (const match of contents.matchAll(/font-family:\s*"([^"]+)"/g)) found.add(match[1]);
+    }
+    return [...found];
+  }
+  function raiseInstanceRoots(css, ids) {
+    let raised = css;
+    for (const id of ids) {
+      const one = toClassName(id);
+      raised = raised.split(`
+.${one} {`).join(`
+.${one}.${one} {`);
+      if (raised.startsWith(`.${one} {`)) raised = `.${one}.${one} {${raised.slice(`.${one} {`.length)}`;
+    }
+    return raised;
   }
   var header = (name) => `/* Generated from Figma \u2014 ${name}. Regenerating replaces this file; edits outside it survive. */`;
 
@@ -29127,13 +29272,18 @@ createRoot(document.getElementById('root')!).render(
     return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children;
   }
   async function variableNamesForExport() {
+    const asCss = async (snapshot) => {
+      const stored = await figma.clientStorage.getAsync("exportOptions");
+      return emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored), readRenameMap())).css;
+    };
     try {
       const snapshot = await readAllVariables();
-      return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), gaps: [] };
+      return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), css: await asCss(snapshot), gaps: [] };
     } catch (error) {
       const local = await readLocalVariables();
       return {
         names: new Map(local.variables.map((one) => [one.id, one.name])),
+        css: await asCss(local),
         gaps: [
           "the library variables could not be read (" + String((error == null ? void 0 : error.message) || error) + ") \u2014 anything bound to a library token is written as the literal value it resolves to"
         ]
@@ -30623,7 +30773,7 @@ createRoot(document.getElementById('root')!).render(
           const variableNamesById = tokens.names;
           await annotateVectorLeaves(nodes, sceneNodesById);
           const alongside = Array.isArray(msg.pages) ? msg.pages.map((one) => String(one)) : [];
-          let library = { files: {}, gaps: [], props: /* @__PURE__ */ new Map() };
+          let library = { files: {}, names: /* @__PURE__ */ new Map(), gaps: [], props: /* @__PURE__ */ new Map() };
           const alongsideRoots = [];
           const named = Array.isArray(msg.components) ? msg.components.map((one) => String(one)) : [];
           if (named.length > 0) {
@@ -30645,12 +30795,14 @@ createRoot(document.getElementById('root')!).render(
               await annotateVectorLeaves(built, index);
               const one = await emitLibrary(built, index, variableNamesById, {
                 motionByNodeId: motionUnder(picked),
-                assetsByNodeId: await vectorsUnder(built)
+                assetsByNodeId: await vectorsUnder(built),
+                componentNamesById: library.names
               });
               library = {
                 files: __spreadValues(__spreadValues({}, library.files), one.files),
                 gaps: [...library.gaps, ...one.gaps],
-                props: new Map([...library.props, ...one.props])
+                props: new Map([...library.props, ...one.props]),
+                names: new Map([...library.names, ...one.names])
               };
               alongsideRoots.push(...picked);
             }
@@ -30671,12 +30823,14 @@ createRoot(document.getElementById('root')!).render(
             await annotateVectorLeaves(built, index);
             const one = await emitLibrary(built, index, variableNamesById, {
               motionByNodeId: motionUnder(sets),
-              assetsByNodeId: await vectorsUnder(built)
+              assetsByNodeId: await vectorsUnder(built),
+              componentNamesById: library.names
             });
             library = {
               files: __spreadValues(__spreadValues({}, library.files), one.files),
               gaps: [...library.gaps, ...one.gaps],
-              props: new Map([...library.props, ...one.props])
+              props: new Map([...library.props, ...one.props]),
+              names: new Map([...library.names, ...one.names])
             };
             alongsideRoots.push(...sets);
           }
@@ -30730,7 +30884,8 @@ createRoot(document.getElementById('root')!).render(
               const one = await emitLibrary(built, index, variableNamesById, {
                 motionByNodeId: motionUnder(indexed),
                 assetsByNodeId: await vectorsUnder(built),
-                libraryProps: library.props
+                libraryProps: library.props,
+                componentNamesById: library.names
               });
               library = {
                 files: __spreadValues(__spreadValues({}, library.files), one.files),
@@ -30742,7 +30897,8 @@ createRoot(document.getElementById('root')!).render(
                     (master) => `${componentName2(master.owner.name)} was read out of the design-system library rather than this file \u2014 swap the import for your own package when you have one`
                   )
                 ],
-                props: new Map([...library.props, ...one.props])
+                props: new Map([...library.props, ...one.props]),
+                names: new Map([...library.names, ...one.names])
               };
               alongsideRoots.push(...indexed);
             }
@@ -30753,9 +30909,14 @@ createRoot(document.getElementById('root')!).render(
             assetsByNodeId: await vectorsUnder(nodes),
             // Names the screen must not rebuild: the library already has them, better.
             libraryProps: library.props,
-            fromLibrary: new Set(
-              Object.keys(library.files).filter((path) => path.startsWith("src/components/") && path.endsWith(".tsx")).map((path) => path.slice("src/components/".length, -".tsx".length))
-            )
+            componentNamesById: library.names,
+            tokensCss: tokens.css,
+            // By master, not by name: the library emitted these exact components, and a screen
+            // holding a DIFFERENT component of the same name must still build its own.
+            fromLibrary: /* @__PURE__ */ new Set([
+              ...library.names.keys(),
+              ...Object.keys(library.files).filter((path) => path.startsWith("src/components/") && path.endsWith(".tsx")).map((path) => path.slice("src/components/".length, -".tsx".length))
+            ])
           };
           const emitted = msg.pageId ? await emitLibrary(nodes, sceneNodesById, variableNamesById, options) : await emitReact(nodes, sceneNodesById, variableNamesById, options);
           const files = __spreadValues(__spreadValues({}, library.files), emitted.files);

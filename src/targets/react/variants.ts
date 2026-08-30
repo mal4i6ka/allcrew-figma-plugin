@@ -280,3 +280,47 @@ function rulesOf(css: string): Map<string, Set<string>> {
   }
   return rules
 }
+
+/**
+ * Variants that differ by ORDER, said in the one way CSS can say it.
+ *
+ * `Orientation=Right` holds the same layers as `Orientation=Left` and holds them the other way
+ * round. The alignment is by name, so both render in the union's order and the checkbox sat on
+ * the wrong side of its label — renaming rules cannot move an element, but `order` can, and every
+ * container these variants build is already a flex box.
+ */
+export function orderRules(
+  union: IrNode,
+  variant: IrNode,
+  /** this variant's own node id → the union node it stands for */
+  map: ReadonlyMap<string, string>,
+  scope: string
+): string {
+  const unionById = new Map<string, IrNode>()
+  const index = (node: IrNode) => {
+    unionById.set(node.id, node)
+    for (const child of (node as { children?: IrNode[] }).children ?? []) index(child)
+  }
+  index(union)
+
+  const rules: string[] = []
+  const walk = (node: IrNode) => {
+    const children = (node as { children?: IrNode[] }).children ?? []
+    const here = unionById.get(map.get(node.id) ?? node.id)
+    const theirs = (here as { children?: IrNode[] } | undefined)?.children ?? []
+    const mine = children.map((child) => map.get(child.id) ?? child.id)
+    const asDrawn = theirs.map((child) => child.id)
+    // Only when the two disagree, and only for the layers this variant actually holds: a variant
+    // missing a layer is already handled by the condition around it.
+    const shared = asDrawn.filter((id) => mine.includes(id))
+    const asHeld = mine.filter((id) => shared.includes(id))
+    if (shared.some((id, at) => asHeld[at] !== id)) {
+      mine.forEach((id, at) => {
+        rules.push(`.${scope} .${toClassName(id)} {\n  order: ${at};\n}`)
+      })
+    }
+    for (const child of children) walk(child)
+  }
+  walk(variant)
+  return rules.join('\n\n')
+}

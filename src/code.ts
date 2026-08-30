@@ -547,14 +547,24 @@ function defaultRoots(): readonly SceneNode[] {
  * `var(--content-base, #101010)` — and losing them is worth a sentence in the report, not the
  * whole render.
  */
-async function variableNamesForExport(): Promise<{ names: Map<string, string>; gaps: string[] }> {
+async function variableNamesForExport(): Promise<{
+  names: Map<string, string>
+  /** The same variables as a stylesheet, so the emitted `var(--token, …)` has a table to read. */
+  css: string
+  gaps: string[]
+}> {
+  const asCss = async (snapshot: Awaited<ReturnType<typeof readAllVariables>>): Promise<string> => {
+    const stored = await figma.clientStorage.getAsync('exportOptions')
+    return emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored), readRenameMap())).css
+  }
   try {
     const snapshot = await readAllVariables()
-    return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), gaps: [] }
+    return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), css: await asCss(snapshot), gaps: [] }
   } catch (error) {
     const local = await readLocalVariables()
     return {
       names: new Map(local.variables.map((one) => [one.id, one.name])),
+      css: await asCss(local),
       gaps: [
         'the library variables could not be read (' +
           String((error as Error)?.message || error) +
@@ -2638,7 +2648,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         // every variant and every state, and the screen then imports them rather than building a
         // lookalike out of the one instance it happened to hold.
         const alongside = Array.isArray(msg.pages) ? msg.pages.map((one) => String(one)) : []
-        let library: ReactOutput = { files: {}, gaps: [], props: new Map() }
+        let library: ReactOutput = { files: {}, names: new Map(), gaps: [], props: new Map() }
         const alongsideRoots: SceneNode[] = []
 
         // Named components, without their page. The icons page holds four hundred of them and a
@@ -2665,11 +2675,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             const one = await emitLibrary(built, index, variableNamesById, {
               motionByNodeId: motionUnder(picked),
               assetsByNodeId: await vectorsUnder(built),
+              componentNamesById: library.names,
             })
             library = {
               files: { ...library.files, ...one.files },
               gaps: [...library.gaps, ...one.gaps],
               props: new Map([...library.props, ...one.props]),
+              names: new Map([...library.names, ...one.names]),
             }
             alongsideRoots.push(...picked)
           }
@@ -2692,11 +2704,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           const one = await emitLibrary(built, index, variableNamesById, {
             motionByNodeId: motionUnder(sets),
             assetsByNodeId: await vectorsUnder(built),
+            componentNamesById: library.names,
           })
           library = {
             files: { ...library.files, ...one.files },
             gaps: [...library.gaps, ...one.gaps],
             props: new Map([...library.props, ...one.props]),
+            names: new Map([...library.names, ...one.names]),
           }
           alongsideRoots.push(...sets)
         }
@@ -2768,6 +2782,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               motionByNodeId: motionUnder(indexed),
               assetsByNodeId: await vectorsUnder(built),
               libraryProps: library.props,
+              componentNamesById: library.names,
             })
             library = {
               files: { ...library.files, ...one.files },
@@ -2782,6 +2797,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
                 ),
               ],
               props: new Map([...library.props, ...one.props]),
+              names: new Map([...library.names, ...one.names]),
             }
             alongsideRoots.push(...indexed)
           }
@@ -2793,11 +2809,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           assetsByNodeId: await vectorsUnder(nodes),
           // Names the screen must not rebuild: the library already has them, better.
           libraryProps: library.props,
-          fromLibrary: new Set(
-            Object.keys(library.files)
+          componentNamesById: library.names,
+          tokensCss: tokens.css,
+          // By master, not by name: the library emitted these exact components, and a screen
+          // holding a DIFFERENT component of the same name must still build its own.
+          fromLibrary: new Set([
+            ...library.names.keys(),
+            ...Object.keys(library.files)
               .filter((path) => path.startsWith('src/components/') && path.endsWith('.tsx'))
-              .map((path) => path.slice('src/components/'.length, -'.tsx'.length))
-          ),
+              .map((path) => path.slice('src/components/'.length, -'.tsx'.length)),
+          ]),
         }
         const emitted = msg.pageId
           ? await emitLibrary(nodes, sceneNodesById, variableNamesById, options)

@@ -24,7 +24,7 @@ import { componentName, emitJsx, newContext, propName, type JsxContext, type Pro
 /** A Figma property type in the words the props are typed by. */
 const kindOfProp = (type: string | undefined): PropKind =>
   type === 'BOOLEAN' ? 'boolean' : type === 'VARIANT' ? 'variant' : 'text'
-import { alignVariants, axesOf, pairOrExplain, scopeVariantCss, variantClass, variantKey, variantKeyFromName } from './variants.ts'
+import { alignVariants, axesOf, orderRules, pairOrExplain, scopeVariantCss, variantClass, variantKey, variantKeyFromName } from './variants.ts'
 import { emitInteractions } from '../django/interactions.ts'
 import { emitNodeAnimationCss } from '../django/motion/css-emitter.ts'
 import type { MotionSnapshot } from '../django/motion/types.ts'
@@ -33,6 +33,8 @@ import { toClassName as className } from '../django/css-emitter.ts'
 export interface ReactOutput {
   /** path → contents, ready to be written into a repository. */
   files: Record<string, string>
+  /** Master node id (a set and each of its variants) → the component emitted from it. */
+  names: Map<string, string>
   /** What could not be translated, gathered for the reply — the same lines are also in the code. */
   gaps: string[]
   /**
@@ -75,11 +77,23 @@ export interface EmitReactOptions {
   fromLibrary?: ReadonlySet<string>
   /** What those library components declare, so a screen never passes one a prop it has not got. */
   libraryProps?: ReadonlyMap<string, ReadonlyMap<string, PropKind>>
+  /**
+   * The file's variables as a stylesheet.
+   *
+   * Every colour in the emitted CSS is `var(--token, literal)`, and without the table the literal
+   * is all there is — the checkbox came out a black square because the fallback said `#101010`
+   * where the design system says `--content-inverse: #ffffff`.
+   */
+  tokensCss?: string
+  /** What earlier runs already emitted, by master id — so an instance finds its own component. */
+  componentNamesById?: ReadonlyMap<string, string>
 }
 
 /** A component as the screens use it: its markup, and every property value they ask for. */
 interface CollectedComponent {
   name: string
+  /** The master this came from, when the instance names one — the identity behind the name. */
+  masterId?: string
   body: IrNode | null
   /** property name → the values seen across every instance. */
   values: Map<string, Set<string>>
@@ -112,6 +126,8 @@ export async function emitLibrary(
   // Seeded with what the caller already emitted: a library run that follows another one renders
   // its instances too, and it has to know what those answer to.
   const props = new Map<string, ReadonlyMap<string, PropKind>>(options.libraryProps ?? [])
+  const names = new Map<string, string>(options.componentNamesById ?? [])
+  const taken = new Set<string>(names.values())
 
   for (const [, asset] of options.assetsByNodeId ?? []) files[`public/assets/${asset.filename}`] = asset.svg
 
@@ -123,7 +139,21 @@ export async function emitLibrary(
     const variants = (root as { component?: unknown }).component ? [root] : (root as { children?: IrNode[] }).children ?? []
     // A set with one child is a component with one variant; a root with none is not a set at all.
     if (variants.length === 0) continue
-    const name = componentName(root.name)
+    // Two masters of one name are two components, not one file written twice. The second keeps
+    // the name it was given and a number, so both survive and every instance finds its own.
+    const wanted = componentName(root.name)
+    let name = names.get(root.id) ?? wanted
+    if (!names.has(root.id)) {
+      for (let n = 2; taken.has(name); n++) name = `${wanted}${n}`
+      if (name !== wanted) {
+        gaps.push(
+          `${wanted} is the name of two different components in this design — this one was emitted as ${name}`
+        )
+      }
+    }
+    taken.add(name)
+    names.set(root.id, name)
+    for (const variant of variants) names.set(variant.id, name)
 
     const collected: CollectedComponent = {
       name,
@@ -172,10 +202,11 @@ export async function emitLibrary(
   }
 
   if (Object.values(files).some((one) => one.includes("from '../copy'"))) files['src/copy.tsx'] = COPY_FILE
-  Object.assign(files, projectFiles(null))
+  if (options.tokensCss) files['src/tokens.css'] = options.tokensCss
+  Object.assign(files, projectFiles(null, Boolean(options.tokensCss), fontsIn(files)))
   // The same sentence once. A component set says a thing per variant, and a 144-variant button
   // said one dropped prop 144 times — a report nobody reads, and megabytes of it to serialize.
-  return { files, gaps: [...new Set(gaps)], props }
+  return { files, names, gaps: [...new Set(gaps)], props }
 }
 
 /**
@@ -225,47 +256,37 @@ export async function emitReact(
   const files: Record<string, string> = {}
   const gaps: string[] = []
   const props = new Map<string, ReadonlyMap<string, PropKind>>(options.libraryProps ?? [])
+  const names = new Map<string, string>(options.componentNamesById ?? [])
   const components = new Map<string, CollectedComponent>()
 
   for (const root of roots) collectComponents(root, components)
 
+  // Every component gets its name before a line of markup is written, so an instance in a screen
+  // resolves to the component built from ITS master rather than to whoever claimed the name first.
+  const taken = new Set<string>(names.values())
+  for (const component of components.values()) {
+    const known = component.masterId ? names.get(component.masterId) : undefined
+    if (known) {
+      component.name = known
+      continue
+    }
+    let name = component.name
+    for (let n = 2; taken.has(name); n++) name = `${component.name}${n}`
+    if (name !== component.name) {
+      gaps.push(`${component.name} is the name of two different components in this design — this one was emitted as ${name}`)
+      component.name = name
+    }
+    taken.add(name)
+    if (component.masterId) names.set(component.masterId, name)
+  }
+
   // The assets themselves, once, under a path a bundler serves as-is.
   for (const [, asset] of options.assetsByNodeId ?? []) files[`public/assets/${asset.filename}`] = asset.svg
 
-  let firstScreen: string | null = null
-  for (const root of roots) {
-    const name = componentName(options.name ?? root.name)
-    firstScreen ??= name
-    const context = newContext(name.toLowerCase())
-    context.assets = options.assetsByNodeId
-    context.declares = props
-    // The stylesheet first: the markup asks it which classes carry the typography.
-    const css = await emitCss([root], sceneNodesById, variableNamesById, { preamble: false })
-    context.segments = segmentsIn(css)
-    const markup = emitJsx(root, context, 2)
-
-    files[`src/screens/${name}.tsx`] = screenFile(name, markup, context)
-    // The motion rules live in the same module as the node they animate. A CSS module hashes its
-    // class names, so a global `motion.css` naming `.n15607-95548` would match nothing at all —
-    // the rule and the element have to be scoped together or the animation silently never runs.
-    const motion = await emitMotion([root], sceneNodesById, options.motionByNodeId ?? new Map())
-    files[`src/screens/${name}.module.css`] = css + (motion.css.trim() === '' ? '' : `\n\n${motion.css}`)
-    gaps.push(...motion.gaps)
-    if (Object.keys(context.copy).length > 0) {
-      files[`src/locales/${name.toLowerCase()}.json`] = `${JSON.stringify(context.copy, null, 2)}\n`
-    }
-    if (context.props.size > 0) files[`src/screens/${name}.mock.ts`] = mockFile(name, context)
-    gaps.push(...context.gaps)
-  }
-
-  Object.assign(files, projectFiles(firstScreen))
-
-  // The screens import it, so it is emitted: a scaffold that does not compile because the
-  // generator referred to a file it never wrote is a scaffold nobody runs.
-  if (Object.values(files).some((one) => one.includes("from '../copy'"))) files['src/copy.tsx'] = COPY_FILE
-
   for (const component of components.values()) {
-    if (options.fromLibrary?.has(component.name)) continue
+    // From the library only when it is the SAME master — a shared name is not a shared component.
+    if (component.masterId && options.fromLibrary?.has(component.masterId)) continue
+    if (!component.masterId && options.fromLibrary?.has(component.name)) continue
     const built = await componentFile(
       component,
       sceneNodesById,
@@ -282,7 +303,44 @@ export async function emitReact(
 
   // The same sentence once. A component set says a thing per variant, and a 144-variant button
   // said one dropped prop 144 times — a report nobody reads, and megabytes of it to serialize.
-  return { files, gaps: [...new Set(gaps)], props }
+
+  let firstScreen: string | null = null
+  for (const root of roots) {
+    const name = componentName(options.name ?? root.name)
+    firstScreen ??= name
+    const context = newContext(name.toLowerCase())
+    context.assets = options.assetsByNodeId
+    context.declares = props
+    context.namesById = names
+    // The stylesheet first: the markup asks it which classes carry the typography.
+    const css = await emitCss([root], sceneNodesById, variableNamesById, { preamble: false })
+    context.segments = segmentsIn(css)
+    const markup = emitJsx(root, context, 2)
+
+    files[`src/screens/${name}.tsx`] = screenFile(name, markup, context)
+    // The motion rules live in the same module as the node they animate. A CSS module hashes its
+    // class names, so a global `motion.css` naming `.n15607-95548` would match nothing at all —
+    // the rule and the element have to be scoped together or the animation silently never runs.
+    const motion = await emitMotion([root], sceneNodesById, options.motionByNodeId ?? new Map())
+    files[`src/screens/${name}.module.css`] =
+      raiseInstanceRoots(css, context.instanceRoots) + (motion.css.trim() === '' ? '' : `\n\n${motion.css}`)
+    gaps.push(...motion.gaps)
+    if (Object.keys(context.copy).length > 0) {
+      files[`src/locales/${name.toLowerCase()}.json`] = `${JSON.stringify(context.copy, null, 2)}\n`
+    }
+    if (context.props.size > 0) files[`src/screens/${name}.mock.ts`] = mockFile(name, context)
+    gaps.push(...context.gaps)
+  }
+
+  if (options.tokensCss) files['src/tokens.css'] = options.tokensCss
+  Object.assign(files, projectFiles(firstScreen, Boolean(options.tokensCss), fontsIn(files)))
+
+  // The screens import it, so it is emitted: a scaffold that does not compile because the
+  // generator referred to a file it never wrote is a scaffold nobody runs.
+  if (Object.values(files).some((one) => one.includes("from '../copy'"))) files['src/copy.tsx'] = COPY_FILE
+
+
+  return { files, names, gaps: [...new Set(gaps)], props }
 }
 
 /* ----------------------------------------------------------------------- motion */
@@ -366,12 +424,24 @@ function* walk(node: IrNode): Generator<IrNode> {
 function collectComponents(node: IrNode, into: Map<string, CollectedComponent>): void {
   if (node.type === 'instance-ref') {
     const name = componentName(node.componentSetName || node.name)
-    const held = into.get(name) ?? { name, body: null, values: new Map(), types: new Map(), variants: new Map(), rawNames: new Map() }
+    // Keyed by the master, not by the name: this file holds two components called
+    // `list-Item-InTheMiddle-Contents`, and collecting them under one key rendered every instance
+    // of both from whichever the walk reached first.
+    const key = node.componentId ?? name
+    const held = into.get(key) ?? {
+      name,
+      masterId: node.componentId ?? undefined,
+      body: null,
+      values: new Map(),
+      types: new Map(),
+      variants: new Map(),
+      rawNames: new Map(),
+    }
     // The first instance supplies the markup. A later one whose shape differs is a real
     // difference and is reported rather than reconciled.
     if (!held.body) held.body = node
-    const key = variantKey(node.componentProperties as never)
-    if (!held.variants.has(key)) held.variants.set(key, node)
+    const variant = variantKey(node.componentProperties as never)
+    if (!held.variants.has(variant)) held.variants.set(variant, node)
     for (const [raw, value] of Object.entries(node.componentProperties ?? {})) {
       const prop = propName(raw)
       const seen = held.values.get(prop) ?? new Set<string>()
@@ -380,8 +450,12 @@ function collectComponents(node: IrNode, into: Map<string, CollectedComponent>):
       held.types.set(prop, value.type)
       held.rawNames.set(prop, raw.replace(/#.*$/, ''))
     }
-    into.set(name, held)
-    return
+    into.set(key, held)
+    // An instance rendered as its component draws its own children, so they are none of the
+    // caller's business. One written out as markup is the opposite: the instances inside it are
+    // the screen's own now, and a nested icon whose master nobody collected fell back to matching
+    // by NAME — the payment card came out Visa where the design says Mastercard.
+    if (!node.restyled) return
   }
   for (const child of (node as { children?: IrNode[] }).children ?? []) collectComponents(child, into)
 }
@@ -440,7 +514,10 @@ async function componentFile(
       })
       const scope = variantClass(key)
       variantClasses.push(`${JSON.stringify(key)}: styles[${JSON.stringify(scope)}]`)
-      variantCss += `\n\n/* ${key} */\n${scopeVariantCss(own, pairs, scope, baseCss)}`
+      const order = laid && bodyNode ? orderRules(bodyNode, instance, pairs, scope) : ''
+      variantCss += `\n\n/* ${key} */\n${scopeVariantCss(own, pairs, scope, baseCss)}${
+        order === '' ? '' : `\n\n${order}`
+      }`
     }
   }
 
@@ -470,7 +547,11 @@ async function componentFile(
   const hasBlock =
     optional.length > 0 ? `\nconst HAS: Record<string, ReadonlySet<string>> = {\n${optional.join('\n')}\n}\n` : ''
 
-  const css = asContainer ? baseCss + (motion.css.trim() === '' ? '' : `\n\n${motion.css}`) + variantCss : ''
+  const css = asContainer
+    ? raiseInstanceRoots(baseCss, context.instanceRoots) +
+      (motion.css.trim() === '' ? '' : `\n\n${motion.css}`) +
+      variantCss
+    : ''
 
   const fields: string[] = []
   for (const [prop, seen] of component.values) {
@@ -492,6 +573,17 @@ async function componentFile(
   // props it was handed. A map rather than a chain of conditions — a component set with three axes
   // has more combinations than anyone wants to read.
   const variantProps = [...component.types.entries()].filter(([, type]) => type === 'VARIANT').map(([prop]) => prop)
+  // What the component is when nobody says: the variant its body was drawn from. Without this a
+  // caller that omits the axis built a key matching no variant, every layer that is not in ALL of
+  // them failed its condition, and the component rendered an empty box — the payment card icon
+  // was there in the markup and nothing was on the screen.
+  const defaults = new Map<string, string>()
+  for (const part of ([...component.variants.keys()][0] ?? '').split(',')) {
+    const [axis, value] = part.split('=').map((one) => one.trim())
+    if (!axis || value === undefined) continue
+    const prop = propName(axis)
+    if (component.types.get(prop) === 'VARIANT') defaults.set(prop, value)
+  }
   const keyExpression =
     variantProps.length > 0
       ? `[${variantProps
@@ -514,6 +606,7 @@ export interface ${component.name}Props {${props}  className?: string
 ${variantBlock}${hasBlock}
 export function ${component.name}({ ${[...component.values.keys(), ...context.props.keys()]
     .filter((one, index, all) => all.indexOf(one) === index)
+    .map((one) => (defaults.has(one) ? `${one} = ${JSON.stringify(defaults.get(one))}` : one))
     .join(', ')}${component.values.size + context.props.size > 0 ? ', ' : ''}className }: ${component.name}Props) {
 ${Object.keys(context.copy).length > 0 ? '  const t = useCopy()\n' : ''}${
     keyExpression && (variantBlock || hasBlock) ? `  const key = ${keyExpression}\n` : ''
@@ -601,8 +694,34 @@ export function useCopy(fallback: Copy = {}): (key: string) => string {
  * The first export shipped 98 files that no tool could open — no package.json, no tsconfig, no
  * entry point. It type-checked only because the person running it wrote those three by hand.
  */
-function projectFiles(screen: string | null): Record<string, string> {
+function projectFiles(screen: string | null, tokens: boolean, fonts: readonly string[]): Record<string, string> {
   const files: Record<string, string> = {
+    // The browser's own 8px body margin made a 390-wide screen render at 374, and every row in it
+    // wrapped a line early. A scaffold that needs a reset the developer has to guess is not one.
+    'src/global.css':
+      `/* The only opinions here are the ones a Figma frame assumes: no page margin, and sizes
+` +
+      ` * that mean what they say. Everything else the design brings itself. */
+` +
+      `*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+` +
+      `body {
+  margin: 0;
+}
+` +
+      (fonts.length > 0
+        ? `
+/* The design is set in ${fonts.join(', ')} — install ${
+            fonts.length > 1 ? 'them' : 'it'
+          } (a webfont, or your own @font-face)
+ * or the screens fall back to the system sans and every line measures differently. */
+`
+        : ''),
     'package.json': `${JSON.stringify(
       {
         name: 'figma-export',
@@ -658,6 +777,8 @@ function projectFiles(screen: string | null): Record<string, string> {
       `    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>\n`
     files['src/main.tsx'] =
       `import { StrictMode } from 'react'\nimport { createRoot } from 'react-dom/client'\n` +
+      `import './global.css'\n` +
+      (tokens ? `import './tokens.css'\n` : '') +
       `import { ${screen} } from './screens/${screen}'\n\n` +
       `createRoot(document.getElementById('root')!).render(\n  <StrictMode>\n    <${screen} />\n  </StrictMode>\n)\n`
   }
@@ -677,6 +798,34 @@ function segmentsIn(css: string): Map<string, number> {
     found.set(base, Math.max(found.get(base) ?? 0, Number(index) + 1))
   }
   return found
+}
+
+/** The font families the emitted stylesheets name — what a developer has to install. */
+function fontsIn(files: Record<string, string>): string[] {
+  const found = new Set<string>()
+  for (const [path, contents] of Object.entries(files)) {
+    if (!path.endsWith('.css')) continue
+    for (const match of contents.matchAll(/font-family:\s*"([^"]+)"/g)) found.add(match[1])
+  }
+  return [...found]
+}
+
+/**
+ * The caller's class, said twice, so it outranks the component's own root rule.
+ *
+ * `.n15595-92774.n15595-92774` is the same element as `.n15595-92774` and one specificity step
+ * above it — the smallest change that makes "where this instance sits" beat "how this component
+ * is built", without touching the component's stylesheet or depending on which module a bundler
+ * emits last.
+ */
+function raiseInstanceRoots(css: string, ids: ReadonlySet<string>): string {
+  let raised = css
+  for (const id of ids) {
+    const one = toClassName(id)
+    raised = raised.split(`\n.${one} {`).join(`\n.${one}.${one} {`)
+    if (raised.startsWith(`.${one} {`)) raised = `.${one}.${one} {${raised.slice(`.${one} {`.length)}`
+  }
+  return raised
 }
 
 const header = (name: string): string =>

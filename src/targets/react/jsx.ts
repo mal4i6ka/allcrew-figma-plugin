@@ -52,6 +52,15 @@ export interface JsxContext {
   /** The props of the component being emitted right now, by what each of them is. */
   own?: ReadonlyMap<string, PropKind>
   /**
+   * Master node id → the component emitted from it.
+   *
+   * Two different masters can be called the same thing — this file holds two
+   * `list-Item-InTheMiddle-Contents` — and keying components by name made the second overwrite the
+   * first's file while instances of both rendered whichever survived. The rows of the payment tile
+   * came out in the other one's font, at the other one's fixed width, wrapping a line early.
+   */
+  namesById?: ReadonlyMap<string, string>
+  /**
    * Base class name → how many styled runs its text has, read off the stylesheet.
    *
    * Every font, size, weight and colour a text has lives in a `--segment-N` rule, and the markup
@@ -65,6 +74,15 @@ export interface JsxContext {
   props: Map<string, string>
   /** Components this subtree instantiates, by the name they are imported under. */
   used: Set<string>
+  /**
+   * The nodes rendered as a component rather than as markup.
+   *
+   * Their element wears two classes — the component's own root and the one the caller passes —
+   * and at equal specificity the later stylesheet wins, which is whichever CSS module the bundler
+   * happened to put last. The master's own "fill my frame" then beat the caller's "hug", and the
+   * balance line was laid on top of the label it sits beside.
+   */
+  instanceRoots: Set<string>
   /** What could not be translated, in the words the comment uses. */
   gaps: string[]
   /** True when the component has variant classes, so its root also carries the variant one. */
@@ -95,7 +113,7 @@ export interface JsxContext {
 }
 
 export function newContext(scope: string): JsxContext {
-  return { copy: {}, props: new Map(), used: new Set(), gaps: [], scope }
+  return { copy: {}, props: new Map(), used: new Set(), instanceRoots: new Set(), gaps: [], scope }
 }
 
 const INDENT = '  '
@@ -215,6 +233,18 @@ function emitElement(node: IrNode, context: JsxContext, depth: number): string {
 
   for (const warning of node.warnings ?? []) context.gaps.push(`${node.name}: ${warning}`)
 
+  if (node.type === 'instance-ref' && node.restyled) {
+    // Written out where it sits, because that is the only place its own font, size and colour
+    // exist. The component it came from is named so a developer can decide whether the design
+    // meant a new variant of it.
+    const of =
+      (node.componentId ? context.namesById?.get(node.componentId) : undefined) ??
+      componentName(node.componentSetName || node.name)
+    context.gaps.push(
+      `${node.name}: restyled where it sits — written out as markup rather than rendered as <${of} />`
+    )
+  }
+
   if (node.type === 'text') {
     const bound = node.componentPropertyReferences?.characters ?? (context.insideComponent ? node.name : null)
     let body: string
@@ -242,9 +272,13 @@ function emitElement(node: IrNode, context: JsxContext, depth: number): string {
     return `${pad}<span className=${worn}>${body}</span>`
   }
 
-  if (node.type === 'instance-ref') {
-    const name = componentName(node.componentSetName || node.name)
+  if (node.type === 'instance-ref' && !node.restyled) {
+    // By what it IS an instance of, and only then by what it is called.
+    const name =
+      (node.componentId ? context.namesById?.get(node.componentId) : undefined) ??
+      componentName(node.componentSetName || node.name)
     context.used.add(name)
+    context.instanceRoots.add(node.id)
     const props: string[] = []
     // What this instance says, as against what its component says by default. The component's
     // body turns each of its texts into a prop; here is where each instance fills them in.

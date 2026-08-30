@@ -435,6 +435,15 @@ export interface IrVectorNode extends IrNodeBase {
 /** A component instance: keeps its own children (for structural fallback) plus a link to the main component. */
 export interface IrInstanceRefNode extends IrNodeBase {
   type: 'instance-ref'
+  /**
+   * True when the instance was restyled where it sits — a different font, size, colour or
+   * auto-resize than its component draws.
+   *
+   * A component takes text and its own properties; it does not take "and set this line in Inter
+   * 13 and let it hug". The payment tile's rows are that: rendered as the component they came
+   * from, they came out in the master's 15px SF Pro at a fixed 120px, wrapping a line early.
+   */
+  restyled?: true
   layout: IrLayout
   componentId: string | null
   componentKey: string | null
@@ -1625,7 +1634,36 @@ export async function serializeInstance(node: InstanceNode, isGridChild = false)
     componentKey: mainComponent?.key ?? null,
     componentSetName,
     componentProperties: normalizeComponentProperties(readComponentProperties(node)),
+    ...(restyledInPlace(node) ? { restyled: true as const } : {}),
     children: await serializeChildren(node, isManualGridParent(node)),
+  }
+}
+
+/** What an instance can say through its component: the text of a layer it holds. Everything else
+ * it overrides — a fill, a font, a size, an auto-resize — has nowhere to go in
+ * `<Component text="…" />`.
+ *
+ * `componentProperties` is on this list for the instance ITSELF (which travels as props and is
+ * skipped before this is asked) and deliberately not for a DESCENDANT instance: the payment tile
+ * picks Mastercard on an icon three levels down, and the component that holds it exposes no such
+ * prop — rendered as that component, the screen came out showing Visa. */
+const PROPERTY_FIELDS = new Set(['characters'])
+
+/** Whether this instance was changed in ways its component cannot be asked for. */
+function restyledInPlace(node: InstanceNode): boolean {
+  try {
+    const own = node.id
+    const prefix = own.startsWith('I') ? `${own};` : `I${own};`
+    return node.overrides.some(
+      (entry) =>
+        entry.id !== own &&
+        entry.id.startsWith(prefix) &&
+        entry.overriddenFields.some((field) => !PROPERTY_FIELDS.has(field as string))
+    )
+  } catch {
+    // A variant, a detached thing, a node Figma will not answer for: not knowing is not a reason
+    // to claim it was restyled.
+    return false
   }
 }
 
