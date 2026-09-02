@@ -23412,6 +23412,58 @@ ${scripts}`, "");
     if (mirrorAliasId === "") return false;
     return mainAliasId !== mirrorAliasId;
   }
+  async function resolveMainSide(node, lookups) {
+    var _a;
+    const segments = node.id.split(";");
+    if (segments.length < 2) return null;
+    const outerId = segments[0].startsWith("I") ? segments[0].slice(1) : segments[0];
+    const path = [];
+    let outer = null;
+    let cursor = node;
+    while (cursor.parent) {
+      const parent = cursor.parent;
+      const siblings = parent.children;
+      const index = Array.isArray(siblings) ? siblings.findIndex((one) => one.id === cursor.id) : -1;
+      if (index < 0) break;
+      path.unshift(index);
+      if (parent.type === "INSTANCE" && parent.id === outerId) {
+        outer = parent;
+        break;
+      }
+      cursor = parent;
+    }
+    if (outer) {
+      let found = null;
+      try {
+        found = await lookups.mainOf(outer);
+      } catch (e) {
+        found = null;
+      }
+      for (const index of path) {
+        const children = found == null ? void 0 : found.children;
+        found = Array.isArray(children) && index < children.length ? children[index] : null;
+        if (!found) break;
+      }
+      if (found && found.type === node.type) return found;
+    }
+    const mirrored = segments.length > 2 ? `I${segments.slice(1).join(";")}` : segments[1];
+    try {
+      return (_a = await lookups.byId(mirrored)) != null ? _a : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function mainAliasFor(main, job) {
+    var _a, _b, _c;
+    if (!main) return void 0;
+    if (job.prop !== void 0 && job.index !== void 0) {
+      const paints2 = main[job.prop];
+      const paint = Array.isArray(paints2) ? paints2[job.index] : void 0;
+      return (_b = (_a = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
+    }
+    const bound = main.boundVariables;
+    return (_c = bound == null ? void 0 : bound[job.field]) == null ? void 0 : _c.id;
+  }
   var WRITE_OPS = [
     {
       name: "variables.set",
@@ -24077,7 +24129,7 @@ ${scripts}`, "");
     {
       name: "variables.rebind",
       summary: "Repoint every binding of one variable onto another, document-wide \u2014 the migration op.",
-      agent: "The migration op. Build the map from a FRESH variables.external \u2014 once nothing references a remote variable Figma garbage-collects it and stale from-ids refuse the whole map. Mains are enough: instance mirrors follow.",
+      agent: "The migration op. Build the map from a FRESH variables.external \u2014 once nothing references a remote variable Figma garbage-collects it and stale from-ids refuse the whole map. Mains are enough: instance mirrors follow. Preview an overrides pass with dryRun first: the report splits instance matches into overrides (would be repointed) and inherited (left alone).",
       mutates: true,
       params: {
         map: {
@@ -24092,12 +24144,16 @@ ${scripts}`, "");
         overrides: {
           type: "boolean",
           default: false,
-          description: "Also repoint bindings that a layer INSIDE an instance overrides for itself. Off by default and deliberately so: the walk then descends into every instance, which is the expensive direction on a big file \u2014 pair it with pageId. It never CREATES an override; a sublayer whose binding merely mirrors its main is left alone and counted as skipped."
+          description: "Also repoint bindings that a layer INSIDE an instance overrides for itself. Off by default and deliberately so: the walk then descends into every instance, which is the expensive direction on a big file \u2014 pair it with pageId. It never CREATES an override; a sublayer whose binding merely mirrors its main is left alone and counted as `inherited`. Which side a binding is on is read off the main, reached through the instance itself, so sublayers of LIBRARY components compare against the local copy of their main \u2014 their ids name nodes in the source file, which this file cannot look up."
         },
-        dryRun: { type: "boolean", default: false, description: "Count and report every match without writing anything." }
+        dryRun: {
+          type: "boolean",
+          default: false,
+          description: "Count and report every match without writing anything. With overrides: true the main comparison still runs, so `overrides` (would be repointed) and `inherited` (would be left alone) preview the split; `rebound` stays 0."
+        }
       },
       async run(params) {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+        var _a, _b, _c, _d, _e, _f, _g;
         const rows = asArray(params.map, "map");
         const dryRun = params.dryRun === true;
         const wantOverrides = params.overrides === true;
@@ -24165,7 +24221,7 @@ ${scripts}`, "");
               const at = pairByFromId.get(aliasId);
               if (at === void 0) continue;
               pairs[at].matched += 1;
-              if (!dryRun) overrideJobs.push({ node, at, aliasId, field });
+              overrideJobs.push({ node, at, aliasId, field });
             }
           }
           for (const prop of ["fills", "strokes"]) {
@@ -24178,7 +24234,7 @@ ${scripts}`, "");
               const at = pairByFromId.get(aliasId);
               if (at === void 0) return;
               pairs[at].matched += 1;
-              if (!dryRun) overrideJobs.push({ node, at, aliasId, field: `${prop}[${index}]`, prop, index });
+              overrideJobs.push({ node, at, aliasId, field: `${prop}[${index}]`, prop, index });
             });
           }
         };
@@ -24390,34 +24446,31 @@ ${scripts}`, "");
           visited += walked.visited;
         }
         const walkMs = Date.now() - tWalk;
-        const mainCache = /* @__PURE__ */ new Map();
+        const mainByInstance = /* @__PURE__ */ new Map();
+        const lookups = {
+          byId: (id) => figma.getNodeByIdAsync(id),
+          mainOf: (instance) => {
+            let main = mainByInstance.get(instance.id);
+            if (!main) {
+              main = instance.getMainComponentAsync();
+              mainByInstance.set(instance.id, main);
+            }
+            return main;
+          }
+        };
+        const mainSideByNode = /* @__PURE__ */ new Map();
         for (const job of overrideJobs) {
-          const mainId = (_a = job.node.id.split(";").pop()) != null ? _a : "";
-          let main = mainCache.get(mainId);
+          let main = mainSideByNode.get(job.node.id);
           if (main === void 0) {
-            try {
-              const found = await figma.getNodeByIdAsync(mainId);
-              main = found != null ? found : null;
-            } catch (e) {
-              main = null;
-            }
-            mainCache.set(mainId, main);
+            main = await resolveMainSide(job.node, lookups);
+            mainSideByNode.set(job.node.id, main);
           }
-          let mainAlias;
-          if (main) {
-            if (job.prop !== void 0 && job.index !== void 0) {
-              const paints2 = main[job.prop];
-              const paint = Array.isArray(paints2) ? paints2[job.index] : void 0;
-              mainAlias = (_c = (_b = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _b.color) == null ? void 0 : _c.id;
-            } else {
-              const bound = main.boundVariables;
-              mainAlias = (_d = bound == null ? void 0 : bound[job.field]) == null ? void 0 : _d.id;
-            }
-          }
-          if (!isOwnOverride(job.aliasId, mainAlias)) {
+          if (!isOwnOverride(job.aliasId, mainAliasFor(main, job))) {
             pairs[job.at].inherited += 1;
             continue;
           }
+          pairs[job.at].overrides += 1;
+          if (dryRun) continue;
           try {
             if (job.prop !== void 0 && job.index !== void 0) {
               const holder = job.node;
@@ -24438,7 +24491,6 @@ ${scripts}`, "");
               );
             }
             pairs[job.at].rebound += 1;
-            pairs[job.at].overrides += 1;
           } catch (err) {
             pairs[job.at].failed += 1;
             const message = `override ${job.field}: ${String((err == null ? void 0 : err.message) || err)}`;
@@ -24453,16 +24505,16 @@ ${scripts}`, "");
             await loadTextFonts(text4);
             const segments = text4.getStyledTextSegments(["boundVariables"]);
             for (const segment of segments) {
-              const at = pairByFromId.get((_g = (_f = (_e = segment.boundVariables) == null ? void 0 : _e[job.field]) == null ? void 0 : _f.id) != null ? _g : "");
+              const at = pairByFromId.get((_c = (_b = (_a = segment.boundVariables) == null ? void 0 : _a[job.field]) == null ? void 0 : _b.id) != null ? _c : "");
               if (at === void 0) continue;
               text4.setRangeBoundVariable(segment.start, segment.end, job.field, pairs[at].to);
               pairs[at].rebound += 1;
             }
-            const after = (_h = text4.boundVariables) == null ? void 0 : _h[job.field];
+            const after = (_d = text4.boundVariables) == null ? void 0 : _d[job.field];
             const leftover = Array.isArray(after) ? after.filter((entry) => {
               var _a2;
               return pairByFromId.has((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
-            }).length : pairByFromId.has((_i = after == null ? void 0 : after.id) != null ? _i : "") ? 1 : 0;
+            }).length : pairByFromId.has((_e = after == null ? void 0 : after.id) != null ? _e : "") ? 1 : 0;
             if (leftover > 0) {
               const entries = Array.isArray(after) ? after : [];
               const targets = new Set(
@@ -24491,11 +24543,11 @@ ${scripts}`, "");
                         target
                       );
                     }
-                    const recheck = (_j = text4.boundVariables) == null ? void 0 : _j[job.field];
+                    const recheck = (_f = text4.boundVariables) == null ? void 0 : _f[job.field];
                     const still = Array.isArray(recheck) ? recheck.filter((entry) => {
                       var _a2;
                       return pairByFromId.has((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
-                    }).length : pairByFromId.has((_k = recheck == null ? void 0 : recheck.id) != null ? _k : "") ? 1 : 0;
+                    }).length : pairByFromId.has((_g = recheck == null ? void 0 : recheck.id) != null ? _g : "") ? 1 : 0;
                     if (still === 0) {
                       pairs[at].rebound += leftover;
                       cleared = true;

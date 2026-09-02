@@ -324,6 +324,109 @@ export function isOwnOverride(mirrorAliasId: string, mainAliasId: string | undef
   return mainAliasId !== mirrorAliasId
 }
 
+/** One binding a sublayer inside an instance carries on a mapped source, queued for the
+ * main-comparison pass. `prop`/`index` locate a paint-level colour alias; otherwise `field` is a
+ * key of `boundVariables`. */
+export interface OverrideJob {
+  node: SceneNode
+  at: number
+  aliasId: string
+  field: string
+  prop?: 'fills' | 'strokes'
+  index?: number
+}
+
+/** The two lookups `resolveMainSide` needs, injectable so the comparison can be exercised
+ * without a document — and so the op can cache both across the thousands of jobs one page
+ * produces. */
+export interface MainSideLookups {
+  byId: (id: string) => Promise<BaseNode | null>
+  mainOf: (instance: InstanceNode) => Promise<ComponentNode | null>
+}
+
+/**
+ * The node a sublayer's binding is compared against: the one standing at the same place inside
+ * the enclosing instance's main.
+ *
+ * `I<instance>;<path…>` names a sublayer seen through an instance, and the segments after the
+ * first are ids in the file the MAIN lives in. For a local component that is this file, and the
+ * mirrored id (`<path…>`, re-prefixed with `I` when the sublayer sits in a nested instance)
+ * resolves directly. For a library component it is the source file: `I1836:22376;4518:286745`
+ * on this page mirrors a node that is 12164:75019 in the local copy of the main, and looking up
+ * 4518:286745 here finds nothing — which an id-only lookup takes for "the main binds nothing"
+ * and so calls every such binding an own override. So the main is reached through the instance
+ * instead (`getMainComponentAsync` hands back the local copy for a remote component) and the
+ * mirrored node is found by position: an instance cannot add, drop or reorder children, so the
+ * child-index path from the instance down to the sublayer is the same path inside the main.
+ * The same node type at the end of the path is the sanity check; a nested instance swapped for
+ * another component fails it and falls through to the id lookup.
+ *
+ * "Enclosing instance" is the OUTERMOST one — the node whose id has no `;` — not the nearest:
+ * what instance A inherits for a layer inside its nested B is whatever A's main shows there,
+ * A's own override on B included. Comparing against B's main would miss that and mint an
+ * override on A.
+ */
+export async function resolveMainSide(
+  node: SceneNode,
+  lookups: MainSideLookups
+): Promise<Record<string, unknown> | null> {
+  const segments = node.id.split(';')
+  if (segments.length < 2) return null
+  const outerId = segments[0].startsWith('I') ? segments[0].slice(1) : segments[0]
+
+  const path: number[] = []
+  let outer: InstanceNode | null = null
+  let cursor: BaseNode = node
+  while (cursor.parent) {
+    const parent: BaseNode = cursor.parent
+    const siblings = (parent as unknown as { children?: readonly BaseNode[] }).children
+    const index = Array.isArray(siblings) ? siblings.findIndex((one) => one.id === cursor.id) : -1
+    if (index < 0) break
+    path.unshift(index)
+    if (parent.type === 'INSTANCE' && parent.id === outerId) {
+      outer = parent as InstanceNode
+      break
+    }
+    cursor = parent
+  }
+
+  if (outer) {
+    let found: BaseNode | null = null
+    try {
+      found = await lookups.mainOf(outer)
+    } catch {
+      found = null
+    }
+    for (const index of path) {
+      const children: readonly BaseNode[] | undefined = (found as unknown as { children?: readonly BaseNode[] } | null)
+        ?.children
+      found = Array.isArray(children) && index < children.length ? children[index] : null
+      if (!found) break
+    }
+    if (found && found.type === node.type) return found as unknown as Record<string, unknown>
+  }
+
+  const mirrored = segments.length > 2 ? `I${segments.slice(1).join(';')}` : segments[1]
+  try {
+    return ((await lookups.byId(mirrored)) as unknown as Record<string, unknown> | null) ?? null
+  } catch {
+    return null
+  }
+}
+
+/** What the main-side node binds for the field a job is about — the other half of
+ * `isOwnOverride`. Absent when there is no main to read, or the main binds nothing there. */
+export function mainAliasFor(main: Record<string, unknown> | null, job: OverrideJob): string | undefined {
+  if (!main) return undefined
+  if (job.prop !== undefined && job.index !== undefined) {
+    const paints = main[job.prop]
+    const paint = Array.isArray(paints) ? (paints as Paint[])[job.index] : undefined
+    return (paint as { boundVariables?: { color?: { id?: string } } } | undefined)?.boundVariables?.color?.id
+  }
+  const bound = main.boundVariables as Record<string, { id?: string }> | undefined
+  return bound?.[job.field]?.id
+}
+
 export const WRITE_OPS: readonly OpDef[] = [
   {
     name: 'variables.set',
@@ -1138,7 +1241,7 @@ export const WRITE_OPS: readonly OpDef[] = [
     name: 'variables.rebind',
     summary: 'Repoint every binding of one variable onto another, document-wide — the migration op.',
     agent:
-      'The migration op. Build the map from a FRESH variables.external — once nothing references a remote variable Figma garbage-collects it and stale from-ids refuse the whole map. Mains are enough: instance mirrors follow.',
+      'The migration op. Build the map from a FRESH variables.external — once nothing references a remote variable Figma garbage-collects it and stale from-ids refuse the whole map. Mains are enough: instance mirrors follow. Preview an overrides pass with dryRun first: the report splits instance matches into overrides (would be repointed) and inherited (left alone).',
     mutates: true,
     params: {
       map: {
@@ -1161,9 +1264,19 @@ export const WRITE_OPS: readonly OpDef[] = [
           'Also repoint bindings that a layer INSIDE an instance overrides for itself. Off by ' +
           'default and deliberately so: the walk then descends into every instance, which is the ' +
           'expensive direction on a big file — pair it with pageId. It never CREATES an override; ' +
-          'a sublayer whose binding merely mirrors its main is left alone and counted as skipped.',
+          'a sublayer whose binding merely mirrors its main is left alone and counted as `inherited`. ' +
+          'Which side a binding is on is read off the main, reached through the instance itself, so ' +
+          'sublayers of LIBRARY components compare against the local copy of their main — their ' +
+          'ids name nodes in the source file, which this file cannot look up.',
       },
-      dryRun: { type: 'boolean', default: false, description: 'Count and report every match without writing anything.' },
+      dryRun: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Count and report every match without writing anything. With overrides: true the main ' +
+          'comparison still runs, so `overrides` (would be repointed) and `inherited` (would be ' +
+          'left alone) preview the split; `rebound` stays 0.',
+      },
     },
     async run(params) {
       const rows = asArray(params.map, 'map')
@@ -1252,15 +1365,11 @@ export const WRITE_OPS: readonly OpDef[] = [
        * the very thing the walk avoids by skipping instance children. The main's own alias for
        * the same field is what tells them apart, and it is the only reliable signal: after the
        * mains have moved, an inherited binding already reads as the NEW variable, so anything
-       * still reading the old one is an override by construction. */
-      const overrideJobs: Array<{
-        node: SceneNode
-        at: number
-        aliasId: string
-        field: string
-        prop?: 'fills' | 'strokes'
-        index?: number
-      }> = []
+       * still reading the old one is an override by construction.
+       *
+       * Jobs are collected in a dry run too: the split into own overrides and inherited IS what
+       * a dry run of this mode is asked to preview, and only the main comparison can draw it. */
+      const overrideJobs: OverrideJob[] = []
 
       const collectOverrides = (node: SceneNode) => {
         const holder = node as unknown as Record<string, unknown>
@@ -1273,7 +1382,7 @@ export const WRITE_OPS: readonly OpDef[] = [
             const at = pairByFromId.get(aliasId)
             if (at === undefined) continue
             pairs[at].matched += 1
-            if (!dryRun) overrideJobs.push({ node, at, aliasId, field })
+            overrideJobs.push({ node, at, aliasId, field })
           }
         }
         for (const prop of ['fills', 'strokes'] as const) {
@@ -1286,7 +1395,7 @@ export const WRITE_OPS: readonly OpDef[] = [
             const at = pairByFromId.get(aliasId)
             if (at === undefined) return
             pairs[at].matched += 1
-            if (!dryRun) overrideJobs.push({ node, at, aliasId, field: `${prop}[${index}]`, prop, index })
+            overrideJobs.push({ node, at, aliasId, field: `${prop}[${index}]`, prop, index })
           })
         }
       }
@@ -1521,39 +1630,38 @@ export const WRITE_OPS: readonly OpDef[] = [
       }
       const walkMs = Date.now() - tWalk
 
-      /* Overrides are applied after the walk, in one async pass: each job needs the main's alias
-       * for the same field, and one main serves many instances, so the lookups are cached. A job
-       * whose main agrees is INHERITED — reported as such and left alone, because the write that
-       * would "fix" it is exactly the override-minting this op refuses to do. */
-      const mainCache = new Map<string, Record<string, unknown> | null>()
+      /* Overrides are classified after the walk, in one async pass: each job needs the main's
+       * alias for the same field, and one main serves many instances, so the lookups are cached —
+       * the main per instance, the mirrored node per sublayer (a fill and a stroke on one layer
+       * are two jobs on one node). A job whose main agrees is INHERITED — reported as such and
+       * left alone, because the write that would "fix" it is exactly the override-minting this
+       * op refuses to do. A dry run classifies exactly as a live run does and then stops short of
+       * the write: `overrides` is what WOULD be repointed, and `rebound` stays at zero. */
+      const mainByInstance = new Map<string, Promise<ComponentNode | null>>()
+      const lookups: MainSideLookups = {
+        byId: (id) => figma.getNodeByIdAsync(id),
+        mainOf: (instance) => {
+          let main = mainByInstance.get(instance.id)
+          if (!main) {
+            main = instance.getMainComponentAsync()
+            mainByInstance.set(instance.id, main)
+          }
+          return main
+        },
+      }
+      const mainSideByNode = new Map<string, Record<string, unknown> | null>()
       for (const job of overrideJobs) {
-        const mainId = job.node.id.split(';').pop() ?? ''
-        let main = mainCache.get(mainId)
+        let main = mainSideByNode.get(job.node.id)
         if (main === undefined) {
-          try {
-            const found = await figma.getNodeByIdAsync(mainId)
-            main = (found as unknown as Record<string, unknown>) ?? null
-          } catch {
-            main = null
-          }
-          mainCache.set(mainId, main)
+          main = await resolveMainSide(job.node, lookups)
+          mainSideByNode.set(job.node.id, main)
         }
-        let mainAlias: string | undefined
-        if (main) {
-          if (job.prop !== undefined && job.index !== undefined) {
-            const paints = main[job.prop]
-            const paint = Array.isArray(paints) ? (paints as Paint[])[job.index] : undefined
-            mainAlias = (paint as { boundVariables?: { color?: { id?: string } } } | undefined)?.boundVariables?.color
-              ?.id
-          } else {
-            const bound = main.boundVariables as Record<string, { id?: string }> | undefined
-            mainAlias = bound?.[job.field]?.id
-          }
-        }
-        if (!isOwnOverride(job.aliasId, mainAlias)) {
+        if (!isOwnOverride(job.aliasId, mainAliasFor(main, job))) {
           pairs[job.at].inherited += 1
           continue
         }
+        pairs[job.at].overrides += 1
+        if (dryRun) continue
         try {
           if (job.prop !== undefined && job.index !== undefined) {
             const holder = job.node as unknown as Record<string, unknown>
@@ -1573,7 +1681,6 @@ export const WRITE_OPS: readonly OpDef[] = [
             )
           }
           pairs[job.at].rebound += 1
-          pairs[job.at].overrides += 1
         } catch (err) {
           pairs[job.at].failed += 1
           const message = `override ${job.field}: ${String((err as Error)?.message || err)}`
@@ -1754,7 +1861,8 @@ export const WRITE_OPS: readonly OpDef[] = [
           rebound: pair.rebound,
           failed: pair.failed,
           /* Reported separately because they answer different questions: `overrides` is what this
-           * run edited inside instances, `inherited` is what it deliberately left for the main. */
+           * run found the instances owning and repointed — or, in a dry run, would repoint —
+           * `inherited` is what it deliberately left for the main. */
           ...(pair.overrides > 0 ? { overrides: pair.overrides } : {}),
           ...(pair.inherited > 0 ? { inherited: pair.inherited } : {}),
           ...(pair.errors.length > 0 ? { errors: pair.errors } : {}),
