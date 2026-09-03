@@ -137,8 +137,25 @@ export interface NodeSummary {
   /** INSTANCE only. */
   instanceOf?: { id: string | null; name: string | null; properties?: Record<string, unknown> }
   reactions?: ReactionSummary[]
+  /** Variable modes on this node. `explicit` — pinned right here (Figma's per-collection mode
+   * picker; "Auto" leaves the entry out); `resolved` — what actually applies, pins inherited
+   * from ancestors included. Reported on the root of a read only, because that is the node the
+   * question is about ("which theme is this frame drawn in?"), and per-node lookups on a deep
+   * walk would cost a collection fetch each. */
+  modes?: { explicit?: VariableModeSummary[]; resolved?: VariableModeSummary[] }
   childCount?: number
   children?: NodeSummary[]
+}
+
+export interface VariableModeSummary {
+  collectionId: string
+  /** Collection name, or null when the collection is not reachable from this file. */
+  collection: string | null
+  modeId: string
+  /** Mode name — `Light`, `Dark`, `Mobile` … — or null when the collection is unreachable. */
+  mode: string | null
+  /** The collection lives in another file. */
+  remote?: boolean
 }
 
 /** Figma geometry is float-noisy; two decimals is past anything a layout decision turns on. */
@@ -552,11 +569,55 @@ async function describePaints(node: any): Promise<NodeSummary['paints'] | null> 
   return out.fills || out.strokes ? out : null
 }
 
-async function describeNode(node: any, depth: number, paints = false): Promise<NodeSummary> {
+/** Names for a node's variable modes. One collection fetch per collection, cached for the call. */
+async function describeVariableModes(node: any): Promise<NodeSummary['modes'] | null> {
+  const explicit: Record<string, string> = node.explicitVariableModes ?? {}
+  const resolved: Record<string, string> = node.resolvedVariableModes ?? {}
+  if (Object.keys(explicit).length === 0 && Object.keys(resolved).length === 0) return null
+
+  const collections = new Map<string, VariableCollection | null>()
+  const describe = async (collectionId: string, modeId: string): Promise<VariableModeSummary> => {
+    if (!collections.has(collectionId)) {
+      let collection: VariableCollection | null = null
+      try {
+        collection = await figma.variables.getVariableCollectionByIdAsync(collectionId)
+      } catch {
+        /* a collection from a library this file no longer subscribes to — report the ids */
+      }
+      collections.set(collectionId, collection)
+    }
+    const collection = collections.get(collectionId) ?? null
+    return {
+      collectionId,
+      collection: collection?.name ?? null,
+      modeId,
+      mode: collection?.modes.find((mode) => mode.modeId === modeId)?.name ?? null,
+      ...(collection?.remote ? { remote: true } : {}),
+    }
+  }
+
+  const out: NonNullable<NodeSummary['modes']> = {}
+  if (Object.keys(explicit).length > 0) {
+    out.explicit = []
+    for (const [collectionId, modeId] of Object.entries(explicit)) out.explicit.push(await describe(collectionId, modeId))
+  }
+  if (Object.keys(resolved).length > 0) {
+    out.resolved = []
+    for (const [collectionId, modeId] of Object.entries(resolved)) out.resolved.push(await describe(collectionId, modeId))
+  }
+  return out
+}
+
+async function describeNode(node: any, depth: number, paints = false, root = true): Promise<NodeSummary> {
   const summary = summarizeNode(node)
 
   const bindings = await describeBindings(node, summary)
   if (bindings) summary.bindings = bindings
+
+  if (root) {
+    const modes = await describeVariableModes(node)
+    if (modes) summary.modes = modes
+  }
 
   if (paints) {
     const described = await describePaints(node)
@@ -588,7 +649,7 @@ async function describeNode(node: any, depth: number, paints = false): Promise<N
 
   if (depth > 0 && Array.isArray(node.children)) {
     summary.children = []
-    for (const child of node.children) summary.children.push(await describeNode(child, depth - 1, paints))
+    for (const child of node.children) summary.children.push(await describeNode(child, depth - 1, paints, false))
   }
 
   return summary

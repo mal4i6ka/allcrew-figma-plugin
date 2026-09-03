@@ -22209,6 +22209,51 @@ ${scripts}`, "");
     return { html, backend: decision.backend, reason: decision.reason };
   }
 
+  // src/agent/image-dimensions.ts
+  var be32 = (b, at) => (b[at] << 24 | b[at + 1] << 16 | b[at + 2] << 8 | b[at + 3]) >>> 0;
+  var be16 = (b, at) => b[at] << 8 | b[at + 1];
+  var le16 = (b, at) => b[at] | b[at + 1] << 8;
+  var le24 = (b, at) => b[at] | b[at + 1] << 8 | b[at + 2] << 16;
+  function imageDimensions(bytes) {
+    const none = { width: 0, height: 0 };
+    if (bytes.length < 24) return none;
+    if (bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) {
+      return { width: be32(bytes, 16), height: be32(bytes, 20) };
+    }
+    if (bytes[0] === 71 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 56) {
+      return { width: le16(bytes, 6), height: le16(bytes, 8) };
+    }
+    if (bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69) {
+      const chunk = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
+      if (chunk === "VP8 " && bytes.length >= 30) return { width: le16(bytes, 26) & 16383, height: le16(bytes, 28) & 16383 };
+      if (chunk === "VP8L" && bytes.length >= 25) {
+        const bits = bytes[21] | bytes[22] << 8 | bytes[23] << 16 | bytes[24] << 24;
+        return { width: (bits & 16383) + 1, height: (bits >>> 14 & 16383) + 1 };
+      }
+      if (chunk === "VP8X" && bytes.length >= 30) return { width: le24(bytes, 24) + 1, height: le24(bytes, 27) + 1 };
+      return none;
+    }
+    if (bytes[0] === 255 && bytes[1] === 216) {
+      let at = 2;
+      while (at + 9 < bytes.length) {
+        if (bytes[at] !== 255) {
+          at += 1;
+          continue;
+        }
+        const marker = bytes[at + 1];
+        if (marker === 216 || marker === 1 || marker >= 208 && marker <= 215) {
+          at += 2;
+          continue;
+        }
+        const length = be16(bytes, at + 2);
+        const isFrame = marker >= 192 && marker <= 207 && marker !== 196 && marker !== 200 && marker !== 204;
+        if (isFrame) return { width: be16(bytes, at + 7), height: be16(bytes, at + 5) };
+        at += 2 + length;
+      }
+    }
+    return none;
+  }
+
   // src/agent/files.ts
   var FILE_ENVELOPE = "__alteryFile";
   function isSafeFileName(name) {
@@ -22357,6 +22402,107 @@ ${scripts}`, "");
           scale,
           bytes: bytes.length,
           file: binaryFile(`${slugify2(node.name)}.png`, "image/png", bytes)
+        };
+      }
+    },
+    {
+      name: "image.fills",
+      summary: "The original files behind a subtree\u2019s image fills \u2014 the photo itself, not a render with text baked over it.",
+      agent: "A render (node.screenshot, NODE_EXPORT) flattens overlays and text into the pixels; this hands back the uploaded source of each IMAGE paint under the node, deduplicated by hash, largest first. Read-only: no export settings on the node, no write gate \u2014 `figma.getImageByHash` is a read. Answers with files, not payloads.",
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "Subtree to search for image fills." },
+        limit: { type: "number", default: 20, min: 1, max: 100, description: "How many distinct images to hand back." },
+        minSide: {
+          type: "number",
+          default: 64,
+          min: 0,
+          description: "Skip images whose longer side is below this many pixels \u2014 icons and textures, not photos."
+        }
+      },
+      async run(params) {
+        const root = await resolveSceneNode(params.nodeId);
+        const limit = params.limit;
+        const minSide = params.minSide;
+        let page = root;
+        while (page && page.type !== "PAGE") page = page.parent;
+        if (page) await page.loadAsync();
+        const deadline = (work, what, ms = 2e4) => new Promise((resolve2, reject) => {
+          const timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms);
+          work.then(
+            (value) => {
+              clearTimeout(timer);
+              resolve2(value);
+            },
+            (error) => {
+              clearTimeout(timer);
+              reject(error);
+            }
+          );
+        });
+        const hits = /* @__PURE__ */ new Map();
+        const visit = (node) => {
+          if (node.visible === false) return;
+          const fills = node.fills;
+          if (Array.isArray(fills)) {
+            fills.forEach((paint, paintIndex) => {
+              if (paint.type !== "IMAGE" || !paint.imageHash || paint.visible === false) return;
+              if (!hits.has(paint.imageHash)) {
+                hits.set(paint.imageHash, { node, paintIndex, scaleMode: paint.scaleMode });
+              }
+            });
+          }
+          if ("children" in node) for (const child of node.children) visit(child);
+        };
+        visit(root);
+        const ranked = [...hits.entries()].sort(
+          ([, a], [, b]) => b.node.width * b.node.height - a.node.width * a.node.height
+        );
+        const failures = [];
+        let skipped = 0;
+        const images = [];
+        for (const [hash, hit] of ranked) {
+          if (images.length >= limit) break;
+          const image = figma.getImageByHash(hash);
+          if (!image) continue;
+          let bytes;
+          try {
+            bytes = await deadline(image.getBytesAsync(), `getBytesAsync ${hit.node.name}`, 6e4);
+          } catch (error) {
+            failures.push({ node: hit.node.id, hash, error: String(error) });
+            continue;
+          }
+          const format = detectImageFillFormat(bytes);
+          const { width, height } = imageDimensions(bytes);
+          if (width && height && Math.max(width, height) < minSide) {
+            skipped += 1;
+            continue;
+          }
+          images.push({
+            node: { id: hit.node.id, name: hit.node.name, type: hit.node.type, width: hit.node.width, height: hit.node.height },
+            paintIndex: hit.paintIndex,
+            scaleMode: hit.scaleMode,
+            hash,
+            width,
+            height,
+            bytes: bytes.length,
+            format,
+            file: binaryFile(
+              `${slugify2(hit.node.name)}-${hash.slice(0, 8)}.${format}`,
+              format === "jpg" ? "image/jpeg" : `image/${format}`,
+              bytes
+            )
+          });
+        }
+        const truncated = Math.max(0, ranked.length - images.length - failures.length - skipped);
+        return {
+          node: { id: root.id, name: root.name, type: root.type },
+          count: images.length,
+          truncated,
+          skippedSmall: skipped,
+          /** Images Figma would not hand over in time — named, so the caller can retry or fall back. */
+          failed: failures,
+          images
         };
       }
     },
@@ -25885,11 +26031,50 @@ ${scripts}`, "");
     }
     return out.fills || out.strokes ? out : null;
   }
-  async function describeNode(node, depth, paints2 = false) {
+  async function describeVariableModes(node) {
+    var _a, _b;
+    const explicit = (_a = node.explicitVariableModes) != null ? _a : {};
+    const resolved = (_b = node.resolvedVariableModes) != null ? _b : {};
+    if (Object.keys(explicit).length === 0 && Object.keys(resolved).length === 0) return null;
+    const collections = /* @__PURE__ */ new Map();
+    const describe = async (collectionId, modeId) => {
+      var _a2, _b2, _c, _d;
+      if (!collections.has(collectionId)) {
+        let collection2 = null;
+        try {
+          collection2 = await figma.variables.getVariableCollectionByIdAsync(collectionId);
+        } catch (e) {
+        }
+        collections.set(collectionId, collection2);
+      }
+      const collection = (_a2 = collections.get(collectionId)) != null ? _a2 : null;
+      return __spreadValues({
+        collectionId,
+        collection: (_b2 = collection == null ? void 0 : collection.name) != null ? _b2 : null,
+        modeId,
+        mode: (_d = (_c = collection == null ? void 0 : collection.modes.find((mode) => mode.modeId === modeId)) == null ? void 0 : _c.name) != null ? _d : null
+      }, (collection == null ? void 0 : collection.remote) ? { remote: true } : {});
+    };
+    const out = {};
+    if (Object.keys(explicit).length > 0) {
+      out.explicit = [];
+      for (const [collectionId, modeId] of Object.entries(explicit)) out.explicit.push(await describe(collectionId, modeId));
+    }
+    if (Object.keys(resolved).length > 0) {
+      out.resolved = [];
+      for (const [collectionId, modeId] of Object.entries(resolved)) out.resolved.push(await describe(collectionId, modeId));
+    }
+    return out;
+  }
+  async function describeNode(node, depth, paints2 = false, root = true) {
     var _a, _b;
     const summary = summarizeNode(node);
     const bindings = await describeBindings(node, summary);
     if (bindings) summary.bindings = bindings;
+    if (root) {
+      const modes = await describeVariableModes(node);
+      if (modes) summary.modes = modes;
+    }
     if (paints2) {
       const described = await describePaints2(node);
       if (described) summary.paints = described;
@@ -25912,7 +26097,7 @@ ${scripts}`, "");
     }
     if (depth > 0 && Array.isArray(node.children)) {
       summary.children = [];
-      for (const child of node.children) summary.children.push(await describeNode(child, depth - 1, paints2));
+      for (const child of node.children) summary.children.push(await describeNode(child, depth - 1, paints2, false));
     }
     return summary;
   }
