@@ -23,6 +23,8 @@ import { buildPreviewDocument } from '../targets/django/motion/preview.ts'
 import type { MotionTrack } from '../targets/django/motion/types.ts'
 import { serializeNode, type IrNode } from '../targets/django/ir.ts'
 import { annotateVectorLeaves, type AssetSourceNode } from '../targets/django/export/assets.ts'
+import { detectImageFillFormat } from '../targets/django/assets.ts'
+import { imageDimensions } from './image-dimensions.ts'
 import { findAllWithCriteria } from '../utils/tree.ts'
 import { readLocalVariables } from '../variables.ts'
 import { binaryFile, slugify, textFile } from './files.ts'
@@ -202,6 +204,126 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         scale,
         bytes: bytes.length,
         file: binaryFile(`${slugify(node.name)}.png`, 'image/png', bytes),
+      }
+    },
+  },
+
+  {
+    name: 'image.fills',
+    summary: 'The original files behind a subtree’s image fills — the photo itself, not a render with text baked over it.',
+    agent:
+      'A render (node.screenshot, NODE_EXPORT) flattens overlays and text into the pixels; this hands back the uploaded ' +
+      'source of each IMAGE paint under the node, deduplicated by hash, largest first. Read-only: no export settings on ' +
+      'the node, no write gate — `figma.getImageByHash` is a read. Answers with files, not payloads.',
+    mutates: false,
+    params: {
+      nodeId: { type: 'string', required: true, description: 'Subtree to search for image fills.' },
+      limit: { type: 'number', default: 20, min: 1, max: 100, description: 'How many distinct images to hand back.' },
+      minSide: {
+        type: 'number',
+        default: 64,
+        min: 0,
+        description: 'Skip images whose longer side is below this many pixels — icons and textures, not photos.',
+      },
+    },
+    async run(params) {
+      const root = await resolveSceneNode(params.nodeId)
+      const limit = params.limit as number
+      const minSide = params.minSide as number
+
+      // Image data belongs to a loaded page: with dynamic page loading, an image on a page the
+      // designer has not opened is a promise that never settles. Load it first.
+      let page: BaseNode | null = root
+      while (page && page.type !== 'PAGE') page = page.parent
+      if (page) await (page as PageNode).loadAsync()
+
+      // A read that does not come back is worse than one that says it failed: every fetch
+      // below is raced against a deadline and reported per image.
+      const deadline = <T,>(work: Promise<T>, what: string, ms = 20000): Promise<T> =>
+        new Promise<T>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms)
+          work.then(
+            (value) => {
+              clearTimeout(timer)
+              resolve(value)
+            },
+            (error) => {
+              clearTimeout(timer)
+              reject(error)
+            },
+          )
+        })
+
+      // One entry per distinct image: the same photo is often the fill of a frame and of the
+      // rectangle inside it, and the caller wants the file once.
+      const hits = new Map<string, { node: SceneNode; paintIndex: number; scaleMode: string }>()
+      const visit = (node: SceneNode) => {
+        if (node.visible === false) return
+        const fills = (node as GeometryMixin).fills
+        if (Array.isArray(fills)) {
+          fills.forEach((paint, paintIndex) => {
+            if (paint.type !== 'IMAGE' || !paint.imageHash || paint.visible === false) return
+            if (!hits.has(paint.imageHash)) {
+              hits.set(paint.imageHash, { node, paintIndex, scaleMode: paint.scaleMode })
+            }
+          })
+        }
+        if ('children' in node) for (const child of node.children) visit(child)
+      }
+      visit(root)
+
+      // `getSizeAsync` is not consulted: on a live file it never settled, for any image. The
+      // fills are ranked by the area of the layer they paint — the section photo is the big
+      // node, the thumbnails are the small ones — bytes are fetched for the top `limit` only,
+      // and pixel dimensions are read off the file header.
+      const ranked = [...hits.entries()].sort(
+        ([, a], [, b]) => b.node.width * b.node.height - a.node.width * a.node.height,
+      )
+      const failures: Array<{ node: string; hash: string; error: string }> = []
+      let skipped = 0
+      const images: Array<Record<string, unknown>> = []
+      for (const [hash, hit] of ranked) {
+        if (images.length >= limit) break
+        const image = figma.getImageByHash(hash)
+        if (!image) continue
+        let bytes: Uint8Array
+        try {
+          bytes = await deadline(image.getBytesAsync(), `getBytesAsync ${hit.node.name}`, 60000)
+        } catch (error) {
+          failures.push({ node: hit.node.id, hash, error: String(error) })
+          continue
+        }
+        const format = detectImageFillFormat(bytes)
+        const { width, height } = imageDimensions(bytes)
+        if (width && height && Math.max(width, height) < minSide) {
+          skipped += 1
+          continue
+        }
+        images.push({
+          node: { id: hit.node.id, name: hit.node.name, type: hit.node.type, width: hit.node.width, height: hit.node.height },
+          paintIndex: hit.paintIndex,
+          scaleMode: hit.scaleMode,
+          hash,
+          width,
+          height,
+          bytes: bytes.length,
+          format,
+          file: binaryFile(
+            `${slugify(hit.node.name)}-${hash.slice(0, 8)}.${format}`,
+            format === 'jpg' ? 'image/jpeg' : `image/${format}`,
+            bytes,
+          ),
+        })
+      }
+      const truncated = Math.max(0, ranked.length - images.length - failures.length - skipped)
+      return {
+        node: { id: root.id, name: root.name, type: root.type },
+        count: images.length,
+        truncated,
+        skippedSmall: skipped,
+        /** Images Figma would not hand over in time — named, so the caller can retry or fall back. */
+        failed: failures,
+        images,
       }
     },
   },
