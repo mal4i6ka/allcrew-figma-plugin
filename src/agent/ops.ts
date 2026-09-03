@@ -51,6 +51,15 @@ export interface PaintSummary {
    * instance sublayer inherits from its main component, so this is not the same question as
    * the node-level `bindings` map. Always null on a gradient: a gradient binds per stop. */
   bound?: string | null
+  /** IMAGE paints: the content hash of the picture — two layers with the same hash paint the
+   * same file, which is what an asset pass needs to know before it exports either. */
+  imageHash?: string
+  /** VIDEO paints: the content hash. The Plugin API hands out nothing else for a video — no
+   * bytes, no export — so the hash is the whole identity a consumer can act on: count the
+   * distinct videos a design needs and ask for those files. */
+  videoHash?: string
+  /** IMAGE and VIDEO paints: FILL, FIT, CROP or TILE. */
+  scaleMode?: string
   /** Gradients only. A gradient's tokens live on its stops, so a paint reported without them
    * says almost nothing — and `bound` above is null for a gradient however well tokenised it
    * is, which reads as "raw" and is not. */
@@ -540,6 +549,11 @@ export async function describePaint(paint: any, index: number): Promise<PaintSum
     return out
   }
 
+  if (paint?.type === 'IMAGE' && typeof paint.imageHash === 'string') out.imageHash = paint.imageHash
+  if (paint?.type === 'VIDEO' && typeof paint.videoHash === 'string') out.videoHash = paint.videoHash
+  if ((paint?.type === 'IMAGE' || paint?.type === 'VIDEO') && typeof paint.scaleMode === 'string') {
+    out.scaleMode = paint.scaleMode
+  }
   out.bound = await boundTokenName(paint)
   return out
 }

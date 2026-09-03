@@ -26007,6 +26007,11 @@ ${scripts}`, "");
       }
       return out;
     }
+    if ((paint == null ? void 0 : paint.type) === "IMAGE" && typeof paint.imageHash === "string") out.imageHash = paint.imageHash;
+    if ((paint == null ? void 0 : paint.type) === "VIDEO" && typeof paint.videoHash === "string") out.videoHash = paint.videoHash;
+    if (((paint == null ? void 0 : paint.type) === "IMAGE" || (paint == null ? void 0 : paint.type) === "VIDEO") && typeof paint.scaleMode === "string") {
+      out.scaleMode = paint.scaleMode;
+    }
     out.bound = await boundTokenName(paint);
     return out;
   }
