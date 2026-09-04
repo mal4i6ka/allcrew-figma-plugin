@@ -109,6 +109,32 @@ function injectProps(source) {
   return source.replace(PROPS_MARKER, JSON.stringify(JSON.stringify(props)));
 }
 
+/**
+ * Отказ сборки, если в бандл попало выражение `import(`.
+ *
+ * Песочница Figma сканирует код плагина и отклоняет его целиком с
+ * «SyntaxError: possible import expression rejected around line 1» — плагин
+ * просто не запускается, канал молчит, и по симптому это неотличимо от
+ * закрытого окна. Стоило одной строки в ОПИСАНИИ параметра («ids to import (a
+ * bare string…»): проверка смотрит на текст, а не на код, поэтому попасться
+ * может любая строка справки. Дешевле поймать здесь, чем в Figma.
+ *
+ * `import {` не проверяется: статические импорты в шаблонах генераторов кода
+ * песочница пропускает, их в бандле много и они безобидны.
+ */
+function refuseImportExpressions(file) {
+  const source = readFileSync(file, "utf8");
+  const pattern = /(^|[^.\w$])import\s*\(/g;
+  const hits = [...source.matchAll(pattern)];
+  if (hits.length === 0) return;
+  console.error(`\n${file}: выражений import( — ${hits.length}. Песочница Figma отклонит бандл целиком.`);
+  for (const hit of hits.slice(0, 5)) {
+    const around = source.slice(Math.max(0, hit.index - 120), hit.index + 80).replace(/\n/g, " ");
+    console.error(`  …${around}`);
+  }
+  process.exit(1);
+}
+
 const mainCtx = await esbuild.context({
   ...commonOptions,
   entryPoints: ["src/code.ts"],
@@ -149,4 +175,5 @@ if (watch) {
 } else {
   await mainCtx.rebuild();
   await mainCtx.dispose();
+  refuseImportExpressions("dist/code.js");
 }

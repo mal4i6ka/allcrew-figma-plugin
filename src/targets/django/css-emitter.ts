@@ -83,6 +83,9 @@ export interface DjangoNodeSource {
 export type EmitterNote =
   | { type: 'squircle-approx'; node: string; smoothing: number }
   | { type: 'unsupported-effect'; node: string; effect: string }
+  /** A paint CSS has no way to draw — a SHADER layer above all. `getCSSAsync` drops it without
+   * a word, so the emitted rule is a picture with a layer missing and nothing said about it. */
+  | { type: 'unsupported-fill'; node: string; fill: string }
 
 export function toClassName(id: string): string {
   return `n${id.replace(/[^a-zA-Z0-9]+/g, '-')}`
@@ -627,7 +630,29 @@ function withFallback(varName: string, fallback: string | undefined): string {
   return fallback ? `var(${varName}, ${fallback})` : `var(${varName})`
 }
 
-function tokenOverrides(
+/**
+ * Does this declaration say one thing, or is it a stack?
+ *
+ * A `var(--token, …)` override REPLACES the declaration, so it is only ever right when the
+ * declaration is one layer. Figma writes a layered fill as comma-separated layers, and
+ * `boundVariables.fills[0]` is not the colour of the bottom one — it is the first entry of a
+ * flat list of every variable the field reaches, which on a layer holding a shader is one of
+ * the shader's own gradient stops. The two together turned a banner painted colour + shader +
+ * photo into `background: var(--orange, url(…), var(--white, #FFF))`: every layer but one
+ * discarded, and the one kept a colour the layer never showed.
+ */
+export function singleLayer(value: string | undefined): boolean {
+  if (!value) return true
+  let depth = 0
+  for (const character of value) {
+    if (character === '(') depth += 1
+    else if (character === ')') depth -= 1
+    else if (character === ',' && depth === 0) return false
+  }
+  return true
+}
+
+export function tokenOverrides(
   bound: DjangoBoundVariables | undefined,
   isText: boolean,
   variableNamesById: ReadonlyMap<string, string>,
@@ -638,10 +663,16 @@ function tokenOverrides(
 
   const fillProperty = isText ? 'color' : 'background'
   const fillName = bound.fills?.[0] && variableNamesById.get(bound.fills[0].id)
-  if (fillName) overrides[fillProperty] = withFallback(toCssVarName(fillName), literalFallback(literal[fillProperty]))
+  // Text has one colour and cannot stack; a box can. Where it does, Figma's own value stands:
+  // it is the whole picture minus what CSS cannot draw, and the notes name what that was.
+  if (fillName && singleLayer(literal[fillProperty])) {
+    overrides[fillProperty] = withFallback(toCssVarName(fillName), literalFallback(literal[fillProperty]))
+  }
 
   const strokeName = bound.strokes?.[0] && variableNamesById.get(bound.strokes[0].id)
-  if (strokeName) overrides['border-color'] = withFallback(toCssVarName(strokeName), literalFallback(literal['border-color']))
+  if (strokeName && singleLayer(literal['border-color'])) {
+    overrides['border-color'] = withFallback(toCssVarName(strokeName), literalFallback(literal['border-color']))
+  }
 
   const effectName = bound.effects?.[0] && variableNamesById.get(bound.effects[0].id)
   if (effectName) overrides['box-shadow'] = withFallback(toCssVarName(effectName), literalFallback(literal['box-shadow']))
@@ -815,6 +846,25 @@ function formatStyleRefsComment(className: string, styleRefs: IrStyleRefs | unde
 
 const UNSUPPORTED_EFFECT_TYPES = new Set<string>(['NOISE', 'TEXTURE', 'GLASS', 'SHADER'])
 
+/** Paints with no CSS at all. A shader is a program; a pattern is another node tiled. Figma's
+ * own `getCSSAsync` omits both silently, which is how a banner painted colour + shader + photo
+ * came out looking like colour + photo with nobody able to say which half went missing. */
+const UNSUPPORTED_FILL_TYPES = new Set<string>(['SHADER', 'PATTERN'])
+
+function warnUnsupportedFills(source: DjangoNodeSource, nodeId: string, notes: EmitterNote[] | undefined): void {
+  for (const field of ['fills', 'strokes'] as const) {
+    const paints = (source as unknown as Record<string, unknown>)[field]
+    if (!Array.isArray(paints)) continue
+    for (const paint of paints) {
+      const entry = paint as { type?: string; visible?: boolean }
+      if (entry?.visible === false) continue
+      if (typeof entry?.type !== 'string' || !UNSUPPORTED_FILL_TYPES.has(entry.type)) continue
+      console.warn(`[css-emitter] "${nodeId}": ${entry.type} ${field.slice(0, -1)} has no CSS equivalent — skipped`)
+      notes?.push({ type: 'unsupported-fill', node: nodeId, fill: entry.type })
+    }
+  }
+}
+
 function warnUnsupportedEffect(nodeId: string, effectType: string, notes: EmitterNote[] | undefined): void {
   console.warn(`[css-emitter] "${nodeId}": ${effectType} effect has no CSS equivalent — skipped`)
   notes?.push({ type: 'unsupported-effect', node: nodeId, effect: effectType })
@@ -893,6 +943,7 @@ async function emitBoxRules(
 
   // M8: showShadowBehindNode has no box-shadow equivalent — re-map to filter: drop-shadow() and
   // warn on any NOISE/TEXTURE/GLASS/SHADER effect (no CSS mapping exists for those either).
+  if (source && !isVectorLeaf) warnUnsupportedFills(source, node.id, notes)
   const effect = source && !isVectorLeaf ? effectDeclarations(source, node.id, notes) : {}
   if (effect.filter) {
     if (effect.dropBoxShadow) delete decl['box-shadow']

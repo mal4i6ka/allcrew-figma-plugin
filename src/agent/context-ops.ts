@@ -28,6 +28,7 @@ import { imageDimensions } from './image-dimensions.ts'
 import { findAllWithCriteria } from '../utils/tree.ts'
 import { readLocalVariables } from '../variables.ts'
 import { binaryFile, slugify, textFile } from './files.ts'
+import { describePaint, describeShader, shadersFor, type PaintSummary, type ShaderSummary } from './ops.ts'
 import type { OpDef } from './protocol.ts'
 
 /* ----------------------------------------------------------------- helpers */
@@ -571,6 +572,238 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         animated,
         gsapPlugins: animation.gsapPlugins,
         files,
+      }
+    },
+  },
+
+  {
+    name: 'paints.stack',
+    summary: 'Every layer of one node’s fill sandwich, bottom to top — shader layers included.',
+    agent:
+      'The op for “what is this thing actually painted with”. `node.get` with paints:true answers the same question ' +
+      'per node while walking a tree; this one answers it for one node and adds what only matters when you mean to ' +
+      'rebuild the stack: the node’s own opacity and blend mode under the paints, the style the paints came from, and ' +
+      'a catalogue entry per shader in the stack. A shader paint carries no colour, no stops and no hash — its id and ' +
+      'its settings are the whole of it, so they are reported in full, with any variable bound inside them named. ' +
+      'Read-only: nothing is imported into the file, which is why a shader the file did not author comes back with ' +
+      'named:false and its settings numbered rather than named — see `shaders[].why`.',
+    mutates: false,
+    params: {
+      nodeId: { type: 'string', required: true, description: 'The layer to take apart.' },
+      children: {
+        type: 'boolean',
+        default: false,
+        description: 'Also report every descendant that paints something — a banner’s picture is often on a child.',
+      },
+      limit: { type: 'number', default: 50, min: 1, max: 500, description: 'How many painted nodes come back.' },
+    },
+    async run(params) {
+      const root = await resolveSceneNode(params.nodeId)
+      const withChildren = params.children as boolean
+      const limit = params.limit as number
+
+      const catalogue: { map?: Map<string, Shader> } = {}
+      const seen = new Map<string, ShaderSummary>()
+
+      const paintsOf = async (node: SceneNode, field: 'fills' | 'strokes'): Promise<PaintSummary[] | null> => {
+        const paints = (node as unknown as Record<string, unknown>)[field]
+        if (!Array.isArray(paints) || paints.length === 0) return null
+        const shaders = paints.some((paint) => (paint as { type?: string })?.type === 'SHADER')
+          ? await shadersFor(catalogue)
+          : undefined
+        const out: PaintSummary[] = []
+        for (const [index, paint] of paints.entries()) {
+          const described = await describePaint(paint, index, shaders)
+          if (described.shader) seen.set(described.shader.id, described.shader)
+          out.push(described)
+        }
+        return out
+      }
+
+      const styleName = async (node: SceneNode, field: 'fillStyleId' | 'strokeStyleId'): Promise<string | null> => {
+        const id = (node as unknown as Record<string, unknown>)[field]
+        if (id === figma.mixed) return 'mixed'
+        if (typeof id !== 'string' || id === '') return null
+        const style = await figma.getStyleByIdAsync(id)
+        return style ? style.name : id
+      }
+
+      const describeLayer = async (node: SceneNode) => {
+        const fills = await paintsOf(node, 'fills')
+        const strokes = await paintsOf(node, 'strokes')
+        if (!fills && !strokes) return null
+        const opacity = (node as unknown as { opacity?: number }).opacity
+        const blendMode = (node as unknown as { blendMode?: string }).blendMode
+        return {
+          id: node.id,
+          name: node.name,
+          type: node.type,
+          // The node's own opacity and blend mode sit UNDER the paints: the stack is composited
+          // first and the result is then blended into the page. A reading that reports only the
+          // paints is a reading of half the sandwich.
+          ...(typeof opacity === 'number' && opacity < 1 ? { opacity } : {}),
+          ...(typeof blendMode === 'string' && blendMode !== 'NORMAL' && blendMode !== 'PASS_THROUGH'
+            ? { blendMode }
+            : {}),
+          ...(fills ? { fills, fillStyle: await styleName(node, 'fillStyleId') } : {}),
+          ...(strokes ? { strokes, strokeStyle: await styleName(node, 'strokeStyleId') } : {}),
+        }
+      }
+
+      const layers: unknown[] = []
+      const first = await describeLayer(root)
+      if (first) layers.push(first)
+      if (withChildren && 'children' in root) {
+        const queue: SceneNode[] = [...(root.children as readonly SceneNode[])]
+        while (queue.length > 0 && layers.length < limit) {
+          const node = queue.shift() as SceneNode
+          const described = await describeLayer(node)
+          if (described) layers.push(described)
+          if ('children' in node) queue.push(...(node.children as readonly SceneNode[]))
+        }
+      }
+
+      // Shader effects live on `effects`, not on `fills`, and the same shader is often both.
+      // Reported here too so one call answers "which shaders is this layer made of".
+      const effects = (root as unknown as { effects?: readonly unknown[] }).effects
+      const shaderEffects: unknown[] = []
+      if (Array.isArray(effects)) {
+        for (const effect of effects) {
+          if ((effect as { type?: string })?.type !== 'SHADER') continue
+          const described = await describeShader(effect as { id?: unknown; properties?: unknown }, await shadersFor(catalogue))
+          seen.set(described.id, described)
+          shaderEffects.push({
+            visible: (effect as { visible?: boolean }).visible !== false,
+            shader: described,
+          })
+        }
+      }
+
+      const shaders = [...seen.values()].map((shader) => ({
+        ...shader,
+        ...(shader.named
+          ? {}
+          : {
+              why:
+                'listAvailableShaders() does not offer this shader, so its settings could not be named. ' +
+                'The ids below are stable and go back verbatim on a write; to get their names, import the ' +
+                'shader into the file first (figma.importShaderById) — a write, and not this op’s to make.',
+            }),
+      }))
+
+      return {
+        node: { id: root.id, name: root.name, type: root.type },
+        layers,
+        ...(shaderEffects.length > 0 ? { shaderEffects } : {}),
+        ...(shaders.length > 0 ? { shaders } : {}),
+      }
+    },
+  },
+
+  {
+    name: 'shader.define',
+    summary: 'Import a shader by id so its settings get names — the one thing a read cannot do.',
+    agent:
+      'A shader paint carries opaque setting ids (`2331874402:1925656642`) and nothing else; the names live in the ' +
+      "shader's `propertyDefinitions`, which only `listAvailableShaders()` and `importShaderById()` hand out — and the " +
+      'first answers EMPTY on a file that merely uses a shader it did not author. So `paints.stack` reports such a ' +
+      'shader as `named: false`. This op closes that: it imports the ids you name and returns their definitions. ' +
+      'Write-gated because `importShaderById` materialises the shader into the file — for a shader already on a layer ' +
+      'that is a no-op, but it is the Plugin API call for putting one there, and an op does not get to decide that on ' +
+      "the designer's behalf. Run it once; afterwards every read names the settings, because the shader is then in the " +
+      'catalogue. Ids come from `paints.stack` or `SHADER_LIST`.',
+    mutates: true,
+    params: {
+      shaders: {
+        type: 'json',
+        required: true,
+        description:
+          'An ARRAY of shader ids; a bare string is refused by the param check. The ids must be ones ' +
+          '`figma.listAvailableShaders()` offers — NOT the id a paint carries: those are two id spaces, and the ' +
+          'paint\'s `8ce92017…/625` form is rejected outright.',
+      },
+      dryRun: {
+        type: 'boolean',
+        default: false,
+        description: 'Report what would be imported, and what the file already offers, without importing anything.',
+      },
+    },
+    async run(params) {
+      const raw = params.shaders
+      const ids = (Array.isArray(raw) ? raw : [raw]).filter(
+        (id): id is string => typeof id === 'string' && id !== ''
+      )
+      if (ids.length === 0) throw new Error('shaders must be a shader id, or an array of them')
+      const dryRun = params.dryRun as boolean
+
+      // What the file offers BEFORE anything is imported: that is the difference this op makes,
+      // and reporting it is how a caller learns the import was unnecessary rather than assuming.
+      const offered = new Map<string, Shader>()
+      try {
+        for (const shader of await figma.listAvailableShaders()) offered.set(shader.id, shader)
+      } catch {
+        /* a sandbox without the shader API — the import below will say so per id */
+      }
+
+      const results: Array<Record<string, unknown>> = []
+      for (const id of ids) {
+        const before = offered.get(id)
+        if (dryRun) {
+          results.push({
+            id,
+            ok: true,
+            offeredAlready: before !== undefined,
+            ...(before ? { name: before.name, kind: before.type, imported: before.imported } : {}),
+            would: before?.propertyDefinitions ? 'nothing — the file already names it' : 'import to read its settings',
+          })
+          continue
+        }
+        try {
+          const shader = await figma.importShaderById(id)
+          results.push({
+            id,
+            ok: true,
+            offeredAlready: before !== undefined,
+            name: shader.name,
+            kind: shader.type,
+            imported: shader.imported,
+            // The whole point of the call: id → { name, type, default }, so a reading of a paint
+            // stops being a row of numbers.
+            properties: Object.entries(shader.propertyDefinitions ?? {}).map(([defId, definition]) => ({
+              id: defId,
+              name: definition.name,
+              type: definition.type,
+              ...(definition.defaultValue === undefined ? {} : { default: definition.defaultValue }),
+              ...(definition.description ? { description: definition.description } : {}),
+            })),
+          })
+        } catch (error) {
+          // On a file whose catalogue is empty every id is "unknown", and Figma's message sends
+          // the reader to the very call that answered nothing. Say which of the two it is.
+          results.push({
+            id,
+            ok: false,
+            error: String((error as Error)?.message || error),
+            ...(offered.size === 0
+              ? {
+                  why:
+                    'listAvailableShaders() offers nothing in this file, so no id can be imported — including the ' +
+                    'ids of shaders visibly in use here. The names of a shader\'s settings are then unreachable ' +
+                    'through the Plugin API; read them from the shader panel in Figma, or from the source the ' +
+                    'Figma MCP hands out (list_shaders → get_shader).',
+                }
+              : { offeredIds: [...offered.keys()].slice(0, 20) }),
+          })
+        }
+      }
+
+      const named = results.filter((row) => Array.isArray(row.properties) && (row.properties as unknown[]).length > 0)
+      return {
+        dryRun,
+        total: results.length,
+        named: named.length,
+        failed: results.filter((row) => row.ok === false).length,
+        results,
       }
     },
   },

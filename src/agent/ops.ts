@@ -64,6 +64,40 @@ export interface PaintSummary {
    * says almost nothing — and `bound` above is null for a gradient however well tokenised it
    * is, which reads as "raw" and is not. */
   stops?: PaintStopSummary[]
+  /** How much of this paint shows through, 0..1, when it is not 1. Reported on every paint
+   * type, not just solids: a layer painted with three fills is a stack, and a stack read
+   * without the opacity of each slice cannot be put back together — the colour underneath
+   * either shows or it does not, and nothing else in the reading says which. */
+  opacity?: number
+  /** How this paint combines with the ones below it, when it is not NORMAL. The other half of
+   * what makes a stack a stack: a MULTIPLY layer over a photo and a NORMAL one over the same
+   * photo are two different pictures out of identical colours. */
+  blendMode?: string
+  /** Gradients: Figma's 2×3 matrix — where the ramp starts, where it ends, how it is turned.
+   * Two gradients with the same stops and different transforms are two different gradients,
+   * and the stops alone say nothing about the angle. */
+  transform?: number[][]
+  /** IMAGE and VIDEO: the crop, the tile size, the rotation and the colour adjustments Figma
+   * applies on top of the file. The hash names the picture; these say what was done to it,
+   * and a re-export that ignores them lands a different image. */
+  imageTransform?: number[][]
+  scalingFactor?: number
+  rotation?: number
+  filters?: Record<string, number>
+  /** PATTERN paints: the paint is another node, tiled. `sourceNodeId` is the whole content —
+   * without it the paint reads as an empty type name. */
+  pattern?: {
+    sourceNodeId?: string
+    tileType?: string
+    scalingFactor?: number
+    spacing?: { x: number; y: number }
+    horizontalAlignment?: string
+    verticalAlignment?: string
+  }
+  /** SHADER paints: the shader and the settings it was given. Everything a shader layer is
+   * lives here — the paint itself carries no colour, no stops and no hash, so a reading
+   * without this says only that something unreadable is in the stack. */
+  shader?: ShaderSummary
 }
 
 export interface PaintStopSummary {
@@ -72,6 +106,40 @@ export interface PaintStopSummary {
   color: string
   alpha?: number
   bound: string | null
+}
+
+/**
+ * A shader paint or effect, as far as this file can describe it.
+ *
+ * The uniform ids are opaque (`2331874402:1925656642`) and mean nothing on their own; their
+ * names live in the shader's `propertyDefinitions`, which only `listAvailableShaders()` and
+ * `importShaderById()` hand out. On a file that merely *uses* a shader the first comes back
+ * empty, so `named` says plainly whether the settings below are named or just numbered —
+ * silently reporting ids as if they were the whole answer is what made a shader layer look
+ * like a paint with nothing in it.
+ */
+export interface ShaderSummary {
+  /** The id that puts this shader, and no other, on another layer. */
+  id: string
+  name?: string
+  kind?: 'fill' | 'effect'
+  /** False when the file could not name the settings — then `properties[].name` is absent and
+   * the ids are all there is. */
+  named: boolean
+  properties?: ShaderPropertySummary[]
+}
+
+export interface ShaderPropertySummary {
+  /** The property-definition id — the key a write puts back into `properties`. */
+  id: string
+  /** The author's name for the setting, when the shader could be named. */
+  name?: string
+  /** NUMBER, COLOR, GRADIENT, POINT, … — the shape `value` is in. */
+  type?: string
+  /** The value as Figma holds it. Variable aliases inside it — a gradient stop bound to a
+   * token, a colour bound to one — are replaced by `{ token, id }`, because an id alone
+   * cannot be read and a name alone cannot be written back. */
+  value: unknown
 }
 
 export interface NodeSummary {
@@ -139,6 +207,10 @@ export interface NodeSummary {
        * live dependency; onto a local one it is not. Reported because the two look identical
        * in Figma and behave completely differently when the upstream library changes. */
       remote?: boolean
+      /** Paint fields only: the node reaches this variable through `fills`/`strokes`, but no
+       * paint in the stack carries it — a shader paint's settings are bound this way. Keyed
+       * `fills[*0]`, `fills[*1]`, … so it can never be mistaken for `fills[0]`. */
+      unattributed?: boolean
     }
   >
   /** TEXT only, truncated — an agent wants the gist, not the copy deck. */
@@ -391,18 +463,42 @@ const COMPARABLE: Readonly<Record<string, string>> = {
  * whoever reads it cannot tell whether the design means 21.76 or the token's own value. Both
  * numbers are reported so the answer is not a guess.
  */
-async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSummary['bindings']> {
+export async function describeBindings(node: any, summary: NodeSummary): Promise<NodeSummary['bindings']> {
   const bound = node.boundVariables
   if (!bound || typeof bound !== 'object') return undefined
 
   const out: NonNullable<NodeSummary['bindings']> = {}
   for (const [field, entry] of Object.entries(bound as Record<string, any>)) {
     if (field in PAINT_FIELDS) {
-      const aliases = Array.isArray(entry) ? entry : [entry]
-      const paints = node[field]
-      for (const [index, alias] of aliases.entries()) {
-        const record = await describePaintBinding(alias, Array.isArray(paints) ? paints[index] : undefined)
-        if (record) out[aliases.length > 1 ? `${field}[${index}]` : field] = record
+      // The binding of a paint is the one the PAINT carries: `boundVariables.color`, and only
+      // a SOLID has the field at all. The node-level `boundVariables.fills` is a flat list of
+      // every variable the field reaches — nothing in the API says it lines up with `fills`,
+      // and on a layer whose stack holds a shader it plainly does not: the aliases there are
+      // the shader's own gradient stops. Zipping the two lists named the wrong paint and
+      // invented a mismatch on a paint that renders exactly what its token says.
+      const paints = Array.isArray(node[field]) ? (node[field] as unknown[]) : []
+      const claimed = new Set<string>()
+      for (const [index, paint] of paints.entries()) {
+        const alias = (paint as { boundVariables?: { color?: { id?: string } } })?.boundVariables?.color
+        if (typeof alias?.id !== 'string') continue
+        const record = await describePaintBinding(alias, paint)
+        if (!record) continue
+        out[paints.length > 1 ? `${field}[${index}]` : field] = record
+        claimed.add(alias.id)
+      }
+
+      // What is left is real — the field does reach these variables — but belongs to no single
+      // paint: a shader's settings arrive this way. Reported apart, and marked, so a token
+      // census still counts them and nobody reads them as the colour of a layer.
+      let spare = 0
+      for (const alias of Array.isArray(entry) ? entry : [entry]) {
+        const id = (alias as { id?: unknown } | null)?.id
+        if (typeof id !== 'string' || claimed.has(id)) continue
+        const record = await describePaintBinding(alias, undefined)
+        if (!record) continue
+        record.unattributed = true
+        out[`${field}[*${spare}]`] = record
+        spare += 1
       }
       continue
     }
@@ -516,6 +612,76 @@ async function boundTokenName(holder: unknown): Promise<string | null> {
 }
 
 /**
+ * The variable aliases buried inside a shader's settings, named.
+ *
+ * A shader colour or gradient stop can be bound to a token exactly like any other colour, and
+ * Figma hands the binding back as `{ type: 'VARIABLE_ALIAS', id }` nested wherever the value
+ * happens to be. An id is unreadable and a name is unwritable, so both are kept: `token` is
+ * for the person, `id` is what goes back on a write.
+ */
+async function nameAliasesWithin(value: unknown): Promise<unknown> {
+  if (Array.isArray(value)) {
+    const out: unknown[] = []
+    for (const item of value) out.push(await nameAliasesWithin(item))
+    return out
+  }
+  if (!value || typeof value !== 'object') return value
+
+  const record = value as Record<string, unknown>
+  if (record.type === 'VARIABLE_ALIAS' && typeof record.id === 'string') {
+    let variable: Variable | null = null
+    try {
+      variable = await figma.variables.getVariableByIdAsync(record.id)
+    } catch {
+      /* an unresolvable alias is still the binding that is there — report it unnamed */
+    }
+    return { token: variable?.name ?? record.id, id: record.id, ...(variable?.key ? { key: variable.key } : {}) }
+  }
+
+  const out: Record<string, unknown> = {}
+  for (const [key, item] of Object.entries(record)) out[key] = await nameAliasesWithin(item)
+  return out
+}
+
+/**
+ * One shader — paint or effect — with its settings.
+ *
+ * `definitions` is the shader catalogue when the file could produce one. It is optional
+ * because `listAvailableShaders()` costs a round trip and comes back empty on a file that
+ * only uses shaders it did not author, which is the common case: the settings are then
+ * reported by id, and `named: false` says so rather than leaving the reader to wonder why
+ * every name is missing.
+ */
+export async function describeShader(
+  shader: { id?: unknown; properties?: unknown },
+  definitions?: Map<string, Shader>
+): Promise<ShaderSummary> {
+  const id = typeof shader?.id === 'string' ? shader.id : ''
+  const known = definitions?.get(id)
+  const declared = known?.propertyDefinitions ?? {}
+  const out: ShaderSummary = {
+    id,
+    named: known !== undefined,
+    ...(known ? { name: known.name, kind: known.type } : {}),
+  }
+
+  const properties = shader?.properties
+  if (properties && typeof properties === 'object') {
+    const described: ShaderPropertySummary[] = []
+    for (const [defId, value] of Object.entries(properties as Record<string, unknown>)) {
+      const definition = declared[defId]
+      described.push({
+        id: defId,
+        ...(definition ? { name: definition.name, type: definition.type } : {}),
+        value: await nameAliasesWithin(value),
+      })
+    }
+    if (described.length > 0) out.properties = described
+  }
+  return out
+}
+
+/**
  * The one description of a paint, shared by `node.get` and `styles.list`.
  *
  * It is one function on purpose. These two ops answered the same question differently for a
@@ -523,12 +689,23 @@ async function boundTokenName(holder: unknown): Promise<string | null> {
  * invisible until a gradient had to be told apart from another gradient and neither answer
  * could do it. Two descriptions of one thing drift; one cannot.
  */
-export async function describePaint(paint: any, index: number): Promise<PaintSummary> {
+export async function describePaint(
+  paint: any,
+  index: number,
+  shaders?: Map<string, Shader>
+): Promise<PaintSummary> {
   const out: PaintSummary = { type: String(paint?.type ?? 'UNKNOWN'), index }
   if (paint?.visible === false) out.visible = false
+  // Every paint type carries these two, and a stack cannot be reassembled without them.
+  // Reported before the per-type branches precisely because those branches return early —
+  // that is how they went missing from images and gradients in the first place.
+  if (typeof paint?.opacity === 'number' && paint.opacity < 1) out.opacity = paint.opacity
+  if (typeof paint?.blendMode === 'string' && paint.blendMode !== 'NORMAL') out.blendMode = paint.blendMode
 
   if (paint?.type === 'SOLID' && paint.color) {
     out.color = paintHex(paint.color)
+    // `alpha` predates `opacity` here and means the same thing on a solid. Kept because
+    // callers read it; the two never disagree.
     if (typeof paint.opacity === 'number' && paint.opacity < 1) out.alpha = paint.opacity
     out.bound = await boundTokenName(paint)
     return out
@@ -536,6 +713,7 @@ export async function describePaint(paint: any, index: number): Promise<PaintSum
 
   if (Array.isArray(paint?.gradientStops)) {
     out.bound = null
+    if (Array.isArray(paint.gradientTransform)) out.transform = paint.gradientTransform
     out.stops = []
     for (const stop of paint.gradientStops) {
       const described: PaintStopSummary = {
@@ -549,11 +727,48 @@ export async function describePaint(paint: any, index: number): Promise<PaintSum
     return out
   }
 
-  if (paint?.type === 'IMAGE' && typeof paint.imageHash === 'string') out.imageHash = paint.imageHash
-  if (paint?.type === 'VIDEO' && typeof paint.videoHash === 'string') out.videoHash = paint.videoHash
-  if ((paint?.type === 'IMAGE' || paint?.type === 'VIDEO') && typeof paint.scaleMode === 'string') {
-    out.scaleMode = paint.scaleMode
+  if (paint?.type === 'IMAGE' || paint?.type === 'VIDEO') {
+    if (paint.type === 'IMAGE' && typeof paint.imageHash === 'string') out.imageHash = paint.imageHash
+    if (paint.type === 'VIDEO' && typeof paint.videoHash === 'string') out.videoHash = paint.videoHash
+    if (typeof paint.scaleMode === 'string') out.scaleMode = paint.scaleMode
+    const transform = paint.type === 'IMAGE' ? paint.imageTransform : paint.videoTransform
+    if (Array.isArray(transform)) out.imageTransform = transform
+    if (typeof paint.scalingFactor === 'number') out.scalingFactor = paint.scalingFactor
+    if (typeof paint.rotation === 'number' && paint.rotation !== 0) out.rotation = paint.rotation
+    if (paint.filters && typeof paint.filters === 'object') {
+      // Figma writes every adjustment it holds, zeroes included; only the ones that do
+      // something are worth carrying.
+      const filters: Record<string, number> = {}
+      for (const [name, value] of Object.entries(paint.filters as Record<string, unknown>)) {
+        if (typeof value === 'number' && value !== 0) filters[name] = value
+      }
+      if (Object.keys(filters).length > 0) out.filters = filters
+    }
+    out.bound = null
+    return out
   }
+
+  if (paint?.type === 'PATTERN') {
+    out.pattern = {
+      ...(typeof paint.sourceNodeId === 'string' ? { sourceNodeId: paint.sourceNodeId } : {}),
+      ...(typeof paint.tileType === 'string' ? { tileType: paint.tileType } : {}),
+      ...(typeof paint.scalingFactor === 'number' ? { scalingFactor: paint.scalingFactor } : {}),
+      ...(paint.spacing ? { spacing: { x: paint.spacing.x, y: paint.spacing.y } } : {}),
+      ...(typeof paint.horizontalAlignment === 'string'
+        ? { horizontalAlignment: paint.horizontalAlignment }
+        : {}),
+      ...(typeof paint.verticalAlignment === 'string' ? { verticalAlignment: paint.verticalAlignment } : {}),
+    }
+    out.bound = null
+    return out
+  }
+
+  if (paint?.type === 'SHADER') {
+    out.shader = await describeShader(paint, shaders)
+    out.bound = null
+    return out
+  }
+
   out.bound = await boundTokenName(paint)
   return out
 }
@@ -568,16 +783,45 @@ async function paintStyleName(node: any, field: 'fillStyleId' | 'strokeStyleId')
   return style ? style.name : id
 }
 
-async function describePaints(node: any): Promise<NodeSummary['paints'] | null> {
+/**
+ * The shader catalogue, fetched at most once per call and only if a shader turns up.
+ *
+ * `listAvailableShaders()` is a round trip and answers empty on most files, so paying for it
+ * on every `node.get` would be a cost with no return. The holder threads one answer through a
+ * whole recursion without making every caller know the shader API exists.
+ */
+export type ShaderCatalogue = { map?: Map<string, Shader> }
+
+export async function shadersFor(catalogue: ShaderCatalogue): Promise<Map<string, Shader>> {
+  if (!catalogue.map) {
+    const map = new Map<string, Shader>()
+    try {
+      for (const shader of await figma.listAvailableShaders()) map.set(shader.id, shader)
+    } catch {
+      /* a sandbox without the shader API: the ids on the paints are then the whole answer */
+    }
+    catalogue.map = map
+  }
+  return catalogue.map
+}
+
+const hasShader = (paints: unknown): boolean =>
+  Array.isArray(paints) && paints.some((paint) => (paint as { type?: string })?.type === 'SHADER')
+
+async function describePaints(
+  node: any,
+  catalogue: ShaderCatalogue = {}
+): Promise<NodeSummary['paints'] | null> {
   const out: NonNullable<NodeSummary['paints']> = {}
+  const shaders = hasShader(node.fills) || hasShader(node.strokes) ? await shadersFor(catalogue) : undefined
   if (Array.isArray(node.fills)) {
     out.fills = []
-    for (const [index, paint] of node.fills.entries()) out.fills.push(await describePaint(paint, index))
+    for (const [index, paint] of node.fills.entries()) out.fills.push(await describePaint(paint, index, shaders))
     out.fillStyle = await paintStyleName(node, 'fillStyleId')
   }
   if (Array.isArray(node.strokes)) {
     out.strokes = []
-    for (const [index, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index))
+    for (const [index, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index, shaders))
     out.strokeStyle = await paintStyleName(node, 'strokeStyleId')
   }
   return out.fills || out.strokes ? out : null
@@ -622,7 +866,13 @@ async function describeVariableModes(node: any): Promise<NodeSummary['modes'] | 
   return out
 }
 
-async function describeNode(node: any, depth: number, paints = false, root = true): Promise<NodeSummary> {
+async function describeNode(
+  node: any,
+  depth: number,
+  paints = false,
+  root = true,
+  catalogue: ShaderCatalogue = {}
+): Promise<NodeSummary> {
   const summary = summarizeNode(node)
 
   const bindings = await describeBindings(node, summary)
@@ -634,7 +884,7 @@ async function describeNode(node: any, depth: number, paints = false, root = tru
   }
 
   if (paints) {
-    const described = await describePaints(node)
+    const described = await describePaints(node, catalogue)
     if (described) summary.paints = described
   }
 
@@ -663,7 +913,7 @@ async function describeNode(node: any, depth: number, paints = false, root = tru
 
   if (depth > 0 && Array.isArray(node.children)) {
     summary.children = []
-    for (const child of node.children) summary.children.push(await describeNode(child, depth - 1, paints, false))
+    for (const child of node.children) summary.children.push(await describeNode(child, depth - 1, paints, false, catalogue))
   }
 
   return summary

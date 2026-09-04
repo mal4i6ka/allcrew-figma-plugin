@@ -219,7 +219,7 @@ type PluginMessage =
       loop?: number
     }
   | { type: 'MOTION_STYLES' }
-  | { type: 'SHADER_LIST'; kind?: string }
+  | { type: 'SHADER_LIST'; kind?: string; scope?: string }
   | { type: 'STYLE_LIST'; kind?: string; query?: string; limit?: number }
   | {
       type: 'STYLE_MAKE'
@@ -4095,15 +4095,34 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       break
     }
     case 'SHADER_LIST': {
-      // @agent read: the shaders this file can use — their ids, whether they paint or filter, and the settings each one takes
+      // @agent read: the shaders this file can use, and the ones it is already using — ids, whether they paint or filter, and the settings each takes
       // @agent param kind: fill or effect; omitted means both
+      // @agent param scope: page or document — where to look for shaders in use; page by default, none skips the scan
       try {
         const kind = typeof msg.kind === 'string' ? msg.kind.trim().toLowerCase() : ''
         if (kind !== '' && kind !== 'fill' && kind !== 'effect') {
           refuse('SHADER_LIST', 'kind must be fill or effect')
           break
         }
-        const shaders = (await figma.listAvailableShaders())
+        const scope = typeof msg.scope === 'string' ? msg.scope.trim().toLowerCase() : 'page'
+        if (!['page', 'document', 'none'].includes(scope)) {
+          refuse('SHADER_LIST', 'scope must be page, document or none')
+          break
+        }
+
+        const oneLine = (definitions: Shader['propertyDefinitions']): string =>
+          Object.entries(definitions ?? {})
+            .map(([defId, definition]) => {
+              const fallback =
+                definition.defaultValue === undefined
+                  ? ''
+                  : ` (=${typeof definition.defaultValue === 'object' ? JSON.stringify(definition.defaultValue) : definition.defaultValue})`
+              return `${defId}: ${definition.type.toLowerCase()}${fallback}`
+            })
+            .join(' · ')
+
+        const offered = await figma.listAvailableShaders()
+        const shaders: Array<Record<string, unknown>> = offered
           .filter((shader) => kind === '' || shader.type === kind)
           .map((shader) => ({
             id: shader.id,
@@ -4112,17 +4131,68 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             imported: shader.imported,
             // One line, like every other catalogue here: a property's own name, its type and
             // whatever it defaults to.
-            properties: Object.entries(shader.propertyDefinitions ?? {})
-              .map(([defId, definition]) => {
-                const fallback =
-                  definition.defaultValue === undefined
-                    ? ''
-                    : ` (=${typeof definition.defaultValue === 'object' ? JSON.stringify(definition.defaultValue) : definition.defaultValue})`
-                return `${defId}: ${definition.type.toLowerCase()}${fallback}`
-              })
-              .join(' · '),
+            properties: oneLine(shader.propertyDefinitions),
           }))
-        postToUi({ type: 'SHADERS', total: shaders.length, shaders })
+
+        // `listAvailableShaders()` answers with what the file OWNS or subscribes to, and comes
+        // back empty on a file that merely has a shader on a layer — which made this command
+        // report "no shaders" about a document you can see one in. What is on the canvas is
+        // findable, so it is found: id, where it is used, and the setting ids it was given.
+        // Those ids are what a write puts back, so an unnamed shader is still a usable one.
+        const used = new Map<string, { kind: 'fill' | 'effect'; nodes: string[]; keys: Set<string> }>()
+        if (scope !== 'none') {
+          const note = (id: unknown, shaderKind: 'fill' | 'effect', node: SceneNode, properties: unknown) => {
+            if (typeof id !== 'string' || id === '') return
+            if (kind !== '' && kind !== shaderKind) return
+            const entry = used.get(id) ?? { kind: shaderKind, nodes: [], keys: new Set<string>() }
+            if (entry.nodes.length < 10) entry.nodes.push(`${node.name} (${node.id})`)
+            if (properties && typeof properties === 'object') {
+              for (const key of Object.keys(properties as Record<string, unknown>)) entry.keys.add(key)
+            }
+            used.set(id, entry)
+          }
+          const visit = (node: SceneNode) => {
+            for (const field of ['fills', 'strokes'] as const) {
+              const paints = (node as unknown as Record<string, unknown>)[field]
+              if (!Array.isArray(paints)) continue
+              for (const paint of paints) {
+                if ((paint as Paint)?.type !== 'SHADER') continue
+                note((paint as ShaderPaint).id, 'fill', node, (paint as ShaderPaint).properties)
+              }
+            }
+            const effects = (node as unknown as { effects?: readonly Effect[] }).effects
+            if (Array.isArray(effects)) {
+              for (const effect of effects) {
+                if (effect?.type !== 'SHADER') continue
+                note((effect as ShaderEffect).id, 'effect', node, (effect as ShaderEffect).properties)
+              }
+            }
+            if ('children' in node) for (const child of node.children) visit(child)
+          }
+          const pages = scope === 'document' ? figma.root.children : [figma.currentPage]
+          for (const page of pages) {
+            await page.loadAsync()
+            for (const node of page.children) visit(node)
+          }
+        }
+
+        const known = new Set(offered.map((shader) => shader.id))
+        for (const [id, entry] of used) {
+          if (known.has(id)) continue
+          shaders.push({
+            id,
+            kind: entry.kind,
+            imported: true,
+            inUse: entry.nodes.length,
+            usedBy: entry.nodes,
+            // Numbered, not named: the definitions live on the Shader object, and this file
+            // does not offer one for this id. `importShaderById` would fetch them — a write.
+            properties: [...entry.keys].join(' · '),
+            named: false,
+          })
+        }
+
+        postToUi({ type: 'SHADERS', total: shaders.length, shaders, scanned: scope })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'SHADER_LIST', message: String((error as Error)?.message || error) })
       }

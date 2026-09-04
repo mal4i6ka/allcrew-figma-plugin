@@ -194,6 +194,7 @@ altery-figma ops --json       # the same, machine-readable
 | `node.focus` | selects a node and scrolls the designer to it — "this one, look", and a link when the plugin is Organization-private |
 | `node.screenshot` | renders a node to PNG — how an agent checks what it actually drew |
 | `design.context` | reference HTML + CSS + PNG for a node, plus the tokens it binds |
+| `paints.stack` | every layer of one node's fill sandwich, bottom to top — opacity, blend mode and shader settings included |
 | `motion.context` | keyframe tracks with easing, the CSS/GSAP they compile to, and which backend fits |
 | `motion.preview` | a standalone page that actually plays the animation |
 | `transition.context` | Smart Animate between variants → CSS transitions, a FLIP toggle or View Transitions |
