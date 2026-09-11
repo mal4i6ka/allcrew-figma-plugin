@@ -9,7 +9,7 @@
  * (DOMContentLoaded + IntersectionObserver, §2.5) — the only trigger this task covers.
  */
 
-import { BEZIER_PRESETS, resolveSpringBounce, sampleSpring } from '../easing/index.ts'
+import { BEZIER_PRESETS, perceptualAngularFrequency, resolveSpringBounce, sampleSpring } from '../easing/index.ts'
 import type { MotionTrack } from './types.ts'
 
 export type GsapPluginName = 'CustomEase' | 'DrawSVGPlugin' | 'TextPlugin'
@@ -149,7 +149,15 @@ class EaseRegistry {
  * statically (no build-time value) and falls back to `"none"`, same treatment T5.3's
  * `pickBackend` gives it.
  */
-function resolveEase(easing: MotionEasing | VariableAlias, registry: EaseRegistry, plugins: Set<GsapPluginName>): string {
+function resolveEase(
+  easing: MotionEasing | VariableAlias,
+  registry: EaseRegistry,
+  plugins: Set<GsapPluginName>,
+  /** Length of the keyframe segment this ease covers, in seconds. A GSAP ease is normalized over
+   * that segment, so the spring must be solved at the segment's own period — otherwise a short
+   * segment gets a curve shaped for a much slower spring, squeezed. */
+  segmentSec: number
+): string {
   if (easing.type === 'VARIABLE_ALIAS') return 'none'
   if (easing.type === 'LINEAR' || easing.type === 'HOLD') return 'none'
 
@@ -172,7 +180,7 @@ function resolveEase(easing: MotionEasing | VariableAlias, registry: EaseRegistr
     if (bounce <= SPRING_BACK_BOUNCE_THRESHOLD) {
       return `back.out(${round(1 + 2.5 * bounce, 3)})`
     }
-    return registry.sampledSpring(sampleSpring(bounce).points)
+    return registry.sampledSpring(sampleSpring(bounce, perceptualAngularFrequency(segmentSec)).points)
   }
 
   // Remaining named presets (EASE_IN, EASE_OUT_BACK, ...): Figma gives exact control points
@@ -228,6 +236,7 @@ function buildPropertyTween(
   const keyframes: Record<string, unknown> = {}
   let lastVars: Record<string, unknown> = fromVars
   let lastPercent = 0
+  let lastPositionSec = 0
 
   for (const keyframe of sorted) {
     const vars = trackValueVars(keyframe.value, gsapKeys, `${track.field} keyframe ${keyframe.id}`)
@@ -237,9 +246,10 @@ function buildPropertyTween(
       continue
     }
     const percent = (keyframe.timelinePosition / timelineDuration) * 100
-    const ease = resolveEase(keyframe.easing, registry, plugins)
+    const ease = resolveEase(keyframe.easing, registry, plugins, keyframe.timelinePosition - lastPositionSec)
     keyframes[formatPercentLabel(percent)] = { ...vars, ease }
     lastPercent = percent
+    lastPositionSec = keyframe.timelinePosition
   }
 
   ensureTerminalKeyframe(keyframes, lastPercent, lastVars)
@@ -257,6 +267,7 @@ function buildTextTween(track: MotionTrack, timelineDuration: number, registry: 
   const keyframes: Record<string, unknown> = {}
   let lastVars: Record<string, unknown> = fromVars
   let lastPercent = 0
+  let lastPositionSec = 0
 
   for (const keyframe of sorted) {
     const text = requireTextData(keyframe.value, `${track.field} keyframe ${keyframe.id}`)
@@ -267,9 +278,10 @@ function buildTextTween(track: MotionTrack, timelineDuration: number, registry: 
       continue
     }
     const percent = (keyframe.timelinePosition / timelineDuration) * 100
-    const ease = resolveEase(keyframe.easing, registry, plugins)
+    const ease = resolveEase(keyframe.easing, registry, plugins, keyframe.timelinePosition - lastPositionSec)
     keyframes[formatPercentLabel(percent)] = { ...vars, ease }
     lastPercent = percent
+    lastPositionSec = keyframe.timelinePosition
   }
 
   ensureTerminalKeyframe(keyframes, lastPercent, lastVars)
@@ -316,6 +328,7 @@ function buildDrawSvgTween(
   const keyframes: Record<string, unknown> = {}
   let lastVars: Record<string, unknown> = fromVars
   let lastPercent = 0
+  let lastPositionSec = 0
 
   for (const position of [...positions].sort((a, b) => a - b)) {
     if (position <= 0) continue
@@ -323,13 +336,14 @@ function buildDrawSvgTween(
     const start = valueAtOrBefore(startTrack, position, startBase)
     const end = valueAtOrBefore(endTrack, position, endBase)
     const easing = start.easing ?? end.easing ?? { type: 'LINEAR' as const }
-    const ease = resolveEase(easing, registry, plugins)
+    const ease = resolveEase(easing, registry, plugins, position - lastPositionSec)
     const vars = { drawSVG: drawSvgLabel(start.value, end.value) }
 
     const percent = (position / timelineDuration) * 100
     keyframes[formatPercentLabel(percent)] = { ...vars, ease }
     lastVars = vars
     lastPercent = percent
+    lastPositionSec = position
   }
 
   ensureTerminalKeyframe(keyframes, lastPercent, lastVars)
@@ -426,24 +440,4 @@ export function emitGsapTimeline(input: GsapTimelineInput): GsapEmitResult {
   }
 
   return { js: renderScript(input.timelineId, registry, plugins, tweenStatements), usedPlugins: [...plugins] }
-}
-
-const PLUGIN_STATIC_FILE_BY_NAME: Record<GsapPluginName, string> = {
-  CustomEase: 'vendor/gsap/CustomEase.min.js',
-  DrawSVGPlugin: 'vendor/gsap/DrawSVGPlugin.min.js',
-  TextPlugin: 'vendor/gsap/TextPlugin.min.js',
-}
-
-/**
- * `<script>` tags for the vendored GSAP bundle (core + only the plugins actually used) plus
- * the generated animation file — all via `{% static %}`, never a CDN (DoD, §1.2). The plugin
- * expects `gsap.min.js` and any listed plugin file to already be copied into `static/vendor/gsap/`.
- */
-export function emitGsapScriptTags(usedPlugins: readonly GsapPluginName[], animationJsPath: string): string {
-  return [
-    '{% load static %}',
-    `<script src="{% static 'vendor/gsap/gsap.min.js' %}"></script>`,
-    ...usedPlugins.map((plugin) => `<script src="{% static '${PLUGIN_STATIC_FILE_BY_NAME[plugin]}' %}" defer></script>`),
-    `<script src="{% static '${animationJsPath}' %}" defer></script>`,
-  ].join('\n')
 }

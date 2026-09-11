@@ -1293,10 +1293,11 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       framework: "bootstrap",
       bootstrapFidelity: "components",
       bootstrapSource: "vendored",
-      bootstrapVersion: "5.3"
+      bootstrapVersion: "5.3",
+      djangoScaffold: true
     },
     tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: "", emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: "tshirt", collectionRoles: "" },
-    i18n: { wrapTranslate: true, sourceLanguage: "en" }
+    i18n: { wrapTranslate: true, sourceLanguage: "en", languages: "" }
   };
   var DESIGN_TOKENS_VALUES = {
     target: "design-tokens",
@@ -1306,10 +1307,11 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       framework: "none",
       bootstrapFidelity: "tokens",
       bootstrapSource: "vendored",
-      bootstrapVersion: "5.3"
+      bootstrapVersion: "5.3",
+      djangoScaffold: false
     },
     tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: "data-theme-name", emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: "tshirt", collectionRoles: "" },
-    i18n: { wrapTranslate: true, sourceLanguage: "en" }
+    i18n: { wrapTranslate: true, sourceLanguage: "en", languages: "" }
   };
   var TAURI_APP_VALUES = {
     target: "django",
@@ -1319,10 +1321,11 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       framework: "none",
       bootstrapFidelity: "tokens",
       bootstrapSource: "cdn",
-      bootstrapVersion: "5.3"
+      bootstrapVersion: "5.3",
+      djangoScaffold: false
     },
     tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: "", emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: "tshirt", collectionRoles: "" },
-    i18n: { wrapTranslate: true, sourceLanguage: "en" }
+    i18n: { wrapTranslate: true, sourceLanguage: "en", languages: "" }
   };
   var EXPORT_PRESETS = [
     { id: "django-bootstrap", label: "Django \xD7 Bootstrap", values: DJANGO_BOOTSTRAP_VALUES },
@@ -1389,7 +1392,8 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       framework: raw.framework === "none" || raw.framework === "bootstrap" ? raw.framework : defaults.framework,
       bootstrapFidelity: raw.bootstrapFidelity === "tokens" || raw.bootstrapFidelity === "utilities" || raw.bootstrapFidelity === "components" || raw.bootstrapFidelity === "theme" ? raw.bootstrapFidelity : defaults.bootstrapFidelity,
       bootstrapSource: raw.bootstrapSource === "assume" || raw.bootstrapSource === "cdn" || raw.bootstrapSource === "vendored" ? raw.bootstrapSource : defaults.bootstrapSource,
-      bootstrapVersion: typeof raw.bootstrapVersion === "string" && raw.bootstrapVersion.trim() !== "" ? raw.bootstrapVersion.trim() : defaults.bootstrapVersion
+      bootstrapVersion: typeof raw.bootstrapVersion === "string" && raw.bootstrapVersion.trim() !== "" ? raw.bootstrapVersion.trim() : defaults.bootstrapVersion,
+      djangoScaffold: typeof raw.djangoScaffold === "boolean" ? raw.djangoScaffold : defaults.djangoScaffold
     };
   }
   function normalizeTokens(raw) {
@@ -1415,8 +1419,24 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     if (!isRecord2(raw)) return __spreadValues({}, defaults);
     return {
       wrapTranslate: typeof raw.wrapTranslate === "boolean" ? raw.wrapTranslate : defaults.wrapTranslate,
-      sourceLanguage: typeof raw.sourceLanguage === "string" && raw.sourceLanguage.trim() !== "" ? raw.sourceLanguage.trim() : defaults.sourceLanguage
+      sourceLanguage: typeof raw.sourceLanguage === "string" && raw.sourceLanguage.trim() !== "" ? raw.sourceLanguage.trim() : defaults.sourceLanguage,
+      // Stored verbatim (minus surrounding blanks) so the settings field shows what was typed;
+      // `parseLanguages` is the single place that decides what a valid locale code is.
+      languages: typeof raw.languages === "string" ? raw.languages.trim() : defaults.languages
     };
+  }
+  function parseLanguages(languages, sourceLanguage) {
+    const source = sourceLanguage.trim().toLowerCase();
+    const seen = /* @__PURE__ */ new Set();
+    const codes = [];
+    for (const raw of languages.split(",")) {
+      const code = raw.trim().toLowerCase().replace(/_/g, "-");
+      if (!/^[a-z]{2,3}(-[a-z0-9]{2,8})?$/.test(code)) continue;
+      if (code === source || seen.has(code)) continue;
+      seen.add(code);
+      codes.push(code);
+    }
+    return codes;
   }
   function normalizeDelivery2(raw) {
     if (!isRecord2(raw)) return __spreadValues({}, DEFAULT_DELIVERY);
@@ -3838,8 +3858,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     el.fontName = node.bold ? ctx.fonts.bold : ctx.fonts.regular;
     el.characters = node.text;
     el.fontSize = node.fontSize;
-    const paints2 = resolveFill(node.color, ctx);
-    el.fills = paints2.length ? paints2 : [solidPaint(COLOR.bodyText)];
+    const paints = resolveFill(node.color, ctx);
+    el.fills = paints.length ? paints : [solidPaint(COLOR.bodyText)];
     el.textAlignHorizontal = ((_a = node.align) != null ? _a : "left").toUpperCase();
     el.textAutoResize = node.grow ? "HEIGHT" : "WIDTH_AND_HEIGHT";
     return el;
@@ -4220,6 +4240,10 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     SLOW: 0.15
   };
   var BASE_SPRING_ANGULAR_FREQUENCY = 10;
+  function perceptualAngularFrequency(durationSec) {
+    if (!(durationSec > 0) || !Number.isFinite(durationSec)) return BASE_SPRING_ANGULAR_FREQUENCY;
+    return 2 * Math.PI / durationSec;
+  }
   function clamp(value, lo, hi) {
     return Math.min(hi, Math.max(lo, value));
   }
@@ -4270,6 +4294,74 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     }
     throw new Error(`${easing.type} is not a spring easing`);
   }
+  function physicalSpringParams(spring) {
+    var _a;
+    const mass = spring.mass > 0 ? spring.mass : 1;
+    const stiffness = spring.stiffness > 0 ? spring.stiffness : 1;
+    const angularFrequency = Math.sqrt(stiffness / mass);
+    const dampingRatio = clamp(spring.damping / (2 * Math.sqrt(stiffness * mass)), MIN_DAMPING_RATIO, 1);
+    return { dampingRatio, angularFrequency, initialVelocity: (_a = spring.initialVelocity) != null ? _a : 0 };
+  }
+  function normalizedSpringParams(bounce, angularFrequency = BASE_SPRING_ANGULAR_FREQUENCY) {
+    return { dampingRatio: clamp(1 - bounce, MIN_DAMPING_RATIO, 1), angularFrequency, initialVelocity: 0 };
+  }
+  function springParamsFromEasing(easing, durationSec) {
+    const spring = easing.easingFunctionSpring;
+    const preset = easing.type === "CUSTOM_SPRING" ? void 0 : easing.type;
+    if (spring && typeof spring.mass === "number" && typeof spring.stiffness === "number" && typeof spring.damping === "number") {
+      return {
+        params: physicalSpringParams({
+          mass: spring.mass,
+          stiffness: spring.stiffness,
+          damping: spring.damping,
+          initialVelocity: spring.initialVelocity
+        }),
+        source: "physical",
+        preset
+      };
+    }
+    const angularFrequency = durationSec === void 0 ? BASE_SPRING_ANGULAR_FREQUENCY : perceptualAngularFrequency(durationSec);
+    if (spring && typeof spring.bounce === "number") {
+      return { params: normalizedSpringParams(spring.bounce, angularFrequency), source: "normalized", preset };
+    }
+    if (easing.type in NAMED_SPRING_BOUNCE) {
+      const bounce = NAMED_SPRING_BOUNCE[easing.type];
+      return { params: normalizedSpringParams(bounce, angularFrequency), source: "preset-table", preset };
+    }
+    throw new Error(`${easing.type} is not a spring easing`);
+  }
+  function observeSpringPreset(easing) {
+    if (!(easing.type in NAMED_SPRING_BOUNCE)) return null;
+    const spring = easing.easingFunctionSpring;
+    if (!spring) return null;
+    const tableBounce = NAMED_SPRING_BOUNCE[easing.type];
+    if (typeof spring.mass === "number" && typeof spring.stiffness === "number" && typeof spring.damping === "number") {
+      const observedBounce = physicalSpringToNormalized({ mass: spring.mass, stiffness: spring.stiffness, damping: spring.damping });
+      return { preset: easing.type, observedBounce, tableBounce };
+    }
+    if (typeof spring.bounce === "number") {
+      return { preset: easing.type, observedBounce: spring.bounce, tableBounce };
+    }
+    return null;
+  }
+  function summarizeSpringPresetObservations(observations, tolerance = 0.02) {
+    var _a;
+    const byPreset = {};
+    for (const observation of observations) {
+      const bucket = (_a = byPreset[observation.preset]) != null ? _a : { total: 0, samples: 0, tableBounce: observation.tableBounce };
+      bucket.total += observation.observedBounce;
+      bucket.samples += 1;
+      byPreset[observation.preset] = bucket;
+    }
+    const summary = {};
+    for (const preset of Object.keys(byPreset).sort()) {
+      const { total, samples, tableBounce } = byPreset[preset];
+      const observedBounce = round3(total / samples, 4);
+      const delta = round3(Math.abs(observedBounce - tableBounce), 4);
+      summary[preset] = { observedBounce, tableBounce, delta, matches: delta <= tolerance, samples };
+    }
+    return summary;
+  }
   function springDerivative(state, dampingRatio, omega0) {
     return {
       d: state.v,
@@ -4289,38 +4381,49 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   var MIN_DAMPING_RATIO = 1e-3;
   var SETTLE_TOLERANCE = 4e-3;
   var MAX_SETTLE_TIME_SEC = 10;
-  function findSettlingTimeSec(dampingRatio, omega0) {
-    const period = 2 * Math.PI / omega0;
-    const dt = Math.min(period / 100, 0.01);
+  function integrationStepSec(omega0) {
+    return Math.min(2 * Math.PI / omega0 / 100, 0.01);
+  }
+  function findSettlingTimeSec(params) {
+    const dt = integrationStepSec(params.angularFrequency);
     const maxSteps = Math.ceil(MAX_SETTLE_TIME_SEC / dt);
-    let state = { d: -1, v: 0 };
+    let state = { d: -1, v: params.initialVelocity };
     let lastUnsettledStep = 0;
     for (let step = 1; step <= maxSteps; step++) {
-      state = rk4Step(state, dt, dampingRatio, omega0);
+      state = rk4Step(state, dt, params.dampingRatio, params.angularFrequency);
       if (Math.abs(state.d) > SETTLE_TOLERANCE) lastUnsettledStep = step;
     }
     return Math.min(lastUnsettledStep * dt, MAX_SETTLE_TIME_SEC);
   }
   var SAMPLE_COUNT = 80;
-  function sampleSpring(bounce, angularFrequency = BASE_SPRING_ANGULAR_FREQUENCY) {
-    const dampingRatio = clamp(1 - bounce, MIN_DAMPING_RATIO, 1);
-    const settlingTimeSec = findSettlingTimeSec(dampingRatio, angularFrequency);
+  function sampleSpringParams(params) {
+    const settlingTimeSec = findSettlingTimeSec(params);
     if (settlingTimeSec <= 0) {
       return { points: Array(SAMPLE_COUNT).fill(1), settlingTimeMs: 0 };
     }
-    const dt = settlingTimeSec / (SAMPLE_COUNT - 1);
+    const sampleDt = settlingTimeSec / (SAMPLE_COUNT - 1);
+    const stepsPerSample = Math.max(1, Math.ceil(sampleDt / integrationStepSec(params.angularFrequency)));
+    const dt = sampleDt / stepsPerSample;
     const points = [0];
-    let state = { d: -1, v: 0 };
+    let state = { d: -1, v: params.initialVelocity };
     for (let i = 1; i < SAMPLE_COUNT; i++) {
-      state = rk4Step(state, dt, dampingRatio, angularFrequency);
+      for (let step = 0; step < stepsPerSample; step++) {
+        state = rk4Step(state, dt, params.dampingRatio, params.angularFrequency);
+      }
       points.push(1 + state.d);
     }
     points[points.length - 1] = 1;
     return { points, settlingTimeMs: settlingTimeSec * 1e3 };
   }
-  function springToCssLinear(bounce, angularFrequency) {
-    const { points, settlingTimeMs } = sampleSpring(bounce, angularFrequency);
+  function sampleSpring(bounce, angularFrequency = BASE_SPRING_ANGULAR_FREQUENCY) {
+    return sampleSpringParams(normalizedSpringParams(bounce, angularFrequency));
+  }
+  function springParamsToCssLinear(params) {
+    const { points, settlingTimeMs } = sampleSpringParams(params);
     return { easing: `linear(${points.map((p) => round3(p, 4)).join(", ")})`, durationMs: settlingTimeMs };
+  }
+  function springToCssLinear(bounce, angularFrequency) {
+    return springParamsToCssLinear(normalizedSpringParams(bounce, angularFrequency));
   }
 
   // src/targets/django/smart-animate/easing-adapter.ts
@@ -4337,20 +4440,22 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
         const { x1, y1, x2, y2 } = easing.easingFunctionCubicBezier;
         return { timingFunction: `cubic-bezier(${x1}, ${y1}, ${x2}, ${y2})`, durationMs };
       }
-      case "CUSTOM_SPRING": {
-        if (!easing.easingFunctionSpring) {
-          throw new Error("CUSTOM_SPRING easing is missing easingFunctionSpring");
-        }
-        const bounce = physicalSpringToNormalized(easing.easingFunctionSpring);
-        const sampled = springToCssLinear(bounce);
-        return { timingFunction: sampled.easing, durationMs: sampled.durationMs };
-      }
+      case "CUSTOM_SPRING":
       case "GENTLE":
       case "QUICK":
       case "BOUNCY":
       case "SLOW": {
-        const sampled = springToCssLinear(NAMED_SPRING_BOUNCE[easing.type]);
-        return { timingFunction: sampled.easing, durationMs: sampled.durationMs };
+        if (easing.type === "CUSTOM_SPRING" && !easing.easingFunctionSpring) {
+          throw new Error("CUSTOM_SPRING easing is missing easingFunctionSpring");
+        }
+        const resolved = springParamsFromEasing(easing, duration);
+        const sampled = springParamsToCssLinear(resolved.params);
+        const observation = observeSpringPreset(easing);
+        return __spreadValues(__spreadValues({
+          timingFunction: sampled.easing,
+          durationMs: sampled.durationMs,
+          springSource: resolved.source
+        }, resolved.preset ? { springPreset: resolved.preset } : {}), observation ? { springObservation: observation } : {});
       }
       default: {
         const bezier = BEZIER_PRESETS[easing.type];
@@ -4908,7 +5013,14 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     try {
       const timing = transitionToCssTiming(transition);
       const direction = "direction" in transition ? { direction: transition.direction } : {};
-      return { transition: __spreadProps(__spreadValues({ style: transition.type }, direction), { durationMs: timing.durationMs, timingFunction: timing.timingFunction }) };
+      return {
+        transition: __spreadValues(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
+          style: transition.type
+        }, direction), {
+          durationMs: timing.durationMs,
+          timingFunction: timing.timingFunction
+        }), timing.springSource ? { springSource: timing.springSource } : {}), timing.springPreset ? { springPreset: timing.springPreset } : {}), timing.springObservation ? { springObservation: timing.springObservation } : {})
+      };
     } catch (e) {
       return {};
     }
@@ -4930,10 +5042,13 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       for (const action of (_a = reaction.actions) != null ? _a : []) {
         if (action.type !== "NODE" || action.navigation !== "CHANGE_TO" || !action.destinationId) continue;
         const transition = (_b = action.transition) != null ? _b : { type: "DISSOLVE", easing: { type: "LINEAR" }, duration: 0 };
-        const { timingFunction, durationMs } = transitionToCssTiming(
-          transition
-        );
-        interactions.push(__spreadValues({ trigger, destinationId: action.destinationId, durationMs, timingFunction }, sourceId ? { sourceId } : {}));
+        const timing = transitionToCssTiming(transition);
+        interactions.push(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+          trigger,
+          destinationId: action.destinationId,
+          durationMs: timing.durationMs,
+          timingFunction: timing.timingFunction
+        }, timing.springSource ? { springSource: timing.springSource } : {}), timing.springPreset ? { springPreset: timing.springPreset } : {}), timing.springObservation ? { springObservation: timing.springObservation } : {}), sourceId ? { sourceId } : {}));
       }
     }
     return interactions.length > 0 ? { interactions } : {};
@@ -4977,21 +5092,51 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
         const background2 = rawBackground && rawBackground.type === "SOLID_COLOR" && rawBackground.color ? { type: "SOLID_COLOR", color: rawBackground.color } : { type: "NONE" };
         const closeInteraction = action.overlayBackgroundInteraction === "CLOSE_ON_CLICK_OUTSIDE" ? "CLOSE_ON_CLICK_OUTSIDE" : "NONE";
         const relativePosition = (_c = action.overlayRelativePosition) != null ? _c : null;
-        overlays.push({
-          trigger: reaction.trigger.type,
+        const triggerTimeoutMs = reaction.trigger.type === "AFTER_TIMEOUT" ? Math.round(reaction.trigger.timeout * 1e3) : void 0;
+        const triggerKeyCodes = reaction.trigger.type === "ON_KEY_DOWN" ? reaction.trigger.keyCodes : void 0;
+        overlays.push(__spreadValues(__spreadProps(__spreadValues(__spreadValues({
+          trigger: reaction.trigger.type
+        }, triggerTimeoutMs !== void 0 ? { triggerTimeoutMs } : {}), triggerKeyCodes ? { triggerKeyCodes } : {}), {
           destinationId: action.destinationId,
           relativePosition,
           positionType,
           background: background2,
           closeInteraction
-        });
+        }), readNavigateTransition(action.transition)));
       }
     }
     return overlays.length > 0 ? { overlays } : {};
   }
+  var CLICK_ACTION_TRIGGERS = { ON_CLICK: true, MOUSE_UP: true };
+  function readClickActions(node) {
+    var _a;
+    let reactions;
+    try {
+      reactions = node.reactions;
+    } catch (e) {
+      return {};
+    }
+    for (const reaction of reactions != null ? reactions : []) {
+      if (!reaction.trigger || !CLICK_ACTION_TRIGGERS[reaction.trigger.type]) continue;
+      for (const action of (_a = reaction.actions) != null ? _a : []) {
+        if (action.type === "URL" && action.url) return { externalHref: action.url };
+        if (action.type === "BACK") return { back: true };
+        if (action.type === "CLOSE") return { closeDialog: true };
+        if (action.type === "NODE" && action.navigation === "SCROLL_TO" && action.destinationId) {
+          return { scrollTo: { destinationId: action.destinationId } };
+        }
+      }
+    }
+    return {};
+  }
+  function readScrollBehavior(node) {
+    if (node.scrollBehavior === "FIXED") return { scrollBehavior: "fixed" };
+    if (node.scrollBehavior === "STICKY_SCROLLS") return { scrollBehavior: "sticky" };
+    return {};
+  }
   function baseProps(node, isGridChild) {
     const constraints = readConstraints(node);
-    return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+    return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
       id: node.id,
       name: node.name,
       position: { x: node.x, y: node.y },
@@ -4999,7 +5144,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       gridPlacement: normalizeGridPlacement(node, isGridChild),
       componentPropertyReferences: normalizeComponentPropertyReferences(readComponentPropertyReferences(node)),
       warnings: []
-    }, constraints ? { constraints } : {}), childLayoutOverrides(node)), readAspectRatio(node)), readNavigateReaction(node)), readInteractions(node)), readOverlays(node));
+    }, constraints ? { constraints } : {}), childLayoutOverrides(node)), readAspectRatio(node)), readNavigateReaction(node)), readInteractions(node)), readOverlays(node)), readClickActions(node)), readScrollBehavior(node));
   }
   function fixedChildrenCount(node) {
     return node.numberOfFixedChildren ? { fixedChildrenCount: node.numberOfFixedChildren } : {};
@@ -5130,9 +5275,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       characters: node.characters
     }), textAlign ? { textAlign } : {}), textAlignVertical ? { textAlignVertical } : {}), textTruncate(node)), node.textAutoResize === "WIDTH_AND_HEIGHT" ? { noWrap: true } : {}), node.textAutoResize && node.textAutoResize !== "NONE" ? { autoResize: true } : {}), paragraphSpacing ? { paragraphSpacing } : {}), paragraphIndent ? { paragraphIndent } : {}), listSpacing ? { listSpacing } : {}), node.leadingTrim === "CAP_HEIGHT" ? { leadingTrim: "CAP_HEIGHT" } : {}), node.hangingPunctuation ? { hangingPunctuation: true } : {}), node.hangingList ? { hangingList: true } : {});
   }
-  function firstSolidCss(paints2) {
-    if (!Array.isArray(paints2)) return void 0;
-    const solid6 = paints2.find((p) => (p == null ? void 0 : p.type) === "SOLID" && p.visible !== false);
+  function firstSolidCss(paints) {
+    if (!Array.isArray(paints)) return void 0;
+    const solid6 = paints.find((p) => (p == null ? void 0 : p.type) === "SOLID" && p.visible !== false);
     if (!(solid6 == null ? void 0 : solid6.color)) return void 0;
     return rgbaToCss(solid6.opacity != null && solid6.opacity < 1 ? __spreadProps(__spreadValues({}, solid6.color), { a: solid6.opacity }) : solid6.color);
   }
@@ -6269,9 +6414,9 @@ ${body}
   var UNSUPPORTED_FILL_TYPES = /* @__PURE__ */ new Set(["SHADER", "PATTERN"]);
   function warnUnsupportedFills(source, nodeId, notes) {
     for (const field of ["fills", "strokes"]) {
-      const paints2 = source[field];
-      if (!Array.isArray(paints2)) continue;
-      for (const paint of paints2) {
+      const paints = source[field];
+      if (!Array.isArray(paints)) continue;
+      for (const paint of paints) {
         const entry = paint;
         if ((entry == null ? void 0 : entry.visible) === false) continue;
         if (typeof (entry == null ? void 0 : entry.type) !== "string" || !UNSUPPORTED_FILL_TYPES.has(entry.type)) continue;
@@ -6359,7 +6504,7 @@ ${body}
     if (rule) rules.push(rule);
   }
   async function collectNodeCss(node, parentLayout, parentSize, sceneNodesById, variableNamesById, rules, options, isFixedChild = false, childIndex) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     const className = classNameFor(node.id, options);
     const source = sceneNodesById.get(node.id);
     const layout = layoutDeclarations(node, parentLayout, parentSize, childIndex);
@@ -6368,13 +6513,18 @@ ${body}
       layout["top"] = "0";
       layout["z-index"] = "10";
     }
+    if (node.scrollBehavior) {
+      layout["position"] = node.scrollBehavior;
+      if (layout["top"] === void 0 && layout["bottom"] === void 0) layout["top"] = "0";
+      layout["z-index"] = (_a = layout["z-index"]) != null ? _a : "10";
+    }
     if (node.aspectRatio && node.type === "text" && node.autoResize) {
       rules.push(`/* .${className}: aspect-ratio skipped: auto-resize text */`);
     }
     const styleRefsComment = formatStyleRefsComment(className, node.styleRefs);
     if (styleRefsComment) rules.push(styleRefsComment);
     if (node.type === "text") {
-      const segments = (_b = (_a = source == null ? void 0 : source.getStyledTextSegments) == null ? void 0 : _a.call(source, TEXT_SEGMENT_FIELDS)) != null ? _b : [{ characters: node.characters }];
+      const segments = (_c = (_b = source == null ? void 0 : source.getStyledTextSegments) == null ? void 0 : _b.call(source, TEXT_SEGMENT_FIELDS)) != null ? _c : [{ characters: node.characters }];
       const paragraphs = splitTextParagraphs(segments);
       if (isMultiBlockText(paragraphs)) {
         const TYPOGRAPHY_KEYS = /* @__PURE__ */ new Set(["margin", "text-align", "text-indent"]);
@@ -6404,52 +6554,223 @@ ${body}
       }
       await emitTextRules(className, source, node, variableNamesById, rules);
     } else {
-      await emitBoxRules(className, node, source, layout, imageFillUrls(node), node.type === "vector", variableNamesById, rules, options.notes, (_c = options.themedInstances) == null ? void 0 : _c.get(node.id));
+      await emitBoxRules(className, node, source, layout, imageFillUrls(node), node.type === "vector", variableNamesById, rules, options.notes, (_d = options.themedInstances) == null ? void 0 : _d.get(node.id));
     }
     if ("children" in node) {
       const ownLayout = "layout" in node ? node.layout : null;
       const ownSize = fixedPixelSize(node);
-      const firstFixedIndex = node.children.length - ((_d = node.fixedChildrenCount) != null ? _d : 0);
+      const firstFixedIndex = node.children.length - ((_e = node.fixedChildrenCount) != null ? _e : 0);
       for (const [index, child] of node.children.entries()) {
         await collectNodeCss(child, ownLayout, ownSize, sceneNodesById, variableNamesById, rules, options, index >= firstFixedIndex, index);
       }
     }
   }
+  function variantPropertiesOf(component) {
+    var _a;
+    return ((_a = component == null ? void 0 : component.properties) != null ? _a : []).filter((prop) => prop.type === "VARIANT");
+  }
+  function nodeShapeSignature(node) {
+    return "children" in node ? `${node.type}(${node.children.map(nodeShapeSignature).join(",")})` : node.type;
+  }
+  function isDefaultVariant(node, variantProps2) {
+    const values = parseVariantName(node.name);
+    return variantProps2.every((prop) => values.get(prop.name.trim().toLowerCase()) === String(prop.defaultValue).trim().toLowerCase());
+  }
+  function groupComponentVariantSets(components) {
+    var _a, _b;
+    const order = [];
+    const membersBySetName = /* @__PURE__ */ new Map();
+    for (const component of components) {
+      const setName = (_b = (_a = component.component) == null ? void 0 : _a.setName) == null ? void 0 : _b.trim();
+      if (!setName) continue;
+      const members = membersBySetName.get(setName);
+      if (members) members.push(component);
+      else {
+        membersBySetName.set(setName, [component]);
+        order.push(setName);
+      }
+    }
+    return order.map((setName) => {
+      var _a2;
+      const members = membersBySetName.get(setName);
+      const baseline = nodeShapeSignature(members[0]);
+      const uniform = members.every((member) => nodeShapeSignature(member) === baseline);
+      const variantProps2 = variantPropertiesOf(members[0].component);
+      const defaultVariant = (_a2 = members.find((member) => isDefaultVariant(member, variantProps2))) != null ? _a2 : members[0];
+      return { setName, members, defaultVariant, uniform };
+    });
+  }
+  async function computeVariantDeclarations(node, parentLayout, parentSize, sceneNodesById, variableNamesById, childIndex) {
+    const source = sceneNodesById.get(node.id);
+    const layout = layoutDeclarations(node, parentLayout, parentSize, childIndex);
+    if (node.type === "text") return layout;
+    const isVectorLeaf = node.type === "vector";
+    let literal = source ? resolveImageFillPlaceholders(pickVisualDeclarations(await source.getCSSAsync()), imageFillUrls(node)) : {};
+    if (isVectorLeaf) literal = Object.fromEntries(Object.entries(literal).filter(([property]) => !VECTOR_LEAF_PAINT.has(property)));
+    const overrides = source && !isVectorLeaf ? tokenOverrides(source.boundVariables, false, variableNamesById, literal) : {};
+    const decl = __spreadValues(__spreadValues(__spreadValues({}, layout), literal), overrides);
+    const stroke = source && !isVectorLeaf ? strokeDeclarations(source) : {};
+    if (Object.keys(stroke).length > 0) {
+      for (const property of STROKE_OWNED_CSS) delete decl[property];
+      if (stroke["box-shadow"] && decl["box-shadow"]) stroke["box-shadow"] = `${stroke["box-shadow"]}, ${decl["box-shadow"]}`;
+      Object.assign(decl, stroke);
+    }
+    const smoothing = source == null ? void 0 : source.cornerSmoothing;
+    if (smoothing && smoothing > 0 && decl["border-radius"]) decl["border-radius"] = scaleBorderRadius(decl["border-radius"], smoothing);
+    const effect = source && !isVectorLeaf ? effectDeclarations(source, node.id, void 0) : {};
+    if (effect.filter) {
+      if (effect.dropBoxShadow) delete decl["box-shadow"];
+      decl["filter"] = decl["filter"] ? `${effect.filter} ${decl["filter"]}` : effect.filter;
+    }
+    return decl;
+  }
+  async function flattenVariantDeclarations(node, sceneNodesById, variableNamesById) {
+    const out = [];
+    const visit = async (n, parentLayout, parentSize, childIndex) => {
+      out.push({ id: n.id, decl: await computeVariantDeclarations(n, parentLayout, parentSize, sceneNodesById, variableNamesById, childIndex) });
+      if ("children" in n) {
+        const ownLayout = "layout" in n ? n.layout : null;
+        const ownSize = fixedPixelSize(n);
+        for (const [index, child] of n.children.entries()) await visit(child, ownLayout, ownSize, index);
+      }
+    };
+    await visit(node, null, void 0);
+    return out;
+  }
+  function diffVariantDeclarations(defaultDecl, siblingDecl) {
+    const diff = {};
+    for (const [property, value] of Object.entries(siblingDecl)) {
+      if (defaultDecl[property] === value) continue;
+      diff[property] = value;
+    }
+    return diff;
+  }
+  function findIsolatedVariant(members, defaultVariant, variantProps2, targetProp, targetValue) {
+    const wantedValue = targetValue.trim().toLowerCase();
+    return members.find((member) => {
+      if (member === defaultVariant) return false;
+      const values = parseVariantName(member.name);
+      return variantProps2.every((prop) => {
+        const actual = values.get(prop.name.trim().toLowerCase());
+        const wanted = prop === targetProp ? wantedValue : String(prop.defaultValue).trim().toLowerCase();
+        return actual === wanted;
+      });
+    });
+  }
+  function collectComponentSetMembers(nodes) {
+    const found = [];
+    const visit = (node) => {
+      if (node.type === "container" && node.component) found.push(node);
+      if ("children" in node) node.children.forEach(visit);
+    };
+    nodes.forEach(visit);
+    return found;
+  }
+  async function emitComponentVariantModifierCss(nodes, sceneNodesById, variableNamesById, options) {
+    var _a;
+    const rules = [];
+    for (const set of groupComponentVariantSets(collectComponentSetMembers(nodes))) {
+      if (!set.uniform || set.members.length < 2) continue;
+      const variantProps2 = variantPropertiesOf(set.defaultVariant.component);
+      if (variantProps2.length === 0) continue;
+      const defaultFlat = await flattenVariantDeclarations(set.defaultVariant, sceneNodesById, variableNamesById);
+      const modifierRoot = classNameFor(set.defaultVariant.id, options);
+      for (const prop of variantProps2) {
+        const defaultValue = String(prop.defaultValue).trim().toLowerCase();
+        for (const option of (_a = prop.variantOptions) != null ? _a : []) {
+          if (option.trim().toLowerCase() === defaultValue) continue;
+          const sibling = findIsolatedVariant(set.members, set.defaultVariant, variantProps2, prop, option);
+          if (!sibling) continue;
+          const siblingFlat = await flattenVariantDeclarations(sibling, sceneNodesById, variableNamesById);
+          if (siblingFlat.length !== defaultFlat.length) continue;
+          const modifierClass = `${modifierRoot}--${option}`;
+          for (let i = 0; i < defaultFlat.length; i++) {
+            const diff = diffVariantDeclarations(defaultFlat[i].decl, siblingFlat[i].decl);
+            if (Object.keys(diff).length === 0) continue;
+            const selector = i === 0 ? modifierClass : `${modifierClass} .${classNameFor(defaultFlat[i].id, options)}`;
+            const rule = formatRule(selector, diff);
+            if (rule) rules.push(rule);
+          }
+        }
+      }
+    }
+    return rules;
+  }
+  var CSS_PREAMBLE = [
+    "*, *::before, *::after {\n  box-sizing: border-box;\n}",
+    "body {\n  margin: 0;\n}",
+    "img, svg, video {\n  display: block;\n  max-width: 100%;\n}",
+    // Visually hidden until :focus — a keyboard/screen-reader user tabs straight to it and past
+    // repeated page chrome; a sighted mouse user never sees it at all.
+    ".skip-to-content {\n  position: absolute;\n  left: -9999px;\n  top: 0;\n  z-index: 9999;\n  padding: 0.5rem 1rem;\n  background: #fff;\n  color: #000;\n}\n\n.skip-to-content:focus {\n  left: 0;\n}",
+    "@media (prefers-reduced-motion: reduce) {\n  * {\n    animation-duration: .01ms !important;\n    animation-iteration-count: 1 !important;\n    transition-duration: .01ms !important;\n    scroll-behavior: auto !important;\n  }\n}"
+  ].join("\n\n");
   async function emitCss(nodes, sceneNodesById, variableNamesById = /* @__PURE__ */ new Map(), options = {}) {
-    const rules = options.preamble === false ? [] : ["*, *::before, *::after {\n  box-sizing: border-box;\n}\n\nbody {\n  margin: 0;\n}"];
+    const rules = options.preamble === false ? [] : [CSS_PREAMBLE];
     for (const node of nodes) {
       await collectNodeCss(node, null, void 0, sceneNodesById, variableNamesById, rules, options);
     }
+    rules.push(...await emitComponentVariantModifierCss(nodes, sceneNodesById, variableNamesById, options));
     return rules.join("\n\n");
+  }
+
+  // src/utils/plugin-data.ts
+  var PLUGIN_DATA_NAMESPACE = "altery";
+  var MAX_PLUGIN_DATA_BYTES = 1e5;
+  function parsePluginData(raw) {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+  function getPluginData(node, key) {
+    return parsePluginData(node.getSharedPluginData(PLUGIN_DATA_NAMESPACE, key));
+  }
+  function setPluginData(node, key, value) {
+    const serialized = JSON.stringify(value);
+    if (serialized.length > MAX_PLUGIN_DATA_BYTES) {
+      throw new Error("pluginData limit 100KB exceeded");
+    }
+    node.setSharedPluginData(PLUGIN_DATA_NAMESPACE, key, serialized);
   }
 
   // src/targets/django/html-emitter.ts
   function escapeHtml(value) {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
-  var PLACEHOLDER_PATTERN = /\{(\w+)\}/g;
-  function wrapTranslatable(escaped) {
+  var PLACEHOLDER_PATTERN = /%\((\w+)\)s/g;
+  function wrapTranslatable(escaped, msgctxt = "") {
     if (!escaped) return escaped;
     escaped = escaped.replace(/\s*[\r\n\u2028\u2029]+\s*/g, " ");
+    const context = msgctxt ? ` context "${msgctxt.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : "";
     const names = [...new Set([...escaped.matchAll(PLACEHOLDER_PATTERN)].map((match) => match[1]))];
-    if (names.length === 0) return `{% translate "${escaped}" %}`;
+    if (names.length === 0) return `{% translate "${escaped}"${context} %}`;
     const withClause = names.map((name) => `${name}=${name}`).join(" ");
     const body = escaped.replace(PLACEHOLDER_PATTERN, (_match, name) => `{{ ${name} }}`);
-    return `{% blocktranslate with ${withClause} %}${body}{% endblocktranslate %}`;
+    return `{% blocktranslate${context} with ${withClause} %}${body}{% endblocktranslate %}`;
   }
-  function renderSegmentSpan(className, index, segment) {
+  function readMsgctxt(source) {
     var _a;
-    const span = `<span class="${segmentClassName(className, index)}">${wrapTranslatable(escapeHtml(segment.characters))}</span>`;
+    const annotation = parsePluginData(
+      (_a = source == null ? void 0 : source.getSharedPluginData) == null ? void 0 : _a.call(source, PLUGIN_DATA_NAMESPACE, "i18nKey" /* I18N_KEY */)
+    );
+    return typeof (annotation == null ? void 0 : annotation.context) === "string" ? annotation.context : "";
+  }
+  function renderSegmentSpan(className, index, segment, msgctxt = "") {
+    var _a;
+    const span = `<span class="${segmentClassName(className, index)}">${wrapTranslatable(escapeHtml(segment.characters), msgctxt)}</span>`;
     if (((_a = segment.hyperlink) == null ? void 0 : _a.type) === "URL") return `<a href="${escapeHtml(segment.hyperlink.value)}">${span}</a>`;
     return span;
   }
-  function renderTextSpans(className, segments) {
-    return segments.map((segment, index) => renderSegmentSpan(className, index, segment)).join("");
+  function renderTextSpans(className, segments, msgctxt = "") {
+    return segments.map((segment, index) => renderSegmentSpan(className, index, segment, msgctxt)).join("");
   }
-  function renderParagraphRuns(className, runs) {
-    return runs.map(({ segment, index }) => renderSegmentSpan(className, index, segment)).join("");
+  function renderParagraphRuns(className, runs, msgctxt) {
+    return runs.map(({ segment, index }) => renderSegmentSpan(className, index, segment, msgctxt)).join("");
   }
-  function renderTextList(items, className, indent2) {
+  function renderTextList(items, className, indent2, msgctxt) {
     let i = 0;
     function parseLevel(depth, ind) {
       const tag = items[i].listType === "ORDERED" ? "ol" : "ul";
@@ -6457,7 +6778,7 @@ ${body}
       while (i < items.length && items[i].listDepth === depth) {
         const item = items[i];
         i++;
-        let content = `${renderParagraphRuns(className, item.runs)}`;
+        let content = `${renderParagraphRuns(className, item.runs, msgctxt)}`;
         if (i < items.length && items[i].listDepth > depth) {
           content += `
 ${parseLevel(depth + 1, `${ind}  `)}
@@ -6470,12 +6791,12 @@ ${ind}  `;
     }
     return parseLevel(items[0].listDepth, indent2);
   }
-  function renderTextBody(paragraphs, className, indent2) {
+  function renderTextBody(paragraphs, className, indent2, msgctxt) {
     const blocks = [];
     let i = 0;
     while (i < paragraphs.length) {
       if (paragraphs[i].listType === "NONE") {
-        blocks.push(`${indent2}<p class="${className}">${renderParagraphRuns(className, paragraphs[i].runs)}</p>`);
+        blocks.push(`${indent2}<p class="${className}">${renderParagraphRuns(className, paragraphs[i].runs, msgctxt)}</p>`);
         i++;
         continue;
       }
@@ -6484,25 +6805,59 @@ ${ind}  `;
         run.push(paragraphs[i]);
         i++;
       }
-      blocks.push(renderTextList(run, className, indent2));
+      blocks.push(renderTextList(run, className, indent2, msgctxt));
     }
     return blocks.join("\n");
   }
-  function renderTextBlock(node, source, className, indent2) {
+  function createHeadingState() {
+    return { usedH1: false };
+  }
+  function explicitHeadingLevel(name) {
+    var _a, _b;
+    const tokens = name.split(/[^a-zA-Z0-9]+/).filter(Boolean);
+    for (let i = 0; i < tokens.length; i++) {
+      const token2 = tokens[i].toLowerCase();
+      const explicit = (_a = /^h([1-6])$/.exec(token2)) != null ? _a : /^heading([1-6])$/.exec(token2);
+      if (explicit) return Number(explicit[1]);
+      if (token2 === "heading" && /^[1-6]$/.test((_b = tokens[i + 1]) != null ? _b : "")) return Number(tokens[i + 1]);
+    }
+    return null;
+  }
+  function resolveHeadingTag(name, state) {
+    const level = explicitHeadingLevel(name);
+    if (level === null) return null;
+    if (level === 1) {
+      if (state.usedH1) return "h2";
+      state.usedH1 = true;
+      return "h1";
+    }
+    return `h${level}`;
+  }
+  function renderTextBlock(node, source, className, indent2, headingTag = null) {
     var _a, _b;
     const segments = (_b = (_a = source == null ? void 0 : source.getStyledTextSegments) == null ? void 0 : _a.call(source, TEXT_SEGMENT_FIELDS)) != null ? _b : [{ characters: node.characters }];
     const paragraphs = splitTextParagraphs(segments);
+    const msgctxt = readMsgctxt(source);
     if (!isMultiBlockText(paragraphs)) {
-      return `${indent2}<p class="${className}">${renderTextSpans(className, segments)}</p>`;
+      const tag = headingTag != null ? headingTag : "p";
+      return `${indent2}<${tag} class="${className}">${renderTextSpans(className, segments, msgctxt)}</${tag}>`;
     }
-    const inner = renderTextBody(paragraphs, className, `${indent2}  `);
+    const inner = renderTextBody(paragraphs, className, `${indent2}  `, msgctxt);
     return `${indent2}<div class="${className}--box">
 ${inner}
 ${indent2}</div>`;
   }
-  function renderTextNode(node, sceneNodesById, indent2) {
+  function renderTextNode(node, sceneNodesById, indent2, headingState) {
     const className = toClassName(node.id);
-    return renderTextBlock(node, sceneNodesById.get(node.id), className, indent2);
+    const headingTag = resolveHeadingTag(node.name, headingState);
+    return renderTextBlock(node, sceneNodesById.get(node.id), className, indent2, headingTag);
+  }
+  var AUTO_NAMED_LAYER = /^(rectangle|vector|ellipse|image|frame|group)\s*\d*$/i;
+  function isDecorativeLayerName(name) {
+    const trimmed = name.trim();
+    if (trimmed === "" || trimmed.startsWith("_")) return true;
+    if (!/[a-zA-Z]/.test(trimmed)) return true;
+    return AUTO_NAMED_LAYER.test(trimmed);
   }
   function imageStaticPath(node) {
     return `img/${rasterFilename(node.id, node.name, "png", 1)}`;
@@ -6510,8 +6865,10 @@ ${indent2}</div>`;
   function renderAssetLeaf(node, indent2) {
     var _a;
     const className = toClassName(node.id);
+    const decorative = isDecorativeLayerName(node.name);
     if (node.type === "vector" && !node.assetSrc && node.inlineSvg) {
-      return `${indent2}${node.inlineSvg.replace(/<svg\b/, `<svg class="${className}"`)}`;
+      const svgAttrs = decorative ? ` class="${className}" aria-hidden="true"` : ` class="${className}"`;
+      return `${indent2}${node.inlineSvg.replace(/<svg\b/, `<svg${svgAttrs}`)}`;
     }
     const src = node.type === "image" ? (_a = node.assetSrc) != null ? _a : imageStaticPath(node) : node.assetSrc;
     if (!src) return `${indent2}<div class="${className}"></div>`;
@@ -6520,7 +6877,7 @@ ${indent2}</div>`;
       const objectFit = scaleModeToObjectFit(node.type === "image" ? node.videoScaleMode : void 0);
       return `${indent2}<video class="${className}" data-autoplay-video src="{% static '${src}' %}"${poster} autoplay loop muted playsinline preload="metadata" style="object-fit:${objectFit}"></video>`;
     }
-    return `${indent2}<img class="${className}" src="{% static '${src}' %}" alt="${escapeHtml(node.name)}">`;
+    return `${indent2}<img class="${className}" src="{% static '${src}' %}" alt="${decorative ? "" : escapeHtml(node.name)}">`;
   }
   function wrapNavigate(node, rendered, indent2, navMap) {
     var _a;
@@ -6542,24 +6899,55 @@ ${indent2}</a>`;
     const className = toClassName(node.id);
     return `${indent2}<video class="${className}__bg-video" data-autoplay-video src="{% static '${bv.assetSrc}' %}" poster="{% static '${bv.posterSrc}' %}" autoplay loop muted playsinline preload="metadata" style="position:absolute;inset:0;width:100%;height:100%;object-fit:${objectFit};z-index:-2;pointer-events:none"></video>`;
   }
-  function renderNode(node, sceneNodesById, indent2, navMap) {
+  var LANDMARK_KIND_BY_NAME = {
+    header: "header",
+    "top bar": "header",
+    navbar: "header",
+    nav: "nav",
+    menu: "nav",
+    navigation: "nav",
+    footer: "footer",
+    sidebar: "aside",
+    aside: "aside"
+  };
+  function landmarkKindByName(name) {
+    var _a;
+    const firstSegment = name.split("/")[0].trim().toLowerCase();
+    return (_a = LANDMARK_KIND_BY_NAME[firstSegment]) != null ? _a : null;
+  }
+  var NO_LANDMARK_ANCESTRY = /* @__PURE__ */ new Set();
+  function isClickButton(node) {
+    var _a;
+    if (node.navigate) return false;
+    return ((_a = node.interactions) != null ? _a : []).some((interaction) => interaction.trigger === "ON_CLICK");
+  }
+  function resolveContainerTag(node, ancestry, isPageRootChild) {
+    const landmarkKind = landmarkKindByName(node.name);
+    if (landmarkKind && !ancestry.has(landmarkKind)) return { tag: landmarkKind, attrs: "", landmarkKind };
+    if (isClickButton(node)) return { tag: "button", attrs: ' type="button"', landmarkKind: null };
+    if (isPageRootChild && node.children.length > 0) return { tag: "section", attrs: "", landmarkKind: null };
+    return { tag: "div", attrs: "", landmarkKind: null };
+  }
+  function renderNode(node, sceneNodesById, indent2, navMap, headingState, ancestry = NO_LANDMARK_ANCESTRY, isPageRootChild = false, isPageRoot = true) {
     const className = toClassName(node.id);
     const rendered = (() => {
       switch (node.type) {
         case "text":
-          return renderTextNode(node, sceneNodesById, indent2);
+          return renderTextNode(node, sceneNodesById, indent2, headingState);
         case "image":
         case "vector":
           return renderAssetLeaf(node, indent2);
         case "container":
         case "instance-ref": {
+          const { tag, attrs, landmarkKind } = resolveContainerTag(node, ancestry, isPageRootChild);
+          const childAncestry = landmarkKind ? /* @__PURE__ */ new Set([...ancestry, landmarkKind]) : ancestry;
           const bgVideo = renderBackgroundVideoLayer(node, `${indent2}  `);
-          if (node.children.length === 0 && !bgVideo) return `${indent2}<div class="${className}"></div>`;
-          const inner = node.children.map((child) => renderNode(child, sceneNodesById, `${indent2}  `, navMap)).join("\n");
+          if (node.children.length === 0 && !bgVideo) return `${indent2}<${tag}${attrs} class="${className}"></${tag}>`;
+          const inner = node.children.map((child) => renderNode(child, sceneNodesById, `${indent2}  `, navMap, headingState, childAncestry, isPageRoot, false)).join("\n");
           const parts = [bgVideo, inner].filter(Boolean);
-          return `${indent2}<div class="${className}">
+          return `${indent2}<${tag}${attrs} class="${className}">
 ${parts.join("\n")}
-${indent2}</div>`;
+${indent2}</${tag}>`;
         }
       }
     })();
@@ -6570,7 +6958,8 @@ ${indent2}</div>`;
 if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEach(function(v){v.pause();v.removeAttribute('autoplay');});}})();
 <\/script>`;
   function emitHtml(nodes, sceneNodesById, cssFile, navMap = /* @__PURE__ */ new Map()) {
-    const body = nodes.map((node) => renderNode(node, sceneNodesById, "    ", navMap)).join("\n");
+    const headingState = createHeadingState();
+    const body = nodes.map((node) => renderNode(node, sceneNodesById, "    ", navMap, headingState)).join("\n");
     const hasAutoplayVideo = body.includes("data-autoplay-video");
     return [
       "{% load static %}",
@@ -6596,7 +6985,19 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
   function idSlug(id) {
     return id.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   }
+  var COLLAPSED_SET_MEMBER = /* @__PURE__ */ Symbol("collapsedSetMember");
+  function markCollapsedSetMember(node) {
+    return __spreadProps(__spreadValues({}, node), { [COLLAPSED_SET_MEMBER]: true });
+  }
+  function isCollapsedSetMember(node) {
+    return node[COLLAPSED_SET_MEMBER] === true;
+  }
   function partialPath(component) {
+    if (isCollapsedSetMember(component)) {
+      const setName = component.component.setName.trim();
+      const slug3 = setName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      return `components/${slug3 || "component"}.html`;
+    }
     const slug2 = component.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
     return `components/${slug2 || "component"}--${idSlug(component.id)}.html`;
   }
@@ -6624,7 +7025,30 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
       if ("children" in node) node.children.forEach(visit);
     };
     nodes.forEach(visit);
-    return found;
+    return collapseComponentSetVariants(found);
+  }
+  function collapseComponentSetVariants(flat) {
+    var _a, _b;
+    const setsByName = new Map(groupComponentVariantSets(flat).map((set) => [set.setName, set]));
+    const collapsedSetNames = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const component of flat) {
+      const setName = (_b = (_a = component.component) == null ? void 0 : _a.setName) == null ? void 0 : _b.trim();
+      if (!setName) {
+        result.push(component);
+        continue;
+      }
+      if (collapsedSetNames.has(setName)) continue;
+      collapsedSetNames.add(setName);
+      const set = setsByName.get(setName);
+      if (!set.uniform || set.members.length < 2) {
+        result.push(...set.members);
+        continue;
+      }
+      const rest = set.members.filter((member) => member !== set.defaultVariant);
+      result.push(...rest.map(markCollapsedSetMember), markCollapsedSetMember(set.defaultVariant));
+    }
+    return result;
   }
   function buildComponentRegistry(components) {
     const pathByComponentKey = /* @__PURE__ */ new Map();
@@ -6885,18 +7309,21 @@ ${rendered}
 ${indent2}{% endif %}`;
   }
   function renderPartialText(node, className, ctx, indent2) {
-    if (ctx.literalText) return renderTextBlock(node, ctx.sceneNodesById.get(node.id), className, indent2);
+    const headingTag = resolveHeadingTag(node.name, ctx.headingState);
+    if (ctx.literalText) return renderTextBlock(node, ctx.sceneNodesById.get(node.id), className, indent2, headingTag);
     const propName2 = node.componentPropertyReferences.characters;
     if (propName2) {
       const varName2 = toVarName(propName2);
-      return `${indent2}<p class="${className}"><span class="${segmentClassName(className, 0)}">{{ ${varName2} }}</span></p>`;
+      const tag = headingTag != null ? headingTag : "p";
+      return `${indent2}<${tag} class="${className}"><span class="${segmentClassName(className, 0)}">{{ ${varName2} }}</span></${tag}>`;
     }
     if (ctx.overriddenTextNodeIds.has(node.id)) {
       const varName2 = textOverrideVarName(node.id);
       const fallback = escapeDjangoString(node.characters);
-      return `${indent2}<p class="${className}"><span class="${segmentClassName(className, 0)}">{{ ${varName2}|default:"${fallback}" }}</span></p>`;
+      const tag = headingTag != null ? headingTag : "p";
+      return `${indent2}<${tag} class="${className}"><span class="${segmentClassName(className, 0)}">{{ ${varName2}|default:"${fallback}" }}</span></${tag}>`;
     }
-    return renderTextBlock(node, ctx.sceneNodesById.get(node.id), className, indent2);
+    return renderTextBlock(node, ctx.sceneNodesById.get(node.id), className, indent2, headingTag);
   }
   function renderPartialInstanceRef(node, className, ctx, indent2) {
     var _a, _b, _c;
@@ -6919,32 +7346,36 @@ ${indent2}{% endif %}`;
       const comp = recognizable == null ? void 0 : recognizable.component;
       const match = comp ? matchBootstrapComponent((_c = comp.setName) != null ? _c : recognizable.name, comp, toVarName) : null;
       if (recognizable && match && subtreeHasText(node) && !(match.void && node.children.length > 0)) {
-        const childCtx = __spreadProps(__spreadValues({}, ctx), { bootstrapParts: match.parts, wiring: buildWiring(recognizable, match, ctx.registry) });
-        return renderPartialContainer(recognizable, className, childCtx, indent2);
+        const childCtx2 = __spreadProps(__spreadValues({}, ctx), { bootstrapParts: match.parts, wiring: buildWiring(recognizable, match, ctx.registry) });
+        return renderPartialContainer(recognizable, className, childCtx2, indent2);
       }
     }
+    const { tag, attrs, landmarkKind } = resolveContainerTag(node, ctx.ancestry, false);
+    const childCtx = landmarkKind ? __spreadProps(__spreadValues({}, ctx), { ancestry: /* @__PURE__ */ new Set([...ctx.ancestry, landmarkKind]) }) : ctx;
     const bgVideo = renderBackgroundVideoLayer(node, `${indent2}  `);
-    if (node.children.length === 0 && !bgVideo) return `${indent2}<div class="${className}"></div>`;
-    const inner = node.children.map((child) => renderPartialNode(child, ctx, `${indent2}  `)).join("\n");
+    if (node.children.length === 0 && !bgVideo) return `${indent2}<${tag}${attrs} class="${className}"></${tag}>`;
+    const inner = node.children.map((child) => renderPartialNode(child, childCtx, `${indent2}  `)).join("\n");
     const parts = [bgVideo, inner].filter(Boolean);
-    return `${indent2}<div class="${className}">
+    return `${indent2}<${tag}${attrs} class="${className}">
 ${parts.join("\n")}
-${indent2}</div>`;
+${indent2}</${tag}>`;
   }
   function renderPartialContainer(node, className, ctx, indent2) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
     const bootstrap = ctx.bootstrapComponents && node.component ? matchBootstrapComponent((_a = node.component.setName) != null ? _a : node.name, node.component, toVarName) : null;
     const part = !node.component && ctx.bootstrapComponents ? partForName(ctx.bootstrapParts, node.name) : null;
+    const semantic = !bootstrap && !part ? resolveContainerTag(node, ctx.ancestry, false) : null;
+    const childCtx = (semantic == null ? void 0 : semantic.landmarkKind) ? __spreadProps(__spreadValues({}, ctx), { ancestry: /* @__PURE__ */ new Set([...ctx.ancestry, semantic.landmarkKind]) }) : ctx;
     const wiring = (_b = ctx.wiring) == null ? void 0 : _b.get(node.id);
     const joinedClasses = [rootClassAttr(className, ctx.literalText ? null : node.component), ...(_c = bootstrap == null ? void 0 : bootstrap.classes) != null ? _c : [], ...(_d = part == null ? void 0 : part.classes) != null ? _d : [], ...(_e = wiring == null ? void 0 : wiring.addClasses) != null ? _e : []].filter(Boolean).join(" ");
     const classAttr = ctx.literalText ? foldDefaultClassExprs(joinedClasses) : joinedClasses;
-    const tag = (_g = (_f = bootstrap == null ? void 0 : bootstrap.tag) != null ? _f : part == null ? void 0 : part.tag) != null ? _g : "div";
-    const attrs = ((_i = (_h = bootstrap == null ? void 0 : bootstrap.attributes) != null ? _h : part == null ? void 0 : part.attributes) != null ? _i : "") + ((_j = wiring == null ? void 0 : wiring.addAttrs) != null ? _j : "");
+    const tag = (_h = (_g = (_f = bootstrap == null ? void 0 : bootstrap.tag) != null ? _f : part == null ? void 0 : part.tag) != null ? _g : semantic == null ? void 0 : semantic.tag) != null ? _h : "div";
+    const attrs = ((_k = (_j = (_i = bootstrap == null ? void 0 : bootstrap.attributes) != null ? _i : part == null ? void 0 : part.attributes) != null ? _j : semantic == null ? void 0 : semantic.attrs) != null ? _k : "") + ((_l = wiring == null ? void 0 : wiring.addAttrs) != null ? _l : "");
     if ((bootstrap == null ? void 0 : bootstrap.void) || (part == null ? void 0 : part.void)) return `${indent2}<${tag} class="${classAttr}"${attrs}>`;
     const appended = (bootstrap == null ? void 0 : bootstrap.appendHtml) ? `${indent2}  ${bootstrap.appendHtml}` : "";
     const bgVideo = renderBackgroundVideoLayer(node, `${indent2}  `);
     if (node.children.length === 0 && !bgVideo && !appended) return `${indent2}<${tag} class="${classAttr}"${attrs}></${tag}>`;
-    const inner = node.children.map((child) => renderPartialNode(child, ctx, `${indent2}  `)).join("\n");
+    const inner = node.children.map((child) => renderPartialNode(child, childCtx, `${indent2}  `)).join("\n");
     const parts = [bgVideo, inner, appended].filter(Boolean);
     return `${indent2}<${tag} class="${classAttr}"${attrs}>
 ${parts.join("\n")}
@@ -6974,7 +7405,7 @@ ${indent2}</${tag}>`;
     const wiring = match ? buildWiring(component, match, registry) : void 0;
     const body = renderPartialNode(
       component,
-      { sceneNodesById, registry, overriddenTextNodeIds, navMap, bootstrapComponents, bootstrapParts: match == null ? void 0 : match.parts, wiring },
+      { sceneNodesById, registry, overriddenTextNodeIds, navMap, bootstrapComponents, bootstrapParts: match == null ? void 0 : match.parts, wiring, ancestry: NO_LANDMARK_ANCESTRY, headingState: createHeadingState() },
       ""
     );
     return `{% load i18n %}
@@ -6998,7 +7429,7 @@ ${body}`;
   function foldDefaultClassExprs(classAttr) {
     return classAttr.replace(/\{\{ [a-zA-Z0-9_]+\|default:'([^']*)'(?:\|lower)? \}\}/g, "$1");
   }
-  function renderPageNode(node, sceneNodesById, registry, navMap, indent2, bootstrapComponents) {
+  function renderPageNode(node, sceneNodesById, registry, navMap, indent2, bootstrapComponents, headingState, ancestry = NO_LANDMARK_ANCESTRY, isPageRootChild = false, isPageRoot = true) {
     const className = toClassName(node.id);
     const rendered = (() => {
       var _a;
@@ -7021,8 +7452,12 @@ ${body}`;
               bootstrapComponents,
               bootstrapParts: match.parts,
               wiring,
-              literalText: true
+              literalText: true,
               // page-inline: no include binds the labels → render literal characters
+              ancestry,
+              // continue the page's own landmark-ancestry into the recognized subtree
+              headingState
+              // continue the page's own H1-uniqueness tracking into the recognized subtree
             };
             return renderPartialContainer(recognizable, className, ctx, indent2);
           }
@@ -7030,27 +7465,32 @@ ${body}`;
       }
       switch (node.type) {
         case "text":
-          return renderTextBlock(node, sceneNodesById.get(node.id), className, indent2);
+          return renderTextBlock(node, sceneNodesById.get(node.id), className, indent2, resolveHeadingTag(node.name, headingState));
         case "image":
         case "vector":
           return renderAssetLeaf(node, indent2);
         case "container":
         case "instance-ref": {
+          const { tag, attrs, landmarkKind } = resolveContainerTag(node, ancestry, isPageRootChild);
+          const childAncestry = landmarkKind ? /* @__PURE__ */ new Set([...ancestry, landmarkKind]) : ancestry;
           const bgVideo = renderBackgroundVideoLayer(node, `${indent2}  `);
-          if (node.children.length === 0 && !bgVideo) return `${indent2}<div class="${className}"></div>`;
-          const inner = node.children.map((child) => renderPageNode(child, sceneNodesById, registry, navMap, `${indent2}  `, bootstrapComponents)).join("\n");
+          if (node.children.length === 0 && !bgVideo) return `${indent2}<${tag}${attrs} class="${className}"></${tag}>`;
+          const inner = node.children.map((child) => renderPageNode(child, sceneNodesById, registry, navMap, `${indent2}  `, bootstrapComponents, headingState, childAncestry, isPageRoot, false)).join("\n");
           const parts = [bgVideo, inner].filter(Boolean);
-          return `${indent2}<div class="${className}">
+          return `${indent2}<${tag}${attrs} class="${className}">
 ${parts.join("\n")}
-${indent2}</div>`;
+${indent2}</${tag}>`;
         }
       }
     })();
     return wrapNavigate(node, rendered, indent2, navMap);
   }
   function emitPage(root, sceneNodesById, registry, navMap = /* @__PURE__ */ new Map(), bootstrapComponents = false) {
-    const body = renderPageNode(root, sceneNodesById, registry, navMap, "    ", bootstrapComponents);
+    const body = renderPageNode(root, sceneNodesById, registry, navMap, "    ", bootstrapComponents, createHeadingState());
     return ['{% extends "base.html" %}', "{% load i18n %}", "{% load static %}", "{% block content %}", body, "{% endblock %}"].join("\n");
+  }
+  function renderOverlayFragment(node, sceneNodesById, registry, navMap, bootstrapComponents) {
+    return renderPageNode(node, sceneNodesById, registry, navMap, "  ", bootstrapComponents, createHeadingState());
   }
   function fontLinks(fontFamilies) {
     if (fontFamilies.length === 0) return [];
@@ -7062,12 +7502,14 @@ ${indent2}</div>`;
       )
     ];
   }
-  var GSAP_PLUGIN_STATIC_FILE_BY_NAME = {
-    CustomEase: "vendor/gsap/CustomEase.min.js",
-    DrawSVGPlugin: "vendor/gsap/DrawSVGPlugin.min.js",
-    TextPlugin: "vendor/gsap/TextPlugin.min.js"
+  var GSAP_CDN_VERSION = "3.13.0";
+  var GSAP_CORE_SRC = `https://cdn.jsdelivr.net/npm/gsap@${GSAP_CDN_VERSION}/dist/gsap.min.js`;
+  var GSAP_PLUGIN_SRC_BY_NAME = {
+    CustomEase: `https://cdn.jsdelivr.net/npm/gsap@${GSAP_CDN_VERSION}/dist/CustomEase.min.js`,
+    DrawSVGPlugin: `https://cdn.jsdelivr.net/npm/gsap@${GSAP_CDN_VERSION}/dist/DrawSVGPlugin.min.js`,
+    TextPlugin: `https://cdn.jsdelivr.net/npm/gsap@${GSAP_CDN_VERSION}/dist/TextPlugin.min.js`
   };
-  function emitBaseHtml(cssFile, tokensCssFile = "css/tokens.css", fontFamilies = [], interactionLinks = { interactionsCss: false, interactionsJs: false }, framework = null) {
+  function emitBaseHtml(cssFile, tokensCssFile = "css/tokens.css", fontFamilies = [], interactionLinks = { interactionsCss: false, interactionsJs: false }, framework = null, shell = {}) {
     var _a;
     const frameworkCssLines = framework ? [
       "  {% block framework_css %}",
@@ -7089,34 +7531,266 @@ ${indent2}</div>`;
     ] : [];
     const interactionCssLink = interactionLinks.interactionsCss ? [`  <link rel="stylesheet" href="{% static 'css/interactions.css' %}">`] : [];
     const animationCssLink = interactionLinks.animationsCss ? [`  <link rel="stylesheet" href="{% static 'css/animations.css' %}">`] : [];
+    const transitionsCssLink = shell.transitionsCss ? [`  <link rel="stylesheet" href="{% static 'css/transitions.css' %}">`] : [];
     const interactionJsLink = interactionLinks.interactionsJs ? [`  <script src="{% static 'js/interactions.js' %}" defer><\/script>`] : [];
     const animationJsLink = interactionLinks.animationsJs ? [
-      `  <script src="{% static 'vendor/gsap/gsap.min.js' %}"><\/script>`,
+      `  <script src="${GSAP_CORE_SRC}"><\/script>`,
       ...((_a = interactionLinks.gsapPlugins) != null ? _a : []).map(
-        (plugin) => `  <script src="{% static '${GSAP_PLUGIN_STATIC_FILE_BY_NAME[plugin]}' %}" defer><\/script>`
+        (plugin) => `  <script src="${GSAP_PLUGIN_SRC_BY_NAME[plugin]}" defer><\/script>`
       ),
       `  <script src="{% static 'js/animations.js' %}" defer><\/script>`
     ] : [];
+    const transitionsJsLink = shell.transitionsJs ? [`  <script src="{% static 'js/transitions.js' %}" defer><\/script>`] : [];
+    const languageSwitcherBlock = shell.languageSwitcher ? ["  {% block language_switcher %}{% include 'partials/language-switcher.html' %}{% endblock %}"] : [];
     return [
       "{% load static %}",
+      ...shell.languageSwitcher ? ["{% load i18n %}"] : [],
       "<!DOCTYPE html>",
-      "<html>",
+      `<html lang="{{ LANGUAGE_CODE|default:'en' }}"{% if LANGUAGE_BIDI %} dir="rtl"{% endif %}>`,
       "<head>",
+      '  <meta charset="utf-8">',
+      '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+      "  {% block head_meta %}{% endblock %}",
+      "  <title>{% block title %}{{ page_title|default:'' }}{% endblock %}</title>",
+      `  <meta name="description" content="{% block meta_description %}{{ page_description|default:'' }}{% endblock %}">`,
       ...fontLinks(fontFamilies),
       ...frameworkCssLines,
       ...tokensCssFile ? [`  <link rel="stylesheet" href="{% static '${tokensCssFile}' %}">`] : [],
       `  <link rel="stylesheet" href="{% static '${cssFile}' %}">`,
       ...interactionCssLink,
       ...animationCssLink,
+      ...transitionsCssLink,
+      "  {% block extra_head %}{% endblock %}",
       "</head>",
       "<body>",
+      // The skip link is ALWAYS the first body child — its whole purpose is to be the first stop
+      // for keyboard/screen-reader navigation, ahead of ANY page chrome, the language switcher
+      // included.
+      '  <a class="skip-to-content" href="#content">Skip to content</a>',
+      ...languageSwitcherBlock,
+      '  <main id="content">',
       "  {% block content %}{% endblock %}",
+      "  </main>",
       ...frameworkJsLines,
       ...interactionJsLink,
       ...animationJsLink,
+      ...transitionsJsLink,
+      "  {% block body_end %}{% endblock %}",
       "</body>",
       "</html>"
     ].join("\n");
+  }
+
+  // src/targets/django/smart-animate/match-layers.ts
+  function indexTree(root) {
+    const map = /* @__PURE__ */ new Map();
+    const walk2 = (node, prefix) => {
+      var _a, _b;
+      const seen = /* @__PURE__ */ new Map();
+      for (const child of (_a = node.children) != null ? _a : []) {
+        const dupIndex = (_b = seen.get(child.name)) != null ? _b : 0;
+        seen.set(child.name, dupIndex + 1);
+        const path = `${prefix}${child.name}#${dupIndex}`;
+        map.set(path, child);
+        walk2(child, `${path}/`);
+      }
+    };
+    walk2(root, "");
+    return map;
+  }
+  function matchLayers(base, target) {
+    const baseIndex = indexTree(base);
+    const targetIndex = indexTree(target);
+    const matched = [];
+    const removed = [];
+    const added = [];
+    for (const [path, node] of baseIndex) {
+      const other = targetIndex.get(path);
+      if (other && other.type === node.type) {
+        matched.push({ path, a: node, b: other });
+      } else {
+        removed.push({ path, node });
+        if (other) added.push({ path, node: other });
+      }
+    }
+    for (const [path, node] of targetIndex) {
+      if (!baseIndex.has(path)) added.push({ path, node });
+    }
+    return { matched, removed, added };
+  }
+
+  // src/targets/django/transitions.ts
+  function collectNavEdges(nodes, pageRootIds) {
+    const edges = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const root of nodes) {
+      if (!pageRootIds.has(root.id)) continue;
+      const visit = (node) => {
+        var _a, _b;
+        const navigate = node.navigate;
+        if (navigate && pageRootIds.has(navigate.destinationId)) {
+          const key = `${root.id}\0${navigate.destinationId}\0${(_b = (_a = navigate.transition) == null ? void 0 : _a.style) != null ? _b : "NONE"}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            edges.push({ sourcePageId: root.id, destPageId: navigate.destinationId, transition: navigate.transition });
+          }
+        }
+        if ("children" in node) for (const child of node.children) visit(child);
+      };
+      visit(root);
+    }
+    return edges;
+  }
+  var DIRECTIONAL_STYLES = /* @__PURE__ */ new Set(["MOVE_IN", "MOVE_OUT", "PUSH", "SLIDE_IN", "SLIDE_OUT"]);
+  function directionTransforms(style, direction) {
+    var _a, _b, _c;
+    const enter = {
+      LEFT: "translateX(-100%)",
+      RIGHT: "translateX(100%)",
+      TOP: "translateY(-100%)",
+      BOTTOM: "translateY(100%)"
+    };
+    const exit = {
+      LEFT: "translateX(100%)",
+      RIGHT: "translateX(-100%)",
+      TOP: "translateY(100%)",
+      BOTTOM: "translateY(-100%)"
+    };
+    const newFrom = (_a = enter[direction]) != null ? _a : enter.RIGHT;
+    if (style === "PUSH") return { newFrom, oldTo: (_b = exit[direction]) != null ? _b : exit.RIGHT };
+    if (style === "MOVE_OUT" || style === "SLIDE_OUT") return { newFrom: "none", oldTo: (_c = exit[direction]) != null ? _c : exit.RIGHT };
+    return { newFrom };
+  }
+  var MAX_MATCHED_LAYERS = 40;
+  function toPageDiffable(node) {
+    const id = node.type === "instance-ref" && node.componentId ? node.componentId : node.id;
+    const children = node.type === "instance-ref" ? void 0 : "children" in node ? node.children.map(toPageDiffable) : void 0;
+    return { id, name: node.name, type: node.type, x: 0, y: 0, width: 0, height: 0, children };
+  }
+  function idOccurrenceCounts(page) {
+    const counts = /* @__PURE__ */ new Map();
+    const visit = (node, isRoot) => {
+      var _a;
+      if (!isRoot) {
+        const id = node.type === "instance-ref" && node.componentId ? node.componentId : node.id;
+        counts.set(id, ((_a = counts.get(id)) != null ? _a : 0) + 1);
+      }
+      if (node.type === "instance-ref") return;
+      if ("children" in node) for (const child of node.children) visit(child, false);
+    };
+    visit(page, true);
+    return counts;
+  }
+  function emitPageTransitions(input) {
+    var _a, _b, _c;
+    const edges = collectNavEdges(input.nodes, input.pageRootIds);
+    if (edges.length === 0) return { css: "", js: "" };
+    const pageById = new Map(input.nodes.filter((node) => input.pageRootIds.has(node.id)).map((node) => [node.id, node]));
+    const animated = edges.filter((edge) => Boolean(edge.transition));
+    const lines = [
+      "/* Prototype page transitions \u2014 generated from Figma NAVIGATE reactions (django/transitions.ts). */",
+      "@view-transition {",
+      "  navigation: auto;",
+      "}",
+      ""
+    ];
+    if (animated.length > 0) {
+      const slowest = animated.reduce((a, b) => b.transition.durationMs > a.transition.durationMs ? b : a);
+      lines.push(
+        "::view-transition-group(root),",
+        "::view-transition-old(root),",
+        "::view-transition-new(root) {",
+        `  animation-duration: ${slowest.transition.durationMs}ms;`,
+        `  animation-timing-function: ${slowest.transition.timingFunction};`,
+        "}",
+        ""
+      );
+      const directional = animated.filter((edge) => DIRECTIONAL_STYLES.has(edge.transition.style));
+      const styles = new Set(directional.map((edge) => {
+        var _a2;
+        return `${edge.transition.style}/${(_a2 = edge.transition.direction) != null ? _a2 : "RIGHT"}`;
+      }));
+      if (directional.length === animated.length && styles.size === 1) {
+        const { style, direction = "RIGHT" } = directional[0].transition;
+        const { newFrom, oldTo } = directionTransforms(style, direction);
+        if (newFrom !== "none") {
+          lines.push(
+            "@keyframes pgvt-enter {",
+            `  from { transform: ${newFrom}; }`,
+            "  to { transform: none; }",
+            "}",
+            "::view-transition-new(root) {",
+            "  animation-name: pgvt-enter;",
+            "}",
+            ""
+          );
+        }
+        if (oldTo) {
+          lines.push(
+            "@keyframes pgvt-exit {",
+            "  from { transform: none; }",
+            `  to { transform: ${oldTo}; }`,
+            "}",
+            "::view-transition-old(root) {",
+            "  animation-name: pgvt-exit;",
+            "}",
+            ""
+          );
+        }
+      }
+      const morphEdges = animated.filter((edge) => edge.transition.style === "SMART_ANIMATE");
+      if (morphEdges.length > 0) {
+        const countsByPage = /* @__PURE__ */ new Map();
+        const countsFor = (pageId) => {
+          let counts = countsByPage.get(pageId);
+          if (!counts) {
+            const page = pageById.get(pageId);
+            counts = page ? idOccurrenceCounts(page) : /* @__PURE__ */ new Map();
+            countsByPage.set(pageId, counts);
+          }
+          return counts;
+        };
+        const assignments = /* @__PURE__ */ new Map();
+        for (const edge of morphEdges) {
+          const sourcePage = pageById.get(edge.sourcePageId);
+          const destPage = pageById.get(edge.destPageId);
+          if (!sourcePage || !destPage) continue;
+          const sourceCounts = countsFor(edge.sourcePageId);
+          const destCounts = countsFor(edge.destPageId);
+          const { matched } = matchLayers(toPageDiffable(sourcePage), toPageDiffable(destPage));
+          let assigned = 0;
+          for (const pair2 of matched) {
+            if (assigned >= MAX_MATCHED_LAYERS) break;
+            const aId = pair2.a.id;
+            const bId = pair2.b.id;
+            if (((_a = sourceCounts.get(aId)) != null ? _a : 0) > 1 || ((_b = destCounts.get(bId)) != null ? _b : 0) > 1) continue;
+            const ident = toClassName(aId);
+            const ids = (_c = assignments.get(ident)) != null ? _c : /* @__PURE__ */ new Set();
+            ids.add(aId);
+            ids.add(bId);
+            assignments.set(ident, ids);
+            assigned++;
+          }
+        }
+        const sortedAssignments = [...assignments.entries()].sort(([a], [b]) => a.localeCompare(b));
+        for (const [ident, ids] of sortedAssignments) {
+          const selectors = [...ids].map((id) => `.${toClassName(id)}`).sort().join(", ");
+          lines.push(`${selectors} { view-transition-name: ${ident}; }`);
+        }
+        if (sortedAssignments.length > 0) lines.push("");
+      }
+    }
+    lines.push(
+      "@media (prefers-reduced-motion: reduce) {",
+      "  ::view-transition-group(*),",
+      "  ::view-transition-old(*),",
+      "  ::view-transition-new(*) {",
+      "    animation: none !important;",
+      "  }",
+      "}",
+      ""
+    );
+    return { css: lines.join("\n"), js: "" };
   }
 
   // src/targets/django/regenerate.ts
@@ -7206,44 +7880,6 @@ ${indent2}</div>`;
   // src/targets/django/smart-animate/types.ts
   var MIXED = /* @__PURE__ */ Symbol("smart-animate-mixed");
 
-  // src/targets/django/smart-animate/match-layers.ts
-  function indexTree(root) {
-    const map = /* @__PURE__ */ new Map();
-    const walk2 = (node, prefix) => {
-      var _a, _b;
-      const seen = /* @__PURE__ */ new Map();
-      for (const child of (_a = node.children) != null ? _a : []) {
-        const dupIndex = (_b = seen.get(child.name)) != null ? _b : 0;
-        seen.set(child.name, dupIndex + 1);
-        const path = `${prefix}${child.name}#${dupIndex}`;
-        map.set(path, child);
-        walk2(child, `${path}/`);
-      }
-    };
-    walk2(root, "");
-    return map;
-  }
-  function matchLayers(base, target) {
-    const baseIndex = indexTree(base);
-    const targetIndex = indexTree(target);
-    const matched = [];
-    const removed = [];
-    const added = [];
-    for (const [path, node] of baseIndex) {
-      const other = targetIndex.get(path);
-      if (other && other.type === node.type) {
-        matched.push({ path, a: node, b: other });
-      } else {
-        removed.push({ path, node });
-        if (other) added.push({ path, node: other });
-      }
-    }
-    for (const [path, node] of targetIndex) {
-      if (!baseIndex.has(path)) added.push({ path, node });
-    }
-    return { matched, removed, added };
-  }
-
   // src/targets/django/smart-animate/diff-properties.ts
   var EPS = 0.01;
   function neq(a, b) {
@@ -7258,8 +7894,46 @@ ${indent2}</div>`;
     }
     return null;
   }
+  function singleSolidPaint(paints, requireVisible) {
+    if (paints === void 0 || paints === MIXED || paints.length !== 1) return null;
+    const paint = paints[0];
+    if (paint.type !== "SOLID" || !paint.color) return null;
+    if (requireVisible && paint.visible === false) return null;
+    return paint;
+  }
+  function solidRgba(paint) {
+    var _a;
+    if (!paint.color) return { r: 0, g: 0, b: 0, a: 0 };
+    return __spreadProps(__spreadValues({}, paint.color), { a: (_a = paint.opacity) != null ? _a : 1 });
+  }
+  function isShadowEffect(effect) {
+    return effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW";
+  }
+  function shadowLayers(node) {
+    var _a;
+    return ((_a = node.effects) != null ? _a : []).filter((effect) => effect.visible !== false).filter(isShadowEffect).map((effect) => {
+      var _a2, _b, _c, _d, _e, _f;
+      return {
+        type: effect.type,
+        color: (_a2 = effect.color) != null ? _a2 : { r: 0, g: 0, b: 0, a: 0 },
+        offsetX: (_c = (_b = effect.offset) == null ? void 0 : _b.x) != null ? _c : 0,
+        offsetY: (_e = (_d = effect.offset) == null ? void 0 : _d.y) != null ? _e : 0,
+        radius: effect.radius,
+        spread: (_f = effect.spread) != null ? _f : 0
+      };
+    });
+  }
+  function blurRadii(node, type) {
+    var _a;
+    return ((_a = node.effects) != null ? _a : []).filter((effect) => effect.visible !== false && effect.type === type).map((effect) => effect.radius);
+  }
+  function isRenderedPaint(paint) {
+    return paint.visible !== false;
+  }
+  function imagePaints(paints) {
+    return paints.filter((paint) => paint.type === "IMAGE" && typeof paint.imageHash === "string").map((paint) => ({ imageHash: paint.imageHash, scaleMode: paint.scaleMode, opacity: paint.opacity }));
+  }
   function diffProperties(a, b) {
-    var _a, _b;
     const out = [];
     if (neq(a.x, b.x)) out.push({ prop: "x", from: a.x, to: b.x });
     if (neq(a.y, b.y)) out.push({ prop: "y", from: a.y, to: b.y });
@@ -7271,16 +7945,42 @@ ${indent2}</div>`;
     if (a.opacity !== void 0 && b.opacity !== void 0 && neq(a.opacity, b.opacity)) {
       out.push({ prop: "opacity", from: a.opacity, to: b.opacity });
     }
-    if (a.fills !== void 0 && b.fills !== void 0 && a.fills !== MIXED && b.fills !== MIXED) {
-      const fa = a.fills;
-      const fb = b.fills;
-      if (fa.length === 1 && fb.length === 1 && fa[0].type === "SOLID" && fb[0].type === "SOLID" && fa[0].color && fb[0].color && JSON.stringify(fa[0]) !== JSON.stringify(fb[0])) {
-        out.push({
-          prop: "fillColor",
-          from: __spreadProps(__spreadValues({}, fa[0].color), { a: (_a = fa[0].opacity) != null ? _a : 1 }),
-          to: __spreadProps(__spreadValues({}, fb[0].color), { a: (_b = fb[0].opacity) != null ? _b : 1 })
-        });
+    if (a.visible !== void 0 && b.visible !== void 0 && a.visible !== b.visible) {
+      out.push({ prop: "visible", from: a.visible, to: b.visible });
+    }
+    if (a.blendMode !== void 0 && b.blendMode !== void 0 && a.blendMode !== b.blendMode) {
+      out.push({ prop: "blendMode", from: a.blendMode, to: b.blendMode });
+    }
+    const isText2 = a.type === "TEXT" && b.type === "TEXT";
+    if (isText2) {
+      const singleA = singleSolidPaint(a.fills, false);
+      const singleB = singleSolidPaint(b.fills, false);
+      if (singleA && singleB && JSON.stringify(singleA) !== JSON.stringify(singleB)) {
+        out.push({ prop: "textColor", from: solidRgba(singleA), to: solidRgba(singleB) });
       }
+    } else if (a.fills !== void 0 && b.fills !== void 0 && a.fills !== MIXED && b.fills !== MIXED) {
+      const singleA = singleSolidPaint(a.fills, false);
+      const singleB = singleSolidPaint(b.fills, false);
+      if (singleA && singleB && JSON.stringify(singleA) !== JSON.stringify(singleB)) {
+        out.push({ prop: "fillColor", from: solidRgba(singleA), to: solidRgba(singleB) });
+      } else {
+        const visibleA = a.fills.filter(isRenderedPaint);
+        const visibleB = b.fills.filter(isRenderedPaint);
+        if (JSON.stringify(visibleA) !== JSON.stringify(visibleB)) {
+          const interpolable = visibleA.every((p) => p.type === "SOLID") && visibleB.every((p) => p.type === "SOLID");
+          out.push({ prop: "background", from: visibleA, to: visibleB, interpolable, images: imagePaints(visibleB) });
+        }
+      }
+    }
+    if (a.strokes !== void 0 && b.strokes !== void 0 && a.strokes !== MIXED && b.strokes !== MIXED) {
+      const singleA = singleSolidPaint(a.strokes, true);
+      const singleB = singleSolidPaint(b.strokes, true);
+      if (singleA && singleB && JSON.stringify(singleA) !== JSON.stringify(singleB)) {
+        out.push({ prop: "strokeColor", from: solidRgba(singleA), to: solidRgba(singleB) });
+      }
+    }
+    if (a.strokeWeight !== void 0 && b.strokeWeight !== void 0 && a.strokeWeight !== MIXED && b.strokeWeight !== MIXED && neq(a.strokeWeight, b.strokeWeight)) {
+      out.push({ prop: "strokeWeight", from: a.strokeWeight, to: b.strokeWeight });
     }
     const ra = cornerRadii(a);
     const rb = cornerRadii(b);
@@ -7291,12 +7991,55 @@ ${indent2}</div>`;
         aUniform && bUniform ? { prop: "cornerRadius", from: ra[0], to: rb[0] } : { prop: "cornerRadii", from: ra, to: rb }
       );
     }
+    if (a.effects !== void 0 && b.effects !== void 0) {
+      const shadowsA = shadowLayers(a);
+      const shadowsB = shadowLayers(b);
+      if (JSON.stringify(shadowsA) !== JSON.stringify(shadowsB)) out.push({ prop: "boxShadow", from: shadowsA, to: shadowsB });
+      const layerBlurA = blurRadii(a, "LAYER_BLUR");
+      const layerBlurB = blurRadii(b, "LAYER_BLUR");
+      if (JSON.stringify(layerBlurA) !== JSON.stringify(layerBlurB)) {
+        out.push({ prop: "layerBlur", from: layerBlurA, to: layerBlurB });
+      }
+      const bgBlurA = blurRadii(a, "BACKGROUND_BLUR");
+      const bgBlurB = blurRadii(b, "BACKGROUND_BLUR");
+      if (JSON.stringify(bgBlurA) !== JSON.stringify(bgBlurB)) {
+        out.push({ prop: "backgroundBlur", from: bgBlurA, to: bgBlurB });
+      }
+    }
+    if (a.fontSize !== void 0 && b.fontSize !== void 0 && a.fontSize !== MIXED && b.fontSize !== MIXED && neq(a.fontSize, b.fontSize)) {
+      out.push({ prop: "fontSize", from: a.fontSize, to: b.fontSize });
+    }
+    if (a.fontWeight !== void 0 && b.fontWeight !== void 0 && a.fontWeight !== MIXED && b.fontWeight !== MIXED && neq(a.fontWeight, b.fontWeight)) {
+      out.push({ prop: "fontWeight", from: a.fontWeight, to: b.fontWeight });
+    }
+    if (a.letterSpacing !== void 0 && b.letterSpacing !== void 0 && a.letterSpacing !== MIXED && b.letterSpacing !== MIXED) {
+      const sameUnit = a.letterSpacing.unit === b.letterSpacing.unit;
+      if (!sameUnit || neq(a.letterSpacing.value, b.letterSpacing.value)) {
+        out.push({ prop: "letterSpacing", from: a.letterSpacing, to: b.letterSpacing });
+      }
+    }
+    if (a.lineHeight !== void 0 && b.lineHeight !== void 0 && a.lineHeight !== MIXED && b.lineHeight !== MIXED) {
+      const sameUnit = a.lineHeight.unit === b.lineHeight.unit;
+      const changed = !sameUnit || a.lineHeight.unit !== "AUTO" && b.lineHeight.unit !== "AUTO" && neq(a.lineHeight.value, b.lineHeight.value);
+      if (changed) out.push({ prop: "lineHeight", from: a.lineHeight, to: b.lineHeight });
+    }
+    if (a.paddingTop !== void 0 && b.paddingTop !== void 0 && a.paddingRight !== void 0 && b.paddingRight !== void 0 && a.paddingBottom !== void 0 && b.paddingBottom !== void 0 && a.paddingLeft !== void 0 && b.paddingLeft !== void 0) {
+      const pa = [a.paddingTop, a.paddingRight, a.paddingBottom, a.paddingLeft];
+      const pb = [b.paddingTop, b.paddingRight, b.paddingBottom, b.paddingLeft];
+      if (pa.some((v, i) => neq(v, pb[i]))) out.push({ prop: "padding", from: pa, to: pb });
+    }
+    if (a.itemSpacing !== void 0 && b.itemSpacing !== void 0 && neq(a.itemSpacing, b.itemSpacing)) {
+      out.push({ prop: "gap", from: a.itemSpacing, to: b.itemSpacing });
+    }
+    if (typeof a.counterAxisSpacing === "number" && typeof b.counterAxisSpacing === "number" && neq(a.counterAxisSpacing, b.counterAxisSpacing)) {
+      out.push({ prop: "crossGap", from: a.counterAxisSpacing, to: b.counterAxisSpacing });
+    }
     return out;
   }
   function diffStates(base, target) {
     const { matched, removed, added } = matchLayers(base, target);
     return {
-      pairs: matched.map(({ path, a, b }) => ({ path, changes: diffProperties(a, b) })).filter((pair2) => pair2.changes.length > 0),
+      pairs: [{ path: "", a: base, b: target }, ...matched].map(({ path, a, b }) => ({ path, changes: diffProperties(a, b) })).filter((pair2) => pair2.changes.length > 0),
       fadeOut: removed.map((r) => r.path),
       fadeIn: added.map((r) => r.path)
     };
@@ -7365,7 +8108,113 @@ ${indent2}</div>`;
     const to255 = (channel) => Math.round(channel * 255);
     return `rgba(${to255(color.r)}, ${to255(color.g)}, ${to255(color.b)}, ${round4(color.a, 4)})`;
   }
+  var BLEND_MODE_CSS = {
+    PASS_THROUGH: "normal",
+    NORMAL: "normal",
+    DARKEN: "darken",
+    MULTIPLY: "multiply",
+    LINEAR_BURN: "plus-darker",
+    COLOR_BURN: "color-burn",
+    LIGHTEN: "lighten",
+    SCREEN: "screen",
+    LINEAR_DODGE: "plus-lighter",
+    COLOR_DODGE: "color-dodge",
+    OVERLAY: "overlay",
+    SOFT_LIGHT: "soft-light",
+    HARD_LIGHT: "hard-light",
+    DIFFERENCE: "difference",
+    EXCLUSION: "exclusion",
+    HUE: "hue",
+    SATURATION: "saturation",
+    COLOR: "color",
+    LUMINOSITY: "luminosity"
+  };
+  function gradientAngleDeg(transform) {
+    const [[dx], [dy]] = transform;
+    const degrees = Math.atan2(dx, -dy) * 180 / Math.PI;
+    return (degrees % 360 + 360) % 360;
+  }
+  function colorStopsCss(paint) {
+    var _a;
+    return ((_a = paint.gradientStops) != null ? _a : []).map((stop) => `${rgbaToCss2(stop.color)} ${round4(stop.position * 100, 2)}%`).join(", ");
+  }
+  function gradientCss(paint) {
+    if (!paint.gradientStops || paint.gradientStops.length === 0) return void 0;
+    const stops = colorStopsCss(paint);
+    switch (paint.type) {
+      case "GRADIENT_LINEAR": {
+        const angle = paint.gradientTransform ? gradientAngleDeg(paint.gradientTransform) : 180;
+        return `linear-gradient(${round4(angle, 2)}deg, ${stops})`;
+      }
+      case "GRADIENT_RADIAL":
+      case "GRADIENT_DIAMOND":
+        return `radial-gradient(circle, ${stops})`;
+      case "GRADIENT_ANGULAR": {
+        const angle = paint.gradientTransform ? gradientAngleDeg(paint.gradientTransform) : 0;
+        return `conic-gradient(from ${round4(angle, 2)}deg, ${stops})`;
+      }
+      default:
+        return void 0;
+    }
+  }
+  var SCALE_MODE_BACKGROUND_SIZE = {
+    FILL: "cover",
+    FIT: "contain",
+    CROP: "cover",
+    TILE: "auto"
+  };
+  function imageOverlayCss(change, restSelector, activeSelector, durationMs, timingFunction, imageUrlFor) {
+    var _a, _b, _c;
+    if (imageUrlFor === void 0) return void 0;
+    const images = (_a = change.images) != null ? _a : [];
+    if (images.length === 0) return void 0;
+    const hasGradient = change.to.some((paint) => paint.visible !== false && paint.type.startsWith("GRADIENT"));
+    if (hasGradient) return void 0;
+    const image = images[images.length - 1];
+    const url = imageUrlFor(image.imageHash);
+    if (url === void 0) return void 0;
+    const size = (_c = SCALE_MODE_BACKGROUND_SIZE[(_b = image.scaleMode) != null ? _b : ""]) != null ? _c : "cover";
+    const repeat = image.scaleMode === "TILE" ? "repeat" : "no-repeat";
+    const restRule = [
+      `${restSelector}::after {`,
+      '  content: "";',
+      "  position: absolute;",
+      "  inset: 0;",
+      `  background-image: url(${url});`,
+      `  background-size: ${size};`,
+      "  background-position: center;",
+      `  background-repeat: ${repeat};`,
+      "  opacity: 0;",
+      "  pointer-events: none;",
+      `  transition: opacity ${durationMs}ms ${timingFunction};`,
+      "}"
+    ].join("\n");
+    const activeRule = `${activeSelector}::after {
+  opacity: 1;
+}`;
+    return { restRule, activeRule };
+  }
+  function topSolidColor(paints) {
+    var _a;
+    for (let i = paints.length - 1; i >= 0; i--) {
+      const paint = paints[i];
+      if (paint.type === "SOLID" && paint.color) return __spreadProps(__spreadValues({}, paint.color), { a: (_a = paint.opacity) != null ? _a : 1 });
+    }
+    return { r: 0, g: 0, b: 0, a: 0 };
+  }
+  function shadowCss(layer) {
+    const inset = layer.type === "INNER_SHADOW" ? "inset " : "";
+    return `${inset}${round4(layer.offsetX, 2)}px ${round4(layer.offsetY, 2)}px ${round4(layer.radius, 2)}px ${round4(layer.spread, 2)}px ${rgbaToCss2(layer.color)}`;
+  }
+  function letterSpacingCss(letterSpacing) {
+    return `${round4(letterSpacing.value, 2)}${letterSpacing.unit === "PERCENT" ? "%" : "px"}`;
+  }
+  function lineHeightCss(lineHeight) {
+    if (lineHeight.unit === "AUTO") return "normal";
+    return `${round4(lineHeight.value, 2)}${lineHeight.unit === "PERCENT" ? "%" : "px"}`;
+  }
   function buildDeclarations(changes) {
+    var _a;
     const decls = [];
     let dx = null;
     let dy = null;
@@ -7386,27 +8235,104 @@ ${indent2}</div>`;
           sy = change.from !== 0 ? change.to / change.from : 1;
           break;
         case "rotation":
-          decls.push({ cssProperty: "rotate", value: `${round4(change.to - change.from, 2)}deg` });
+          decls.push({ cssProperty: "rotate", value: `${round4(change.to - change.from, 2)}deg`, interpolable: true });
           break;
         case "opacity":
-          decls.push({ cssProperty: "opacity", value: `${round4(change.to, 4)}` });
+          decls.push({ cssProperty: "opacity", value: `${round4(change.to, 4)}`, interpolable: true });
           break;
         case "fillColor":
-          decls.push({ cssProperty: "background-color", value: rgbaToCss2(change.to) });
+          decls.push({ cssProperty: "background-color", value: rgbaToCss2(change.to), interpolable: true });
           break;
         case "cornerRadius":
-          decls.push({ cssProperty: "border-radius", value: `${round4(change.to, 2)}px` });
+          decls.push({ cssProperty: "border-radius", value: `${round4(change.to, 2)}px`, interpolable: true });
           break;
         case "cornerRadii":
-          decls.push({ cssProperty: "border-radius", value: change.to.map((v) => `${round4(v, 2)}px`).join(" ") });
+          decls.push({ cssProperty: "border-radius", value: change.to.map((v) => `${round4(v, 2)}px`).join(" "), interpolable: true });
+          break;
+        case "strokeColor":
+          decls.push({ cssProperty: "border-color", value: rgbaToCss2(change.to), interpolable: true });
+          break;
+        case "strokeWeight":
+          decls.push({ cssProperty: "border-width", value: `${round4(change.to, 2)}px`, interpolable: true });
+          break;
+        case "background":
+          if (change.interpolable) {
+            decls.push({ cssProperty: "background-color", value: rgbaToCss2(topSolidColor(change.to)), interpolable: true });
+          } else {
+            const gradient = change.to.find((paint) => paint.visible !== false && paint.type.startsWith("GRADIENT"));
+            const image = gradient ? void 0 : change.to.find((paint) => paint.visible !== false && paint.type === "IMAGE");
+            if (gradient) {
+              const value = gradientCss(gradient);
+              if (value !== void 0) decls.push({ cssProperty: "background-image", value, interpolable: false });
+            } else if (image) {
+            }
+          }
+          break;
+        case "boxShadow":
+          decls.push({
+            cssProperty: "box-shadow",
+            value: change.to.length > 0 ? change.to.map(shadowCss).join(", ") : "none",
+            interpolable: true
+          });
+          break;
+        case "layerBlur":
+          decls.push({
+            cssProperty: "filter",
+            value: change.to.length > 0 ? change.to.map((radius) => `blur(${round4(radius, 2)}px)`).join(" ") : "none",
+            interpolable: true
+          });
+          break;
+        case "backgroundBlur":
+          decls.push({
+            cssProperty: "backdrop-filter",
+            value: change.to.length > 0 ? change.to.map((radius) => `blur(${round4(radius, 2)}px)`).join(" ") : "none",
+            interpolable: true
+          });
+          break;
+        case "fontSize":
+          decls.push({ cssProperty: "font-size", value: `${round4(change.to, 2)}px`, interpolable: true });
+          break;
+        case "fontWeight":
+          decls.push({ cssProperty: "font-weight", value: `${change.to}`, interpolable: true });
+          break;
+        case "letterSpacing":
+          decls.push({ cssProperty: "letter-spacing", value: letterSpacingCss(change.to), interpolable: true });
+          break;
+        case "lineHeight":
+          decls.push({ cssProperty: "line-height", value: lineHeightCss(change.to), interpolable: true });
+          break;
+        case "textColor":
+          decls.push({ cssProperty: "color", value: rgbaToCss2(change.to), interpolable: true });
+          break;
+        case "padding":
+          decls.push({ cssProperty: "padding", value: change.to.map((v) => `${round4(v, 2)}px`).join(" "), interpolable: true });
+          break;
+        case "gap":
+          decls.push({ cssProperty: "gap", value: `${round4(change.to, 2)}px`, interpolable: true });
+          break;
+        case "crossGap":
+          decls.push({ cssProperty: "row-gap", value: `${round4(change.to, 2)}px`, interpolable: true });
+          break;
+        case "visible":
+          decls.push({
+            cssProperty: "visibility",
+            value: change.to ? "visible" : "hidden",
+            interpolable: false,
+            transitionBehavior: "allow-discrete"
+          });
+          decls.push({ cssProperty: "opacity", value: change.to ? "1" : "0", interpolable: true });
+          decls.push({ cssProperty: "pointer-events", value: change.to ? "auto" : "none", interpolable: false });
+          break;
+        case "blendMode":
+          decls.push({ cssProperty: "mix-blend-mode", value: (_a = BLEND_MODE_CSS[change.to]) != null ? _a : "normal", interpolable: false });
           break;
       }
     }
     if (dx !== null || dy !== null) {
-      decls.unshift({ cssProperty: "translate", value: `${round4(dx != null ? dx : 0, 2)}px ${round4(dy != null ? dy : 0, 2)}px` });
+      decls.unshift({ cssProperty: "translate", value: `${round4(dx != null ? dx : 0, 2)}px ${round4(dy != null ? dy : 0, 2)}px`, interpolable: true });
     }
     if (sx !== null || sy !== null) {
-      decls.unshift({ cssProperty: "scale", value: `${round4(sx != null ? sx : 1, 4)} ${round4(sy != null ? sy : 1, 4)}` });
+      decls.unshift({ cssProperty: "scale", value: `${round4(sx != null ? sx : 1, 4)} ${round4(sy != null ? sy : 1, 4)}`, interpolable: true });
     }
     return decls;
   }
@@ -7439,34 +8365,54 @@ ${indent2}</div>`;
     const modifier = modifierSelector(input.baseSelector, input.mechanism, toggleClass);
     const rules = [];
     const transitionProps = /* @__PURE__ */ new Map();
-    const trackTransition = (path, cssProperty) => {
+    const trackTransition = (path, cssProperty, interpolable, transitionBehavior) => {
       var _a2;
+      if (!interpolable && transitionBehavior === void 0) return;
       const selector = `${input.baseSelector}${input.pathToSelector(path)}`;
-      const props = (_a2 = transitionProps.get(selector)) != null ? _a2 : /* @__PURE__ */ new Set();
-      props.add(cssProperty);
+      const props = (_a2 = transitionProps.get(selector)) != null ? _a2 : /* @__PURE__ */ new Map();
+      props.set(cssProperty, transitionBehavior);
       transitionProps.set(selector, props);
     };
     for (const pair2 of input.diff.pairs) {
       const decls = buildDeclarations(pair2.changes);
-      if (decls.length === 0) continue;
-      decls.forEach((d) => trackTransition(pair2.path, d.cssProperty));
       const suffix = input.pathToSelector(pair2.path);
-      rules.push(`${modifier}${suffix} {
+      const backgroundChange = pair2.changes.find(
+        (c) => c.prop === "background" && !c.interpolable
+      );
+      const overlay = backgroundChange ? imageOverlayCss(
+        backgroundChange,
+        `${input.baseSelector}${suffix}`,
+        `${modifier}${suffix}`,
+        input.durationMs,
+        input.timingFunction,
+        input.imageUrlFor
+      ) : void 0;
+      if (decls.length === 0 && overlay === void 0) continue;
+      if (decls.length > 0) {
+        decls.forEach((d) => trackTransition(pair2.path, d.cssProperty, d.interpolable, d.transitionBehavior));
+        rules.push(`${modifier}${suffix} {
 ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
 }`);
+      }
+      if (overlay !== void 0) {
+        rules.push(overlay.restRule);
+        rules.push(overlay.activeRule);
+      }
     }
     for (const path of input.diff.fadeIn) {
-      trackTransition(path, "opacity");
+      trackTransition(path, "opacity", true, void 0);
       const suffix = input.pathToSelector(path);
       rules.push(`${input.baseSelector}${suffix} { opacity: 0; }`);
       rules.push(`${modifier}${suffix} { opacity: 1; }`);
     }
     for (const path of input.diff.fadeOut) {
-      trackTransition(path, "opacity");
+      trackTransition(path, "opacity", true, void 0);
       rules.push(`${modifier}${input.pathToSelector(path)} { opacity: 0; }`);
     }
     const transitionRules = [...transitionProps.entries()].map(([selector, props]) => {
-      const transitionList = [...props].map((prop) => `${prop} ${input.durationMs}ms ${input.timingFunction}`);
+      const transitionList = [...props.entries()].map(
+        ([prop, behavior]) => `${prop} ${input.durationMs}ms ${input.timingFunction}${behavior ? ` ${behavior}` : ""}`
+      );
       return `${selector} {
   transition:
     ${transitionList.join(",\n    ")};
@@ -7574,9 +8520,9 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
     const slug2 = match[1].trim();
     if (!slug2) return null;
     const suffix = match[2].trim().toLowerCase();
-    if (suffix in namedWidths) return { slug: slug2, width: namedWidths[suffix] };
+    if (suffix in namedWidths) return { slug: slug2, width: namedWidths[suffix], breakpoint: suffix };
     const width = /^(\d+)\s*(?:px)?$/.exec(suffix);
-    if (width) return { slug: slug2, width: Number(width[1]) };
+    if (width) return { slug: slug2, width: Number(width[1]), breakpoint: suffix };
     return null;
   }
   function detectBreakpointGroups(roots, namedWidthsOverrides) {
@@ -7591,7 +8537,7 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
         bySlug.set(key, { slug: parsed.slug, frames: [] });
         keyOrder.push(key);
       }
-      bySlug.get(key).frames.push({ width: parsed.width, node: root });
+      bySlug.get(key).frames.push({ width: parsed.width, breakpoint: parsed.breakpoint, node: root });
     }
     const groups = [];
     const groupedIds = /* @__PURE__ */ new Set();
@@ -7622,31 +8568,200 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
   function indent(block2) {
     return block2.replace(/^/gm, "  ");
   }
-  async function emitBreakpointCss(group, sceneNodesById, variableNamesById = /* @__PURE__ */ new Map()) {
+  function indexRealTree(root) {
+    const byPath = /* @__PURE__ */ new Map();
+    const byId = /* @__PURE__ */ new Map();
+    const walk2 = (node, prefix) => {
+      if (!("children" in node)) return;
+      const seen = /* @__PURE__ */ new Map();
+      node.children.forEach((child, indexInParent) => {
+        var _a;
+        const dupIndex = (_a = seen.get(child.name)) != null ? _a : 0;
+        seen.set(child.name, dupIndex + 1);
+        const path = `${prefix}${child.name}#${dupIndex}`;
+        const entry = { node: child, parent: node, indexInParent, path };
+        byPath.set(path, entry);
+        byId.set(child.id, entry);
+        walk2(child, `${path}/`);
+      });
+    };
+    walk2(root, "");
+    return { byPath, byId };
+  }
+  function parentPathOf(path) {
+    const slash = path.lastIndexOf("/");
+    return slash === -1 ? "" : path.slice(0, slash);
+  }
+  function computeFlexOrderOverrides(frameRoot, beforeIndex, frameIndex, idAliases) {
+    var _a;
+    const overrides = /* @__PURE__ */ new Map();
+    const consideredParents = /* @__PURE__ */ new Set();
+    for (const entry of beforeIndex.byPath.values()) {
+      if (!entry.parent || consideredParents.has(entry.parent.id)) continue;
+      const parentLayout = "layout" in entry.parent ? entry.parent.layout : null;
+      if ((parentLayout == null ? void 0 : parentLayout.kind) !== "flex") continue;
+      consideredParents.add(entry.parent.id);
+      const parentPath = parentPathOf(entry.path);
+      const frameParent = parentPath === "" ? frameRoot : (_a = frameIndex.byPath.get(parentPath)) == null ? void 0 : _a.node;
+      if (!frameParent || !("children" in frameParent)) continue;
+      const mergedFlow = entry.parent.children.filter((c) => c.absoluteInLayout !== true);
+      const frameFlow = frameParent.children.filter((c) => c.absoluteInLayout !== true);
+      const frameIdToMergedId = /* @__PURE__ */ new Map();
+      for (const child of frameFlow) {
+        const mergedId = idAliases.get(child.id);
+        if (mergedId) frameIdToMergedId.set(child.id, mergedId);
+      }
+      const commonMergedIds = new Set(frameIdToMergedId.values());
+      const mergedOrder = mergedFlow.map((c) => c.id).filter((id) => commonMergedIds.has(id));
+      const frameOrder = frameFlow.map((c) => frameIdToMergedId.get(c.id)).filter((id) => Boolean(id));
+      if (mergedOrder.length < 2 || mergedOrder.join("|") === frameOrder.join("|")) continue;
+      frameFlow.forEach((child, index) => {
+        var _a2;
+        overrides.set((_a2 = frameIdToMergedId.get(child.id)) != null ? _a2 : child.id, index);
+      });
+    }
+    return overrides;
+  }
+  function computeRevealDisplay(root, ids) {
+    const result = /* @__PURE__ */ new Map();
+    const walk2 = (node, parentLayout) => {
+      var _a;
+      if (ids.has(node.id)) result.set(node.id, (_a = layoutDeclarations(node, parentLayout)["display"]) != null ? _a : "block");
+      if ("children" in node) {
+        const layout = "layout" in node ? node.layout : null;
+        for (const child of node.children) walk2(child, layout);
+      }
+    };
+    walk2(root, null);
+    return result;
+  }
+  function collectFixedWidthInterpolationIds(root, desktopWidth) {
+    const ids = [];
+    const walk2 = (node) => {
+      if ((node.type === "container" || node.type === "instance-ref") && node.sizing.width.mode === "fixed" && node.sizing.width.value === desktopWidth) {
+        ids.push(node.id);
+      }
+      if ("children" in node) for (const child of node.children) walk2(child);
+    };
+    walk2(root);
+    return ids.sort();
+  }
+  function cloneIr(node) {
+    return JSON.parse(JSON.stringify(node));
+  }
+  function mergeBreakpointGroup(group) {
+    var _a;
     const [widest, ...narrower] = group.frames;
-    const widestDiffable = toDiffable(widest.node);
-    const blocks = [];
-    for (let index = 0; index < narrower.length; index++) {
-      const frame3 = narrower[index];
-      const nextWiderWidth = index === 0 ? widest.width : narrower[index - 1].width;
-      const result = matchLayers(widestDiffable, toDiffable(frame3.node));
-      const idAliases = /* @__PURE__ */ new Map([[frame3.node.id, widest.node.id]]);
-      for (const pair2 of result.matched) {
+    const merged = cloneIr(widest.node);
+    const baseHiddenIds = /* @__PURE__ */ new Set();
+    const frames = [];
+    for (let i = 0; i < narrower.length; i++) {
+      const frame3 = narrower[i];
+      const nextWiderWidth = i === 0 ? widest.width : narrower[i - 1].width;
+      const beforeIndex = indexRealTree(merged);
+      const frameIndex = indexRealTree(frame3.node);
+      const diffResult = matchLayers(toDiffable(merged), toDiffable(frame3.node));
+      const idAliases = /* @__PURE__ */ new Map([[frame3.node.id, merged.id]]);
+      for (const pair2 of diffResult.matched) {
         if (pair2.a.id && pair2.b.id) idAliases.set(pair2.b.id, pair2.a.id);
       }
-      const overrides = await emitCss([frame3.node], sceneNodesById, variableNamesById, {
-        idAliases,
-        preamble: false
+      const revealedIds = [];
+      for (const pair2 of diffResult.matched) {
+        if (!pair2.a.id) continue;
+        const entry = beforeIndex.byId.get(pair2.a.id);
+        if (!entry || !entry.parent) continue;
+        const existing = entry.node.breakpointOnly;
+        if (existing && existing.length > 0) {
+          revealedIds.push(pair2.a.id);
+          if (!existing.includes(frame3.breakpoint)) {
+            entry.parent.children[entry.indexInParent] = __spreadProps(__spreadValues({}, entry.node), { breakpointOnly: [...existing, frame3.breakpoint] });
+          }
+        }
+      }
+      const orderByClassId = computeFlexOrderOverrides(frame3.node, beforeIndex, frameIndex, idAliases);
+      const addedRoots = diffResult.added.filter((entry) => {
+        if (beforeIndex.byPath.has(entry.path)) return false;
+        const parentPath = parentPathOf(entry.path);
+        return parentPath === "" || beforeIndex.byPath.has(parentPath);
       });
-      const hidden = result.removed.map((entry) => entry.node.id).filter((id) => Boolean(id)).map((id) => `.${toClassName(id)} {
+      const sortedAdded = [...addedRoots].sort(
+        (x, y) => frameIndex.byPath.get(x.path).indexInParent - frameIndex.byPath.get(y.path).indexInParent
+      );
+      const insertedCountByParent = /* @__PURE__ */ new Map();
+      for (const added of sortedAdded) {
+        const real = frameIndex.byPath.get(added.path);
+        if (!real) continue;
+        const parentPath = parentPathOf(added.path);
+        const parentNode = parentPath === "" ? merged : beforeIndex.byPath.get(parentPath).node;
+        if (!("children" in parentNode)) continue;
+        const already = (_a = insertedCountByParent.get(parentNode.id)) != null ? _a : 0;
+        const insertAt = Math.min(real.indexInParent + already, parentNode.children.length);
+        const spliced = __spreadProps(__spreadValues({}, cloneIr(real.node)), { breakpointOnly: [frame3.breakpoint] });
+        parentNode.children.splice(insertAt, 0, spliced);
+        insertedCountByParent.set(parentNode.id, already + 1);
+        baseHiddenIds.add(spliced.id);
+        revealedIds.push(spliced.id);
+      }
+      const hiddenIds = diffResult.removed.map((entry) => entry.node.id).filter((id) => Boolean(id));
+      frames.push({ frame: frame3, nextWiderWidth, idAliases, revealedIds, hiddenIds, orderByClassId });
+    }
+    const interpolatedFixedWidthIds = group.frames.length === 2 ? collectFixedWidthInterpolationIds(merged, widest.width) : [];
+    const revealDisplayById = computeRevealDisplay(merged, baseHiddenIds);
+    return { root: merged, baseHiddenIds: [...baseHiddenIds].sort(), interpolatedFixedWidthIds, frames, revealDisplayById };
+  }
+  function mergeBreakpointVariants(group) {
+    return mergeBreakpointGroup(group).root;
+  }
+  async function emitBreakpointCss(group, sceneNodesById, variableNamesById = /* @__PURE__ */ new Map()) {
+    const merged = mergeBreakpointGroup(group);
+    const baseParts = [];
+    if (merged.baseHiddenIds.length > 0) {
+      const selector = merged.baseHiddenIds.map((id) => `.${toClassName(id)}`).join(",\n");
+      baseParts.push(`${selector} {
   display: none;
 }`);
-      const body = [overrides, ...hidden].filter((part) => part.length > 0).join("\n\n");
-      blocks.push(`@media (max-width: ${nextWiderWidth - 1}px) {
+    }
+    const blocks = [];
+    for (const fr of merged.frames) {
+      const overrides = await emitCss([fr.frame.node], sceneNodesById, variableNamesById, {
+        idAliases: fr.idAliases,
+        preamble: false
+      });
+      const revealed = [...fr.revealedIds].sort().map((id) => {
+        var _a;
+        return `.${toClassName(id)} {
+  display: ${(_a = merged.revealDisplayById.get(id)) != null ? _a : "block"};
+}`;
+      });
+      const hidden = [...fr.hiddenIds].sort().map((id) => `.${toClassName(id)} {
+  display: none;
+}`);
+      const orders = [...fr.orderByClassId.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, order]) => `.${toClassName(id)} {
+  order: ${order};
+}`);
+      const body = [overrides, ...revealed, ...hidden, ...orders].filter((part) => part.length > 0).join("\n\n");
+      if (body.length === 0) continue;
+      blocks.push(`@media (max-width: ${fr.nextWiderWidth - 1}px) {
 ${indent(body)}
 }`);
     }
-    return blocks.join("\n\n");
+    if (merged.interpolatedFixedWidthIds.length > 0) {
+      const mobileWidth = group.frames[group.frames.length - 1].width;
+      const px2 = group.frames[0].width;
+      const selector = merged.interpolatedFixedWidthIds.map((id) => `.${toClassName(id)}`).join(",\n");
+      blocks.push(
+        `/* M4b missing-tablet interpolation: no frame exists between desktop and mobile, so a
+   desktop-width fixed container is bounded-fluid instead of showing mobile's cramped
+   design across the whole gap (see emitBreakpointCss's doc comment). */
+@media (min-width: ${mobileWidth}px) {
+${indent(`${selector} {
+  width: 100%;
+  max-width: ${px2}px;
+}`)}
+}`
+      );
+    }
+    return [...baseParts, ...blocks].join("\n\n");
   }
   var BREAKPOINT_COLLECTION_PLUGIN_KEY = "alteryBreakpointsGenerated";
   var DEFAULT_BREAKPOINTS = {
@@ -7734,18 +8849,12 @@ ${indent(body)}
 
   // src/targets/django/interactions.ts
   var IR_OWNED_CSS2 = /* @__PURE__ */ new Set([
-    "width",
-    "height",
-    "min-width",
-    "max-width",
-    "min-height",
-    "max-height",
+    "position",
     "top",
     "right",
     "bottom",
     "left",
     "inset",
-    "position",
     "float",
     "clear",
     "box-sizing",
@@ -7771,9 +8880,6 @@ ${indent(body)}
     "place-content",
     "place-self",
     "order",
-    "gap",
-    "row-gap",
-    "column-gap",
     "grid",
     "grid-template",
     "grid-template-columns",
@@ -7785,27 +8891,11 @@ ${indent(body)}
     "grid-auto-flow",
     "grid-auto-columns",
     "grid-auto-rows",
-    "grid-column-gap",
-    "grid-row-gap",
-    "margin",
-    "margin-top",
-    "margin-right",
-    "margin-bottom",
-    "margin-left",
-    "padding",
-    "padding-top",
-    "padding-right",
-    "padding-bottom",
-    "padding-left",
     "font",
     "font-family",
-    "font-size",
-    "font-weight",
     "font-style",
     "font-variant",
     "font-stretch",
-    "line-height",
-    "letter-spacing",
     "text-align",
     "text-indent",
     "white-space",
@@ -7816,18 +8906,32 @@ ${indent(body)}
     "-webkit-line-clamp",
     "-webkit-box-orient"
   ]);
-  function pseudoClass(trigger) {
-    return trigger === "ON_HOVER" ? "hover" : "active";
-  }
-  function diffCss(sourceCss, destCss) {
+  function diffCss(sourceCss, destCss, imageUrls = [], nodeLabel = "") {
     const decls = [];
     for (const [property, value] of Object.entries(destCss)) {
       if (IR_OWNED_CSS2.has(property)) continue;
       if (sourceCss[property] === value) continue;
       if (!(property in sourceCss) && !value) continue;
+      if (value.includes("<path-to-image>")) {
+        if (imageUrls.length === 0) {
+          console.warn(`${nodeLabel || "a state"} changes an image fill whose asset was not exported \u2014 dropping "${property}" from the state rule`);
+          continue;
+        }
+        decls.push({ property, value: resolveImagePlaceholders(value, imageUrls) });
+        continue;
+      }
       decls.push({ property, value });
     }
     return decls;
+  }
+  var IMAGE_FILL_PLACEHOLDER2 = /url\(\s*(["']?)<path-to-image>\1\s*\)/g;
+  function resolveImagePlaceholders(value, imageUrls) {
+    let index = 0;
+    return value.replace(IMAGE_FILL_PLACEHOLDER2, () => {
+      const url = imageUrls[Math.min(index, imageUrls.length - 1)];
+      index++;
+      return `url(${url})`;
+    });
   }
   function collectReactionDestinationIds(nodes) {
     const ids = /* @__PURE__ */ new Set();
@@ -7843,6 +8947,58 @@ ${indent(body)}
     for (const node of nodes) visit(node);
     return ids;
   }
+  function toLiveDiffableTree(source) {
+    var _a, _b, _c;
+    const duck = source;
+    return {
+      name: (_a = duck.name) != null ? _a : "",
+      type: (_b = duck.type) != null ? _b : "",
+      // matchLayers only reads name/type/children (see match-layers.ts) — the geometry fields
+      // `DiffableNode` declares (for its own FLIP-style diff, unused here) are irrelevant.
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      children: ((_c = duck.children) != null ? _c : []).map(toLiveDiffableTree),
+      live: source
+    };
+  }
+  function toRenderDiffableTree(node) {
+    return {
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      children: "children" in node ? node.children.map(toRenderDiffableTree) : void 0
+    };
+  }
+  async function descendantRules(sourceNode, destNode, renderIndex, imageUrlsByNodeId) {
+    var _a, _b;
+    if (!sourceNode) return [];
+    const { matched, removed, added } = matchLayers(toLiveDiffableTree(sourceNode), toLiveDiffableTree(destNode));
+    const rules = [];
+    for (const pair2 of matched) {
+      const renderNode2 = renderIndex.get(pair2.path);
+      if (!(renderNode2 == null ? void 0 : renderNode2.id)) continue;
+      const a = pair2.a;
+      const b = pair2.b;
+      const [sourceCss, destCss] = await Promise.all([a.live.getCSSAsync(), b.live.getCSSAsync()]);
+      const decls = diffCss(sourceCss, destCss, (_b = imageUrlsByNodeId.get((_a = b.id) != null ? _a : "")) != null ? _b : [], `"${b.name}"`);
+      if (decls.length > 0) rules.push({ renderId: renderNode2.id, kind: "changed", decls });
+    }
+    for (const entry of removed) {
+      const renderNode2 = renderIndex.get(entry.path);
+      if (renderNode2 == null ? void 0 : renderNode2.id) rules.push({ renderId: renderNode2.id, kind: "removed", decls: [] });
+    }
+    for (const entry of added) {
+      const renderNode2 = renderIndex.get(entry.path);
+      if (renderNode2 == null ? void 0 : renderNode2.id) rules.push({ renderId: renderNode2.id, kind: "added", decls: [] });
+    }
+    return rules;
+  }
   async function emitInteractions(nodes, sceneNodesById, options = {}) {
     const cssParts = [];
     const jsParts = [];
@@ -7857,46 +9013,88 @@ ${indent(body)}
     };
     for (const node of nodes) indexNode(node);
     const visit = async (node) => {
-      var _a, _b, _c, _d, _e, _f;
+      var _a, _b, _c, _d, _e, _f, _g, _h, _i;
       if (node.interactions) {
         const className = toClassName(node.id);
-        const transitionByProp = /* @__PURE__ */ new Map();
+        const renderIndex = indexTree(toRenderDiffableTree(node));
+        const transitionsBySelector = /* @__PURE__ */ new Map();
         const stateBlocks = [];
+        const restBlocks = [];
+        const addTransition = (selector, property, durationMs, timingFunction, discrete = false) => {
+          var _a2;
+          const props = (_a2 = transitionsBySelector.get(selector)) != null ? _a2 : /* @__PURE__ */ new Map();
+          if (!props.has(property)) {
+            props.set(property, `${property} ${durationMs}ms ${timingFunction}${discrete ? " allow-discrete" : ""}`);
+          }
+          transitionsBySelector.set(selector, props);
+        };
         for (const interaction of node.interactions) {
           const sourceNode = (_a = interaction.sourceId ? sceneNodesById.get(interaction.sourceId) : void 0) != null ? _a : sceneNodesById.get(node.id);
-          const sourceCss = (_b = await (sourceNode == null ? void 0 : sourceNode.getCSSAsync())) != null ? _b : {};
           const destNode = sceneNodesById.get(interaction.destinationId);
-          const destCss = (_c = await (destNode == null ? void 0 : destNode.getCSSAsync())) != null ? _c : {};
           if (!destNode) {
             console.warn(`"${node.name}" has a ${interaction.trigger} CHANGE_TO interaction targeting "${interaction.destinationId}", which isn't in the exported node set \u2014 skipping`);
             continue;
           }
-          const decls = diffCss(sourceCss, destCss);
-          if (decls.length === 0) continue;
-          for (const d of decls) {
-            if (!transitionByProp.has(d.property)) transitionByProp.set(d.property, `${d.property} ${interaction.durationMs}ms ${interaction.timingFunction}`);
-          }
-          const destBlock = decls.map((d) => `  ${d.property}: ${d.value};`).join("\n");
-          if (interaction.trigger === "ON_CLICK") {
-            stateBlocks.push(`.${className}.is-active {
-${destBlock}
+          const sourceCss = (_b = await (sourceNode == null ? void 0 : sourceNode.getCSSAsync())) != null ? _b : {};
+          const destCss = await destNode.getCSSAsync();
+          const imageUrls = (_c = options.imageUrlsByNodeId) != null ? _c : /* @__PURE__ */ new Map();
+          const rootDecls = diffCss(sourceCss, destCss, (_d = imageUrls.get(interaction.destinationId)) != null ? _d : [], `"${node.name}"`);
+          const descRules = await descendantRules(sourceNode, destNode, renderIndex, imageUrls);
+          if (rootDecls.length === 0 && descRules.length === 0) continue;
+          const baseSelector = `.${className}`;
+          const triggerStateSelector = interaction.trigger === "ON_CLICK" ? `${baseSelector}.is-active` : `${baseSelector}:${interaction.trigger === "ON_HOVER" ? "hover" : "active"}`;
+          if (rootDecls.length > 0) {
+            for (const d of rootDecls) addTransition(baseSelector, d.property, interaction.durationMs, interaction.timingFunction);
+            stateBlocks.push(`${triggerStateSelector} {
+${rootDecls.map((d) => `  ${d.property}: ${d.value};`).join("\n")}
 }`);
+          }
+          for (const rule of descRules) {
+            const descClass = toClassName(rule.renderId);
+            const descSelector = `${baseSelector} .${descClass}`;
+            const descStateSelector = `${triggerStateSelector} .${descClass}`;
+            if (rule.kind === "changed") {
+              for (const d of rule.decls) addTransition(descSelector, d.property, interaction.durationMs, interaction.timingFunction);
+              stateBlocks.push(`${descStateSelector} {
+${rule.decls.map((d) => `  ${d.property}: ${d.value};`).join("\n")}
+}`);
+            } else if (rule.kind === "removed") {
+              addTransition(descSelector, "opacity", interaction.durationMs, interaction.timingFunction);
+              addTransition(descSelector, "visibility", interaction.durationMs, interaction.timingFunction, true);
+              stateBlocks.push(`${descStateSelector} {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}`);
+            } else {
+              restBlocks.push(`${descSelector} {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}`);
+              addTransition(descSelector, "opacity", interaction.durationMs, interaction.timingFunction);
+              addTransition(descSelector, "visibility", interaction.durationMs, interaction.timingFunction, true);
+              stateBlocks.push(`${descStateSelector} {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}`);
+            }
+          }
+          if (interaction.trigger === "ON_CLICK") {
             jsParts.push(
               `document.querySelectorAll('.${className}').forEach(function (el) { el.addEventListener('click', function () { el.classList.toggle('is-active') }) })`
             );
-          } else {
-            const pseudo = pseudoClass(interaction.trigger);
-            stateBlocks.push(`.${className}:${pseudo} {
-${destBlock}
-}`);
           }
         }
-        if (transitionByProp.size > 0) {
-          const base = `.${className} {
+        if (transitionsBySelector.size > 0) {
+          const transitionRules = [...transitionsBySelector].map(
+            ([selector, props]) => `${selector} {
   transition:
-    ${[...transitionByProp.values()].join(",\n    ")};
-}`;
-          cssParts.push([base, ...stateBlocks].join("\n"));
+    ${[...props.values()].join(",\n    ")};
+}`
+          );
+          cssParts.push([...restBlocks, ...transitionRules, ...stateBlocks].join("\n"));
         }
       }
       if (node.overlays) {
@@ -7910,10 +9108,11 @@ ${destBlock}
           }
           const dialogId = `${className}--overlay-${overlay.destinationId.replace(/[^a-zA-Z0-9]+/g, "-")}`;
           const destComponentName = overlayDestinationComponentName(irNodeById.get(overlay.destinationId));
+          const body = (_f = (_e = options.renderOverlayBody) == null ? void 0 : _e.call(options, overlay.destinationId)) != null ? _f : "";
           if (options.bootstrapModals && (destComponentName === "tooltip" || destComponentName === "popover")) {
             const text4 = escapeHtml(firstTextOf(irNodeById.get(overlay.destinationId)));
             const attr = destComponentName === "tooltip" ? ` data-bs-toggle="tooltip" data-bs-title="${text4}"` : ` data-bs-toggle="popover" data-bs-content="${text4}"`;
-            triggerAttributes.set(className, `${(_d = triggerAttributes.get(className)) != null ? _d : ""}${attr}`);
+            triggerAttributes.set(className, `${(_g = triggerAttributes.get(className)) != null ? _g : ""}${attr}`);
             needsTooltipInit || (needsTooltipInit = destComponentName === "tooltip");
             needsPopoverInit || (needsPopoverInit = destComponentName === "popover");
             continue;
@@ -7922,37 +9121,29 @@ ${destBlock}
             if (destComponentName === "offcanvas") {
               const placement = offcanvasPlacement(irNodeById.get(overlay.destinationId));
               dialogs.push(
-                `<div class="offcanvas offcanvas-${placement}" tabindex="-1" id="${dialogId}" aria-hidden="true"><div class="offcanvas-body"></div></div>`
+                `<div class="offcanvas offcanvas-${placement}" tabindex="-1" id="${dialogId}" aria-hidden="true"><div class="offcanvas-body">${body}</div></div>`
               );
-              const existingOc = (_e = triggerAttributes.get(className)) != null ? _e : "";
+              const existingOc = (_h = triggerAttributes.get(className)) != null ? _h : "";
               triggerAttributes.set(className, `${existingOc} data-bs-toggle="offcanvas" data-bs-target="#${dialogId}"`);
               continue;
             }
             const backdropAttr = overlay.closeInteraction === "CLOSE_ON_CLICK_OUTSIDE" ? "" : ' data-bs-backdrop="static"';
             dialogs.push(
-              `<div class="modal fade" id="${dialogId}" tabindex="-1" aria-hidden="true"${backdropAttr}><div class="modal-dialog"><div class="modal-content"></div></div></div>`
+              `<div class="modal fade" id="${dialogId}" tabindex="-1" aria-hidden="true"${backdropAttr}><div class="modal-dialog"><div class="modal-content">${body}</div></div></div>`
             );
-            const existing = (_f = triggerAttributes.get(className)) != null ? _f : "";
+            const existing = (_i = triggerAttributes.get(className)) != null ? _i : "";
             triggerAttributes.set(className, `${existing} data-bs-toggle="modal" data-bs-target="#${dialogId}"`);
             continue;
           }
-          const backdropCss = overlay.background.type === "SOLID_COLOR" ? `backdrop: rgba(${Math.round(overlay.background.color.r * 255)}, ${Math.round(overlay.background.color.g * 255)}, ${Math.round(overlay.background.color.b * 255)}, ${overlay.background.color.a});` : "";
-          const positionStyle = overlay.positionType === "MANUAL" && overlay.relativePosition ? `top: ${overlay.relativePosition.y}px; left: ${overlay.relativePosition.x}px;` : "";
+          const backdropCss = overlay.background.type === "SOLID_COLOR" ? `background-color: rgba(${Math.round(overlay.background.color.r * 255)}, ${Math.round(overlay.background.color.g * 255)}, ${Math.round(overlay.background.color.b * 255)}, ${overlay.background.color.a});` : "";
+          const positionStyle = overlayPositionStyle(overlay);
           dialogs.push(
-            `<dialog id="${dialogId}" class="${className}--overlay" style="${positionStyle}"></dialog>`
+            `<dialog id="${dialogId}" class="${className}--overlay" style="${positionStyle}">${body}</dialog>`
           );
           if (backdropCss) cssParts.push(`#${dialogId}::backdrop { ${backdropCss} }`);
-          const event = triggerToEvent(overlay.trigger);
-          const closeJs = overlay.closeInteraction === "CLOSE_ON_CLICK_OUTSIDE" ? `
-  d.addEventListener('click', (e) => { if (e.target === d) d.close() })` : "";
-          jsParts.push(
-            `document.querySelectorAll('.${className}').forEach((el) => {
-  el.addEventListener('${event}', () => {
-    var d = document.getElementById('${dialogId}')
-    if (d && typeof d.showModal === 'function') d.showModal()
-  })
-})`
-          );
+          const animationCss = dialogAnimationCss(dialogId, overlay.transition);
+          if (animationCss) cssParts.push(animationCss);
+          jsParts.push(overlayOpenJs(className, dialogId, overlay));
           if (overlay.closeInteraction === "CLOSE_ON_CLICK_OUTSIDE") {
             jsParts.push(
               `var _d${dialogId.replace(/-/g, "_")} = document.getElementById('${dialogId}')
@@ -7961,6 +9152,42 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
           }
         }
         if (dialogs.length > 0) overlayDialogs.set(node.id, dialogs);
+      }
+      if (node.back) {
+        const className = toClassName(node.id);
+        jsParts.push(
+          `document.querySelectorAll('.${className}').forEach((el) => {
+  el.addEventListener('click', (e) => {
+    e.preventDefault()
+    history.back()
+  })
+})`
+        );
+      }
+      if (node.closeDialog) {
+        const className = toClassName(node.id);
+        jsParts.push(
+          `document.querySelectorAll('.${className}').forEach((el) => {
+  el.addEventListener('click', (e) => {
+    e.preventDefault()
+    var d = el.closest('dialog')
+    if (d) d.close()
+  })
+})`
+        );
+      }
+      if (node.scrollTo) {
+        const className = toClassName(node.id);
+        const targetClass = toClassName(node.scrollTo.destinationId);
+        jsParts.push(
+          `document.querySelectorAll('.${className}').forEach((el) => {
+  el.addEventListener('click', (e) => {
+    e.preventDefault()
+    var t = document.querySelector('.${targetClass}')
+    if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+})`
+        );
       }
       if ("children" in node) {
         for (const child of node.children) await visit(child);
@@ -8013,33 +9240,103 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
     }
     return "start";
   }
-  function triggerToEvent(trigger) {
-    switch (trigger) {
-      case "ON_CLICK":
-        return "click";
-      case "ON_HOVER":
-        return "mouseenter";
-      case "ON_PRESS":
-        return "mousedown";
-      case "MOUSE_UP":
-        return "mouseup";
-      case "MOUSE_ENTER":
-        return "mouseenter";
-      case "MOUSE_LEAVE":
-        return "mouseleave";
-      case "MOUSE_DOWN":
-        return "mousedown";
-      case "ON_DRAG":
-        return "pointerdown";
-      case "ON_KEY_DOWN":
-        return "keydown";
-      case "ON_MEDIA_END":
-        return "ended";
-      case "ON_MEDIA_HIT":
-        return "timeupdate";
-      case "AFTER_TIMEOUT":
-        return "click";
+  function overlayPositionStyle(overlay) {
+    if (overlay.positionType === "MANUAL") {
+      return overlay.relativePosition ? `position: fixed; margin: 0; top: ${overlay.relativePosition.y}px; left: ${overlay.relativePosition.x}px;` : "";
     }
+    switch (overlay.positionType) {
+      case "TOP_LEFT":
+        return "position: fixed; margin: 0; top: 0; left: 0;";
+      case "TOP_CENTER":
+        return "position: fixed; margin: 0 auto; top: 0; left: 0; right: 0;";
+      case "TOP_RIGHT":
+        return "position: fixed; margin: 0; top: 0; right: 0; left: auto;";
+      case "BOTTOM_LEFT":
+        return "position: fixed; margin: 0; top: auto; bottom: 0; left: 0;";
+      case "BOTTOM_CENTER":
+        return "position: fixed; margin: 0 auto; top: auto; bottom: 0; left: 0; right: 0;";
+      case "BOTTOM_RIGHT":
+        return "position: fixed; margin: 0; top: auto; bottom: 0; right: 0; left: auto;";
+      default:
+        return "";
+    }
+  }
+  function dialogAnimationCss(dialogId, transition) {
+    var _a, _b;
+    const durationMs = (_a = transition == null ? void 0 : transition.durationMs) != null ? _a : 200;
+    const timingFunction = (_b = transition == null ? void 0 : transition.timingFunction) != null ? _b : "ease";
+    if (durationMs <= 0) return "";
+    const sel = `#${dialogId}`;
+    return [
+      "@media (prefers-reduced-motion: no-preference) {",
+      `  ${sel} {`,
+      "    opacity: 0;",
+      "    transform: scale(0.95);",
+      `    transition: opacity ${durationMs}ms ${timingFunction}, transform ${durationMs}ms ${timingFunction}, overlay ${durationMs}ms allow-discrete, display ${durationMs}ms allow-discrete;`,
+      "  }",
+      `  ${sel}[open] {`,
+      "    opacity: 1;",
+      "    transform: scale(1);",
+      "  }",
+      "  @starting-style {",
+      `    ${sel}[open] {`,
+      "      opacity: 0;",
+      "      transform: scale(0.95);",
+      "    }",
+      "  }",
+      "}"
+    ].join("\n");
+  }
+  function overlayOpenMechanism(overlay) {
+    var _a;
+    switch (overlay.trigger) {
+      case "AFTER_TIMEOUT":
+        return { kind: "timeout", timeoutMs: (_a = overlay.triggerTimeoutMs) != null ? _a : 0 };
+      case "ON_CLICK":
+        return { kind: "event", event: "click" };
+      case "ON_HOVER":
+        return { kind: "event", event: "mouseenter" };
+      case "ON_PRESS":
+        return { kind: "event", event: "mousedown" };
+      case "MOUSE_UP":
+        return { kind: "event", event: "mouseup" };
+      case "MOUSE_DOWN":
+        return { kind: "event", event: "mousedown" };
+      case "MOUSE_ENTER":
+        return { kind: "event", event: "mouseenter" };
+      case "MOUSE_LEAVE":
+        return { kind: "event", event: "mouseleave" };
+      case "ON_KEY_DOWN":
+        return { kind: "event", event: "keydown" };
+      case "ON_DRAG":
+        return { kind: "event", event: "pointerdown" };
+      case "ON_MEDIA_HIT":
+        return { kind: "event", event: "timeupdate" };
+      case "ON_MEDIA_END":
+        return { kind: "event", event: "ended" };
+    }
+  }
+  function overlayOpenJs(className, dialogId, overlay) {
+    var _a;
+    const openCall = `{ var d = document.getElementById(${JSON.stringify(dialogId)}); if (d && typeof d.showModal === 'function') d.showModal() }`;
+    const mechanism = overlayOpenMechanism(overlay);
+    if (mechanism.kind === "timeout") {
+      return `document.querySelectorAll('.${className}').forEach((el) => {
+  setTimeout(() => ${openCall}, ${mechanism.timeoutMs})
+})`;
+    }
+    if (overlay.trigger === "ON_KEY_DOWN") {
+      const codes = JSON.stringify((_a = overlay.triggerKeyCodes) != null ? _a : []);
+      return `document.querySelectorAll('.${className}').forEach((el) => {
+  el.addEventListener('keydown', (e) => {
+    if (${codes}.length && !${codes}.includes(e.keyCode)) return
+    ${openCall}
+  })
+})`;
+    }
+    return `document.querySelectorAll('.${className}').forEach((el) => {
+  el.addEventListener('${mechanism.event}', () => ${openCall})
+})`;
   }
 
   // src/targets/django/bootstrap/utilities.ts
@@ -8328,8 +9625,14 @@ ${keptLines.join("\n")}
     return { html, css };
   }
   async function emitDjangoProject(pageRoots, sceneNodesById, variableNamesById, opts) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
-    const { rendered, groups } = detectBreakpointGroups(pageRoots, opts.breakpointTokens);
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    const detected = detectBreakpointGroups(pageRoots, opts.breakpointTokens);
+    const groups = detected.groups;
+    const mergedByWidestId = new Map(groups.map((group) => [group.frames[0].node.id, mergeBreakpointVariants(group)]));
+    const rendered = detected.rendered.map((root) => {
+      var _a2;
+      return (_a2 = mergedByWidestId.get(root.id)) != null ? _a2 : root;
+    });
     const components = collectComponents(rendered);
     const registry = buildComponentRegistry(components);
     const overriddenTextNodeIds = collectOverriddenTextNodeIds(rendered, registry);
@@ -8354,13 +9657,30 @@ ${keptLines.join("\n")}
     }
     const groupSlugByWidestId = new Map(groups.map((group) => [group.frames[0].node.id, group.slug]));
     const pages = {};
+    const pageRoutes = [];
+    const usedSlugs = /* @__PURE__ */ new Set();
+    const startPageId = opts.startPageId && rendered.some((root) => root.id === opts.startPageId) ? opts.startPageId : (_d = rendered[0]) == null ? void 0 : _d.id;
     for (const root of rendered) {
-      const path = pageTemplatePath(root, groupSlugByWidestId.get(root.id));
+      const groupSlug = groupSlugByWidestId.get(root.id);
+      const path = pageTemplatePath(root, groupSlug);
       pages[path] = wrapGenerated(root.id, emitPage(root, sceneNodesById, registry, navMap, bootstrapComponents));
       fileNodeIds[path] = root.id;
+      const name = groupSlug != null ? groupSlug : root.name;
+      const base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "page";
+      const slug2 = usedSlugs.has(base) ? `${base}-${root.id.replace(/[^a-zA-Z0-9]+/g, "-")}` : base;
+      usedSlugs.add(slug2);
+      pageRoutes.push({
+        templatePath: path,
+        nodeId: root.id,
+        navKey: navMapKey(root.id),
+        slug: slug2,
+        title: name.trim(),
+        isStart: root.id === startPageId
+      });
     }
-    const themedInstances = ((_d = opts.framework) == null ? void 0 : _d.fidelity) === "theme" && ((_e = opts.themeSets) == null ? void 0 : _e.length) ? collectThemedInstanceMasters(rendered, opts.themeSets) : void 0;
-    let css = await emitCss(rendered, sceneNodesById, variableNamesById, { themedInstances });
+    const themedInstances = ((_e = opts.framework) == null ? void 0 : _e.fidelity) === "theme" && ((_f = opts.themeSets) == null ? void 0 : _f.length) ? collectThemedInstanceMasters(rendered, opts.themeSets) : void 0;
+    const notes = [];
+    let css = await emitCss(rendered, sceneNodesById, variableNamesById, { themedInstances, notes });
     for (const group of groups) {
       const mediaCss = await emitBreakpointCss(group, sceneNodesById, variableNamesById);
       if (mediaCss.length > 0) css += `
@@ -8379,20 +9699,46 @@ ${mediaCss}`;
 
 ` + css;
     }
+    const irNodesById = /* @__PURE__ */ new Map();
+    const indexNode = (node) => {
+      irNodesById.set(node.id, node);
+      if ("children" in node) for (const child of node.children) indexNode(child);
+    };
+    for (const root of pageRoots) indexNode(root);
+    for (const root of rendered) indexNode(root);
     const {
       css: interactionsCss,
       js: interactionsJs,
       overlayDialogs,
       triggerAttributes
-    } = await emitInteractions(rendered, sceneNodesById, { bootstrapModals: bootstrapComponents });
+    } = await emitInteractions(rendered, sceneNodesById, {
+      bootstrapModals: bootstrapComponents,
+      imageUrlsByNodeId: opts.stateImageUrlsByNodeId,
+      renderOverlayBody: (destinationId) => {
+        const destination = irNodesById.get(destinationId);
+        return destination ? renderOverlayFragment(destination, sceneNodesById, registry, navMap, bootstrapComponents) : void 0;
+      }
+    });
+    const { css: transitionsCss, js: transitionsJs } = emitPageTransitions({
+      nodes: rendered,
+      pageRootIds: new Set(rendered.map((root) => root.id))
+    });
     if (overlayDialogs.size > 0) {
+      const pagePathByNodeId = /* @__PURE__ */ new Map();
+      for (const [path, html] of Object.entries(pages)) {
+        const root = rendered.find((candidate) => fileNodeIds[path] === candidate.id);
+        if (!root || !html) continue;
+        const claim = (node) => {
+          if (!pagePathByNodeId.has(node.id)) pagePathByNodeId.set(node.id, path);
+          if ("children" in node) for (const child of node.children) claim(child);
+        };
+        claim(root);
+      }
       for (const [nodeId, dialogs] of overlayDialogs) {
-        for (const [path, html] of Object.entries(pages)) {
-          if (path.includes(nodeId.replace(/[^a-zA-Z0-9]+/g, "-"))) {
-            pages[path] = html.replace("{% endblock %}", `  ${dialogs.join("\n  ")}
+        const path = (_g = pagePathByNodeId.get(nodeId)) != null ? _g : Object.keys(pages).find((candidate) => fileNodeIds[candidate] === startPageId);
+        if (!path) continue;
+        pages[path] = pages[path].replace("{% endblock %}", `  ${dialogs.join("\n  ")}
 {% endblock %}`);
-          }
-        }
       }
     }
     if (triggerAttributes.size > 0) {
@@ -8405,27 +9751,79 @@ ${mediaCss}`;
       Object.assign(pages, utilized.pages);
       Object.assign(partials, utilized.partials);
     }
-    const themeCss = ((_f = opts.framework) == null ? void 0 : _f.fidelity) === "theme" && ((_g = opts.themeSets) == null ? void 0 : _g.length) ? buildBootstrapTheme(opts.themeSets) : "";
+    const themeCss = ((_h = opts.framework) == null ? void 0 : _h.fidelity) === "theme" && ((_i = opts.themeSets) == null ? void 0 : _i.length) ? buildBootstrapTheme(opts.themeSets) : "";
     const fontFamilies = [...new Set([...css.matchAll(/font-family: "([^"]+)"/g)].map((match) => match[1]))];
     const baseHtml = wrapGenerated(
       BASE_HTML_NODE_ID,
       emitBaseHtml(
         opts.cssFile,
-        (_h = opts.tokensCssFile) != null ? _h : "css/tokens.css",
+        (_j = opts.tokensCssFile) != null ? _j : "css/tokens.css",
         fontFamilies,
         __spreadValues({
           interactionsCss: interactionsCss.length > 0,
           interactionsJs: interactionsJs.length > 0
-        }, (_i = opts.animationLinks) != null ? _i : { animationsCss: false, animationsJs: false, gsapPlugins: [] }),
-        opts.framework ? __spreadProps(__spreadValues({}, opts.framework), { themeCssFile: themeCss.length > 0 ? "css/bootstrap-theme.css" : null }) : null
+        }, (_k = opts.animationLinks) != null ? _k : { animationsCss: false, animationsJs: false, gsapPlugins: [] }),
+        opts.framework ? __spreadProps(__spreadValues({}, opts.framework), { themeCssFile: themeCss.length > 0 ? "css/bootstrap-theme.css" : null }) : null,
+        {
+          transitionsCss: transitionsCss.length > 0,
+          transitionsJs: transitionsJs.length > 0,
+          languageSwitcher: opts.languageSwitcher === true
+        }
       )
     );
     fileNodeIds["base.html"] = BASE_HTML_NODE_ID;
-    return { baseHtml, pages, partials, css, interactionsCss, interactionsJs, themeCss, fileNodeIds };
+    return {
+      baseHtml,
+      pages,
+      partials,
+      css,
+      interactionsCss,
+      interactionsJs,
+      themeCss,
+      transitionsCss,
+      transitionsJs,
+      pageRoutes,
+      notes,
+      fileNodeIds
+    };
+  }
+
+  // src/targets/django/variable-names.ts
+  function collectAliasIds(nodes) {
+    const ids = /* @__PURE__ */ new Set();
+    for (const node of nodes) {
+      const bound = node.boundVariables;
+      if (!bound) continue;
+      for (const entry of Object.values(bound)) {
+        for (const alias of Array.isArray(entry) ? entry : [entry]) {
+          const id = alias == null ? void 0 : alias.id;
+          if (typeof id === "string") ids.add(id);
+        }
+      }
+    }
+    return ids;
+  }
+  async function resolveBoundVariableNames(nodes, lookup, localNames) {
+    const names = new Map(localNames != null ? localNames : /* @__PURE__ */ new Map());
+    for (const id of collectAliasIds(nodes)) {
+      if (names.has(id)) continue;
+      try {
+        const variable = await lookup(id);
+        if (variable) names.set(id, variable.name);
+      } catch (e) {
+      }
+    }
+    return names;
+  }
+  async function variableNamesForScope(nodes) {
+    const local = await readLocalVariables();
+    const localNames = new Map(local.variables.map((variable) => [variable.id, variable.name]));
+    return resolveBoundVariableNames(nodes, (id) => figma.variables.getVariableByIdAsync(id), localNames);
   }
 
   // src/utils/tree.ts
   async function loadAllPagesAsync() {
+    var _a;
     const pages = figma.root.children.slice();
     const BATCH = 4;
     for (let start = 0; start < pages.length; start += BATCH) {
@@ -8443,6 +9841,7 @@ ${mediaCss}`;
         })
       );
     }
+    await ((_a = figma.loadAllPagesAsync) == null ? void 0 : _a.call(figma));
   }
   var YIELD_EVERY = 500;
   function yieldToHost() {
@@ -8469,6 +9868,28 @@ ${mediaCss}`;
     } finally {
       figma.skipInvisibleInstanceChildren = false;
     }
+  }
+  function nativeFindAllWithCriteria(root) {
+    if (!("findAllWithCriteria" in root) || typeof root.findAllWithCriteria !== "function") return null;
+    const method = root.findAllWithCriteria;
+    return method.bind(root);
+  }
+  async function findAllByTypes(root, types, opts) {
+    const native = nativeFindAllWithCriteria(root);
+    if (native) {
+      figma.skipInvisibleInstanceChildren = true;
+      try {
+        const found = native({ types }).filter(isSceneNode);
+        if ((opts == null ? void 0 : opts.includeRoot) && isSceneNode(root) && types.includes(root.type)) {
+          found.unshift(root);
+        }
+        return found;
+      } finally {
+        figma.skipInvisibleInstanceChildren = false;
+      }
+    }
+    const typeSet = new Set(types);
+    return findAllWithCriteria(root, (node) => typeSet.has(node.type), opts);
   }
   async function walkSceneNodes(root, visit, opts) {
     figma.skipInvisibleInstanceChildren = true;
@@ -8502,128 +9923,6 @@ ${mediaCss}`;
     return node.type !== "DOCUMENT" && node.type !== "PAGE";
   }
 
-  // src/utils/plugin-data.ts
-  var NAMESPACE = "altery";
-  var MAX_PLUGIN_DATA_BYTES = 1e5;
-  function getPluginData(node, key) {
-    const raw = node.getSharedPluginData(NAMESPACE, key);
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw);
-    } catch (e) {
-      return null;
-    }
-  }
-  function setPluginData(node, key, value) {
-    const serialized = JSON.stringify(value);
-    if (serialized.length > MAX_PLUGIN_DATA_BYTES) {
-      throw new Error("pluginData limit 100KB exceeded");
-    }
-    node.setSharedPluginData(NAMESPACE, key, serialized);
-  }
-
-  // src/targets/django/i18n/normalize.ts
-  var FIGMA_LINE_SEPARATORS = new RegExp(`[${String.fromCharCode(8232)}${String.fromCharCode(8233)}]`, "g");
-  function normalize2(characters) {
-    return characters.replace(FIGMA_LINE_SEPARATORS, "\n").replace(/\s*\n\s*/g, " ").replace(/\s+/g, " ").trim();
-  }
-  var CONTEXT_SEPARATOR = String.fromCharCode(4);
-  function translationKey(msgctxt, characters) {
-    return `${msgctxt}${CONTEXT_SEPARATOR}${normalize2(characters)}`;
-  }
-
-  // src/targets/django/i18n/extract.ts
-  var MARKUP_SEGMENT_FIELDS = ["fontWeight", "hyperlink"];
-  function isTextNode(node) {
-    return node.type === "TEXT";
-  }
-  function nodePath(node) {
-    const parts = [];
-    let cur = node;
-    while (cur && cur.type !== "DOCUMENT") {
-      parts.unshift(cur.name);
-      cur = "parent" in cur ? cur.parent : null;
-    }
-    return parts.join("/");
-  }
-  function reference(node) {
-    const fileKey = figma.fileKey;
-    return `figma://${fileKey != null ? fileKey : ""}?node-id=${node.id} ${nodePath(node)}`;
-  }
-  function buildMarkup(node) {
-    var _a;
-    const segments = node.getStyledTextSegments([...MARKUP_SEGMENT_FIELDS]);
-    if (segments.length <= 1) return { markup: null, hasInlineStyles: false };
-    const baseWeight = Math.min(...segments.map((s) => s.fontWeight));
-    let markup = "";
-    for (const segment of segments) {
-      let chunk = segment.characters;
-      if (((_a = segment.hyperlink) == null ? void 0 : _a.type) === "URL") {
-        chunk = `<a href="${segment.hyperlink.value}">${chunk}</a>`;
-      } else if (segment.fontWeight > baseWeight) {
-        chunk = `<strong>${chunk}</strong>`;
-      }
-      markup += chunk;
-    }
-    return { markup: normalize2(markup), hasInlineStyles: true };
-  }
-  async function extractStrings(root) {
-    var _a;
-    const textNodes = await findAllWithCriteria(root, isTextNode);
-    const catalog = /* @__PURE__ */ new Map();
-    for (const node of textNodes) {
-      const msgid = normalize2(node.characters);
-      if (!msgid) continue;
-      const key = getPluginData(node, "i18nKey" /* I18N_KEY */);
-      const msgctxt = (_a = key == null ? void 0 : key.context) != null ? _a : "";
-      const dedupeKey = translationKey(msgctxt, node.characters);
-      const existing = catalog.get(dedupeKey);
-      if (existing) {
-        existing.references.push(reference(node));
-        existing.nodeIds.push(node.id);
-        if (!existing.comment.includes(node.name)) existing.comment += `; ${node.name}`;
-        continue;
-      }
-      const { markup } = buildMarkup(node);
-      catalog.set(dedupeKey, {
-        msgid,
-        msgctxt,
-        markup,
-        references: [reference(node)],
-        comment: node.name,
-        nodeIds: [node.id]
-      });
-    }
-    return [...catalog.values()];
-  }
-
-  // src/targets/django/i18n/po.ts
-  var HEADER = [
-    'msgid ""',
-    'msgstr ""',
-    '"Content-Type: text/plain; charset=UTF-8\\n"',
-    '"Content-Transfer-Encoding: 8bit\\n"'
-  ].join("\n");
-  function escapePoString(value) {
-    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\t/g, "\\t");
-  }
-  function quoted(value) {
-    return `"${escapePoString(value)}"`;
-  }
-  function emitEntry(entry) {
-    var _a;
-    const lines = [];
-    if (entry.comment) lines.push(`#. ${entry.comment}`);
-    for (const reference2 of entry.references) lines.push(`#: ${reference2}`);
-    if (entry.msgctxt) lines.push(`msgctxt ${quoted(entry.msgctxt)}`);
-    lines.push(`msgid ${quoted((_a = entry.markup) != null ? _a : entry.msgid)}`);
-    lines.push('msgstr ""');
-    return lines.join("\n");
-  }
-  function emitPo(entries) {
-    return [HEADER, ...entries.map(emitEntry)].join("\n\n") + "\n";
-  }
-
   // src/targets/django/i18n/annotation.ts
   var PLACEHOLDER_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
   function getAnnotation(node) {
@@ -8655,6 +9954,16 @@ ${mediaCss}`;
   function setAnnotation(node, annotation) {
     validateAnnotation(annotation, node.characters.length);
     setPluginData(node, "i18nKey" /* I18N_KEY */, annotation);
+  }
+
+  // src/targets/django/i18n/normalize.ts
+  var FIGMA_LINE_SEPARATORS = new RegExp(`[${String.fromCharCode(8232)}${String.fromCharCode(8233)}]`, "g");
+  function normalize2(characters) {
+    return characters.replace(FIGMA_LINE_SEPARATORS, "\n").replace(/\s*\n\s*/g, " ").replace(/\s+/g, " ").trim();
+  }
+  var CONTEXT_SEPARATOR = String.fromCharCode(4);
+  function translationKey(msgctxt, characters) {
+    return `${msgctxt}${CONTEXT_SEPARATOR}${normalize2(characters)}`;
   }
 
   // src/targets/django/i18n/keys.ts
@@ -8714,8 +10023,292 @@ ${mediaCss}`;
     return resolveManualKey(node);
   }
 
+  // src/targets/django/i18n/segment-text.ts
+  var LINE_SEPARATOR_RUN = /\s*[\r\n\u2028\u2029]+\s*/g;
+  function normalizeSegmentText(characters) {
+    return characters.replace(LINE_SEPARATOR_RUN, " ");
+  }
+
+  // src/targets/django/i18n/extract.ts
+  function isTextNode(node) {
+    return node.type === "TEXT";
+  }
+  function nodePath(node) {
+    const parts = [];
+    let cur = node;
+    while (cur && cur.type !== "DOCUMENT") {
+      parts.unshift(cur.name);
+      cur = "parent" in cur ? cur.parent : null;
+    }
+    return parts.join("/");
+  }
+  function reference(node) {
+    const fileKey = figma.fileKey;
+    return `figma://${fileKey != null ? fileKey : ""}?node-id=${node.id} ${nodePath(node)}`;
+  }
+  function styleRuns(node) {
+    const segments = node.getStyledTextSegments([...TEXT_SEGMENT_FIELDS]);
+    const paragraphs = splitTextParagraphs(segments);
+    const runs = [];
+    for (const paragraph2 of paragraphs) {
+      for (const run of paragraph2.runs) runs.push(run.segment);
+    }
+    return runs;
+  }
+  async function extractNodeEntries(node, sourceLocale) {
+    var _a, _b;
+    const runs = styleRuns(node);
+    if (runs.length <= 1) {
+      const key = await resolveKey(node, { sourceLocale });
+      if (!key.msgid) return [];
+      return [{ msgid: key.msgid, msgctxt: key.msgctxt, msgidPlural: key.msgidPlural, dedupeKey: translationKey(key.msgctxt, key.msgid) }];
+    }
+    const msgctxt = (_b = (_a = getAnnotation(node)) == null ? void 0 : _a.context) != null ? _b : "";
+    const entries = [];
+    for (const run of runs) {
+      const msgid = normalizeSegmentText(run.characters);
+      if (!msgid) continue;
+      entries.push({ msgid, msgctxt, dedupeKey: translationKey(msgctxt, msgid) });
+    }
+    return entries;
+  }
+  async function extractStrings(root, options = {}) {
+    var _a;
+    const sourceLocale = (_a = options.sourceLocale) != null ? _a : "en";
+    const textNodes = await findAllWithCriteria(root, isTextNode);
+    const catalog = /* @__PURE__ */ new Map();
+    for (const node of textNodes) {
+      const nodeEntries = await extractNodeEntries(node, sourceLocale);
+      if (nodeEntries.length === 0) continue;
+      const ref = reference(node);
+      for (const nodeEntry of nodeEntries) {
+        const existing = catalog.get(nodeEntry.dedupeKey);
+        if (existing) {
+          if (!existing.references.includes(ref)) existing.references.push(ref);
+          if (!existing.nodeIds.includes(node.id)) existing.nodeIds.push(node.id);
+          if (!existing.comment.includes(node.name)) existing.comment += `; ${node.name}`;
+          continue;
+        }
+        catalog.set(nodeEntry.dedupeKey, __spreadProps(__spreadValues({
+          msgid: nodeEntry.msgid,
+          msgctxt: nodeEntry.msgctxt
+        }, nodeEntry.msgidPlural ? { msgidPlural: nodeEntry.msgidPlural } : {}), {
+          markup: null,
+          references: [ref],
+          comment: node.name,
+          nodeIds: [node.id]
+        }));
+      }
+    }
+    return [...catalog.values()];
+  }
+
+  // src/targets/django/i18n/plural-forms.ts
+  var FALLBACK_PLURAL_FORMS = { nplurals: 2, expression: "(n != 1)" };
+  var RUSSIAN_UKRAINIAN_FORMS = {
+    nplurals: 3,
+    expression: "(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2)"
+  };
+  var PLURAL_FORMS_TABLE = {
+    ar: {
+      nplurals: 6,
+      expression: "(n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5)"
+    },
+    de: FALLBACK_PLURAL_FORMS,
+    en: FALLBACK_PLURAL_FORMS,
+    es: FALLBACK_PLURAL_FORMS,
+    fr: { nplurals: 2, expression: "(n > 1)" },
+    ja: { nplurals: 1, expression: "0" },
+    pl: { nplurals: 3, expression: "(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2)" },
+    ru: RUSSIAN_UKRAINIAN_FORMS,
+    tr: { nplurals: 2, expression: "(n > 1)" },
+    uk: RUSSIAN_UKRAINIAN_FORMS,
+    zh: { nplurals: 1, expression: "0" }
+  };
+  function pluralFormsFor(language) {
+    var _a;
+    const base = language.trim().toLowerCase().split(/[-_]/)[0];
+    return (_a = PLURAL_FORMS_TABLE[base]) != null ? _a : FALLBACK_PLURAL_FORMS;
+  }
+  function pluralFormsHeaderLine(forms) {
+    return `Plural-Forms: nplurals=${forms.nplurals}; plural=${forms.expression};`;
+  }
+  var PLURAL_FORMS_HEADER = /Plural-Forms:\s*nplurals\s*=\s*(\d+)\s*;\s*plural\s*=\s*(.*?);?\s*(?:\n|$)/;
+  function parsePluralFormsHeader(headerBody) {
+    const match = headerBody.match(PLURAL_FORMS_HEADER);
+    if (!match) return null;
+    return { nplurals: Number(match[1]), expression: match[2].trim() };
+  }
+  var PLURAL_EXPRESSION_TOKEN = /\d+|n\b|&&|\|\||==|!=|<=|>=|[<>%+\-*/?:()!]/g;
+  var PluralExpression = class {
+    constructor(tokens, n) {
+      this.tokens = tokens;
+      this.n = n;
+      this.position = 0;
+    }
+    evaluate() {
+      return this.ternary();
+    }
+    ternary() {
+      const condition = this.logicalOr();
+      if (this.tokens[this.position] !== "?") return condition;
+      this.position++;
+      const whenTrue = this.ternary();
+      if (this.tokens[this.position] === ":") this.position++;
+      const whenFalse = this.ternary();
+      return condition !== 0 ? whenTrue : whenFalse;
+    }
+    logicalOr() {
+      let value = this.logicalAnd();
+      while (this.tokens[this.position] === "||") {
+        this.position++;
+        value = value !== 0 || this.logicalAnd() !== 0 ? 1 : 0;
+      }
+      return value;
+    }
+    logicalAnd() {
+      let value = this.equality();
+      while (this.tokens[this.position] === "&&") {
+        this.position++;
+        value = value !== 0 && this.equality() !== 0 ? 1 : 0;
+      }
+      return value;
+    }
+    equality() {
+      let value = this.relational();
+      for (; ; ) {
+        const op = this.tokens[this.position];
+        if (op !== "==" && op !== "!=") return value;
+        this.position++;
+        const rhs = this.relational();
+        value = op === "==" ? value === rhs ? 1 : 0 : value !== rhs ? 1 : 0;
+      }
+    }
+    relational() {
+      let value = this.additive();
+      for (; ; ) {
+        const op = this.tokens[this.position];
+        if (op !== "<" && op !== "<=" && op !== ">" && op !== ">=") return value;
+        this.position++;
+        const rhs = this.additive();
+        if (op === "<") value = value < rhs ? 1 : 0;
+        else if (op === "<=") value = value <= rhs ? 1 : 0;
+        else if (op === ">") value = value > rhs ? 1 : 0;
+        else value = value >= rhs ? 1 : 0;
+      }
+    }
+    additive() {
+      let value = this.multiplicative();
+      for (; ; ) {
+        const op = this.tokens[this.position];
+        if (op !== "+" && op !== "-") return value;
+        this.position++;
+        const rhs = this.multiplicative();
+        value = op === "+" ? value + rhs : value - rhs;
+      }
+    }
+    multiplicative() {
+      let value = this.unary();
+      for (; ; ) {
+        const op = this.tokens[this.position];
+        if (op !== "%" && op !== "*" && op !== "/") return value;
+        this.position++;
+        const rhs = this.unary();
+        value = op === "%" ? value % rhs : op === "*" ? value * rhs : Math.trunc(value / rhs);
+      }
+    }
+    unary() {
+      if (this.tokens[this.position] === "!") {
+        this.position++;
+        return this.unary() === 0 ? 1 : 0;
+      }
+      if (this.tokens[this.position] === "-") {
+        this.position++;
+        return -this.unary();
+      }
+      return this.primary();
+    }
+    primary() {
+      const token2 = this.tokens[this.position++];
+      if (token2 === "(") {
+        const value = this.ternary();
+        if (this.tokens[this.position] === ")") this.position++;
+        return value;
+      }
+      if (token2 === "n") return this.n;
+      return Number(token2);
+    }
+  };
+  function evaluatePluralIndex(expression, n) {
+    var _a;
+    const tokens = (_a = expression.match(PLURAL_EXPRESSION_TOKEN)) != null ? _a : [];
+    if (tokens.length === 0) return 0;
+    return Math.trunc(new PluralExpression(tokens, n).evaluate());
+  }
+
+  // src/targets/django/i18n/po.ts
+  function escapePoString(value) {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+  }
+  function quoted(value) {
+    return `"${escapePoString(value)}"`;
+  }
+  function buildHeader(options, forms) {
+    var _a;
+    const language = (_a = options == null ? void 0 : options.language) != null ? _a : options == null ? void 0 : options.sourceLanguage;
+    const lines = [
+      'msgid ""',
+      'msgstr ""',
+      quoted("Project-Id-Version: Figma export\n"),
+      quoted("PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"),
+      quoted("Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"),
+      quoted(`Language-Team: ${language != null ? language : "LANGUAGE"} <LL@li.org>
+`)
+    ];
+    if (language) lines.push(quoted(`Language: ${language}
+`));
+    lines.push(
+      quoted("MIME-Version: 1.0\n"),
+      quoted("Content-Type: text/plain; charset=UTF-8\n"),
+      quoted("Content-Transfer-Encoding: 8bit\n"),
+      quoted(`${pluralFormsHeaderLine(forms)}
+`)
+    );
+    return lines.join("\n");
+  }
+  function emitEntry(entry, nplurals) {
+    var _a;
+    const lines = [];
+    if (entry.comment) lines.push(`#. ${entry.comment}`);
+    for (const reference2 of entry.references) lines.push(`#: ${reference2}`);
+    if (entry.msgctxt) lines.push(`msgctxt ${quoted(entry.msgctxt)}`);
+    lines.push(`msgid ${quoted((_a = entry.markup) != null ? _a : entry.msgid)}`);
+    if (entry.msgidPlural) {
+      lines.push(`msgid_plural ${quoted(entry.msgidPlural)}`);
+      for (let index = 0; index < nplurals; index++) lines.push(`msgstr[${index}] ""`);
+    } else {
+      lines.push('msgstr ""');
+    }
+    return lines.join("\n");
+  }
+  function emitPo(entries, options) {
+    var _a, _b;
+    const forms = pluralFormsFor((_b = (_a = options == null ? void 0 : options.language) != null ? _a : options == null ? void 0 : options.sourceLanguage) != null ? _b : "en");
+    const header2 = buildHeader(options, forms);
+    return [header2, ...entries.map((entry) => emitEntry(entry, forms.nplurals))].join("\n\n") + "\n";
+  }
+  function emitLocaleCatalogs(entries, languages, sourceLanguage) {
+    const targets = [...new Set(languages)].filter((language) => language !== sourceLanguage).sort();
+    const files = {};
+    for (const language of targets) {
+      files[`locale/${language}/LC_MESSAGES/django.po`] = emitPo(entries, { language, sourceLanguage });
+    }
+    return files;
+  }
+
   // src/targets/django/i18n/import.ts
   var NODE_ID_REFERENCE = /figma:\/\/[^?]*\?node-id=([^\s]+)/;
+  var FALLBACK_PLURAL_FORMS2 = { nplurals: 2, expression: "(n != 1)" };
   function unescapePoString(raw) {
     return raw.replace(/\\(.)/g, (_, ch) => {
       switch (ch) {
@@ -8737,11 +10330,14 @@ ${mediaCss}`;
     return match ? unescapePoString(match[1]) : "";
   }
   function parsePoBlock(block2) {
+    var _a;
     const lines = block2.split("\n");
     let msgctxt = "";
     let msgid = "";
+    let msgidPlural;
     let msgstr = "";
     let nodeId;
+    const pluralMsgstrs = [];
     let field = null;
     for (const line of lines) {
       const trimmed = line.trim();
@@ -8762,7 +10358,8 @@ ${mediaCss}`;
         continue;
       }
       if (trimmed.startsWith("msgid_plural")) {
-        field = null;
+        msgidPlural = parseQuoted(trimmed);
+        field = "msgid_plural";
         continue;
       }
       if (trimmed.startsWith("msgid ")) {
@@ -8770,8 +10367,11 @@ ${mediaCss}`;
         field = "msgid";
         continue;
       }
-      if (trimmed.startsWith("msgstr[")) {
-        field = null;
+      const pluralForm = trimmed.match(/^msgstr\[(\d+)\]\s*(.*)$/);
+      if (pluralForm) {
+        const index = Number(pluralForm[1]);
+        pluralMsgstrs[index] = parseQuoted(trimmed);
+        field = index;
         continue;
       }
       if (trimmed.startsWith("msgstr ")) {
@@ -8779,18 +10379,42 @@ ${mediaCss}`;
         field = "msgstr";
         continue;
       }
-      if (trimmed.startsWith('"') && field) {
+      if (trimmed.startsWith('"') && field !== null) {
         const continuation = parseQuoted(trimmed);
         if (field === "msgctxt") msgctxt += continuation;
         else if (field === "msgid") msgid += continuation;
-        else msgstr += continuation;
+        else if (field === "msgid_plural") msgidPlural = (msgidPlural != null ? msgidPlural : "") + continuation;
+        else if (field === "msgstr") msgstr += continuation;
+        else if (typeof field === "number") pluralMsgstrs[field] = ((_a = pluralMsgstrs[field]) != null ? _a : "") + continuation;
       }
     }
-    if (msgid === "" && msgctxt === "") return null;
-    return { nodeId, msgctxt, msgid, msgstr };
+    const isHeader = msgid === "" && msgctxt === "" && msgidPlural === void 0;
+    if (isHeader) return { isHeader: true, nodeId, msgctxt, msgid, msgstr };
+    return __spreadValues({ isHeader: false, nodeId, msgctxt, msgid, msgidPlural, msgstr }, pluralMsgstrs.length > 0 ? { pluralMsgstrs } : {});
   }
   function parsePo(content) {
-    return content.split(/\r?\n\s*\r?\n/).map(parsePoBlock).filter((entry) => entry !== null);
+    var _a, _b;
+    const blocks = content.split(/\r?\n\s*\r?\n/);
+    let pluralForms = null;
+    const entries = [];
+    for (const block2 of blocks) {
+      const parsed = parsePoBlock(block2);
+      if (!parsed) continue;
+      if (parsed.isHeader) {
+        pluralForms = parsePluralFormsHeader(parsed.msgstr);
+        continue;
+      }
+      const { nodeId, msgctxt, msgid, msgidPlural, msgstr, pluralMsgstrs } = parsed;
+      if (pluralMsgstrs && msgidPlural !== void 0) {
+        const forms = pluralForms != null ? pluralForms : FALLBACK_PLURAL_FORMS2;
+        const formIndex = evaluatePluralIndex(forms.expression, 1);
+        const resolved = (_b = (_a = pluralMsgstrs[formIndex]) != null ? _a : pluralMsgstrs[0]) != null ? _b : "";
+        entries.push({ nodeId, msgctxt, msgid, msgstr: resolved, msgidPlural });
+        continue;
+      }
+      entries.push({ nodeId, msgctxt, msgid, msgstr });
+    }
+    return entries;
   }
   function parseJson(content) {
     const data = JSON.parse(content);
@@ -8856,32 +10480,71 @@ ${mediaCss}`;
   }
 
   // src/targets/django/i18n/overflow-report.ts
-  function isAutoLayoutFrame(node) {
-    return !!node && "layoutMode" in node && node.layoutMode !== "NONE";
+  function isClippingAncestor(node) {
+    if (!node || !("layoutMode" in node)) return false;
+    const candidate = node;
+    return candidate.layoutMode !== "NONE" || candidate.clipsContent === true;
   }
-  function findAutoLayoutParent(node) {
+  function findClippingAncestor(node) {
     let cur = node.parent;
     while (cur) {
-      if (isAutoLayoutFrame(cur)) return cur;
+      if (isClippingAncestor(cur)) return cur;
       cur = "parent" in cur ? cur.parent : null;
     }
     return null;
   }
-  function hasFixedWidth(parent) {
-    return parent.layoutMode === "HORIZONTAL" ? parent.primaryAxisSizingMode === "FIXED" : parent.counterAxisSizingMode === "FIXED";
+  function hasFixedWidth(container) {
+    if (container.layoutMode === "NONE") return !!container.clipsContent;
+    return container.layoutMode === "HORIZONTAL" ? container.primaryAxisSizingMode === "FIXED" : container.counterAxisSizingMode === "FIXED";
+  }
+  function hasFixedHeight(container) {
+    if (container.layoutMode === "NONE") return !!container.clipsContent;
+    return container.layoutMode === "HORIZONTAL" ? container.counterAxisSizingMode === "FIXED" : container.primaryAxisSizingMode === "FIXED";
+  }
+  var AUTO_LINE_HEIGHT_FACTOR = 1.2;
+  var AVERAGE_GLYPH_WIDTH_FACTOR = 0.6;
+  function lineHeightPx(fontSize, lineHeight) {
+    if (lineHeight && typeof lineHeight.value === "number") {
+      if (lineHeight.unit === "PIXELS") return lineHeight.value;
+      if (lineHeight.unit === "PERCENT") return fontSize * (lineHeight.value / 100);
+    }
+    return fontSize * AUTO_LINE_HEIGHT_FACTOR;
+  }
+  function detectSelfClippedText(node) {
+    if (node.textAutoResize !== "NONE") return null;
+    const box = node.absoluteBoundingBox;
+    if (!box || typeof node.fontSize !== "number") return null;
+    const fontSize = node.fontSize;
+    const lineHeight = typeof node.lineHeight === "object" ? node.lineHeight : void 0;
+    const linePx = lineHeightPx(fontSize, lineHeight);
+    const charsPerLine = Math.max(1, Math.floor(box.width / (fontSize * AVERAGE_GLYPH_WIDTH_FACTOR)));
+    const maxLines = Math.max(1, Math.floor(box.height / linePx));
+    const capacity = charsPerLine * maxLines;
+    const length = node.characters.length;
+    if (length <= capacity) return null;
+    const neededLines = Math.ceil(length / charsPerLine);
+    return { nodeId: node.id, nodeName: node.name, axis: "vertical", expected: box.height, actual: neededLines * linePx };
   }
   function detectOverflows(nodes) {
     const reports = [];
     for (const node of nodes) {
-      const parent = findAutoLayoutParent(node);
-      if (!parent || !hasFixedWidth(parent)) continue;
+      const selfClipped = detectSelfClippedText(node);
+      if (selfClipped) {
+        reports.push(selfClipped);
+        continue;
+      }
+      const container = findClippingAncestor(node);
+      if (!container) continue;
       const nodeBox = node.absoluteBoundingBox;
-      const parentBox = parent.absoluteBoundingBox;
-      if (!nodeBox || !parentBox) continue;
-      const expected = parent.width;
-      const actual = nodeBox.x + nodeBox.width - parentBox.x;
-      if (actual > expected) {
-        reports.push({ nodeId: node.id, nodeName: node.name, expected, actual });
+      const containerBox = container.absoluteBoundingBox;
+      if (!nodeBox || !containerBox) continue;
+      if (hasFixedWidth(container)) {
+        const actual = nodeBox.x + nodeBox.width - containerBox.x;
+        if (actual > container.width) reports.push({ nodeId: node.id, nodeName: node.name, axis: "horizontal", expected: container.width, actual });
+      }
+      if (hasFixedHeight(container)) {
+        const actual = nodeBox.y + nodeBox.height - containerBox.y;
+        if (actual > container.height) reports.push({ nodeId: node.id, nodeName: node.name, axis: "vertical", expected: container.height, actual });
       }
     }
     return reports;
@@ -8948,9 +10611,9 @@ ${mediaCss}`;
     const byColor = /* @__PURE__ */ new Map();
     const channel = (value) => Math.round(value * 255).toString(16).padStart(2, "0");
     for (const prop of ["fills", "strokes"]) {
-      const paints2 = source[prop];
-      if (!Array.isArray(paints2)) continue;
-      for (const paint of paints2) {
+      const paints = source[prop];
+      if (!Array.isArray(paints)) continue;
+      for (const paint of paints) {
         if (paint.type !== "SOLID" || paint.visible === false) continue;
         const aliasId = (_b = (_a = paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
         if (!aliasId) continue;
@@ -9143,7 +10806,7 @@ ${mediaCss}`;
 
   // src/targets/django/export/file-tree.ts
   function buildExportTree(opts) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e;
     const files = {};
     files["templates/base.html"] = opts.project.baseHtml;
     for (const [path, html] of Object.entries(opts.project.pages)) files[`templates/${path}`] = html;
@@ -9155,8 +10818,14 @@ ${mediaCss}`;
     if (opts.project.themeCss) files["static/css/bootstrap-theme.css"] = opts.project.themeCss;
     if ((_a = opts.animation) == null ? void 0 : _a.css) files["static/css/animations.css"] = opts.animation.css;
     if ((_b = opts.animation) == null ? void 0 : _b.js) files["static/js/animations.js"] = opts.animation.js;
+    if (opts.project.transitionsCss) files["static/css/transitions.css"] = opts.project.transitionsCss;
+    if (opts.project.transitionsJs) files["static/js/transitions.js"] = opts.project.transitionsJs;
     for (const asset of (_c = opts.assets) != null ? _c : []) files[`static/img/${asset.filename}`] = asset.content;
     if (opts.po) files["locale/figma.po"] = opts.po;
+    for (const [path, catalog] of Object.entries((_d = opts.localeCatalogs) != null ? _d : {})) files[path] = catalog;
+    for (const [path, content] of Object.entries((_e = opts.scaffold) != null ? _e : {})) {
+      if (!(path in files)) files[path] = content;
+    }
     return files;
   }
   function buildRegenStaticFiles(opts) {
@@ -9166,12 +10835,518 @@ ${mediaCss}`;
     if (opts.themeCss) files["static/css/bootstrap-theme.css"] = opts.themeCss;
     if (opts.interactionsCss) files["static/css/interactions.css"] = opts.interactionsCss;
     if (opts.interactionsJs) files["static/js/interactions.js"] = opts.interactionsJs;
+    if (opts.transitionsCss) files["static/css/transitions.css"] = opts.transitionsCss;
+    if (opts.transitionsJs) files["static/js/transitions.js"] = opts.transitionsJs;
+    return files;
+  }
+
+  // src/targets/django/project/python.ts
+  function pyStr(value) {
+    const escaped = value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+    return `'${escaped}'`;
+  }
+  function toPascalCase(value) {
+    return value.split(/[^a-zA-Z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("");
+  }
+
+  // src/targets/django/project/index.ts
+  function emitPagesPy(pages) {
+    const lines = [
+      '"""Generated page registry (do not edit by hand \u2014 regenerated on every export): one entry',
+      "per exported Figma page frame. `views.py` looks pages up by slug; `context_processors.py`",
+      "reverses each page's URL into the `navMap` the exported templates already reference via",
+      '`{{ navMap.nav_1_2 }}`."""',
+      "",
+      "PAGES = ["
+    ];
+    for (const page of pages) {
+      lines.push(
+        "    {",
+        `        'slug': ${pyStr(page.slug)},`,
+        `        'template': ${pyStr(page.templatePath)},`,
+        `        'title': ${pyStr(page.title)},`,
+        "        'description': '',",
+        `        'nav_key': ${pyStr(page.navKey)},`,
+        `        'node_id': ${pyStr(page.nodeId)},`,
+        `        'is_start': ${page.isStart ? "True" : "False"},`,
+        "    },"
+      );
+    }
+    lines.push("]", "");
+    return lines.join("\n");
+  }
+  function emitAppUrlsPy(appName) {
+    return [
+      '"""Generated URL routes (do not edit by hand \u2014 regenerated on every export): the',
+      "prototype's start frame serves at the site root, every other page at `<slug>/`, named",
+      '`page-<slug>` so `context_processors.py`\'s `reverse()` calls resolve them."""',
+      "",
+      "from django.urls import path",
+      "",
+      "from . import views",
+      "from .pages import PAGES",
+      "",
+      `app_name = ${pyStr(appName)}`,
+      "",
+      "urlpatterns = [",
+      `    path('' if entry['is_start'] else f"{entry['slug']}/", views.page, {'slug': entry['slug']}, name=f"page-{entry['slug']}")`,
+      "    for entry in PAGES",
+      "]",
+      ""
+    ].join("\n");
+  }
+  function emitContextProcessorsPy(appName) {
+    return [
+      '"""Context processor: rebuilds `navMap` \u2014 see `component-emitter.ts`\'s `navMapKey` on the',
+      "TypeScript side \u2014 on every request, so the raw `{{ navMap.nav_1_2 }}` lookups the exported",
+      'templates already emit resolve to real, i18n-aware URLs instead of rendering empty."""',
+      "",
+      "from django.urls import reverse",
+      "",
+      "from .pages import PAGES",
+      "",
+      "",
+      "def nav_map(request):",
+      "    return {",
+      "        'navMap': {",
+      `            page['nav_key']: reverse(f'${appName}:page-{page["slug"]}')`,
+      "            for page in PAGES",
+      "        }",
+      "    }",
+      ""
+    ].join("\n");
+  }
+  function emitAppsPy(appName) {
+    return ["from django.apps import AppConfig", "", "", `class ${toPascalCase(appName)}Config(AppConfig):`, `    name = ${pyStr(appName)}`, ""].join(
+      "\n"
+    );
+  }
+  function emitManagePy(projectName) {
+    return [
+      "#!/usr/bin/env python",
+      `"""Django's command-line utility for administrative tasks."""`,
+      "import os",
+      "import sys",
+      "",
+      "",
+      "def main():",
+      '    """Run administrative tasks."""',
+      `    os.environ.setdefault('DJANGO_SETTINGS_MODULE', ${pyStr(`${projectName}.settings`)})`,
+      "    try:",
+      "        from django.core.management import execute_from_command_line",
+      "    except ImportError as exc:",
+      "        raise ImportError(",
+      `            "Couldn't import Django. Are you sure it's installed and "`,
+      '            "available on your PYTHONPATH environment variable? Did you "',
+      '            "forget to activate a virtual environment?"',
+      "        ) from exc",
+      "    execute_from_command_line(sys.argv)",
+      "",
+      "",
+      "if __name__ == '__main__':",
+      "    main()",
+      ""
+    ].join("\n");
+  }
+  function emitWsgiPy(projectName) {
+    return [
+      `"""WSGI config for the ${projectName} project."""`,
+      "",
+      "import os",
+      "",
+      "from django.core.wsgi import get_wsgi_application",
+      "",
+      `os.environ.setdefault('DJANGO_SETTINGS_MODULE', ${pyStr(`${projectName}.settings`)})`,
+      "",
+      "application = get_wsgi_application()",
+      ""
+    ].join("\n");
+  }
+  function emitAsgiPy(projectName) {
+    return [
+      `"""ASGI config for the ${projectName} project."""`,
+      "",
+      "import os",
+      "",
+      "from django.core.asgi import get_asgi_application",
+      "",
+      `os.environ.setdefault('DJANGO_SETTINGS_MODULE', ${pyStr(`${projectName}.settings`)})`,
+      "",
+      "application = get_asgi_application()",
+      ""
+    ].join("\n");
+  }
+  function emitProjectUrlsPy(appName, hasLanguages) {
+    if (hasLanguages) {
+      return [
+        '"""Root URLconf: mounts the generated page routes under `i18n_patterns` and exposes',
+        '`set_language` at `i18n/` for `templates/partials/language-switcher.html`\'s POST."""',
+        "",
+        "from django.conf.urls.i18n import i18n_patterns",
+        "from django.urls import include, path",
+        "",
+        "urlpatterns = [",
+        "    path('i18n/', include('django.conf.urls.i18n')),",
+        "]",
+        "",
+        "urlpatterns += i18n_patterns(",
+        `    path('', include(${pyStr(`${appName}.urls`)}, namespace=${pyStr(appName)})),`,
+        "    prefix_default_language=False,",
+        ")",
+        ""
+      ].join("\n");
+    }
+    return [
+      '"""Root URLconf: mounts the generated page routes. No `languages` were configured, so',
+      "there is no `i18n_patterns` wrapping and no `set_language` endpoint \u2014 see `settings.py`'s",
+      '`MIDDLEWARE`/`LANGUAGES` for the i18n toggle this mirrors."""',
+      "",
+      "from django.urls import include, path",
+      "",
+      "urlpatterns = [",
+      `    path('', include(${pyStr(`${appName}.urls`)}, namespace=${pyStr(appName)})),`,
+      "]",
+      ""
+    ].join("\n");
+  }
+  function emitSettingsPy(input) {
+    const { projectName, appName, languages, defaultLanguage, staticCssFile } = input;
+    const hasLanguages = languages.length > 0;
+    const middleware = [
+      "django.middleware.security.SecurityMiddleware",
+      "whitenoise.middleware.WhiteNoiseMiddleware",
+      ...hasLanguages ? ["django.middleware.locale.LocaleMiddleware"] : [],
+      "django.middleware.common.CommonMiddleware",
+      "django.middleware.csrf.CsrfViewMiddleware",
+      "django.middleware.clickjacking.XFrameOptionsMiddleware"
+    ];
+    const languagesBlock = hasLanguages ? ["LANGUAGES = [", ...languages.map((lang) => `    (${pyStr(lang.code)}, ${pyStr(lang.label)}),`), "]", ""] : [];
+    return [
+      '"""Generated Django settings (contract item 4): production-shaped by default. `DEBUG`,',
+      "`ALLOWED_HOSTS`, and `SECRET_KEY` come from the environment (see `.env.example`); WhiteNoise",
+      "serves `static/` directly so a plain `gunicorn <project>.wsgi` deployment needs no separate",
+      'web server for assets."""',
+      "",
+      "import os",
+      "from pathlib import Path",
+      "",
+      "BASE_DIR = Path(__file__).resolve().parent.parent",
+      "",
+      "SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-dev-key-change-me')",
+      "",
+      "DEBUG = os.environ.get('DJANGO_DEBUG', '').strip().lower() in ('1', 'true', 'yes')",
+      "",
+      "ALLOWED_HOSTS = [host.strip() for host in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',') if host.strip()]",
+      "",
+      "INSTALLED_APPS = [",
+      "    'django.contrib.staticfiles',",
+      `    ${pyStr(appName)},`,
+      "]",
+      "",
+      "# `set_language` (django.views.i18n.set_language) only writes the chosen language into",
+      "# `request.session` when `hasattr(request, 'session')` \u2014 with no `django.contrib.sessions`",
+      "# installed that never holds, so it falls through to the cookie it always also sets. No",
+      "# session app is added here because nothing in this project authenticates a user or",
+      "# otherwise needs one; the language switcher is deliberately cookie-only.",
+      "MIDDLEWARE = [",
+      ...middleware.map((m) => `    ${pyStr(m)},`),
+      "]",
+      "",
+      `ROOT_URLCONF = ${pyStr(`${projectName}.urls`)}`,
+      "",
+      "TEMPLATES = [",
+      "    {",
+      "        'BACKEND': 'django.template.backends.django.DjangoTemplates',",
+      "        'DIRS': [BASE_DIR / 'templates'],",
+      "        'APP_DIRS': True,",
+      "        'OPTIONS': {",
+      "            'context_processors': [",
+      "                'django.template.context_processors.debug',",
+      "                'django.template.context_processors.request',",
+      // Without this, `{{ LANGUAGE_CODE }}` is empty and base.html's <html lang> falls back to the
+      // default on every localized page — the page renders in Russian and tells the browser it is
+      // English. Only added with languages configured; there is nothing to switch otherwise.
+      ...hasLanguages ? ["                'django.template.context_processors.i18n',"] : [],
+      `                ${pyStr(`${appName}.context_processors.nav_map`)},`,
+      "            ],",
+      "        },",
+      "    },",
+      "]",
+      "",
+      `WSGI_APPLICATION = ${pyStr(`${projectName}.wsgi.application`)}`,
+      `ASGI_APPLICATION = ${pyStr(`${projectName}.asgi.application`)}`,
+      "",
+      "USE_I18N = True",
+      `LANGUAGE_CODE = ${pyStr(defaultLanguage)}`,
+      ...languagesBlock,
+      "LOCALE_PATHS = [BASE_DIR / 'locale']",
+      "",
+      "USE_TZ = True",
+      "",
+      "STATIC_URL = 'static/'",
+      "",
+      `# base.html links the generated stylesheet via {% static ${pyStr(staticCssFile)} %}.`,
+      "STATICFILES_DIRS = [BASE_DIR / 'static']",
+      "STATIC_ROOT = BASE_DIR / 'staticfiles'",
+      "",
+      "STORAGES = {",
+      "    'default': {",
+      "        'BACKEND': 'django.core.files.storage.FileSystemStorage',",
+      "    },",
+      "    'staticfiles': {",
+      "        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',",
+      "    },",
+      "}",
+      "",
+      "if not DEBUG:",
+      "    SECURE_HSTS_SECONDS = 31536000",
+      // Both HSTS companions matter: without INCLUDE_SUBDOMAINS a single plaintext subdomain undoes
+      // the header, and without PRELOAD the domain cannot enter the browser preload list.
+      // `manage.py check --deploy` names them individually (W005/W021).
+      "    SECURE_HSTS_INCLUDE_SUBDOMAINS = True",
+      "    SECURE_HSTS_PRELOAD = True",
+      "    SECURE_SSL_REDIRECT = True",
+      "    SESSION_COOKIE_SECURE = True",
+      "    CSRF_COOKIE_SECURE = True",
+      "    X_FRAME_OPTIONS = 'DENY'",
+      ""
+    ].join("\n");
+  }
+  function emitMakefile(languages) {
+    const messagesCommand = languages.length > 0 ? `python manage.py makemessages ${languages.map((lang) => `-l ${lang.code}`).join(" ")}` : "python manage.py makemessages --all";
+    return [
+      ".PHONY: install run messages compilemessages collectstatic check",
+      "",
+      "install:",
+      "	pip install -r requirements.txt",
+      "",
+      "run:",
+      "	python manage.py runserver",
+      "",
+      "messages:",
+      `	${messagesCommand}`,
+      "",
+      "compilemessages:",
+      "	python manage.py compilemessages",
+      "",
+      "collectstatic:",
+      "	python manage.py collectstatic --noinput",
+      "",
+      "check:",
+      "	python manage.py check --deploy",
+      ""
+    ].join("\n");
+  }
+  function emitReadme(input) {
+    const { staticCssFile, languages } = input;
+    const localizedNote = languages.length > 0 ? `Ships localized into ${languages.map((lang) => lang.code).join(", ")}; \`compilemessages\` below turns the shipped \`locale/**/*.po\` catalogs into the \`.mo\` files Django actually loads. It needs GNU gettext on PATH (\`brew install gettext\` / \`apt install gettext\`) \u2014 without \`msgfmt\` the command fails and every page renders in the source language.` : "No additional languages were configured for this export, so `compilemessages` below is a harmless no-op.";
+    return [
+      "# Generated Django site",
+      "",
+      "This project was generated by the Figma-to-Django export. Its templates, static assets",
+      `(including \`static/${staticCssFile}\`), and this scaffold together form a runnable, localized`,
+      "multipage Django 5 site.",
+      "",
+      localizedNote,
+      "",
+      "## Run it",
+      "",
+      "```sh",
+      "pip install -r requirements.txt",
+      "python manage.py compilemessages",
+      "python manage.py collectstatic --noinput",
+      "python manage.py runserver",
+      "```",
+      "",
+      "Then open http://127.0.0.1:8000/.",
+      ""
+    ].join("\n");
+  }
+  function emitDjangoScaffold(input) {
+    const { pages, projectName, appName, languages } = input;
+    const hasLanguages = languages.length > 0;
+    const files = {};
+    files["manage.py"] = emitManagePy(projectName);
+    files[`${projectName}/__init__.py`] = "";
+    files[`${projectName}/settings.py`] = emitSettingsPy(input);
+    files[`${projectName}/urls.py`] = emitProjectUrlsPy(appName, hasLanguages);
+    files[`${projectName}/wsgi.py`] = emitWsgiPy(projectName);
+    files[`${projectName}/asgi.py`] = emitAsgiPy(projectName);
+    files[`${appName}/__init__.py`] = "";
+    files[`${appName}/apps.py`] = emitAppsPy(appName);
+    files[`${appName}/urls.py`] = emitAppUrlsPy(appName);
+    files[`${appName}/views.py`] = [
+      '"""Renders a page by slug from the generated `pages.py` registry. Regenerating the export',
+      "overwrites `pages.py`, not this dispatch, so page additions/removals need no manual wiring",
+      'here."""',
+      "",
+      "from django.http import Http404",
+      "from django.shortcuts import render",
+      "",
+      "from .pages import PAGES",
+      "",
+      "_PAGES_BY_SLUG = {page['slug']: page for page in PAGES}",
+      "",
+      "",
+      "def page(request, slug):",
+      "    entry = _PAGES_BY_SLUG.get(slug)",
+      "    if entry is None:",
+      `        raise Http404(f'No page registered for slug "{slug}"')`,
+      "    context = {",
+      "        'page_title': entry['title'],",
+      "        'page_description': entry['description'],",
+      "    }",
+      "    return render(request, entry['template'], context)",
+      ""
+    ].join("\n");
+    files[`${appName}/pages.py`] = emitPagesPy(pages);
+    files[`${appName}/context_processors.py`] = emitContextProcessorsPy(appName);
+    files["templates/404.html"] = [
+      '{% extends "base.html" %}',
+      "{% load i18n %}",
+      "{% block content %}",
+      '  <section style="text-align:center; padding:4rem 1rem;">',
+      "    <h1>404</h1>",
+      `    <p>{% translate "This page doesn't exist." %}</p>`,
+      "  </section>",
+      "{% endblock %}",
+      ""
+    ].join("\n");
+    files["templates/500.html"] = [
+      "{% load i18n %}",
+      "<!doctype html>",
+      `<html lang="{{ LANGUAGE_CODE|default:'en' }}">`,
+      "  <head>",
+      '    <meta charset="utf-8">',
+      '    <title>{% translate "Server error" %}</title>',
+      "  </head>",
+      "  <body>",
+      '    <section style="text-align:center; padding:4rem 1rem;">',
+      "      <h1>500</h1>",
+      '      <p>{% translate "Something went wrong on our end. Please try again shortly." %}</p>',
+      "    </section>",
+      "  </body>",
+      "</html>",
+      ""
+    ].join("\n");
+    files["templates/partials/language-switcher.html"] = [
+      "{% load i18n %}",
+      // `{% url … as var %}` is the non-raising form: applied onto a project that never wired
+      // `django.conf.urls.i18n`, the plain `{% url %}` raises NoReverseMatch and takes every page
+      // that extends base.html down with it. Missing route → empty string → no switcher, page fine.
+      "{% url 'set_language' as set_language_url %}",
+      "{% get_current_language as CURRENT_LANGUAGE %}",
+      "{% get_available_languages as AVAILABLE_LANGUAGES %}",
+      "{% if set_language_url and AVAILABLE_LANGUAGES|length > 1 %}",
+      '<form action="{{ set_language_url }}" method="post" class="language-switcher">',
+      "  {% csrf_token %}",
+      '  <input type="hidden" name="next" value="{{ request.path }}">',
+      '  <select name="language">',
+      "    {% for code, name in AVAILABLE_LANGUAGES %}",
+      '      <option value="{{ code }}"{% if code == CURRENT_LANGUAGE %} selected{% endif %}>{{ name }}</option>',
+      "    {% endfor %}",
+      "  </select>",
+      '  <button type="submit">{% translate "Switch" %}</button>',
+      "</form>",
+      "{% endif %}",
+      ""
+    ].join("\n");
+    files["requirements.txt"] = ["django>=5.0,<6", "whitenoise>=6.6,<7", ""].join("\n");
+    files[".gitignore"] = ["__pycache__/", "*.pyc", ".env", "/staticfiles/", "/.venv/", "*.mo", ""].join("\n");
+    files[".env.example"] = [
+      "# Copy to .env (or export these directly) before running in anything but local dev.",
+      "DJANGO_SECRET_KEY=change-me",
+      "DJANGO_DEBUG=false",
+      "DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1",
+      ""
+    ].join("\n");
+    files["README.md"] = emitReadme(input);
+    files["Makefile"] = emitMakefile(languages);
     return files;
   }
 
   // src/targets/django/export/report.ts
   function buildExportReport(input) {
     return JSON.stringify(input, null, 2) + "\n";
+  }
+  function collectSpringReport(nodes) {
+    const estimated = {};
+    const observations = [];
+    const record2 = (spring) => {
+      var _a;
+      if (spring.springSource === "preset-table" && spring.springPreset) {
+        estimated[spring.springPreset] = ((_a = estimated[spring.springPreset]) != null ? _a : 0) + 1;
+      }
+      if (spring.springObservation) observations.push(spring.springObservation);
+    };
+    const visit = (node) => {
+      var _a, _b;
+      if ((_a = node.navigate) == null ? void 0 : _a.transition) record2(node.navigate.transition);
+      for (const interaction of (_b = node.interactions) != null ? _b : []) record2(interaction);
+      if ("children" in node) for (const child of node.children) visit(child);
+    };
+    for (const node of nodes) visit(node);
+    const counts = {};
+    for (const preset of Object.keys(estimated).sort()) counts[preset] = estimated[preset];
+    return __spreadValues(__spreadValues({}, observations.length > 0 ? { springPresetCalibration: summarizeSpringPresetObservations(observations) } : {}), Object.keys(counts).length > 0 ? { estimatedSpringPresets: counts } : {});
+  }
+  function summarizeEmitterNotes(notes) {
+    var _a, _b;
+    if (notes.length === 0) return void 0;
+    const byKind = {};
+    for (const note of notes) {
+      const detail = note.type === "squircle-approx" ? `smoothing-${note.smoothing}` : note.type === "unsupported-effect" ? note.effect : note.fill;
+      const details = (_a = byKind[note.type]) != null ? _a : {};
+      const ids = (_b = details[detail]) != null ? _b : /* @__PURE__ */ new Set();
+      ids.add(note.node);
+      details[detail] = ids;
+      byKind[note.type] = details;
+    }
+    const summary = {};
+    for (const kind of Object.keys(byKind).sort()) {
+      const details = {};
+      for (const detail of Object.keys(byKind[kind]).sort()) details[detail] = [...byKind[kind][detail]].sort();
+      summary[kind] = details;
+    }
+    return summary;
+  }
+  var CONTENT_BLOCK = /\{%\s*block\s+content\s*%\}([\s\S]*?)\{%\s*endblock\s*%\}/;
+  function unwrapNavigateAnchor(html) {
+    const match = /^<a\b[^>]*style="display:contents"[^>]*>([\s\S]*)<\/a>$/i.exec(html);
+    return match ? match[1].trim() : html;
+  }
+  var SINGLE_IMG = /^<img\b[^>]*>$/i;
+  var SINGLE_SVG = /^<svg\b[\s\S]*<\/svg>$/i;
+  var STATIC_ASSET_SRC = /\{%\s*static\s+'([^']+)'\s*%\}/;
+  function collectFlattenedPages(pages, fileNodeIds) {
+    var _a, _b;
+    const flattened = [];
+    for (const templatePath of Object.keys(pages).sort()) {
+      const block2 = CONTENT_BLOCK.exec(pages[templatePath]);
+      if (!block2) continue;
+      const content = unwrapNavigateAnchor(block2[1].trim());
+      if (!SINGLE_IMG.test(content) && !SINGLE_SVG.test(content)) continue;
+      const nodeId = fileNodeIds[templatePath];
+      if (!nodeId) continue;
+      flattened.push({ templatePath, nodeId, asset: (_b = (_a = STATIC_ASSET_SRC.exec(content)) == null ? void 0 : _a[1]) != null ? _b : "" });
+    }
+    return flattened;
+  }
+  function figmaFileSlug(name) {
+    const slug2 = name.trim().replace(/\s+/g, "-").replace(/[^A-Za-z0-9_-]+/g, "");
+    return slug2 || "file";
+  }
+  function buildFigmaFileReference(input) {
+    if (!input.key) return { key: null, name: input.name, pageUrls: {} };
+    const slug2 = figmaFileSlug(input.name);
+    const pageUrls = {};
+    for (const templatePath of Object.keys(input.fileNodeIds).sort()) {
+      const nodeId = input.fileNodeIds[templatePath];
+      if (!nodeId.includes(":")) continue;
+      const anchor = nodeId.replace(/[^a-zA-Z0-9_-]+/g, "-");
+      pageUrls[templatePath] = `https://www.figma.com/design/${input.key}/${slug2}?node-id=${anchor}`;
+    }
+    return { key: input.key, name: input.name, pageUrls };
   }
 
   // src/targets/django/lint/index.ts
@@ -9647,12 +11822,12 @@ ${mediaCss}`;
     if (styleId !== void 0 && styleId !== "") {
       return { status: "skipped", detail: `${prop} come from a paint style \u2014 already tokenized, re-scan the scope` };
     }
-    const paints2 = node[prop];
-    if (!Array.isArray(paints2)) {
+    const paints = node[prop];
+    if (!Array.isArray(paints)) {
       return { status: "failed", detail: `${prop} are unreadable on this node` };
     }
     const boundPaints = "boundVariables" in node ? (_a = node.boundVariables) == null ? void 0 : _a[prop] : void 0;
-    const next = paints2.slice();
+    const next = paints.slice();
     const boundNames = [];
     for (let i = 0; i < next.length; i++) {
       const paint = next[i];
@@ -9788,8 +11963,8 @@ ${mediaCss}`;
       detail: `${inferred.layoutMode.toLowerCase()} Auto Layout, spacing ${inferred.itemSpacing}px`
     };
   }
-  function anyVisible(paints2) {
-    return Array.isArray(paints2) && paints2.some((p) => p.visible !== false);
+  function anyVisible(paints) {
+    return Array.isArray(paints) && paints.some((p) => p.visible !== false);
   }
   function clippingHasEffect(node) {
     var _a;
@@ -10386,11 +12561,11 @@ ${mediaCss}`;
   function isLiteralEasing2(easing) {
     return easing.type !== "VARIABLE_ALIAS";
   }
-  function easingToTimingFunctionCss(easing) {
+  function easingToTimingFunctionCss(easing, segmentSec) {
     try {
       return easingToCss(easing);
     } catch (e) {
-      return springToCssLinear(resolveSpringBounce(easing)).easing;
+      return springToCssLinear(resolveSpringBounce(easing), perceptualAngularFrequency(segmentSec)).easing;
     }
   }
   function withBaseKeyframe(track) {
@@ -10419,7 +12594,8 @@ ${mediaCss}`;
         );
       }
       if (frames[i].declaration === frames[i - 1].declaration) continue;
-      frames[i - 1].timingFunction = easingToTimingFunctionCss(easing);
+      const segmentSec = keyframes[i].timelinePosition - keyframes[i - 1].timelinePosition;
+      frames[i - 1].timingFunction = easingToTimingFunctionCss(easing, segmentSec);
     }
     return frames;
   }
@@ -10563,7 +12739,7 @@ ${frames.map(formatFrame).join("\n")}
       return name;
     }
   };
-  function resolveEase(easing, registry, plugins) {
+  function resolveEase(easing, registry, plugins, segmentSec) {
     if (easing.type === "VARIABLE_ALIAS") return "none";
     if (easing.type === "LINEAR" || easing.type === "HOLD") return "none";
     if (easing.type === "CUSTOM_CUBIC_BEZIER") {
@@ -10578,7 +12754,7 @@ ${frames.map(formatFrame).join("\n")}
       if (bounce <= SPRING_BACK_BOUNCE_THRESHOLD) {
         return `back.out(${round6(1 + 2.5 * bounce, 3)})`;
       }
-      return registry.sampledSpring(sampleSpring(bounce).points);
+      return registry.sampledSpring(sampleSpring(bounce, perceptualAngularFrequency(segmentSec)).points);
     }
     plugins.add("CustomEase");
     return registry.bezier(BEZIER_PRESETS[easing.type]);
@@ -10604,6 +12780,7 @@ ${frames.map(formatFrame).join("\n")}
     const keyframes = {};
     let lastVars = fromVars;
     let lastPercent = 0;
+    let lastPositionSec = 0;
     for (const keyframe of sorted) {
       const vars = trackValueVars(keyframe.value, gsapKeys, `${track.field} keyframe ${keyframe.id}`);
       lastVars = vars;
@@ -10612,9 +12789,10 @@ ${frames.map(formatFrame).join("\n")}
         continue;
       }
       const percent = keyframe.timelinePosition / timelineDuration * 100;
-      const ease = resolveEase(keyframe.easing, registry, plugins);
+      const ease = resolveEase(keyframe.easing, registry, plugins, keyframe.timelinePosition - lastPositionSec);
       keyframes[formatPercentLabel(percent)] = __spreadProps(__spreadValues({}, vars), { ease });
       lastPercent = percent;
+      lastPositionSec = keyframe.timelinePosition;
     }
     ensureTerminalKeyframe(keyframes, lastPercent, lastVars);
     return { fromVars, keyframes };
@@ -10627,6 +12805,7 @@ ${frames.map(formatFrame).join("\n")}
     const keyframes = {};
     let lastVars = fromVars;
     let lastPercent = 0;
+    let lastPositionSec = 0;
     for (const keyframe of sorted) {
       const text4 = requireTextData(keyframe.value, `${track.field} keyframe ${keyframe.id}`);
       const vars = { text: { value: text4 } };
@@ -10636,9 +12815,10 @@ ${frames.map(formatFrame).join("\n")}
         continue;
       }
       const percent = keyframe.timelinePosition / timelineDuration * 100;
-      const ease = resolveEase(keyframe.easing, registry, plugins);
+      const ease = resolveEase(keyframe.easing, registry, plugins, keyframe.timelinePosition - lastPositionSec);
       keyframes[formatPercentLabel(percent)] = __spreadProps(__spreadValues({}, vars), { ease });
       lastPercent = percent;
+      lastPositionSec = keyframe.timelinePosition;
     }
     ensureTerminalKeyframe(keyframes, lastPercent, lastVars);
     return { fromVars, keyframes };
@@ -10667,17 +12847,19 @@ ${frames.map(formatFrame).join("\n")}
     const keyframes = {};
     let lastVars = fromVars;
     let lastPercent = 0;
+    let lastPositionSec = 0;
     for (const position of [...positions].sort((a, b) => a - b)) {
       if (position <= 0) continue;
       const start = valueAtOrBefore(startTrack, position, startBase);
       const end = valueAtOrBefore(endTrack, position, endBase);
       const easing = (_d = (_c = start.easing) != null ? _c : end.easing) != null ? _d : { type: "LINEAR" };
-      const ease = resolveEase(easing, registry, plugins);
+      const ease = resolveEase(easing, registry, plugins, position - lastPositionSec);
       const vars = { drawSVG: drawSvgLabel(start.value, end.value) };
       const percent = position / timelineDuration * 100;
       keyframes[formatPercentLabel(percent)] = __spreadProps(__spreadValues({}, vars), { ease });
       lastVars = vars;
       lastPercent = percent;
+      lastPositionSec = position;
     }
     ensureTerminalKeyframe(keyframes, lastPercent, lastVars);
     return { fromVars, keyframes };
@@ -12516,181 +14698,6 @@ ${body}
     return doc.replace(/\n{3,}/g, "\n\n");
   }
 
-  // src/targets/tauri/transitions.ts
-  function collectNavEdges(pages) {
-    const pageIds = new Set(pages.map((page) => page.id));
-    const edges = [];
-    const seen = /* @__PURE__ */ new Set();
-    for (const page of pages) {
-      const visit = (node) => {
-        var _a, _b;
-        const navigate = node.navigate;
-        if (navigate && pageIds.has(navigate.destinationId)) {
-          const key = `${page.id}\0${navigate.destinationId}\0${(_b = (_a = navigate.transition) == null ? void 0 : _a.style) != null ? _b : "NONE"}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            edges.push({ sourcePageId: page.id, destPageId: navigate.destinationId, transition: navigate.transition });
-          }
-        }
-        if ("children" in node) node.children.forEach(visit);
-      };
-      visit(page);
-    }
-    return edges;
-  }
-  function nameToIdent(name) {
-    const sanitized = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    return sanitized.length > 0 ? sanitized : "node";
-  }
-  function selectorIdFor(node) {
-    return node.type === "instance-ref" && node.componentId ? node.componentId : node.id;
-  }
-  function nodesByName(page) {
-    const byName = /* @__PURE__ */ new Map();
-    const visit = (node) => {
-      if (node !== page && !byName.has(node.name)) byName.set(node.name, node);
-      if (node.type === "instance-ref") return;
-      if ("children" in node) node.children.forEach(visit);
-    };
-    visit(page);
-    return byName;
-  }
-  function selectorCountsPerPage(pages) {
-    var _a;
-    const maxCounts = /* @__PURE__ */ new Map();
-    for (const page of pages) {
-      const counts = /* @__PURE__ */ new Map();
-      const visit = (node) => {
-        var _a2;
-        if (node !== page) {
-          const sid = selectorIdFor(node);
-          counts.set(sid, ((_a2 = counts.get(sid)) != null ? _a2 : 0) + 1);
-        }
-        if (node.type === "instance-ref") return;
-        if ("children" in node) node.children.forEach(visit);
-      };
-      visit(page);
-      for (const [sid, count] of counts) maxCounts.set(sid, Math.max((_a = maxCounts.get(sid)) != null ? _a : 0, count));
-    }
-    return maxCounts;
-  }
-  var MAX_MATCHED_LAYERS = 40;
-  var DIRECTIONAL_STYLES = /* @__PURE__ */ new Set(["MOVE_IN", "MOVE_OUT", "PUSH", "SLIDE_IN", "SLIDE_OUT"]);
-  function directionTransforms(style, direction) {
-    var _a, _b, _c;
-    const enter = {
-      LEFT: "translateX(-100%)",
-      RIGHT: "translateX(100%)",
-      TOP: "translateY(-100%)",
-      BOTTOM: "translateY(100%)"
-    };
-    const exit = {
-      LEFT: "translateX(100%)",
-      RIGHT: "translateX(-100%)",
-      TOP: "translateY(100%)",
-      BOTTOM: "translateY(-100%)"
-    };
-    const newFrom = (_a = enter[direction]) != null ? _a : enter.RIGHT;
-    if (style === "PUSH") return { newFrom, oldTo: (_b = exit[direction]) != null ? _b : exit.RIGHT };
-    if (style === "MOVE_OUT" || style === "SLIDE_OUT") return { newFrom: "none", oldTo: (_c = exit[direction]) != null ? _c : exit.RIGHT };
-    return { newFrom };
-  }
-  function emitViewTransitionsCss(input) {
-    var _a, _b, _c;
-    const animated = input.edges.filter((edge) => Boolean(edge.transition));
-    if (animated.length === 0) return "";
-    const lines = [
-      "/* Cross-document view transitions \u2014 generated from Figma prototype NAVIGATE reactions. */",
-      "@view-transition {",
-      "  navigation: auto;",
-      "}",
-      ""
-    ];
-    const slowest = animated.reduce((a, b) => b.transition.durationMs > a.transition.durationMs ? b : a);
-    lines.push(
-      "::view-transition-group(root),",
-      "::view-transition-group(*) {",
-      `  animation-duration: ${slowest.transition.durationMs}ms;`,
-      `  animation-timing-function: ${slowest.transition.timingFunction};`,
-      "}",
-      ""
-    );
-    const directional = animated.filter((edge) => DIRECTIONAL_STYLES.has(edge.transition.style));
-    const styles = new Set(directional.map((edge) => {
-      var _a2;
-      return `${edge.transition.style}/${(_a2 = edge.transition.direction) != null ? _a2 : "RIGHT"}`;
-    }));
-    if (directional.length === animated.length && styles.size === 1) {
-      const { style, direction = "RIGHT" } = directional[0].transition;
-      const { newFrom, oldTo } = directionTransforms(style, direction);
-      if (newFrom !== "none") {
-        lines.push(
-          "@keyframes tauri-vt-enter {",
-          `  from { transform: ${newFrom}; }`,
-          "  to { transform: none; }",
-          "}",
-          "::view-transition-new(root) {",
-          "  animation-name: tauri-vt-enter;",
-          "}",
-          ""
-        );
-      }
-      if (oldTo) {
-        lines.push(
-          "@keyframes tauri-vt-exit {",
-          "  from { transform: none; }",
-          `  to { transform: ${oldTo}; }`,
-          "}",
-          "::view-transition-old(root) {",
-          "  animation-name: tauri-vt-exit;",
-          "}",
-          ""
-        );
-      }
-    }
-    const morphEdges = animated.filter((edge) => edge.transition.style === "SMART_ANIMATE");
-    if (morphEdges.length > 0) {
-      const pageById = new Map(input.pages.map((page) => [page.id, page]));
-      const namesByPage = /* @__PURE__ */ new Map();
-      const lookup = (id) => {
-        let names = namesByPage.get(id);
-        if (!names) {
-          const page = pageById.get(id);
-          names = page ? nodesByName(page) : /* @__PURE__ */ new Map();
-          namesByPage.set(id, names);
-        }
-        return names;
-      };
-      const maxSelectorCounts = selectorCountsPerPage(input.pages);
-      const assignments = /* @__PURE__ */ new Map();
-      for (const edge of morphEdges) {
-        const source = lookup(edge.sourcePageId);
-        const dest = lookup(edge.destPageId);
-        let matched = 0;
-        for (const [name, sourceNode] of source) {
-          if (matched >= MAX_MATCHED_LAYERS) break;
-          const destNode = dest.get(name);
-          if (!destNode) continue;
-          const sourceSid = selectorIdFor(sourceNode);
-          const destSid = selectorIdFor(destNode);
-          if (((_a = maxSelectorCounts.get(sourceSid)) != null ? _a : 0) > 1 || ((_b = maxSelectorCounts.get(destSid)) != null ? _b : 0) > 1) continue;
-          const ident = nameToIdent(name);
-          const ids = (_c = assignments.get(ident)) != null ? _c : /* @__PURE__ */ new Set();
-          ids.add(sourceSid);
-          ids.add(destSid);
-          assignments.set(ident, ids);
-          matched++;
-        }
-      }
-      for (const [ident, ids] of assignments) {
-        const selectors = [...ids].map((id) => `.${toClassName(id)}`).join(", ");
-        lines.push(`${selectors} { view-transition-name: ${ident}; }`);
-      }
-      if (assignments.size > 0) lines.push("");
-    }
-    return lines.join("\n");
-  }
-
   // src/targets/tauri/scroll-guards.ts
   function isGuardCandidate(child, mainAxis) {
     if (child.type !== "container" && child.type !== "instance-ref") return false;
@@ -12936,8 +14943,10 @@ ${gsap}${manualAssets}`;
       }
     }
     const renderedRoots = input.pageRoots.filter((root) => pageHrefs[root.id]);
-    const edges = collectNavEdges(renderedRoots);
-    const transitionsCss = emitViewTransitionsCss({ pages: renderedRoots, edges });
+    const { css: transitionsCss } = emitPageTransitions({
+      nodes: renderedRoots,
+      pageRootIds: new Set(renderedRoots.map((root) => root.id))
+    });
     const partials = new Map(Object.entries(project.partials));
     const bootstrapCdn = input.bootstrapVersion ? {
       "vendor/bootstrap/bootstrap.min.css": `https://cdn.jsdelivr.net/npm/bootstrap@${input.bootstrapVersion}/dist/css/bootstrap.min.css`,
@@ -12960,14 +14969,17 @@ ${gsap}${manualAssets}`;
       const nodeId = project.fileNodeIds[path];
       const pageRoot = input.pageRoots.find((root) => root.id === nodeId);
       const title = `<title>${((_d = pageRoot == null ? void 0 : pageRoot.name) != null ? _d : input.productName).replace(/</g, "&lt;")}</title>`;
-      const transitionsLink = transitionsCss ? '\n  <link rel="stylesheet" href="assets/css/transitions.css">' : "";
-      doc = doc.replace(
-        "<head>",
-        () => `<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  ${title}${transitionsLink}`
-      );
+      doc = /<title>[^<]*<\/title>/.test(doc) ? doc.replace(/<title>[^<]*<\/title>/, () => title) : doc.replace("<head>", () => `<head>
+  ${title}`);
+      if (!doc.includes('name="viewport"')) {
+        doc = doc.replace(
+          "<head>",
+          () => '<head>\n  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">'
+        );
+      }
+      if (transitionsCss) {
+        doc = doc.replace("</head>", () => '  <link rel="stylesheet" href="assets/css/transitions.css">\n</head>');
+      }
       files[`src/${(_e = hrefByPath.get(path)) != null ? _e : path.replace(/^pages\//, "")}`] = doc;
     }
     if (input.tokensCss) files["src/assets/css/tokens.css"] = input.tokensCss;
@@ -14074,11 +16086,11 @@ ${scrollGuards}` : project.css;
       var _a2;
       if (styleId !== "") walk2.styleUsage.set(styleId, ((_a2 = walk2.styleUsage.get(styleId)) != null ? _a2 : 0) + 1);
     };
-    const refsOf = (paints2, nodeLevel, boundOnly) => {
+    const refsOf = (paints, nodeLevel, boundOnly) => {
       var _a2, _b;
       const refs = [];
-      for (let index = 0; index < paints2.length; index++) {
-        const paint = paints2[index];
+      for (let index = 0; index < paints.length; index++) {
+        const paint = paints[index];
         if (paint.visible === false) continue;
         const bound = [
           ...boundIdsOf((_a2 = paint.boundVariables) == null ? void 0 : _a2.color),
@@ -14919,15 +16931,15 @@ ${scrollGuards}` : project.css;
   var MAX_CHUNKS = 32;
   var channelKey = (channels) => channels.join(",");
   function packSnapshot(snapshot) {
-    const paints2 = {};
+    const paints = {};
     for (const place of snapshot.paints) {
       const key = channelKey([place[4], place[5], place[6], place[7]]);
       const packed = place[8] === 1 ? [place[0], place[1], place[2], place[3], 1] : [place[0], place[1], place[2], place[3]];
-      const group = paints2[key];
+      const group = paints[key];
       if (group) group.push(packed);
-      else paints2[key] = [packed];
+      else paints[key] = [packed];
     }
-    return { version: 3, values: snapshot.values, names: snapshot.names, styles: snapshot.styles, paints: paints2 };
+    return { version: 3, values: snapshot.values, names: snapshot.names, styles: snapshot.styles, paints };
   }
   function unpackSnapshot(parsed) {
     var _a;
@@ -14935,14 +16947,14 @@ ${scrollGuards}` : project.css;
     if (raw.version === 2) return parsed;
     if (raw.version !== 3) throw new Error(`the undo snapshot has version ${String(raw.version)}, which this build cannot read`);
     const packed = parsed;
-    const paints2 = [];
+    const paints = [];
     for (const [key, group] of Object.entries(packed.paints)) {
       const channels = key.split(",").map(Number);
       for (const place of group) {
-        paints2.push([place[0], place[1], place[2], place[3], channels[0], channels[1], channels[2], channels[3], (_a = place[4]) != null ? _a : 0]);
+        paints.push([place[0], place[1], place[2], place[3], channels[0], channels[1], channels[2], channels[3], (_a = place[4]) != null ? _a : 0]);
       }
     }
-    return { version: 2, values: packed.values, names: packed.names, styles: packed.styles, paints: paints2 };
+    return { version: 2, values: packed.values, names: packed.names, styles: packed.styles, paints };
   }
   function writeChunked(text4) {
     const chunks = [];
@@ -15084,13 +17096,13 @@ ${scrollGuards}` : project.css;
       const before = report2.paints;
       try {
         if (style.type === "PAINT") {
-          const paints2 = style.paints.map((paint) => __spreadValues({}, paint));
+          const paints = style.paints.map((paint) => __spreadValues({}, paint));
           for (const { entry, address } of group) {
-            const paint = paints2[address.index];
+            const paint = paints[address.index];
             if (!paint) continue;
             if (address.stop === null && paint.type === "SOLID") {
               snapshot.styles.push({ s: styleId, p: "paints", i: address.index, j: -1, c: channelsOf(__spreadProps(__spreadValues({}, paint.color), { a: (_a = paint.opacity) != null ? _a : 1 })) });
-              paints2[address.index] = __spreadProps(__spreadValues({}, paint), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b }, opacity: entry.to.a });
+              paints[address.index] = __spreadProps(__spreadValues({}, paint), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b }, opacity: entry.to.a });
               report2.paints++;
             } else if (address.stop !== null && isGradient(paint)) {
               const stops = paint.gradientStops.map((stop2) => __spreadValues({}, stop2));
@@ -15098,12 +17110,12 @@ ${scrollGuards}` : project.css;
               if (!stop) continue;
               snapshot.styles.push({ s: styleId, p: "paints", i: address.index, j: address.stop, c: channelsOf(withAlpha(stop.color)) });
               stops[address.stop] = __spreadProps(__spreadValues({}, stop), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
-              paints2[address.index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+              paints[address.index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
               report2.paints++;
             }
           }
           ;
-          style.paints = paints2;
+          style.paints = paints;
         } else if (style.type === "EFFECT") {
           const effects = style.effects.map((effect) => __spreadValues({}, effect));
           for (const { entry, address } of group) {
@@ -15145,13 +17157,13 @@ ${scrollGuards}` : project.css;
   function rewritePaints(node, property, context) {
     var _a, _b;
     if (styleIdOf2(node, property) !== "") return false;
-    const paints2 = paintsOf(node, property);
-    if (paints2.length === 0) return false;
+    const paints = paintsOf(node, property);
+    if (paints.length === 0) return false;
     const nodeLevel = nodeLevelBindings(node, property);
-    const next = paints2.map((paint) => __spreadValues({}, paint));
+    const next = paints.map((paint) => __spreadValues({}, paint));
     const code = property === "fills" ? 0 : 1;
     let touched = false;
-    for (const [index, paint] of paints2.entries()) {
+    for (const [index, paint] of paints.entries()) {
       if (paint.visible === false) continue;
       const paintBound2 = (_a = paint.boundVariables) == null ? void 0 : _a.color;
       if (paintBound2 || nodeLevel[index]) continue;
@@ -15276,8 +17288,8 @@ ${scrollGuards}` : project.css;
     const values = options.values ? plan.entries.filter(writableVariable).length : 0;
     const names = options.rename ? plan.renames.length : 0;
     const styles = options.styles ? plan.entries.filter(writableStyle).length : 0;
-    const paints2 = options.canvas ? plan.entries.filter(writableLoose).reduce((total, entry) => total + Math.max(1, entry.site.usage), 0) : 0;
-    return values * BYTES.value + names * BYTES.name + styles * BYTES.style + paints2 * BYTES.paint;
+    const paints = options.canvas ? plan.entries.filter(writableLoose).reduce((total, entry) => total + Math.max(1, entry.site.usage), 0) : 0;
+    return values * BYTES.value + names * BYTES.name + styles * BYTES.style + paints * BYTES.paint;
   }
   var SNAPSHOT_BUDGET_BYTES = CHUNK_BYTES * MAX_CHUNKS;
   async function applyRemap(plan, options = DEFAULT_REMAP_APPLY_OPTIONS, progress2) {
@@ -15453,23 +17465,23 @@ ${scrollGuards}` : project.css;
       if (!style) continue;
       try {
         if (style.type === "PAINT") {
-          const paints2 = style.paints.map((paint) => __spreadValues({}, paint));
+          const paints = style.paints.map((paint) => __spreadValues({}, paint));
           for (const entry of group) {
-            const paint = paints2[entry.i];
+            const paint = paints[entry.i];
             if (!paint) continue;
             const color = colorOf(entry.c);
             if (entry.j < 0 && paint.type === "SOLID") {
-              paints2[entry.i] = __spreadProps(__spreadValues({}, paint), { color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
+              paints[entry.i] = __spreadProps(__spreadValues({}, paint), { color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
             } else if (entry.j >= 0 && isGradient(paint)) {
               const stops = paint.gradientStops.map((stop) => __spreadValues({}, stop));
               if (!stops[entry.j]) continue;
               stops[entry.j] = __spreadProps(__spreadValues({}, stops[entry.j]), { color });
-              paints2[entry.i] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+              paints[entry.i] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
             }
             restored++;
           }
           ;
-          style.paints = paints2;
+          style.paints = paints;
         } else if (style.type === "EFFECT") {
           const effects = style.effects.map((effect) => __spreadValues({}, effect));
           for (const entry of group) {
@@ -15505,25 +17517,25 @@ ${scrollGuards}` : project.css;
           const code = property === "fills" ? 0 : 1;
           const mine = group.filter((entry) => entry[1] === code);
           if (mine.length === 0) continue;
-          const paints2 = paintsOf(scene, property).map((paint) => __spreadValues({}, paint));
+          const paints = paintsOf(scene, property).map((paint) => __spreadValues({}, paint));
           for (const entry of mine) {
-            const paint = paints2[entry[2]];
+            const paint = paints[entry[2]];
             if (!paint) continue;
             const color = colorOf([entry[4], entry[5], entry[6], entry[7]]);
             if (entry[3] < 0 && paint.type === "SOLID") {
               let restoredPaint = __spreadProps(__spreadValues({}, paint), { color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
               if (entry[8] === 1) restoredPaint = figma.variables.setBoundVariableForPaint(restoredPaint, "color", null);
-              paints2[entry[2]] = restoredPaint;
+              paints[entry[2]] = restoredPaint;
             } else if (entry[3] >= 0 && isGradient(paint)) {
               const stops = paint.gradientStops.map((stop) => __spreadValues({}, stop));
               if (!stops[entry[3]]) continue;
               stops[entry[3]] = __spreadProps(__spreadValues({}, stops[entry[3]]), { color });
-              paints2[entry[2]] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+              paints[entry[2]] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
             }
             restored++;
           }
           ;
-          scene[property] = paints2;
+          scene[property] = paints;
         }
         const shadows = group.filter((entry) => entry[1] === 2);
         if (shadows.length > 0 && "effects" in scene && Array.isArray(scene.effects)) {
@@ -15597,13 +17609,13 @@ ${scrollGuards}` : project.css;
       }
     }
     const styles = snapshot.styles ? await revertStyles(snapshot, warnings) : 0;
-    const paints2 = snapshot.paints ? await revertPaints(snapshot, warnings, progress2) : 0;
+    const paints = snapshot.paints ? await revertPaints(snapshot, warnings, progress2) : 0;
     clearSnapshot();
     const restored = new Set(((_c = snapshot.names) != null ? _c : []).map((entry) => entry.n));
     const map = readRenameMap();
     for (const key of Object.keys(map)) if (restored.has(key)) delete map[key];
     writeRenameMap(map);
-    return { values, names, styles, paints: paints2, warnings };
+    return { values, names, styles, paints, warnings };
   }
 
   // src/tokens/remap/color-literal.ts
@@ -16525,14 +18537,14 @@ ${scrollGuards}` : project.css;
       var _a, _b, _c, _d;
       const styleId = node[property === "fills" ? "fillStyleId" : "strokeStyleId"];
       if (typeof styleId === "string" && styleId !== "") return;
-      const paints2 = node[property];
-      if (!Array.isArray(paints2)) return;
+      const paints = node[property];
+      if (!Array.isArray(paints)) return;
       if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has(property))) return;
       const nodeLevel = (_b = node.boundVariables) == null ? void 0 : _b[property];
       const nodeLevelIds = Array.isArray(nodeLevel) ? nodeLevel.map(
         (alias) => alias && alias.type === "VARIABLE_ALIAS" ? alias.id : null
       ) : [];
-      for (const [index, paint] of paints2.entries()) {
+      for (const [index, paint] of paints.entries()) {
         if (paint.type === "SOLID") {
           const oldId = (_d = (_c = boundColorId(paint)) != null ? _c : nodeLevelIds[index]) != null ? _d : null;
           if (!oldId) continue;
@@ -16616,9 +18628,9 @@ ${scrollGuards}` : project.css;
   var aliasTo = (variable) => ({ type: "VARIABLE_ALIAS", id: variable.id });
   async function writePaintBinding(holder, property, index, stop, variable, restoreId) {
     const record2 = holder;
-    const paints2 = record2[property];
-    if (!Array.isArray(paints2) || !paints2[index]) return false;
-    const next = [...paints2];
+    const paints = record2[property];
+    if (!Array.isArray(paints) || !paints[index]) return false;
+    const next = [...paints];
     const paint = next[index];
     const target = variable != null ? variable : restoreId ? await figma.variables.getVariableByIdAsync(restoreId).catch(() => null) : null;
     if (!target) return false;
@@ -21098,11 +23110,11 @@ ${renderSections(sections)}
       `no ${kind} style called "${wanted}"${names.length > 0 ? ` \u2014 this file has ${names.join(", ")}` : " in this file"}`
     );
   }
-  async function describeStyle(style, paints2, effects, grids) {
+  async function describeStyle(style, paints, effects, grids) {
     var _a;
     switch (style.type) {
       case "PAINT":
-        return (_a = await paints2(style.paints)) != null ? _a : "none";
+        return (_a = await paints(style.paints)) != null ? _a : "none";
       case "EFFECT":
         return effects(style.effects);
       case "TEXT": {
@@ -21278,9 +23290,9 @@ ${renderSections(sections)}
       case "paint": {
         if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`);
         const before = await describePaints(bag[step.property]);
-        const paints2 = await buildPaints(step.ref);
-        if (!dry) bag[step.property] = paints2;
-        return { property: step.property, before, after: await describePaints(paints2) };
+        const paints = await buildPaints(step.ref);
+        if (!dry) bag[step.property] = paints;
+        return { property: step.property, before, after: await describePaints(paints) };
       }
       case "reset": {
         const instance = asInstance(node, "overrides to reset");
@@ -21480,12 +23492,12 @@ ${renderSections(sections)}
             continue;
           }
           if (run.fontName) await figma.loadFontAsync(run.fontName);
-          const paints2 = run.fill === void 0 ? null : await buildPaints(run.fill);
+          const paints = run.fill === void 0 ? null : await buildPaints(run.fill);
           for (const [from, to] of ranges) {
             if (dry) continue;
             if (run.fontName) node.setRangeFontName(from, to, run.fontName);
             if (run.fontSize !== void 0) node.setRangeFontSize(from, to, run.fontSize);
-            if (paints2) node.setRangeFills(from, to, paints2);
+            if (paints) node.setRangeFills(from, to, paints);
             if (run.textDecoration) node.setRangeTextDecoration(from, to, run.textDecoration);
             if (run.textCase) node.setRangeTextCase(from, to, run.textCase);
             if (run.textWrap) node.setRangeTextWrapStyle(from, to, run.textWrap);
@@ -22413,6 +24425,59 @@ ${scripts}`, "");
   async function screenshot(node, scale) {
     return node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: scale } });
   }
+  async function designerScale(nodeId, sceneNodesById) {
+    var _a;
+    const source = sceneNodesById.get(nodeId);
+    if (!source) return 1;
+    const settings = await resolveExportSettings(
+      source
+    );
+    const primary = primaryDesignerSetting(settings);
+    return ((_a = primary == null ? void 0 : primary.constraint) == null ? void 0 : _a.type) === "SCALE" ? primary.constraint.value : 1;
+  }
+  async function collectContextAssets(nodes, sceneNodesById) {
+    const manual = collectManualAssets(nodes);
+    const manualReason = "Figma's export API already refused this video (see the export report's manualAssets) \u2014 NODE_EXPORT will fail on this nodeId the same way; the file has to be attached manually.";
+    const out = [];
+    const push = async (nodeId, assetSrc, kind, scale) => {
+      const filename = assetSrc.replace(/^img\//, "");
+      const failing = manual.some((asset) => asset.nodeId === nodeId && asset.assetSrc === assetSrc);
+      out.push(__spreadValues({
+        filename,
+        nodeId,
+        kind,
+        scale,
+        format: filename.slice(filename.lastIndexOf(".") + 1)
+      }, failing ? { exportable: false, reason: manualReason } : {}));
+    };
+    const visit = async (node) => {
+      var _a, _b, _c;
+      if (node.type === "image") {
+        const assetSrc = (_a = node.assetSrc) != null ? _a : imageStaticPath(node);
+        const video = isVideoAssetPath(assetSrc);
+        await push(node.id, assetSrc, video ? "video" : "raster", video ? 1 : await designerScale(node.id, sceneNodesById));
+        if (node.posterSrc) await push(node.id, node.posterSrc, "poster", 1);
+        return;
+      }
+      if (node.type === "vector") {
+        if (node.assetSrc) await push(node.id, node.assetSrc, "vector", await designerScale(node.id, sceneNodesById));
+        return;
+      }
+      if (node.type === "container" || node.type === "instance-ref") {
+        for (const bg of (_b = node.backgroundImages) != null ? _b : []) await push(node.id, bg.assetSrc, "raster", 1);
+        if (node.backgroundVideo) {
+          await push(node.id, node.backgroundVideo.assetSrc, "video", 1);
+          await push(node.id, node.backgroundVideo.posterSrc, "poster", 1);
+        }
+        if (node.type === "container" && ((_c = node.mask) == null ? void 0 : _c.kind) === "image") {
+          await push(node.mask.nodeId, node.mask.assetSrc, "vector", 1);
+        }
+        for (const child of node.children) await visit(child);
+      }
+    };
+    for (const node of nodes) await visit(node);
+    return out;
+  }
   var CONTEXT_OPS = [
     {
       name: "node.screenshot",
@@ -22456,7 +24521,7 @@ ${scripts}`, "");
         let page = root;
         while (page && page.type !== "PAGE") page = page.parent;
         if (page) await page.loadAsync();
-        const deadline = (work, what, ms = 2e4) => new Promise((resolve2, reject) => {
+        const deadline2 = (work, what, ms = 2e4) => new Promise((resolve2, reject) => {
           const timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms);
           work.then(
             (value) => {
@@ -22496,7 +24561,7 @@ ${scripts}`, "");
           if (!image) continue;
           let bytes;
           try {
-            bytes = await deadline(image.getBytesAsync(), `getBytesAsync ${hit.node.name}`, 6e4);
+            bytes = await deadline2(image.getBytesAsync(), `getBytesAsync ${hit.node.name}`, 6e4);
           } catch (error) {
             failures.push({ node: hit.node.id, hash, error: String(error) });
             continue;
@@ -22569,7 +24634,7 @@ ${scripts}`, "");
     {
       name: "design.context",
       summary: "Reference HTML + CSS + PNG for a node, with the tokens it binds \u2014 implement from this.",
-      agent: "Answers with file paths, not payloads \u2014 open them. The token usage table says which variables actually carry the subtree.",
+      agent: "Answers with file paths, not payloads \u2014 open them. The token usage table says which variables actually carry the subtree. `assets[]` names every raster/vector/video/poster the emitted HTML+CSS actually references \u2014 `filename` is exactly the path the markup asks for, and `nodeId` is the id to hand straight to NODE_EXPORT to produce it; no need to reverse-engineer one from the other. An entry with `exportable: false` names a video Figma's export API already refused \u2014 NODE_EXPORT will fail on that nodeId the same way, so don't retry it.",
       mutates: false,
       params: {
         nodeId: { type: "string", required: true, description: "Frame or component to describe." },
@@ -22591,10 +24656,9 @@ ${scripts}`, "");
         const ir = await clock.time("serialize", () => serializeNode(root));
         if (!ir) throw new Error(`"${root.name}" (${root.type}) produced no exportable structure`);
         const irNodes = [ir];
-        await clock.time(
-          "vectors",
-          () => annotateVectorLeaves(irNodes, sceneNodesById)
-        );
+        const assetSourceNodes = sceneNodesById;
+        await clock.time("vectors", () => annotateVectorLeaves(irNodes, assetSourceNodes));
+        await clock.time("videos", () => annotateVideoFills(irNodes, assetSourceNodes));
         const { html, css } = await clock.time(
           "emit",
           () => emitDjango(irNodes, sceneNodesById, tokens.names, { cssFile: params.cssFile })
@@ -22608,12 +24672,14 @@ ${scripts}`, "");
           const png = await clock.time("screenshot", () => screenshot(root, params.scale));
           files.push(binaryFile(`${slug2}.png`, "image/png", png));
         }
+        const assets = await clock.time("assets", () => collectContextAssets(irNodes, sceneNodesById));
         return {
           node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
           layers: sceneNodesById.size,
           tokens: tokens.usage,
           ms: clock.report(),
-          files
+          files,
+          assets
         };
       }
     },
@@ -22772,11 +24838,11 @@ ${scripts}`, "");
         const catalogue = {};
         const seen = /* @__PURE__ */ new Map();
         const paintsOf2 = async (node, field) => {
-          const paints2 = node[field];
-          if (!Array.isArray(paints2) || paints2.length === 0) return null;
-          const shaders2 = paints2.some((paint) => (paint == null ? void 0 : paint.type) === "SHADER") ? await shadersFor(catalogue) : void 0;
+          const paints = node[field];
+          if (!Array.isArray(paints) || paints.length === 0) return null;
+          const shaders2 = paints.some((paint) => (paint == null ? void 0 : paint.type) === "SHADER") ? await shadersFor(catalogue) : void 0;
           const out = [];
-          for (const [index, paint] of paints2.entries()) {
+          for (const [index, paint] of paints.entries()) {
             const described = await describePaint(paint, index, shaders2);
             if (described.shader) seen.set(described.shader.id, described.shader);
             out.push(described);
@@ -22922,19 +24988,56 @@ ${scripts}`, "");
   function orMixed(value) {
     return value === figma.mixed ? MIXED : value;
   }
-  function paints(node) {
-    const fills = node.fills;
-    if (fills === void 0) return void 0;
-    if (fills === figma.mixed) return MIXED;
-    if (!Array.isArray(fills)) return void 0;
-    return fills.map((paint) => ({
+  function isGradientPaint(paint) {
+    return paint.type === "GRADIENT_LINEAR" || paint.type === "GRADIENT_RADIAL" || paint.type === "GRADIENT_ANGULAR" || paint.type === "GRADIENT_DIAMOND";
+  }
+  function paintList(raw) {
+    if (raw === void 0) return void 0;
+    if (raw === figma.mixed) return MIXED;
+    if (!Array.isArray(raw)) return void 0;
+    const rawPaints = raw;
+    return rawPaints.map((paint) => ({
       type: paint.type,
       color: paint.type === "SOLID" ? paint.color : void 0,
-      opacity: paint.opacity
+      opacity: paint.opacity,
+      visible: paint.visible,
+      blendMode: paint.blendMode,
+      gradientStops: isGradientPaint(paint) ? paint.gradientStops.map((stop) => ({ position: stop.position, color: stop.color })) : void 0,
+      gradientTransform: isGradientPaint(paint) ? paint.gradientTransform : void 0,
+      imageHash: paint.type === "IMAGE" ? paint.imageHash : void 0,
+      scaleMode: paint.type === "IMAGE" ? paint.scaleMode : void 0
     }));
   }
+  function isShadowEffect2(effect) {
+    return effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW";
+  }
+  function isBlurEffect(effect) {
+    return effect.type === "LAYER_BLUR" || effect.type === "BACKGROUND_BLUR";
+  }
+  function effectsList(raw) {
+    if (raw === void 0) return void 0;
+    if (!Array.isArray(raw)) return void 0;
+    const rawEffects = raw;
+    return rawEffects.map((effect) => {
+      if (isShadowEffect2(effect)) {
+        return { type: effect.type, color: effect.color, offset: effect.offset, radius: effect.radius, spread: effect.spread, visible: effect.visible };
+      }
+      if (isBlurEffect(effect)) {
+        return { type: effect.type, radius: effect.radius, visible: effect.visible };
+      }
+      return { type: effect.type, radius: 0, visible: effect.visible };
+    });
+  }
+  function letterSpacingOf(fields) {
+    if (fields.letterSpacing === void 0) return void 0;
+    return orMixed(fields.letterSpacing);
+  }
+  function lineHeightOf(fields) {
+    if (fields.lineHeight === void 0) return void 0;
+    return orMixed(fields.lineHeight);
+  }
   function toDiffable2(node) {
-    const any = node;
+    const fields = node;
     const children = node.children;
     return {
       id: node.id,
@@ -22944,14 +25047,31 @@ ${scripts}`, "");
       y: node.y,
       width: node.width,
       height: node.height,
-      rotation: typeof any.rotation === "number" ? any.rotation : void 0,
-      opacity: typeof any.opacity === "number" ? any.opacity : void 0,
-      cornerRadius: any.cornerRadius === void 0 ? void 0 : orMixed(any.cornerRadius),
-      topLeftRadius: typeof any.topLeftRadius === "number" ? any.topLeftRadius : void 0,
-      topRightRadius: typeof any.topRightRadius === "number" ? any.topRightRadius : void 0,
-      bottomRightRadius: typeof any.bottomRightRadius === "number" ? any.bottomRightRadius : void 0,
-      bottomLeftRadius: typeof any.bottomLeftRadius === "number" ? any.bottomLeftRadius : void 0,
-      fills: paints(node),
+      rotation: typeof fields.rotation === "number" ? fields.rotation : void 0,
+      opacity: typeof fields.opacity === "number" ? fields.opacity : void 0,
+      visible: typeof fields.visible === "boolean" ? fields.visible : void 0,
+      blendMode: typeof fields.blendMode === "string" ? fields.blendMode : void 0,
+      cornerRadius: fields.cornerRadius === void 0 ? void 0 : orMixed(fields.cornerRadius),
+      topLeftRadius: typeof fields.topLeftRadius === "number" ? fields.topLeftRadius : void 0,
+      topRightRadius: typeof fields.topRightRadius === "number" ? fields.topRightRadius : void 0,
+      bottomRightRadius: typeof fields.bottomRightRadius === "number" ? fields.bottomRightRadius : void 0,
+      bottomLeftRadius: typeof fields.bottomLeftRadius === "number" ? fields.bottomLeftRadius : void 0,
+      fills: paintList(fields.fills),
+      strokes: paintList(fields.strokes),
+      strokeWeight: fields.strokeWeight === void 0 ? void 0 : orMixed(fields.strokeWeight),
+      strokeAlign: typeof fields.strokeAlign === "string" ? fields.strokeAlign : void 0,
+      effects: effectsList(fields.effects),
+      paddingTop: typeof fields.paddingTop === "number" ? fields.paddingTop : void 0,
+      paddingRight: typeof fields.paddingRight === "number" ? fields.paddingRight : void 0,
+      paddingBottom: typeof fields.paddingBottom === "number" ? fields.paddingBottom : void 0,
+      paddingLeft: typeof fields.paddingLeft === "number" ? fields.paddingLeft : void 0,
+      itemSpacing: typeof fields.itemSpacing === "number" ? fields.itemSpacing : void 0,
+      counterAxisSpacing: fields.counterAxisSpacing === null ? null : typeof fields.counterAxisSpacing === "number" ? fields.counterAxisSpacing : void 0,
+      fontSize: fields.fontSize === void 0 ? void 0 : orMixed(fields.fontSize),
+      fontWeight: fields.fontWeight === void 0 ? void 0 : orMixed(fields.fontWeight),
+      letterSpacing: letterSpacingOf(fields),
+      lineHeight: lineHeightOf(fields),
+      characters: typeof fields.characters === "string" ? fields.characters : void 0,
       children: children ? children.map(toDiffable2) : void 0
     };
   }
@@ -22968,6 +25088,63 @@ ${scripts}`, "");
   function pathToSelector(path) {
     if (path === "") return "";
     return path.split("/").map((segment) => ` .${slugify2(segment.replace(/#\d+$/, ""), "layer")}`).join("");
+  }
+  function imageHashesIn(diffs) {
+    var _a;
+    const hashes = /* @__PURE__ */ new Set();
+    for (const diff of diffs) {
+      for (const pair2 of diff.pairs) {
+        for (const change of pair2.changes) {
+          if (change.prop !== "background" || change.interpolable) continue;
+          for (const image of (_a = change.images) != null ? _a : []) hashes.add(image.imageHash);
+        }
+      }
+    }
+    return [...hashes];
+  }
+  function deadline(work, what, ms = 2e4) {
+    return new Promise((resolve2, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms);
+      work.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve2(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        }
+      );
+    });
+  }
+  async function resolveImageUrls(root, diffs, slug2) {
+    const hashes = imageHashesIn(diffs);
+    const urls = /* @__PURE__ */ new Map();
+    const files = [];
+    const warnings = [];
+    if (hashes.length === 0) return { urlFor: () => void 0, files, warnings };
+    let page = root;
+    while (page && page.type !== "PAGE") page = page.parent;
+    if (page) await page.loadAsync();
+    for (const hash of hashes) {
+      const image = figma.getImageByHash(hash);
+      if (!image) {
+        warnings.push(`image crossfade skipped: no image for hash ${hash}`);
+        continue;
+      }
+      let bytes;
+      try {
+        bytes = await deadline(image.getBytesAsync(), `getBytesAsync ${hash}`, 6e4);
+      } catch (error) {
+        warnings.push(`image crossfade skipped for hash ${hash}: ${String(error)}`);
+        continue;
+      }
+      const format = detectImageFillFormat(bytes);
+      const filename = `${slug2}-${hash.slice(0, 8)}.${format}`;
+      files.push(binaryFile(filename, format === "jpg" ? "image/jpeg" : `image/${format}`, bytes));
+      urls.set(hash, filename);
+    }
+    return { urlFor: (imageHash) => urls.get(imageHash), files, warnings };
   }
   var TRANSITION_OPS = [
     {
@@ -23004,11 +25181,13 @@ ${scripts}`, "");
         const strategy = params.strategy;
         const toggleClass = params.toggleClass;
         const wants = (kind) => strategy === "all" || strategy === kind;
+        const slug2 = slugify2(node.name, "transitions");
+        const diffed = pairs.map((pair2) => ({ pair: pair2, diff: diffStates(toDiffable2(pair2.from), toDiffable2(pair2.to)) }));
+        const imageCrossfade = wants("transition") ? await resolveImageUrls(node, diffed.map((entry) => entry.diff), slug2) : { urlFor: () => void 0, files: [], warnings: [] };
         const transitions = [];
         const css = [];
         const js = [];
-        for (const pair2 of pairs) {
-          const diff = diffStates(toDiffable2(pair2.from), toDiffable2(pair2.to));
+        for (const { pair: pair2, diff } of diffed) {
           const mechanism = mapTriggerToMechanism(pair2.trigger);
           const timing = transitionToCssTiming(pair2.transition);
           const baseSelector = `.${slugify2(pair2.from.name, "variant")}`;
@@ -23021,11 +25200,13 @@ ${scripts}`, "");
               durationMs: timing.durationMs,
               timingFunction: timing.timingFunction,
               mechanism,
-              toggleClass
+              toggleClass,
+              imageUrlFor: imageCrossfade.urlFor
             });
             if (result.css) {
               css.push(result.css);
               emitted.push("transition");
+              if (result.css.includes("::after")) emitted.push("image-crossfade");
             }
             if (result.js) js.push(result.js);
           }
@@ -23065,11 +25246,14 @@ ${scripts}`, "");
             emitted
           });
         }
-        const slug2 = slugify2(node.name, "transitions");
-        const files = [];
+        const files = [...imageCrossfade.files];
         if (css.length > 0) files.push(textFile(`${slug2}.transitions.css`, "text/css", css.join("\n\n")));
         if (js.length > 0) files.push(textFile(`${slug2}.transitions.js`, "text/javascript", js.join("\n\n")));
-        return { componentSet: { id: node.id, name: node.name }, transitions, files };
+        return __spreadValues({
+          componentSet: { id: node.id, name: node.name },
+          transitions,
+          files
+        }, imageCrossfade.warnings.length > 0 ? { warnings: imageCrossfade.warnings } : {});
       }
     }
   ];
@@ -23662,9 +25846,9 @@ ${scripts}`, "");
     if (typeof styleId === "string" && styleId !== "") {
       throw new Error(`${prop} come from a paint style \u2014 unlink it first, or the binding would break the style`);
     }
-    const paints2 = node[prop];
-    if (!Array.isArray(paints2)) throw new Error(`${prop} are unreadable on this node`);
-    const next = paints2.slice();
+    const paints = node[prop];
+    if (!Array.isArray(paints)) throw new Error(`${prop} are unreadable on this node`);
+    const next = paints.slice();
     const touched = [];
     const was = [];
     for (let i = 0; i < next.length; i++) {
@@ -23797,8 +25981,8 @@ ${scripts}`, "");
     var _a, _b, _c;
     if (!main) return void 0;
     if (job.prop !== void 0 && job.index !== void 0) {
-      const paints2 = main[job.prop];
-      const paint = Array.isArray(paints2) ? paints2[job.index] : void 0;
+      const paints = main[job.prop];
+      const paint = Array.isArray(paints) ? paints[job.index] : void 0;
       return (_b = (_a = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
     }
     const bound = main.boundVariables;
@@ -24210,9 +26394,9 @@ ${scripts}`, "");
             const style = await findStyle(entry.style);
             const paintIndex = entry.paint === void 0 ? 0 : Number(entry.paint);
             if (!Number.isInteger(paintIndex)) throw new Error('"paint" must be a whole number');
-            const paints2 = style.paints.slice();
-            const target = paints2[paintIndex];
-            if (!target) throw new Error(`this style has ${paints2.length} paint(s), no index ${paintIndex}`);
+            const paints = style.paints.slice();
+            const target = paints[paintIndex];
+            if (!target) throw new Error(`this style has ${paints.length} paint(s), no index ${paintIndex}`);
             const variable = entry.variable === null ? null : await resolveVariableRef(entry.variable);
             if (variable && variable.resolvedType !== "COLOR") {
               throw new Error(`"${variable.name}" is ${variable.resolvedType}, not COLOR`);
@@ -24224,7 +26408,7 @@ ${scripts}`, "");
               before = await nameOf(
                 (_b = (_a = target.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id
               );
-              paints2[paintIndex] = figma.variables.setBoundVariableForPaint(target, "color", variable);
+              paints[paintIndex] = figma.variables.setBoundVariableForPaint(target, "color", variable);
             } else {
               const gradient = target;
               if (!Array.isArray(gradient.gradientStops)) throw new Error(`paint ${paintIndex} has no gradient stops`);
@@ -24234,7 +26418,7 @@ ${scripts}`, "");
               const stops = gradient.gradientStops.map(
                 (stop, at2) => at2 !== at ? stop : __spreadValues({ position: stop.position, color: stop.color }, alias ? { boundVariables: { color: alias } } : {})
               );
-              paints2[paintIndex] = __spreadProps(__spreadValues({}, gradient), { gradientStops: stops });
+              paints[paintIndex] = __spreadProps(__spreadValues({}, gradient), { gradientStops: stops });
             }
             if (dryRun) {
               results.push(__spreadProps(__spreadValues({
@@ -24248,7 +26432,7 @@ ${scripts}`, "");
               }));
               continue;
             }
-            style.paints = paints2;
+            style.paints = paints;
             const written = await figma.getStyleByIdAsync(style.id);
             const check = (_e = written == null ? void 0 : written.paints) == null ? void 0 : _e[paintIndex];
             const landed = (check == null ? void 0 : check.type) === "SOLID" ? (_h = (_g = (_f = check.boundVariables) == null ? void 0 : _f.color) == null ? void 0 : _g.id) != null ? _h : null : (_m = (_l = (_k = (_j = (_i = check == null ? void 0 : check.gradientStops) == null ? void 0 : _i[stopOf(check, Number(entry.stop))]) == null ? void 0 : _j.boundVariables) == null ? void 0 : _k.color) == null ? void 0 : _l.id) != null ? _m : null;
@@ -24565,9 +26749,9 @@ ${scripts}`, "");
             }
           }
           for (const prop of ["fills", "strokes"]) {
-            const paints2 = holder[prop];
-            if (!Array.isArray(paints2)) continue;
-            paints2.forEach((paint, index) => {
+            const paints = holder[prop];
+            if (!Array.isArray(paints)) continue;
+            paints.forEach((paint, index) => {
               var _a3, _b2, _c2;
               if (paint.type !== "SOLID") return;
               const aliasId = (_c2 = (_b2 = (_a3 = paint.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b2.id) != null ? _c2 : "";
@@ -24655,10 +26839,10 @@ ${scripts}`, "");
           }
           for (const prop of ["fills", "strokes"]) {
             if (styled(holder[prop === "fills" ? "fillStyleId" : "strokeStyleId"])) continue;
-            const paints2 = holder[prop];
-            if (!Array.isArray(paints2)) continue;
+            const paints = holder[prop];
+            if (!Array.isArray(paints)) continue;
             let next = null;
-            paints2.forEach((paint, index) => {
+            paints.forEach((paint, index) => {
               var _a3, _b3, _c3;
               const paintAt = pairByFromId.get(
                 (_c3 = (_b3 = (_a3 = paint.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b3.id) != null ? _c3 : ""
@@ -24666,7 +26850,7 @@ ${scripts}`, "");
               if (paintAt !== void 0 && paint.type === "SOLID") {
                 pairs[paintAt].matched += 1;
                 if (!dryRun) {
-                  next = next != null ? next : paints2.slice();
+                  next = next != null ? next : paints.slice();
                   next[index] = figma.variables.setBoundVariableForPaint(next[index], "color", pairs[paintAt].to);
                   pairs[paintAt].rebound += 1;
                 }
@@ -24689,7 +26873,7 @@ ${scripts}`, "");
                   pairs[stopAt].rebound += 1;
                 });
                 if (newStops) {
-                  next = next != null ? next : paints2.slice();
+                  next = next != null ? next : paints.slice();
                   next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: newStops });
                 }
               }
@@ -24814,9 +26998,9 @@ ${scripts}`, "");
           try {
             if (job.prop !== void 0 && job.index !== void 0) {
               const holder = job.node;
-              const paints2 = holder[job.prop];
-              if (!Array.isArray(paints2)) throw new Error(`${job.prop} is not an array any more`);
-              const next = paints2.slice();
+              const paints = holder[job.prop];
+              if (!Array.isArray(paints)) throw new Error(`${job.prop} is not an array any more`);
+              const next = paints.slice();
               next[job.index] = figma.variables.setBoundVariableForPaint(
                 next[job.index],
                 "color",
@@ -24937,9 +27121,9 @@ ${scripts}`, "");
           const paintStyles = await figma.getLocalPaintStylesAsync();
           stylesScanned = paintStyles.length;
           for (const style of paintStyles) {
-            const paints2 = style.paints;
+            const paints = style.paints;
             let next = null;
-            paints2.forEach((paint, index) => {
+            paints.forEach((paint, index) => {
               var _a2, _b2, _c2;
               const paintAt = pairByFromId.get(
                 (_c2 = (_b2 = (_a2 = paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id) != null ? _c2 : ""
@@ -24947,7 +27131,7 @@ ${scripts}`, "");
               if (paintAt !== void 0 && paint.type === "SOLID") {
                 pairs[paintAt].matched += 1;
                 if (!dryRun) {
-                  next = next != null ? next : paints2.slice();
+                  next = next != null ? next : paints.slice();
                   next[index] = figma.variables.setBoundVariableForPaint(next[index], "color", pairs[paintAt].to);
                   pairs[paintAt].rebound += 1;
                 }
@@ -24970,7 +27154,7 @@ ${scripts}`, "");
                   pairs[stopAt].rebound += 1;
                 });
                 if (newStops) {
-                  next = next != null ? next : paints2.slice();
+                  next = next != null ? next : paints.slice();
                   next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: newStops });
                 }
               }
@@ -25039,7 +27223,7 @@ ${scripts}`, "");
           page.name = ref;
           return page;
         };
-        const pageOf3 = (node) => {
+        const pageOf4 = (node) => {
           let walk2 = node.parent;
           while (walk2 && walk2.type !== "PAGE") walk2 = walk2.parent;
           return walk2 != null ? walk2 : null;
@@ -25054,7 +27238,7 @@ ${scripts}`, "");
             if (!source) throw new Error(`no node with id ${id}`);
             if (source.type === "PAGE" || source.type === "DOCUMENT") throw new Error(`${source.type} cannot be copied`);
             const scene = source;
-            const home = pageOf3(scene);
+            const home = pageOf4(scene);
             if (home) await home.loadAsync();
             const wantAs = typeof entry.as === "string" ? entry.as : null;
             if (wantAs !== null && wantAs !== "instance" && wantAs !== "clone") {
@@ -25244,10 +27428,10 @@ ${scripts}`, "");
           var _a2;
           if (typeof id === "string" && targets.has(id)) used.set(id, ((_a2 = used.get(id)) != null ? _a2 : 0) + 1);
         };
-        const scanPaints = (paints2) => {
+        const scanPaints = (paints) => {
           var _a2, _b2, _c, _d;
-          if (!Array.isArray(paints2)) return;
-          for (const paint of paints2) {
+          if (!Array.isArray(paints)) return;
+          for (const paint of paints) {
             note((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id);
             if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) for (const stop of paint.gradientStops) note((_d = (_c = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c.color) == null ? void 0 : _d.id);
           }
@@ -25503,7 +27687,7 @@ ${scripts}`, "");
   })();
 
   // src/agent/ui-commands.ts
-  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string","note":"the package itself, base64 \u2014 the bytes CONFIRM_EXPORT handed back"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope and every variable \u2014 80s on a large file; narrow the scope to a frame","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope and every variable \u2014 80s on a large file; narrow the scope to a frame","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportDeliveryOptions; ag\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on Altery Mobile DS","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes","cost":"one render each, and a large frame at 4x is megabytes \u2014 the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"the animation styles Figma offers, with the settings each one takes \u2014 what you have to know before applying one","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect and grid \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect or grid; omitted means all four"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the module document itself (see TASK-user-modules.md), object or JSON text"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id; without it a clash is refused"}],"replies":["MODULE_REJECTED","MODULE_INSTALLED","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the type the module declared for that field"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
+  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string","note":"the package itself, base64 \u2014 the bytes CONFIRM_EXPORT handed back"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportDeliveryOptions; ag\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on Altery Mobile DS","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes","cost":"one render each, and a large frame at 4x is megabytes \u2014 the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"the animation styles Figma offers, with the settings each one takes \u2014 what you have to know before applying one","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect and grid \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect or grid; omitted means all four"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the module document itself (see TASK-user-modules.md), object or JSON text"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id; without it a clash is refused"}],"replies":["MODULE_REJECTED","MODULE_INSTALLED","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the type the module declared for that field"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
   var UI_COMMANDS = (() => {
     if (!INJECTED2.startsWith("[")) return [];
     try {
@@ -25727,7 +27911,7 @@ ${scripts}`, "");
     const replies = beginRecording();
     let timedOut = false;
     let timer;
-    const deadline = new Promise((resolve2) => {
+    const deadline2 = new Promise((resolve2) => {
       timer = setTimeout(() => {
         timedOut = true;
         resolve2();
@@ -25742,7 +27926,7 @@ ${scripts}`, "");
           }
           throw error;
         }),
-        deadline
+        deadline2
       ]);
     } finally {
       if (timer !== void 0) clearTimeout(timer);
@@ -25872,7 +28056,7 @@ ${scripts}`, "");
             default: DEFAULT_CALL_TIMEOUT_MS,
             min: 1e3,
             max: 6e5,
-            description: "How long to wait for the command before answering with what it said so far."
+            description: "How long to wait for the command before answering with what it said so far. The BRIDGE cuts the call at its own ceiling first (ALTERY_AGENT_CALL_TIMEOUT_MS, 180s by default), so a value above that one only takes effect when the bridge is started with a matching ceiling."
           }
         },
         async run(params) {
@@ -26092,14 +28276,14 @@ ${scripts}`, "");
     const out = {};
     for (const [field, entry] of Object.entries(bound)) {
       if (field in PAINT_FIELDS2) {
-        const paints2 = Array.isArray(node[field]) ? node[field] : [];
+        const paints = Array.isArray(node[field]) ? node[field] : [];
         const claimed = /* @__PURE__ */ new Set();
-        for (const [index, paint] of paints2.entries()) {
+        for (const [index, paint] of paints.entries()) {
           const alias2 = (_a = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a.color;
           if (typeof (alias2 == null ? void 0 : alias2.id) !== "string") continue;
           const record3 = await describePaintBinding(alias2, paint);
           if (!record3) continue;
-          out[paints2.length > 1 ? `${field}[${index}]` : field] = record3;
+          out[paints.length > 1 ? `${field}[${index}]` : field] = record3;
           claimed.add(alias2.id);
         }
         let spare = 0;
@@ -26312,7 +28496,7 @@ ${scripts}`, "");
     }
     return catalogue.map;
   }
-  var hasShader = (paints2) => Array.isArray(paints2) && paints2.some((paint) => (paint == null ? void 0 : paint.type) === "SHADER");
+  var hasShader = (paints) => Array.isArray(paints) && paints.some((paint) => (paint == null ? void 0 : paint.type) === "SHADER");
   async function describePaints2(node, catalogue = {}) {
     const out = {};
     const shaders = hasShader(node.fills) || hasShader(node.strokes) ? await shadersFor(catalogue) : void 0;
@@ -26328,12 +28512,11 @@ ${scripts}`, "");
     }
     return out.fills || out.strokes ? out : null;
   }
-  async function describeVariableModes(node) {
+  async function describeVariableModes(node, collections, withResolved) {
     var _a, _b;
     const explicit = (_a = node.explicitVariableModes) != null ? _a : {};
-    const resolved = (_b = node.resolvedVariableModes) != null ? _b : {};
+    const resolved = withResolved ? (_b = node.resolvedVariableModes) != null ? _b : {} : {};
     if (Object.keys(explicit).length === 0 && Object.keys(resolved).length === 0) return null;
-    const collections = /* @__PURE__ */ new Map();
     const describe = async (collectionId, modeId) => {
       var _a2, _b2, _c, _d;
       if (!collections.has(collectionId)) {
@@ -26363,16 +28546,14 @@ ${scripts}`, "");
     }
     return out;
   }
-  async function describeNode(node, depth, paints2 = false, root = true, catalogue = {}) {
-    var _a, _b;
+  async function describeNode(node, depth, paints = false, root = true, catalogue = {}, collections = /* @__PURE__ */ new Map()) {
+    var _a, _b, _c, _d;
     const summary = summarizeNode(node);
     const bindings = await describeBindings(node, summary);
     if (bindings) summary.bindings = bindings;
-    if (root) {
-      const modes = await describeVariableModes(node);
-      if (modes) summary.modes = modes;
-    }
-    if (paints2) {
+    const modes = await describeVariableModes(node, collections, root);
+    if (modes) summary.modes = modes;
+    if (paints) {
       const described = await describePaints2(node, catalogue);
       if (described) summary.paints = described;
     }
@@ -26387,14 +28568,24 @@ ${scripts}`, "");
         main = typeof node.getMainComponentAsync === "function" ? await node.getMainComponentAsync() : null;
       } catch (e) {
       }
-      summary.instanceOf = __spreadValues({
-        id: (_a = main == null ? void 0 : main.id) != null ? _a : null,
-        name: (_b = main == null ? void 0 : main.name) != null ? _b : null
-      }, summarizeComponentProperties(node.componentProperties) ? { properties: summarizeComponentProperties(node.componentProperties) } : {});
+      const set = ((_a = main == null ? void 0 : main.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? main.parent : null;
+      let properties;
+      let propertiesError;
+      try {
+        properties = (_b = summarizeComponentProperties(node.componentProperties)) != null ? _b : void 0;
+      } catch (error) {
+        propertiesError = error instanceof Error ? error.message : String(error);
+      }
+      summary.instanceOf = __spreadValues(__spreadValues(__spreadValues({
+        id: (_c = main == null ? void 0 : main.id) != null ? _c : null,
+        name: (_d = main == null ? void 0 : main.name) != null ? _d : null
+      }, set ? { setId: set.id, setName: set.name } : {}), properties ? { properties } : {}), propertiesError ? { propertiesError } : {});
     }
     if (depth > 0 && Array.isArray(node.children)) {
       summary.children = [];
-      for (const child of node.children) summary.children.push(await describeNode(child, depth - 1, paints2, false, catalogue));
+      for (const child of node.children) {
+        summary.children.push(await describeNode(child, depth - 1, paints, false, catalogue, collections));
+      }
     }
     return summary;
   }
@@ -26432,6 +28623,14 @@ ${scripts}`, "");
       return figma.root;
     }
     return figma.currentPage;
+  }
+  function readPropertyDefinitions(node) {
+    var _a;
+    try {
+      return { properties: (_a = node.componentPropertyDefinitions) != null ? _a : void 0 };
+    } catch (error) {
+      return { propertiesError: error instanceof Error ? error.message : String(error) };
+    }
   }
   var READ_OPS = [
     {
@@ -26514,11 +28713,12 @@ ${scripts}`, "");
         const needle = typeof params.name === "string" ? params.name.toLowerCase() : null;
         const types = (_a = params.types) != null ? _a : null;
         const root = await resolveScope(params.scope);
-        const matches = await findAllWithCriteria(root, (node) => {
-          if (types && !types.includes(node.type)) return false;
-          if (needle && !node.name.toLowerCase().includes(needle)) return false;
-          return true;
-        });
+        const matches = types && types.length > 0 ? (await findAllByTypes(root, types)).filter(
+          (node) => !needle || node.name.toLowerCase().includes(needle)
+        ) : await findAllWithCriteria(
+          root,
+          (node) => !needle || node.name.toLowerCase().includes(needle)
+        );
         const limit = params.limit;
         return {
           total: matches.length,
@@ -26557,20 +28757,18 @@ ${scripts}`, "");
         }
       },
       async run(params) {
-        var _a;
         const needle = typeof params.name === "string" ? params.name.toLowerCase() : null;
         const root = await resolveScope(params.scope);
-        const found = await findAllWithCriteria(root, (node) => {
-          var _a2;
-          if (node.type !== "COMPONENT" && node.type !== "COMPONENT_SET") return false;
+        const found = (await findAllByTypes(root, ["COMPONENT", "COMPONENT_SET"])).filter((node) => {
+          var _a;
           if (needle && !node.name.toLowerCase().includes(needle)) return false;
-          return !(node.type === "COMPONENT" && ((_a2 = node.parent) == null ? void 0 : _a2.type) === "COMPONENT_SET");
+          return !(node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) === "COMPONENT_SET");
         });
         const limit = params.limit;
         const wantStatus = params.publishStatus === true;
         const components = [];
         for (const node of found.slice(0, limit)) {
-          components.push(__spreadValues({
+          components.push(__spreadValues(__spreadProps(__spreadValues({
             id: node.id,
             key: node.key,
             name: node.name,
@@ -26583,10 +28781,10 @@ ${scripts}`, "");
             descriptionMarkdown: typeof node.descriptionMarkdown === "string" && node.descriptionMarkdown !== node.description ? node.descriptionMarkdown || void 0 : void 0,
             // Where a team keeps the real documentation. An agent that has it stops guessing the
             // intent from the layer names.
-            documentationLinks: node.documentationLinks && node.documentationLinks.length > 0 ? node.documentationLinks.map((link) => link.uri) : void 0,
-            properties: (_a = node.componentPropertyDefinitions) != null ? _a : void 0,
+            documentationLinks: node.documentationLinks && node.documentationLinks.length > 0 ? node.documentationLinks.map((link) => link.uri) : void 0
+          }, readPropertyDefinitions(node)), {
             variants: node.type === "COMPONENT_SET" ? node.children.map((child) => ({ id: child.id, name: child.name })) : void 0
-          }, wantStatus ? { publishStatus: await publishStatusOf(node) } : {}));
+          }), wantStatus ? { publishStatus: await publishStatusOf(node) } : {}));
         }
         return { total: found.length, truncated: found.length > limit, components };
       }
@@ -26793,9 +28991,9 @@ ${scripts}`, "");
               }
             }
             for (const prop of ["fills", "strokes"]) {
-              const paints2 = holder[prop];
-              if (!Array.isArray(paints2)) continue;
-              for (const paint of paints2) {
+              const paints = holder[prop];
+              if (!Array.isArray(paints)) continue;
+              for (const paint of paints) {
                 push((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id);
                 if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
                   for (const stop of paint.gradientStops) push((_d = (_c = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c.color) == null ? void 0 : _d.id);
@@ -26899,9 +29097,9 @@ ${scripts}`, "");
             }
           }
         };
-        const scanPaints = (paints2, site) => {
-          if (!Array.isArray(paints2)) return;
-          paints2.forEach((paint, index) => {
+        const scanPaints = (paints, site) => {
+          if (!Array.isArray(paints)) return;
+          paints.forEach((paint, index) => {
             var _a2, _b2, _c2, _d;
             consider((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id, () => site(`paint[${index}]`));
             if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
@@ -27125,9 +29323,9 @@ ${scripts}`, "");
             }
           }
         }
-        const scanPaints = (paints2, where, label3) => {
-          if (!Array.isArray(paints2)) return;
-          paints2.forEach((paint, index) => {
+        const scanPaints = (paints, where, label3) => {
+          if (!Array.isArray(paints)) return;
+          paints.forEach((paint, index) => {
             var _a2, _b2;
             const direct = (_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id;
             if (direct) note(direct, where, label3(`paint[${index}]`));
@@ -28072,8 +30270,11 @@ ${scripts}`, "");
     const camel = cleaned.split(" ").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join("");
     return /^[A-Za-z]/.test(camel) ? camel : `C${camel}`;
   }
+  function stripPropSuffix(name) {
+    return name.replace(/#.*$/, "");
+  }
   function propName(name) {
-    const words = name.replace(/#.*$/, "").replace(/[^A-Za-z0-9]+/g, " ").trim().split(" ");
+    const words = stripPropSuffix(name).replace(/[^A-Za-z0-9]+/g, " ").trim().split(" ");
     const camel = words.map((word, index) => index === 0 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join("");
     if (camel === "") return "value";
     return /^[A-Za-z_]/.test(camel) ? camel : `value${camel.charAt(0).toUpperCase()}${camel.slice(1)}`;
@@ -28415,6 +30616,42 @@ ${pad2}</${tag}>`;
     return rules.join("\n\n");
   }
 
+  // src/targets/react/code-connect.ts
+  var isIdentifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+  var sq = (text4) => `'${text4.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+  var objectKey = (text4) => isIdentifier.test(text4) ? text4 : sq(text4);
+  var urlNodeId = (nodeId) => nodeId.replace(/:/g, "-");
+  var urlFileName = (fileName) => {
+    const slug2 = fileName.trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return slug2 === "" ? "Untitled" : slug2;
+  };
+  function propMapping(name, prop) {
+    var _a;
+    const figmaName = stripPropSuffix(prop.figmaName);
+    if (prop.kind === "boolean") return `${name}: figma.boolean(${sq(figmaName)})`;
+    if (prop.kind === "text") return `${name}: figma.string(${sq(figmaName)})`;
+    const entries = ((_a = prop.values) != null ? _a : []).map((value) => `${objectKey(value)}: ${sq(value)}`).join(", ");
+    return `${name}: figma.enum(${sq(figmaName)}, { ${entries} })`;
+  }
+  function codeConnectFile(options) {
+    const importBase = options.componentPath.slice(options.componentPath.lastIndexOf("/") + 1).replace(/\.tsx$/, "");
+    const url = `https://www.figma.com/design/${options.fileKey}/${urlFileName(options.fileName)}?node-id=${urlNodeId(options.nodeId)}`;
+    const names = [...options.props.keys()];
+    const propsBlock = names.length === 0 ? "{}" : `{
+${names.map((name) => `    ${propMapping(name, options.props.get(name))},`).join("\n")}
+  }`;
+    const attrs = names.map((name) => `${name}={props.${name}}`).join(" ");
+    const example = `(props) => <${options.componentName}${attrs === "" ? "" : ` ${attrs}`} />`;
+    return `import figma from '@figma/code-connect'
+import { ${options.componentName} } from './${importBase}'
+
+figma.connect(${options.componentName}, ${sq(url)}, {
+  props: ${propsBlock},
+  example: ${example},
+})
+`;
+  }
+
   // src/targets/react/index.ts
   var kindOfProp = (type) => type === "BOOLEAN" ? "boolean" : type === "VARIANT" ? "variant" : "text";
   async function emitLibrary(roots, sceneNodesById, variableNamesById, options = {}) {
@@ -28506,7 +30743,7 @@ ${pad2}</${tag}>`;
     );
   }
   async function emitReact(roots, sceneNodesById, variableNamesById, options = {}) {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     const files = {};
     const gaps = [];
     const props = new Map((_a = options.libraryProps) != null ? _a : []);
@@ -28530,6 +30767,12 @@ ${pad2}</${tag}>`;
       if (component.masterId) names.set(component.masterId, name);
     }
     for (const [, asset] of (_c = options.assetsByNodeId) != null ? _c : []) files[`public/assets/${asset.filename}`] = asset.svg;
+    if (!options.fileKey && components.size > 0) {
+      gaps.push(
+        "Code Connect files were not emitted for this export \u2014 figma.fileKey is only granted to a private plugin on an Organization plan, and a node URL cannot be built without it"
+      );
+    }
+    let connectFilesWritten = false;
     for (const component of components.values()) {
       if (component.masterId && ((_d = options.fromLibrary) == null ? void 0 : _d.has(component.masterId))) continue;
       if (!component.masterId && ((_e = options.fromLibrary) == null ? void 0 : _e.has(component.name))) continue;
@@ -28545,10 +30788,36 @@ ${pad2}</${tag}>`;
       if (built.css.trim() !== "") files[`src/components/${component.name}.module.css`] = built.css;
       gaps.push(...built.gaps);
       props.set(component.name, built.props);
+      if (options.fileKey) {
+        if (component.masterId) {
+          const connectProps = /* @__PURE__ */ new Map();
+          for (const prop of component.values.keys()) {
+            const kind = kindOfProp(component.types.get(prop));
+            connectProps.set(prop, {
+              kind,
+              figmaName: (_g = component.rawNames.get(prop)) != null ? _g : prop,
+              values: kind === "variant" ? [...(_h = component.values.get(prop)) != null ? _h : []] : void 0
+            });
+          }
+          files[`src/components/${component.name}.figma.tsx`] = codeConnectFile({
+            componentName: component.name,
+            componentPath: `src/components/${component.name}.tsx`,
+            nodeId: component.masterId,
+            props: connectProps,
+            fileKey: options.fileKey,
+            fileName: (_i = options.fileName) != null ? _i : ""
+          });
+          connectFilesWritten = true;
+        } else {
+          gaps.push(
+            `${component.name} has no Figma component id of its own \u2014 Code Connect links a node id, and this component's markup did not resolve to one`
+          );
+        }
+      }
     }
     let firstScreen = null;
     for (const root of roots) {
-      const name = componentName2((_g = options.name) != null ? _g : root.name);
+      const name = componentName2((_j = options.name) != null ? _j : root.name);
       firstScreen != null ? firstScreen : firstScreen = name;
       const context = newContext(name.toLowerCase());
       context.assets = options.assetsByNodeId;
@@ -28558,7 +30827,7 @@ ${pad2}</${tag}>`;
       context.segments = segmentsIn(css);
       const markup = emitJsx(root, context, 2);
       files[`src/screens/${name}.tsx`] = screenFile(name, markup, context);
-      const motion = await emitMotion([root], sceneNodesById, (_h = options.motionByNodeId) != null ? _h : /* @__PURE__ */ new Map());
+      const motion = await emitMotion([root], sceneNodesById, (_k = options.motionByNodeId) != null ? _k : /* @__PURE__ */ new Map());
       files[`src/screens/${name}.module.css`] = raiseInstanceRoots(css, context.instanceRoots) + (motion.css.trim() === "" ? "" : `
 
 ${motion.css}`);
@@ -28572,6 +30841,14 @@ ${motion.css}`);
     }
     if (options.tokensCss) files["src/tokens.css"] = options.tokensCss;
     Object.assign(files, projectFiles(firstScreen, Boolean(options.tokensCss), fontsIn(files)));
+    if (connectFilesWritten) {
+      files["figma.config.json"] = `${JSON.stringify(
+        { codeConnect: { parser: "react", include: ["src/components/**/*.tsx"] } },
+        null,
+        2
+      )}
+`;
+    }
     if (Object.values(files).some((one) => one.includes("from '../copy'"))) files["src/copy.tsx"] = COPY_FILE;
     return { files, names, gaps: [...new Set(gaps)], props };
   }
@@ -28637,7 +30914,7 @@ ${motion.css}`);
         seen.add(String(value.value));
         held.values.set(prop, seen);
         held.types.set(prop, value.type);
-        held.rawNames.set(prop, raw.replace(/#.*$/, ""));
+        held.rawNames.set(prop, stripPropSuffix(raw));
       }
       into.set(key, held);
       if (!node.restyled) return;
@@ -29802,6 +32079,37 @@ createRoot(document.getElementById('root')!).render(
       fidelity: options.targetOptions.bootstrapFidelity
     };
   }
+  var LANGUAGE_LABELS = {
+    ar: "\u0627\u0644\u0639\u0631\u0628\u064A\u0629",
+    de: "Deutsch",
+    en: "English",
+    es: "Espa\xF1ol",
+    fr: "Fran\xE7ais",
+    it: "Italiano",
+    ja: "\u65E5\u672C\u8A9E",
+    ko: "\uD55C\uAD6D\uC5B4",
+    nl: "Nederlands",
+    pl: "Polski",
+    pt: "Portugu\xEAs",
+    "pt-br": "Portugu\xEAs (Brasil)",
+    ru: "\u0420\u0443\u0441\u0441\u043A\u0438\u0439",
+    tr: "T\xFCrk\xE7e",
+    uk: "\u0423\u043A\u0440\u0430\u0457\u043D\u0441\u044C\u043A\u0430",
+    zh: "\u4E2D\u6587",
+    "zh-hans": "\u7B80\u4F53\u4E2D\u6587"
+  };
+  function languageLabel(code) {
+    var _a;
+    return (_a = LANGUAGE_LABELS[code.toLowerCase()]) != null ? _a : code;
+  }
+  function figmaFileKey() {
+    var _a;
+    try {
+      return (_a = figma.fileKey) != null ? _a : null;
+    } catch (e) {
+      return null;
+    }
+  }
   function defaultRoots() {
     return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children;
   }
@@ -29900,20 +32208,37 @@ createRoot(document.getElementById('root')!).render(
     for (const root of roots) walk2(root);
     return found;
   }
-  function rootsForScope(scope) {
+  async function rootsForScope(scope) {
     if (!scope) return defaultRoots();
     switch (scope.mode) {
       case "selection":
         return figma.currentPage.selection;
       case "frame": {
-        const top = figma.currentPage.children.find((node) => node.id === scope.frameId);
+        const top = figma.currentPage.children.find((node2) => node2.id === scope.frameId);
         if (top) return [top];
-        const found = figma.currentPage.findOne((node) => node.id === scope.frameId);
-        return found ? [found] : [];
+        const found = figma.currentPage.findOne((node2) => node2.id === scope.frameId);
+        if (found) return [found];
+        const node = await figma.getNodeByIdAsync(scope.frameId);
+        if (node && "visible" in node) {
+          const page = pageOf3(node);
+          if (page) await page.loadAsync();
+          return [node];
+        }
+        return [];
       }
       case "page":
         return figma.currentPage.children;
     }
+  }
+  function pageOf3(node) {
+    let parent = node.parent;
+    while (parent && parent.type !== "PAGE") parent = parent.parent;
+    return parent != null ? parent : null;
+  }
+  function requireNonEmptyScope(command, roots, scope) {
+    if (roots.length > 0) return;
+    const what = (scope == null ? void 0 : scope.mode) === "frame" ? `no node with id "${scope.frameId}" exists in this file` : (scope == null ? void 0 : scope.mode) === "selection" ? "nothing is selected" : "the current page has no top-level frames";
+    throw new Error(`${command}: ${what} \u2014 nothing to export`);
   }
   async function indexSceneNodes2(roots) {
     const index = /* @__PURE__ */ new Map();
@@ -29932,6 +32257,27 @@ createRoot(document.getElementById('root')!).render(
         if (node && "getCSSAsync" in node) sceneNodesById.set(id, node);
       })
     );
+  }
+  async function serializeReactionDestinations(pageRoots, sceneNodesById) {
+    const inPages = /* @__PURE__ */ new Set();
+    const index = (node) => {
+      inPages.add(node.id);
+      if ("children" in node) for (const child of node.children) index(child);
+    };
+    for (const root of pageRoots) index(root);
+    const serialized = [];
+    for (const id of collectReactionDestinationIds(pageRoots)) {
+      if (inPages.has(id)) continue;
+      const scene = sceneNodesById.get(id);
+      if (!scene) continue;
+      try {
+        const node = await serializeNode(scene);
+        if (node) serialized.push(node);
+      } catch (error) {
+        console.warn("[export] state variant did not serialize; its images will not ship", id, error);
+      }
+    }
+    return serialized;
   }
   async function collectThemableSets(sceneNodesById) {
     var _a, _b;
@@ -30169,7 +32515,7 @@ createRoot(document.getElementById('root')!).render(
       targets = figma.root.findAllWithCriteria({ types: ["COMPONENT_SET", "COMPONENT"] }).filter(isDocumentableComponent);
     }
     const pageNameById = /* @__PURE__ */ new Map();
-    const pageOf3 = (node) => {
+    const pageOf4 = (node) => {
       let current = node;
       while (current && current.type !== "PAGE") current = current.parent;
       if (!current) return void 0;
@@ -30190,7 +32536,7 @@ createRoot(document.getElementById('root')!).render(
       const doc = {
         id: node.id,
         name: node.name,
-        page: pageOf3(node),
+        page: pageOf4(node),
         description,
         links,
         properties: componentPropertiesOf(node),
@@ -30311,6 +32657,7 @@ createRoot(document.getElementById('root')!).render(
   }
   if (figma.mode === "codegen") {
     figma.codegen.on("generate", async ({ node }) => {
+      var _a;
       try {
         const ir = await serializeNode(node);
         if (!ir) return [{ title: "React", code: `// ${node.name} (${node.type}) has nothing to render`, language: "TYPESCRIPT" }];
@@ -30318,7 +32665,10 @@ createRoot(document.getElementById('root')!).render(
         const snapshot = await readAllVariables();
         const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]));
         await annotateVectorLeaves([ir], sceneNodesById);
-        const { files, gaps } = await emitReact([ir], sceneNodesById, variableNamesById, {});
+        const { files, gaps } = await emitReact([ir], sceneNodesById, variableNamesById, {
+          fileKey: (_a = figma.fileKey) != null ? _a : void 0,
+          fileName: figma.root.name
+        });
         const results = [];
         for (const [path, contents] of Object.entries(files)) {
           if (path.endsWith(".tsx")) results.push({ title: path, code: contents, language: "TYPESCRIPT" });
@@ -30631,6 +32981,22 @@ createRoot(document.getElementById('root')!).render(
     taken.add(candidate);
     return candidate;
   }
+  function clippedBy(node) {
+    const geometry = node;
+    const box = geometry.absoluteBoundingBox;
+    if (!box || box.height === 0) return null;
+    const rendered = geometry.absoluteRenderBounds;
+    const visible = rendered ? rendered.height : 0;
+    if (visible >= box.height * 0.98) return null;
+    let parent = node.parent;
+    while (parent) {
+      if ("clipsContent" in parent && parent.clipsContent) {
+        return { by: `${parent.name} (${parent.id})`, visible, own: box.height };
+      }
+      parent = parent.parent;
+    }
+    return { by: "an ancestor", visible, own: box.height };
+  }
   var CLONE_GAP = 64;
   var plain = (value) => value === figma.mixed ? "mixed" : value;
   function textMeasure(value) {
@@ -30892,7 +33258,7 @@ createRoot(document.getElementById('root')!).render(
     return plan;
   }
   async function handleUiMessage(msg) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
@@ -31262,14 +33628,14 @@ createRoot(document.getElementById('root')!).render(
       }
       /* ---- django target ---- */
       case "EMIT_DJANGO": {
-        const roots = rootsForScope(msg.scope);
-        const [irNodes, sceneNodesById, snapshot] = await Promise.all([
+        const roots = await rootsForScope(msg.scope);
+        requireNonEmptyScope("EMIT_DJANGO", roots, msg.scope);
+        const [irNodes, sceneNodesById] = await Promise.all([
           Promise.all(roots.map((root) => serializeNode(root))),
-          indexSceneNodes2(roots),
-          readAllVariables()
+          indexSceneNodes2(roots)
         ]);
         const nodes = irNodes.filter((node) => node !== null);
-        const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]));
+        const variableNamesById = await variableNamesForScope(sceneNodesById.values());
         await annotateVectorLeaves(nodes, sceneNodesById);
         const { html, css } = await emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile: msg.cssFile });
         postToUi({ type: "DJANGO_TEMPLATE", html, css });
@@ -31292,7 +33658,7 @@ createRoot(document.getElementById('root')!).render(
               break;
             }
           } else {
-            roots = rootsForScope(msg.scope);
+            roots = await rootsForScope(msg.scope);
           }
           const [irNodes, sceneNodesById, tokens] = await Promise.all([
             Promise.all(roots.map((root) => serializeNode(root))),
@@ -31445,6 +33811,10 @@ createRoot(document.getElementById('root')!).render(
             libraryProps: library.props,
             componentNamesById: library.names,
             tokensCss: tokens.css,
+            // Code Connect addresses a node by URL, not by anything this plugin publishes itself —
+            // both halves of that URL come from the live document, the same as everything else here.
+            fileKey: (_k = figma.fileKey) != null ? _k : void 0,
+            fileName: figma.root.name,
             // By master, not by name: the library emitted these exact components, and a screen
             // holding a DIFFERENT component of the same name must still build its own.
             fromLibrary: /* @__PURE__ */ new Set([
@@ -31469,21 +33839,22 @@ createRoot(document.getElementById('root')!).render(
         break;
       }
       case "EMIT_DJANGO_PROJECT": {
-        const roots = rootsForScope(msg.scope);
-        const [irNodes, sceneNodesById, snapshot] = await Promise.all([
+        const roots = await rootsForScope(msg.scope);
+        requireNonEmptyScope("EMIT_DJANGO_PROJECT", roots, msg.scope);
+        const [irNodes, sceneNodesById] = await Promise.all([
           Promise.all(roots.map((root) => serializeNode(root))),
-          indexSceneNodes2(roots),
-          readAllVariables()
+          indexSceneNodes2(roots)
         ]);
         const pageRoots = irNodes.filter((node) => node !== null && node.type === "container");
-        const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]));
+        const variableNamesById = await variableNamesForScope(sceneNodesById.values());
         await annotateVectorLeaves(pageRoots, sceneNodesById);
         await addReactionDestinationsToScene(pageRoots, sceneNodesById);
         const previewOptions = normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions"));
         const tokensOn = previewOptions.modules.tokens;
         const previewThemeSets = previewOptions.targetOptions.framework === "bootstrap" && previewOptions.targetOptions.bootstrapFidelity === "theme" ? await collectThemableSets(sceneNodesById) : void 0;
+        const snapshot = tokensOn ? await readAllVariables() : await readLocalVariables();
         const previewBreakpointTokens = extractBreakpointTokens2(snapshot);
-        const { baseHtml, pages, partials, css, interactionsCss, interactionsJs, themeCss, fileNodeIds } = await emitDjangoProject(
+        const { baseHtml, pages, partials, css, interactionsCss, interactionsJs, themeCss, transitionsCss, transitionsJs, fileNodeIds } = await emitDjangoProject(
           pageRoots,
           sceneNodesById,
           variableNamesById,
@@ -31501,7 +33872,7 @@ createRoot(document.getElementById('root')!).render(
             { nodeId: fileNodeIds[path], content }
           ])
         );
-        const existingFiles = new Map(Object.entries((_k = msg.existingFiles) != null ? _k : {}));
+        const existingFiles = new Map(Object.entries((_l = msg.existingFiles) != null ? _l : {}));
         const plan = planRegeneration(existingFiles, freshFiles);
         let tokensCss;
         let bootstrapTokensCss;
@@ -31518,12 +33889,20 @@ createRoot(document.getElementById('root')!).render(
             if (bootstrap.css) bootstrapTokensCss = bootstrap.css;
           }
         }
-        const staticFiles = buildRegenStaticFiles({ interactionsCss, interactionsJs, tokensCss, bootstrapTokensCss, themeCss });
+        const staticFiles = buildRegenStaticFiles({
+          interactionsCss,
+          interactionsJs,
+          tokensCss,
+          bootstrapTokensCss,
+          themeCss,
+          transitionsCss,
+          transitionsJs
+        });
         postToUi({ type: "DJANGO_PROJECT_PLAN", css, cssFile: msg.cssFile, plan, staticFiles });
         break;
       }
       case "SCAN": {
-        const roots = rootsForScope(msg.scope);
+        const roots = await rootsForScope(msg.scope);
         const index = await indexSceneNodes2(roots);
         lastScanIndex = index;
         const frames = figma.currentPage.children.filter((node) => node.type === "FRAME").map((node) => ({ id: node.id, name: node.name }));
@@ -31559,7 +33938,7 @@ createRoot(document.getElementById('root')!).render(
         break;
       }
       case "SCROLL_INTO_VIEW": {
-        const node = (_l = lastScanIndex.get(msg.nodeId)) != null ? _l : await figma.getNodeByIdAsync(msg.nodeId);
+        const node = (_m = lastScanIndex.get(msg.nodeId)) != null ? _m : await figma.getNodeByIdAsync(msg.nodeId);
         if (!node || !("visible" in node)) {
           refuse("SCROLL_INTO_VIEW", `no scene node with id ${msg.nodeId} \u2014 it may have been removed, or live on a page this session has not loaded`);
           break;
@@ -31652,7 +34031,7 @@ createRoot(document.getElementById('root')!).render(
           ops: agentManifest(),
           commands: UI_COMMANDS,
           file: figma.root.name,
-          fileKey: (_m = figma.fileKey) != null ? _m : null
+          fileKey: (_n = figma.fileKey) != null ? _n : null
         }));
         break;
       }
@@ -31696,7 +34075,7 @@ createRoot(document.getElementById('root')!).render(
           }
           const parent = msg.parent && msg.parent !== "page" ? await figma.getNodeByIdAsync(msg.parent) : figma.currentPage;
           if (!parent || !("appendChild" in parent)) {
-            refuse("NODE_CREATE", `parent ${(_n = msg.parent) != null ? _n : "(page)"} is not a container`);
+            refuse("NODE_CREATE", `parent ${(_o = msg.parent) != null ? _o : "(page)"} is not a container`);
             break;
           }
           const dry = msg.dryRun === true;
@@ -31788,7 +34167,7 @@ createRoot(document.getElementById('root')!).render(
       case "NODE_QUERY": {
         try {
           const wantProps = msg.props === true;
-          const limit = Math.min(Math.max((_o = msg.limit) != null ? _o : 50, 1), 500);
+          const limit = Math.min(Math.max((_p = msg.limit) != null ? _p : 50, 1), 500);
           if (msg.nodeId) {
             const node = await figma.getNodeByIdAsync(msg.nodeId);
             if (!node || !("type" in node)) {
@@ -31970,20 +34349,20 @@ createRoot(document.getElementById('root')!).render(
             break;
           }
           if (as === "repeat") {
-            const spec = (_p = msg.repeat) != null ? _p : {};
-            const radial = String((_q = spec.type) != null ? _q : "LINEAR").toUpperCase() === "RADIAL";
+            const spec = (_q = msg.repeat) != null ? _q : {};
+            const radial = String((_r = spec.type) != null ? _r : "LINEAR").toUpperCase() === "RADIAL";
             const count = typeof spec.count === "number" ? spec.count : 3;
             if (!Number.isInteger(count) || count < 2) {
               refuse("NODE_GROUP", "repeat.count must be a whole number of at least 2");
               break;
             }
             const offset = typeof spec.offset === "number" ? spec.offset : radial ? 0 : 1;
-            const unit = String((_r = spec.unit) != null ? _r : radial ? "RELATIVE" : "RELATIVE").toUpperCase();
+            const unit = String((_s = spec.unit) != null ? _s : radial ? "RELATIVE" : "RELATIVE").toUpperCase();
             if (unit !== "RELATIVE" && unit !== "PIXELS") {
               refuse("NODE_GROUP", "repeat.unit must be RELATIVE or PIXELS");
               break;
             }
-            const axis = String((_s = spec.axis) != null ? _s : "HORIZONTAL").toUpperCase();
+            const axis = String((_t = spec.axis) != null ? _t : "HORIZONTAL").toUpperCase();
             if (!radial && axis !== "HORIZONTAL" && axis !== "VERTICAL") {
               refuse("NODE_GROUP", "repeat.axis must be HORIZONTAL or VERTICAL");
               break;
@@ -32281,7 +34660,7 @@ createRoot(document.getElementById('root')!).render(
                 preferred ? { preferredValues: preferred } : void 0
               );
               done.push({ added: full, type: entry.type });
-              for (const node of (_t = entry.bind) != null ? _t : []) bindings.push({ node, property: full, type: entry.type });
+              for (const node of (_u = entry.bind) != null ? _u : []) bindings.push({ node, property: full, type: entry.type });
             } catch (error) {
               done.push({ added: entry.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
             }
@@ -32305,7 +34684,7 @@ createRoot(document.getElementById('root')!).render(
               done.push({ removed: name, ok: false, error: noSuchProperty(owner, name) });
               continue;
             }
-            const wasSlot = ((_u = definitionsOf(owner)[key]) == null ? void 0 : _u.type) === "SLOT";
+            const wasSlot = ((_v = definitionsOf(owner)[key]) == null ? void 0 : _v.type) === "SLOT";
             try {
               owner.deleteComponentProperty(key);
               done.push(__spreadValues({ removed: key }, wasSlot ? { note: "the slot's own layer stays on the canvas" } : {}));
@@ -32337,7 +34716,7 @@ createRoot(document.getElementById('root')!).render(
             }
             try {
               const layer = node;
-              layer.componentPropertyReferences = __spreadProps(__spreadValues({}, (_v = layer.componentPropertyReferences) != null ? _v : {}), { [field]: entry.property });
+              layer.componentPropertyReferences = __spreadProps(__spreadValues({}, (_w = layer.componentPropertyReferences) != null ? _w : {}), { [field]: entry.property });
               done.push({ bound: entry.property, to: layer.name, drives: field });
             } catch (error) {
               done.push({ bound: entry.property, ok: false, error: String((error == null ? void 0 : error.message) || error) });
@@ -32362,7 +34741,13 @@ createRoot(document.getElementById('root')!).render(
       }
       case "NODE_EXPORT": {
         try {
-          const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id));
+          const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((entry) => {
+            if (typeof entry === "string") return entry;
+            const candidate = entry != null ? entry : {};
+            const id = typeof candidate.id === "string" ? candidate.id : candidate.nodeId;
+            if (typeof id === "string") return id;
+            throw new Error(`nodes takes ids as strings (or { id }); got ${JSON.stringify(entry)}`);
+          });
           const format = (typeof msg.format === "string" ? msg.format : "PNG").trim().toUpperCase();
           if (!EXPORT_FORMATS.includes(format)) {
             refuse("NODE_EXPORT", `format must be one of: ${EXPORT_FORMATS.join(", ")}`);
@@ -32403,6 +34788,16 @@ createRoot(document.getElementById('root')!).render(
               continue;
             }
             const scene = node;
+            const clipped = clippedBy(scene);
+            if (clipped && clipped.visible === 0) {
+              reports.push({
+                node: id,
+                name: scene.name,
+                ok: false,
+                error: `renders nothing: it sits outside ${clipped.by}, which clips its content. Turn off "Clip content" on that frame, or export the frame itself.`
+              });
+              continue;
+            }
             try {
               if (format === "SVG") {
                 const svg = await scene.exportAsync({ format: "SVG_STRING", svgOutlineText: msg.outlineText !== false });
@@ -32435,7 +34830,13 @@ createRoot(document.getElementById('root')!).render(
               const ext = format.toLowerCase();
               const name = exportName(scene.name, ext, taken);
               files.push(binaryFile(name, EXPORT_MIME[format], bytes));
-              reports.push({ node: id, name: scene.name, ok: true, file: name, bytes: bytes.length });
+              reports.push(__spreadValues({
+                node: id,
+                name: scene.name,
+                ok: true,
+                file: name,
+                bytes: bytes.length
+              }, clipped ? { clipped: { by: clipped.by, renderedPx: Math.round(clipped.visible), ownPx: Math.round(clipped.own) } } : {}));
             } catch (error) {
               reports.push({ node: id, name: scene.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
             }
@@ -32499,9 +34900,9 @@ createRoot(document.getElementById('root')!).render(
             };
             const visit = (node) => {
               for (const field of ["fills", "strokes"]) {
-                const paints2 = node[field];
-                if (!Array.isArray(paints2)) continue;
-                for (const paint of paints2) {
+                const paints = node[field];
+                if (!Array.isArray(paints)) continue;
+                for (const paint of paints) {
                   if ((paint == null ? void 0 : paint.type) !== "SHADER") continue;
                   note(paint.id, "fill", node, paint.properties);
                 }
@@ -32551,7 +34952,7 @@ createRoot(document.getElementById('root')!).render(
             break;
           }
           const query = typeof msg.query === "string" ? msg.query.trim().toLowerCase() : "";
-          const limit = Math.min(Math.max((_w = msg.limit) != null ? _w : 100, 1), 500);
+          const limit = Math.min(Math.max((_x = msg.limit) != null ? _x : 100, 1), 500);
           const styles = [];
           for (const kind of kinds) {
             for (const style of await localStyles(kind)) {
@@ -32597,18 +34998,18 @@ createRoot(document.getElementById('root')!).render(
             }
             source = node;
           }
-          const existing = (_x = (await localStyles(kind)).find((style2) => style2.name === name)) != null ? _x : null;
+          const existing = (_y = (await localStyles(kind)).find((style2) => style2.name === name)) != null ? _y : null;
           const style = existing != null ? existing : kind === "paint" ? figma.createPaintStyle() : kind === "text" ? figma.createTextStyle() : kind === "effect" ? figma.createEffectStyle() : figma.createGridStyle();
           style.name = name;
           if (typeof msg.description === "string") style.description = msg.description;
           if (kind === "paint") {
-            const paints2 = source ? (_y = source.fills) != null ? _y : [] : (await applyToScratch(msg.paints, "paints")).fills;
-            style.paints = paints2;
+            const paints = source ? (_z = source.fills) != null ? _z : [] : (await applyToScratch(msg.paints, "paints")).fills;
+            style.paints = paints;
           } else if (kind === "effect") {
-            const effects = source ? (_z = source.effects) != null ? _z : [] : (await applyToScratch(msg.effects, "effects")).effects;
+            const effects = source ? (_A = source.effects) != null ? _A : [] : (await applyToScratch(msg.effects, "effects")).effects;
             style.effects = effects;
           } else if (kind === "grid") {
-            const grids = source ? (_A = source.layoutGrids) != null ? _A : [] : (await applyToScratch(msg.grid, "grid")).grids;
+            const grids = source ? (_B = source.layoutGrids) != null ? _B : [] : (await applyToScratch(msg.grid, "grid")).grids;
             style.layoutGrids = grids;
           } else {
             const from = (source == null ? void 0 : source.type) === "TEXT" ? source : null;
@@ -32705,7 +35106,7 @@ createRoot(document.getElementById('root')!).render(
           const flows = [];
           for (const point2 of page.flowStartingPoints) {
             const node = await figma.getNodeByIdAsync(point2.nodeId).catch(() => null);
-            flows.push({ name: point2.name, node: point2.nodeId, frame: (_B = node == null ? void 0 : node.name) != null ? _B : "(missing)" });
+            flows.push({ name: point2.name, node: point2.nodeId, frame: (_C = node == null ? void 0 : node.name) != null ? _C : "(missing)" });
           }
           postToUi({ type: "FLOWS", page: { id: page.id, name: page.name }, flows });
         } catch (error) {
@@ -32735,7 +35136,7 @@ createRoot(document.getElementById('root')!).render(
               continue;
             }
             const node = await figma.getNodeByIdAsync(entry.node).catch(() => null);
-            if (!node || node.type !== "FRAME" || ((_C = node.parent) == null ? void 0 : _C.type) !== "PAGE") {
+            if (!node || node.type !== "FRAME" || ((_D = node.parent) == null ? void 0 : _D.type) !== "PAGE") {
               problems.push(`flows[${index}]: ${entry.node} is not a top-level frame on this page`);
               continue;
             }
@@ -32898,7 +35299,7 @@ createRoot(document.getElementById('root')!).render(
             if (typeof msg.category === "string" && msg.category.trim() !== "") {
               const categories = await figma.annotations.getAnnotationCategoriesAsync();
               const wanted = msg.category.trim();
-              const found = (_D = categories.find((one) => one.id === wanted)) != null ? _D : categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase());
+              const found = (_E = categories.find((one) => one.id === wanted)) != null ? _E : categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase());
               if (!found) {
                 refuse("ANNOTATE", `no category "${wanted}" \u2014 this file has: ${categories.map((one) => one.label).join(", ") || "(none)"}`);
                 break;
@@ -32915,12 +35316,12 @@ createRoot(document.getElementById('root')!).render(
               continue;
             }
             try {
-              bag.annotations = clearing ? [] : [...(_E = bag.annotations) != null ? _E : [], annotation];
+              bag.annotations = clearing ? [] : [...(_F = bag.annotations) != null ? _F : [], annotation];
               rows.push({
                 node: node.id,
                 name: node.name,
                 ok: true,
-                annotations: await describeAnnotations((_F = bag.annotations) != null ? _F : [])
+                annotations: await describeAnnotations((_G = bag.annotations) != null ? _G : [])
               });
             } catch (error) {
               rows.push({ node: node.id, name: node.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
@@ -33002,7 +35403,7 @@ createRoot(document.getElementById('root')!).render(
       case "NODE_ROUNDTRIP": {
         try {
           const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id));
-          const depth = Math.min(Math.max((_G = msg.depth) != null ? _G : 3, 0), 12);
+          const depth = Math.min(Math.max((_H = msg.depth) != null ? _H : 3, 0), 12);
           const ignore = new Set((Array.isArray(msg.ignore) ? msg.ignore : []).map((one) => String(one)));
           const reports = [];
           for (const id of ids) {
@@ -33045,17 +35446,17 @@ createRoot(document.getElementById('root')!).render(
               reports.push({ node: id, name: original.name, ok: false, error: problems.join(" \xB7 ") || "the reading did not plan", dropped });
               continue;
             }
-            const parent = (_H = original.parent) != null ? _H : figma.currentPage;
+            const parent = (_I = original.parent) != null ? _I : figma.currentPage;
             const copy = await createNode(plan, parent, false);
             const made = await figma.getNodeByIdAsync(copy.id);
             if (!made || !("type" in made)) {
               reports.push({ node: id, name: original.name, ok: false, error: "the copy was not made", dropped });
               continue;
             }
-            const before = (_I = (await describeNode2(original, true)).props) != null ? _I : {};
-            const after = (_J = (await describeNode2(made, true)).props) != null ? _J : {};
+            const before = (_J = (await describeNode2(original, true)).props) != null ? _J : {};
+            const after = (_K = (await describeNode2(made, true)).props) != null ? _K : {};
             const { same, diverged } = compare(before, after, ignore);
-            const failed = (_K = copy.failures) != null ? _K : [];
+            const failed = (_L = copy.failures) != null ? _L : [];
             if (msg.keep !== true) made.remove();
             else figma.commitUndo();
             reports.push(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
@@ -33109,7 +35510,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "MODULE_INSTALL": {
         try {
-          const size = JSON.stringify((_L = msg.file) != null ? _L : null).length;
+          const size = JSON.stringify((_M = msg.file) != null ? _M : null).length;
           if (size > MODULE_SIZE_LIMIT) {
             throw new Error(`the module is ${size} bytes; the limit is ${MODULE_SIZE_LIMIT}`);
           }
@@ -33153,7 +35554,7 @@ createRoot(document.getElementById('root')!).render(
           refuse("MODULE_REMOVE", `no module "${msg.id}" is installed`);
           break;
         }
-        const _N = stored, { [_M = msg.id]: gone } = _N, rest = __objRest(_N, [__restKey(_M)]);
+        const _O = stored, { [_N = msg.id]: gone } = _O, rest = __objRest(_O, [__restKey(_N)]);
         await writeStoredModules(rest);
         figma.notify(`Removed "${msg.id}"`);
         postToUi({ type: "MODULE_REMOVED", id: msg.id, modules: describeModules(userModules) });
@@ -33191,7 +35592,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "MODULE_STATE_SET": {
         const entry = userModules.find((candidate) => candidate.id === msg.id);
-        const declared = (_O = entry == null ? void 0 : entry.module) == null ? void 0 : _O.state[msg.field];
+        const declared = (_P = entry == null ? void 0 : entry.module) == null ? void 0 : _P.state[msg.field];
         if (!(entry == null ? void 0 : entry.module) || !declared) {
           refuse("MODULE_STATE_SET", `module "${msg.id}" declares no field "${msg.field}"`);
           break;
@@ -33213,7 +35614,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "MODULE_RUN": {
         const entry = userModules.find((candidate) => candidate.id === msg.id);
-        const screen = (_P = entry == null ? void 0 : entry.module) == null ? void 0 : _P.screens[msg.screen];
+        const screen = (_Q = entry == null ? void 0 : entry.module) == null ? void 0 : _Q.screens[msg.screen];
         const block2 = screen == null ? void 0 : screen.blocks[msg.block];
         if (!(entry == null ? void 0 : entry.module) || !block2) {
           refuse("MODULE_RUN", `no block ${msg.block} on the ${msg.screen} screen of "${msg.id}"`);
@@ -33276,7 +35677,7 @@ createRoot(document.getElementById('root')!).render(
           // export read back through the bridge would not re-validate.
           file: entry.file,
           json: JSON.stringify(entry.file, null, 1),
-          state: (_Q = entry.state) != null ? _Q : null
+          state: (_R = entry.state) != null ? _R : null
         });
         break;
       }
@@ -33296,7 +35697,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "IMPORT_TRANSLATIONS": {
         try {
-          const roots = rootsForScope(msg.scope);
+          const roots = await rootsForScope(msg.scope);
           const index = await indexSceneNodes2(roots);
           const textNodes = [];
           for (const node of index.values()) if (node.type === "TEXT") textNodes.push(node);
@@ -33320,7 +35721,8 @@ createRoot(document.getElementById('root')!).render(
       }
       case "CONFIRM_EXPORT": {
         const { scope, modules: modules2, cssFile } = msg;
-        const roots = rootsForScope(scope);
+        const roots = await rootsForScope(scope);
+        requireNonEmptyScope("CONFIRM_EXPORT", roots, scope);
         let stage = "scan";
         try {
           postToUi({ type: "EXPORT_PROGRESS", stage: "scan", percent: 10 });
@@ -33328,13 +35730,23 @@ createRoot(document.getElementById('root')!).render(
           const [irNodes, sceneNodesById, snapshot] = await Promise.all([
             Promise.all(roots.map((root) => serializeNode(root))),
             indexSceneNodes2(roots),
-            readAllVariables()
+            modules2.tokens ? readAllVariables() : readLocalVariables()
           ]);
           const nodes = irNodes.filter((node) => node !== null);
           const pageRoots = nodes.filter((node) => node.type === "container");
-          const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]));
+          const variableNamesById = modules2.tokens ? new Map(snapshot.variables.map((variable) => [variable.id, variable.name])) : await variableNamesForScope(sceneNodesById.values());
           const motionExport = buildMotionExport(sceneNodesById, modules2);
           if (modules2.templates) await addReactionDestinationsToScene(pageRoots, sceneNodesById);
+          const stateNodes = modules2.templates ? await serializeReactionDestinations(pageRoots, sceneNodesById) : [];
+          const stateImageUrlsByNodeId = /* @__PURE__ */ new Map();
+          for (const stateNode of stateNodes) {
+            const collect = (node) => {
+              const urls = imageFillUrls(node);
+              if (urls.length > 0) stateImageUrlsByNodeId.set(node.id, urls);
+              if ("children" in node) for (const child of node.children) collect(child);
+            };
+            collect(stateNode);
+          }
           stage = "i18n";
           postToUi({ type: "EXPORT_PROGRESS", stage: "i18n", percent: 30 });
           const entries = modules2.i18n ? await extractAllStrings(roots) : [];
@@ -33352,6 +35764,12 @@ createRoot(document.getElementById('root')!).render(
           }
           const themeSets = modules2.templates && exportOptions.targetOptions.framework === "bootstrap" && exportOptions.targetOptions.bootstrapFidelity === "theme" ? await collectThemableSets(sceneNodesById) : void 0;
           const breakpointTokens = extractBreakpointTokens2(snapshot);
+          const targetLanguages = modules2.i18n ? parseLanguages(exportOptions.i18n.languages, exportOptions.i18n.sourceLanguage) : [];
+          let startPageId;
+          try {
+            startPageId = (_S = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _S.nodeId;
+          } catch (e) {
+          }
           const [project, assets] = await Promise.all([
             modules2.templates ? emitDjangoProject(pageRoots, sceneNodesById, variableNamesById, {
               cssFile,
@@ -33359,14 +35777,35 @@ createRoot(document.getElementById('root')!).render(
               animationLinks: motionExport.animationLinks,
               framework: frameworkLinksFrom(exportOptions, modules2.tokens),
               themeSets,
-              breakpointTokens
+              breakpointTokens,
+              startPageId,
+              languageSwitcher: targetLanguages.length > 0 && exportOptions.targetOptions.djangoScaffold,
+              stateImageUrlsByNodeId
             }) : void 0,
-            modules2.templates ? collectExportAssets(nodes, assetSourcesById, (hash) => figma.getImageByHash(hash), videoBytesById) : []
+            modules2.templates ? collectExportAssets([...nodes, ...stateNodes], assetSourcesById, (hash) => figma.getImageByHash(hash), videoBytesById) : []
           ]);
           stage = "assets";
           postToUi({ type: "EXPORT_PROGRESS", stage: "assets", percent: 80 });
-          const po = modules2.i18n && entries.length > 0 ? emitPo(entries) : void 0;
-          const files = project ? buildExportTree({ project, tokensCss: "", cssFile, po, assets, animation: motionExport.animation }) : {};
+          const po = modules2.i18n && entries.length > 0 ? emitPo(entries, { sourceLanguage: exportOptions.i18n.sourceLanguage }) : void 0;
+          const localeCatalogs = modules2.i18n && entries.length > 0 && targetLanguages.length > 0 ? emitLocaleCatalogs(entries, targetLanguages, exportOptions.i18n.sourceLanguage) : void 0;
+          const scaffold = project && exportOptions.targetOptions.djangoScaffold && exportOptions.targetOptions.platform === "django" ? emitDjangoScaffold({
+            pages: project.pageRoutes,
+            projectName: "config",
+            appName: "design",
+            languages: [exportOptions.i18n.sourceLanguage, ...targetLanguages].filter((code, index, all) => all.indexOf(code) === index).map((code) => ({ code, label: languageLabel(code) })),
+            defaultLanguage: exportOptions.i18n.sourceLanguage,
+            staticCssFile: cssFile
+          }) : void 0;
+          const files = project ? buildExportTree({
+            project,
+            tokensCss: "",
+            cssFile,
+            po,
+            localeCatalogs,
+            scaffold,
+            assets,
+            animation: motionExport.animation
+          }) : {};
           if (!project) {
             for (const asset of assets) files[`static/img/${asset.filename}`] = asset.content;
             if (po) files["locale/figma.po"] = po;
@@ -33394,12 +35833,7 @@ createRoot(document.getElementById('root')!).render(
           if (!project && motionExport.animation.js) files["static/js/animations.js"] = motionExport.animation.js;
           let tauriPageHrefs;
           if (exportOptions.targetOptions.platform === "tauri" && project) {
-            let startPageId;
-            try {
-              startPageId = (_R = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _R.nodeId;
-            } catch (e) {
-            }
-            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_S = pageRoots[0]) == null ? void 0 : _S.id;
+            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_T = pageRoots[0]) == null ? void 0 : _T.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -33432,9 +35866,9 @@ createRoot(document.getElementById('root')!).render(
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_T = sceneNodesById.get(nodeId)) != null ? _T : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (_U = sceneNodesById.get(nodeId)) != null ? _U : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_U = node.parent) == null ? void 0 : _U.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((_V = node.parent) == null ? void 0 : _V.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -33457,7 +35891,7 @@ createRoot(document.getElementById('root')!).render(
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((_V = counts[finding.rule]) != null ? _V : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_W = counts[finding.rule]) != null ? _W : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -33507,11 +35941,11 @@ createRoot(document.getElementById('root')!).render(
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (_X = (_W = figma.currentUser) == null ? void 0 : _W.name) != null ? _X : "unknown";
+            exportedBy = (_Y = (_X = figma.currentUser) == null ? void 0 : _X.name) != null ? _Y : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }
-          files["export-report.json"] = buildExportReport({
+          files["export-report.json"] = buildExportReport(__spreadValues(__spreadProps(__spreadValues({
             exportedAt,
             exportedBy,
             activeUserCount,
@@ -33519,7 +35953,19 @@ createRoot(document.getElementById('root')!).render(
             modules: modules2,
             fileCount: Object.keys(files).length,
             manualAssets: manualAssets.length > 0 ? manualAssets.map((a) => a.assetSrc) : void 0
-          });
+          }, collectSpringReport(nodes)), {
+            // Squircle approximations and effects/fills CSS cannot draw, named per node instead of
+            // vanishing into a console nobody reads.
+            fidelityNotes: project ? summarizeEmitterNotes(project.notes) : void 0
+          }), project ? (() => {
+            const flattenedPages = collectFlattenedPages(project.pages, project.fileNodeIds);
+            const figmaFile = buildFigmaFileReference({
+              key: figmaFileKey(),
+              name: figma.root.name,
+              fileNodeIds: project.fileNodeIds
+            });
+            return __spreadValues(__spreadValues({}, flattenedPages.length > 0 ? { flattenedPages } : {}), figmaFile.key || Object.keys(figmaFile.pageUrls).length > 0 ? { figmaFile } : {});
+          })() : {}));
           try {
             for (const root of roots) root.setRelaunchData({ reexport: "" });
           } catch (e) {

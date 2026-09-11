@@ -14,11 +14,23 @@
  * a path that doesn't exist.
  */
 
-import type { IrNode, IrLayout, IrGridTrack, IrSize, IrConstraint, IrConstraints, IrMask, IrStyleRefs } from './ir.ts'
+import type {
+  IrNode,
+  IrLayout,
+  IrGridTrack,
+  IrSize,
+  IrConstraint,
+  IrConstraints,
+  IrMask,
+  IrStyleRefs,
+  IrContainerNode,
+  IrComponentDef,
+  IrComponentPropertyDef,
+} from './ir.ts'
 import { rasterFilename } from './assets.ts'
 import { toCssVarName, rgbaToCss } from './tokens.ts'
 import { segmentsToCss, splitTextParagraphs, isMultiBlockText, TEXT_SEGMENT_FIELDS, type TextStyleSegment } from './text-styles.ts'
-import { themeButtonInstanceDecl } from './bootstrap/theme.ts'
+import { parseVariantName, themeButtonInstanceDecl } from './bootstrap/theme.ts'
 
 /** A single bindable field: `VariableAlias` for a scalar property (e.g. `cornerRadius`). */
 interface BoundVariableRef {
@@ -75,6 +87,10 @@ export interface DjangoNodeSource {
   readonly cornerSmoothing?: number
   /** `effects` (M8) — DropShadow behind-node re-mapping and unsupported-effect detection. */
   readonly effects?: readonly EffectLike[]
+  /** The node's shared plugin data, read by `html-emitter.ts` for the manual i18n `msgctxt` a
+   * designer attached through the annotation panel. Optional so mock nodes stay two-field objects;
+   * absent simply means "no annotation", which is what an un-annotated node has anyway. */
+  getSharedPluginData?(namespace: string, key: string): string
 }
 
 /** A structured export-report note: the squircle approximation (M7), or an effect with no CSS
@@ -215,7 +231,7 @@ const IMAGE_FILL_PLACEHOLDER = /url\(\s*(["']?)<path-to-image>\1\s*\)/g
  * vector leaf, or a container with no image fill): the caller degrades every placeholder occurrence
  * to `none`, which keeps the shorthand's other layers (gradients, fallback color) instead of a
  * guaranteed-404 request. */
-function imageFillUrls(node: IrNode): string[] {
+export function imageFillUrls(node: IrNode): string[] {
   if (node.type === 'image') return [`../${node.assetSrc ?? `img/${rasterFilename(node.id, node.name, 'png', 1)}`}`]
   if (node.type === 'container' || node.type === 'instance-ref') {
     return (node.backgroundImages ?? []).map((bg) => `../${bg.assetSrc}`)
@@ -1017,6 +1033,17 @@ async function collectNodeCss(
     layout['top'] = '0'
     layout['z-index'] = '10'
   }
+  // A per-layer "Fixed position when scrolling" / "Stick to top" is a design statement the export
+  // used to read into the IR and then drop: the header scrolled away in the browser while it
+  // stayed put in the prototype. The layer's own choice wins over the parent's fixed-children
+  // section, which is the coarser of the two.
+  if (node.scrollBehavior) {
+    layout['position'] = node.scrollBehavior
+    // Absolute placement already gave the layer its own offsets; a fixed/sticky box with no
+    // resolved offset would never actually stick to anything.
+    if (layout['top'] === undefined && layout['bottom'] === undefined) layout['top'] = '0'
+    layout['z-index'] = layout['z-index'] ?? '10'
+  }
   // M4c: aspect-ratio is skipped, not just omitted, for auto-resizing text (see
   // `layoutDeclarations`) — leave a note instead of silently dropping the design intent.
   if (node.aspectRatio && node.type === 'text' && node.autoResize) {
@@ -1075,14 +1102,252 @@ async function collectNodeCss(
   }
 }
 
+// --- component-set variant modifier CSS (Shell item 3) ---------------------------------------
+//
+// `variantModifierClasses` (component-emitter.ts) appends a `n<id>--{{ prop|default:'x' }}` BEM
+// modifier to a collapsed component set's root class, but nothing ever defined those classes —
+// every variant rendered pixel-identical to the default. This groups the exported component-set
+// members back into sets, diffs each non-default option's ISOLATED sibling (every other axis at
+// its own default) against the default variant position-for-position through both subtrees, and
+// emits the delta scoped under the modifier class.
+
+/** One VARIANT-property axis' definitions off a component, typed for `parseVariantName`'s
+ * lower-cased map lookups. Non-VARIANT properties (TEXT/BOOLEAN/INSTANCE_SWAP) carry no
+ * modifier class and never enter the diff. */
+function variantPropertiesOf(component: IrComponentDef | null): (IrComponentPropertyDef & { type: 'VARIANT' })[] {
+  return (component?.properties ?? []).filter((prop): prop is IrComponentPropertyDef & { type: 'VARIANT' } => prop.type === 'VARIANT')
+}
+
+/** A pure structural fingerprint (type + child count/types, recursively) — two variants with the
+ * same signature carry the same node at every position, so a position-for-position CSS diff never
+ * compares unrelated nodes. Ignores everything else (ids, text, styling) on purpose. */
+function nodeShapeSignature(node: IrNode): string {
+  return 'children' in node ? `${node.type}(${node.children.map(nodeShapeSignature).join(',')})` : node.type
+}
+
+/** Figma names a variant member by its own prop values ("Size=lg, State=Hover") — the IR carries
+ * no other way to tell one member's values apart from its siblings (`component.properties` is the
+ * SET's shared defs, identical across every member). A member is "the default" when every VARIANT
+ * prop's own value (parsed from its name) matches that prop's declared default. */
+function isDefaultVariant(node: IrContainerNode, variantProps: readonly IrComponentPropertyDef[]): boolean {
+  const values = parseVariantName(node.name)
+  return variantProps.every((prop) => values.get(prop.name.trim().toLowerCase()) === String(prop.defaultValue).trim().toLowerCase())
+}
+
+/** One component set's collected variant members, as seen by both the markup collapse
+ * (`collectComponents` in component-emitter.ts) and this module's CSS diff pass — kept in ONE
+ * place so the two can never disagree about which sets collapse or which member is the default. */
+export interface ComponentVariantSet {
+  readonly setName: string
+  readonly members: readonly IrContainerNode[]
+  readonly defaultVariant: IrContainerNode
+  /** False for a structurally divergent set (different child count/types across variants, e.g. a
+   * "with icon" variant) — callers keep the pre-collapse one-partial/one-CSS-block-per-variant
+   * behavior for those instead of diffing subtrees that don't correspond position-for-position. */
+  readonly uniform: boolean
+}
+
+/** Groups the flat component list `collectComponents` walks (every ComponentNode variant, one
+ * entry per member — `component.setName` is the SAME string across every member of one set,
+ * read off the shared parent ComponentSet) back into one `ComponentVariantSet` per distinct name,
+ * in first-occurrence order. Components with no `setName` (standalone, non-variant) are excluded
+ * — they're never part of a set to begin with. */
+export function groupComponentVariantSets(components: readonly IrContainerNode[]): readonly ComponentVariantSet[] {
+  const order: string[] = []
+  const membersBySetName = new Map<string, IrContainerNode[]>()
+  for (const component of components) {
+    const setName = component.component?.setName?.trim()
+    if (!setName) continue
+    const members = membersBySetName.get(setName)
+    if (members) members.push(component)
+    else {
+      membersBySetName.set(setName, [component])
+      order.push(setName)
+    }
+  }
+  return order.map((setName) => {
+    const members = membersBySetName.get(setName)!
+    const baseline = nodeShapeSignature(members[0])
+    const uniform = members.every((member) => nodeShapeSignature(member) === baseline)
+    const variantProps = variantPropertiesOf(members[0].component)
+    const defaultVariant = members.find((member) => isDefaultVariant(member, variantProps)) ?? members[0]
+    return { setName, members, defaultVariant, uniform }
+  })
+}
+
+/** The declaration map `collectNodeCss`/`emitBoxRules` would emit for one node, computed at
+ * top-level (no parent context) since a diffed variant is compared against its sibling in
+ * isolation, not against whatever parent happened to contain it in the live document. Duplicated
+ * from `emitBoxRules` rather than shared — same call interactions.ts makes for its own local
+ * `IR_OWNED_CSS` copy — so this read-only diff pass can never mutate what a node's OWN base rule
+ * contains. Text segment typography isn't covered (segments carry their own per-node class ids,
+ * independent of the box declarations here) — out of this pass's scope. */
+async function computeVariantDeclarations(
+  node: IrNode,
+  parentLayout: IrLayout | null,
+  parentSize: { width: number; height: number } | undefined,
+  sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
+  variableNamesById: ReadonlyMap<string, string>,
+  childIndex?: number
+): Promise<Record<string, string>> {
+  const source = sceneNodesById.get(node.id)
+  const layout = layoutDeclarations(node, parentLayout, parentSize, childIndex)
+  if (node.type === 'text') return layout
+  const isVectorLeaf = node.type === 'vector'
+  let literal = source ? resolveImageFillPlaceholders(pickVisualDeclarations(await source.getCSSAsync()), imageFillUrls(node)) : {}
+  if (isVectorLeaf) literal = Object.fromEntries(Object.entries(literal).filter(([property]) => !VECTOR_LEAF_PAINT.has(property)))
+  const overrides = source && !isVectorLeaf ? tokenOverrides(source.boundVariables, false, variableNamesById, literal) : {}
+  const decl: Record<string, string> = { ...layout, ...literal, ...overrides }
+  const stroke = source && !isVectorLeaf ? strokeDeclarations(source) : {}
+  if (Object.keys(stroke).length > 0) {
+    for (const property of STROKE_OWNED_CSS) delete decl[property]
+    if (stroke['box-shadow'] && decl['box-shadow']) stroke['box-shadow'] = `${stroke['box-shadow']}, ${decl['box-shadow']}`
+    Object.assign(decl, stroke)
+  }
+  const smoothing = source?.cornerSmoothing
+  if (smoothing && smoothing > 0 && decl['border-radius']) decl['border-radius'] = scaleBorderRadius(decl['border-radius'], smoothing)
+  // Notes (squircle/unsupported-effect/-fill) stay owned by the real per-node pass above — this
+  // is a derived comparison over the same nodes, not a second emission of the same warnings.
+  const effect = source && !isVectorLeaf ? effectDeclarations(source, node.id, undefined) : {}
+  if (effect.filter) {
+    if (effect.dropBoxShadow) delete decl['box-shadow']
+    decl['filter'] = decl['filter'] ? `${effect.filter} ${decl['filter']}` : effect.filter
+  }
+  return decl
+}
+
+/** Flattens a subtree into its declaration map in the SAME pre-order traversal `collectNodeCss`
+ * walks, so position `i` in two structurally-identical variants' flattened lists is always "the
+ * same slot" — `groupComponentVariantSets`'s `uniform` check is what guarantees that identity. */
+async function flattenVariantDeclarations(
+  node: IrNode,
+  sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
+  variableNamesById: ReadonlyMap<string, string>
+): Promise<{ id: string; decl: Record<string, string> }[]> {
+  const out: { id: string; decl: Record<string, string> }[] = []
+  const visit = async (
+    n: IrNode,
+    parentLayout: IrLayout | null,
+    parentSize: { width: number; height: number } | undefined,
+    childIndex?: number
+  ): Promise<void> => {
+    out.push({ id: n.id, decl: await computeVariantDeclarations(n, parentLayout, parentSize, sceneNodesById, variableNamesById, childIndex) })
+    if ('children' in n) {
+      const ownLayout = 'layout' in n ? n.layout : null
+      const ownSize = fixedPixelSize(n)
+      for (const [index, child] of n.children.entries()) await visit(child, ownLayout, ownSize, index)
+    }
+  }
+  await visit(node, null, undefined)
+  return out
+}
+
+/** Only the properties where the sibling's value differs from the default's — matches
+ * interactions.ts's `diffCss` discipline (a property the sibling doesn't carry is skipped, no
+ * `unset`/`initial`), except IR-owned layout properties are NOT excluded here: a Size variant's
+ * whole point is a different width/padding, unlike a hover/press pseudo-state's fixed box. */
+function diffVariantDeclarations(defaultDecl: Record<string, string>, siblingDecl: Record<string, string>): Record<string, string> {
+  const diff: Record<string, string> = {}
+  for (const [property, value] of Object.entries(siblingDecl)) {
+    if (defaultDecl[property] === value) continue
+    diff[property] = value
+  }
+  return diff
+}
+
+/** The one sibling whose OTHER axes all sit at their own default and whose `targetProp` axis is
+ * `targetValue` — isolating exactly one axis' effect, since the modifier classes are per-axis
+ * (`variantModifierClasses` emits one class token per VARIANT prop, not one per full combination),
+ * so the CSS diffed for it must be per-axis too. `undefined` when the export doesn't contain that
+ * exact combination (a non-Cartesian export, or that variant simply wasn't included) — the
+ * modifier class then stays dead weight for that one option, same as before this pass existed. */
+function findIsolatedVariant(
+  members: readonly IrContainerNode[],
+  defaultVariant: IrContainerNode,
+  variantProps: readonly IrComponentPropertyDef[],
+  targetProp: IrComponentPropertyDef,
+  targetValue: string
+): IrContainerNode | undefined {
+  const wantedValue = targetValue.trim().toLowerCase()
+  return members.find((member) => {
+    if (member === defaultVariant) return false
+    const values = parseVariantName(member.name)
+    return variantProps.every((prop) => {
+      const actual = values.get(prop.name.trim().toLowerCase())
+      const wanted = prop === targetProp ? wantedValue : String(prop.defaultValue).trim().toLowerCase()
+      return actual === wanted
+    })
+  })
+}
+
+/** Recursively finds every collected component-set variant member — a local copy of
+ * component-emitter.ts's `collectComponents` walk (pre-collapse): importing that function here
+ * would create a css-emitter ↔ component-emitter import cycle (component-emitter already imports
+ * FROM this module), so this module walks the same shape independently instead. */
+function collectComponentSetMembers(nodes: readonly IrNode[]): IrContainerNode[] {
+  const found: IrContainerNode[] = []
+  const visit = (node: IrNode): void => {
+    if (node.type === 'container' && node.component) found.push(node)
+    if ('children' in node) node.children.forEach(visit)
+  }
+  nodes.forEach(visit)
+  return found
+}
+
+async function emitComponentVariantModifierCss(
+  nodes: readonly IrNode[],
+  sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
+  variableNamesById: ReadonlyMap<string, string>,
+  options: EmitCssOptions
+): Promise<string[]> {
+  const rules: string[] = []
+  for (const set of groupComponentVariantSets(collectComponentSetMembers(nodes))) {
+    if (!set.uniform || set.members.length < 2) continue
+    const variantProps = variantPropertiesOf(set.defaultVariant.component)
+    if (variantProps.length === 0) continue
+    const defaultFlat = await flattenVariantDeclarations(set.defaultVariant, sceneNodesById, variableNamesById)
+    const modifierRoot = classNameFor(set.defaultVariant.id, options)
+    for (const prop of variantProps) {
+      const defaultValue = String(prop.defaultValue).trim().toLowerCase()
+      for (const option of prop.variantOptions ?? []) {
+        if (option.trim().toLowerCase() === defaultValue) continue
+        const sibling = findIsolatedVariant(set.members, set.defaultVariant, variantProps, prop, option)
+        if (!sibling) continue
+        const siblingFlat = await flattenVariantDeclarations(sibling, sceneNodesById, variableNamesById)
+        if (siblingFlat.length !== defaultFlat.length) continue // uniform check already guards this; defensive only
+        const modifierClass = `${modifierRoot}--${option}`
+        for (let i = 0; i < defaultFlat.length; i++) {
+          const diff = diffVariantDeclarations(defaultFlat[i].decl, siblingFlat[i].decl)
+          if (Object.keys(diff).length === 0) continue
+          const selector = i === 0 ? modifierClass : `${modifierClass} .${classNameFor(defaultFlat[i].id, options)}`
+          const rule = formatRule(selector, diff)
+          if (rule) rules.push(rule)
+        }
+      }
+    }
+  }
+  return rules
+}
+
 /**
  * Emits one CSS class rule per IR node (recursing into containers/instance-refs), plus one
  * `.<class>--segment-N` rule per style range for text nodes. Layout geometry (flex/grid/absolute,
  * sizes, positions) comes from the IR itself; visual paint comes from `sceneNodesById`, which
  * resolves an IR node's Figma id back to the live node `getCSSAsync`/`getStyledTextSegments`
- * run against. A leading `body { margin: 0 }` keeps the browser's default 8px body margin from
- * offsetting the 1:1 geometry.
+ * run against. The leading preamble (box-sizing reset, `body` margin, block-level media/skip-link
+ * visibility, reduced-motion) is a small, fixed, deterministic baseline — never opinionated resets
+ * beyond what an adaptive multipage document needs to not visibly break on a real device.
  */
+const CSS_PREAMBLE = [
+  '*, *::before, *::after {\n  box-sizing: border-box;\n}',
+  'body {\n  margin: 0;\n}',
+  'img, svg, video {\n  display: block;\n  max-width: 100%;\n}',
+  // Visually hidden until :focus — a keyboard/screen-reader user tabs straight to it and past
+  // repeated page chrome; a sighted mouse user never sees it at all.
+  '.skip-to-content {\n  position: absolute;\n  left: -9999px;\n  top: 0;\n  z-index: 9999;\n  padding: 0.5rem 1rem;\n  background: #fff;\n  color: #000;\n}\n\n.skip-to-content:focus {\n  left: 0;\n}',
+  '@media (prefers-reduced-motion: reduce) {\n  * {\n    animation-duration: .01ms !important;\n    animation-iteration-count: 1 !important;\n    transition-duration: .01ms !important;\n    scroll-behavior: auto !important;\n  }\n}',
+].join('\n\n')
+
 export async function emitCss(
   nodes: readonly IrNode[],
   sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
@@ -1092,10 +1357,12 @@ export async function emitCss(
   // Figma sizes are border-box (padding inside width/height) — the browser's content-box
   // default would inflate every padded fixed-size node (e.g. a 1920px header with 312px side
   // padding rendered 2544px wide).
-  const rules: string[] =
-    options.preamble === false ? [] : ['*, *::before, *::after {\n  box-sizing: border-box;\n}\n\nbody {\n  margin: 0;\n}']
+  const rules: string[] = options.preamble === false ? [] : [CSS_PREAMBLE]
   for (const node of nodes) {
     await collectNodeCss(node, null, undefined, sceneNodesById, variableNamesById, rules, options)
   }
+  // Shell: component-set variant modifier classes (`n<id>--lg`) are otherwise dead weight — no
+  // rule ever defined them, so every variant of a collapsed set rendered identically.
+  rules.push(...(await emitComponentVariantModifierCss(nodes, sceneNodesById, variableNamesById, options)))
   return rules.join('\n\n')
 }

@@ -11,31 +11,52 @@ import type { IrNode } from './ir.ts'
 import { isVideoAssetPath, rasterFilename, scaleModeToObjectFit } from './assets.ts'
 import { toClassName, type DjangoNodeSource } from './css-emitter.ts'
 import { segmentClassName, splitTextParagraphs, isMultiBlockText, TEXT_SEGMENT_FIELDS, type TextParagraph } from './text-styles.ts'
+import { parsePluginData, PluginDataKey, PLUGIN_DATA_NAMESPACE } from '../../utils/plugin-data.ts'
 
 export function escapeHtml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
-/** `{name}` tokens a designer typed as a placeholder (docs/research/03-i18n-figma-django.md §3.2). */
-const PLACEHOLDER_PATTERN = /\{(\w+)\}/g
+/** `%(name)s` tokens a designer typed as a placeholder (docs/research/03-i18n-figma-django.md
+ * §3.2). Gettext's own form, which is what `i18n/keys.ts`'s `applyPlaceholders` writes into the
+ * msgid: the older `{name}` spelling here meant the catalog and the template disagreed about what
+ * a placeholder even looks like, so a `{% blocktranslate %}` was emitted for text no catalog entry
+ * matched (and vice versa). */
+const PLACEHOLDER_PATTERN = /%\((\w+)\)s/g
 
 /** Wraps already-`escapeHtml`-escaped text for E4/T4.3's Django i18n integration: plain text
- * becomes `{% translate %}`, text carrying `{name}` placeholders becomes `{% blocktranslate %}`
+ * becomes `{% translate %}`, text carrying `%(name)s` placeholders becomes `{% blocktranslate %}`
  * with an explicit `with name=name` clause per placeholder — `blocktranslate` is required because
  * `translate` only takes a literal string or a single variable, never an interpolated one.
  *
  * Newline runs collapse to a single space first: Django's tag lexer does not match `{% … %}`
  * across lines, so a multi-line Figma text node would emit a tag the engine serves as literal
  * text. This mirrors i18n/normalize.ts, keeping the msgid identical to the one figma.po carries. */
-function wrapTranslatable(escaped: string): string {
+function wrapTranslatable(escaped: string, msgctxt = ''): string {
   if (!escaped) return escaped
   escaped = escaped.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ')
+  // `msgctxt` is a string literal in the tag, not markup: it needs gettext's own `\`/`"` escaping
+  // (what `i18n/po.ts` writes into the catalog), never `escapeHtml` — an HTML-escaped context
+  // would look up a msgctxt no catalog entry carries, which fails by silently not translating.
+  const context = msgctxt ? ` context "${msgctxt.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : ''
   const names = [...new Set([...escaped.matchAll(PLACEHOLDER_PATTERN)].map((match) => match[1]))]
-  if (names.length === 0) return `{% translate "${escaped}" %}`
+  if (names.length === 0) return `{% translate "${escaped}"${context} %}`
 
   const withClause = names.map((name) => `${name}=${name}`).join(' ')
   const body = escaped.replace(PLACEHOLDER_PATTERN, (_match, name: string) => `{{ ${name} }}`)
-  return `{% blocktranslate with ${withClause} %}${body}{% endblocktranslate %}`
+  return `{% blocktranslate${context} with ${withClause} %}${body}{% endblocktranslate %}`
+}
+
+/** The manual `msgctxt` a designer attached to a TEXT node through the annotation panel
+ * (`i18n/annotation.ts`, stored under `pluginData('i18nKey')`). `i18n/extract.ts` already writes
+ * it into the catalog; without reading it back here the template asks gettext for the
+ * NO-context translation, which no entry in that catalog has — the string renders untranslated
+ * with nothing anywhere reporting a miss. */
+function readMsgctxt(source: DjangoNodeSource | undefined): string {
+  const annotation = parsePluginData<{ context?: unknown }>(
+    source?.getSharedPluginData?.(PLUGIN_DATA_NAMESPACE, PluginDataKey.I18N_KEY)
+  )
+  return typeof annotation?.context === 'string' ? annotation.context : ''
 }
 
 interface TextSpanLike {
@@ -44,10 +65,11 @@ interface TextSpanLike {
 }
 
 /** A `NODE` hyperlink targets another Figma node, not a URL this export can resolve to a Django
- * route — rendered as plain text, same as `i18n/extract.ts`'s po markup (`buildMarkup` only
- * special-cases `type === 'URL'` too), so the visible markup and the msgid stay in sync. */
-function renderSegmentSpan(className: string, index: number, segment: TextSpanLike): string {
-  const span = `<span class="${segmentClassName(className, index)}">${wrapTranslatable(escapeHtml(segment.characters))}</span>`
+ * route — rendered as plain text, same as `i18n/extract.ts`, which emits one plain-text entry per
+ * styled run and never special-cases a `NODE` link either, so the visible markup and the msgid
+ * stay in sync. */
+function renderSegmentSpan(className: string, index: number, segment: TextSpanLike, msgctxt = ''): string {
+  const span = `<span class="${segmentClassName(className, index)}">${wrapTranslatable(escapeHtml(segment.characters), msgctxt)}</span>`
   if (segment.hyperlink?.type === 'URL') return `<a href="${escapeHtml(segment.hyperlink.value)}">${span}</a>`
   return span
 }
@@ -56,12 +78,16 @@ function renderSegmentSpan(className: string, index: number, segment: TextSpanLi
  * (docs §3.2) — shared by the single-page emitter and the components/pages emitter so both sides
  * of a `{% include %}` produce identically-tagged msgids. A `URL` hyperlink segment additionally
  * wraps its span in `<a href>`. */
-export function renderTextSpans(className: string, segments: readonly TextSpanLike[]): string {
-  return segments.map((segment, index) => renderSegmentSpan(className, index, segment)).join('')
+export function renderTextSpans(className: string, segments: readonly TextSpanLike[], msgctxt = ''): string {
+  return segments.map((segment, index) => renderSegmentSpan(className, index, segment, msgctxt)).join('')
 }
 
-function renderParagraphRuns(className: string, runs: readonly { readonly segment: TextSpanLike; readonly index: number }[]): string {
-  return runs.map(({ segment, index }) => renderSegmentSpan(className, index, segment)).join('')
+function renderParagraphRuns(
+  className: string,
+  runs: readonly { readonly segment: TextSpanLike; readonly index: number }[],
+  msgctxt: string
+): string {
+  return runs.map(({ segment, index }) => renderSegmentSpan(className, index, segment, msgctxt)).join('')
 }
 
 /** Builds nested `<ul>`/`<ol>` markup from a flat run of same-block list paragraphs, using each
@@ -69,7 +95,12 @@ function renderParagraphRuns(className: string, runs: readonly { readonly segmen
  * list inside the current `<li>`, a decrease (or run end) closes back out. Depth jumps of more
  * than one level (skipping an indentation step) collapse onto the next level down rather than
  * inserting empty intermediate lists — an edge case Figma's own UI doesn't produce today. */
-function renderTextList<T extends TextSpanLike>(items: readonly TextParagraph<T>[], className: string, indent: string): string {
+function renderTextList<T extends TextSpanLike>(
+  items: readonly TextParagraph<T>[],
+  className: string,
+  indent: string,
+  msgctxt: string
+): string {
   let i = 0
   function parseLevel(depth: number, ind: string): string {
     const tag = items[i].listType === 'ORDERED' ? 'ol' : 'ul'
@@ -77,7 +108,7 @@ function renderTextList<T extends TextSpanLike>(items: readonly TextParagraph<T>
     while (i < items.length && items[i].listDepth === depth) {
       const item = items[i]
       i++
-      let content = `${renderParagraphRuns(className, item.runs)}`
+      let content = `${renderParagraphRuns(className, item.runs, msgctxt)}`
       if (i < items.length && items[i].listDepth > depth) {
         content += `\n${parseLevel(depth + 1, `${ind}  `)}\n${ind}  `
       }
@@ -92,12 +123,17 @@ function renderTextList<T extends TextSpanLike>(items: readonly TextParagraph<T>
 /** Renders a text node's paragraphs/list items once it's been determined they don't fit on one
  * `<p>` — a run of consecutive non-list paragraphs becomes one `<p>` each, a run of consecutive
  * list paragraphs becomes one nested `<ul>`/`<ol>`. */
-function renderTextBody<T extends TextSpanLike>(paragraphs: readonly TextParagraph<T>[], className: string, indent: string): string {
+function renderTextBody<T extends TextSpanLike>(
+  paragraphs: readonly TextParagraph<T>[],
+  className: string,
+  indent: string,
+  msgctxt: string
+): string {
   const blocks: string[] = []
   let i = 0
   while (i < paragraphs.length) {
     if (paragraphs[i].listType === 'NONE') {
-      blocks.push(`${indent}<p class="${className}">${renderParagraphRuns(className, paragraphs[i].runs)}</p>`)
+      blocks.push(`${indent}<p class="${className}">${renderParagraphRuns(className, paragraphs[i].runs, msgctxt)}</p>`)
       i++
       continue
     }
@@ -106,39 +142,110 @@ function renderTextBody<T extends TextSpanLike>(paragraphs: readonly TextParagra
       run.push(paragraphs[i])
       i++
     }
-    blocks.push(renderTextList(run, className, indent))
+    blocks.push(renderTextList(run, className, indent, msgctxt))
   }
   return blocks.join('\n')
 }
 
-/** Renders a text node's full content: a single `<p>` for the common case (one paragraph, no
- * list), or a `<div class="…--box">` wrapper carrying the node's position/sizing around several
- * `<p>`/`<ul>`/`<ol>` children when the text has multiple paragraphs and/or a list — see
- * css-emitter.ts's `collectNodeCss` for why the box rule has to move to that wrapper in that
- * case. Shared by the single-page emitter and the components/pages emitter (`component-emitter.ts`)
- * so every text node renders identically regardless of which template it lands in. */
+export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6
+export type HeadingTag = `h${HeadingLevel}`
+
+/** Tracks whether this document has already emitted its one `<h1>` (docs item 2 — "exactly one
+ * `<h1>` per page"). Threaded by reference through every text node a single `emitHtml`/`emitPage`/
+ * `emitComponentPartial` call renders, in document order, so a second level-1 claimant degrades to
+ * `<h2>` instead of the page shipping two `<h1>`s. */
+export interface HeadingState {
+  usedH1: boolean
+}
+
+export function createHeadingState(): HeadingState {
+  return { usedH1: false }
+}
+
+/** The ONLY heading evidence trusted here: an explicit level spelled out in the TEXT node's own
+ * layer name — "H2", "Heading 2", "Title/H3" (docs item 2). Neither `ir.ts` nor `DjangoNodeSource`
+ * exposes the Figma *text style*'s own name the way `IrStyleRefs` resolves a fill/stroke/effect
+ * style to one (`ir.ts`'s `readStyleRefs` never reads `textStyleId` at all) — the layer name is
+ * genuinely the only heading signal this emitter can read. Font size (`TextStyleSegment.fontSize`)
+ * is deliberately never consulted: a big label isn't necessarily structural, and mistagging body
+ * copy as a heading misleads a screen reader worse than leaving it a plain `<p>`. */
+function explicitHeadingLevel(name: string): HeadingLevel | null {
+  const tokens = name.split(/[^a-zA-Z0-9]+/).filter(Boolean)
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i].toLowerCase()
+    const explicit = /^h([1-6])$/.exec(token) ?? /^heading([1-6])$/.exec(token)
+    if (explicit) return Number(explicit[1]) as HeadingLevel
+    if (token === 'heading' && /^[1-6]$/.test(tokens[i + 1] ?? '')) return Number(tokens[i + 1]) as HeadingLevel
+  }
+  return null
+}
+
+/** Resolves the `<hN>` tag a TEXT node's layer name claims, enforcing "exactly one `<h1>` per
+ * page": the first level-1 claimant in document order keeps `<h1>`, every later one degrades to
+ * `<h2>` (still a heading, just not a second top-level one). `null` means no explicit level was
+ * found — the caller keeps its default `<p>`. */
+export function resolveHeadingTag(name: string, state: HeadingState): HeadingTag | null {
+  const level = explicitHeadingLevel(name)
+  if (level === null) return null
+  if (level === 1) {
+    if (state.usedH1) return 'h2'
+    state.usedH1 = true
+    return 'h1'
+  }
+  return `h${level}`
+}
+
+/** Renders a text node's full content: a single `<p>` (or, per `headingTag`, `<h1>`…`<h6>` — docs
+ * item 2) for the common case (one paragraph, no list), or a `<div class="…--box">` wrapper
+ * carrying the node's position/sizing around several `<p>`/`<ul>`/`<ol>` children when the text
+ * has multiple paragraphs and/or a list — see css-emitter.ts's `collectNodeCss` for why the box
+ * rule has to move to that wrapper in that case. A heading is a single run of text, never a
+ * wrapper around block children, so `headingTag` is only honored on the single-`<p>` path — the
+ * multi-block branch always keeps its plain `<p>`/`<div>` shape. Shared by the single-page emitter
+ * and the components/pages emitter (`component-emitter.ts`) so every text node renders
+ * identically regardless of which template it lands in. */
 export function renderTextBlock(
   node: { readonly id: string; readonly characters: string },
   source: DjangoNodeSource | undefined,
   className: string,
-  indent: string
+  indent: string,
+  headingTag: HeadingTag | null = null
 ): string {
   const segments: readonly TextSpanLike[] = source?.getStyledTextSegments?.(TEXT_SEGMENT_FIELDS) ?? [{ characters: node.characters }]
   const paragraphs = splitTextParagraphs(segments)
+  const msgctxt = readMsgctxt(source)
   if (!isMultiBlockText(paragraphs)) {
-    return `${indent}<p class="${className}">${renderTextSpans(className, segments)}</p>`
+    const tag = headingTag ?? 'p'
+    return `${indent}<${tag} class="${className}">${renderTextSpans(className, segments, msgctxt)}</${tag}>`
   }
-  const inner = renderTextBody(paragraphs, className, `${indent}  `)
+  const inner = renderTextBody(paragraphs, className, `${indent}  `, msgctxt)
   return `${indent}<div class="${className}--box">\n${inner}\n${indent}</div>`
 }
 
 function renderTextNode(
   node: Extract<IrNode, { type: 'text' }>,
   sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
-  indent: string
+  indent: string,
+  headingState: HeadingState
 ): string {
   const className = toClassName(node.id)
-  return renderTextBlock(node, sceneNodesById.get(node.id), className, indent)
+  const headingTag = resolveHeadingTag(node.name, headingState)
+  return renderTextBlock(node, sceneNodesById.get(node.id), className, indent, headingTag)
+}
+
+/** Figma's own auto-generated name for a layer nobody renamed — "Rectangle 12", "Vector",
+ * "Ellipse 3", "Image 4", "Frame 1", "Group 7" (shape/type keyword + optional index) — carries no
+ * information a screen reader can use; neither does a name that's only digits/punctuation, nor
+ * one starting with `_` (Figma's community "ignore me" convention). Reading any of those out loud
+ * is worse than reading nothing (docs item 4), so `renderAssetLeaf` emits an empty `alt` for them
+ * instead of the raw layer name. */
+const AUTO_NAMED_LAYER = /^(rectangle|vector|ellipse|image|frame|group)\s*\d*$/i
+
+export function isDecorativeLayerName(name: string): boolean {
+  const trimmed = name.trim()
+  if (trimmed === '' || trimmed.startsWith('_')) return true
+  if (!/[a-zA-Z]/.test(trimmed)) return true
+  return AUTO_NAMED_LAYER.test(trimmed)
 }
 
 /** `static`-relative path for an unmarked image leaf — must name the exact file the asset pass
@@ -156,9 +263,14 @@ export function imageStaticPath(node: Extract<IrNode, { type: 'image' }>): strin
  * `poster`, `preload="metadata"`, and `object-fit` derived from the VideoPaint `scaleMode`. */
 export function renderAssetLeaf(node: Extract<IrNode, { type: 'image' | 'vector' }>, indent: string): string {
   const className = toClassName(node.id)
+  const decorative = isDecorativeLayerName(node.name)
   if (node.type === 'vector' && !node.assetSrc && node.inlineSvg) {
     // Tag the <svg> root with the node's class so the emitted sizing/position rules apply to it.
-    return `${indent}${node.inlineSvg.replace(/<svg\b/, `<svg class="${className}"`)}`
+    // A decorative/auto-named layer additionally gets aria-hidden (docs item 4) — there's no
+    // `alt` attribute on `<svg>`, so this is how the same "don't announce this" signal reaches
+    // assistive tech for an inlined vector.
+    const svgAttrs = decorative ? ` class="${className}" aria-hidden="true"` : ` class="${className}"`
+    return `${indent}${node.inlineSvg.replace(/<svg\b/, `<svg${svgAttrs}`)}`
   }
   const src = node.type === 'image' ? node.assetSrc ?? imageStaticPath(node) : node.assetSrc
   if (!src) return `${indent}<div class="${className}"></div>`
@@ -171,7 +283,7 @@ export function renderAssetLeaf(node: Extract<IrNode, { type: 'image' | 'vector'
     const objectFit = scaleModeToObjectFit(node.type === 'image' ? node.videoScaleMode : undefined)
     return `${indent}<video class="${className}" data-autoplay-video src="{% static '${src}' %}"${poster} autoplay loop muted playsinline preload="metadata" style="object-fit:${objectFit}"></video>`
   }
-  return `${indent}<img class="${className}" src="{% static '${src}' %}" alt="${escapeHtml(node.name)}">`
+  return `${indent}<img class="${className}" src="{% static '${src}' %}" alt="${decorative ? '' : escapeHtml(node.name)}">`
 }
 
 /** Wraps `rendered` in `<a href="{{ navMap.<slug> }}">` when `node` carries an `ON_CLICK`/
@@ -224,30 +336,103 @@ export function renderBackgroundVideoLayer(node: IrNode, indent: string): string
   )
 }
 
+/** Chrome landmark kinds a container's Figma layer name can identify (docs item 1) — matching is
+ * EXACT (case-insensitive, trimmed) against Figma's own naming convention for these regions, not
+ * a loose substring: "Header Section" or "Navigation Bar Wrapper" stay plain `<div>`s rather than
+ * risk mistagging an unrelated frame that merely mentions the word. */
+export type LandmarkKind = 'header' | 'nav' | 'footer' | 'aside'
+
+const LANDMARK_KIND_BY_NAME: Record<string, LandmarkKind> = {
+  header: 'header',
+  'top bar': 'header',
+  navbar: 'header',
+  nav: 'nav',
+  menu: 'nav',
+  navigation: 'nav',
+  footer: 'footer',
+  sidebar: 'aside',
+  aside: 'aside',
+}
+
+/** Figma's component-set/breakpoint suffix convention ("Header / Desktop", "Footer / Mobile")
+ * doubles as noise here — only the part before the first "/" carries the semantic name. */
+function landmarkKindByName(name: string): LandmarkKind | null {
+  const firstSegment = name.split('/')[0].trim().toLowerCase()
+  return LANDMARK_KIND_BY_NAME[firstSegment] ?? null
+}
+
+/** Landmark kinds already emitted on the path from the document root to this node — threaded
+ * through the recursive renderer so a landmark-named node nested inside a SAME-kind landmark (a
+ * duplicated/synthetic layer, not a pattern Figma's own UI encourages) never emits a second
+ * `<header>`/`<nav>`/`<footer>`/`<aside>`: only the outermost match of each kind fires. A
+ * DIFFERENT kind nested inside (a `<nav>` inside a `<header>`, say — a Navbar's own nav list) is
+ * left alone; that's valid HTML and a real pattern. */
+export type LandmarkAncestry = ReadonlySet<LandmarkKind>
+export const NO_LANDMARK_ANCESTRY: LandmarkAncestry = new Set()
+
+/** `<button>`-worthy: an `ON_CLICK`/`MOUSE_UP` CHANGE_TO interaction (`ir.ts`'s `readInteractions`
+ * already normalizes MOUSE_UP into the same `'ON_CLICK'` trigger) with no NAVIGATE reaction — a
+ * real click target belongs behind a `<button>` a keyboard/screen reader can reach, not the `<div>`
+ * neither can. A `navigate` reaction wins outright instead: `wrapNavigate` already puts the node
+ * behind a real `<a href>`, and a `<button>` nested inside an `<a>` is invalid HTML (interactive
+ * content cannot contain further interactive content) — the two paths can never both fire. */
+function isClickButton(node: IrNode): boolean {
+  if (node.navigate) return false
+  return (node.interactions ?? []).some((interaction) => interaction.trigger === 'ON_CLICK')
+}
+
+/** Resolves the semantic element for a `container`/`instance-ref` node that would otherwise emit
+ * a bare `<div>`: a landmark name wins outright (item 1); failing that, a click interaction makes
+ * it a real `<button type="button">` (item 3); failing that, an unnamed direct child of the page
+ * root with content of its own becomes a `<section>` — the one generic promotion item 1 asks for,
+ * since a page's own top-level regions are structure worth surfacing even with no specific chrome
+ * name. Everything else keeps the conservative default: `<div>`. Returns the matched
+ * `landmarkKind` too (or `null`), so the caller can extend `LandmarkAncestry` for this node's own
+ * children without re-deriving it. */
+export function resolveContainerTag(
+  node: Extract<IrNode, { type: 'container' | 'instance-ref' }>,
+  ancestry: LandmarkAncestry,
+  isPageRootChild: boolean
+): { tag: string; attrs: string; landmarkKind: LandmarkKind | null } {
+  const landmarkKind = landmarkKindByName(node.name)
+  if (landmarkKind && !ancestry.has(landmarkKind)) return { tag: landmarkKind, attrs: '', landmarkKind }
+  if (isClickButton(node)) return { tag: 'button', attrs: ' type="button"', landmarkKind: null }
+  if (isPageRootChild && node.children.length > 0) return { tag: 'section', attrs: '', landmarkKind: null }
+  return { tag: 'div', attrs: '', landmarkKind: null }
+}
+
 function renderNode(
   node: IrNode,
   sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
   indent: string,
-  navMap: ReadonlyMap<string, string>
+  navMap: ReadonlyMap<string, string>,
+  headingState: HeadingState,
+  ancestry: LandmarkAncestry = NO_LANDMARK_ANCESTRY,
+  isPageRootChild = false,
+  isPageRoot = true
 ): string {
   const className = toClassName(node.id)
 
   const rendered = (() => {
     switch (node.type) {
       case 'text':
-        return renderTextNode(node, sceneNodesById, indent)
+        return renderTextNode(node, sceneNodesById, indent, headingState)
       case 'image':
       case 'vector':
         return renderAssetLeaf(node, indent)
       case 'container':
       case 'instance-ref': {
+        const { tag, attrs, landmarkKind } = resolveContainerTag(node, ancestry, isPageRootChild)
+        const childAncestry = landmarkKind ? new Set([...ancestry, landmarkKind]) : ancestry
         // M11: a VideoPaint background fill renders as a positioned <video> layer behind content.
         const bgVideo = renderBackgroundVideoLayer(node, `${indent}  `)
-        if (node.children.length === 0 && !bgVideo) return `${indent}<div class="${className}"></div>`
-        const inner = node.children.map((child) => renderNode(child, sceneNodesById, `${indent}  `, navMap)).join('\n')
+        if (node.children.length === 0 && !bgVideo) return `${indent}<${tag}${attrs} class="${className}"></${tag}>`
+        const inner = node.children
+          .map((child) => renderNode(child, sceneNodesById, `${indent}  `, navMap, headingState, childAncestry, isPageRoot, false))
+          .join('\n')
         // The background video layer goes first (lowest z-index), children stack above it.
         const parts = [bgVideo, inner].filter(Boolean)
-        return `${indent}<div class="${className}">\n${parts.join('\n')}\n${indent}</div>`
+        return `${indent}<${tag}${attrs} class="${className}">\n${parts.join('\n')}\n${indent}</${tag}>`
       }
     }
   })()
@@ -274,7 +459,8 @@ export function emitHtml(
   cssFile: string,
   navMap: ReadonlyMap<string, string> = new Map()
 ): string {
-  const body = nodes.map((node) => renderNode(node, sceneNodesById, '    ', navMap)).join('\n')
+  const headingState = createHeadingState()
+  const body = nodes.map((node) => renderNode(node, sceneNodesById, '    ', navMap, headingState)).join('\n')
   const hasAutoplayVideo = body.includes('data-autoplay-video')
 
   return [

@@ -52,3 +52,36 @@ test('parseTranslations(json) reads a flat msgctxt -> translation map', () => {
     ]
   )
 })
+
+test('parseTranslations(po) resolves msgid_plural/msgstr[n] to the n=1 form using the catalog\'s own Plural-Forms', () => {
+  const po = `
+msgid ""
+msgstr ""
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\\n"
+
+msgid "%(count)d item"
+msgid_plural "%(count)d items"
+msgstr[0] "%(count)d штука"
+msgstr[1] "%(count)d штуки"
+msgstr[2] "%(count)d штук"
+`
+
+  const [entry] = parseTranslations(po, 'po')
+
+  assert.equal(entry.msgid, '%(count)d item')
+  assert.equal(entry.msgidPlural, '%(count)d items')
+  assert.equal(entry.msgstr, '%(count)d штука')
+})
+
+test('parseTranslations(po) falls back to the English nplurals=2 rule when the catalog carries no Plural-Forms header', () => {
+  const po = `
+msgid "%(count)d item"
+msgid_plural "%(count)d items"
+msgstr[0] "%(count)d item"
+msgstr[1] "%(count)d items"
+`
+
+  const [entry] = parseTranslations(po, 'po')
+
+  assert.equal(entry.msgstr, '%(count)d item')
+})

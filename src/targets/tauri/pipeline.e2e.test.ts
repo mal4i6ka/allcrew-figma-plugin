@@ -147,12 +147,23 @@ test('tauri e2e: real emitDjangoProject output renders static with nav links, tr
   // The detail instance falls back to the component's default characters.
   assert.ok(detailDoc.includes('Card title'))
 
-  // Smart-animate navigation produced the transitions stylesheet, linked from the pages, with
-  // the Card layer matched by name across both documents.
+  // Smart-animate navigation produced the transitions stylesheet, linked from the pages, with the
+  // Card layer matched across both documents. The morph name is keyed by the export's own class
+  // (`.n<node id>`), not by the layer's display name: two differently-placed layers can share a
+  // name, and a name-keyed ident then collides into a transition the browser skips.
   const transitions = String(files['src/assets/css/transitions.css'])
   assert.ok(transitions.includes('@view-transition'))
   assert.ok(transitions.includes('animation-duration: 420ms;'))
-  assert.ok(transitions.includes('view-transition-name: card;'))
+  const morph = /^(?<selectors>[^\n{]+)\{ view-transition-name: (?<ident>[\w-]+); \}$/m.exec(transitions)
+  assert.ok(morph, `expected a view-transition-name rule, got:\n${transitions}`)
+  const selectors = morph.groups!.selectors.trim().split(', ')
+  // An instance of the same master on both pages renders with one class, so one selector carries
+  // the name — what matters is that the element it names exists in BOTH documents, which is the
+  // condition the browser morphs on.
+  for (const selector of selectors) {
+    assert.ok(landingDoc.includes(selector.slice(1)), `${selector} missing from the landing document`)
+    assert.ok(detailDoc.includes(selector.slice(1)), `${selector} missing from the detail document`)
+  }
   assert.ok(landingDoc.includes('assets/css/transitions.css'))
 
   // Assets: the linked stylesheet paths exist in the tree.

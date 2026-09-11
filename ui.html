@@ -1096,6 +1096,11 @@
           <span class="set-text"><b>Platform</b><i>Template engine of the package</i></span>
           <select id="set-platform" class="set-ctl" aria-label="Platform"><option value="django">Django</option><option value="tauri">Tauri</option></select>
         </div>
+        <label class="set-row" data-needs-target="django" for="set-django-scaffold">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 20V8l8-4 8 4v12" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M10 20v-6h4v6" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></svg>
+          <span class="set-text"><b>Django project</b><i>Ship <code>manage.py</code>, settings, URLs and views — the package runs as a site. Off when applying onto a project that has its own</i></span>
+          <span class="switch"><input type="checkbox" id="set-django-scaffold" /><span class="track"></span></span>
+        </label>
         <div class="set-row" data-needs-target="django">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
           <span class="set-text"><b>CSS framework</b><i>Adapter for styles &amp; markup</i></span>
@@ -1267,6 +1272,11 @@
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" stroke="currentColor" stroke-width="1.4"/></svg>
           <span class="set-text"><b>Source language</b><i>msgid language, into the PO header</i></span>
           <input id="set-source-lang" class="set-input" type="text" spellcheck="false" aria-label="Source language" />
+        </div>
+        <div class="set-row" data-needs-target="django">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h10M4 17h7" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
+          <span class="set-text"><b>Target languages</b><i>Comma-separated, e.g. <code>ru, tr, es</code> — one <code>locale/&lt;code&gt;/LC_MESSAGES/django.po</code> each, plus URL prefixes and a switcher</i></span>
+          <input id="set-languages" class="set-input" type="text" spellcheck="false" placeholder="ru, tr, es" aria-label="Target languages" />
         </div>
         <label class="file-pick" data-needs-target="django">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 16V5m0 0L7.5 9.5M12 5l4.5 4.5M4 19h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1846,6 +1856,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('set-bs-fidelity', 'value', OPTIONS.targetOptions.bootstrapFidelity)
         setControl('set-bs-source', 'value', OPTIONS.targetOptions.bootstrapSource)
         setControl('set-bs-version', 'value', OPTIONS.targetOptions.bootstrapVersion)
+        setControl('set-django-scaffold', 'checked', OPTIONS.targetOptions.djangoScaffold !== false)
         setControl('set-inline', 'checked', OPTIONS.tokens.inlinePrimitives)
         setControl('set-flatten', 'checked', OPTIONS.tokens.flattenAliases)
         setControl('set-theme-attr', 'value', OPTIONS.tokens.themeAttribute)
@@ -1865,6 +1876,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('set-doc-budget', 'value', docsOpt.previewBudgetMb || 8)
         setControl('set-wrap-translate', 'checked', OPTIONS.i18n.wrapTranslate)
         setControl('set-source-lang', 'value', OPTIONS.i18n.sourceLanguage)
+        setControl('set-languages', 'value', OPTIONS.i18n.languages || '')
         setControl('set-dlv-endpoint', 'value', OPTIONS.delivery.endpoint)
         setControl('set-dlv-secret', 'value', OPTIONS.delivery.secret)
         setControl('set-dlv-on-export', 'checked', OPTIONS.delivery.onExport)
@@ -1983,6 +1995,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       bindSetting('set-bs-fidelity', function (el) { OPTIONS.targetOptions.bootstrapFidelity = el.value })
       bindSetting('set-bs-source', function (el) { OPTIONS.targetOptions.bootstrapSource = el.value })
       bindSetting('set-bs-version', function (el) { OPTIONS.targetOptions.bootstrapVersion = el.value.trim() })
+      bindSetting('set-django-scaffold', function (el) { OPTIONS.targetOptions.djangoScaffold = el.checked })
       bindSetting('set-inline', function (el) { OPTIONS.tokens.inlinePrimitives = el.checked })
       bindSetting('set-flatten', function (el) { OPTIONS.tokens.flattenAliases = el.checked })
       bindSetting('set-theme-attr', function (el) { OPTIONS.tokens.themeAttribute = el.value.trim() })
@@ -2018,6 +2031,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       })
       bindSetting('set-wrap-translate', function (el) { OPTIONS.i18n.wrapTranslate = el.checked })
       bindSetting('set-source-lang', function (el) { OPTIONS.i18n.sourceLanguage = el.value.trim() })
+      bindSetting('set-languages', function (el) { OPTIONS.i18n.languages = el.value.trim() })
       bindSetting('set-dlv-endpoint', function (el) { OPTIONS.delivery.endpoint = el.value.trim() })
       bindSetting('set-dlv-secret', function (el) { OPTIONS.delivery.secret = el.value })
       bindSetting('set-dlv-on-export', function (el) { OPTIONS.delivery.onExport = el.checked })
@@ -3786,6 +3800,35 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           'about who changed something or what a comment said; those are the answers that sound',
           'right and are checked last.',
           '',
+          '## Code Connect: what this channel can and cannot do',
+          '',
+          'Telling Figma which component of a repository a design component IS — so Dev Mode and',
+          'the official MCP answer `<Button variant="primary">` instead of anonymous markup — is',
+          'the fourth thing outside this channel. It is published from the repository:',
+          '',
+          '    npx figma connect publish --token <token>',
+          '',
+          'A mapping addresses its component by node URL, and the id takes a DASH there:',
+          '`819:95512` is written `…/New-Website-Django?node-id=819-95512`. What this channel is',
+          'for is the other half — `components.list` gives the exact node id and the property',
+          'names a mapping must use verbatim, typos included (`Button-lable`, `Meduim`); the',
+          '`#1956:6` suffix on a property key is not part of its name.',
+          '',
+          'Two things that look like blockers and are not the same one:',
+          '',
+          '- **Publishing the library is not required for the CLI.** A component reporting',
+          '  `publishStatus: UNPUBLISHED` publishes its mapping fine. That status only blocks the',
+          "  MCP route (`add_code_connect_map` answers \"Published component not found\").",
+          '- **The token category is required.** The `file_code_connect:write` scope does not',
+          '  exist for personal access tokens — a PAT answers `403 Invalid scope(s)` on publish,',
+          '  and a plan token of the REST API category has those endpoints switched off. It takes',
+          '  a plan access token of the **Figma CLI** category (figma.com/developers/tokens →',
+          '  Figma CLI tab; an organization admin creates it, 2FA required). Same file as above:',
+          '  `$FIGMA_TOKEN`, else `~/.altery/figma-token`.',
+          '',
+          "The plugin's React export writes these mapping files itself, one per generated",
+          'component, so an exported repository arrives already connected.',
+          '',
           '## A library key is not a variable id',
           '',
           'Aliasing onto another library\'s token takes the 40-character *library key*, and only',
@@ -3834,6 +3877,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           'dryRun; then ask the designer to close and reopen the plugin in that file — that is',
           'the whole fix. Prefer `pageId` chunking over document scans right after heavy write',
           'campaigns.',
+          '',
+          'One class of document scan is no longer in that category: `components.list`, and',
+          '`node.find` when `types` is given, search Figma\'s own type index instead of walking',
+          'every node, so a document-wide inventory answers on a file where the walk used to run',
+          'past three minutes and return nothing. `node.find` WITHOUT `types` still walks — name',
+          'the types you want.',
           '',
           '## When the file disagrees with you',
           '',

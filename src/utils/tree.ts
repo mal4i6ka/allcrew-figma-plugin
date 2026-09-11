@@ -25,6 +25,14 @@ export async function loadAllPagesAsync(): Promise<void> {
       })
     )
   }
+
+  /* Per-page `loadAsync` is enough to READ a page, but not enough for a document-wide
+   * `findAllWithCriteria`: the runtime gates that on `figma.loadAllPagesAsync()` having been
+   * called — the call itself, not the state it produces — and otherwise throws "Cannot call with
+   * documentAccess: dynamic-page without calling figma.loadAllPagesAsync() first". Every page is
+   * already warm by now, so this opens the gate without the 50-way load storm the batching above
+   * exists to avoid. */
+  await figma.loadAllPagesAsync?.()
 }
 
 export interface FindAllWithCriteriaOptions {
@@ -69,6 +77,58 @@ export async function findAllWithCriteria<T extends SceneNode>(
   } finally {
     figma.skipInvisibleInstanceChildren = false
   }
+}
+
+/** A node whose `findAllWithCriteria` is Figma's own — the method the hand-written DFS above
+ * stands in for wherever it's missing (older runtimes, or the plain objects plugin tests use as
+ * documents). Duck-typed rather than a Figma type check: `BaseNode` does not statically carry
+ * this method (it comes from `ChildrenMixin` or `DocumentNode`, not `BaseNode` itself), and a
+ * test double only needs to look like the real thing. */
+function nativeFindAllWithCriteria(
+  root: BaseNode
+): ((criteria: { types: NodeType[] }) => Array<PageNode | SceneNode>) | null {
+  if (!('findAllWithCriteria' in root) || typeof root.findAllWithCriteria !== 'function') return null
+  // Figma's own method, once present, always has this signature — TypeScript has no static link
+  // from `BaseNode` to it because the method lives on `ChildrenMixin` / `DocumentNode`, not here.
+  const method = root.findAllWithCriteria as (criteria: { types: NodeType[] }) => Array<PageNode | SceneNode>
+  return method.bind(root)
+}
+
+/**
+ * Search a subtree for scene nodes of the given types, the same shape of query as
+ * `findAllWithCriteria` above but restricted to a type list. Prefer this whenever the caller
+ * only needs types: Figma's own `node.findAllWithCriteria({ types })` is backed by an index the
+ * host maintains per document, answering in roughly constant overhead per match regardless of
+ * document size — the hand-rolled DFS above walks every node in JS and, on a ~200k-node live
+ * file, didn't return within a 170s bridge call for exactly this query. Falls back to that same
+ * DFS when `root` has no native method (older Figma runtime, or a plain mock in a test), so a
+ * caller never has to special-case the difference.
+ *
+ * Excludes `root` itself, matching the DFS's default (`includeRoot` restores it either way) —
+ * Figma's own method never considers its receiver a match.
+ */
+export async function findAllByTypes<T extends SceneNode = SceneNode>(
+  root: BaseNode,
+  types: readonly string[],
+  opts?: FindAllWithCriteriaOptions
+): Promise<T[]> {
+  const native = nativeFindAllWithCriteria(root)
+  if (native) {
+    // Same flag, same reason as the DFS path: a search that walks into instances by default
+    // would count (and pay for) every override mirror, which no caller of this helper wants.
+    figma.skipInvisibleInstanceChildren = true
+    try {
+      const found = native({ types: types as NodeType[] }).filter(isSceneNode) as T[]
+      if (opts?.includeRoot && isSceneNode(root) && types.includes(root.type)) {
+        found.unshift(root as unknown as T)
+      }
+      return found
+    } finally {
+      figma.skipInvisibleInstanceChildren = false
+    }
+  }
+  const typeSet = new Set(types)
+  return findAllWithCriteria(root, (node): node is T => typeSet.has(node.type), opts)
 }
 
 export interface WalkOptions {

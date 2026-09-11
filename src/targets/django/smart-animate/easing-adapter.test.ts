@@ -38,6 +38,27 @@ test('transitionToCssTiming samples a named spring preset (GENTLE) into a linear
   assert.ok(result.durationMs > 0)
 })
 
+test('a stiff CUSTOM_SPRING runs shorter than a soft one, instead of both getting the same curve', () => {
+  const stiff = transitionToCssTiming({
+    easing: { type: 'CUSTOM_SPRING', easingFunctionSpring: { mass: 1, stiffness: 900, damping: 45, initialVelocity: 0 } },
+    duration: 0.3,
+  })
+  const soft = transitionToCssTiming({
+    easing: { type: 'CUSTOM_SPRING', easingFunctionSpring: { mass: 3, stiffness: 100, damping: 26, initialVelocity: 0 } },
+    duration: 0.3,
+  })
+  assert.ok(stiff.durationMs < soft.durationMs, `${stiff.durationMs} < ${soft.durationMs}`)
+  assert.notEqual(stiff.timingFunction, soft.timingFunction)
+})
+
+test('a named spring is scaled by the duration the designer typed next to it', () => {
+  const quick = transitionToCssTiming({ easing: { type: 'BOUNCY' }, duration: 0.15 })
+  const slow = transitionToCssTiming({ easing: { type: 'BOUNCY' }, duration: 0.9 })
+  // Same preset, different intent: a 150ms bounce must not outlive a 900ms one.
+  assert.ok(quick.durationMs < slow.durationMs, `${quick.durationMs} < ${slow.durationMs}`)
+  assert.ok(quick.durationMs < 400, `a 150ms BOUNCY settled in ${quick.durationMs}ms`)
+})
+
 test('transitionToCssTiming throws when CUSTOM_CUBIC_BEZIER is missing its control points', () => {
   assert.throws(() => transitionToCssTiming({ easing: { type: 'CUSTOM_CUBIC_BEZIER' }, duration: 0.2 }))
 })

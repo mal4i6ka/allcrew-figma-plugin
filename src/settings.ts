@@ -29,6 +29,11 @@ export interface ExportTargetOptions {
   bootstrapFidelity: BootstrapFidelity
   bootstrapSource: BootstrapSource
   bootstrapVersion: string
+  /** Ship the Django project itself (`manage.py`, settings/urls/views, the page registry and the
+   * `navMap` context processor) alongside the templates, so the zip runs as an application instead
+   * of waiting for someone to hand-write a URLconf. Off when the package is laid onto a project
+   * that already has its own — `altery-dj apply` merges templates and static either way. */
+  djangoScaffold: boolean
 }
 
 export interface ExportTokensOptions {
@@ -52,6 +57,10 @@ export interface ExportTokensOptions {
 export interface ExportI18nOptions {
   wrapTranslate: boolean
   sourceLanguage: string
+  /** Target locales the site is built for, comma-separated (`ru, tr, es`) — the source language is
+   * implied and never listed. Each one gets `locale/<code>/LC_MESSAGES/django.po` and a row in the
+   * generated `LANGUAGES`; empty means a single-language site (no `i18n_patterns`, no switcher). */
+  languages: string
 }
 
 export interface ExportDeliveryOptions {
@@ -141,9 +150,10 @@ const DJANGO_BOOTSTRAP_VALUES: PackageFormingOptions = {
     bootstrapFidelity: 'components',
     bootstrapSource: 'vendored',
     bootstrapVersion: '5.3',
+    djangoScaffold: true,
   },
   tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: '', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', collectionRoles: '' },
-  i18n: { wrapTranslate: true, sourceLanguage: 'en' },
+  i18n: { wrapTranslate: true, sourceLanguage: 'en', languages: '' },
 }
 
 const DESIGN_TOKENS_VALUES: PackageFormingOptions = {
@@ -155,9 +165,10 @@ const DESIGN_TOKENS_VALUES: PackageFormingOptions = {
     bootstrapFidelity: 'tokens',
     bootstrapSource: 'vendored',
     bootstrapVersion: '5.3',
+    djangoScaffold: false,
   },
   tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: 'data-theme-name', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', collectionRoles: '' },
-  i18n: { wrapTranslate: true, sourceLanguage: 'en' },
+  i18n: { wrapTranslate: true, sourceLanguage: 'en', languages: '' },
 }
 
 /** Tauri v2 desktop app (vanilla-template shape: static `src/` frontend, `src-tauri/` scaffold).
@@ -174,9 +185,10 @@ const TAURI_APP_VALUES: PackageFormingOptions = {
     bootstrapFidelity: 'tokens',
     bootstrapSource: 'cdn',
     bootstrapVersion: '5.3',
+    djangoScaffold: false,
   },
   tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: '', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', collectionRoles: '' },
-  i18n: { wrapTranslate: true, sourceLanguage: 'en' },
+  i18n: { wrapTranslate: true, sourceLanguage: 'en', languages: '' },
 }
 
 export const EXPORT_PRESETS: readonly ExportPreset[] = [
@@ -269,6 +281,7 @@ function normalizeTargetOptions(raw: unknown): ExportTargetOptions {
       typeof raw.bootstrapVersion === 'string' && raw.bootstrapVersion.trim() !== ''
         ? raw.bootstrapVersion.trim()
         : defaults.bootstrapVersion,
+    djangoScaffold: typeof raw.djangoScaffold === 'boolean' ? raw.djangoScaffold : defaults.djangoScaffold,
   }
 }
 
@@ -300,7 +313,28 @@ function normalizeI18n(raw: unknown): ExportI18nOptions {
       typeof raw.sourceLanguage === 'string' && raw.sourceLanguage.trim() !== ''
         ? raw.sourceLanguage.trim()
         : defaults.sourceLanguage,
+    // Stored verbatim (minus surrounding blanks) so the settings field shows what was typed;
+    // `parseLanguages` is the single place that decides what a valid locale code is.
+    languages: typeof raw.languages === 'string' ? raw.languages.trim() : defaults.languages,
   }
+}
+
+/** Splits the comma-separated `i18n.languages` field into locale codes Django will accept in
+ * `LANGUAGES`/`LOCALE_PATHS`: lowercased, region kept (`pt-BR` → `pt-br`, the form Django's
+ * `LANGUAGE_CODE` uses), deduped, and with the source language removed — a catalog translating
+ * a language into itself is what makes `makemessages` emit an empty file nobody notices. */
+export function parseLanguages(languages: string, sourceLanguage: string): string[] {
+  const source = sourceLanguage.trim().toLowerCase()
+  const seen = new Set<string>()
+  const codes: string[] = []
+  for (const raw of languages.split(',')) {
+    const code = raw.trim().toLowerCase().replace(/_/g, '-')
+    if (!/^[a-z]{2,3}(-[a-z0-9]{2,8})?$/.test(code)) continue
+    if (code === source || seen.has(code)) continue
+    seen.add(code)
+    codes.push(code)
+  }
+  return codes
 }
 
 function normalizeDelivery(raw: unknown): ExportDeliveryOptions {

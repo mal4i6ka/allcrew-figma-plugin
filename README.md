@@ -121,6 +121,112 @@ The default theme also lands on `:global(:root)`. Concatenating every
 keep every theme present (use `tokens.css`, or import all `*.module.css`) and
 toggle `data-theme-name`.
 
+## Django app export
+
+With the **Django × Bootstrap** preset the package is not a folder of templates
+waiting for someone to write a URLconf — it is a site you can run:
+
+```bash
+unzip export.zip -d site && cd site
+pip install -r requirements.txt
+DJANGO_DEBUG=1 python manage.py runserver
+```
+
+| What ships | Where it comes from |
+|---|---|
+| `manage.py`, `config/{settings,urls,wsgi,asgi}.py`, `design/{views,urls,pages,context_processors}.py` | Settings → Target → **Django project** (off when you apply onto a project that already has its own) |
+| `templates/base.html` + one template per frame + one partial per component | the frames in scope; a component **set** becomes one partial, its variants CSS modifiers |
+| `static/css/project.css`, `tokens.css`, `interactions.css`, `transitions.css` | layout/paint, design tokens, reaction states, prototype page transitions |
+| `locale/figma.po` + `locale/<code>/LC_MESSAGES/django.po` | Settings → i18n → **Target languages** |
+
+`design/pages.py` is the generated page registry — the one file a re-export
+overwrites. Everything else reads it: the prototype's start frame serves at `/`,
+every other page at `/<slug>/`, and the `navMap` context processor reverses those
+routes so the `{{ navMap.nav_… }}` hrefs the markup already emits resolve (and pick
+up the active locale prefix). Configure **Target languages** and the routes move
+under `i18n_patterns` with a no-JS language switcher in the shell.
+
+**Markup.** A frame named `Header`/`Nav`/`Footer`/`Sidebar` becomes that element, a page root's
+other direct children become `<section>`, a text layer whose name states a level (`Heading 2`,
+`Title/H3`) becomes `<h2>`/`<h3>` — with exactly one `<h1>` per page — and a layer that only reacts
+to a click becomes a real `<button type="button">` instead of a div no keyboard can reach. Figma's
+own auto-names (`Rectangle 12`, `Vector`) render as `alt=""`/`aria-hidden`, because a screen reader
+announcing "Rectangle 12" is worse than silence. A layer the designer pinned with *Fixed position
+when scrolling* gets `position: fixed`/`sticky` — that choice used to be read and then dropped.
+
+What the CSS pass could only approximate or could not draw at all (squircle corners, NOISE /
+TEXTURE / GLASS / SHADER effects and fills) is listed per node in `export-report.json` under
+`fidelityNotes`, instead of disappearing into a console.
+
+**Motion.** Reaction states (`ON_HOVER`/`ON_PRESS`/`ON_CLICK` → CHANGE_TO) are
+diffed against the destination variant *including its descendants*, so a hover that
+recolours an icon, re-pads a button or reveals a badge survives. Overlays render the
+destination frame's own markup into a `<dialog>` with an open/close animation.
+Page-to-page prototype transitions (DISSOLVE / PUSH / MOVE / SLIDE / SMART_ANIMATE)
+become cross-document view transitions — Smart Animate assigns a shared
+`view-transition-name` to the layers matched across both screens. Everything is
+wrapped in `prefers-reduced-motion` guards.
+
+The Smart Animate diff behind those states covers what Figma covers: position, size, rotation,
+opacity, corner radii, strokes, the whole fill stack (gradients included, marked non-interpolable
+where CSS cannot tween them), shadows and blurs, text size/weight/spacing/colour, auto-layout
+padding and gap, visibility (with `transition-behavior: allow-discrete`) and blend mode — on the
+changed layer itself as well as its descendants. A state that swaps a **photo** ships the
+destination variant's image with the page assets and references it; when that image cannot be
+exported the declaration is dropped rather than emitted as the `url(<path-to-image>)` placeholder
+Figma hands out, which resolves to a 404 and blanks the element on hover.
+
+**Springs.** A `CUSTOM_SPRING` reaction is solved from its own physics (`ω₀ = √(k/m)`,
+`ζ = c / 2√(km)`, plus the designer's `initialVelocity`), and a named preset (`GENTLE`, `BOUNCY`, …)
+from its bounce at the frequency whose period is the duration typed next to it. The emitted
+`linear()` curve runs for the spring's real settle time, so a 150 ms bouncy press is a 150 ms-ish
+bounce rather than the same half-second curve every spring used to collapse into.
+
+Figma publishes no physics for its named presets, so those bounces come from a reverse-engineered
+table — the one estimate left in the emitted motion, and `export-report.json` says so:
+`estimatedSpringPresets` counts the curves that rest on it, and `springPresetCalibration` reports
+what the file's own springs say the table should hold whenever Figma does supply the numbers. A
+preset that arrives with real parameters is solved from them and never touches the table at all.
+
+**Adaptivity.** Frames named `Home / desktop` + `Home / mobile` collapse into one
+page: the widest frame is the DOM, the narrower ones become `@media` blocks, and
+nodes that exist *only* in a narrow frame (the burger, a stacked CTA) are spliced in
+hidden and revealed at their breakpoint. `base.html` carries the viewport meta, so
+those queries apply on a real phone.
+
+## React export & Code Connect
+
+The React target writes a component per Figma component set, and beside each one a
+`<Component>.figma.tsx` — the Code Connect mapping that tells Figma *this* is the code for that
+design component. From then on Dev Mode and Figma's official MCP answer with
+`<Button type="Primary" …>` and a real import, instead of anonymous markup a developer has to
+recognise. A root `figma.config.json` ships with them, so the repository is publishable as it
+lands:
+
+```bash
+npx figma connect publish --token <token>
+```
+
+Props are not guessed: the same variant/text/boolean definitions the component's own union types
+come from become `figma.enum` / `figma.string` / `figma.boolean`, with the Figma property names
+verbatim — `Button-lable` and `Meduim` are mapped as spelled, because that is what the file
+contains. A component with no properties still gets a file with an empty `props`.
+
+Two things worth knowing before troubleshooting a publish:
+
+- **The library does not have to be published.** A mapping addresses its component by node URL
+  (`?node-id=819-95512` — a dash, not the colon Figma stores), so `publishStatus: UNPUBLISHED`
+  publishes fine. Publishing only matters for the MCP route, where `add_code_connect_map` refuses
+  with "Published component not found".
+- **The token must be the right category.** `file_code_connect:write` is not among the scopes a
+  personal access token can carry — a PAT answers `403 Invalid scope(s)`, and a plan token of the
+  REST API category has those endpoints switched off. It takes a plan access token of the
+  **Figma CLI** category (figma.com/developers/tokens → Figma CLI tab; organization admin, 2FA).
+
+`figma.fileKey` is granted only to a private plugin on an Organization plan. Without it a node URL
+cannot be built, so no mapping files are written at all and the export report names that as the
+reason — a half-written mapping pointing at a placeholder key would be worse than none.
+
 ## Automated delivery
 
 Reading variable **values** over REST is Enterprise-only, so on Organization the

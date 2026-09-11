@@ -29,7 +29,10 @@ export interface LayerMatchResult {
   readonly added: readonly UnmatchedNode[]
 }
 
-function indexTree(root: DiffableNode): Map<NodePath, DiffableNode> {
+/** Exported so callers that need a name+path→node lookup (interactions.ts's descendant diff,
+ * transitions.ts's page-root morph matching) can resolve a `matchLayers` path back to a REAL
+ * node — e.g. the exported DOM's own descendant, as opposed to an off-tree variant's. */
+export function indexTree(root: DiffableNode): Map<NodePath, DiffableNode> {
   const map = new Map<NodePath, DiffableNode>()
 
   const walk = (node: DiffableNode, prefix: string): void => {

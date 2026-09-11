@@ -2,20 +2,22 @@
  * Breakpoint frames → media queries (M4b, docs/1TO1-FIDELITY.md §M4b): several top-level frames
  * named for the same page at different widths (`Home/desktop` + `Home/mobile`, or width-suffixed
  * `Home/1920` + `Home/375`) collapse into ONE Django template whose CSS carries `@media
- * (max-width: …)` blocks. The widest frame is the base (unconditional) layout and provides the
- * rendered DOM; each narrower frame becomes a media block that overrides its matched nodes.
+ * (max-width: …)` blocks. The widest frame is the base (unconditional) layout; `mergeBreakpointVariants`
+ * additionally splices every node that exists ONLY in a narrower frame (a mobile burger, a
+ * stacked CTA) into its matched parent's position in that base tree, so it reaches the rendered
+ * DOM instead of being dropped — hidden by default (`display: none`) and revealed inside the
+ * `@media` block for the breakpoint(s) it belongs to.
  *
  * Cross-frame node identity reuses the Smart-Animate layer matcher (`matchLayers`, by name +
  * nesting path): a node matched between the widest frame and a narrower one shares the widest
  * node's CSS class, so the narrower frame's rule overrides the base rule of the same DOM element.
  * A node present in the widest frame but absent from a narrower one is hidden (`display: none`)
- * inside that frame's media block; a node that exists only in a narrower frame has no element in
- * the rendered DOM and is dropped.
+ * inside that frame's media block.
  */
 
-import type { IrContainerNode, IrNode } from './ir.ts'
-import { matchLayers, type DiffableNode } from './smart-animate/index.ts'
-import { emitCss, toClassName, type DjangoNodeSource } from './css-emitter.ts'
+import type { IrContainerNode, IrInstanceRefNode, IrLayout, IrNode } from './ir.ts'
+import { matchLayers, type DiffableNode, type LayerMatchResult } from './smart-animate/index.ts'
+import { emitCss, layoutDeclarations, toClassName, type DjangoNodeSource } from './css-emitter.ts'
 import type { VariableSnapshot } from '../../variables.ts'
 
 /** Canonical widths for the named-breakpoint convention (`<slug>/desktop|tablet|mobile`).
@@ -104,6 +106,9 @@ export function extractBreakpointTokens(snapshot: VariableSnapshot | undefined):
 export interface BreakpointFrame {
   /** The frame's design width — its `@media` threshold input (widest is the base layout). */
   readonly width: number
+  /** The raw name-suffix this frame was parsed from (`'mobile'`, `'tablet'`, `'768'`, …) — the
+   * tag `mergeBreakpointVariants` stamps onto a narrow-only node's `breakpointOnly`. */
+  readonly breakpoint: string
   readonly node: IrContainerNode
 }
 
@@ -133,15 +138,15 @@ function resolveNamedWidths(overrides: ReadonlyMap<string, number> | undefined):
 export function parseBreakpointName(
   name: string,
   namedWidths: Record<string, number> = NAMED_WIDTHS
-): { slug: string; width: number } | null {
+): { slug: string; width: number; breakpoint: string } | null {
   const match = /^(.*)\/([^/]+)$/.exec(name.trim())
   if (!match) return null
   const slug = match[1].trim()
   if (!slug) return null
   const suffix = match[2].trim().toLowerCase()
-  if (suffix in namedWidths) return { slug, width: namedWidths[suffix] }
+  if (suffix in namedWidths) return { slug, width: namedWidths[suffix], breakpoint: suffix }
   const width = /^(\d+)\s*(?:px)?$/.exec(suffix)
-  if (width) return { slug, width: Number(width[1]) }
+  if (width) return { slug, width: Number(width[1]), breakpoint: suffix }
   return null
 }
 
@@ -175,7 +180,7 @@ export function detectBreakpointGroups(
       bySlug.set(key, { slug: parsed.slug, frames: [] })
       keyOrder.push(key)
     }
-    bySlug.get(key)!.frames.push({ width: parsed.width, node: root })
+    bySlug.get(key)!.frames.push({ width: parsed.width, breakpoint: parsed.breakpoint, node: root })
   }
 
   const groups: BreakpointGroup[] = []
@@ -214,58 +219,370 @@ function indent(block: string): string {
   return block.replace(/^/gm, '  ')
 }
 
+type ParentNode = IrContainerNode | IrInstanceRefNode
+
+/** One node in a real IR tree, indexed the same way `matchLayers`' internal `indexTree` indexes
+ * `DiffableNode`s (name#dupIndex path segments) — so a `DiffableNode` path found by `matchLayers`
+ * resolves straight back to the real node (with its real, un-flattened subtree) at that path. */
+interface RealTreeEntry {
+  readonly node: IrNode
+  readonly parent: ParentNode | null
+  readonly indexInParent: number
+  readonly path: string
+}
+
+/** Indexes every descendant of `root` by its `name#dupIndex/…` path (see `RealTreeEntry`) and by
+ * id, mirroring `match-layers.ts`'s private `indexTree` exactly so paths line up with
+ * `matchLayers`' output. Rebuilding this fresh for the merged tree before each narrower frame's
+ * diff keeps splice targets and dedup checks accurate as earlier frames' splices land. */
+function indexRealTree(root: IrNode): { byPath: Map<string, RealTreeEntry>; byId: Map<string, RealTreeEntry> } {
+  const byPath = new Map<string, RealTreeEntry>()
+  const byId = new Map<string, RealTreeEntry>()
+  const walk = (node: IrNode, prefix: string): void => {
+    if (!('children' in node)) return
+    const seen = new Map<string, number>()
+    node.children.forEach((child, indexInParent) => {
+      const dupIndex = seen.get(child.name) ?? 0
+      seen.set(child.name, dupIndex + 1)
+      const path = `${prefix}${child.name}#${dupIndex}`
+      const entry: RealTreeEntry = { node: child, parent: node as ParentNode, indexInParent, path }
+      byPath.set(path, entry)
+      byId.set(child.id, entry)
+      walk(child, `${path}/`)
+    })
+  }
+  walk(root, '')
+  return { byPath, byId }
+}
+
+/** The path of `path`'s parent — everything before the last `/`, or `''` for a direct root child
+ * (matching `matchLayers`' root-relative path convention, which has no leading segment for it). */
+function parentPathOf(path: string): string {
+  const slash = path.lastIndexOf('/')
+  return slash === -1 ? '' : path.slice(0, slash)
+}
+
+/**
+ * For every flex-parent container shared between the merged tree and `frameRoot`, compares the
+ * two trees' flow-child order (children with `absoluteInLayout !== true`, restricted to the
+ * common set matched by `idAliases`). A differing sequence means the narrower frame reordered
+ * its children (docs: a stacked mobile CTA moved above the copy) — CSS `order` cannot express
+ * "these two swapped" in isolation (an un-annotated sibling defaults to `order: 0` and would
+ * jump to the front), so EVERY flow child of that parent gets an explicit `order` pinned to the
+ * frame's own sequence, not just the ones that moved. Absolute/grid parents are skipped — `order`
+ * only affects flex layout, so setting it there would be a silent no-op with no cascade value.
+ */
+function computeFlexOrderOverrides(
+  frameRoot: IrContainerNode,
+  beforeIndex: { readonly byPath: ReadonlyMap<string, RealTreeEntry> },
+  frameIndex: { readonly byPath: ReadonlyMap<string, RealTreeEntry> },
+  idAliases: ReadonlyMap<string, string>
+): Map<string, number> {
+  const overrides = new Map<string, number>()
+  const consideredParents = new Set<string>()
+
+  for (const entry of beforeIndex.byPath.values()) {
+    if (!entry.parent || consideredParents.has(entry.parent.id)) continue
+    const parentLayout = 'layout' in entry.parent ? entry.parent.layout : null
+    if (parentLayout?.kind !== 'flex') continue
+    consideredParents.add(entry.parent.id)
+
+    const parentPath = parentPathOf(entry.path)
+    const frameParent = parentPath === '' ? frameRoot : frameIndex.byPath.get(parentPath)?.node
+    if (!frameParent || !('children' in frameParent)) continue
+
+    const mergedFlow = entry.parent.children.filter((c) => c.absoluteInLayout !== true)
+    const frameFlow = frameParent.children.filter((c) => c.absoluteInLayout !== true)
+
+    const frameIdToMergedId = new Map<string, string>()
+    for (const child of frameFlow) {
+      const mergedId = idAliases.get(child.id)
+      if (mergedId) frameIdToMergedId.set(child.id, mergedId)
+    }
+    const commonMergedIds = new Set(frameIdToMergedId.values())
+    const mergedOrder = mergedFlow.map((c) => c.id).filter((id) => commonMergedIds.has(id))
+    const frameOrder = frameFlow.map((c) => frameIdToMergedId.get(c.id)).filter((id): id is string => Boolean(id))
+
+    if (mergedOrder.length < 2 || mergedOrder.join('|') === frameOrder.join('|')) continue
+
+    // Sequence differs — pin every flow child (matched or freshly spliced-in this frame) to the
+    // frame's own order. A freshly spliced child has no merged-id alias yet (it's about to be
+    // added at exactly this position), so it keeps its own id, which becomes its merged id too.
+    frameFlow.forEach((child, index) => {
+      overrides.set(frameIdToMergedId.get(child.id) ?? child.id, index)
+    })
+  }
+
+  return overrides
+}
+
+/** The `display` value a node reveals to when its `breakpointOnly` media block turns it back on
+ * — reuses `layoutDeclarations`' own flex/grid/line-clamp/image-block rules (so a mobile-only flex
+ * row reveals as `flex`, not `block`) with `block` as the CSS default fallback for anything else
+ * (a plain leaf/absolute container), matching the same default the browser already applies to a
+ * `<div>`/`<p>`. Computed once over the FINAL merged tree since a node's own display never
+ * depends on which frame is asking. */
+function computeRevealDisplay(root: IrContainerNode, ids: ReadonlySet<string>): Map<string, string> {
+  const result = new Map<string, string>()
+  const walk = (node: IrNode, parentLayout: IrLayout | null): void => {
+    if (ids.has(node.id)) result.set(node.id, layoutDeclarations(node, parentLayout)['display'] ?? 'block')
+    if ('children' in node) {
+      const layout = 'layout' in node ? node.layout : null
+      for (const child of node.children) walk(child, layout)
+    }
+  }
+  walk(root, null)
+  return result
+}
+
+/**
+ * M4b missing-tablet interpolation (docs §M4b "missing-tablet reality"): a group with only a
+ * desktop and a mobile frame has no design for the gap between the mobile threshold and the
+ * desktop width — the mobile block's `max-width` has no lower bound (see `emitBreakpointCss`'s
+ * doc comment), so without this, mobile's cramped fixed-px layout would stretch across that whole
+ * gap. The one interpolation this function makes is conservative by construction: a CONTAINER
+ * whose own width is a fixed px EQUAL to the desktop frame's width (typically the page root, or a
+ * full-bleed section) becomes fluid (`width: 100%; max-width: <px>`) instead — identical to the
+ * original fixed value at ≥ desktop width, and never wider than the viewport below it. No other
+ * layout property is touched, so nothing beyond overflow-safety is invented for the gap.
+ */
+function collectFixedWidthInterpolationIds(root: IrContainerNode, desktopWidth: number): string[] {
+  const ids: string[] = []
+  const walk = (node: IrNode): void => {
+    if (
+      (node.type === 'container' || node.type === 'instance-ref') &&
+      node.sizing.width.mode === 'fixed' &&
+      node.sizing.width.value === desktopWidth
+    ) {
+      ids.push(node.id)
+    }
+    if ('children' in node) for (const child of node.children) walk(child)
+  }
+  walk(root)
+  return ids.sort()
+}
+
+/** Per-narrower-frame CSS inputs computed by `mergeBreakpointGroup` — everything
+ * `emitBreakpointCss` needs to format one `@media` block without re-diffing. */
+interface MergedFrameDiff {
+  readonly frame: BreakpointFrame
+  readonly nextWiderWidth: number
+  /** Frame node id → merged node id, for `emitCss`'s `idAliases` (M4b overrides). */
+  readonly idAliases: ReadonlyMap<string, string>
+  /** Merged ids spliced into the tree AT this frame — `display: <real>` reveals them here. */
+  readonly revealedIds: readonly string[]
+  /** Merged ids present before this frame but absent from it — `display: none` here. */
+  readonly hiddenIds: readonly string[]
+  /** Merged/own id → `order` value, for flex parents whose child sequence this frame reorders. */
+  readonly orderByClassId: ReadonlyMap<string, number>
+}
+
+interface MergedBreakpointResult {
+  readonly root: IrContainerNode
+  /** Every `breakpointOnly`-tagged node — `display: none` in the unconditional base CSS. */
+  readonly baseHiddenIds: readonly string[]
+  /** M4b missing-tablet interpolation targets (`collectFixedWidthInterpolationIds`) — empty
+   * unless the group has exactly a desktop and a mobile frame with nothing in between. */
+  readonly interpolatedFixedWidthIds: readonly string[]
+  /** Narrower frames' diffs, widest-first (so `emitBreakpointCss` emits blocks in that order). */
+  readonly frames: readonly MergedFrameDiff[]
+  readonly revealDisplayById: ReadonlyMap<string, string>
+}
+
+/** Deep copy of an IR subtree. `structuredClone` is a host API — the Figma plugin sandbox does not
+ * define it, so calling it would throw at export time on the only machine that matters; the IR is
+ * plain JSON data, so a serialize/parse round trip is an exact copy. A shallow copy is not an
+ * option: the merge splices narrow-only subtrees into the widest frame's own children arrays and
+ * would mutate the frame it cloned from. */
+function cloneIr<T extends IrNode>(node: T): T {
+  return JSON.parse(JSON.stringify(node)) as T
+}
+
+/**
+ * The shared merge+diff pass behind both `mergeBreakpointVariants` (the DOM) and
+ * `emitBreakpointCss` (the CSS) — computed once per group so the two stay in lockstep.
+ *
+ * Frames are folded into the merged tree widest-to-narrowest, and each narrower frame is diffed
+ * against the CURRENT merged tree (not the original widest frame) rather than independently
+ * against the widest frame alone. This matters for a 3+ frame group: a node introduced by the
+ * tablet frame (absent from desktop) that also exists in the mobile frame is diffed as MATCHED at
+ * the mobile step (it's already in the merged tree from the tablet splice), not re-added as a
+ * second, duplicate mobile-only copy — and its `breakpointOnly` tag widens to cover both.
+ */
+function mergeBreakpointGroup(group: BreakpointGroup): MergedBreakpointResult {
+  const [widest, ...narrower] = group.frames
+  const merged = cloneIr(widest.node) as IrContainerNode
+  const baseHiddenIds = new Set<string>()
+  const frames: MergedFrameDiff[] = []
+
+  for (let i = 0; i < narrower.length; i++) {
+    const frame = narrower[i]
+    const nextWiderWidth = i === 0 ? widest.width : narrower[i - 1].width
+
+    const beforeIndex = indexRealTree(merged)
+    const frameIndex = indexRealTree(frame.node)
+    const diffResult: LayerMatchResult = matchLayers(toDiffable(merged), toDiffable(frame.node))
+
+    const idAliases = new Map<string, string>([[frame.node.id, merged.id]])
+    for (const pair of diffResult.matched) {
+      if (pair.a.id && pair.b.id) idAliases.set(pair.b.id, pair.a.id)
+    }
+    const revealedIds: string[] = []
+
+    // A merged node that already carries `breakpointOnly` (spliced by an EARLIER, wider narrow
+    // frame) and is ALSO present here belongs to this breakpoint too — widen its tag AND reveal
+    // it again in this frame's own block. The reveal is redundant with the wider frame's block
+    // cascading down (max-width has no lower bound — see `emitBreakpointCss`), but keeping one
+    // self-contained `display` rule per breakpoint the node belongs to means a later block never
+    // has to be trusted to carry it, and no block ever declares two conflicting rules for it.
+    for (const pair of diffResult.matched) {
+      if (!pair.a.id) continue
+      const entry = beforeIndex.byId.get(pair.a.id)
+      if (!entry || !entry.parent) continue
+      const existing = entry.node.breakpointOnly
+      if (existing && existing.length > 0) {
+        revealedIds.push(pair.a.id)
+        if (!existing.includes(frame.breakpoint)) {
+          entry.parent.children[entry.indexInParent] = { ...entry.node, breakpointOnly: [...existing, frame.breakpoint] }
+        }
+      }
+    }
+
+    const orderByClassId = computeFlexOrderOverrides(frame.node, beforeIndex, frameIndex, idAliases)
+
+    // Splice every top-level narrow-only subtree (present in this frame, absent from the merged
+    // tree so far) into its matched parent. `beforeIndex.byPath.has(entry.path)` excludes a
+    // type-mismatch (same path, different node type in matchLayers' removed+added pairing) —
+    // that degrades to "hidden" (below) against the widest-frame node already at that path,
+    // rather than splicing a conflicting second node into the same slot.
+    const addedRoots = diffResult.added.filter((entry) => {
+      if (beforeIndex.byPath.has(entry.path)) return false
+      const parentPath = parentPathOf(entry.path)
+      return parentPath === '' || beforeIndex.byPath.has(parentPath)
+    })
+    const sortedAdded = [...addedRoots].sort(
+      (x, y) => frameIndex.byPath.get(x.path)!.indexInParent - frameIndex.byPath.get(y.path)!.indexInParent
+    )
+    const insertedCountByParent = new Map<string, number>()
+    for (const added of sortedAdded) {
+      const real = frameIndex.byPath.get(added.path)
+      if (!real) continue
+      const parentPath = parentPathOf(added.path)
+      const parentNode: ParentNode = parentPath === '' ? merged : (beforeIndex.byPath.get(parentPath)!.node as ParentNode)
+      if (!('children' in parentNode)) continue
+      const already = insertedCountByParent.get(parentNode.id) ?? 0
+      const insertAt = Math.min(real.indexInParent + already, parentNode.children.length)
+      const spliced: IrNode = { ...cloneIr(real.node), breakpointOnly: [frame.breakpoint] }
+      parentNode.children.splice(insertAt, 0, spliced)
+      insertedCountByParent.set(parentNode.id, already + 1)
+      baseHiddenIds.add(spliced.id)
+      revealedIds.push(spliced.id)
+    }
+
+    // `removed` = present in the merged tree before this frame, absent (or type-changed) here —
+    // hidden in this frame's block. Covers both original widest-frame nodes AND nodes an earlier
+    // narrower frame spliced in that this frame doesn't have (e.g. tablet-only, gone by mobile).
+    const hiddenIds = diffResult.removed
+      .map((entry) => entry.node.id)
+      .filter((id): id is string => Boolean(id))
+
+    frames.push({ frame, nextWiderWidth, idAliases, revealedIds, hiddenIds, orderByClassId })
+  }
+
+  const interpolatedFixedWidthIds =
+    group.frames.length === 2 ? collectFixedWidthInterpolationIds(merged, widest.width) : []
+  const revealDisplayById = computeRevealDisplay(merged, baseHiddenIds)
+
+  return { root: merged, baseHiddenIds: [...baseHiddenIds].sort(), interpolatedFixedWidthIds, frames, revealDisplayById }
+}
+
+/**
+ * Merges a breakpoint group's frames into ONE IR tree (M4b): the widest frame's tree, with every
+ * node that exists only in a narrower frame spliced into its matched parent at that frame's
+ * sibling position, tagged `breakpointOnly` with the breakpoint(s) it belongs to. Callers render
+ * THIS tree instead of the raw widest frame — `emitBreakpointCss` (same group) supplies the CSS
+ * that hides each spliced node outside its breakpoint(s) and reveals it inside them.
+ */
+export function mergeBreakpointVariants(group: BreakpointGroup): IrContainerNode {
+  return mergeBreakpointGroup(group).root
+}
+
 /**
  * Emits the `@media (max-width: …)` blocks for one breakpoint group's narrower frames — the
  * widest frame is the base layout and is emitted by the caller's ordinary `emitCss` pass over
- * the rendered roots. Blocks come out widest-first (descending threshold) so the narrowest
- * frame's rules win the cascade where two thresholds overlap.
+ * the rendered roots (over `mergeBreakpointVariants`'s merged tree, once the caller has swapped
+ * it in — see that function's doc comment). Blocks come out widest-first (descending threshold)
+ * so the narrowest frame's rules win the cascade where two thresholds overlap.
  *
  * A frame's design applies from ITS OWN width up to just below the NEXT WIDER frame's width —
  * so each block's threshold is `nextWiderWidth - 1`, not the frame's own width. (With own-width
  * thresholds, a 375px viewport would render the 768 design: the 375 block would only match
- * at ≤374px, one frame off across the whole cascade.)
+ * at ≤374px, one frame off across the whole cascade.) Because `max-width` has no lower bound,
+ * a frame's declarations also apply to every viewport narrower than its own threshold UNLESS a
+ * still-narrower frame's block (emitted after it) redeclares that property — the intended
+ * cascade for a 3+ frame group, but a leak for a 2-frame (desktop+mobile, no tablet) group: the
+ * lone mobile block's `max-width` runs all the way to `desktop.width - 1`, so mobile's fixed-px
+ * layout would otherwise stretch across the whole desktop↔mobile gap. `collectFixedWidthInterpolationIds`'s
+ * fluid replacement is protected from that leak by its own guard, emitted LAST as
+ * `@media (min-width: mobile.width)` — same specificity as mobile's block, later in the
+ * stylesheet, so it wins the `width`/`max-width` properties for those nodes everywhere at or
+ * above mobile's own width, while mobile's actual (narrower) design still applies unmodified
+ * below it.
  *
- * For each narrower frame: matched nodes (by name + nesting path against the widest frame)
- * re-key their CSS onto the widest node's class via `idAliases`, so the block overrides the
- * base rule of the same DOM element; the frame's own root aliases onto the widest root the
- * same way. Widest-frame nodes with no match in this frame get `display: none` inside the block.
+ * For each narrower frame: matched nodes (by name + nesting path against the merged tree so
+ * far) re-key their CSS onto the merged node's class via `idAliases`, so the block overrides the
+ * base rule of the same DOM element; the frame's own root aliases onto the merged root the same
+ * way. Nodes absent from this frame get `display: none`; nodes this frame introduces (spliced by
+ * `mergeBreakpointVariants`) get `display: <real>` to undo the unconditional base hide. Flex
+ * parents whose flow-child order this frame changes get an `order` declaration per child.
  */
 export async function emitBreakpointCss(
   group: BreakpointGroup,
   sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
   variableNamesById: ReadonlyMap<string, string> = new Map()
 ): Promise<string> {
-  const [widest, ...narrower] = group.frames
-  const widestDiffable = toDiffable(widest.node)
+  const merged = mergeBreakpointGroup(group)
 
-  const blocks: string[] = []
-  for (let index = 0; index < narrower.length; index++) {
-    const frame = narrower[index]
-    const nextWiderWidth = index === 0 ? widest.width : narrower[index - 1].width
-    const result = matchLayers(widestDiffable, toDiffable(frame.node))
-
-    // The frame's root maps onto the widest root (both are the single page container); matched
-    // descendants map narrow-id → widest-id.
-    const idAliases = new Map<string, string>([[frame.node.id, widest.node.id]])
-    for (const pair of result.matched) {
-      if (pair.a.id && pair.b.id) idAliases.set(pair.b.id, pair.a.id)
-    }
-
-    const overrides = await emitCss([frame.node], sceneNodesById, variableNamesById, {
-      idAliases,
-      preamble: false,
-    })
-    // `removed` = present in the widest frame, absent (or type-changed) in this one → hide it here.
-    const hidden = result.removed
-      .map((entry) => entry.node.id)
-      .filter((id): id is string => Boolean(id))
-      .map((id) => `.${toClassName(id)} {\n  display: none;\n}`)
-
-    const body = [overrides, ...hidden].filter((part) => part.length > 0).join('\n\n')
-    blocks.push(`@media (max-width: ${nextWiderWidth - 1}px) {\n${indent(body)}\n}`)
+  const baseParts: string[] = []
+  if (merged.baseHiddenIds.length > 0) {
+    const selector = merged.baseHiddenIds.map((id) => `.${toClassName(id)}`).join(',\n')
+    baseParts.push(`${selector} {\n  display: none;\n}`)
   }
 
-  return blocks.join('\n\n')
+  const blocks: string[] = []
+  for (const fr of merged.frames) {
+    const overrides = await emitCss([fr.frame.node], sceneNodesById, variableNamesById, {
+      idAliases: fr.idAliases,
+      preamble: false,
+    })
+    const revealed = [...fr.revealedIds]
+      .sort()
+      .map((id) => `.${toClassName(id)} {\n  display: ${merged.revealDisplayById.get(id) ?? 'block'};\n}`)
+    const hidden = [...fr.hiddenIds].sort().map((id) => `.${toClassName(id)} {\n  display: none;\n}`)
+    const orders = [...fr.orderByClassId.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([id, order]) => `.${toClassName(id)} {\n  order: ${order};\n}`)
+
+    const body = [overrides, ...revealed, ...hidden, ...orders].filter((part) => part.length > 0).join('\n\n')
+    if (body.length === 0) continue
+    blocks.push(`@media (max-width: ${fr.nextWiderWidth - 1}px) {\n${indent(body)}\n}`)
+  }
+
+  // Missing-tablet gap guard (see doc comment above) — placed after every max-width block so it
+  // wins the width/max-width properties for the interpolated nodes across the whole gap.
+  if (merged.interpolatedFixedWidthIds.length > 0) {
+    const mobileWidth = group.frames[group.frames.length - 1].width
+    const px = group.frames[0].width
+    const selector = merged.interpolatedFixedWidthIds.map((id) => `.${toClassName(id)}`).join(',\n')
+    blocks.push(
+      `/* M4b missing-tablet interpolation: no frame exists between desktop and mobile, so a\n` +
+        `   desktop-width fixed container is bounded-fluid instead of showing mobile's cramped\n` +
+        `   design across the whole gap (see emitBreakpointCss's doc comment). */\n` +
+        `@media (min-width: ${mobileWidth}px) {\n${indent(`${selector} {\n  width: 100%;\n  max-width: ${px}px;\n}`)}\n}`
+    )
+  }
+
+  return [...baseParts, ...blocks].join('\n\n')
 }
 
 // ── Breakpoint collection generator (forum-recommended modes-as-breakpoints pattern) ──────

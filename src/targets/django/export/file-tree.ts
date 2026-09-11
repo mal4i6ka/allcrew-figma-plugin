@@ -21,6 +21,13 @@ export interface BuildExportTreeOptions {
   cssFile: string
   /** `locale/figma.po` content (T4.1 extraction serialized by `emitPo`); omitted when there is nothing to translate. */
   po?: string
+  /** Per-locale catalogs (`emitLocaleCatalogs`), keyed by their full `locale/<lang>/LC_MESSAGES/
+   * django.po` path — the files `makemessages`/`compilemessages` and Django's own `LOCALE_PATHS`
+   * expect. `figma.po` alone is a translation source, not something Django ever loads. */
+  localeCatalogs?: Record<string, string>
+  /** The Django project itself (`emitDjangoScaffold`) — `manage.py`, settings/urls/views, the page
+   * registry. Absent when the package is laid onto a project that already has one. */
+  scaffold?: Record<string, string>
   assets?: readonly ExportAsset[]
   /** M10 Motion outputs; empty strings mean the selected export produced no timelines for that backend. */
   animation?: {
@@ -57,10 +64,20 @@ export function buildExportTree(opts: BuildExportTreeOptions): Record<string, Ex
   if (opts.project.themeCss) files['static/css/bootstrap-theme.css'] = opts.project.themeCss
   if (opts.animation?.css) files['static/css/animations.css'] = opts.animation.css
   if (opts.animation?.js) files['static/js/animations.js'] = opts.animation.js
+  // Prototype page transitions — same rule: linked from base.html only when they exist.
+  if (opts.project.transitionsCss) files['static/css/transitions.css'] = opts.project.transitionsCss
+  if (opts.project.transitionsJs) files['static/js/transitions.js'] = opts.project.transitionsJs
 
   for (const asset of opts.assets ?? []) files[`static/img/${asset.filename}`] = asset.content
 
   if (opts.po) files['locale/figma.po'] = opts.po
+  for (const [path, catalog] of Object.entries(opts.localeCatalogs ?? {})) files[path] = catalog
+  // Written last and without overwriting: a scaffold file never replaces a generated template or
+  // stylesheet that shares its path (`templates/404.html` is the scaffold's, `templates/base.html`
+  // is the emitter's), so the design always wins over the boilerplate.
+  for (const [path, content] of Object.entries(opts.scaffold ?? {})) {
+    if (!(path in files)) files[path] = content
+  }
 
   return files
 }
@@ -90,6 +107,10 @@ export function buildRegenStaticFiles(opts: {
   bootstrapTokensCss?: string
   /** `EmitDjangoProjectOutput.themeCss` (REFORM phase 14 B) — shipped as `static/css/bootstrap-theme.css` when non-empty. */
   themeCss?: string
+  /** `EmitDjangoProjectOutput.transitionsCss/Js` — base.html links them, so a regen preview that
+   * left them out would 404 exactly the files the page transitions need. */
+  transitionsCss?: string
+  transitionsJs?: string
 }): Record<string, string> {
   const files: Record<string, string> = {}
   if (opts.tokensCss) files['static/css/tokens.css'] = opts.tokensCss
@@ -97,5 +118,7 @@ export function buildRegenStaticFiles(opts: {
   if (opts.themeCss) files['static/css/bootstrap-theme.css'] = opts.themeCss
   if (opts.interactionsCss) files['static/css/interactions.css'] = opts.interactionsCss
   if (opts.interactionsJs) files['static/js/interactions.js'] = opts.interactionsJs
+  if (opts.transitionsCss) files['static/css/transitions.css'] = opts.transitionsCss
+  if (opts.transitionsJs) files['static/js/transitions.js'] = opts.transitionsJs
   return files
 }

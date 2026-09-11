@@ -18,28 +18,37 @@ import type { BaseHtmlFrameworkLinks } from './targets/django/index'
 import { serializeNode, type IrContainerNode, type IrNode } from './targets/django/ir'
 import { emitDjango, emitDjangoProject, planRegeneration, type FreshFile } from './targets/django/index'
 import { extractBreakpointTokens, generateBreakpointCollection, parseBreakpointName } from './targets/django/breakpoint-frames'
+import { variableNamesForScope } from './targets/django/variable-names'
 import { collectReactionDestinationIds } from './targets/django/interactions'
 import { matchBootstrapComponent } from './targets/django/bootstrap/components'
-import { scaleBorderRadius } from './targets/django/css-emitter'
+import { imageFillUrls, scaleBorderRadius } from './targets/django/css-emitter'
 import type { ThemableSetData, ThemableVariantData } from './targets/django/bootstrap/theme'
 import { findAllWithCriteria, walkSceneNodes, yieldToHost } from './utils/tree'
 import { extractStrings, type ExtractedEntry } from './targets/django/i18n/extract'
 import { translationKey } from './targets/django/i18n/normalize'
-import { emitPo } from './targets/django/i18n/po'
+import { emitLocaleCatalogs, emitPo } from './targets/django/i18n/po'
 import { resolveKey } from './targets/django/i18n/keys'
 import { importTranslations, type ImportFormat } from './targets/django/i18n/index'
 import { annotateVectorLeaves, annotateVideoFills, collectExportAssets, collectManualAssets, type AssetSourceNode } from './targets/django/export/assets'
 import { videoFilename } from './targets/django/assets'
 import { buildExportTree, buildRegenStaticFiles, type ExportFileContent } from './targets/django/export/file-tree'
+import { emitDjangoScaffold } from './targets/django/project/index'
 import {
   EXPORT_PRESETS,
   mergeExportOptions,
   normalizeExportOptions,
   normalizeUserPresets,
   upsertUserPreset,
+  parseLanguages,
   type ExportOptions,
 } from './settings'
-import { buildExportReport } from './targets/django/export/report'
+import {
+  buildExportReport,
+  buildFigmaFileReference,
+  collectFlattenedPages,
+  collectSpringReport,
+  summarizeEmitterNotes,
+} from './targets/django/export/report'
 import { lintScopeAsync, type LintFinding } from './targets/django/lint/index'
 import { annotateUnfixableFindings, applyLintFix, buildFixContext, type LintFixRequest, type LintFixResult } from './targets/django/lint/fix'
 import { loadAnnotationForm, applyAnnotationForm, renderAnnotationPanel, type AnnotationFormState } from './targets/django/ui/annotation-panel'
@@ -527,6 +536,43 @@ function frameworkLinksFrom(options: ExportOptions, tokensOn: boolean): BaseHtml
   }
 }
 
+/** Endonyms for the locales a designer is likely to configure. Django's own `LANG_INFO` has the
+ * full table, but the generated `settings.py` must stay importable without reaching into a private
+ * Django module, and an unlisted code is better shown as the code itself than as a wrong name. */
+const LANGUAGE_LABELS: Record<string, string> = {
+  ar: 'العربية',
+  de: 'Deutsch',
+  en: 'English',
+  es: 'Español',
+  fr: 'Français',
+  it: 'Italiano',
+  ja: '日本語',
+  ko: '한국어',
+  nl: 'Nederlands',
+  pl: 'Polski',
+  pt: 'Português',
+  'pt-br': 'Português (Brasil)',
+  ru: 'Русский',
+  tr: 'Türkçe',
+  uk: 'Українська',
+  zh: '中文',
+  'zh-hans': '简体中文',
+}
+
+function languageLabel(code: string): string {
+  return LANGUAGE_LABELS[code.toLowerCase()] ?? code
+}
+
+/** `figma.fileKey` is given only to private plugins on Organization plans; everywhere else reading
+ * it throws rather than returning undefined, and an export must not die over a URL it cannot build. */
+function figmaFileKey(): string | null {
+  try {
+    return figma.fileKey ?? null
+  } catch {
+    return null
+  }
+}
+
 function defaultRoots(): readonly SceneNode[] {
   return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children
 }
@@ -700,7 +746,7 @@ function motionUnder(roots: readonly SceneNode[]): Map<string, MotionSnapshot> {
   return found
 }
 
-function rootsForScope(scope: ExportScope | undefined): readonly SceneNode[] {
+async function rootsForScope(scope: ExportScope | undefined): Promise<readonly SceneNode[]> {
   if (!scope) return defaultRoots()
   switch (scope.mode) {
     case 'selection': return figma.currentPage.selection
@@ -711,10 +757,40 @@ function rootsForScope(scope: ExportScope | undefined): readonly SceneNode[] {
       const top = figma.currentPage.children.find((node) => node.id === scope.frameId)
       if (top) return [top]
       const found = figma.currentPage.findOne((node) => node.id === scope.frameId)
-      return found ? [found] : []
+      if (found) return [found]
+      // …and on any OTHER page too. An agent addresses a frame by id, and the id it was handed
+      // (from `document.info`, a site map, a Figma URL) is just as likely to sit on a page the
+      // designer does not have open. That case used to export an empty project — base.html and
+      // nothing else — and report success.
+      const node = await figma.getNodeByIdAsync(scope.frameId)
+      if (node && 'visible' in node) {
+        const page = pageOf(node as SceneNode)
+        if (page) await page.loadAsync()
+        return [node as SceneNode]
+      }
+      return []
     }
     case 'page': return figma.currentPage.children
   }
+}
+
+function pageOf(node: BaseNode): PageNode | null {
+  let parent: BaseNode | null = node.parent
+  while (parent && parent.type !== 'PAGE') parent = parent.parent
+  return (parent as PageNode | null) ?? null
+}
+
+/** An export whose scope resolved to nothing must say so. It used to emit `base.html` alone and
+ * answer as a success, so the caller wrote an empty page and only found out by opening it. */
+function requireNonEmptyScope(command: string, roots: readonly SceneNode[], scope: ExportScope | undefined): void {
+  if (roots.length > 0) return
+  const what =
+    scope?.mode === 'frame'
+      ? `no node with id "${scope.frameId}" exists in this file`
+      : scope?.mode === 'selection'
+        ? 'nothing is selected'
+        : 'the current page has no top-level frames'
+  throw new Error(`${command}: ${what} — nothing to export`)
 }
 
 async function indexSceneNodes(roots: readonly SceneNode[]): Promise<Map<string, SceneNode>> {
@@ -738,6 +814,37 @@ async function addReactionDestinationsToScene(
       if (node && 'getCSSAsync' in node) sceneNodesById.set(id, node as SceneNode)
     })
   )
+}
+
+/** Serializes every CHANGE_TO/overlay destination that is NOT already part of an exported page
+ * tree. The result is never rendered as markup — it exists so the asset pass exports the fills of
+ * state variants (`backgroundImages[].assetSrc`), which the interactions emitter then references
+ * instead of dropping the declaration. A destination that fails to serialize is skipped: a missing
+ * hover image must not sink the export. */
+async function serializeReactionDestinations(
+  pageRoots: readonly IrNode[],
+  sceneNodesById: ReadonlyMap<string, SceneNode>
+): Promise<IrNode[]> {
+  const inPages = new Set<string>()
+  const index = (node: IrNode): void => {
+    inPages.add(node.id)
+    if ('children' in node) for (const child of node.children) index(child)
+  }
+  for (const root of pageRoots) index(root)
+
+  const serialized: IrNode[] = []
+  for (const id of collectReactionDestinationIds(pageRoots)) {
+    if (inPages.has(id)) continue
+    const scene = sceneNodesById.get(id)
+    if (!scene) continue
+    try {
+      const node = await serializeNode(scene)
+      if (node) serialized.push(node)
+    } catch (error) {
+      console.warn('[export] state variant did not serialize; its images will not ship', id, error)
+    }
+  }
+  return serialized
 }
 
 async function collectThemableSets(sceneNodesById: ReadonlyMap<string, SceneNode>): Promise<ThemableSetData[]> {
@@ -1187,7 +1294,10 @@ if (figma.mode === 'codegen') {
       const snapshot = await readAllVariables()
       const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
       await annotateVectorLeaves([ir], sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
-      const { files, gaps } = await emitReact([ir], sceneNodesById, variableNamesById, {})
+      const { files, gaps } = await emitReact([ir], sceneNodesById, variableNamesById, {
+        fileKey: figma.fileKey ?? undefined,
+        fileName: figma.root.name,
+      })
 
       const results: CodegenResult[] = []
       for (const [path, contents] of Object.entries(files)) {
@@ -1608,6 +1718,44 @@ function exportName(layer: string, extension: string, taken: Set<string>): strin
   for (let n = 2; taken.has(candidate); n++) candidate = `${stem}-${n}.${extension}`
   taken.add(candidate)
   return candidate
+}
+
+/**
+ * What an ancestor's "Clip content" leaves of a node, before anyone renders it.
+ *
+ * A node parked below the bottom of a clipping frame renders as NOTHING, and `exportAsync` answers
+ * that with a valid 1x1 PNG rather than an error — 149 bytes that every consumer downstream treats
+ * as a picture. Observed live on this file's mobile frames: `Main_container` at y=116 inside a
+ * 812-tall frame exports 188x348 (the 696 visible pixels at scale 0.5) and every section below it
+ * exports 1x1, so a whole mobile fidelity pass compared nothing against nothing.
+ *
+ * `absoluteRenderBounds` is Figma's own answer to "what of this actually draws": null when the
+ * node renders nothing at all, and the clipped rectangle when an ancestor cuts it.
+ */
+function clippedBy(node: SceneNode): { by: string; visible: number; own: number } | null {
+  // A StickyNode has neither field in the typings, and a node type that never clips is not a
+  // question worth asking — read both defensively rather than narrowing to a union of every
+  // exportable type Figma ships.
+  const geometry = node as unknown as {
+    absoluteBoundingBox?: Rect | null
+    absoluteRenderBounds?: Rect | null
+  }
+  const box = geometry.absoluteBoundingBox
+  if (!box || box.height === 0) return null
+  const rendered = geometry.absoluteRenderBounds
+  const visible = rendered ? rendered.height : 0
+  // Effects (a shadow, a blur) make the render bounds LARGER, which is not clipping; only a
+  // materially smaller box is. 2% of slack absorbs Figma's own rounding.
+  if (visible >= box.height * 0.98) return null
+
+  let parent: BaseNode | null = node.parent
+  while (parent) {
+    if ('clipsContent' in parent && (parent as FrameNode).clipsContent) {
+      return { by: `${parent.name} (${parent.id})`, visible, own: box.height }
+    }
+    parent = parent.parent
+  }
+  return { by: 'an ancestor', visible, own: box.height }
 }
 
 /** How far a copy is stepped aside from what it was copied from, when nobody said where to put
@@ -2587,15 +2735,15 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent read: render the scope as one Django template plus its CSS
       // @agent param cssFile: the name the stylesheet is written and linked as, e.g. "tokens.css"
       // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
-      // @agent cost: reads the scope and every variable — 80s on a large file; narrow the scope to a frame
-      const roots = rootsForScope(msg.scope)
-      const [irNodes, sceneNodesById, snapshot] = await Promise.all([
+      // @agent cost: reads the scope — the variables it needs are the ones the scope binds, not the library
+      const roots = await rootsForScope(msg.scope)
+      requireNonEmptyScope('EMIT_DJANGO', roots, msg.scope)
+      const [irNodes, sceneNodesById] = await Promise.all([
         Promise.all(roots.map((root) => serializeNode(root))),
         indexSceneNodes(roots),
-        readAllVariables(),
       ])
       const nodes = irNodes.filter((node): node is IrNode => node !== null)
-      const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
+      const variableNamesById = await variableNamesForScope(sceneNodesById.values())
       await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
       const { html, css } = await emitDjango(nodes, sceneNodesById, variableNamesById, { cssFile: msg.cssFile })
       postToUi({ type: 'DJANGO_TEMPLATE', html, css })
@@ -2629,7 +2777,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             break
           }
         } else {
-          roots = rootsForScope(msg.scope)
+          roots = await rootsForScope(msg.scope)
         }
 
         const [irNodes, sceneNodesById, tokens] = await Promise.all([
@@ -2811,6 +2959,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           libraryProps: library.props,
           componentNamesById: library.names,
           tokensCss: tokens.css,
+          // Code Connect addresses a node by URL, not by anything this plugin publishes itself —
+          // both halves of that URL come from the live document, the same as everything else here.
+          fileKey: figma.fileKey ?? undefined,
+          fileName: figma.root.name,
           // By master, not by name: the library emitted these exact components, and a screen
           // holding a DIFFERENT component of the same name must still build its own.
           fromLibrary: new Set([
@@ -2848,15 +3000,18 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param cssFile: the name the stylesheet is written and linked as, e.g. "tokens.css"
       // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
       // @agent param existingFiles: what the repository already holds, as { path: contents } — the plan compares against it and reports what would change rather than overwriting blindly
-      // @agent cost: reads the scope and every variable — 80s on a large file; narrow the scope to a frame
-      const roots = rootsForScope(msg.scope)
-      const [irNodes, sceneNodesById, snapshot] = await Promise.all([
+      // @agent cost: reads the scope; the full token snapshot is paid only when tokens are emitted
+      const roots = await rootsForScope(msg.scope)
+      requireNonEmptyScope('EMIT_DJANGO_PROJECT', roots, msg.scope)
+      const [irNodes, sceneNodesById] = await Promise.all([
         Promise.all(roots.map((root) => serializeNode(root))),
         indexSceneNodes(roots),
-        readAllVariables(),
       ])
       const pageRoots = irNodes.filter((node): node is IrContainerNode => node !== null && node.type === 'container')
-      const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
+      // Names only, resolved from the ids this scope actually binds: the library import behind
+      // `readAllVariables` costs a minute per export and answers the same question for thousands
+      // of variables no layer here touches (see targets/django/variable-names.ts).
+      const variableNamesById = await variableNamesForScope(sceneNodesById.values())
       await annotateVectorLeaves(pageRoots, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
       await addReactionDestinationsToScene(pageRoots, sceneNodesById)
 
@@ -2866,8 +3021,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         previewOptions.targetOptions.framework === 'bootstrap' && previewOptions.targetOptions.bootstrapFidelity === 'theme'
           ? await collectThemableSets(sceneNodesById)
           : undefined
+      // The breakpoint collection lives in this file, and only the token artifacts below need the
+      // library — so the expensive snapshot is read only when they are actually emitted.
+      const snapshot = tokensOn ? await readAllVariables() : await readLocalVariables()
       const previewBreakpointTokens = extractBreakpointTokens(snapshot)
-      const { baseHtml, pages, partials, css, interactionsCss, interactionsJs, themeCss, fileNodeIds } = await emitDjangoProject(
+      const { baseHtml, pages, partials, css, interactionsCss, interactionsJs, themeCss, transitionsCss, transitionsJs, fileNodeIds } = await emitDjangoProject(
         pageRoots, sceneNodesById, variableNamesById,
         {
           cssFile: msg.cssFile,
@@ -2901,7 +3059,15 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           if (bootstrap.css) bootstrapTokensCss = bootstrap.css
         }
       }
-      const staticFiles = buildRegenStaticFiles({ interactionsCss, interactionsJs, tokensCss, bootstrapTokensCss, themeCss })
+      const staticFiles = buildRegenStaticFiles({
+        interactionsCss,
+        interactionsJs,
+        tokensCss,
+        bootstrapTokensCss,
+        themeCss,
+        transitionsCss,
+        transitionsJs,
+      })
 
       postToUi({ type: 'DJANGO_PROJECT_PLAN', css, cssFile: msg.cssFile, plan, staticFiles })
       break
@@ -2910,7 +3076,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent read: index the scope: frames, text nodes, lint findings, video assets
       // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
       // @agent param lintMaxDepth: how deep the lint walk goes under each root — deeper finds more and costs more
-      const roots = rootsForScope(msg.scope)
+      const roots = await rootsForScope(msg.scope)
       const index = await indexSceneNodes(roots)
       lastScanIndex = index
 
@@ -3980,7 +4146,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param loop: GIF only — how many times it repeats; 0 is forever
       // @agent cost: one render each, and a large frame at 4x is megabytes — the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation
       try {
-        const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
+        // `{"id": "1:2"}` is what every other node-taking command accepts, and an agent that sent
+        // it here got `"node":"[object Object]", "error":"no such exportable node"` — a refusal
+        // that named neither the id it was given nor the shape it wanted.
+        const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((entry) => {
+          if (typeof entry === 'string') return entry
+          const candidate = (entry as { id?: unknown; nodeId?: unknown } | null) ?? {}
+          const id = typeof candidate.id === 'string' ? candidate.id : candidate.nodeId
+          if (typeof id === 'string') return id
+          throw new Error(`nodes takes ids as strings (or { id }); got ${JSON.stringify(entry)}`)
+        })
         const format = (typeof msg.format === 'string' ? msg.format : 'PNG').trim().toUpperCase()
         if (!EXPORT_FORMATS.includes(format)) {
           refuse('NODE_EXPORT', `format must be one of: ${EXPORT_FORMATS.join(', ')}`)
@@ -4030,6 +4205,21 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             continue
           }
           const scene = node as SceneNode
+          // A node an ancestor clips away renders empty, and `exportAsync` hands back a valid 1x1
+          // file for it rather than failing. Say what happened instead: the fix is in Figma ("Clip
+          // content" on the frame named here), and a caller cannot infer that from 149 bytes.
+          const clipped = clippedBy(scene)
+          if (clipped && clipped.visible === 0) {
+            reports.push({
+              node: id,
+              name: scene.name,
+              ok: false,
+              error:
+                `renders nothing: it sits outside ${clipped.by}, which clips its content. ` +
+                `Turn off "Clip content" on that frame, or export the frame itself.`,
+            })
+            continue
+          }
           try {
             if (format === 'SVG') {
               const svg = await scene.exportAsync({ format: 'SVG_STRING', svgOutlineText: msg.outlineText !== false })
@@ -4067,7 +4257,18 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             const ext = format.toLowerCase()
             const name = exportName(scene.name, ext, taken)
             files.push(binaryFile(name, EXPORT_MIME[format], bytes))
-            reports.push({ node: id, name: scene.name, ok: true, file: name, bytes: bytes.length })
+            reports.push({
+              node: id,
+              name: scene.name,
+              ok: true,
+              file: name,
+              bytes: bytes.length,
+              // Partly clipped still exports — but only the visible band, and a caller comparing
+              // it against the design would be measuring the crop, not the section.
+              ...(clipped
+                ? { clipped: { by: clipped.by, renderedPx: Math.round(clipped.visible), ownPx: Math.round(clipped.own) } }
+                : {}),
+            })
           } catch (error) {
             reports.push({ node: id, name: scene.name, ok: false, error: String((error as Error)?.message || error) })
           }
@@ -5146,7 +5347,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param format: "po" or "json"
       // @agent param scope: what is read — { mode: "page" }, { mode: "selection" }, or { mode: "frame", frameId } for one frame and everything under it
       try {
-        const roots = rootsForScope(msg.scope)
+        const roots = await rootsForScope(msg.scope)
         const index = await indexSceneNodes(roots)
         const textNodes: TextNode[] = []
         for (const node of index.values()) if (node.type === 'TEXT') textNodes.push(node)
@@ -5176,21 +5377,42 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param cssFile: the name the stylesheet is written and linked as, e.g. "tokens.css"
       // @agent param existingFiles: what the repository already holds, as { path: contents } — the plan compares against it rather than overwriting blindly
       const { scope, modules, cssFile } = msg
-      const roots = rootsForScope(scope)
+      const roots = await rootsForScope(scope)
+      requireNonEmptyScope('CONFIRM_EXPORT', roots, scope)
       let stage = 'scan'
       try {
         postToUi({ type: 'EXPORT_PROGRESS', stage: 'scan', percent: 10 })
         const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions'))
+        // The full snapshot is what tokens.css is made of, so it is read only when that module is
+        // on; the emitters need names, and those come from the ids the scope binds (60-90s of
+        // library import saved on every export that ships templates alone).
         const [irNodes, sceneNodesById, snapshot] = await Promise.all([
           Promise.all(roots.map((root) => serializeNode(root))),
           indexSceneNodes(roots),
-          readAllVariables(),
+          modules.tokens ? readAllVariables() : readLocalVariables(),
         ])
         const nodes = irNodes.filter((node): node is IrNode => node !== null)
         const pageRoots = nodes.filter((node): node is IrContainerNode => node.type === 'container')
-        const variableNamesById = new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
+        const variableNamesById = modules.tokens
+          ? new Map(snapshot.variables.map((variable) => [variable.id, variable.name]))
+          : await variableNamesForScope(sceneNodesById.values())
         const motionExport = buildMotionExport(sceneNodesById, modules)
         if (modules.templates) await addReactionDestinationsToScene(pageRoots, sceneNodesById)
+        // A hover/press variant lives in the component set, outside every exported page tree, so
+        // the asset pass never saw its image fills and `getCSSAsync` could only offer the
+        // `url(<path-to-image>)` placeholder for them. Serializing those destinations gives the
+        // asset pass their fills (and this map their url()s), which is the difference between a
+        // hover that swaps a photo and a hover that blanks the element.
+        const stateNodes = modules.templates ? await serializeReactionDestinations(pageRoots, sceneNodesById) : []
+        const stateImageUrlsByNodeId = new Map<string, readonly string[]>()
+        for (const stateNode of stateNodes) {
+          const collect = (node: IrNode): void => {
+            const urls = imageFillUrls(node)
+            if (urls.length > 0) stateImageUrlsByNodeId.set(node.id, urls)
+            if ('children' in node) for (const child of node.children) collect(child)
+          }
+          collect(stateNode)
+        }
 
         stage = 'i18n'
         postToUi({ type: 'EXPORT_PROGRESS', stage: 'i18n', percent: 30 })
@@ -5215,6 +5437,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             ? await collectThemableSets(sceneNodesById)
             : undefined
         const breakpointTokens = extractBreakpointTokens(snapshot)
+        // The locales the package is built for. Only a package that ships more than one catalog
+        // gets `i18n_patterns` and the switcher — a single-language site with a language menu of
+        // one entry is worse than none.
+        const targetLanguages = modules.i18n
+          ? parseLanguages(exportOptions.i18n.languages, exportOptions.i18n.sourceLanguage)
+          : []
+        let startPageId: string | undefined
+        try {
+          startPageId = figma.currentPage.flowStartingPoints[0]?.nodeId
+        } catch { /* older API surface — the first exported frame takes the root URL instead */ }
         const [project, assets] = await Promise.all([
           modules.templates
             ? emitDjangoProject(pageRoots, sceneNodesById, variableNamesById, {
@@ -5224,17 +5456,50 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
                 framework: frameworkLinksFrom(exportOptions, modules.tokens),
                 themeSets,
                 breakpointTokens,
+                startPageId,
+                languageSwitcher: targetLanguages.length > 0 && exportOptions.targetOptions.djangoScaffold,
+                stateImageUrlsByNodeId,
               })
             : undefined,
-          modules.templates ? collectExportAssets(nodes, assetSourcesById, (hash) => figma.getImageByHash(hash), videoBytesById) : [],
+          modules.templates
+            ? collectExportAssets([...nodes, ...stateNodes], assetSourcesById, (hash) => figma.getImageByHash(hash), videoBytesById)
+            : [],
         ])
 
         stage = 'assets'
         postToUi({ type: 'EXPORT_PROGRESS', stage: 'assets', percent: 80 })
-        const po = modules.i18n && entries.length > 0 ? emitPo(entries) : undefined
+        const po = modules.i18n && entries.length > 0 ? emitPo(entries, { sourceLanguage: exportOptions.i18n.sourceLanguage }) : undefined
+        const localeCatalogs =
+          modules.i18n && entries.length > 0 && targetLanguages.length > 0
+            ? emitLocaleCatalogs(entries, targetLanguages, exportOptions.i18n.sourceLanguage)
+            : undefined
+        // The Django project that serves the templates. Only for the django platform: the Tauri
+        // tree below re-roots templates/ and static/ into a webview app with no Python in it.
+        const scaffold =
+          project && exportOptions.targetOptions.djangoScaffold && exportOptions.targetOptions.platform === 'django'
+            ? emitDjangoScaffold({
+                pages: project.pageRoutes,
+                projectName: 'config',
+                appName: 'design',
+                languages: [exportOptions.i18n.sourceLanguage, ...targetLanguages]
+                  .filter((code, index, all) => all.indexOf(code) === index)
+                  .map((code) => ({ code, label: languageLabel(code) })),
+                defaultLanguage: exportOptions.i18n.sourceLanguage,
+                staticCssFile: cssFile,
+              })
+            : undefined
 
         const files: Record<string, ExportFileContent> = project
-          ? buildExportTree({ project, tokensCss: '', cssFile, po, assets, animation: motionExport.animation })
+          ? buildExportTree({
+              project,
+              tokensCss: '',
+              cssFile,
+              po,
+              localeCatalogs,
+              scaffold,
+              assets,
+              animation: motionExport.animation,
+            })
           : {}
         if (!project) {
           for (const asset of assets) files[`static/img/${asset.filename}`] = asset.content
@@ -5270,10 +5535,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         // below, …) stay; the django-layout templates/ + static/ entries are replaced wholesale.
         let tauriPageHrefs: Record<string, string> | undefined
         if (exportOptions.targetOptions.platform === 'tauri' && project) {
-          let startPageId: string | undefined
-          try {
-            startPageId = figma.currentPage.flowStartingPoints[0]?.nodeId
-          } catch { /* older API surface */ }
+          // `startPageId` is already resolved above (the django emit needs it to decide which page
+          // serves at the site root); the Tauri window just reuses that same start frame.
           const startRootId =
             startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : pageRoots[0]?.id
           const startScene = startRootId ? sceneNodesById.get(startRootId) : undefined
@@ -5432,6 +5695,33 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           modules,
           fileCount: Object.keys(files).length,
           manualAssets: manualAssets.length > 0 ? manualAssets.map((a) => a.assetSrc) : undefined,
+          // Which emitted spring curves are estimates, and what this file says the estimate
+          // should have been — the guessed preset table is the only part of the motion the
+          // export cannot derive, so it says so in the package instead of nowhere.
+          ...collectSpringReport(nodes),
+          // Squircle approximations and effects/fills CSS cannot draw, named per node instead of
+          // vanishing into a console nobody reads.
+          fidelityNotes: project ? summarizeEmitterNotes(project.notes) : undefined,
+          // A frame carrying export settings flattens to a single <img>: a "page" with no text and
+          // no links. Saying which pages those are is the difference between a known trade-off and
+          // a developer opening the template and wondering where the content went.
+          ...(project
+            ? (() => {
+                const flattenedPages = collectFlattenedPages(project.pages, project.fileNodeIds)
+                const figmaFile = buildFigmaFileReference({
+                  key: figmaFileKey(),
+                  name: figma.root.name,
+                  fileNodeIds: project.fileNodeIds,
+                })
+                return {
+                  ...(flattenedPages.length > 0 ? { flattenedPages } : {}),
+                  // The package otherwise names no file at all: every other tool in the chain
+                  // (Figma's own MCP included) is addressed by fileKey + nodeId, and without them
+                  // an emitted template cannot be traced back to the frame it came from.
+                  ...(figmaFile.key || Object.keys(figmaFile.pageUrls).length > 0 ? { figmaFile } : {}),
+                }
+              })()
+            : {}),
         })
 
         try { for (const root of roots) root.setRelaunchData({ reexport: '' }) } catch { /* dev build */ }

@@ -35,8 +35,20 @@ import type {
   IrNode,
   IrTextNode,
 } from './ir.ts'
-import { toClassName, type DjangoNodeSource } from './css-emitter.ts'
-import { escapeHtml, renderAssetLeaf, renderBackgroundVideoLayer, renderTextBlock, wrapNavigate } from './html-emitter.ts'
+import { groupComponentVariantSets, toClassName, type DjangoNodeSource } from './css-emitter.ts'
+import {
+  createHeadingState,
+  escapeHtml,
+  NO_LANDMARK_ANCESTRY,
+  renderAssetLeaf,
+  renderBackgroundVideoLayer,
+  renderTextBlock,
+  resolveContainerTag,
+  resolveHeadingTag,
+  wrapNavigate,
+  type HeadingState,
+  type LandmarkAncestry,
+} from './html-emitter.ts'
 import { segmentClassName } from './text-styles.ts'
 import {
   matchBootstrapComponent,
@@ -60,11 +72,37 @@ function idSlug(id: string): string {
   return id.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
+/** Internal marker stamped by `collectComponents`'s set-collapsing pass (below) onto every
+ * member of a component set it decided to merge into ONE partial — not part of the public IR
+ * shape, so it's only ever read through `isCollapsedSetMember`. `partialPath` keys a marked
+ * member off the shared set name instead of its own id: every variant of a collapsed set must
+ * resolve to the identical partial path, regardless of which specific variant an instance's
+ * `componentKey` happens to reference. */
+const COLLAPSED_SET_MEMBER = Symbol('collapsedSetMember')
+
+function markCollapsedSetMember(node: IrContainerNode): IrContainerNode {
+  return { ...node, [COLLAPSED_SET_MEMBER]: true } as unknown as IrContainerNode
+}
+
+function isCollapsedSetMember(node: IrContainerNode): boolean {
+  return (node as unknown as Record<symbol, boolean>)[COLLAPSED_SET_MEMBER] === true
+}
+
 /** Maps a component to its partial's project-relative path: a human-readable name slug plus a
  * node-id suffix. The id suffix is what makes the path stable by node id — a rename only shifts
  * the readable part, so regeneration (`regenerate.ts`) still finds the right file via its
- * `GENERATED` marker even if this exact path drifts. */
+ * `GENERATED` marker even if this exact path drifts.
+ *
+ * A collapsed component-set member (`isCollapsedSetMember`, set by `collectComponents`) is the
+ * one exception: every variant of the set must resolve to this SAME path since an instance can
+ * reference any one of them, so the slug there is the shared set name alone — there's no single
+ * node id that identifies "the set" itself, only one that identifies one of its variants. */
 export function partialPath(component: IrContainerNode): string {
+  if (isCollapsedSetMember(component)) {
+    const setName = component.component!.setName!.trim()
+    const slug = setName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    return `components/${slug || 'component'}.html`
+  }
   const slug = component.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   return `components/${slug || 'component'}--${idSlug(component.id)}.html`
 }
@@ -98,7 +136,11 @@ function djangoStringLiteral(value: string): string {
 }
 
 /** Recursively finds every `container` node with a non-null `component` (i.e. every serialized
- * ComponentNode) inside `nodes`. */
+ * ComponentNode) inside `nodes`, then collapses each structurally-uniform component set's
+ * variants down to one shared partial (`collapseComponentSetVariants`) — an N-variant set no
+ * longer produces N near-identical partial files, just one, with the variant deltas expressed as
+ * CSS modifier classes (css-emitter.ts's `emitComponentVariantModifierCss`) instead of duplicated
+ * markup. */
 export function collectComponents(nodes: readonly IrNode[]): IrContainerNode[] {
   const found: IrContainerNode[] = []
   const visit = (node: IrNode): void => {
@@ -106,7 +148,46 @@ export function collectComponents(nodes: readonly IrNode[]): IrContainerNode[] {
     if ('children' in node) node.children.forEach(visit)
   }
   nodes.forEach(visit)
-  return found
+  return collapseComponentSetVariants(found)
+}
+
+/** Groups `flat` via `groupComponentVariantSets` (css-emitter.ts — shared with the variant-
+ * modifier CSS pass so both agree on which sets collapse and which member is the default) and
+ * marks EVERY member of a structurally-uniform set as collapsed, default variant last.
+ *
+ * Keeping every member (rather than dropping the non-default ones) means `buildComponentRegistry`
+ * needs no changes of its own: its existing per-component loop still registers every variant's
+ * own `key`/`id` against the shared path (now identical for the whole set — see `partialPath`).
+ * Ordering the default last means `emitDjangoProject`'s `partials[partialPath(component)] = …`
+ * loop (index.ts, outside this module) ends up with the default's markup as the final write for
+ * that shared path — the earlier writes for the other members still render (and get discarded), a
+ * deliberate small waste that keeps every caller of `collectComponents` completely unaware
+ * collapsing happens at all.
+ *
+ * A structurally divergent set (different child count/types across variants — `uniform: false`)
+ * can't share one partial body safely, so its members pass through unmarked: pre-collapse
+ * one-partial-per-variant behavior, unchanged. */
+function collapseComponentSetVariants(flat: readonly IrContainerNode[]): IrContainerNode[] {
+  const setsByName = new Map(groupComponentVariantSets(flat).map((set) => [set.setName, set]))
+  const collapsedSetNames = new Set<string>()
+  const result: IrContainerNode[] = []
+  for (const component of flat) {
+    const setName = component.component?.setName?.trim()
+    if (!setName) {
+      result.push(component)
+      continue
+    }
+    if (collapsedSetNames.has(setName)) continue // this set's whole group was already emitted
+    collapsedSetNames.add(setName)
+    const set = setsByName.get(setName)!
+    if (!set.uniform || set.members.length < 2) {
+      result.push(...set.members)
+      continue
+    }
+    const rest = set.members.filter((member) => member !== set.defaultVariant)
+    result.push(...rest.map(markCollapsedSetMember), markCollapsedSetMember(set.defaultVariant))
+  }
+  return result
 }
 
 export interface ComponentRegistry {
@@ -267,6 +348,14 @@ interface PartialCtx {
    * a page has no `{% include %}` to supply the label, so an unbound `{{ var }}` renders empty
    * (the label visually vanishes). Partials leave this unset so their labels stay parametric. */
   readonly literalText?: boolean
+  /** Landmark kinds already emitted on the path from the partial's own root to this node — see
+   * `html-emitter.ts`'s `resolveContainerTag`. Never promotes a node to `<section>` inside a
+   * partial (no page-root concept here — a component is a reusable fragment, not a page). */
+  readonly ancestry: LandmarkAncestry
+  /** Shared H1-uniqueness tracker for the document this partial ultimately renders into — a
+   * fresh one per `emitComponentPartial` call (its own file), or the ambient page's own state
+   * when recognized inline on a page (REFORM phase 12/13). */
+  readonly headingState: HeadingState
 }
 
 /** Generic wiring for a node: classes/attributes the emitter appends so Bootstrap's data API
@@ -511,23 +600,27 @@ function wrapVisible(node: IrNode, rendered: string, indent: string, literalText
 }
 
 function renderPartialText(node: IrTextNode, className: string, ctx: PartialCtx, indent: string): string {
+  const headingTag = resolveHeadingTag(node.name, ctx.headingState)
+
   // On a page (inline recognition) there is no include to bind a label — render the literal Figma
   // characters, exactly as renderPageNode's own text path does, so the text doesn't vanish.
-  if (ctx.literalText) return renderTextBlock(node, ctx.sceneNodesById.get(node.id), className, indent)
+  if (ctx.literalText) return renderTextBlock(node, ctx.sceneNodesById.get(node.id), className, indent, headingTag)
 
   const propName = node.componentPropertyReferences.characters
   if (propName) {
     const varName = toVarName(propName)
-    return `${indent}<p class="${className}"><span class="${segmentClassName(className, 0)}">{{ ${varName} }}</span></p>`
+    const tag = headingTag ?? 'p'
+    return `${indent}<${tag} class="${className}"><span class="${segmentClassName(className, 0)}">{{ ${varName} }}</span></${tag}>`
   }
 
   if (ctx.overriddenTextNodeIds.has(node.id)) {
     const varName = textOverrideVarName(node.id)
     const fallback = escapeDjangoString(node.characters)
-    return `${indent}<p class="${className}"><span class="${segmentClassName(className, 0)}">{{ ${varName}|default:"${fallback}" }}</span></p>`
+    const tag = headingTag ?? 'p'
+    return `${indent}<${tag} class="${className}"><span class="${segmentClassName(className, 0)}">{{ ${varName}|default:"${fallback}" }}</span></${tag}>`
   }
 
-  return renderTextBlock(node, ctx.sceneNodesById.get(node.id), className, indent)
+  return renderTextBlock(node, ctx.sceneNodesById.get(node.id), className, indent, headingTag)
 }
 
 function renderPartialInstanceRef(node: IrInstanceRefNode, className: string, ctx: PartialCtx, indent: string): string {
@@ -575,11 +668,13 @@ function renderPartialInstanceRef(node: IrInstanceRefNode, className: string, ct
     }
   }
 
+  const { tag, attrs, landmarkKind } = resolveContainerTag(node, ctx.ancestry, false)
+  const childCtx: PartialCtx = landmarkKind ? { ...ctx, ancestry: new Set([...ctx.ancestry, landmarkKind]) } : ctx
   const bgVideo = renderBackgroundVideoLayer(node, `${indent}  `)
-  if (node.children.length === 0 && !bgVideo) return `${indent}<div class="${className}"></div>`
-  const inner = node.children.map((child) => renderPartialNode(child, ctx, `${indent}  `)).join('\n')
+  if (node.children.length === 0 && !bgVideo) return `${indent}<${tag}${attrs} class="${className}"></${tag}>`
+  const inner = node.children.map((child) => renderPartialNode(child, childCtx, `${indent}  `)).join('\n')
   const parts = [bgVideo, inner].filter(Boolean)
-  return `${indent}<div class="${className}">\n${parts.join('\n')}\n${indent}</div>`
+  return `${indent}<${tag}${attrs} class="${className}">\n${parts.join('\n')}\n${indent}</${tag}>`
 }
 
 function renderPartialContainer(node: IrContainerNode, className: string, ctx: PartialCtx, indent: string): string {
@@ -593,6 +688,13 @@ function renderPartialContainer(node: IrContainerNode, className: string, ctx: P
   // REFORM wave 2: inside a matched component, a container layer named like a part
   // (`Header`, `Item`, `Menu`…) renders with the part's tag/classes/attributes.
   const part = !node.component && ctx.bootstrapComponents ? partForName(ctx.bootstrapParts, node.name) : null
+  // Landmark/button/section semantics (docs items 1/3) apply ONLY when neither Bootstrap
+  // mechanism has an opinion about this node's name — a Card's "Header"/"Footer" part or an
+  // Accordion's "Header" toggle are Bootstrap-semantic regions, not page landmarks, even though
+  // they share the English word. `false`: a partial is a reusable fragment, never a page root,
+  // so it never promotes an unnamed child to `<section>`.
+  const semantic = !bootstrap && !part ? resolveContainerTag(node, ctx.ancestry, false) : null
+  const childCtx: PartialCtx = semantic?.landmarkKind ? { ...ctx, ancestry: new Set([...ctx.ancestry, semantic.landmarkKind]) } : ctx
   // REFORM wave 3c/3f: behavioral wiring — extra classes/attrs that link toggles↔targets for
   // collapse, tabs, and carousel via Bootstrap's data API (the pre-passes decided them).
   const wiring = ctx.wiring?.get(node.id)
@@ -605,8 +707,8 @@ function renderPartialContainer(node: IrContainerNode, className: string, ctx: P
   // Theme phase A: on a page nothing binds the variant vars — fold `{{ v|default:'x'|lower }}` to
   // the concrete class so page markup reads `btn btn-primary`, not a dead template expression.
   const classAttr = ctx.literalText ? foldDefaultClassExprs(joinedClasses) : joinedClasses
-  const tag = bootstrap?.tag ?? part?.tag ?? 'div'
-  const attrs = (bootstrap?.attributes ?? part?.attributes ?? '') + (wiring?.addAttrs ?? '')
+  const tag = bootstrap?.tag ?? part?.tag ?? semantic?.tag ?? 'div'
+  const attrs = (bootstrap?.attributes ?? part?.attributes ?? semantic?.attrs ?? '') + (wiring?.addAttrs ?? '')
   // REFORM wave 3: a void form control (`<input>`) has no children and no closing tag —
   // anything a designer nested inside it (there shouldn't be) is dropped.
   if (bootstrap?.void || part?.void) return `${indent}<${tag} class="${classAttr}"${attrs}>`
@@ -614,7 +716,7 @@ function renderPartialContainer(node: IrContainerNode, className: string, ctx: P
   const appended = bootstrap?.appendHtml ? `${indent}  ${bootstrap.appendHtml}` : ''
   const bgVideo = renderBackgroundVideoLayer(node, `${indent}  `)
   if (node.children.length === 0 && !bgVideo && !appended) return `${indent}<${tag} class="${classAttr}"${attrs}></${tag}>`
-  const inner = node.children.map((child) => renderPartialNode(child, ctx, `${indent}  `)).join('\n')
+  const inner = node.children.map((child) => renderPartialNode(child, childCtx, `${indent}  `)).join('\n')
   const parts = [bgVideo, inner, appended].filter(Boolean)
   return `${indent}<${tag} class="${classAttr}"${attrs}>\n${parts.join('\n')}\n${indent}</${tag}>`
 }
@@ -660,7 +762,7 @@ export function emitComponentPartial(
   const wiring = match ? buildWiring(component, match, registry) : undefined
   const body = renderPartialNode(
     component,
-    { sceneNodesById, registry, overriddenTextNodeIds, navMap, bootstrapComponents, bootstrapParts: match?.parts, wiring },
+    { sceneNodesById, registry, overriddenTextNodeIds, navMap, bootstrapComponents, bootstrapParts: match?.parts, wiring, ancestry: NO_LANDMARK_ANCESTRY, headingState: createHeadingState() },
     ''
   )
   // {% load %} is per-file (never inherited via include/extends) — static is needed for the
@@ -712,7 +814,11 @@ function renderPageNode(
   registry: ComponentRegistry,
   navMap: ReadonlyMap<string, string>,
   indent: string,
-  bootstrapComponents: boolean
+  bootstrapComponents: boolean,
+  headingState: HeadingState,
+  ancestry: LandmarkAncestry = NO_LANDMARK_ANCESTRY,
+  isPageRootChild = false,
+  isPageRoot = true
 ): string {
   const className = toClassName(node.id)
 
@@ -742,6 +848,8 @@ function renderPageNode(
             bootstrapParts: match.parts,
             wiring,
             literalText: true, // page-inline: no include binds the labels → render literal characters
+            ancestry, // continue the page's own landmark-ancestry into the recognized subtree
+            headingState, // continue the page's own H1-uniqueness tracking into the recognized subtree
           }
           return renderPartialContainer(recognizable, className, ctx, indent)
         }
@@ -750,17 +858,21 @@ function renderPageNode(
 
     switch (node.type) {
       case 'text':
-        return renderTextBlock(node, sceneNodesById.get(node.id), className, indent)
+        return renderTextBlock(node, sceneNodesById.get(node.id), className, indent, resolveHeadingTag(node.name, headingState))
       case 'image':
       case 'vector':
         return renderAssetLeaf(node, indent)
       case 'container':
       case 'instance-ref': {
+        const { tag, attrs, landmarkKind } = resolveContainerTag(node, ancestry, isPageRootChild)
+        const childAncestry = landmarkKind ? new Set([...ancestry, landmarkKind]) : ancestry
         const bgVideo = renderBackgroundVideoLayer(node, `${indent}  `)
-        if (node.children.length === 0 && !bgVideo) return `${indent}<div class="${className}"></div>`
-        const inner = node.children.map((child) => renderPageNode(child, sceneNodesById, registry, navMap, `${indent}  `, bootstrapComponents)).join('\n')
+        if (node.children.length === 0 && !bgVideo) return `${indent}<${tag}${attrs} class="${className}"></${tag}>`
+        const inner = node.children
+          .map((child) => renderPageNode(child, sceneNodesById, registry, navMap, `${indent}  `, bootstrapComponents, headingState, childAncestry, isPageRoot, false))
+          .join('\n')
         const parts = [bgVideo, inner].filter(Boolean)
-        return `${indent}<div class="${className}">\n${parts.join('\n')}\n${indent}</div>`
+        return `${indent}<${tag}${attrs} class="${className}">\n${parts.join('\n')}\n${indent}</${tag}>`
       }
     }
   })()
@@ -779,10 +891,26 @@ export function emitPage(
   navMap: ReadonlyMap<string, string> = new Map(),
   bootstrapComponents = false
 ): string {
-  const body = renderPageNode(root, sceneNodesById, registry, navMap, '    ', bootstrapComponents)
+  const body = renderPageNode(root, sceneNodesById, registry, navMap, '    ', bootstrapComponents, createHeadingState())
   // {% load static %} is per-file — base.html's own load does NOT cover this template's
   // {% static %} refs (image nodes, marked graphics).
   return ['{% extends "base.html" %}', '{% load i18n %}', '{% load static %}', '{% block content %}', body, '{% endblock %}'].join('\n')
+}
+
+/** Renders an overlay destination frame's markup as a standalone fragment — no `{% extends %}`/
+ * `{% block %}` wrapper, unlike `emitPage`. Motion's interactions emitter splices this straight
+ * into the TRIGGERING page's own `{% block content %}` (as the `<dialog>`'s body), so it must not
+ * carry template-inheritance tags of its own — the page already has its `{% load %}`s. Reuses the
+ * same page-node renderer `emitPage` calls, so an overlay body gets identical fidelity (recognized
+ * components, includes, nav links) to a real page instead of rendering EMPTY. */
+export function renderOverlayFragment(
+  node: IrNode,
+  sceneNodesById: ReadonlyMap<string, DjangoNodeSource>,
+  registry: ComponentRegistry,
+  navMap: ReadonlyMap<string, string>,
+  bootstrapComponents: boolean
+): string {
+  return renderPageNode(node, sceneNodesById, registry, navMap, '  ', bootstrapComponents, createHeadingState())
 }
 
 /** One Google Fonts `<link>` per family (variable-range weights). Per-family links keep one
@@ -802,10 +930,18 @@ function fontLinks(fontFamilies: readonly string[]): string[] {
 
 export type BaseHtmlGsapPluginName = 'CustomEase' | 'DrawSVGPlugin' | 'TextPlugin'
 
-const GSAP_PLUGIN_STATIC_FILE_BY_NAME: Record<BaseHtmlGsapPluginName, string> = {
-  CustomEase: 'vendor/gsap/CustomEase.min.js',
-  DrawSVGPlugin: 'vendor/gsap/DrawSVGPlugin.min.js',
-  TextPlugin: 'vendor/gsap/TextPlugin.min.js',
+/** GSAP core/plugin sources. The export cannot ship the runtime (the plugin has no network), and
+ * `{% static 'vendor/gsap/…' %}` was a guaranteed 404 that silently killed every Motion timeline:
+ * nothing in this pipeline ever wrote those files. GSAP 3.13 publishes every plugin — the former
+ * Club ones included — to npm, so the pinned jsDelivr build is a complete runtime. An offline
+ * deployment copies the files into `static/vendor/gsap/` and repoints these tags in base.html,
+ * outside the generated marker so regeneration keeps the edit. */
+const GSAP_CDN_VERSION = '3.13.0'
+const GSAP_CORE_SRC = `https://cdn.jsdelivr.net/npm/gsap@${GSAP_CDN_VERSION}/dist/gsap.min.js`
+const GSAP_PLUGIN_SRC_BY_NAME: Record<BaseHtmlGsapPluginName, string> = {
+  CustomEase: `https://cdn.jsdelivr.net/npm/gsap@${GSAP_CDN_VERSION}/dist/CustomEase.min.js`,
+  DrawSVGPlugin: `https://cdn.jsdelivr.net/npm/gsap@${GSAP_CDN_VERSION}/dist/DrawSVGPlugin.min.js`,
+  TextPlugin: `https://cdn.jsdelivr.net/npm/gsap@${GSAP_CDN_VERSION}/dist/TextPlugin.min.js`,
 }
 
 /** Options for linking animation assets from `base.html` (M10). */
@@ -853,20 +989,44 @@ export interface BaseHtmlInteractionLinks {
   gsapPlugins?: readonly BaseHtmlGsapPluginName[]
 }
 
-/** Emits the shared `base.html` skeleton every page `{% extends %}` (docs §3.1/§3.3).
+/** Shell options for `base.html` (adaptive multipage upgrade): each links/wires an asset another
+ * slice emits, so base.html only ever references files that actually exist for this export. */
+export interface BaseHtmlShellOptions {
+  /** Links `static/css/transitions.css` (page-to-page prototype transitions) after interactions.css. */
+  readonly transitionsCss?: boolean
+  /** Links `static/js/transitions.js`, deferred, after every other script. */
+  readonly transitionsJs?: boolean
+  /** Renders `{% include 'partials/language-switcher.html' %}` inside `{% block language_switcher %}`
+   * near the top of `<body>` — the partial itself belongs to the i18n slice; base.html only wires
+   * it in and loads `{% load i18n %}` for it. */
+  readonly languageSwitcher?: boolean
+}
+
+/** Emits the shared `base.html` skeleton every page `{% extends %}` (docs §3.1/§3.3) as a
+ * production document, not a bare fragment: charset/viewport meta FIRST (every `@media
+ * (max-width:…)` the pipeline emits is inert on a real phone without the viewport tag), an
+ * `<html lang>`/`dir` pair driven by Django's active-language context vars, title/description
+ * blocks a page can fill in, and a skip-link + `<main id="content">` landmark for keyboard/screen-
+ * reader navigation (WCAG 2.4.1). `extra_head`/`body_end` blocks let a project inject anything
+ * this skeleton doesn't anticipate without touching the generated markup.
+ *
  * `tokensCssFile` links the design-token variables stylesheet BEFORE the project css — without
  * it every fallback-less `var(--…)` reference (bound fills, lint-fix auto variables) resolves
  * to nothing and the element renders transparent. Pass `null` when the tokens module is off.
  * `fontFamilies` (the families the emitted CSS actually uses) become best-effort Google Fonts
  * links — font binaries can't leave Figma through the Plugin API.
  * `interactionLinks` (M9) conditionally links `css/interactions.css` and `js/interactions.js`
- * after the project stylesheet — only when the export produced them. */
+ * after the project stylesheet — only when the export produced them.
+ * `shell` links the adaptive/i18n additions (page transitions, language switcher) other slices
+ * produce — every field defaults off, so an export that doesn't use them gets the pre-existing
+ * link set exactly. */
 export function emitBaseHtml(
   cssFile: string,
   tokensCssFile: string | null = 'css/tokens.css',
   fontFamilies: readonly string[] = [],
   interactionLinks: BaseHtmlInteractionLinks = { interactionsCss: false, interactionsJs: false },
-  framework: BaseHtmlFrameworkLinks | null = null
+  framework: BaseHtmlFrameworkLinks | null = null,
+  shell: BaseHtmlShellOptions = {}
 ): string {
   // Stylesheet order (REFORM §5.2): bootstrap.css → bootstrap-tokens.css → tokens.css → project.
   // Bootstrap loads into a CASCADE LAYER (phase 13 / P2g): un-layered author CSS (tokens/project/
@@ -916,35 +1076,57 @@ export function emitBaseHtml(
   const animationCssLink = interactionLinks.animationsCss
     ? [`  <link rel="stylesheet" href="{% static 'css/animations.css' %}">`]
     : []
+  const transitionsCssLink = shell.transitionsCss ? [`  <link rel="stylesheet" href="{% static 'css/transitions.css' %}">`] : []
   const interactionJsLink = interactionLinks.interactionsJs
     ? [`  <script src="{% static 'js/interactions.js' %}" defer></script>`]
     : []
   const animationJsLink = interactionLinks.animationsJs
     ? [
-        `  <script src="{% static 'vendor/gsap/gsap.min.js' %}"></script>`,
+        `  <script src="${GSAP_CORE_SRC}"></script>`,
         ...(interactionLinks.gsapPlugins ?? []).map(
-          (plugin) => `  <script src="{% static '${GSAP_PLUGIN_STATIC_FILE_BY_NAME[plugin]}' %}" defer></script>`
+          (plugin) => `  <script src="${GSAP_PLUGIN_SRC_BY_NAME[plugin]}" defer></script>`
         ),
         `  <script src="{% static 'js/animations.js' %}" defer></script>`,
       ]
     : []
+  const transitionsJsLink = shell.transitionsJs ? [`  <script src="{% static 'js/transitions.js' %}" defer></script>`] : []
+  const languageSwitcherBlock = shell.languageSwitcher
+    ? ["  {% block language_switcher %}{% include 'partials/language-switcher.html' %}{% endblock %}"]
+    : []
   return [
     '{% load static %}',
+    ...(shell.languageSwitcher ? ['{% load i18n %}'] : []),
     '<!DOCTYPE html>',
-    '<html>',
+    "<html lang=\"{{ LANGUAGE_CODE|default:'en' }}\"{% if LANGUAGE_BIDI %} dir=\"rtl\"{% endif %}>",
     '<head>',
+    '  <meta charset="utf-8">',
+    '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+    '  {% block head_meta %}{% endblock %}',
+    '  <title>{% block title %}{{ page_title|default:\'\' }}{% endblock %}</title>',
+    '  <meta name="description" content="{% block meta_description %}{{ page_description|default:\'\' }}{% endblock %}">',
     ...fontLinks(fontFamilies),
     ...frameworkCssLines,
     ...(tokensCssFile ? [`  <link rel="stylesheet" href="{% static '${tokensCssFile}' %}">`] : []),
     `  <link rel="stylesheet" href="{% static '${cssFile}' %}">`,
     ...interactionCssLink,
     ...animationCssLink,
+    ...transitionsCssLink,
+    '  {% block extra_head %}{% endblock %}',
     '</head>',
     '<body>',
+    // The skip link is ALWAYS the first body child — its whole purpose is to be the first stop
+    // for keyboard/screen-reader navigation, ahead of ANY page chrome, the language switcher
+    // included.
+    '  <a class="skip-to-content" href="#content">Skip to content</a>',
+    ...languageSwitcherBlock,
+    '  <main id="content">',
     '  {% block content %}{% endblock %}',
+    '  </main>',
     ...frameworkJsLines,
     ...interactionJsLink,
     ...animationJsLink,
+    ...transitionsJsLink,
+    '  {% block body_end %}{% endblock %}',
     '</body>',
     '</html>',
   ].join('\n')

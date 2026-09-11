@@ -407,7 +407,14 @@ function dispatch(plugin, op, params) {
     const id = crypto.randomUUID()
     const timer = setTimeout(() => {
       pending.delete(id)
-      resolve({ ok: false, error: `no answer from "${plugin.handle}" within ${CALL_TIMEOUT_MS / 1000}s` })
+      // Name the knob: a caller that asked for a longer `timeoutMs` (plugin.call allows up to
+      // 600s) otherwise reads this as the plugin hanging, when it is this bridge giving up first.
+      resolve({
+        ok: false,
+        error:
+          `no answer from "${plugin.handle}" within ${CALL_TIMEOUT_MS / 1000}s ` +
+          '(the bridge ceiling — raise it with ALTERY_AGENT_CALL_TIMEOUT_MS, or narrow the scope)',
+      })
     }, CALL_TIMEOUT_MS)
     pending.set(id, { resolve, timer, op, session: plugin.session, startedAt: Date.now() })
     plugin.queue.push({ id, op, params: params ?? {} })
@@ -550,7 +557,15 @@ const ROUTES = {
     const files = roster().map(describe)
     return {
       code: 200,
-      body: { online: files.length > 0, files, count: files.length, inFlight: pending.size },
+      // `callTimeoutMs` is published so a caller can size its own work to the ceiling instead of
+      // discovering it as a failed 3-minute call.
+      body: {
+        online: files.length > 0,
+        files,
+        count: files.length,
+        inFlight: pending.size,
+        callTimeoutMs: CALL_TIMEOUT_MS,
+      },
     }
   },
 

@@ -129,9 +129,15 @@ export function componentName(name: string): string {
   return /^[A-Za-z]/.test(camel) ? camel : `C${camel}`
 }
 
+/** The `#1234:5` a Figma property's own name carries in `componentPropertyDefinitions` — its
+ * node id, not part of what a person or a screen calls the property. */
+export function stripPropSuffix(name: string): string {
+  return name.replace(/#.*$/, '')
+}
+
 /** A prop name from a Figma property name: `Label text` → `labelText`. */
 export function propName(name: string): string {
-  const words = name.replace(/#.*$/, '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(' ')
+  const words = stripPropSuffix(name).replace(/[^A-Za-z0-9]+/g, ' ').trim().split(' ')
   const camel = words
     .map((word, index) => (index === 0 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()))
     .join('')

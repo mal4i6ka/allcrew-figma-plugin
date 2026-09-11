@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { loadAllPagesAsync, findAllWithCriteria, walkSceneNodes } from './tree.ts'
+import { loadAllPagesAsync, findAllWithCriteria, findAllByTypes, walkSceneNodes } from './tree.ts'
 
 function setFigma(mock: any) {
   ;(globalThis as any).figma = mock
@@ -24,6 +24,21 @@ test('loadAllPagesAsync loads every page under figma.root', async () => {
   await loadAllPagesAsync()
 
   assert.deepEqual(loaded.sort(), ['page1', 'page2'])
+})
+
+test("loadAllPagesAsync also makes Figma's own call, the one a document-wide search is gated on", async () => {
+  // Without it, `figma.root.findAllWithCriteria` throws "Cannot call with documentAccess:
+  // dynamic-page without calling figma.loadAllPagesAsync() first" even with every page loaded —
+  // observed on the live 54-page file.
+  const order: string[] = []
+  setFigma({
+    root: { children: [{ id: 'page1', loadAsync: async () => order.push('page1') }] },
+    loadAllPagesAsync: async () => order.push('gate'),
+  })
+
+  await loadAllPagesAsync()
+
+  assert.deepEqual(order, ['page1', 'gate'])
 })
 
 test('loadAllPagesAsync keeps at most four loads in flight', async () => {
@@ -161,6 +176,100 @@ test('findAllWithCriteria includeRoot tests the root node itself when it is a Sc
     withRoot.map((n: any) => n.id),
     ['root']
   )
+})
+
+test('findAllByTypes uses the native method without walking children', async () => {
+  setFigma({ skipInvisibleInstanceChildren: false })
+
+  const found = [
+    { id: 'comp1', type: 'COMPONENT' },
+    { id: 'set1', type: 'COMPONENT_SET' },
+  ]
+  const mock = {
+    id: 'root',
+    type: 'PAGE',
+    get children(): never {
+      // The whole point of the native path: it must never fall through to a DFS that reads
+      // this. A live ~200k-node document is exactly the case a DFS read here would blow up on.
+      throw new Error('DFS should not run when the native method is available')
+    },
+    findAllWithCriteria(criteria: { types: string[] }) {
+      assert.deepEqual(criteria.types, ['COMPONENT', 'COMPONENT_SET'])
+      return found
+    },
+  }
+  // A test double only needs to look like a real BaseNode to `findAllByTypes` — it never reads
+  // fields other than `type`, `children` and (when present) `findAllWithCriteria`.
+  const root = mock as unknown as BaseNode
+
+  const results = await findAllByTypes(root, ['COMPONENT', 'COMPONENT_SET'])
+
+  assert.deepEqual(
+    results.map((n) => n.id),
+    ['comp1', 'set1']
+  )
+})
+
+test('findAllByTypes falls back to the DFS when the node has no native method', async () => {
+  setFigma({ skipInvisibleInstanceChildren: false })
+
+  const nestedComponent = makeNode({ id: 'comp1', type: 'COMPONENT' })
+  const root = makeNode({
+    id: 'root',
+    type: 'PAGE',
+    children: [makeNode({ id: 'rect1', type: 'RECTANGLE' }), nestedComponent],
+  })
+
+  const results = await findAllByTypes(root, ['COMPONENT', 'COMPONENT_SET'])
+
+  assert.deepEqual(
+    results.map((n) => n.id),
+    ['comp1']
+  )
+})
+
+test('findAllByTypes finds the same nodes natively and via the DFS fallback', async () => {
+  setFigma({ skipInvisibleInstanceChildren: false })
+
+  const leaf = makeNode({ id: 'frame1', type: 'FRAME' })
+  const dfsRoot = makeNode({ id: 'root', type: 'PAGE', children: [leaf] })
+  const nativeMock = {
+    id: 'root',
+    type: 'PAGE',
+    children: [leaf],
+    findAllWithCriteria: ({ types }: { types: string[] }) =>
+      dfsRoot.children.filter((n: { type: string }) => types.includes(n.type)),
+  }
+  const nativeRoot = nativeMock as unknown as BaseNode
+
+  const viaDfs = await findAllByTypes(dfsRoot, ['FRAME'])
+  const viaNative = await findAllByTypes(nativeRoot, ['FRAME'])
+
+  assert.deepEqual(
+    viaNative.map((n) => n.id),
+    viaDfs.map((n) => n.id)
+  )
+})
+
+test('findAllByTypes toggles figma.skipInvisibleInstanceChildren around the native call too', async () => {
+  const figmaMock = { skipInvisibleInstanceChildren: false }
+  setFigma(figmaMock)
+
+  let sawFlagDuringCall = false
+  const mock = {
+    id: 'root',
+    type: 'PAGE',
+    findAllWithCriteria() {
+      sawFlagDuringCall = figmaMock.skipInvisibleInstanceChildren === true
+      return []
+    },
+  }
+  const root = mock as unknown as BaseNode
+
+  await findAllByTypes(root, ['FRAME'])
+
+  assert.equal(sawFlagDuringCall, true)
+  assert.equal(figmaMock.skipInvisibleInstanceChildren, false)
 })
 
 test('walkSceneNodes visits every scene node once, and knows which sat inside instances', async () => {

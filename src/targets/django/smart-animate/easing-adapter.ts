@@ -1,16 +1,38 @@
 /**
  * Adapts a prototyping `Transition.easing` (the `Easing`/`EasingFunctionSpring` shape reactions
- * carry — physical `{mass, stiffness, damping}` springs) to CSS, reusing T5.1's shared easing
- * module (`src/easing/index.ts`), which already solves the spring ODE and exposes
- * `physicalSpringToNormalized`. `Easing` and `MotionEasing` share every preset name except
- * `HOLD` (prototyping reactions don't have it), so the bezier-preset table applies unchanged.
+ * carry — physical `{mass, stiffness, damping, initialVelocity}` springs) to CSS, reusing T5.1's
+ * shared easing module (`src/easing/index.ts`), which solves the spring ODE. `Easing` and
+ * `MotionEasing` share every preset name except `HOLD` (prototyping reactions don't have it), so
+ * the bezier-preset table applies unchanged.
+ *
+ * Springs are solved from the reaction's OWN numbers: `CUSTOM_SPRING` from its mass/stiffness/
+ * damping/initialVelocity, a named preset from its bounce at the frequency whose period is the
+ * duration the designer typed. Both used to be flattened onto one hardcoded 10 rad/s spring, so
+ * every spring in every file animated at the same speed and for the same length of time no matter
+ * what the designer set.
  */
 
-import { BEZIER_PRESETS, NAMED_SPRING_BOUNCE, physicalSpringToNormalized, springToCssLinear } from '../easing/index.ts'
+import {
+  BEZIER_PRESETS,
+  observeSpringPreset,
+  springParamsFromEasing,
+  springParamsToCssLinear,
+  type SpringPresetObservation,
+  type SpringSource,
+} from '../easing/index.ts'
 
 export interface CssTiming {
   readonly timingFunction: string
   readonly durationMs: number
+  /** Set only for springs. `preset-table` means the curve rests on the reverse-engineered
+   * `NAMED_SPRING_BOUNCE` estimate rather than on numbers Figma stated — the export reports those
+   * so a wrong guess is visible in the package instead of only in the pixels. */
+  readonly springSource?: SpringSource
+  /** The preset name (`GENTLE`, `BOUNCY`, …) a spring easing carried, so the report can name which
+   * estimate a curve rests on. Absent for `CUSTOM_SPRING`, which is never an estimate. */
+  readonly springPreset?: string
+  /** Set only when a named preset arrived carrying enough of its own numbers to check the table. */
+  readonly springObservation?: SpringPresetObservation
 }
 
 /** Converts a `SimpleTransition`'s `{easing, duration}` to a CSS timing-function + duration. */
@@ -28,20 +50,27 @@ export function transitionToCssTiming(transition: { readonly easing: Easing; rea
       const { x1, y1, x2, y2 } = easing.easingFunctionCubicBezier
       return { timingFunction: `cubic-bezier(${x1}, ${y1}, ${x2}, ${y2})`, durationMs }
     }
-    case 'CUSTOM_SPRING': {
-      if (!easing.easingFunctionSpring) {
-        throw new Error('CUSTOM_SPRING easing is missing easingFunctionSpring')
-      }
-      const bounce = physicalSpringToNormalized(easing.easingFunctionSpring)
-      const sampled = springToCssLinear(bounce)
-      return { timingFunction: sampled.easing, durationMs: sampled.durationMs }
-    }
+    case 'CUSTOM_SPRING':
     case 'GENTLE':
     case 'QUICK':
     case 'BOUNCY':
     case 'SLOW': {
-      const sampled = springToCssLinear(NAMED_SPRING_BOUNCE[easing.type])
-      return { timingFunction: sampled.easing, durationMs: sampled.durationMs }
+      if (easing.type === 'CUSTOM_SPRING' && !easing.easingFunctionSpring) {
+        throw new Error('CUSTOM_SPRING easing is missing easingFunctionSpring')
+      }
+      // A spring's own physics decide how long it runs — the reaction's `duration` field is inert
+      // for it in Figma too — but a preset that states only a bounce takes that duration as the
+      // period it should oscillate at.
+      const resolved = springParamsFromEasing(easing, duration)
+      const sampled = springParamsToCssLinear(resolved.params)
+      const observation = observeSpringPreset(easing)
+      return {
+        timingFunction: sampled.easing,
+        durationMs: sampled.durationMs,
+        springSource: resolved.source,
+        ...(resolved.preset ? { springPreset: resolved.preset } : {}),
+        ...(observation ? { springObservation: observation } : {}),
+      }
     }
     default: {
       const bezier = BEZIER_PRESETS[easing.type]

@@ -19,7 +19,7 @@
 import type { IrNode } from '../django/ir.ts'
 import { emitCss, toClassName } from '../django/css-emitter.ts'
 import type { DjangoNodeSource } from '../django/css-emitter.ts'
-import { componentName, emitJsx, newContext, propName, type JsxContext, type PropKind } from './jsx.ts'
+import { componentName, emitJsx, newContext, propName, stripPropSuffix, type JsxContext, type PropKind } from './jsx.ts'
 
 /** A Figma property type in the words the props are typed by. */
 const kindOfProp = (type: string | undefined): PropKind =>
@@ -29,6 +29,7 @@ import { emitInteractions } from '../django/interactions.ts'
 import { emitNodeAnimationCss } from '../django/motion/css-emitter.ts'
 import type { MotionSnapshot } from '../django/motion/types.ts'
 import { toClassName as className } from '../django/css-emitter.ts'
+import { codeConnectFile, type CodeConnectProp } from './code-connect.ts'
 
 export interface ReactOutput {
   /** path → contents, ready to be written into a repository. */
@@ -87,6 +88,18 @@ export interface EmitReactOptions {
   tokensCss?: string
   /** What earlier runs already emitted, by master id — so an instance finds its own component. */
   componentNamesById?: ReadonlyMap<string, string>
+  /**
+   * The design file's own key — `figma.fileKey`. Granted only to a private plugin on an
+   * Organization plan; `undefined` everywhere else.
+   *
+   * Code Connect addresses a component by a node URL, not by anything this plugin can publish
+   * itself, and the URL cannot be built without the key. Without it `emitReact` writes no
+   * `.figma.tsx` files at all rather than a set that would half fail to publish.
+   */
+  fileKey?: string
+  /** The design file's own name — `figma.root.name`. Only cosmetic in the Code Connect URL, but
+   * read here rather than re-derived so the two never disagree. */
+  fileName?: string
 }
 
 /** A component as the screens use it: its markup, and every property value they ask for. */
@@ -283,6 +296,18 @@ export async function emitReact(
   // The assets themselves, once, under a path a bundler serves as-is.
   for (const [, asset] of options.assetsByNodeId ?? []) files[`public/assets/${asset.filename}`] = asset.svg
 
+  // Every link below needs the file's own key — figma.fileKey exists only for a private plugin
+  // on an Organization plan, and a node URL cannot be built without it. A partial run (some
+  // components linked, others silently not) would read as a working Code Connect setup that
+  // fails to publish half the time — nothing is written until every link can be built the same way.
+  if (!options.fileKey && components.size > 0) {
+    gaps.push(
+      'Code Connect files were not emitted for this export — figma.fileKey is only granted to a ' +
+        'private plugin on an Organization plan, and a node URL cannot be built without it'
+    )
+  }
+  let connectFilesWritten = false
+
   for (const component of components.values()) {
     // From the library only when it is the SAME master — a shared name is not a shared component.
     if (component.masterId && options.fromLibrary?.has(component.masterId)) continue
@@ -299,6 +324,38 @@ export async function emitReact(
     if (built.css.trim() !== '') files[`src/components/${component.name}.module.css`] = built.css
     gaps.push(...built.gaps)
     props.set(component.name, built.props)
+
+    // The Code Connect file this component needs to publish, built from the exact props Figma
+    // gave it — the same `values`/`types`/`rawNames` `componentFile` just read from, not a second
+    // guess. A component with no master id (its markup came from an instance whose own master
+    // could not be resolved) has no node to link and is named in the gaps instead of guessed at.
+    if (options.fileKey) {
+      if (component.masterId) {
+        const connectProps = new Map<string, CodeConnectProp>()
+        for (const prop of component.values.keys()) {
+          const kind = kindOfProp(component.types.get(prop))
+          connectProps.set(prop, {
+            kind,
+            figmaName: component.rawNames.get(prop) ?? prop,
+            values: kind === 'variant' ? [...(component.values.get(prop) ?? [])] : undefined,
+          })
+        }
+        files[`src/components/${component.name}.figma.tsx`] = codeConnectFile({
+          componentName: component.name,
+          componentPath: `src/components/${component.name}.tsx`,
+          nodeId: component.masterId,
+          props: connectProps,
+          fileKey: options.fileKey,
+          fileName: options.fileName ?? '',
+        })
+        connectFilesWritten = true
+      } else {
+        gaps.push(
+          `${component.name} has no Figma component id of its own — Code Connect links a node id, ` +
+            `and this component's markup did not resolve to one`
+        )
+      }
+    }
   }
 
   // The same sentence once. A component set says a thing per variant, and a 144-variant button
@@ -334,6 +391,15 @@ export async function emitReact(
 
   if (options.tokensCss) files['src/tokens.css'] = options.tokensCss
   Object.assign(files, projectFiles(firstScreen, Boolean(options.tokensCss), fontsIn(files)))
+  // The include glob already matches `*.figma.tsx` alongside the component it names — Code
+  // Connect's own parser tells the two apart by the calls inside, not by a separate list here.
+  if (connectFilesWritten) {
+    files['figma.config.json'] = `${JSON.stringify(
+      { codeConnect: { parser: 'react', include: ['src/components/**/*.tsx'] } },
+      null,
+      2
+    )}\n`
+  }
 
   // The screens import it, so it is emitted: a scaffold that does not compile because the
   // generator referred to a file it never wrote is a scaffold nobody runs.
@@ -448,7 +514,7 @@ function collectComponents(node: IrNode, into: Map<string, CollectedComponent>):
       seen.add(String(value.value))
       held.values.set(prop, seen)
       held.types.set(prop, value.type)
-      held.rawNames.set(prop, raw.replace(/#.*$/, ''))
+      held.rawNames.set(prop, stripPropSuffix(raw))
     }
     into.set(key, held)
     // An instance rendered as its component draws its own children, so they are none of the

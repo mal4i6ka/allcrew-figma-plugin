@@ -5,44 +5,53 @@
  *
  * Hover/press → `:hover`/`:active` CSS rules: the emitter diffs the source node's `getCSSAsync`
  * output against the destination variant's, keeping only properties that differ and are NOT in
- * the IR-owned set (layout/box-model/font-metrics — those are handled by the structural CSS).
- * `transition` names exactly the changed properties — never `transition: all` (docs/research/05
- * §2.1: `all` transitions properties the designer didn't animate, producing visual noise).
+ * the IR-owned set (structural layout only — see the set's own doc below). `transition` names
+ * exactly the changed properties — never `transition: all` (docs/research/05 §2.1: `all`
+ * transitions properties the designer didn't animate, producing visual noise).
+ *
+ * REFORM (M9 follow-up): the diff used to stop at the trigger node itself, so a hover that
+ * recolours an icon, re-pads a label, or reveals a badge — all on a DESCENDANT of the trigger —
+ * emitted nothing. `matchLayers` (smart-animate/match-layers.ts, the same name+path algorithm
+ * Smart Animate itself uses) now walks the trigger's source/destination subtrees too; each
+ * matched descendant gets its own nested `.nTRIGGER:hover .nCHILD` rule, and a descendant that
+ * only exists in one of the two variants (a reveal-on-hover badge, a hide-on-hover icon) gets an
+ * opacity/visibility toggle instead of being silently skipped.
  *
  * Overlays → `<dialog>` elements with JS `showModal()`/`close()`: the trigger event listener is
- * wired per `mapTriggerToMechanism`, and `CLOSE_ON_CLICK_OUTSIDE` adds a backdrop-click handler.
+ * wired per `overlayOpenMechanism`, and `CLOSE_ON_CLICK_OUTSIDE` adds a backdrop-click handler.
+ * `renderOverlayBody` (optional) fills the dialog/modal/offcanvas body with the destination's own
+ * rendered markup instead of leaving an empty shell.
  */
 
-import type { IrNode, IrInteraction, IrOverlay } from './ir.ts'
+import type { IrNode, IrInteraction, IrOverlay, IrNavigateTransition } from './ir.ts'
 import { toClassName, type DjangoNodeSource } from './css-emitter.ts'
 import { escapeHtml } from './html-emitter.ts'
+import { matchLayers, indexTree } from './smart-animate/match-layers.ts'
+import type { DiffableNode, NodePath } from './smart-animate/types.ts'
 
-/** CSS properties the IR layout model and per-segment text rules own — the interaction emitter
- * must not transition these, or the `:hover`/`:active` rule fights the structural CSS. Mirrors the
- * `IR_OWNED_CSS` set in css-emitter.ts; kept as a local copy to avoid a cross-module dependency
- * on a non-exported const. */
+/** CSS properties the IR layout model owns — the interaction emitter must not transition these,
+ * or a `:hover`/`:active` rule would fight the structural CSS (reflowing siblings, breaking the
+ * grid/flex algorithm) rather than just restyling the node. This used to ALSO exclude the node's
+ * own box model (width/height/margin/padding/gap) and typography (font-size/weight/letter-
+ * spacing/line-height) — which meant a hover state that grew, re-padded, or re-weighted text was
+ * silently LOST rather than merely un-transitioned (the destination's value never made it into
+ * the diff at all). Only genuinely structural properties stay excluded now: placement (position/
+ * inset/float/clear/box-sizing/overflow/aspect-ratio/display) and the flex/grid ALGORITHM
+ * (track/alignment definitions — changing these on one interaction state would reflow every
+ * sibling, not just the node carrying the interaction). Size, spacing, font metrics, color, and
+ * transform are all real visual state now and are allowed to change and transition. */
 const IR_OWNED_CSS = new Set<string>([
-  'width', 'height', 'min-width', 'max-width', 'min-height', 'max-height',
-  'top', 'right', 'bottom', 'left', 'inset', 'position', 'float', 'clear', 'box-sizing',
-  'overflow', 'overflow-x', 'overflow-y', 'aspect-ratio',
-  'display', 'flex', 'flex-grow', 'flex-shrink', 'flex-basis', 'flex-direction', 'flex-wrap', 'flex-flow',
+  'position', 'top', 'right', 'bottom', 'left', 'inset', 'float', 'clear', 'box-sizing',
+  'overflow', 'overflow-x', 'overflow-y', 'aspect-ratio', 'display',
+  'flex', 'flex-grow', 'flex-shrink', 'flex-basis', 'flex-direction', 'flex-wrap', 'flex-flow',
   'align-items', 'align-self', 'align-content', 'justify-content', 'justify-items', 'justify-self',
-  'place-items', 'place-content', 'place-self', 'order', 'gap', 'row-gap', 'column-gap',
+  'place-items', 'place-content', 'place-self', 'order',
   'grid', 'grid-template', 'grid-template-columns', 'grid-template-rows', 'grid-template-areas',
   'grid-column', 'grid-row', 'grid-area', 'grid-auto-flow', 'grid-auto-columns', 'grid-auto-rows',
-  'grid-column-gap', 'grid-row-gap',
-  'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
-  'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
-  'font', 'font-family', 'font-size', 'font-weight', 'font-style', 'font-variant', 'font-stretch',
-  'line-height', 'letter-spacing', 'text-align', 'text-indent', 'white-space', 'word-break', 'word-wrap',
-  'text-overflow', 'writing-mode', '-webkit-line-clamp', '-webkit-box-orient',
+  'font', 'font-family', 'font-style', 'font-variant', 'font-stretch',
+  'text-align', 'text-indent', 'white-space', 'word-break', 'word-wrap', 'text-overflow',
+  'writing-mode', '-webkit-line-clamp', '-webkit-box-orient',
 ])
-
-/** The pseudo-class each interaction trigger maps to. ON_HOVER → `:hover` (reverts on mouse
- * leave), ON_PRESS → `:active` (reverts on mouse up) — both native CSS, no JS needed. */
-function pseudoClass(trigger: IrInteraction['trigger']): string {
-  return trigger === 'ON_HOVER' ? 'hover' : 'active'
-}
 
 /** Diffs two `getCSSAsync` result maps, returning only the properties that differ and aren't
  * IR-owned. Each entry is `{ property, value }` where value is the destination's CSS value — the
@@ -50,7 +59,12 @@ function pseudoClass(trigger: IrInteraction['trigger']): string {
  * the source's. Properties absent from the destination are skipped (no `unset`/`initial`). */
 function diffCss(
   sourceCss: Record<string, string>,
-  destCss: Record<string, string>
+  destCss: Record<string, string>,
+  /** Stylesheet-relative url()s for the DESTINATION node's image fills, in `fills[]` order
+   * (`css-emitter.ts`'s `imageFillUrls`). Absent/empty means the destination's images were never
+   * exported, so a declaration referencing one is dropped rather than shipped. */
+  imageUrls: readonly string[] = [],
+  nodeLabel = ''
 ): { property: string; value: string }[] {
   const decls: { property: string; value: string }[] = []
   for (const [property, value] of Object.entries(destCss)) {
@@ -58,9 +72,37 @@ function diffCss(
     if (sourceCss[property] === value) continue
     // Skip properties where the source didn't have it either — no visual change to transition.
     if (!(property in sourceCss) && !value) continue
+    // Plain substring, not the /g/ regex: `RegExp.test` on a global pattern carries `lastIndex`
+    // between calls and would skip every other match.
+    if (value.includes('<path-to-image>')) {
+      // `getCSSAsync` writes every image fill as the literal `url(<path-to-image>)`. Shipped as-is
+      // it is a guaranteed 404 (`/static/css/%3Cpath-to-image%3E`) that blanks the element on
+      // hover — worse than not animating the swap at all.
+      if (imageUrls.length === 0) {
+        console.warn(`${nodeLabel || 'a state'} changes an image fill whose asset was not exported — dropping "${property}" from the state rule`)
+        continue
+      }
+      decls.push({ property, value: resolveImagePlaceholders(value, imageUrls) })
+      continue
+    }
     decls.push({ property, value })
   }
   return decls
+}
+
+/** `getCSSAsync`'s image-fill placeholder, matched the same way `css-emitter.ts` matches it. */
+const IMAGE_FILL_PLACEHOLDER = /url\(\s*(["']?)<path-to-image>\1\s*\)/g
+
+/** Positional substitution, last url reused once the list runs out — the same rule
+ * `css-emitter.ts`'s `resolveImageFillPlaceholders` follows, for the same reason: one fill can
+ * render as more than one background layer. */
+function resolveImagePlaceholders(value: string, imageUrls: readonly string[]): string {
+  let index = 0
+  return value.replace(IMAGE_FILL_PLACEHOLDER, () => {
+    const url = imageUrls[Math.min(index, imageUrls.length - 1)]
+    index++
+    return `url(${url})`
+  })
 }
 
 export interface EmitInteractionsCssInput {
@@ -87,6 +129,14 @@ export interface EmitInteractionsOptions {
    * data API (no generated JS). Non-click overlay triggers have no Bootstrap data-API
    * equivalent and keep the `<dialog>` + JS path. */
   readonly bootstrapModals?: boolean
+  /** Renders the overlay destination's markup as the dialog/modal/offcanvas body. Absent (or
+   * returning `undefined` for a given destination) → legacy empty shell. */
+  readonly renderOverlayBody?: (destinationId: string) => string | undefined
+  /** Stylesheet-relative url()s for the image fills of nodes OUTSIDE the exported page tree — the
+   * state variants a reaction points at. Their images are exported by the plugin alongside the
+   * page assets (`src/code.ts`); without an entry here a state that swaps a photo drops the
+   * declaration instead of shipping `url(<path-to-image>)`, which resolves to nothing. */
+  readonly imageUrlsByNodeId?: ReadonlyMap<string, readonly string[]>
 }
 
 /** Every variant node id a CHANGE_TO interaction or OVERLAY reaction references — both the DESTINATION
@@ -109,6 +159,94 @@ export function collectReactionDestinationIds(nodes: readonly IrNode[]): Set<str
   }
   for (const node of nodes) visit(node)
   return ids
+}
+
+/** Duck-typed subset of a scene-node-like object (a `DjangoNodeSource`, or the real live Figma
+ * node in production) that the descendant walk needs — name/type/children, exactly what
+ * `matchLayers` reads. Carries the ORIGINAL object too (`live`), because descendants of an
+ * off-tree CHANGE_TO variant are never individually registered in `sceneNodesById` (only the
+ * variant's own top-level id is — see `collectReactionDestinationIds`'s doc), so there is nowhere
+ * else to read a descendant's `getCSSAsync` from. */
+interface LiveDiffableNode extends DiffableNode {
+  readonly live: DjangoNodeSource
+}
+
+function toLiveDiffableTree(source: DjangoNodeSource): LiveDiffableNode {
+  const duck = source as unknown as { name?: string; type?: string; children?: readonly DjangoNodeSource[] }
+  return {
+    name: duck.name ?? '',
+    type: duck.type ?? '',
+    // matchLayers only reads name/type/children (see match-layers.ts) — the geometry fields
+    // `DiffableNode` declares (for its own FLIP-style diff, unused here) are irrelevant.
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    children: (duck.children ?? []).map(toLiveDiffableTree),
+    live: source,
+  }
+}
+
+/** The exported node's OWN children as a `DiffableNode` tree, `id`-carrying — the descendant
+ * walk's source/destination trees (above) are built from off-tree variants whose ids never
+ * appear in the rendered DOM; this tree's ids DO, so a matched/added/removed PATH from that walk
+ * is resolved back to the real `.n<id>` selector through this one (`indexTree`, keyed identically
+ * by name+dupIndex — see match-layers.ts). */
+function toRenderDiffableTree(node: IrNode): DiffableNode {
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    children: 'children' in node ? node.children.map(toRenderDiffableTree) : undefined,
+  }
+}
+
+interface DescendantRule {
+  readonly renderId: string
+  readonly kind: 'changed' | 'removed' | 'added'
+  readonly decls: readonly { property: string; value: string }[]
+}
+
+/** Walks the matched/added/removed layers between an interaction's source and destination
+ * subtrees (`matchLayers` — name+path, the same algorithm Smart Animate itself uses, docs/
+ * research/05 §1.1) and resolves each to the TRIGGER's own rendered descendant id via
+ * `renderIndex`. A path absent from the render tree (added-only and not otherwise present, or the
+ * instance's own structure diverges from the variant being diffed) has no DOM node to attach CSS
+ * to and is skipped — there's nothing to reveal or restyle. */
+async function descendantRules(
+  sourceNode: DjangoNodeSource | undefined,
+  destNode: DjangoNodeSource,
+  renderIndex: ReadonlyMap<NodePath, DiffableNode>,
+  /** Image-fill urls per destination NODE ID — a descendant carries its own fills, not the
+   * trigger's, so the lookup is per matched node rather than one list for the whole subtree. */
+  imageUrlsByNodeId: ReadonlyMap<string, readonly string[]>
+): Promise<DescendantRule[]> {
+  if (!sourceNode) return []
+  const { matched, removed, added } = matchLayers(toLiveDiffableTree(sourceNode), toLiveDiffableTree(destNode))
+  const rules: DescendantRule[] = []
+
+  for (const pair of matched) {
+    const renderNode = renderIndex.get(pair.path)
+    if (!renderNode?.id) continue
+    const a = pair.a as LiveDiffableNode
+    const b = pair.b as LiveDiffableNode
+    const [sourceCss, destCss] = await Promise.all([a.live.getCSSAsync(), b.live.getCSSAsync()])
+    const decls = diffCss(sourceCss, destCss, imageUrlsByNodeId.get(b.id ?? '') ?? [], `"${b.name}"`)
+    if (decls.length > 0) rules.push({ renderId: renderNode.id, kind: 'changed', decls })
+  }
+  for (const entry of removed) {
+    const renderNode = renderIndex.get(entry.path)
+    if (renderNode?.id) rules.push({ renderId: renderNode.id, kind: 'removed', decls: [] })
+  }
+  for (const entry of added) {
+    const renderNode = renderIndex.get(entry.path)
+    if (renderNode?.id) rules.push({ renderId: renderNode.id, kind: 'added', decls: [] })
+  }
+  return rules
 }
 
 /** Emits the interactions CSS and overlay JS from every node carrying `interactions` or
@@ -140,13 +278,27 @@ export async function emitInteractions(
   const visit = async (node: IrNode): Promise<void> => {
     if (node.interactions) {
       const className = toClassName(node.id)
+      const renderIndex = indexTree(toRenderDiffableTree(node))
       // P2e: a node can carry BOTH an ON_HOVER and a chained ON_PRESS (and/or a click toggle). The
-      // base `transition` must be a SINGLE rule per node — one `.class { transition }` per interaction
-      // would override the previous at equal specificity, so only the last interaction's properties
-      // would animate. Aggregate all animated properties into one rule (first duration/timing wins per
-      // property), and emit each state's block (`:hover`/`:active`/`.is-active`) separately.
-      const transitionByProp = new Map<string, string>()
+      // base `transition` must be a SINGLE rule per SELECTOR — one `.class { transition }` per
+      // interaction would override the previous at equal specificity, so only the last
+      // interaction's properties would animate. Aggregate per selector (trigger root, and now
+      // each matched descendant), first duration/timing wins per property; emit each state's
+      // block (`:hover`/`:active`/`.is-active`) separately.
+      const transitionsBySelector = new Map<string, Map<string, string>>()
       const stateBlocks: string[] = []
+      // Unconditional "at rest" declarations — only needed for a descendant that's revealed on
+      // interaction (hidden by default is not the layout's job, it's this emitter's).
+      const restBlocks: string[] = []
+
+      const addTransition = (selector: string, property: string, durationMs: number, timingFunction: string, discrete = false): void => {
+        const props = transitionsBySelector.get(selector) ?? new Map<string, string>()
+        if (!props.has(property)) {
+          props.set(property, `${property} ${durationMs}ms ${timingFunction}${discrete ? ' allow-discrete' : ''}`)
+        }
+        transitionsBySelector.set(selector, props)
+      }
+
       for (const interaction of node.interactions) {
         // P2d: diff from the interaction's SOURCE variant (default variant for inherited reactions;
         // the hover variant for a chained press — P2e) rather than the instance, so only the designer-
@@ -154,38 +306,70 @@ export async function emitInteractions(
         // state. Fall back to the instance when there's no sourceId or it didn't resolve into the scene
         // map (a resolved-source failure would otherwise diff against {} = the whole variant).
         const sourceNode = (interaction.sourceId ? sceneNodesById.get(interaction.sourceId) : undefined) ?? sceneNodesById.get(node.id)
-        const sourceCss = await sourceNode?.getCSSAsync() ?? {}
         const destNode = sceneNodesById.get(interaction.destinationId)
-        const destCss = await destNode?.getCSSAsync() ?? {}
         if (!destNode) {
           console.warn(`"${node.name}" has a ${interaction.trigger} CHANGE_TO interaction targeting "${interaction.destinationId}", which isn't in the exported node set — skipping`)
           continue
         }
-        const decls = diffCss(sourceCss, destCss)
-        if (decls.length === 0) continue
-        for (const d of decls) {
-          if (!transitionByProp.has(d.property)) transitionByProp.set(d.property, `${d.property} ${interaction.durationMs}ms ${interaction.timingFunction}`)
+        const sourceCss = await sourceNode?.getCSSAsync() ?? {}
+        const destCss = await destNode.getCSSAsync()
+        const imageUrls = options.imageUrlsByNodeId ?? new Map<string, readonly string[]>()
+        const rootDecls = diffCss(sourceCss, destCss, imageUrls.get(interaction.destinationId) ?? [], `"${node.name}"`)
+        const descRules = await descendantRules(sourceNode, destNode, renderIndex, imageUrls)
+        if (rootDecls.length === 0 && descRules.length === 0) continue
+
+        const baseSelector = `.${className}`
+        const triggerStateSelector =
+          interaction.trigger === 'ON_CLICK'
+            ? `${baseSelector}.is-active`
+            : `${baseSelector}:${interaction.trigger === 'ON_HOVER' ? 'hover' : 'active'}`
+
+        if (rootDecls.length > 0) {
+          for (const d of rootDecls) addTransition(baseSelector, d.property, interaction.durationMs, interaction.timingFunction)
+          stateBlocks.push(`${triggerStateSelector} {\n${rootDecls.map((d) => `  ${d.property}: ${d.value};`).join('\n')}\n}`)
         }
-        const destBlock = decls.map((d) => `  ${d.property}: ${d.value};`).join('\n')
+
+        for (const rule of descRules) {
+          const descClass = toClassName(rule.renderId)
+          const descSelector = `${baseSelector} .${descClass}`
+          const descStateSelector = `${triggerStateSelector} .${descClass}`
+          if (rule.kind === 'changed') {
+            for (const d of rule.decls) addTransition(descSelector, d.property, interaction.durationMs, interaction.timingFunction)
+            stateBlocks.push(`${descStateSelector} {\n${rule.decls.map((d) => `  ${d.property}: ${d.value};`).join('\n')}\n}`)
+          } else if (rule.kind === 'removed') {
+            // Present at rest, gone in the destination variant — fade it out. `visibility` is a
+            // discrete property; `allow-discrete` lets it animate in step with opacity instead of
+            // snapping to `hidden` at the start of the transition (docs/research/05 §2.3).
+            addTransition(descSelector, 'opacity', interaction.durationMs, interaction.timingFunction)
+            addTransition(descSelector, 'visibility', interaction.durationMs, interaction.timingFunction, true)
+            stateBlocks.push(`${descStateSelector} {\n  opacity: 0;\n  visibility: hidden;\n  pointer-events: none;\n}`)
+          } else {
+            // Present ONLY in the destination variant (a badge/checkmark reveal) — hidden at rest
+            // via opacity+visibility (never `display`, so there's something for the transition to
+            // animate), revealed in the state rule.
+            restBlocks.push(`${descSelector} {\n  opacity: 0;\n  visibility: hidden;\n  pointer-events: none;\n}`)
+            addTransition(descSelector, 'opacity', interaction.durationMs, interaction.timingFunction)
+            addTransition(descSelector, 'visibility', interaction.durationMs, interaction.timingFunction, true)
+            stateBlocks.push(`${descStateSelector} {\n  opacity: 1;\n  visibility: visible;\n  pointer-events: auto;\n}`)
+          }
+        }
+
         if (interaction.trigger === 'ON_CLICK') {
           // P2: a click-driven CHANGE_TO becomes a PERSISTENT toggled state — the base transition
           // animates it (motion from the reaction's duration/easing), a tiny listener flips the
           // `is-active` class. Recognized Bootstrap widgets get their behavior from data-bs-* (P1);
           // this covers free-form components whose interactivity was a Figma prototype.
-          stateBlocks.push(`.${className}.is-active {\n${destBlock}\n}`)
           jsParts.push(
             `document.querySelectorAll('.${className}').forEach(function (el) { el.addEventListener('click', function () { el.classList.toggle('is-active') }) })`
           )
-        } else {
-          // :hover before :active (interaction order) — at equal specificity the later `:active` wins
-          // while the pointer is down, so the pressed state overrides the co-applied hover state.
-          const pseudo = pseudoClass(interaction.trigger)
-          stateBlocks.push(`.${className}:${pseudo} {\n${destBlock}\n}`)
         }
       }
-      if (transitionByProp.size > 0) {
-        const base = `.${className} {\n  transition:\n    ${[...transitionByProp.values()].join(',\n    ')};\n}`
-        cssParts.push([base, ...stateBlocks].join('\n'))
+
+      if (transitionsBySelector.size > 0) {
+        const transitionRules = [...transitionsBySelector].map(
+          ([selector, props]) => `${selector} {\n  transition:\n    ${[...props.values()].join(',\n    ')};\n}`
+        )
+        cssParts.push([...restBlocks, ...transitionRules, ...stateBlocks].join('\n'))
       }
     }
 
@@ -200,6 +384,7 @@ export async function emitInteractions(
         }
         const dialogId = `${className}--overlay-${overlay.destinationId.replace(/[^a-zA-Z0-9]+/g, '-')}`
         const destComponentName = overlayDestinationComponentName(irNodeById.get(overlay.destinationId))
+        const body = options.renderOverlayBody?.(overlay.destinationId) ?? ''
 
         // REFORM wave 3e: a Tooltip/Popover destination → data-bs-toggle on the TRIGGER plus its
         // text pulled from the destination. Unlike modal/offcanvas, Bootstrap does NOT auto-init
@@ -225,7 +410,7 @@ export async function emitInteractions(
             const placement = offcanvasPlacement(irNodeById.get(overlay.destinationId))
             dialogs.push(
               `<div class="offcanvas offcanvas-${placement}" tabindex="-1" id="${dialogId}" aria-hidden="true">` +
-                `<div class="offcanvas-body"></div>` +
+                `<div class="offcanvas-body">${body}</div>` +
                 `</div>`
             )
             const existingOc = triggerAttributes.get(className) ?? ''
@@ -235,7 +420,7 @@ export async function emitInteractions(
           const backdropAttr = overlay.closeInteraction === 'CLOSE_ON_CLICK_OUTSIDE' ? '' : ' data-bs-backdrop="static"'
           dialogs.push(
             `<div class="modal fade" id="${dialogId}" tabindex="-1" aria-hidden="true"${backdropAttr}>` +
-              `<div class="modal-dialog"><div class="modal-content"></div></div>` +
+              `<div class="modal-dialog"><div class="modal-content">${body}</div></div>` +
               `</div>`
           )
           const existing = triggerAttributes.get(className) ?? ''
@@ -244,31 +429,20 @@ export async function emitInteractions(
         }
 
         // The <dialog> element — the interactions JS wires the trigger to showModal().
+        // `::backdrop` paints through `background-color`; there is no `backdrop` property, so the
+        // old spelling was a declaration every browser dropped and the scrim never appeared.
         const backdropCss = overlay.background.type === 'SOLID_COLOR'
-          ? `backdrop: rgba(${Math.round(overlay.background.color.r * 255)}, ${Math.round(overlay.background.color.g * 255)}, ${Math.round(overlay.background.color.b * 255)}, ${overlay.background.color.a});`
+          ? `background-color: rgba(${Math.round(overlay.background.color.r * 255)}, ${Math.round(overlay.background.color.g * 255)}, ${Math.round(overlay.background.color.b * 255)}, ${overlay.background.color.a});`
           : ''
-        const positionStyle = overlay.positionType === 'MANUAL' && overlay.relativePosition
-          ? `top: ${overlay.relativePosition.y}px; left: ${overlay.relativePosition.x}px;`
-          : ''
+        const positionStyle = overlayPositionStyle(overlay)
         dialogs.push(
-          `<dialog id="${dialogId}" class="${className}--overlay" style="${positionStyle}">` +
-          `</dialog>`
+          `<dialog id="${dialogId}" class="${className}--overlay" style="${positionStyle}">${body}</dialog>`
         )
         if (backdropCss) cssParts.push(`#${dialogId}::backdrop { ${backdropCss} }`)
+        const animationCss = dialogAnimationCss(dialogId, overlay.transition)
+        if (animationCss) cssParts.push(animationCss)
 
-        // JS: wire the trigger to showModal(). ON_CLICK → click, ON_HOVER → mouseenter, etc.
-        const event = triggerToEvent(overlay.trigger)
-        const closeJs = overlay.closeInteraction === 'CLOSE_ON_CLICK_OUTSIDE'
-          ? `\n  d.addEventListener('click', (e) => { if (e.target === d) d.close() })`
-          : ''
-        jsParts.push(
-          `document.querySelectorAll('.${className}').forEach((el) => {\n` +
-          `  el.addEventListener('${event}', () => {\n` +
-          `    var d = document.getElementById('${dialogId}')\n` +
-          `    if (d && typeof d.showModal === 'function') d.showModal()\n` +
-          `  })\n` +
-          `})`
-        )
+        jsParts.push(overlayOpenJs(className, dialogId, overlay))
         if (overlay.closeInteraction === 'CLOSE_ON_CLICK_OUTSIDE') {
           jsParts.push(
             `var _d${dialogId.replace(/-/g, '_')} = document.getElementById('${dialogId}')\n` +
@@ -277,6 +451,34 @@ export async function emitInteractions(
         }
       }
       if (dialogs.length > 0) overlayDialogs.set(node.id, dialogs)
+    }
+
+    // M9 follow-up: click actions that vanished silently (BACK/CLOSE/SCROLL_TO — URL is a plain
+    // `<a href>` rendered by html-emitter.ts, no JS needed).
+    if (node.back) {
+      const className = toClassName(node.id)
+      jsParts.push(
+        `document.querySelectorAll('.${className}').forEach((el) => {\n` +
+        `  el.addEventListener('click', (e) => {\n    e.preventDefault()\n    history.back()\n  })\n` +
+        `})`
+      )
+    }
+    if (node.closeDialog) {
+      const className = toClassName(node.id)
+      jsParts.push(
+        `document.querySelectorAll('.${className}').forEach((el) => {\n` +
+        `  el.addEventListener('click', (e) => {\n    e.preventDefault()\n    var d = el.closest('dialog')\n    if (d) d.close()\n  })\n` +
+        `})`
+      )
+    }
+    if (node.scrollTo) {
+      const className = toClassName(node.id)
+      const targetClass = toClassName(node.scrollTo.destinationId)
+      jsParts.push(
+        `document.querySelectorAll('.${className}').forEach((el) => {\n` +
+        `  el.addEventListener('click', (e) => {\n    e.preventDefault()\n    var t = document.querySelector('.${targetClass}')\n    if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' })\n  })\n` +
+        `})`
+      )
     }
 
     if ('children' in node) {
@@ -343,20 +545,109 @@ function offcanvasPlacement(node: IrNode | undefined): string {
   return 'start'
 }
 
-/** Maps a Figma trigger type to the DOM event name the JS listener should use. */
-function triggerToEvent(trigger: IrOverlay['trigger']): string {
-  switch (trigger) {
-    case 'ON_CLICK': return 'click'
-    case 'ON_HOVER': return 'mouseenter'
-    case 'ON_PRESS': return 'mousedown'
-    case 'MOUSE_UP': return 'mouseup'
-    case 'MOUSE_ENTER': return 'mouseenter'
-    case 'MOUSE_LEAVE': return 'mouseleave'
-    case 'MOUSE_DOWN': return 'mousedown'
-    case 'ON_DRAG': return 'pointerdown'
-    case 'ON_KEY_DOWN': return 'keydown'
-    case 'ON_MEDIA_END': return 'ended'
-    case 'ON_MEDIA_HIT': return 'timeupdate'
-    case 'AFTER_TIMEOUT': return 'click'
+/** Inline `style` for a `<dialog>`'s placement. MANUAL uses the reaction's own relative offset
+ * (unchanged); the other six `OverlayPositionType` values previously fell through to the
+ * browser's default `<dialog>` centering regardless of what the designer picked — now each corner/
+ * edge maps to an explicit `position: fixed` placement. CENTER needs no override: a modal
+ * `<dialog>`'s UA stylesheet already centers it. */
+function overlayPositionStyle(overlay: IrOverlay): string {
+  if (overlay.positionType === 'MANUAL') {
+    return overlay.relativePosition
+      ? `position: fixed; margin: 0; top: ${overlay.relativePosition.y}px; left: ${overlay.relativePosition.x}px;`
+      : ''
   }
+  switch (overlay.positionType) {
+    case 'TOP_LEFT': return 'position: fixed; margin: 0; top: 0; left: 0;'
+    case 'TOP_CENTER': return 'position: fixed; margin: 0 auto; top: 0; left: 0; right: 0;'
+    case 'TOP_RIGHT': return 'position: fixed; margin: 0; top: 0; right: 0; left: auto;'
+    case 'BOTTOM_LEFT': return 'position: fixed; margin: 0; top: auto; bottom: 0; left: 0;'
+    case 'BOTTOM_CENTER': return 'position: fixed; margin: 0 auto; top: auto; bottom: 0; left: 0; right: 0;'
+    case 'BOTTOM_RIGHT': return 'position: fixed; margin: 0; top: auto; bottom: 0; right: 0; left: auto;'
+    default: return ''
+  }
+}
+
+/** Open/close fade+scale for the plain `<dialog>` path (Bootstrap modal/offcanvas keep their own
+ * CSS animation and never call this). Uses the overlay reaction's own duration/easing when it
+ * captured one, else a small sensible default. `@starting-style` + `overlay`/`display` in the
+ * `transition` list (with `allow-discrete`) are what let a `<dialog>` animate OPEN at all — by
+ * default it snaps from `display: none` with no starting state to transition from. Wrapped in
+ * `prefers-reduced-motion: no-preference` so reduced-motion users get an instant, unanimated
+ * open/close instead of a suppressed-but-still-there transition. */
+function dialogAnimationCss(dialogId: string, transition: IrNavigateTransition | undefined): string {
+  const durationMs = transition?.durationMs ?? 200
+  const timingFunction = transition?.timingFunction ?? 'ease'
+  if (durationMs <= 0) return ''
+  const sel = `#${dialogId}`
+  return [
+    '@media (prefers-reduced-motion: no-preference) {',
+    `  ${sel} {`,
+    '    opacity: 0;',
+    '    transform: scale(0.95);',
+    `    transition: opacity ${durationMs}ms ${timingFunction}, transform ${durationMs}ms ${timingFunction}, overlay ${durationMs}ms allow-discrete, display ${durationMs}ms allow-discrete;`,
+    '  }',
+    `  ${sel}[open] {`,
+    '    opacity: 1;',
+    '    transform: scale(1);',
+    '  }',
+    '  @starting-style {',
+    `    ${sel}[open] {`,
+    '      opacity: 0;',
+    '      transform: scale(0.95);',
+    '    }',
+    '  }',
+    '}',
+  ].join('\n')
+}
+
+/** How the interactions JS opens a `<dialog>` overlay: an event to listen for, or (`AFTER_TIMEOUT`)
+ * a real `setTimeout`. Previously AFTER_TIMEOUT fell through to `'click'` — a timed overlay that
+ * needed a click to "time out" never opened on its own. */
+function overlayOpenMechanism(overlay: IrOverlay): { kind: 'event'; event: string } | { kind: 'timeout'; timeoutMs: number } {
+  switch (overlay.trigger) {
+    case 'AFTER_TIMEOUT': return { kind: 'timeout', timeoutMs: overlay.triggerTimeoutMs ?? 0 }
+    case 'ON_CLICK': return { kind: 'event', event: 'click' }
+    case 'ON_HOVER': return { kind: 'event', event: 'mouseenter' }
+    case 'ON_PRESS': return { kind: 'event', event: 'mousedown' }
+    case 'MOUSE_UP': return { kind: 'event', event: 'mouseup' }
+    case 'MOUSE_DOWN': return { kind: 'event', event: 'mousedown' }
+    case 'MOUSE_ENTER': return { kind: 'event', event: 'mouseenter' }
+    case 'MOUSE_LEAVE': return { kind: 'event', event: 'mouseleave' }
+    case 'ON_KEY_DOWN': return { kind: 'event', event: 'keydown' }
+    case 'ON_DRAG': return { kind: 'event', event: 'pointerdown' }
+    case 'ON_MEDIA_HIT': return { kind: 'event', event: 'timeupdate' }
+    case 'ON_MEDIA_END': return { kind: 'event', event: 'ended' }
+  }
+}
+
+/** The trigger listener that opens a `<dialog>` overlay — `setTimeout` for AFTER_TIMEOUT, a
+ * key-filtered `keydown` for ON_KEY_DOWN (the reaction's `keyCodes`, or any key when unset), a
+ * plain event listener otherwise. */
+function overlayOpenJs(className: string, dialogId: string, overlay: IrOverlay): string {
+  const openCall = `{ var d = document.getElementById(${JSON.stringify(dialogId)}); if (d && typeof d.showModal === 'function') d.showModal() }`
+  const mechanism = overlayOpenMechanism(overlay)
+
+  if (mechanism.kind === 'timeout') {
+    return (
+      `document.querySelectorAll('.${className}').forEach((el) => {\n` +
+      `  setTimeout(() => ${openCall}, ${mechanism.timeoutMs})\n` +
+      `})`
+    )
+  }
+  if (overlay.trigger === 'ON_KEY_DOWN') {
+    const codes = JSON.stringify(overlay.triggerKeyCodes ?? [])
+    return (
+      `document.querySelectorAll('.${className}').forEach((el) => {\n` +
+      `  el.addEventListener('keydown', (e) => {\n` +
+      `    if (${codes}.length && !${codes}.includes(e.keyCode)) return\n` +
+      `    ${openCall}\n` +
+      `  })\n` +
+      `})`
+    )
+  }
+  return (
+    `document.querySelectorAll('.${className}').forEach((el) => {\n` +
+    `  el.addEventListener('${mechanism.event}', () => ${openCall})\n` +
+    `})`
+  )
 }

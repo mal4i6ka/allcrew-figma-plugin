@@ -10,6 +10,7 @@ import { resolveExportSettings, type ExportMarkedInstanceNode } from '../../util
 import { needsSvg, ellipseArcPath, isDefaultArc } from './geometry.ts'
 import { rgbaToCss } from './tokens.ts'
 import { transitionToCssTiming } from './smart-animate/easing-adapter.ts'
+import type { SpringPresetObservation, SpringSource } from './easing/index.ts'
 import {
   primaryDesignerSetting,
   primaryDesignerAssetFilename,
@@ -220,6 +221,25 @@ interface IrNodeBase {
   /** Shared style names resolved from this node's `fillStyleId`/`strokeStyleId`/`effectStyleId`/
    * `gridStyleId` (M8). Absent when the node references no shared style. */
   styleRefs?: IrStyleRefs
+  /** Breakpoint slugs whose frame is the ONLY one containing this node (mobile-only burger, …).
+   * Base CSS hides it; the matching @media block reveals it. Empty/absent = present everywhere. */
+  readonly breakpointOnly?: readonly string[]
+  /** `URL` action (M9 follow-up) — an external link. Rendered as a real `<a href target="_blank"
+   * rel="noopener">` by the Django emitter (html-emitter.ts), not JS. */
+  readonly externalHref?: string
+  /** `SCROLL_TO` action (M9 follow-up) — smooth-scrolls the destination node into view instead
+   * of navigating. `destinationId` resolves to a same-page element via its own `.n<id>` class. */
+  readonly scrollTo?: { readonly destinationId: string }
+  /** `BACK` action (M9 follow-up) — a prototype "back" button; the interactions JS binds a click
+   * listener that calls `history.back()`. */
+  readonly back?: true
+  /** `CLOSE` action (M9 follow-up) — closes the nearest enclosing `<dialog>`; the interactions JS
+   * binds a click listener that calls `.closest('dialog')?.close()`. */
+  readonly closeDialog?: true
+  /** `scrollBehavior` (`FIXED`/`STICKY_SCROLLS`, read defensively — absent from the installed
+   * `@figma/plugin-typings`) — the CSS emitter maps this to `position: fixed`/`sticky` within a
+   * scrolling frame. Absent means the node scrolls normally with its container. */
+  readonly scrollBehavior?: 'fixed' | 'sticky'
 }
 
 /** M8: a shared style's `name` (`figma.getStyleByIdAsync(id).name`), keyed by which style slot it
@@ -242,6 +262,14 @@ export interface IrNavigateTransition {
   direction?: 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM'
   durationMs: number
   timingFunction: string
+  /** Springs only: where the solved curve's numbers came from (`preset-table` = the estimated
+   * `NAMED_SPRING_BOUNCE` entry). Collected into `export-report.json` so an estimated curve is
+   * visible in the package rather than only in the motion. */
+  springSource?: SpringSource
+  /** Springs only: the preset name behind the curve, so a `preset-table` estimate can be named. */
+  springPreset?: string
+  /** Springs only: a named preset's own numbers next to the table's, when Figma supplied them. */
+  springObservation?: SpringPresetObservation
 }
 
 /** One hover/press interaction from an `ON_HOVER`/`ON_PRESS` reaction with `CHANGE_TO` (M9).
@@ -267,6 +295,12 @@ export interface IrInteraction {
   /** CSS timing-function string (e.g. `cubic-bezier(0.42, 0, 0.58, 1)`) — resolved from the
    * transition's `Easing` via `src/smart-animate/easing-adapter.ts`'s `transitionToCssTiming`. */
   timingFunction: string
+  /** Springs only — see `IrNavigateTransition.springSource`. */
+  springSource?: SpringSource
+  /** Springs only — see `IrNavigateTransition.springPreset`. */
+  springPreset?: string
+  /** Springs only — see `IrNavigateTransition.springObservation`. */
+  springObservation?: SpringPresetObservation
 }
 
 /** An overlay reaction (M9): the trigger opens a destination frame as a modal overlay. The
@@ -274,6 +308,11 @@ export interface IrInteraction {
 export interface IrOverlay {
   /** The trigger type that opens the overlay — maps to a JS event listener. */
   trigger: Trigger['type']
+  /** `AFTER_TIMEOUT`'s delay in ms (Figma stores seconds) — lets the emitter fire a real
+   * `setTimeout` opener instead of miswiring the trigger to a click listener. */
+  triggerTimeoutMs?: number
+  /** `ON_KEY_DOWN`'s key filter (`Trigger.keyCodes`). Absent means "any key". */
+  triggerKeyCodes?: readonly number[]
   /** The overlay target node id. */
   destinationId: string
   /** `overlayRelativePosition` (Vector | null) — MANUAL positioning relative to the trigger. */
@@ -284,6 +323,10 @@ export interface IrOverlay {
   background: { type: 'NONE' } | { type: 'SOLID_COLOR'; color: { r: number; g: number; b: number; a: number } }
   /** `CLOSE_ON_CLICK_OUTSIDE` → the dialog gets a click-outside-to-close listener; `NONE` omits it. */
   closeInteraction: 'NONE' | 'CLOSE_ON_CLICK_OUTSIDE'
+  /** The reaction's own animated transition (M9 follow-up) — the plain `<dialog>` path uses it
+   * for an open/close fade+scale; the Bootstrap modal/offcanvas path keeps Bootstrap's own CSS
+   * animation and ignores this (no generated duplicate). */
+  transition?: IrNavigateTransition
 }
 
 /** A container's own image fill, exported as a real file so its CSS background survives — the
@@ -1089,7 +1132,17 @@ function readNavigateTransition(transition: Transition | null): { transition?: I
   try {
     const timing = transitionToCssTiming(transition)
     const direction = 'direction' in transition ? { direction: transition.direction } : {}
-    return { transition: { style: transition.type, ...direction, durationMs: timing.durationMs, timingFunction: timing.timingFunction } }
+    return {
+      transition: {
+        style: transition.type,
+        ...direction,
+        durationMs: timing.durationMs,
+        timingFunction: timing.timingFunction,
+        ...(timing.springSource ? { springSource: timing.springSource } : {}),
+        ...(timing.springPreset ? { springPreset: timing.springPreset } : {}),
+        ...(timing.springObservation ? { springObservation: timing.springObservation } : {}),
+      },
+    }
   } catch {
     return {}
   }
@@ -1124,12 +1177,19 @@ function readInteractions(
     for (const action of reaction.actions ?? []) {
       if (action.type !== 'NODE' || action.navigation !== 'CHANGE_TO' || !action.destinationId) continue
       const transition = action.transition ?? ({ type: 'DISSOLVE', easing: { type: 'LINEAR' }, duration: 0 } as Transition)
-      const { timingFunction, durationMs } = transitionToCssTiming(
-        transition as { easing: Easing; duration: number }
-      )
+      const timing = transitionToCssTiming(transition as { easing: Easing; duration: number })
       // `sourceId` is set only for reactions read off a main-component VARIANT (P2d): the diff base is
       // the default variant, not the instance, so the instance's own overrides survive the state.
-      interactions.push({ trigger, destinationId: action.destinationId, durationMs, timingFunction, ...(sourceId ? { sourceId } : {}) })
+      interactions.push({
+        trigger,
+        destinationId: action.destinationId,
+        durationMs: timing.durationMs,
+        timingFunction: timing.timingFunction,
+        ...(timing.springSource ? { springSource: timing.springSource } : {}),
+        ...(timing.springPreset ? { springPreset: timing.springPreset } : {}),
+        ...(timing.springObservation ? { springObservation: timing.springObservation } : {}),
+        ...(sourceId ? { sourceId } : {}),
+      })
     }
   }
   return interactions.length > 0 ? { interactions } : {}
@@ -1195,17 +1255,70 @@ function readOverlays(node: { reactions?: ReadonlyArray<Reaction> }): { overlays
         ? 'CLOSE_ON_CLICK_OUTSIDE' as const
         : 'NONE' as const
       const relativePosition = (action as { overlayRelativePosition?: { x: number; y: number } }).overlayRelativePosition ?? null
+      // AFTER_TIMEOUT/ON_KEY_DOWN carry payload the bare trigger TYPE can't express — captured
+      // here so the interactions emitter can fire a real `setTimeout`/key-filtered listener
+      // instead of miswiring the trigger to a plain click (previously the AFTER_TIMEOUT bug).
+      const triggerTimeoutMs = reaction.trigger.type === 'AFTER_TIMEOUT' ? Math.round(reaction.trigger.timeout * 1000) : undefined
+      const triggerKeyCodes = reaction.trigger.type === 'ON_KEY_DOWN' ? reaction.trigger.keyCodes : undefined
       overlays.push({
         trigger: reaction.trigger.type,
+        ...(triggerTimeoutMs !== undefined ? { triggerTimeoutMs } : {}),
+        ...(triggerKeyCodes ? { triggerKeyCodes } : {}),
         destinationId: action.destinationId,
         relativePosition,
         positionType,
         background,
         closeInteraction,
+        ...readNavigateTransition(action.transition),
       })
     }
   }
   return overlays.length > 0 ? { overlays } : {}
+}
+
+/** The trigger types a plain click-driven action (BACK/CLOSE/URL/SCROLL_TO) can faithfully
+ * replicate — mirrors `NAVIGATE_TRIGGERS`. */
+const CLICK_ACTION_TRIGGERS: Record<string, true> = { ON_CLICK: true, MOUSE_UP: true }
+
+/** Reads BACK/CLOSE/URL/SCROLL_TO reactions (M9 follow-up) — four click actions the IR silently
+ * dropped: a prototype "close" button, an external link, a browser-back button, and an anchor
+ * scroll. Each becomes its own IR field (never a generic bag) so the Django emitters wire the
+ * right behavior per kind — a real `<a href>` for URL (html-emitter.ts), JS for the other three
+ * (interactions.ts). Only the first matching action wins, mirroring `readNavigateReaction`. */
+function readClickActions(node: { reactions?: ReadonlyArray<Reaction> }): {
+  externalHref?: string
+  scrollTo?: { destinationId: string }
+  back?: true
+  closeDialog?: true
+} {
+  let reactions: ReadonlyArray<Reaction> | undefined
+  try {
+    reactions = node.reactions
+  } catch {
+    return {}
+  }
+
+  for (const reaction of reactions ?? []) {
+    if (!reaction.trigger || !CLICK_ACTION_TRIGGERS[reaction.trigger.type]) continue
+    for (const action of reaction.actions ?? []) {
+      if (action.type === 'URL' && action.url) return { externalHref: action.url }
+      if (action.type === 'BACK') return { back: true }
+      if (action.type === 'CLOSE') return { closeDialog: true }
+      if (action.type === 'NODE' && action.navigation === 'SCROLL_TO' && action.destinationId) {
+        return { scrollTo: { destinationId: action.destinationId } }
+      }
+    }
+  }
+  return {}
+}
+
+/** `scrollBehavior` (M9 follow-up) — absent from the installed `@figma/plugin-typings` (a newer
+ * Figma API field), so read defensively rather than typed. `FIXED`/`STICKY_SCROLLS` are the only
+ * two values that mean anything on the web; anything else (or absent) omits the field. */
+function readScrollBehavior(node: { scrollBehavior?: string }): { scrollBehavior?: 'fixed' | 'sticky' } {
+  if (node.scrollBehavior === 'FIXED') return { scrollBehavior: 'fixed' }
+  if (node.scrollBehavior === 'STICKY_SCROLLS') return { scrollBehavior: 'sticky' }
+  return {}
 }
 
 /** Fields every IR node carries regardless of kind: identity, position/sizing, grid placement, warnings. */
@@ -1217,6 +1330,7 @@ function baseProps(
     constraints?: Constraints
     targetAspectRatio?: { x: number; y: number } | null
     reactions?: ReadonlyArray<Reaction>
+    scrollBehavior?: string
   },
   isGridChild: boolean
 ) {
@@ -1235,6 +1349,8 @@ function baseProps(
     ...readNavigateReaction(node),
     ...readInteractions(node),
     ...readOverlays(node),
+    ...readClickActions(node),
+    ...readScrollBehavior(node),
   }
 }
 

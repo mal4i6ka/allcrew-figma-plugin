@@ -141,7 +141,24 @@ const FIGMA_API = 'https://api.figma.com'
  * already has the other. */
 function resolveToken() {
   if (process.env.FIGMA_TOKEN) return process.env.FIGMA_TOKEN
-  try { return fs.readFileSync(TOKEN_FILE, 'utf8').trim() } catch { return '' }
+  try {
+    return firstTokenLine(fs.readFileSync(TOKEN_FILE, 'utf8'))
+  } catch {
+    return ''
+  }
+}
+
+/** The token file is also where the instructions for filling it in live, so `#` comments, blank
+ * lines and the shipped `PASTE_…` placeholder are not tokens — sending one of those as a
+ * credential earns a 403 that reads like "your token is wrong" rather than "you have not pasted
+ * one in yet". */
+export function firstTokenLine(contents) {
+  for (const line of contents.split('\n')) {
+    const value = line.trim()
+    if (!value || value.startsWith('#')) continue
+    return value.startsWith('PASTE_') ? '' : value
+  }
+  return ''
 }
 
 /**

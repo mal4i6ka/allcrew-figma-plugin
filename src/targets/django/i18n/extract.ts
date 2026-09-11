@@ -1,19 +1,41 @@
 /**
- * String extraction (T4.1): walks TEXT nodes, normalizes whitespace, dedupes by
- * `(msgctxt, text)`, turns `getStyledTextSegments` runs into inline `<strong>`/`<a>` markup,
- * and carries node metadata (figma-URL, layer path, layer name) as PO `#:`/`#.` comment
- * material for the T4.3 exporter. See docs/research/03-i18n-figma-django.md §1.1-1.2, §3.1-3.2.
+ * String extraction (T4.1): walks TEXT nodes and derives one or more catalog entries per node,
+ * dedupes by `(msgctxt, text)`, and carries node metadata (figma-URL, layer path, layer name) as
+ * PO `#:`/`#.` comment material for the T4.3 exporter. See docs/research/03-i18n-figma-django.md
+ * §1.1-1.2, §3.1-3.2.
+ *
+ * A node's style runs decide the shape:
+ *
+ * - Exactly one run (no paragraph break, one style range): `resolveKey` (keys.ts) derives the
+ *   whole node's key — a bound STRING variable, a manual `pluginData('i18nKey')` annotation
+ *   (context/placeholders/plural), or the plain normalized text. This is the one `{% translate %}`
+ *   /`{% blocktranslate %}` tag `html-emitter.ts`'s `renderTextBlock` emits for that shape.
+ * - More than one run (bold/link spans, and/or a hard line break): `html-emitter.ts`'s
+ *   `renderSegmentSpan` wraps EACH run in its own `{% translate %}` tag, so extraction emits one
+ *   plain-text entry per run too — a single combined entry (this module used to build one with
+ *   inline `<strong>`/`<a>` markup) would carry text the templates never actually render as one
+ *   string. Rich multi-run text is out of scope for `resolveKey`'s variable/placeholder/plural
+ *   machinery (those are whole-string concepts); only the node's own manual `msgctxt`, if any,
+ *   carries over to every run.
  */
 
 import { findAllWithCriteria } from '../../../utils/tree.ts'
-import { getPluginData, PluginDataKey } from '../../../utils/plugin-data.ts'
-import { normalize, translationKey } from './normalize.ts'
+import { TEXT_SEGMENT_FIELDS, splitTextParagraphs, type TextStyleSegment } from '../text-styles.ts'
+import { getAnnotation } from './annotation.ts'
+import { resolveKey } from './keys.ts'
+import { translationKey } from './normalize.ts'
+import { normalizeSegmentText } from './segment-text.ts'
 
 export interface ExtractedEntry {
   msgid: string
   /** `''` when the node carries no `pluginData('i18nKey')` context. */
   msgctxt: string
-  /** Inline `<strong>`/`<a>` markup built from `getStyledTextSegments`; `null` for a single style run. */
+  /** Plural "other" form — present only for a single-run node with a manual plural annotation
+   * (`keys.ts`'s `resolveKey`). */
+  msgidPlural?: string
+  /** Inline markup a hand-authored `ExtractedEntry` may carry for `po.ts`'s benefit; extraction
+   * itself never populates this — see the module doc for why a combined multi-run string no
+   * longer matches what the templates render. */
   markup: string | null
   /** `#:` reference comments: one `figma://<fileKey>?node-id=<id> <layer path>` per source node. */
   references: string[]
@@ -23,7 +45,18 @@ export interface ExtractedEntry {
   nodeIds: string[]
 }
 
-const MARKUP_SEGMENT_FIELDS = ['fontWeight', 'hyperlink'] as const
+export interface ExtractStringsOptions {
+  /** Passed through to `resolveKey` for bound STRING variables — the variable-collection mode
+   * name treated as the source-of-truth locale. Default `'en'`. */
+  sourceLocale?: string
+}
+
+interface NodeEntry {
+  msgid: string
+  msgctxt: string
+  msgidPlural?: string
+  dedupeKey: string
+}
 
 function isTextNode(node: SceneNode): node is TextNode {
   return node.type === 'TEXT'
@@ -44,54 +77,70 @@ function reference(node: TextNode): string {
   return `figma://${fileKey ?? ''}?node-id=${node.id} ${nodePath(node)}`
 }
 
-function buildMarkup(node: TextNode): { markup: string | null; hasInlineStyles: boolean } {
-  const segments = node.getStyledTextSegments([...MARKUP_SEGMENT_FIELDS])
-  if (segments.length <= 1) return { markup: null, hasInlineStyles: false }
-
-  const baseWeight = Math.min(...segments.map((s) => s.fontWeight))
-  let markup = ''
-  for (const segment of segments) {
-    let chunk = segment.characters
-    if (segment.hyperlink?.type === 'URL') {
-      chunk = `<a href="${segment.hyperlink.value}">${chunk}</a>`
-    } else if (segment.fontWeight > baseWeight) {
-      chunk = `<strong>${chunk}</strong>`
-    }
-    markup += chunk
+/** Every `(paragraph × style-run)` slice `getStyledTextSegments(TEXT_SEGMENT_FIELDS)` +
+ * `splitTextParagraphs` produces — the same split `html-emitter.ts` renders one `{% translate %}`
+ * tag per, whether or not the node is "multi-block" (a single paragraph with several style runs
+ * still gets one tag per run; see `renderTextBlock`/`renderTextSpans`). */
+function styleRuns(node: TextNode): TextStyleSegment[] {
+  const segments = node.getStyledTextSegments([...TEXT_SEGMENT_FIELDS]) as unknown as TextStyleSegment[]
+  const paragraphs = splitTextParagraphs(segments)
+  const runs: TextStyleSegment[] = []
+  for (const paragraph of paragraphs) {
+    for (const run of paragraph.runs) runs.push(run.segment)
   }
-  return { markup: normalize(markup), hasInlineStyles: true }
+  return runs
 }
 
-export async function extractStrings(root: BaseNode): Promise<ExtractedEntry[]> {
+async function extractNodeEntries(node: TextNode, sourceLocale: string): Promise<NodeEntry[]> {
+  const runs = styleRuns(node)
+
+  if (runs.length <= 1) {
+    const key = await resolveKey(node, { sourceLocale })
+    if (!key.msgid) return []
+    return [{ msgid: key.msgid, msgctxt: key.msgctxt, msgidPlural: key.msgidPlural, dedupeKey: translationKey(key.msgctxt, key.msgid) }]
+  }
+
+  const msgctxt = getAnnotation(node)?.context ?? ''
+  const entries: NodeEntry[] = []
+  for (const run of runs) {
+    const msgid = normalizeSegmentText(run.characters)
+    if (!msgid) continue
+    entries.push({ msgid, msgctxt, dedupeKey: translationKey(msgctxt, msgid) })
+  }
+  return entries
+}
+
+export async function extractStrings(root: BaseNode, options: ExtractStringsOptions = {}): Promise<ExtractedEntry[]> {
+  const sourceLocale = options.sourceLocale ?? 'en'
   const textNodes = await findAllWithCriteria(root, isTextNode)
   const catalog = new Map<string, ExtractedEntry>()
 
   for (const node of textNodes) {
-    const msgid = normalize(node.characters)
-    if (!msgid) continue
+    const nodeEntries = await extractNodeEntries(node, sourceLocale)
+    if (nodeEntries.length === 0) continue
 
-    const key = getPluginData<{ context?: string }>(node, PluginDataKey.I18N_KEY)
-    const msgctxt = key?.context ?? ''
-    const dedupeKey = translationKey(msgctxt, node.characters)
+    const ref = reference(node)
+    for (const nodeEntry of nodeEntries) {
+      const existing = catalog.get(nodeEntry.dedupeKey)
+      if (existing) {
+        if (!existing.references.includes(ref)) existing.references.push(ref)
+        if (!existing.nodeIds.includes(node.id)) existing.nodeIds.push(node.id)
+        if (!existing.comment.includes(node.name)) existing.comment += `; ${node.name}`
+        continue
+      }
 
-    const existing = catalog.get(dedupeKey)
-    if (existing) {
-      existing.references.push(reference(node))
-      existing.nodeIds.push(node.id)
-      if (!existing.comment.includes(node.name)) existing.comment += `; ${node.name}`
-      continue
+      catalog.set(nodeEntry.dedupeKey, {
+        msgid: nodeEntry.msgid,
+        msgctxt: nodeEntry.msgctxt,
+        ...(nodeEntry.msgidPlural ? { msgidPlural: nodeEntry.msgidPlural } : {}),
+        markup: null,
+        references: [ref],
+        comment: node.name,
+        nodeIds: [node.id],
+      })
     }
-
-    const { markup } = buildMarkup(node)
-    catalog.set(dedupeKey, {
-      msgid,
-      msgctxt,
-      markup,
-      references: [reference(node)],
-      comment: node.name,
-      nodeIds: [node.id],
-    })
   }
 
   return [...catalog.values()]
 }
+

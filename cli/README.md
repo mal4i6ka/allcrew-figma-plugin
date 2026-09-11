@@ -29,7 +29,7 @@ altery-dj demo up export.zip --app .django-demo    # venv + скаффолд + a
 
 | Команда | Что делает |
 |---|---|
-| `altery-dj apply export.zip [--app DIR] [--dry-run]` | распаковать пакет в Django-app (ищет manage.py вверх по дереву); также кладёт tokens.json + bootstrap.map.json в корень app. Перезапускает запущенный управляемый сервер, чтобы он отдавал свежие шаблоны; предупреждает, если `--app` — корень проекта, чьи `settings.py` не проводят корневые templates/static |
+| `altery-dj apply export.zip [--app DIR] [--dry-run]` | распаковать пакет в Django-app (ищет manage.py вверх по дереву); также кладёт tokens.json + bootstrap.map.json в корень app. Файлы самого Django-проекта из пакета (`manage.py`, `config/settings.py`, …) не пишутся — у проекта уже есть свои, и команда об этом сообщает. Перезапускает запущенный управляемый сервер, чтобы он отдавал свежие шаблоны; предупреждает, если `--app` — корень проекта, чьи `settings.py` не проводят корневые templates/static |
 | `altery-dj rebuild export.zip [--dry-run] [--diff]` | переприменить свежий экспорт: правки **вне** `{# GENERATED #}`-маркеров выживают, шаблон без маркеров не трогается; static/locale заменяются целиком |
 
 ### Стенд и dev-сервер

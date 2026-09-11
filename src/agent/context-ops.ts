@@ -16,14 +16,16 @@
  */
 
 import { emitDjango } from '../targets/django/index.ts'
+import { imageStaticPath } from '../targets/django/html-emitter.ts'
 import { pickBackend, type MotionTrigger } from '../targets/django/motion/backend.ts'
 import { readMotionData } from '../targets/django/motion/beta-adapter.ts'
 import { emitMotionExportArtifacts, type MotionExportNode } from '../targets/django/motion/export-assets.ts'
 import { buildPreviewDocument } from '../targets/django/motion/preview.ts'
 import type { MotionTrack } from '../targets/django/motion/types.ts'
 import { serializeNode, type IrNode } from '../targets/django/ir.ts'
-import { annotateVectorLeaves, type AssetSourceNode } from '../targets/django/export/assets.ts'
-import { detectImageFillFormat } from '../targets/django/assets.ts'
+import { annotateVectorLeaves, annotateVideoFills, collectManualAssets, type AssetSourceNode } from '../targets/django/export/assets.ts'
+import { detectImageFillFormat, isVideoAssetPath, primaryDesignerSetting, type DesignerExportSetting } from '../targets/django/assets.ts'
+import { resolveExportSettings, type ExportMarkedInstanceNode } from '../utils/graphics.ts'
 import { imageDimensions } from './image-dimensions.ts'
 import { findAllWithCriteria } from '../utils/tree.ts'
 import { readLocalVariables } from '../variables.ts'
@@ -183,6 +185,100 @@ class Stopwatch {
 
 async function screenshot(node: SceneNode, scale: number): Promise<Uint8Array> {
   return node.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: scale } })
+}
+
+/** One asset the emitted HTML/CSS actually references — named so a caller can hand `nodeId`
+ * straight to `NODE_EXPORT` instead of reverse-engineering it out of `filename` (the failure this
+ * op exists to close — see the module note). Derived from the same IR `emitDjango` reads, never
+ * by re-parsing the markup. */
+export interface ContextAsset {
+  /** `static`-relative filename the emitted markup asks for — `img/<this>`. */
+  filename: string
+  /** Figma node id whose export produces `filename` — the argument `NODE_EXPORT` wants. */
+  nodeId: string
+  kind: 'raster' | 'vector' | 'video' | 'poster'
+  /** Designer `@Nx` export scale; 1 for anything without one (plain leaves, container fills, masks). */
+  scale: number
+  /** File extension without the dot. */
+  format: string
+  /** False only when the plugin already knows this can't ship — a video `collectManualAssets`
+   * reports as unexportable. `NODE_EXPORT` will fail on `nodeId` the same way; don't retry it. */
+  exportable?: false
+  reason?: string
+}
+
+/** The designer's own export scale for `nodeId` — `resolveExportSettings` is the exact check
+ * `serializeNode` uses to decide whether a leaf was routed through `serializeExportedGraphic` at
+ * all, so this never guesses a scale for a plain leaf, container fill, or mask, none of which
+ * carry one. */
+async function designerScale(nodeId: string, sceneNodesById: ReadonlyMap<string, SceneNode>): Promise<number> {
+  const source = sceneNodesById.get(nodeId)
+  if (!source) return 1
+  const settings = (await resolveExportSettings(
+    source as unknown as ExportMarkedInstanceNode
+  )) as ReadonlyArray<DesignerExportSetting>
+  const primary = primaryDesignerSetting(settings)
+  return primary?.constraint?.type === 'SCALE' ? primary.constraint.value : 1
+}
+
+/**
+ * Every asset the emitted HTML/CSS references, one entry per file, named so `NODE_EXPORT` can be
+ * called on `nodeId` directly. Walks the IR after `annotateVectorLeaves`/`annotateVideoFills` have
+ * resolved every leaf, so an entry only appears once a real file (or a documented reason it can't
+ * exist) backs it — a small inlined vector with no `assetSrc` contributes nothing, since nothing
+ * in the markup names a file for it.
+ */
+export async function collectContextAssets(
+  nodes: readonly IrNode[],
+  sceneNodesById: ReadonlyMap<string, SceneNode>
+): Promise<ContextAsset[]> {
+  // `collectManualAssets` is the plugin's own "this video will never export" signal — reused
+  // rather than re-derived so this list and the export report never disagree.
+  const manual = collectManualAssets(nodes)
+  const manualReason =
+    "Figma's export API already refused this video (see the export report's manualAssets) — " +
+    'NODE_EXPORT will fail on this nodeId the same way; the file has to be attached manually.'
+
+  const out: ContextAsset[] = []
+  const push = async (nodeId: string, assetSrc: string, kind: ContextAsset['kind'], scale: number): Promise<void> => {
+    const filename = assetSrc.replace(/^img\//, '')
+    const failing = manual.some((asset) => asset.nodeId === nodeId && asset.assetSrc === assetSrc)
+    out.push({
+      filename,
+      nodeId,
+      kind,
+      scale,
+      format: filename.slice(filename.lastIndexOf('.') + 1),
+      ...(failing ? { exportable: false, reason: manualReason } : {}),
+    })
+  }
+
+  const visit = async (node: IrNode): Promise<void> => {
+    if (node.type === 'image') {
+      const assetSrc = node.assetSrc ?? imageStaticPath(node)
+      const video = isVideoAssetPath(assetSrc)
+      await push(node.id, assetSrc, video ? 'video' : 'raster', video ? 1 : await designerScale(node.id, sceneNodesById))
+      if (node.posterSrc) await push(node.id, node.posterSrc, 'poster', 1)
+      return
+    }
+    if (node.type === 'vector') {
+      if (node.assetSrc) await push(node.id, node.assetSrc, 'vector', await designerScale(node.id, sceneNodesById))
+      return
+    }
+    if (node.type === 'container' || node.type === 'instance-ref') {
+      for (const bg of node.backgroundImages ?? []) await push(node.id, bg.assetSrc, 'raster', 1)
+      if (node.backgroundVideo) {
+        await push(node.id, node.backgroundVideo.assetSrc, 'video', 1)
+        await push(node.id, node.backgroundVideo.posterSrc, 'poster', 1)
+      }
+      if (node.type === 'container' && node.mask?.kind === 'image') {
+        await push(node.mask.nodeId, node.mask.assetSrc, 'vector', 1)
+      }
+      for (const child of node.children) await visit(child)
+    }
+  }
+  for (const node of nodes) await visit(node)
+  return out
 }
 
 /* --------------------------------------------------------------------- ops */
@@ -372,7 +468,12 @@ export const CONTEXT_OPS: readonly OpDef[] = [
     name: 'design.context',
     summary: 'Reference HTML + CSS + PNG for a node, with the tokens it binds — implement from this.',
     agent:
-      'Answers with file paths, not payloads — open them. The token usage table says which variables actually carry the subtree.',
+      'Answers with file paths, not payloads — open them. The token usage table says which variables ' +
+      "actually carry the subtree. `assets[]` names every raster/vector/video/poster the emitted HTML+CSS " +
+      'actually references — `filename` is exactly the path the markup asks for, and `nodeId` is the id to ' +
+      'hand straight to NODE_EXPORT to produce it; no need to reverse-engineer one from the other. An entry ' +
+      "with `exportable: false` names a video Figma's export API already refused — NODE_EXPORT will fail on " +
+      "that nodeId the same way, so don't retry it.",
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'Frame or component to describe.' },
@@ -397,9 +498,11 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       const ir = await clock.time('serialize', () => serializeNode(root))
       if (!ir) throw new Error(`"${root.name}" (${root.type}) produced no exportable structure`)
       const irNodes: readonly IrNode[] = [ir]
-      await clock.time('vectors', () =>
-        annotateVectorLeaves(irNodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
-      )
+      const assetSourceNodes = sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>
+      await clock.time('vectors', () => annotateVectorLeaves(irNodes, assetSourceNodes))
+      // Unannotated, a video fill's `assetSrc` looks shippable even when Figma's export API is
+      // about to refuse it — `collectContextAssets` needs `videoUnavailable` set first to say so.
+      await clock.time('videos', () => annotateVideoFills(irNodes, assetSourceNodes))
       const { html, css } = await clock.time('emit', () =>
         emitDjango(irNodes, sceneNodesById, tokens.names, { cssFile: params.cssFile as string })
       )
@@ -413,6 +516,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         const png = await clock.time('screenshot', () => screenshot(root, params.scale as number))
         files.push(binaryFile(`${slug}.png`, 'image/png', png))
       }
+      const assets = await clock.time('assets', () => collectContextAssets(irNodes, sceneNodesById))
 
       return {
         node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
@@ -420,6 +524,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         tokens: tokens.usage,
         ms: clock.report(),
         files,
+        assets,
       }
     },
   },

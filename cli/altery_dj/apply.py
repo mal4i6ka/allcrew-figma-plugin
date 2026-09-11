@@ -49,6 +49,10 @@ class ApplyResult:
     manage_dir: Path
     written: list[str]
     manual_assets: ManualAssets
+    #: Django project files (`manage.py`, `config/settings.py`, …) the zip carried and this
+    #: command deliberately did not write: applying onto a project that already runs would
+    #: overwrite its settings and URLconf. Reported so the skip is visible, not silent.
+    skipped_project_files: list[str] = field(default_factory=list)
 
 
 def apply_export(zip_path: Path, app_dir: Path, dry_run: bool = False) -> ApplyResult:
@@ -59,6 +63,7 @@ def apply_export(zip_path: Path, app_dir: Path, dry_run: bool = False) -> ApplyR
         raise ValueError(f"no manage.py found at or above {app_dir} — is this a Django project?")
 
     written: list[str] = []
+    skipped_project_files: list[str] = []
     manual = ManualAssets()
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
@@ -66,6 +71,8 @@ def apply_export(zip_path: Path, app_dir: Path, dry_run: bool = False) -> ApplyR
                 continue
             name = info.filename
             if not (name.startswith(KNOWN_ROOTS) or name in KNOWN_ROOT_FILES):
+                if name.endswith(".py") or name in ("requirements.txt", "Makefile", ".env.example"):
+                    skipped_project_files.append(name)
                 continue
             target = app_dir / name
             if not dry_run:
@@ -87,7 +94,13 @@ def apply_export(zip_path: Path, app_dir: Path, dry_run: bool = False) -> ApplyR
                 bucket = manual.present if (app_dir / "static" / asset).exists() else manual.missing
                 bucket.append(asset)
 
-    return ApplyResult(app_dir=app_dir, manage_dir=manage_dir, written=written, manual_assets=manual)
+    return ApplyResult(
+        app_dir=app_dir,
+        manage_dir=manage_dir,
+        written=written,
+        manual_assets=manual,
+        skipped_project_files=skipped_project_files,
+    )
 
 
 def _warn_if_unwired_project_root(app_dir: Path, manage_dir: Path) -> None:
@@ -128,6 +141,15 @@ def run(args) -> int:
     for name in result.written:
         print(f"  {name}")
     _warn_if_unwired_project_root(app_dir, result.manage_dir)
+    if result.skipped_project_files:
+        print(
+            f"[altery-dj apply] skipped {len(result.skipped_project_files)} Django project file(s) in the zip"
+            " (manage.py, settings/urls/views) — this project already has its own."
+        )
+        print(
+            "  They are only meant for a standalone package; turn off Settings → Target → Django project"
+            " to stop exporting them."
+        )
     for asset in result.manual_assets.present:
         print(f"[altery-dj apply] manual asset already in place: static/{asset}")
     if result.manual_assets.missing:

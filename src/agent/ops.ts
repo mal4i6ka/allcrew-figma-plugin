@@ -15,7 +15,7 @@
  */
 
 import { lintScopeAsync, type LintFinding } from '../targets/django/lint/index.ts'
-import { findAllWithCriteria, loadAllPagesAsync, walkSceneNodes } from '../utils/tree.ts'
+import { findAllByTypes, findAllWithCriteria, loadAllPagesAsync, walkSceneNodes } from '../utils/tree.ts'
 import { readAllVariables, readLocalVariables, resolveVariableValue } from '../variables.ts'
 import { describeColor, type Rgba } from './values.ts'
 import { formatHex, parseHex, type Rgb } from '../tokens/color.ts'
@@ -215,14 +215,26 @@ export interface NodeSummary {
   >
   /** TEXT only, truncated — an agent wants the gist, not the copy deck. */
   text?: string
-  /** INSTANCE only. */
-  instanceOf?: { id: string | null; name: string | null; properties?: Record<string, unknown> }
+  /** INSTANCE only. `id`/`name` are the VARIANT the instance points at ("Device=Desktop");
+   * `setId`/`setName` are the component set that variant lives in — the identity everything else
+   * (`components.list`, Code Connect, the design system's own names) is keyed by. A lone
+   * component with no variants has no set, and those two fields are then absent. */
+  instanceOf?: {
+    id: string | null
+    name: string | null
+    setId?: string
+    setName?: string
+    properties?: Record<string, unknown>
+    /** Figma refused to describe the properties — the instance's set is broken in the file. */
+    propertiesError?: string
+  }
   reactions?: ReactionSummary[]
   /** Variable modes on this node. `explicit` — pinned right here (Figma's per-collection mode
-   * picker; "Auto" leaves the entry out); `resolved` — what actually applies, pins inherited
-   * from ancestors included. Reported on the root of a read only, because that is the node the
-   * question is about ("which theme is this frame drawn in?"), and per-node lookups on a deep
-   * walk would cost a collection fetch each. */
+   * picker; "Auto" leaves the entry out), reported for every node of a read because a pin is a
+   * decision and it can sit anywhere: in this file the theme is pinned on the Figma page
+   * ("Redesign One" → Light) and frames inherit it, but a section forced to its own mode is a
+   * thing designers do. `resolved` — what actually applies, inherited pins included; reported on
+   * the root only, since it repeats identically down the whole tree. */
   modes?: { explicit?: VariableModeSummary[]; resolved?: VariableModeSummary[] }
   childCount?: number
   children?: NodeSummary[]
@@ -827,13 +839,28 @@ async function describePaints(
   return out.fills || out.strokes ? out : null
 }
 
-/** Names for a node's variable modes. One collection fetch per collection, cached for the call. */
-async function describeVariableModes(node: any): Promise<NodeSummary['modes'] | null> {
+/** Collection id → collection, shared across one read so a deep walk pays each fetch once.
+ * Every node of a page tends to inherit the same handful of collections; a per-node cache would
+ * refetch them per node instead. */
+type CollectionCache = Map<string, VariableCollection | null>
+
+/** Names for a node's variable modes.
+ *
+ * `explicit` is what the designer pinned ON THIS NODE — the "force this frame to Dark" switch in
+ * the variables picker; `resolved` is what actually applies, pins inherited from ancestors
+ * included. They answer different questions, and only `explicit` says "a person decided this
+ * here": in this file the theme is pinned on the Figma PAGE ("Redesign One" → Light, "Redesign
+ * Business" → Dark) and every frame merely inherits it.
+ */
+async function describeVariableModes(
+  node: any,
+  collections: CollectionCache,
+  withResolved: boolean
+): Promise<NodeSummary['modes'] | null> {
   const explicit: Record<string, string> = node.explicitVariableModes ?? {}
-  const resolved: Record<string, string> = node.resolvedVariableModes ?? {}
+  const resolved: Record<string, string> = withResolved ? (node.resolvedVariableModes ?? {}) : {}
   if (Object.keys(explicit).length === 0 && Object.keys(resolved).length === 0) return null
 
-  const collections = new Map<string, VariableCollection | null>()
   const describe = async (collectionId: string, modeId: string): Promise<VariableModeSummary> => {
     if (!collections.has(collectionId)) {
       let collection: VariableCollection | null = null
@@ -871,17 +898,21 @@ async function describeNode(
   depth: number,
   paints = false,
   root = true,
-  catalogue: ShaderCatalogue = {}
+  catalogue: ShaderCatalogue = {},
+  collections: CollectionCache = new Map()
 ): Promise<NodeSummary> {
   const summary = summarizeNode(node)
 
   const bindings = await describeBindings(node, summary)
   if (bindings) summary.bindings = bindings
 
-  if (root) {
-    const modes = await describeVariableModes(node)
-    if (modes) summary.modes = modes
-  }
+  /* A pin is a decision, and it can sit on any node — a section forced to Light inside a dark
+   * page is a thing designers do. Reporting `explicit` only for the node the call named hid every
+   * such decision below it, and a consumer reading a whole page could not see one at all. The
+   * inherited picture (`resolved`) stays on the root: it repeats down the entire tree, and on a
+   * page with fifteen subscribed collections it is fifteen rows per node of the same answer. */
+  const modes = await describeVariableModes(node, collections, root)
+  if (modes) summary.modes = modes
 
   if (paints) {
     const described = await describePaints(node, catalogue)
@@ -902,18 +933,37 @@ async function describeNode(
     } catch {
       /* main component lives in an unloaded library — report the instance without it */
     }
+    /* `main` is the VARIANT ("Device=Desktop", `823:97861`), and nothing downstream is keyed by a
+     * variant: `components.list`, Code Connect mappings and the design system's own vocabulary all
+     * name the SET (`Tittle_text`, `823:97862`). Reporting only the variant forces every consumer
+     * to make a second call per instance just to learn what it is an instance OF. */
+    const set = main?.parent?.type === 'COMPONENT_SET' ? main.parent : null
+    /* `componentProperties` is a getter that throws when the instance's set is broken in the file
+     * ("Component set for node has existing errors"). One such instance used to abort the whole
+     * read: a `node.get` over a page with a single broken set answered nothing at all instead of
+     * the other 250 nodes. The instance keeps its identity; only its properties are lost, and the
+     * refusal is reported where it happened. */
+    let properties: Record<string, unknown> | undefined
+    let propertiesError: string | undefined
+    try {
+      properties = summarizeComponentProperties(node.componentProperties) ?? undefined
+    } catch (error) {
+      propertiesError = error instanceof Error ? error.message : String(error)
+    }
     summary.instanceOf = {
       id: main?.id ?? null,
       name: main?.name ?? null,
-      ...(summarizeComponentProperties(node.componentProperties)
-        ? { properties: summarizeComponentProperties(node.componentProperties) }
-        : {}),
+      ...(set ? { setId: set.id, setName: set.name } : {}),
+      ...(properties ? { properties } : {}),
+      ...(propertiesError ? { propertiesError } : {}),
     }
   }
 
   if (depth > 0 && Array.isArray(node.children)) {
     summary.children = []
-    for (const child of node.children) summary.children.push(await describeNode(child, depth - 1, paints, false, catalogue))
+    for (const child of node.children) {
+      summary.children.push(await describeNode(child, depth - 1, paints, false, catalogue, collections))
+    }
   }
 
   return summary
@@ -968,6 +1018,22 @@ async function resolveScope(scope: string): Promise<BaseNode> {
     return figma.root
   }
   return figma.currentPage
+}
+
+/** `componentPropertyDefinitions` is a getter that THROWS — "Component set has existing errors"
+ * on a set Figma cannot resolve, and a different refusal on a variant read outside its parent.
+ * A document-wide inventory that lets one broken set through loses every other component with it
+ * (observed live: 500 components, zero returned). The failure is reported per component instead,
+ * because "this set is broken in the file" is an answer a designer can act on. */
+function readPropertyDefinitions(node: ComponentNode | ComponentSetNode): {
+  properties?: ComponentPropertyDefinitions
+  propertiesError?: string
+} {
+  try {
+    return { properties: node.componentPropertyDefinitions ?? undefined }
+  } catch (error) {
+    return { propertiesError: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 /* -------------------------------------------------------------------- ops */
@@ -1064,11 +1130,17 @@ export const READ_OPS: readonly OpDef[] = [
       const needle = typeof params.name === 'string' ? params.name.toLowerCase() : null
       const types = (params.types as string[] | undefined) ?? null
       const root = await resolveScope(params.scope as string)
-      const matches = await findAllWithCriteria(root, (node): node is SceneNode => {
-        if (types && !types.includes(node.type)) return false
-        if (needle && !node.name.toLowerCase().includes(needle)) return false
-        return true
-      })
+      // A type list lets the native, index-backed search do the walk; without one it has nothing
+      // to narrow by, so the hand-rolled DFS (which can filter on name alone) takes over.
+      const matches =
+        types && types.length > 0
+          ? (await findAllByTypes<SceneNode>(root, types)).filter(
+              (node) => !needle || node.name.toLowerCase().includes(needle)
+            )
+          : await findAllWithCriteria(
+              root,
+              (node): node is SceneNode => !needle || node.name.toLowerCase().includes(needle)
+            )
       const limit = params.limit as number
       return {
         total: matches.length,
@@ -1114,8 +1186,9 @@ export const READ_OPS: readonly OpDef[] = [
     async run(params) {
       const needle = typeof params.name === 'string' ? params.name.toLowerCase() : null
       const root = await resolveScope(params.scope as string)
-      const found = await findAllWithCriteria(root, (node): node is ComponentNode | ComponentSetNode => {
-        if (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET') return false
+      const found = (
+        await findAllByTypes<ComponentNode | ComponentSetNode>(root, ['COMPONENT', 'COMPONENT_SET'])
+      ).filter((node) => {
         if (needle && !node.name.toLowerCase().includes(needle)) return false
         // A variant inside a set is reachable through its parent — listing both is noise.
         return !(node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET')
@@ -1145,7 +1218,7 @@ export const READ_OPS: readonly OpDef[] = [
             node.documentationLinks && node.documentationLinks.length > 0
               ? node.documentationLinks.map((link) => link.uri)
               : undefined,
-          properties: node.componentPropertyDefinitions ?? undefined,
+          ...readPropertyDefinitions(node),
           variants:
             node.type === 'COMPONENT_SET'
               ? node.children.map((child) => ({ id: child.id, name: child.name }))

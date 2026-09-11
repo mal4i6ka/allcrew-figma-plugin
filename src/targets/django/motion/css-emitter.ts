@@ -9,7 +9,7 @@
  * each other when their tracks are emitted as separate `@keyframes` rules.
  */
 
-import { easingToCss, resolveSpringBounce, springToCssLinear } from '../easing/index.ts'
+import { easingToCss, perceptualAngularFrequency, resolveSpringBounce, springToCssLinear } from '../easing/index.ts'
 import type { MotionKeyframe, MotionTrack } from './types.ts'
 
 type TransformAxisField = 'TRANSLATION_X' | 'TRANSLATION_Y' | 'TRANSLATION_XY' | 'SCALE_X' | 'SCALE_Y' | 'SCALE_XY'
@@ -75,12 +75,15 @@ function isLiteralEasing(easing: MotionEasing | VariableAlias): easing is Motion
   return easing.type !== 'VARIABLE_ALIAS'
 }
 
-/** Resolves any `MotionEasing` (bezier/named preset or spring) to a CSS timing-function string. */
-function easingToTimingFunctionCss(easing: MotionEasing): string {
+/** Resolves any `MotionEasing` (bezier/named preset or spring) to a CSS timing-function string.
+ * A spring is solved at the frequency whose period is `segmentSec`, the length of the keyframe
+ * segment it eases: `linear()` is normalized over that segment either way, so a spring solved at
+ * a fixed frequency drew the wrong number of bounces into every segment that wasn't ~630 ms. */
+function easingToTimingFunctionCss(easing: MotionEasing, segmentSec: number): string {
   try {
     return easingToCss(easing)
   } catch {
-    return springToCssLinear(resolveSpringBounce(easing)).easing
+    return springToCssLinear(resolveSpringBounce(easing), perceptualAngularFrequency(segmentSec)).easing
   }
 }
 
@@ -122,7 +125,8 @@ function buildPercentFrames(track: MotionTrack): PercentFrame[] {
     // A segment whose value doesn't change renders identically under any timing function
     // (this is how a HOLD keyframe that repeats the previous value collapses to a no-op shift).
     if (frames[i].declaration === frames[i - 1].declaration) continue
-    frames[i - 1].timingFunction = easingToTimingFunctionCss(easing)
+    const segmentSec = keyframes[i].timelinePosition - keyframes[i - 1].timelinePosition
+    frames[i - 1].timingFunction = easingToTimingFunctionCss(easing, segmentSec)
   }
 
   return frames

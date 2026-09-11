@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { extractStrings } from './extract.ts'
+import { renderTextSpans } from '../html-emitter.ts'
 
 function makeTextNode(overrides: any = {}): any {
   const store = new Map<string, string>()
@@ -106,7 +107,7 @@ test('extractStrings leaves markup null for a single style run', async () => {
   assert.equal(entry.markup, null)
 })
 
-test('extractStrings builds <strong> markup from a heavier-weight segment', async () => {
+test("extractStrings splits a two-run node into one entry per style run, matching html-emitter's per-run translate tags", async () => {
   setFigma()
   const node = makeTextNode({
     characters: 'Read the docs',
@@ -117,12 +118,24 @@ test('extractStrings builds <strong> markup from a heavier-weight segment', asyn
   })
   const root = makePage('Page 1', [node])
 
-  const [entry] = await extractStrings(root)
+  const entries = await extractStrings(root)
 
-  assert.equal(entry.markup, 'Read the <strong>docs</strong>')
+  assert.equal(entries.length, 2)
+  assert.deepEqual(
+    entries.map((e) => e.msgid),
+    ['Read the ', 'docs']
+  )
+  assert.ok(entries.every((e) => e.markup === null))
+
+  // Cross-check against the actual template output: every extracted msgid must appear as its
+  // own `{% translate %}` tag in what html-emitter.ts renders for these same segments.
+  const rendered = renderTextSpans('label', node.getStyledTextSegments([]))
+  for (const entry of entries) {
+    assert.ok(rendered.includes(`{% translate "${entry.msgid}" %}`), `missing template tag for msgid "${entry.msgid}"`)
+  }
 })
 
-test('extractStrings builds <a> markup from a URL hyperlink segment', async () => {
+test('extractStrings splits a hyperlink-spanning run out too, preserving inter-run spacing without markup', async () => {
   setFigma()
   const node = makeTextNode({
     characters: 'Read the docs before starting',
@@ -134,9 +147,61 @@ test('extractStrings builds <a> markup from a URL hyperlink segment', async () =
   })
   const root = makePage('Page 1', [node])
 
+  const entries = await extractStrings(root)
+
+  assert.deepEqual(
+    entries.map((e) => e.msgid),
+    ['Read ', 'the docs', ' before starting']
+  )
+})
+
+test('extractStrings reaches a bound STRING variable through resolveKey, using its variable-name context', async () => {
+  const node = makeTextNode({
+    characters: 'stale cached text',
+    boundVariables: { characters: { type: 'VARIABLE_ALIAS', id: 'VariableID:1' } },
+  })
+  const root = makePage('Page 1', [node])
+  ;(globalThis as any).figma = {
+    skipInvisibleInstanceChildren: false,
+    fileKey: 'AbC123',
+    variables: {
+      getVariableByIdAsync: async () => ({
+        name: 'checkout/submit_button',
+        resolvedType: 'STRING',
+        variableCollectionId: 'VariableCollectionId:1',
+        valuesByMode: { modeEn: 'Place order' },
+      }),
+      getVariableCollectionByIdAsync: async () => ({ modes: [{ modeId: 'modeEn', name: 'en' }] }),
+    },
+  }
+
   const [entry] = await extractStrings(root)
 
-  assert.equal(entry.markup, 'Read <a href="https://example.com">the docs</a> before starting')
+  assert.equal(entry.msgid, 'Place order')
+  assert.equal(entry.msgctxt, 'checkout')
+})
+
+test('extractStrings applies a manual placeholder annotation as a gettext %(name)s token', async () => {
+  setFigma()
+  const node = makeTextNode({ characters: 'Hello, Anna!' })
+  node.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ placeholders: [{ start: 7, end: 11, name: 'username' }] }))
+  const root = makePage('Page 1', [node])
+
+  const [entry] = await extractStrings(root)
+
+  assert.equal(entry.msgid, 'Hello, %(username)s!')
+})
+
+test('extractStrings carries a manual plural annotation into msgid/msgidPlural', async () => {
+  setFigma()
+  const node = makeTextNode({ characters: '%(count)d item' })
+  node.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ plural: { one: '%(count)d item', other: '%(count)d items' } }))
+  const root = makePage('Page 1', [node])
+
+  const [entry] = await extractStrings(root)
+
+  assert.equal(entry.msgid, '%(count)d item')
+  assert.equal(entry.msgidPlural, '%(count)d items')
 })
 
 test('extractStrings uses the layer name as the #. extracted comment', async () => {

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { emitGsapScriptTags, emitGsapTimeline, type GsapTimelineNode } from './gsap-emitter.ts'
+import { emitGsapTimeline, type GsapTimelineNode } from './gsap-emitter.ts'
 import type { MotionTrack } from './types.ts'
 
 function makeTrack(overrides: Partial<MotionTrack>): MotionTrack {
@@ -349,25 +349,4 @@ test('overall script structure matches the DOMContentLoaded + IntersectionObserv
   assert.match(result.js, /paused: true/)
   assert.match(result.js, /prefers-reduced-motion/)
   assert.match(result.js, /data-timeline="hero"/)
-})
-
-test('emitGsapScriptTags renders {% load static %}, core + only used plugins, then the animation file last with defer', () => {
-  const tags = emitGsapScriptTags(['CustomEase', 'DrawSVGPlugin'], 'js/animations/hero.js')
-  const lines = tags.split('\n')
-
-  assert.equal(lines[0], '{% load static %}')
-  assert.equal(lines[1], `<script src="{% static 'vendor/gsap/gsap.min.js' %}"></script>`)
-  assert.equal(lines[2], `<script src="{% static 'vendor/gsap/CustomEase.min.js' %}" defer></script>`)
-  assert.equal(lines[3], `<script src="{% static 'vendor/gsap/DrawSVGPlugin.min.js' %}" defer></script>`)
-  assert.equal(lines[4], `<script src="{% static 'js/animations/hero.js' %}" defer></script>`)
-  assert.equal(lines.length, 5)
-  assert.doesNotMatch(tags, /TextPlugin/)
-})
-
-test('emitGsapScriptTags omits plugin tags entirely when no plugins are used', () => {
-  const tags = emitGsapScriptTags([], 'js/animations/hero.js')
-  const lines = tags.split('\n')
-
-  assert.equal(lines.length, 3)
-  assert.equal(lines[2], `<script src="{% static 'js/animations/hero.js' %}" defer></script>`)
 })
