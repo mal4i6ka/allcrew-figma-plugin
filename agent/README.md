@@ -82,6 +82,56 @@ node agent/altery-figma.mjs call document.info
 
 ---
 
+## Through an MCP client (no skill, no curl)
+
+The CLI above is deliberately MCP-*shaped* without being MCP. `agent/mcp.mjs` closes that last
+gap for clients that already speak the protocol — Claude Desktop, Claude Code, Cursor, Codex:
+it is an **MCP stdio server** that fronts the very same bridge, so the client lists tools and
+calls them like any other server, with no `SKILL.md` to paste and no `curl`.
+
+```
+   MCP client (Claude Desktop, Cursor, …)            plugin (open in Figma)
+      │  stdio: initialize, tools/list, tools/call      │
+      ▼                                                 │  GET /plugin/poll
+    mcp.mjs ── POST /call {op, params, target} ──▶ bridge.mjs ──┤
+      ◄──────────────── the op's answer ────────────────────┘
+```
+
+It is a *client* of the bridge, exactly like the CLI — not a replacement. So the same model
+holds: **one bridge per machine, and as many MCP clients as you like**, each spawning its own
+`mcp.mjs` that forwards to that single bridge. Keep the bridge running; the MCP server does not
+replace it.
+
+**Setup.** Press **Download mcp.mjs** on the Agent Listener screen (or use `agent/mcp.mjs` from
+a checkout), then point your client's MCP config at it:
+
+```json
+{ "mcpServers": { "altery-figma": { "command": "node", "args": ["~/Downloads/mcp.mjs"] } } }
+```
+
+No secret to configure — it resolves `~/.altery/agent-secret` the same way the CLI does. The
+same environment variables apply (`ALTERY_AGENT_URL`, `ALTERY_AGENT_SECRET`,
+`ALTERY_AGENT_FILE`).
+
+**The tool surface.** Two tools are always present, so a client that lists tools before the
+plugin is open still has a usable surface:
+
+- `altery_status` — which files are connected and what each allows.
+- `altery_call` — run any op by name; the universal doorway, including `plugin.call`.
+
+On top of those, **every op the connected files publish becomes its own typed tool**
+(`document_info`, `node_get`, `variables_set`, …) with a JSON Schema built from the op's own
+params, plus an optional `target` for choosing between several open files. The server watches
+the roster and emits `notifications/tools/list_changed` when a file is opened, closed or
+re-gated, so the tool list follows the panel.
+
+Everything else carries over unchanged: the read/write gates still decide (a mutating op is
+marked `[writes to the document]` in its tool description), the 409 ambiguity refusal comes back
+with the roster attached, and large results are still written to disk as paths rather than
+inlined.
+
+---
+
 ## No Figma API token
 
 Nothing in this channel uses one. The plugin already has the file open and the Plugin API needs

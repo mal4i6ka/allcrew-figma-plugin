@@ -553,6 +553,7 @@
   #view-agent .btn.ghost:disabled { opacity: .42; cursor: not-allowed; }
   #view-agent .agent-hint + .agent-hint { margin-top: 7px; }
   #view-agent .agent-hint { font-size: 10.5px; color: var(--faint); line-height: 1.55; margin: 10px 0 0; }
+  #view-agent .agent-rule { border: 0; border-top: 1px solid var(--border); margin: 14px 0 4px; }
   #view-agent .agent-hint code { font-family: var(--mono); background: var(--bg-2); padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
   /* Code block and its copy button share one framed box; the button floats over the corner so
      a long command keeps the full width. */
@@ -1031,6 +1032,22 @@
         <p class="agent-hint">It mints its own secret into <code>~/.altery/agent-secret</code> and opens a five-minute pairing window &mdash; press <b>Pair with bridge</b> above. <b>Everyone does this once on their own machine:</b> no secret travels with the plugin, so there is nothing to hand out and nothing to rotate for the team.</p>
         <p class="agent-hint"><b>Desktop app only.</b> Figma in a browser blocks calls to your own machine, so the channel cannot reach the bridge there. After a plugin update, restart the bridge &mdash; this screen says so itself if the two fall out of step.</p>
         <p class="agent-hint"><b>No Figma API token anywhere.</b> The channel goes through this plugin, so nobody needs a personal access token &mdash; which matters because an org admin can forbid creating one. Comments, version history and the audit log are the exception: they exist only in Figma's REST API, are out of reach from here, and do need a token.</p>
+        <hr class="agent-rule" />
+        <p class="agent-hint"><b>Prefer an MCP client?</b> Optional &mdash; skip it if your agent already uses the skill above. This second script lets an MCP client (Claude Desktop, Cursor, Codex) drive the open file with no <code>curl</code> and no skill to paste: it is a front for the same bridge, so keep the bridge running too.</p>
+        <button class="btn ghost" id="agent-dl-mcp" type="button">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+          Download mcp.mjs
+        </button>
+        <p class="agent-hint">Save it, then add this to your MCP client's config (the path is wherever you saved it):</p>
+        <div class="agent-cmd">
+          <pre class="code" id="agent-mcp-cfg" tabindex="0">{ "mcpServers": { "altery-figma": {
+    "command": "node",
+    "args": ["~/Downloads/mcp.mjs"] } } }</pre>
+          <button class="icon-btn" id="agent-copy-mcp" type="button" title="Copy" aria-label="Copy the MCP config">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+        </div>
+        <p class="agent-hint">It reuses the secret the bridge minted, so there is nothing else to configure. The file surfaces every op as its own tool, and re-lists itself when you open, close or re-gate a file.</p>
       </section>
 
       <section class="card">
@@ -3328,6 +3345,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
       var AGENT_BRIDGE_FINGERPRINT = agentFingerprint(AGENT_BRIDGE_SOURCE)
       var AGENT_BRIDGE_EMBEDDED = AGENT_BRIDGE_SOURCE.indexOf('altery-agent-bridge') !== -1
+      // The MCP front for the same bridge — an MCP client (Claude Desktop, Cursor) spawns it and
+      // talks the one wire format they all speak, so no SKILL.md and no curl. Shipped the same
+      // way as the bridge: inlined at build time, handed over as a download.
+      var AGENT_MCP_SOURCE = '__ALTERY_MCP_SOURCE__'
+      var AGENT_MCP_EMBEDDED = AGENT_MCP_SOURCE.indexOf('altery-agent-mcp') !== -1
       var DELIVERY_RECEIVER_SOURCE = '__ALTERY_RECEIVER_SOURCE__'
       var DELIVERY_RECEIVER_EMBEDDED = DELIVERY_RECEIVER_SOURCE.indexOf('altery-tokens-receiver') !== -1
 
@@ -3922,7 +3944,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (!AGENT_BRIDGE_EMBEDDED) return
         dtDownload('bridge.mjs', AGENT_BRIDGE_SOURCE, 'text/javascript')
       })
+      // The MCP front, downloaded and gated the same way — an unbuilt ui.html carries the
+      // marker, not the script, so the button says so instead of writing an empty file.
+      var agentDlMcp = document.getElementById('agent-dl-mcp')
+      if (agentDlMcp) {
+        agentDlMcp.disabled = !AGENT_MCP_EMBEDDED
+        agentDlMcp.title = AGENT_MCP_EMBEDDED ? '' : 'Unbuilt ui.html — run npm run build'
+        agentDlMcp.addEventListener('click', function () {
+          if (!AGENT_MCP_EMBEDDED) return
+          dtDownload('mcp.mjs', AGENT_MCP_SOURCE, 'text/javascript')
+        })
+      }
       agentBindCopy('agent-copy-cmd', function () { return document.getElementById('agent-bridge-cmd').textContent })
+      agentBindCopy('agent-copy-mcp', function () { return document.getElementById('agent-mcp-cfg').textContent })
       agentBindCopy('agent-copy-skill', function () { return agentSkillText() })
 
       function agentHandleMessage(msg) {

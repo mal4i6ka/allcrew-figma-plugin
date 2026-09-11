@@ -24,6 +24,7 @@ const commonOptions = {
  */
 const EMBEDS = [
   { marker: "'__ALTERY_BRIDGE_SOURCE__'", file: "agent/bridge.mjs" },
+  { marker: "'__ALTERY_MCP_SOURCE__'", file: "agent/mcp.mjs" },
   { marker: "'__ALTERY_RECEIVER_SOURCE__'", file: "server/receiver.mjs" },
 ];
 
