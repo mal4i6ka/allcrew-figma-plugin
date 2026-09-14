@@ -1,6 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ALL_OPS, OPS_BY_NAME, READ_OPS, summarizeComponentProperties, summarizeNode, summarizeReactions } from './ops.ts'
+import {
+  ALL_OPS,
+  imagePlacement,
+  OPS_BY_NAME,
+  READ_OPS,
+  summarizeComponentProperties,
+  summarizeNode,
+  summarizeReactions,
+} from './ops.ts'
 import { validateParams } from './protocol.ts'
 
 /* -------------------------------------------------------------- registry */
@@ -285,28 +293,62 @@ test("a mode pinned on a child is reported there, not swallowed by the root's in
 
 /* ------------------------------------------------------------- reactions */
 
-test('summarizeReactions reads the current actions[] shape', () => {
-  const summary = summarizeReactions([
+test('summarizeReactions reads the current actions[] shape', async () => {
+  const summary = await summarizeReactions([
     { trigger: { type: 'ON_CLICK' }, actions: [{ type: 'NODE', destinationId: '3:4', navigation: 'NAVIGATE' }] },
   ])
   assert.deepEqual(summary, [
-    { trigger: 'ON_CLICK', action: 'NODE', destinationId: '3:4', navigation: 'NAVIGATE' },
+    { trigger: 'ON_CLICK', action: 'NODE', destinationId: '3:4', navigation: 'NAVIGATE', transition: null },
   ])
 })
 
-test('summarizeReactions still reads the legacy single action', () => {
-  const summary = summarizeReactions([{ trigger: { type: 'ON_HOVER' }, action: { type: 'NODE', destinationId: '5:6' } }])
-  assert.deepEqual(summary, [{ trigger: 'ON_HOVER', action: 'NODE', destinationId: '5:6' }])
+test('summarizeReactions still reads the legacy single action', async () => {
+  const summary = await summarizeReactions([{ trigger: { type: 'ON_HOVER' }, action: { type: 'NODE', destinationId: '5:6' } }])
+  assert.deepEqual(summary, [{ trigger: 'ON_HOVER', action: 'NODE', destinationId: '5:6', transition: null }])
 })
 
-test('summarizeReactions keeps destination-less actions but omits the key', () => {
-  const summary = summarizeReactions([{ trigger: { type: 'ON_CLICK' }, actions: [{ type: 'CLOSE' }] }])
+test('summarizeReactions keeps destination-less actions but omits the key', async () => {
+  const summary = await summarizeReactions([{ trigger: { type: 'ON_CLICK' }, actions: [{ type: 'CLOSE' }] }])
   assert.deepEqual(summary, [{ trigger: 'ON_CLICK', action: 'CLOSE' }])
 })
 
-test('summarizeReactions tolerates a node with no reactions at all', () => {
-  assert.deepEqual(summarizeReactions(undefined), [])
-  assert.deepEqual(summarizeReactions([null, 'junk']), [])
+test('summarizeReactions tolerates a node with no reactions at all', async () => {
+  assert.deepEqual(await summarizeReactions(undefined), [])
+  assert.deepEqual(await summarizeReactions([null, 'junk']), [])
+})
+
+test("summarizeReactions surfaces a NODE transition's duration and easing", async () => {
+  const summary = await summarizeReactions([
+    {
+      trigger: { type: 'ON_CLICK' },
+      actions: [
+        {
+          type: 'NODE',
+          destinationId: '9:1',
+          navigation: 'NAVIGATE',
+          transition: { type: 'SMART_ANIMATE', duration: 0.4, easing: { type: 'EASE_IN_AND_OUT' } },
+        },
+      ],
+    },
+  ])
+  assert.deepEqual(summary[0].transition, {
+    type: 'SMART_ANIMATE',
+    duration: 0.4,
+    easing: 'EASE_IN_AND_OUT',
+    // The preset name is opaque off the web; its control points ride along so a native
+    // consumer does not have to keep Figma's table itself.
+    curve: { kind: 'bezier', x1: 0.42, y1: 0, x2: 0.58, y2: 1, preset: 'EASE_IN_AND_OUT' },
+  })
+})
+
+test('summarizeReactions names a NODE destination only when a resolver is given', async () => {
+  const raw = [{ trigger: { type: 'ON_CLICK' }, actions: [{ type: 'NODE', destinationId: '9:1', navigation: 'NAVIGATE' }] }]
+
+  const withoutResolver = await summarizeReactions(raw)
+  assert.equal('destinationName' in withoutResolver[0], false)
+
+  const withResolver = await summarizeReactions(raw, async (id) => (id === '9:1' ? 'Details' : null))
+  assert.equal(withResolver[0].destinationName, 'Details')
 })
 
 /* ---------------------------------------------------- component properties */
@@ -377,4 +419,198 @@ test('summarizeNode counts children without walking them', () => {
 test('summarizeNode flags hidden nodes and stays quiet about visible ones', () => {
   assert.equal(summarizeNode({ id: '1:6', name: 'Off', type: 'FRAME', visible: false }).visible, false)
   assert.equal(summarizeNode({ id: '1:7', name: 'On', type: 'FRAME', visible: true }).visible, undefined)
+})
+
+test('summarizeNode reports textLength regardless of truncation, and fullText skips it', () => {
+  const long = 'x'.repeat(400)
+  const truncated = summarizeNode({ id: '1:8', name: 'Body', type: 'TEXT', characters: long })
+  assert.equal(truncated.textLength, 400)
+  assert.equal(truncated.text!.length, 161)
+
+  const full = summarizeNode({ id: '1:9', name: 'Body', type: 'TEXT', characters: long }, true)
+  assert.equal(full.textLength, 400)
+  assert.equal(full.text, long)
+})
+
+/* ----------------------------------------------------- node.get enrichment */
+
+test('node.get reports effects only when asked, and stays quiet by default', async () => {
+  const node = {
+    id: '1:1',
+    name: 'Card',
+    type: 'FRAME',
+    children: [],
+    effects: [{ type: 'LAYER_BLUR', visible: true, radius: 8 }],
+  }
+  setFigma({ getNodeByIdAsync: async () => node })
+
+  const op = OPS_BY_NAME.get('node.get')!
+  const bare = (await op.run(validateParams(op.params, { nodeId: '1:1', depth: 0 }))) as { effects?: unknown }
+  assert.equal(bare.effects, undefined)
+
+  const withEffects = (await op.run(validateParams(op.params, { nodeId: '1:1', depth: 0, effects: true }))) as {
+    effects?: Array<Record<string, unknown>>
+  }
+  assert.deepEqual(withEffects.effects, [{ blur: 'layer', radius: 8 }])
+})
+
+test("node.get names a TEXT node's style, and reports a mixed style honestly", async () => {
+  const style = { id: 'S:1', name: 'Heading/H2', remote: false }
+  const bound = { id: '1:2', name: 'Title', type: 'TEXT', characters: 'Hello', textStyleId: 'S:1', children: [] }
+  const mixedSentinel = Symbol('figma.mixed')
+  const mixed = { id: '1:3', name: 'Mixed', type: 'TEXT', characters: 'Hi', textStyleId: mixedSentinel, children: [] }
+  setFigma({
+    mixed: mixedSentinel,
+    getStyleByIdAsync: async (id: string) => (id === 'S:1' ? style : null),
+    getNodeByIdAsync: async (id: string) => (id === bound.id ? bound : id === mixed.id ? mixed : null),
+  })
+
+  const op = OPS_BY_NAME.get('node.get')!
+  const boundResult = (await op.run(validateParams(op.params, { nodeId: '1:2', depth: 0 }))) as {
+    textStyle?: { id: string; name: string | null; remote: boolean }
+  }
+  assert.deepEqual(boundResult.textStyle, { id: 'S:1', name: 'Heading/H2', remote: false })
+
+  const mixedResult = (await op.run(validateParams(op.params, { nodeId: '1:3', depth: 0 }))) as {
+    textStyle?: { id: string; name: string | null; remote: boolean }
+  }
+  assert.deepEqual(mixedResult.textStyle, { id: 'mixed', name: null, remote: false })
+})
+
+test('node.get truncates at 160 by default and reports textLength either way; fullText skips the cut', async () => {
+  const long = 'y'.repeat(400)
+  const node = { id: '1:4', name: 'Body', type: 'TEXT', characters: long, children: [] }
+  setFigma({ getNodeByIdAsync: async () => node })
+
+  const op = OPS_BY_NAME.get('node.get')!
+  const truncated = (await op.run(validateParams(op.params, { nodeId: '1:4', depth: 0 }))) as {
+    text?: string
+    textLength?: number
+  }
+  assert.equal(truncated.text!.length, 161)
+  assert.equal(truncated.textLength, 400)
+
+  const full = (await op.run(validateParams(op.params, { nodeId: '1:4', depth: 0, fullText: true }))) as {
+    text?: string
+    textLength?: number
+  }
+  assert.equal(full.text, long)
+  assert.equal(full.textLength, 400)
+})
+
+test("node.get names a reaction's destination and carries its Smart Animate timing", async () => {
+  const destination = { id: '2:1', name: 'Screen 2', type: 'FRAME' }
+  const node = {
+    id: '1:9',
+    name: 'Button',
+    type: 'FRAME',
+    children: [],
+    reactions: [
+      {
+        trigger: { type: 'ON_CLICK' },
+        actions: [
+          {
+            type: 'NODE',
+            destinationId: '2:1',
+            navigation: 'NAVIGATE',
+            transition: { type: 'SMART_ANIMATE', duration: 0.4, easing: { type: 'EASE_IN_AND_OUT' } },
+          },
+        ],
+      },
+    ],
+  }
+  setFigma({
+    getNodeByIdAsync: async (id: string) => (id === node.id ? node : id === destination.id ? destination : null),
+  })
+
+  const op = OPS_BY_NAME.get('node.get')!
+  const result = (await op.run(validateParams(op.params, { nodeId: '1:9', depth: 0 }))) as {
+    reactions?: Array<{ destinationName?: string; transition?: { type: string; duration: number; easing: unknown; curve?: unknown } | null }>
+  }
+  assert.equal(result.reactions?.[0].destinationName, 'Screen 2')
+  assert.deepEqual(result.reactions?.[0].transition, {
+    type: 'SMART_ANIMATE',
+    duration: 0.4,
+    easing: 'EASE_IN_AND_OUT',
+    curve: { kind: 'bezier', x1: 0.42, y1: 0, x2: 0.58, y2: 1, preset: 'EASE_IN_AND_OUT' },
+  })
+})
+
+test('a flow edge carries the navigation kind and the timing, not only the two node ids', async () => {
+  // A build needs to render the transition, and the numbers were already computed by
+  // `summarizeReactions` one line away — an edge of five strings sent it to guess.
+  const button = {
+    id: '1:9',
+    name: 'Open sheet',
+    type: 'INSTANCE',
+    reactions: [
+      {
+        trigger: { type: 'ON_CLICK' },
+        actions: [
+          {
+            type: 'NODE',
+            destinationId: '2:1',
+            navigation: 'NAVIGATE',
+            transition: { type: 'PUSH', direction: 'RIGHT', duration: 0.3, easing: { type: 'EASE_OUT' } },
+          },
+        ],
+      },
+    ],
+  }
+  const screen = { id: '2:1', name: 'Sheet', type: 'FRAME' }
+  const currentPage = {
+    id: '0:1',
+    name: 'Page 1',
+    children: [screen, button],
+    flowStartingPoints: [],
+    findAllWithCriteria: () => [button],
+    findAll: () => [button],
+  }
+  setFigma({ currentPage, skipInvisibleInstanceChildren: false })
+
+  const op = OPS_BY_NAME.get('flow.map')!
+  const result = (await op.run(validateParams(op.params, {}))) as {
+    edges: Array<{ to: string; navigation?: string; transition?: { type: string; duration: number; curve?: unknown } }>
+  }
+
+  assert.equal(result.edges.length, 1)
+  assert.equal(result.edges[0].navigation, 'NAVIGATE')
+  // Direction folds into the name the write vocabulary takes, so a rebuild of this link reads back
+  // identically — `PUSH` + `RIGHT` is one `PUSH_RIGHT`.
+  assert.equal(result.edges[0].transition?.type, 'PUSH_RIGHT')
+  assert.equal(result.edges[0].transition?.duration, 0.3)
+  assert.deepEqual(result.edges[0].transition?.curve, {
+    kind: 'bezier',
+    x1: 0,
+    y1: 0,
+    x2: 0.58,
+    y2: 1,
+    preset: 'EASE_OUT',
+  })
+})
+
+test('an image crop comes back as numbers a layout takes, not as a matrix', () => {
+  // Checked against Figma's own output for 4477:114155, where it prints
+  // `background-size: 265.451% 114.231%; background-position: -523.197px 0px` on a 343px box:
+  // 1/0.3767 = 2.6546, and -0.5746/0.3767 * 343 = -523.2.
+  assert.deepEqual(
+    imagePlacement('CROP', [
+      [0.3767179250717163, 0, 0.5746288895606995],
+      [0, 0.875420868396759, 0],
+    ], undefined),
+    { fit: 'crop', scale: { x: 2.6545, y: 1.1423 }, offset: { x: -1.5254, y: -0 } }
+  )
+})
+
+test('the scale modes that need no matrix answer without one', () => {
+  assert.deepEqual(imagePlacement('FILL', undefined, undefined), { fit: 'cover' })
+  assert.deepEqual(imagePlacement('FIT', undefined, undefined), { fit: 'contain' })
+  assert.deepEqual(imagePlacement('TILE', undefined, 0.5), { fit: 'tile', scalingFactor: 0.5 })
+})
+
+test('a rotated crop is named, not flattened onto two axes', () => {
+  // There is no honest background-position for it, and a plausible wrong number is worse than
+  // a refusal that points back at `imageTransform`.
+  assert.deepEqual(imagePlacement('CROP', [[0.9, 0.2, 0], [-0.2, 0.9, 0]], undefined), { fit: 'matrix' })
+  assert.equal(imagePlacement('CROP', undefined, undefined), null)
 })

@@ -25,9 +25,13 @@ export interface FileEnvelope {
   }
 }
 
-/** Rejects anything that could climb out of the directory the bridge picks. */
+/** Rejects anything that could climb out of the directory the bridge picks.
+ *
+ * `@` is in the set because platform asset names use it — `icon@2x.png` is what iOS and every
+ * web build expect, and renaming it to `icon-2x.png` on the way out would make the agent
+ * rename it back. It cannot form a path or a traversal; separators and `..` still cannot. */
 export function isSafeFileName(name: string): boolean {
-  return name.length > 0 && name.length <= 128 && /^[A-Za-z0-9._-]+$/.test(name) && !name.startsWith('.')
+  return name.length > 0 && name.length <= 128 && /^[A-Za-z0-9._@-]+$/.test(name) && !name.startsWith('.')
 }
 
 export function isFileEnvelope(value: unknown): value is FileEnvelope {

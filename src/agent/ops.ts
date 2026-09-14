@@ -21,7 +21,15 @@ import { describeColor, type Rgba } from './values.ts'
 import { formatHex, parseHex, type Rgb } from '../tokens/color.ts'
 import type { OpDef } from './protocol.ts'
 import { styledRuns } from '../canvas/text-runs.ts'
+import { readEffects } from '../canvas/effect-reader.ts'
+import { transitionSummary } from '../canvas/link-reader.ts'
+import { componentApi } from './component-api.ts'
+import { getNodeByIdTimed, isWarm, markWarm, noteLoad, warmPages } from './loading.ts'
 import { CONTEXT_OPS } from './context-ops.ts'
+import { IR_OPS } from './ir-ops.ts'
+import { GUIDES } from './guides.ts'
+import { SPEC_OPS } from './spec-ops.ts'
+import { STATE_OPS } from './state-ops.ts'
 import { TRANSITION_OPS } from './transition-ops.ts'
 import { WRITE_OPS } from './write-ops.ts'
 import { PLUGIN_OPS } from './plugin-ops.ts'
@@ -32,7 +40,15 @@ export interface ReactionSummary {
   trigger: string
   action: string
   destinationId?: string
+  /** The destination's own name, when a resolver could look it up. Absent — not null — when
+   * none was given: `summarizeReactions` stays callable with no document at all (a test), and a
+   * caller without one gets the id back rather than a name it cannot possibly have found. */
+  destinationName?: string
   navigation?: string
+  /** NODE actions only: the transition Figma actually plays — duration and easing, not just its
+   * name. `null` when the action carries no transition. Reuses `transitionSummary` from
+   * `link-reader.ts` so a read and the link a write would recreate from it never disagree. */
+  transition?: { type: string; duration: number; easing: unknown } | null
 }
 
 /** One paint in a stack, described so it can be acted on: what it renders, whether it is
@@ -84,6 +100,25 @@ export interface PaintSummary {
   scalingFactor?: number
   rotation?: number
   filters?: Record<string, number>
+  /** The same crop as numbers a layout engine takes, instead of a matrix nobody can apply.
+   *
+   * `imageTransform` is Figma's own 2x3, and every consumer of it re-derives the same three
+   * quantities by hand (this is what Figma does internally to print
+   * `background-size: 265% 114%; background-position: -523px 0`). `placement` is that
+   * derivation, done once, in units that are not CSS: `scale` is the image's size as a multiple
+   * of the layer's box, `offset` the image's top-left corner in the same multiples. A rotated
+   * crop is refused rather than flattened - `fit: 'matrix'` says "read `imageTransform`". */
+  placement?: {
+    /** `cover` (FILL), `contain` (FIT), `tile` (TILE), `crop` (CROP with an axis-aligned
+     * matrix) or `matrix` (a CROP this projection cannot express). */
+    fit: 'cover' | 'contain' | 'tile' | 'crop' | 'matrix'
+    /** CROP only. 1 means the image exactly covers the box on that axis. */
+    scale?: { x: number; y: number }
+    /** CROP only. 0 means flush with the box's own edge; negative means cropped off it. */
+    offset?: { x: number; y: number }
+    /** TILE only - Figma's own repeat scale, carried through unchanged. */
+    scalingFactor?: number
+  }
   /** PATTERN paints: the paint is another node, tiled. `sourceNodeId` is the whole content —
    * without it the paint reads as an empty type name. */
   pattern?: {
@@ -142,6 +177,11 @@ export interface ShaderPropertySummary {
   value: unknown
 }
 
+/** One effect — shadow, blur, noise, texture, glass, or a shader effect — in the shape
+ * `readEffects` produces. Left as `unknown`, matching `readEffects` itself: effects are read
+ * once, in `effect-reader.ts`, and modelling the shape a second time here would drift from it. */
+export type EffectSummary = unknown
+
 export interface NodeSummary {
   id: string
   name: string
@@ -167,6 +207,10 @@ export interface NodeSummary {
     /** 0..1. Above 0 the shape is a squircle and `border-radius` alone cannot reproduce it. */
     smoothing?: number
   }
+  /** Blurs, shadows, noise, texture, glass — opt-in via `effects: true`. Off by default: most
+   * callers never touch these, and the array roughly doubles the size of a heavily effected
+   * layer. `readEffects` (`effect-reader.ts`) is the one place that knows how to read one. */
+  effects?: EffectSummary[]
   /** The paints as they actually are, opt-in via `paints: true`. `bindings` answers "which
    * token is on this field" and says nothing at all about a field with no token — so a layer
    * flagged by `lint.colors` reads back as bare geometry, and the colour that has to be
@@ -213,8 +257,21 @@ export interface NodeSummary {
       unattributed?: boolean
     }
   >
-  /** TEXT only, truncated — an agent wants the gist, not the copy deck. */
+  /** TEXT only. Truncated to 160 characters unless the call passed `fullText: true` — an agent
+   * usually wants the gist, not the copy deck, but a legal disclaimer or a long paragraph is
+   * sometimes exactly what is being asked for. */
   text?: string
+  /** TEXT only: how many characters `characters` actually holds, reported whether or not `text`
+   * was cut — the only way a caller can tell a full paragraph from a truncated one without
+   * re-fetching with `fullText: true`. */
+  textLength?: number
+  /** TEXT only: the text style this run follows, by name. A heading's level (H1/H2/H3/body) is
+   * a naming decision the design system made once, in the style; reconstructing it from font
+   * size and nesting depth is wrong exactly where the two disagree. `figma.mixed` — several
+   * styles across one text range — is reported as such (`id: 'mixed'`) rather than picked for.
+   * Absent when the run carries no shared style at all, which is the cue to fall back to a
+   * heuristic instead of trusting a name that was never there. */
+  textStyle?: { id: string; name: string | null; remote: boolean }
   /** INSTANCE only. `id`/`name` are the VARIANT the instance points at ("Device=Desktop");
    * `setId`/`setName` are the component set that variant lives in — the identity everything else
    * (`components.list`, Code Connect, the design system's own names) is keyed by. A lone
@@ -257,8 +314,13 @@ function round2(value: unknown): number | undefined {
 }
 
 /** Normalizes both reaction shapes: the current `actions[]` array and the legacy single
- * `action`. Pure so the mapping is testable without a document. */
-export function summarizeReactions(raw: unknown): ReactionSummary[] {
+ * `action`. `resolveDestinationName` looks a NODE action's destination up by id — a call this
+ * function has no document to make on its own, so it is asked in; a caller with no document (a
+ * test) simply omits it and gets the id back without a name instead of nothing at all. */
+export async function summarizeReactions(
+  raw: unknown,
+  resolveDestinationName?: (id: string) => Promise<string | null>
+): Promise<ReactionSummary[]> {
   if (!Array.isArray(raw)) return []
   const out: ReactionSummary[] = []
   for (const reaction of raw) {
@@ -268,11 +330,18 @@ export function summarizeReactions(raw: unknown): ReactionSummary[] {
     const actions: any[] = Array.isArray(entry.actions) ? entry.actions : entry.action ? [entry.action] : []
     for (const action of actions) {
       if (!action || typeof action !== 'object') continue
+      const destinationId = typeof action.destinationId === 'string' ? action.destinationId : undefined
+      const destinationName =
+        destinationId && resolveDestinationName ? await resolveDestinationName(destinationId) : null
       out.push({
         trigger,
         action: action.type ?? 'UNKNOWN',
-        ...(typeof action.destinationId === 'string' ? { destinationId: action.destinationId } : {}),
+        ...(destinationId ? { destinationId } : {}),
         ...(typeof action.navigation === 'string' ? { navigation: action.navigation } : {}),
+        ...(destinationName ? { destinationName } : {}),
+        // Only a NODE navigation carries a transition at all — reporting `null` on every
+        // click/hover/timeout trigger a file has would be noise, not signal.
+        ...(action.type === 'NODE' ? { transition: transitionSummary(action.transition ?? null) } : {}),
       })
     }
   }
@@ -291,8 +360,10 @@ export function summarizeComponentProperties(raw: unknown): Record<string, unkno
 
 const MAX_TEXT = 160
 
-/** Node → summary, minus anything that needs an await (reactions, main component). Pure. */
-export function summarizeNode(node: any): NodeSummary {
+/** Node → summary, minus anything that needs an await (bindings, modes, reactions, main
+ * component, text style). Pure. `fullText` skips the 160-character truncation — off by default
+ * so a deep read of many text nodes stays small, on when the whole copy is the point. */
+export function summarizeNode(node: any, fullText = false): NodeSummary {
   const summary: NodeSummary = { id: node.id, name: node.name, type: node.type }
   if (node.visible === false) summary.visible = false
 
@@ -339,8 +410,9 @@ export function summarizeNode(node: any): NodeSummary {
   if (Object.keys(corners).length > 0) summary.corners = corners
 
   if (node.type === 'TEXT' && typeof node.characters === 'string') {
+    summary.textLength = node.characters.length
     summary.text =
-      node.characters.length > MAX_TEXT ? node.characters.slice(0, MAX_TEXT) + '…' : node.characters
+      !fullText && node.characters.length > MAX_TEXT ? node.characters.slice(0, MAX_TEXT) + '…' : node.characters
   }
 
   if (Array.isArray(node.children)) summary.childCount = node.children.length
@@ -701,6 +773,43 @@ export async function describeShader(
  * invisible until a gradient had to be told apart from another gradient and neither answer
  * could do it. Two descriptions of one thing drift; one cannot.
  */
+/**
+ * Figma's image matrix as the placement a layout engine takes.
+ *
+ * `FILL`/`FIT`/`TILE` need no matrix at all - they are `cover`, `contain` and a repeat. Only
+ * `CROP` carries one, and it is a 2x3 mapping the layer's box back onto the image in normalised
+ * coordinates: `[[a, b, tx], [c, d, ty]]`. With no rotation (`b` and `c` zero, which is every
+ * crop a designer makes by dragging handles) the image is `1/a` by `1/d` boxes big and its top
+ * left corner sits at `-tx/a`, `-ty/d`. That is exactly the arithmetic behind Figma's own
+ * `background-size: 265.451% 114.231%; background-position: -523.197px 0px`, measured on
+ * 4477:114155 and checked against this function.
+ *
+ * A rotated crop is reported as `matrix` rather than squashed into two axes: there is no honest
+ * `background-position` for it, and a silently wrong number is worse than a named refusal.
+ */
+export function imagePlacement(
+  scaleMode: unknown,
+  transform: unknown,
+  scalingFactor: unknown
+): PaintSummary['placement'] | null {
+  if (scaleMode === 'FILL') return { fit: 'cover' }
+  if (scaleMode === 'FIT') return { fit: 'contain' }
+  if (scaleMode === 'TILE') {
+    return { fit: 'tile', ...(typeof scalingFactor === 'number' ? { scalingFactor } : {}) }
+  }
+  if (scaleMode !== 'CROP') return null
+  const rows = transform as number[][] | undefined
+  if (!Array.isArray(rows) || rows.length < 2 || !Array.isArray(rows[0]) || !Array.isArray(rows[1])) return null
+  const [[a, b, tx], [c, d, ty]] = rows as [number[], number[]]
+  if (b !== 0 || c !== 0 || !a || !d) return { fit: 'matrix' }
+  const round = (value: number) => Math.round(value * 10000) / 10000
+  return {
+    fit: 'crop',
+    scale: { x: round(1 / a), y: round(1 / d) },
+    offset: { x: round(-tx / a), y: round(-ty / d) },
+  }
+}
+
 export async function describePaint(
   paint: any,
   index: number,
@@ -746,6 +855,9 @@ export async function describePaint(
     const transform = paint.type === 'IMAGE' ? paint.imageTransform : paint.videoTransform
     if (Array.isArray(transform)) out.imageTransform = transform
     if (typeof paint.scalingFactor === 'number') out.scalingFactor = paint.scalingFactor
+    // The matrix, projected into the two numbers every consumer of it was computing by hand.
+    const placement = imagePlacement(paint.scaleMode, transform, paint.scalingFactor)
+    if (placement) out.placement = placement
     if (typeof paint.rotation === 'number' && paint.rotation !== 0) out.rotation = paint.rotation
     if (paint.filters && typeof paint.filters === 'object') {
       // Figma writes every adjustment it holds, zeroes included; only the ones that do
@@ -892,16 +1004,61 @@ async function describeVariableModes(
   }
   return out
 }
+/** Style id → style, shared across one read the same way `CollectionCache` shares collections —
+ * most TEXT nodes in a section repeat a handful of styles, and a per-node cache would pay for
+ * each one again. */
+type StyleCache = Map<string, BaseStyle | null>
 
-async function describeNode(
-  node: any,
-  depth: number,
-  paints = false,
-  root = true,
-  catalogue: ShaderCatalogue = {},
-  collections: CollectionCache = new Map()
-): Promise<NodeSummary> {
-  const summary = summarizeNode(node)
+/** A TEXT node's style, by name — the signal a consumer needs to tell an H1 from a paragraph
+ * without guessing from font size and nesting depth, the same way `paintStyleName` names a fill
+ * or stroke style. `figma.mixed` (several styles across one text range) is reported as such
+ * (`id: 'mixed'`) rather than flattened to one of them; a run with no style at all reports
+ * nothing, which is the caller's cue to fall back to its own heuristic. */
+async function describeTextStyle(node: any, styles: StyleCache): Promise<NodeSummary['textStyle'] | undefined> {
+  const id = node.textStyleId
+  if (id === figma.mixed) return { id: 'mixed', name: null, remote: false }
+  if (typeof id !== 'string' || id === '') return undefined
+  if (!styles.has(id)) {
+    let style: BaseStyle | null = null
+    try {
+      style = await figma.getStyleByIdAsync(id)
+    } catch {
+      /* a style from a library this file no longer subscribes to */
+    }
+    styles.set(id, style)
+  }
+  const style = styles.get(id) ?? null
+  return { id, name: style?.name ?? null, remote: style?.remote === true }
+}
+
+/** Full description of one node: `summarizeNode` plus everything that needs an await —
+ * bindings, modes, paints, effects, text style, reactions, main component — recursing `depth`
+ * levels of children. `paints`/`effects`/`fullText` stay off unless a caller asks; the caches
+ * (`catalogue`, `collections`, `styles`, `destinationNames`) are built once by the top-level call
+ * and threaded down, so a deep walk pays each fetch once rather than once per node. */
+interface DescribeOptions {
+  paints?: boolean
+  effects?: boolean
+  fullText?: boolean
+  root?: boolean
+  catalogue?: ShaderCatalogue
+  collections?: CollectionCache
+  styles?: StyleCache
+  destinationNames?: Map<string, string | null>
+}
+
+async function describeNode(node: any, depth: number, options: DescribeOptions = {}): Promise<NodeSummary> {
+  const {
+    paints = false,
+    effects = false,
+    fullText = false,
+    root = true,
+    catalogue = {},
+    collections = new Map(),
+    styles = new Map(),
+    destinationNames = new Map(),
+  } = options
+  const summary = summarizeNode(node, fullText)
 
   const bindings = await describeBindings(node, summary)
   if (bindings) summary.bindings = bindings
@@ -919,10 +1076,35 @@ async function describeNode(
     if (described) summary.paints = described
   }
 
+  if (effects) {
+    const described = await readEffects(node.effects)
+    if (described && described.length > 0) summary.effects = described
+  }
+
+  if (node.type === 'TEXT') {
+    const textStyle = await describeTextStyle(node, styles)
+    if (textStyle) summary.textStyle = textStyle
+  }
+
   if (typeof node.getReactionsAsync === 'function' || Array.isArray(node.reactions)) {
     const raw =
       typeof node.getReactionsAsync === 'function' ? await node.getReactionsAsync() : node.reactions
-    const reactions = summarizeReactions(raw)
+    // One lookup per destination id, shared across the whole walk — a "Back to top" link
+    // repeated on every section of a page would otherwise pay for its name once per section.
+    const resolveDestinationName = async (id: string): Promise<string | null> => {
+      if (!destinationNames.has(id)) {
+        let name: string | null = null
+        try {
+          const target = await figma.getNodeByIdAsync(id)
+          name = target && 'name' in target ? target.name : null
+        } catch {
+          /* the destination no longer exists, or lives outside what this call can reach */
+        }
+        destinationNames.set(id, name)
+      }
+      return destinationNames.get(id) ?? null
+    }
+    const reactions = await summarizeReactions(raw, resolveDestinationName)
     if (reactions.length > 0) summary.reactions = reactions
   }
 
@@ -962,7 +1144,18 @@ async function describeNode(
   if (depth > 0 && Array.isArray(node.children)) {
     summary.children = []
     for (const child of node.children) {
-      summary.children.push(await describeNode(child, depth - 1, paints, false, catalogue, collections))
+      summary.children.push(
+        await describeNode(child, depth - 1, {
+          paints,
+          effects,
+          fullText,
+          root: false,
+          catalogue,
+          collections,
+          styles,
+          destinationNames,
+        })
+      )
     }
   }
 
@@ -979,7 +1172,7 @@ async function describeNode(
  */
 async function resolveWalkRoots(params: Record<string, unknown>): Promise<{ roots: BaseNode[]; labels: string[] }> {
   if (typeof params.nodeId === 'string' && params.nodeId !== '') {
-    const found = await figma.getNodeByIdAsync(params.nodeId)
+    const found = await getNodeByIdTimed(params.nodeId)
     if (!found || found.type === 'DOCUMENT') throw new Error(`no node with id ${params.nodeId}`)
     if (found.type === 'PAGE') {
       await (found as PageNode).loadAsync()
@@ -1049,7 +1242,63 @@ export const READ_OPS: readonly OpDef[] = [
         fileName: figma.root.name,
         editorType: figma.editorType,
         currentPage: { id: figma.currentPage.id, name: figma.currentPage.name },
-        pages: figma.root.children.map((page) => ({ id: page.id, name: page.name })),
+        /* `warm` per page, not just the count: under dynamic page loading the first touch of a
+         * page is the expensive one, and the only lever a caller has is the ORDER it works in.
+         * A map lets it start where the bill is already paid — or call `page.warm` on purpose. */
+        pages: figma.root.children.map((page) => ({ id: page.id, name: page.name, warm: isWarm(page.id) })),
+        /* How many pages this plugin session has already reached into. Under
+         * `documentAccess: "dynamic-page"` the first touch of a page costs tens of seconds on a
+         * big file and nothing at all afterwards, so a caller planning a sweep wants to know
+         * how much of that bill is already paid - see `loading.ts`. */
+        warmPages: warmPages(),
+      }
+    },
+  },
+
+  {
+    name: 'page.warm',
+    summary: 'Load a page on purpose, and report what that cost — the wait moved to where you asked for it.',
+    agent:
+      'Under `documentAccess: "dynamic-page"` the FIRST read that touches a page loads it: measured at ~40 s on a ' +
+      'heavy page of a real file and milliseconds on every read after. While that load runs, nothing in the plugin ' +
+      'sandbox gets a turn — not even the ops\' own budget timers — so a cold page can take a working call past the ' +
+      'bridge ceiling and kill it with nothing to show. Call this first and the wait happens under a name that ' +
+      'explains it. `document.info` says which pages are already warm.',
+    mutates: false,
+    params: {
+      pageId: { type: 'string', description: 'Page to load. Defaults to the page the designer is on.' },
+      nodeId: { type: 'string', description: 'Or name a node, and the page it lives on is loaded.' },
+    },
+    async run(params) {
+      let page: BaseNode | null = null
+      if (typeof params.nodeId === 'string' && params.nodeId !== '') {
+        let cursor = await getNodeByIdTimed(params.nodeId)
+        while (cursor && cursor.type !== 'PAGE') cursor = cursor.parent ?? null
+        if (!cursor) throw new Error(`no node with id ${params.nodeId}`)
+        page = cursor
+      } else if (typeof params.pageId === 'string' && params.pageId !== '') {
+        // Deliberately NOT `resolvePage`: that helper loads the page itself, so the load would
+        // happen before the clock starts and this op would report a cold page as instant.
+        const found = await figma.getNodeByIdAsync(params.pageId)
+        if (!found || found.type !== 'PAGE') throw new Error(`no page with id ${params.pageId}`)
+        page = found
+      } else {
+        page = figma.currentPage
+      }
+      const target = page as PageNode
+      const already = isWarm(target.id)
+      const started = Date.now()
+      await target.loadAsync()
+      const ms = Date.now() - started
+      markWarm(target.id)
+      noteLoad(target.name, ms)
+      return {
+        page: { id: target.id, name: target.name },
+        ms,
+        // A page already paid for answers in single digits; saying which case this was stops a
+        // caller reading a fast answer as "the file is small".
+        alreadyWarm: already,
+        warmPages: warmPages(),
       }
     },
   },
@@ -1079,9 +1328,14 @@ export const READ_OPS: readonly OpDef[] = [
 
   {
     name: 'node.get',
-    summary: 'One node by id: geometry, auto-layout, text, instance bindings, children.',
+    summary:
+      'One node by id: geometry, auto-layout, text (with its style and full length), instance bindings, effects, reactions, children.',
     agent:
-      'bindings answer "which token"; paints: true adds raw colours and per-paint/stop bindings — what acting on a lint finding needs.',
+      'bindings answer "which token"; paints: true adds raw colours and per-paint/stop bindings — what acting on a lint finding needs. ' +
+      'effects: true adds shadows/blurs/textures the layer actually renders. TEXT nodes always carry textStyle — the design ' +
+      "system's own name for the level (H1/H2/H3/body), not a guess from font size — and textLength; fullText: true stops the " +
+      '160-character truncation when the whole copy, not the gist, is what is needed. A NODE reaction carries destinationName ' +
+      "and the transition's duration/easing, the timing a Smart Animate needs to be reproduced rather than merely named.",
     mutates: false,
     params: {
       nodeId: { type: 'string', description: 'Node id, e.g. "12:345".', required: true },
@@ -1100,11 +1354,29 @@ export const READ_OPS: readonly OpDef[] = [
           'What `bindings` cannot answer: a field with no token is simply absent from it, so an ' +
           'unbound layer reads back as bare geometry. Needed to act on a `lint.colors` finding.',
       },
+      effects: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Also report shadows, blurs, noise, texture and glass effects. Off by default — most ' +
+          'callers never touch these, and the array roughly doubles the size of a heavily effected layer.',
+      },
+      fullText: {
+        type: 'boolean',
+        default: false,
+        description:
+          "Report a TEXT node's whole `characters` instead of truncating at 160. `textLength` is " +
+          'reported either way, so a caller can tell whether the text was cut without asking twice.',
+      },
     },
     async run(params) {
-      const node = await figma.getNodeByIdAsync(params.nodeId as string)
+      const node = await getNodeByIdTimed(params.nodeId as string)
       if (!node) throw new Error(`no node with id ${params.nodeId}`)
-      return describeNode(node, params.depth as number, params.paints === true)
+      return describeNode(node, params.depth as number, {
+        paints: params.paints === true,
+        effects: params.effects === true,
+        fullText: params.fullText === true,
+      })
     },
   },
 
@@ -1153,14 +1425,28 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'selection.get',
     summary: "What the designer has selected right now — the handoff point for 'this frame'.",
+    agent:
+      'Same shape as `node.get` per selected node: pass effects/fullText for the same reason you ' +
+      'would on a `node.get` call — both are off by default here too.',
     mutates: false,
     params: {
       depth: { type: 'number', description: 'Levels of children per selected node.', default: 0, min: 0, max: 5 },
+      effects: {
+        type: 'boolean',
+        default: false,
+        description: 'Also report shadows, blurs, noise, texture and glass effects on each selected node.',
+      },
+      fullText: {
+        type: 'boolean',
+        default: false,
+        description: "Report each TEXT node's whole `characters` instead of truncating at 160.",
+      },
     },
     async run(params) {
       const depth = params.depth as number
+      const options = { effects: params.effects === true, fullText: params.fullText === true }
       const nodes: NodeSummary[] = []
-      for (const node of figma.currentPage.selection) nodes.push(await describeNode(node, depth))
+      for (const node of figma.currentPage.selection) nodes.push(await describeNode(node, depth, options))
       return { page: { id: figma.currentPage.id, name: figma.currentPage.name }, nodes }
     },
   },
@@ -1227,6 +1513,67 @@ export const READ_OPS: readonly OpDef[] = [
         })
       }
       return { total: found.length, truncated: found.length > limit, components }
+    },
+  },
+
+  {
+    name: 'component.api',
+    summary: 'One component set as an API: axes with their options and defaults, and what each option changes.',
+    agent:
+      'The op for declaring a component in a language. `components.list` gives the signature for every component in ' +
+      'the file; this gives one component in full, and the half that was missing: what a variant value actually DOES. ' +
+      'Each axis option carries the id of the variant that isolates it (that value, every other axis at its default) ' +
+      'and `changes` - the property deltas against the default variant, by layer path, with the TOKEN behind each ' +
+      'value where the layer binds one, so a Secondary button is built from `Text/Primary` rather than from #111. ' +
+      'A `presence` change is a layer that exists in only one of the two - that is how "this variant has an icon" ' +
+      'arrives. Non-variant properties (BOOLEAN/TEXT/INSTANCE_SWAP) cannot be diffed - they act inside every ' +
+      'variant - so each reports `targets`: the layers it drives and the field it drives on them (`visible` for a ' +
+      'boolean toggle, `characters` for text, `mainComponent` for a swap). Pass the SET id; a member or an instance ' +
+      'resolves to its set. `changes: false` skips every diff when you only need the enum.',
+    mutates: false,
+    params: {
+      nodeId: {
+        type: 'string',
+        required: true,
+        description: 'A COMPONENT_SET - or any variant member/instance of one, which resolves to it.',
+      },
+      changes: {
+        type: 'boolean',
+        default: true,
+        description: 'Diff each isolated variant against the default. Off is the signature alone, and much cheaper.',
+      },
+      budgetMs: {
+        type: 'number',
+        default: 60_000,
+        min: 5_000,
+        max: 170_000,
+        description:
+          'Stop diffing after this long and answer with the options measured so far. One option is a ' +
+          'getCSSAsync walk of two subtrees; a wide set is minutes, and the signature half should not ' +
+          'be lost with it.',
+      },
+    },
+    async run(params) {
+      const found = await getNodeByIdTimed(params.nodeId as string)
+      if (!found) throw new Error(`no node with id ${params.nodeId}`)
+      // An agent holding an instance id, or the id of one variant, means the component - and the
+      // set is where the definitions live. Resolving beats making the caller walk up.
+      let set: BaseNode | null = found
+      if (set.type === 'INSTANCE') {
+        const main = await (set as InstanceNode).getMainComponentAsync()
+        set = main?.parent?.type === 'COMPONENT_SET' ? main.parent : main
+      }
+      if (set && set.type === 'COMPONENT' && set.parent?.type === 'COMPONENT_SET') set = set.parent
+      if (!set || (set.type !== 'COMPONENT_SET' && set.type !== 'COMPONENT')) {
+        throw new Error(`${found.type} is not a component, a variant or an instance of one`)
+      }
+      const { properties, propertiesError } = readPropertyDefinitions(set as ComponentNode | ComponentSetNode)
+      return await componentApi(
+        set as unknown as Parameters<typeof componentApi>[0],
+        properties as Parameters<typeof componentApi>[1],
+        propertiesError,
+        { changes: params.changes !== false, budgetMs: params.budgetMs as number }
+      )
     },
   },
 
@@ -1323,7 +1670,10 @@ export const READ_OPS: readonly OpDef[] = [
     name: 'variables.get',
     summary: 'Variable collections, modes and values — the same snapshot the token export reads.',
     agent:
-      'resolve: true follows alias chains per mode — a semantic token differs between Light and Dark; never collapse the modes.',
+      'resolve: true follows alias chains per mode — a semantic token differs between Light and Dark; never collapse the modes. ' +
+      '`library: true` imports every variable of every enabled library one at a time - minutes on a big file. Name a ' +
+      '`collection` and only that one is imported; otherwise page it with `budgetMs` and the `nextOffset` it hands back. ' +
+      'Either way the call comes back inside its budget instead of dying at the bridge ceiling with nothing.',
     mutates: false,
     params: {
       library: {
@@ -1331,12 +1681,30 @@ export const READ_OPS: readonly OpDef[] = [
         default: false,
         description:
           'Include variables from enabled libraries. Off by default: that sweep imports every variable ' +
-          'of every enabled collection one by one and can take minutes on a large file. Use ' +
-          '`library.collections` + `library.variables` to read one library collection instead.',
+          'of every enabled collection one by one and can take minutes on a large file. With ' +
+          '`collection` it imports only that one, and `budgetMs`/`offset` page the rest.',
       },
       collection: {
         type: 'string',
-        description: 'Only this collection, by name or id. Omitted returns them all.',
+        description:
+          'Only this collection, by name or id. With `library: true` the filter runs BEFORE the ' +
+          'import sweep, so asking for one palette costs one palette rather than every library.',
+      },
+      budgetMs: {
+        type: 'number',
+        default: 60_000,
+        min: 5_000,
+        max: 170_000,
+        description:
+          'Library sweeps only. Stop importing after this long and answer with what was read plus ' +
+          '`nextOffset` — measured at 48 s for 213 library variables on a good connection and past ' +
+          '400 s on a bad one, which is how a token sync dies at the call ceiling with nothing.',
+      },
+      offset: {
+        type: 'number',
+        default: 0,
+        min: 0,
+        description: 'Library sweeps only: resume where a previous call stopped, from its `nextOffset`.',
       },
       limit: { type: 'number', default: 2000, min: 1, max: 20000, description: 'Cap on variables returned.' },
       publishStatus: {
@@ -1356,7 +1724,17 @@ export const READ_OPS: readonly OpDef[] = [
       },
     },
     async run(params) {
-      const snapshot = params.library === true ? await readAllVariables() : await readLocalVariables()
+      /* The collection filter travels INTO the sweep, not just around its result: the cost of
+       * `library: true` is the import of every variable of every enabled library, and a caller
+       * that named one collection should not pay for the other eight. */
+      const snapshot =
+        params.library === true
+          ? await readAllVariables({
+              ...(typeof params.collection === 'string' ? { collection: params.collection } : {}),
+              budgetMs: params.budgetMs as number,
+              offset: params.offset as number,
+            })
+          : await readLocalVariables()
       const wanted = typeof params.collection === 'string' ? params.collection.toLowerCase() : null
       const collections = wanted
         ? snapshot.collections.filter(
@@ -1374,8 +1752,14 @@ export const READ_OPS: readonly OpDef[] = [
       const page = variables.slice(0, limit)
       const wantStatus = params.publishStatus === true
       const wantResolved = params.resolve === true
+      // What the sweep itself could not finish, alongside what the page cut off: two different
+      // kinds of "there is more", and a caller resumes them differently.
+      const progress = {
+        ...('nextOffset' in snapshot && snapshot.nextOffset !== undefined ? { nextOffset: snapshot.nextOffset } : {}),
+        ...('stoppedOn' in snapshot && snapshot.stoppedOn !== undefined ? { stoppedOn: snapshot.stoppedOn } : {}),
+      }
       if (!wantStatus && !wantResolved) {
-        return { collections, total: variables.length, truncated: variables.length > limit, variables: page }
+        return { collections, total: variables.length, truncated: variables.length > limit, ...progress, variables: page }
       }
       const modesOf = new Map(collections.map((entry) => [entry.id, entry.modes]))
       const enriched = []
@@ -1402,7 +1786,7 @@ export const READ_OPS: readonly OpDef[] = [
         }
         enriched.push({ ...entry, ...extra })
       }
-      return { collections, total: variables.length, truncated: variables.length > limit, variables: enriched }
+      return { collections, total: variables.length, truncated: variables.length > limit, ...progress, variables: enriched }
     },
   },
 
@@ -2138,9 +2522,13 @@ export const READ_OPS: readonly OpDef[] = [
 
   {
     name: 'flow.map',
-    summary: 'Prototype graph of a page: starting points plus every reaction edge between frames.',
+    summary: 'Prototype graph of a page: starting points plus every reaction edge, with the timing on each.',
     agent:
-      'Read before proposing navigation: extend the existing prototype instead of inventing a parallel one.',
+      'Read before proposing navigation: extend the existing prototype instead of inventing a parallel one. ' +
+      'An edge carries the navigation kind and the transition it animates with - duration, the easing Figma ' +
+      'named, and `curve`: the same easing as numbers (bezier control points, or a spring\'s damping ratio, ' +
+      'stiffness and solved settle time). Build the transition from `curve`, not from the CSS string beside ' +
+      'it - `PUSH` from the right at 300ms is a native navigation transition, and the numbers for it are here.',
     mutates: false,
     params: {
       pageId: { type: 'string', description: 'Page id. Defaults to the page the designer is on.' },
@@ -2150,7 +2538,20 @@ export const READ_OPS: readonly OpDef[] = [
       const named = new Map<string, string>()
       for (const node of page.children) named.set(node.id, node.name)
 
-      const edges: Array<{ from: string; fromName: string; to: string; toName: string | null; trigger: string; action: string }> = []
+      /* An edge used to be five strings. The navigation KIND and the transition were already
+       * computed by `summarizeReactions` below and dropped on the floor - and they are the half a
+       * build needs: "PUSH from the RIGHT, 0.3s, EASE_OUT" is a SwiftUI `NavigationTransition` or
+       * a Compose `AnimatedContentTransitionScope`, while "ON_HOVER → that node" is only a graph. */
+      const edges: Array<{
+        from: string
+        fromName: string
+        to: string
+        toName: string | null
+        trigger: string
+        action: string
+        navigation?: string
+        transition?: unknown
+      }> = []
       const withReactions = await findAllWithCriteria(
         page,
         (node): node is SceneNode => 'reactions' in node || 'getReactionsAsync' in node
@@ -2159,7 +2560,7 @@ export const READ_OPS: readonly OpDef[] = [
         const anyNode = node as any
         const raw =
           typeof anyNode.getReactionsAsync === 'function' ? await anyNode.getReactionsAsync() : anyNode.reactions
-        for (const reaction of summarizeReactions(raw)) {
+        for (const reaction of await summarizeReactions(raw, async (id) => named.get(id) ?? null)) {
           if (!reaction.destinationId) continue
           edges.push({
             from: node.id,
@@ -2168,6 +2569,8 @@ export const READ_OPS: readonly OpDef[] = [
             toName: named.get(reaction.destinationId) ?? null,
             trigger: reaction.trigger,
             action: reaction.action,
+            ...(reaction.navigation ? { navigation: reaction.navigation } : {}),
+            ...(reaction.transition ? { transition: reaction.transition } : {}),
           })
         }
       }
@@ -2209,6 +2612,13 @@ export const READ_OPS: readonly OpDef[] = [
   {
     name: 'library.variables',
     summary: 'Variables inside one library collection, with their values — read a palette from another file.',
+    agent:
+      'Every variable here is a separate round trip to Figma\'s team-library service: measured at ' +
+      '48 s for 213 of them on a good afternoon and past 400 s on a bad one, which is how a token ' +
+      'sync ends up failing at the call ceiling with nothing to show. So this pages: it answers ' +
+      'inside `budgetMs` with what it read and hands back `nextOffset` — pass it to continue. ' +
+      '`values: false` skips the imports entirely and answers in a second when names and types ' +
+      'are all you need, and `resolve: true` follows the alias chains a theme collection is made of.',
     mutates: false,
     params: {
       collectionKey: {
@@ -2221,16 +2631,47 @@ export const READ_OPS: readonly OpDef[] = [
         default: true,
         description: 'Import each variable to read its per-mode values. Off returns names and types only.',
       },
-      limit: { type: 'number', default: 400, min: 1, max: 2000, description: 'Cap on variables returned.' },
+      resolve: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Follow alias chains and add `resolved` per mode — the same option `variables.get` has. ' +
+          'A theme collection is mostly aliases onto a primitive ramp, so without this a caller ' +
+          'reading a library palette gets `{type: "VARIABLE_ALIAS", id}` where it asked for a colour.',
+      },
+      limit: { type: 'number', default: 200, min: 1, max: 2000, description: 'Cap on variables returned in one call.' },
+      offset: {
+        type: 'number',
+        default: 0,
+        min: 0,
+        description: 'Where to resume — the `nextOffset` a previous call handed back.',
+      },
+      budgetMs: {
+        type: 'number',
+        default: 60_000,
+        min: 5_000,
+        max: 170_000,
+        description:
+          'Stop importing after this long and answer with what was read. Each variable is a ' +
+          'separate round trip to the team-library service, and a big collection can outrun any ' +
+          'call ceiling — a partial answer with `nextOffset` beats a call that dies with nothing.',
+      },
     },
     async run(params) {
       const key = params.collectionKey as string
       const entries = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(key)
-      const capped = entries.slice(0, params.limit as number)
+      const offset = Math.min(Number(params.offset) || 0, entries.length)
+      const capped = entries.slice(offset, offset + (params.limit as number))
       if (params.values === false) {
+        // Names and types come from the collection listing itself — no imports, no budget to
+        // run out of, which is why this path answers in a second on a collection that takes
+        // minutes to read in full.
+        const done = offset + capped.length
         return {
           collectionKey: key,
           total: entries.length,
+          offset,
+          ...(done < entries.length ? { nextOffset: done } : {}),
           variables: capped.map((entry) => ({ key: entry.key, name: entry.name, resolvedType: entry.resolvedType })),
         }
       }
@@ -2238,7 +2679,19 @@ export const READ_OPS: readonly OpDef[] = [
       const variables: Array<Record<string, unknown>> = []
       let modes: Array<{ modeId: string; name: string }> = []
       let collectionName: string | null = null
+      /* Measured on a real file: one library variable is one round trip to Figma's team-library
+       * service, and 213 of them took 48 seconds on a good afternoon and over 400 on a bad one.
+       * Whatever the ceiling of the day is, the call must come back inside it with what it read
+       * and say where to resume — the same contract `assets.export` already keeps. */
+      const deadline = Date.now() + (params.budgetMs as number)
+      let read = 0
+      let ranOut = false
       for (const entry of capped) {
+        if (Date.now() > deadline) {
+          ranOut = true
+          break
+        }
+        read += 1
         try {
           const imported = await figma.variables.importVariableByKeyAsync(entry.key)
           if (modes.length === 0) {
@@ -2248,18 +2701,42 @@ export const READ_OPS: readonly OpDef[] = [
               modes = collection.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name }))
             }
           }
+          const resolved: Record<string, unknown> = {}
+          if (params.resolve === true) {
+            // Per mode, for the same reason `variables.get` does it that way: one alias points
+            // somewhere different in Light and Dark, and one number would be the wrong answer in
+            // exactly the case the caller is asking about.
+            for (const mode of modes) {
+              try {
+                resolved[mode.modeId] = await resolveVariableValue(imported, mode.modeId)
+              } catch (err) {
+                resolved[mode.modeId] = { error: String((err as Error)?.message || err) }
+              }
+            }
+          }
           variables.push({
             key: imported.key,
             id: imported.id,
             name: imported.name,
             resolvedType: imported.resolvedType,
             valuesByMode: imported.valuesByMode,
+            ...(params.resolve === true ? { resolved } : {}),
           })
         } catch (err) {
           variables.push({ key: entry.key, name: entry.name, error: String((err as Error)?.message || err) })
         }
       }
-      return { collectionKey: key, collectionName, modes, total: entries.length, variables }
+      const done = offset + read
+      return {
+        collectionKey: key,
+        collectionName,
+        modes,
+        total: entries.length,
+        offset,
+        ...(done < entries.length ? { nextOffset: done } : {}),
+        ...(ranOut ? { stoppedOn: 'budgetMs' } : {}),
+        variables,
+      }
     },
   },
 
@@ -2413,11 +2890,72 @@ export const READ_OPS: readonly OpDef[] = [
       }
     },
   },
+
+  {
+    name: 'guide.list',
+    summary: 'Playbooks: named tasks with the ops they take, in order. Start here on an unfamiliar file.',
+    agent:
+      'The manifest says what each op does; a playbook says which five to call and in what order to get a screen ' +
+      'built, a design system extracted, motion implemented or a build checked against the file. Read this first ' +
+      'and guide.get the one that matches the task — it is cheaper than discovering the sequence by trial.',
+    mutates: false,
+    params: {},
+    async run() {
+      return GUIDES.map((guide) => ({
+        id: guide.id,
+        title: guide.title,
+        goal: guide.goal,
+        when: guide.when,
+        steps: guide.steps.length,
+      }))
+    },
+  },
+
+  {
+    name: 'guide.get',
+    summary: 'One playbook in full — its steps, example params, what to check, and what each op it names does.',
+    agent:
+      'Serves the op summaries and guidance alongside the steps, so a playbook is one call rather than one plus five ' +
+      'lookups. `why` on a step is about sequencing; what the op itself does comes from the op.',
+    mutates: false,
+    params: {
+      id: { type: 'string', required: true, description: 'Playbook id from guide.list, e.g. screen.build.' },
+    },
+    async run(params) {
+      const guide = GUIDES.find((entry) => entry.id === params.id)
+      if (!guide) {
+        throw new Error(`no playbook "${params.id}" — guide.list names them: ${GUIDES.map((g) => g.id).join(', ')}`)
+      }
+      return {
+        ...guide,
+        steps: guide.steps.map((step) => {
+          const op = OPS_BY_NAME.get(step.op)
+          return {
+            ...step,
+            // A playbook that names a renamed op is caught by test; this is the runtime half of
+            // the same promise — the agent sees which step lost its op rather than a silent gap.
+            ...(op
+              ? { summary: op.summary, mutates: op.mutates, ...(op.agent ? { agent: op.agent } : {}) }
+              : { missing: true }),
+          }
+        }),
+      }
+    },
+  },
 ]
 
 // `PLUGIN_OPS` last, and deliberately not folded into either half: it is the doorway onto the
 // plugin's own command surface, which contains reads and writes both, and decides which gate
 // it needs per call rather than per op.
-export const ALL_OPS: readonly OpDef[] = [...READ_OPS, ...CONTEXT_OPS, ...TRANSITION_OPS, ...WRITE_OPS, ...PLUGIN_OPS]
+export const ALL_OPS: readonly OpDef[] = [
+  ...READ_OPS,
+  ...CONTEXT_OPS,
+  ...IR_OPS,
+  ...SPEC_OPS,
+  ...STATE_OPS,
+  ...TRANSITION_OPS,
+  ...WRITE_OPS,
+  ...PLUGIN_OPS,
+]
 
 export const OPS_BY_NAME: ReadonlyMap<string, OpDef> = new Map(ALL_OPS.map((op) => [op.name, op]))

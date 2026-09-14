@@ -63,3 +63,62 @@ export function imageDimensions(bytes: Uint8Array): ImageDimensions {
   }
   return none
 }
+
+/**
+ * Whether an image can carry transparency, from the same header bytes.
+ *
+ * `alpha` is the difference between a photograph and a cut-out figure, and it decides how the
+ * picture is placed: a photo is a `cover` fill under a scrim, a cut-out sits in a corner of a
+ * card. Nothing in the Plugin API says which one a paint holds - the answer is in the file, and
+ * the file is already in the caller's hands whenever this matters.
+ *
+ * It reports what the FORMAT carries, not what the pixels use: an RGBA PNG whose alpha is 255
+ * everywhere still answers `alpha`. Deciding otherwise needs a full decode, which the sandbox
+ * cannot afford - and this is the harmless direction, since a consumer that treats an opaque
+ * RGBA image as a cut-out simply draws it whole.
+ */
+export type ImageAlpha = 'none' | 'alpha' | 'unknown'
+
+export function imageAlpha(bytes: Uint8Array): ImageAlpha {
+  if (bytes.length < 26) return 'unknown'
+
+  // PNG: IHDR's colour type - 4 (grey+alpha) and 6 (RGBA) carry a channel; 3 (palette) carries
+  // transparency only if a tRNS chunk follows, which is exactly how a palette cut-out is stored.
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    const colourType = bytes[25]
+    if (colourType === 4 || colourType === 6) return 'alpha'
+    if (colourType === 3) return hasPngChunk(bytes, 'tRNS') ? 'alpha' : 'none'
+    return 'none'
+  }
+
+  // JPEG has no alpha at all, in any variant - the one format where the answer is free.
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return 'none'
+
+  // WebP: the extended container states it in a flag, lossless keeps it in its own header bit,
+  // and plain lossy VP8 never has it.
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57) {
+    const chunk = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15])
+    if (chunk === 'VP8X') return (bytes[20] & 0x10) !== 0 ? 'alpha' : 'none'
+    if (chunk === 'VP8L') return (bytes[24] & 0x10) !== 0 ? 'alpha' : 'none'
+    if (chunk === 'VP8 ') return 'none'
+    return 'unknown'
+  }
+
+  // GIF keeps transparency in a graphic-control extension anywhere in the stream, so the header
+  // alone cannot answer. Saying so beats guessing on a format Figma fills rarely hold.
+  return 'unknown'
+}
+
+/** Whether a named chunk appears in a PNG, walking the length-prefixed chain from the signature. */
+function hasPngChunk(bytes: Uint8Array, name: string): boolean {
+  let at = 8
+  while (at + 8 <= bytes.length) {
+    const length = be32(bytes, at)
+    const type = String.fromCharCode(bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7])
+    if (type === name) return true
+    // Past the pixel data a tRNS chunk is invalid, so there is nothing left to find.
+    if (type === 'IDAT' || type === 'IEND') return false
+    at += 12 + length
+  }
+  return false
+}

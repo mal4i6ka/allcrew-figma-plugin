@@ -10,6 +10,7 @@
 import { authorize, toManifest, validateParams, type AgentGates, type OpManifestEntry } from './protocol.ts'
 import { ALL_OPS, OPS_BY_NAME } from './ops.ts'
 import { postToUi } from './ui-post.ts'
+import { takeLoading } from './loading.ts'
 
 export interface AgentRequest {
   id: string
@@ -22,6 +23,9 @@ export interface AgentResponse {
   ok: boolean
   result?: unknown
   error?: string
+  /** Pages this call had to wait for Figma to load, and how long each took. Absent when
+   * nothing was cold - see `loading.ts` for why a wait needs saying out loud. */
+  loading?: Array<{ page: string; ms: number }>
 }
 
 /** Both off until the designer says otherwise, every time the plugin opens. Gate state is
@@ -61,11 +65,23 @@ export async function handleAgentRequest(request: AgentRequest): Promise<AgentRe
     const params = validateParams(op!.params, request.params)
     const result = await op!.run(params)
     report(request.op, true, Date.now() - started)
-    return { id: request.id, ok: true, result }
+    /* A call that spent half a minute waiting for Figma to load a page looks, from the other
+     * side of the bridge, exactly like a call that hung. It is not, and the difference decides
+     * what the caller does next: wait, or go looking for a broken channel. */
+    const loading = takeLoading()
+    return {
+      id: request.id,
+      ok: true,
+      result: loading && result && typeof result === 'object' && !Array.isArray(result)
+        ? { ...(result as Record<string, unknown>), loading }
+        : result,
+      ...(loading ? { loading } : {}),
+    }
   } catch (err) {
     const message = String((err as Error)?.message || err)
     report(request.op, false, Date.now() - started, message)
-    return { id: request.id, ok: false, error: message }
+    const loading = takeLoading()
+    return { id: request.id, ok: false, error: message, ...(loading ? { loading } : {}) }
   }
 }
 

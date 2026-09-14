@@ -18,109 +18,37 @@
 import { emitDjango } from '../targets/django/index.ts'
 import { imageStaticPath } from '../targets/django/html-emitter.ts'
 import { pickBackend, type MotionTrigger } from '../targets/django/motion/backend.ts'
+import { motionCurve } from '../targets/django/easing/index.ts'
+import { noteLoad } from './loading.ts'
 import { readMotionData } from '../targets/django/motion/beta-adapter.ts'
 import { emitMotionExportArtifacts, type MotionExportNode } from '../targets/django/motion/export-assets.ts'
 import { buildPreviewDocument } from '../targets/django/motion/preview.ts'
 import type { MotionTrack } from '../targets/django/motion/types.ts'
-import { serializeNode, type IrNode } from '../targets/django/ir.ts'
+import { serializeNode, type IrNode, type IrContainerNode } from '../targets/django/ir.ts'
 import { annotateVectorLeaves, annotateVideoFills, collectManualAssets, type AssetSourceNode } from '../targets/django/export/assets.ts'
+import { emitInteractions } from '../targets/django/interactions.ts'
+import { emitBreakpointCss, type BreakpointGroup } from '../targets/django/breakpoint-frames.ts'
 import { detectImageFillFormat, isVideoAssetPath, primaryDesignerSetting, type DesignerExportSetting } from '../targets/django/assets.ts'
 import { resolveExportSettings, type ExportMarkedInstanceNode } from '../utils/graphics.ts'
-import { imageDimensions } from './image-dimensions.ts'
-import { findAllWithCriteria } from '../utils/tree.ts'
+import { imageAlpha, imageDimensions } from './image-dimensions.ts'
+import { findAllWithCriteria, yieldToHost } from '../utils/tree.ts'
+import { exportPlate } from '../canvas/plate.ts'
 import { readLocalVariables } from '../variables.ts'
 import { binaryFile, slugify, textFile } from './files.ts'
 import { describePaint, describeShader, shadersFor, type PaintSummary, type ShaderSummary } from './ops.ts'
 import type { OpDef } from './protocol.ts'
+import {
+  collectContextAssets,
+  collectTokens,
+  indexSceneNodes,
+  resolveSceneNode,
+  screenshot,
+  type ContextAsset,
+} from './subtree.ts'
 
-/* ----------------------------------------------------------------- helpers */
-
-async function resolveSceneNode(ref: unknown): Promise<SceneNode> {
-  if (typeof ref !== 'string' || ref === '') throw new Error('nodeId must be a non-empty string')
-  const node = await figma.getNodeByIdAsync(ref)
-  if (!node) throw new Error(`no node with id ${ref}`)
-  if (node.type === 'PAGE' || node.type === 'DOCUMENT') throw new Error(`${ref} is a ${node.type}, not a layer`)
-  return node as SceneNode
-}
-
-/** Lifted from the plugin UI's own export path so the agent walks the identical tree. */
-async function indexSceneNodes(roots: readonly SceneNode[]): Promise<Map<string, SceneNode>> {
-  const index = new Map<string, SceneNode>()
-  for (const root of roots) {
-    index.set(root.id, root)
-    for (const node of await findAllWithCriteria(root, (candidate): candidate is SceneNode => true)) {
-      index.set(node.id, node)
-    }
-  }
-  return index
-}
-
-interface TokenReport {
-  /** id → name, for the emitter, which takes a static map. */
-  readonly names: Map<string, string>
-  /** What the subtree binds and how often — the part an agent reads. */
-  readonly usage: Array<{ token: string; uses: number }>
-}
-
-/**
- * Every variable the subtree actually binds, by token name and how often. This is the half a
- * screenshot cannot carry: it tells a generating agent which tokens are in play before it
- * writes a single declaration, and — because the count is there — which of them carry the
- * design and which appear once.
- *
- * Names come from the *local* variables plus a lookup for each bound id that is not among
- * them. The obvious alternative, `readAllVariables()`, is what the plugin's own export uses —
- * and it pulls every enabled library over the network, which is fine for an export a person
- * asked for and pathological for an op an agent is waiting on. A library variable that a layer
- * actually binds has already been imported into this file, so resolving it by id is a local
- * read; the cost stays proportional to the subtree rather than to the libraries.
- */
-async function collectTokens(nodes: Iterable<SceneNode>): Promise<TokenReport> {
-  const local = await readLocalVariables()
-  const names = new Map(local.variables.map((variable) => [variable.id, variable.name]))
-  const counts = new Map<string, number>()
-  const missing = new Set<string>()
-
-  const nameFor = async (id: string): Promise<string | null> => {
-    const known = names.get(id)
-    if (known !== undefined) return known
-    if (missing.has(id)) return null
-    try {
-      const variable = await figma.variables.getVariableByIdAsync(id)
-      if (variable) {
-        names.set(id, variable.name)
-        return variable.name
-      }
-    } catch {
-      /* fall through — an id we cannot resolve is reported as absent, not as an error */
-    }
-    missing.add(id)
-    return null
-  }
-
-  for (const node of nodes) {
-    const bound = (node as unknown as { boundVariables?: Record<string, unknown> }).boundVariables
-    if (!bound) continue
-    for (const entry of Object.values(bound)) {
-      // A field is either one alias (`fills` on a shape) or an array of them (`fills` on a
-      // multi-paint node) — flattening here keeps the caller from caring which.
-      const aliases = Array.isArray(entry) ? entry : [entry]
-      for (const alias of aliases) {
-        const id = (alias as { id?: unknown } | null)?.id
-        if (typeof id !== 'string') continue
-        const name = await nameFor(id)
-        if (!name) continue
-        counts.set(name, (counts.get(name) ?? 0) + 1)
-      }
-    }
-  }
-  return {
-    names,
-    usage: [...counts.entries()]
-      .map(([token, uses]) => ({ token, uses }))
-      .sort((a, b) => b.uses - a.uses || a.token.localeCompare(b.token)),
-  }
-}
+// Re-exported where they were first published: `design.context`'s asset list is asserted by
+// `context-assets.test.ts`, and the shape is this module's contract, not the leaf's.
+export { collectContextAssets, type ContextAsset } from './subtree.ts'
 
 /** Figma's Motion API is a beta that is simply absent for most accounts. Saying so beats
  * answering "no animations" for a file full of them. */
@@ -183,103 +111,7 @@ class Stopwatch {
   }
 }
 
-async function screenshot(node: SceneNode, scale: number): Promise<Uint8Array> {
-  return node.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: scale } })
-}
-
-/** One asset the emitted HTML/CSS actually references — named so a caller can hand `nodeId`
- * straight to `NODE_EXPORT` instead of reverse-engineering it out of `filename` (the failure this
- * op exists to close — see the module note). Derived from the same IR `emitDjango` reads, never
- * by re-parsing the markup. */
-export interface ContextAsset {
-  /** `static`-relative filename the emitted markup asks for — `img/<this>`. */
-  filename: string
-  /** Figma node id whose export produces `filename` — the argument `NODE_EXPORT` wants. */
-  nodeId: string
-  kind: 'raster' | 'vector' | 'video' | 'poster'
-  /** Designer `@Nx` export scale; 1 for anything without one (plain leaves, container fills, masks). */
-  scale: number
-  /** File extension without the dot. */
-  format: string
-  /** False only when the plugin already knows this can't ship — a video `collectManualAssets`
-   * reports as unexportable. `NODE_EXPORT` will fail on `nodeId` the same way; don't retry it. */
-  exportable?: false
-  reason?: string
-}
-
-/** The designer's own export scale for `nodeId` — `resolveExportSettings` is the exact check
- * `serializeNode` uses to decide whether a leaf was routed through `serializeExportedGraphic` at
- * all, so this never guesses a scale for a plain leaf, container fill, or mask, none of which
- * carry one. */
-async function designerScale(nodeId: string, sceneNodesById: ReadonlyMap<string, SceneNode>): Promise<number> {
-  const source = sceneNodesById.get(nodeId)
-  if (!source) return 1
-  const settings = (await resolveExportSettings(
-    source as unknown as ExportMarkedInstanceNode
-  )) as ReadonlyArray<DesignerExportSetting>
-  const primary = primaryDesignerSetting(settings)
-  return primary?.constraint?.type === 'SCALE' ? primary.constraint.value : 1
-}
-
 /**
- * Every asset the emitted HTML/CSS references, one entry per file, named so `NODE_EXPORT` can be
- * called on `nodeId` directly. Walks the IR after `annotateVectorLeaves`/`annotateVideoFills` have
- * resolved every leaf, so an entry only appears once a real file (or a documented reason it can't
- * exist) backs it — a small inlined vector with no `assetSrc` contributes nothing, since nothing
- * in the markup names a file for it.
- */
-export async function collectContextAssets(
-  nodes: readonly IrNode[],
-  sceneNodesById: ReadonlyMap<string, SceneNode>
-): Promise<ContextAsset[]> {
-  // `collectManualAssets` is the plugin's own "this video will never export" signal — reused
-  // rather than re-derived so this list and the export report never disagree.
-  const manual = collectManualAssets(nodes)
-  const manualReason =
-    "Figma's export API already refused this video (see the export report's manualAssets) — " +
-    'NODE_EXPORT will fail on this nodeId the same way; the file has to be attached manually.'
-
-  const out: ContextAsset[] = []
-  const push = async (nodeId: string, assetSrc: string, kind: ContextAsset['kind'], scale: number): Promise<void> => {
-    const filename = assetSrc.replace(/^img\//, '')
-    const failing = manual.some((asset) => asset.nodeId === nodeId && asset.assetSrc === assetSrc)
-    out.push({
-      filename,
-      nodeId,
-      kind,
-      scale,
-      format: filename.slice(filename.lastIndexOf('.') + 1),
-      ...(failing ? { exportable: false, reason: manualReason } : {}),
-    })
-  }
-
-  const visit = async (node: IrNode): Promise<void> => {
-    if (node.type === 'image') {
-      const assetSrc = node.assetSrc ?? imageStaticPath(node)
-      const video = isVideoAssetPath(assetSrc)
-      await push(node.id, assetSrc, video ? 'video' : 'raster', video ? 1 : await designerScale(node.id, sceneNodesById))
-      if (node.posterSrc) await push(node.id, node.posterSrc, 'poster', 1)
-      return
-    }
-    if (node.type === 'vector') {
-      if (node.assetSrc) await push(node.id, node.assetSrc, 'vector', await designerScale(node.id, sceneNodesById))
-      return
-    }
-    if (node.type === 'container' || node.type === 'instance-ref') {
-      for (const bg of node.backgroundImages ?? []) await push(node.id, bg.assetSrc, 'raster', 1)
-      if (node.backgroundVideo) {
-        await push(node.id, node.backgroundVideo.assetSrc, 'video', 1)
-        await push(node.id, node.backgroundVideo.posterSrc, 'poster', 1)
-      }
-      if (node.type === 'container' && node.mask?.kind === 'image') {
-        await push(node.mask.nodeId, node.mask.assetSrc, 'vector', 1)
-      }
-      for (const child of node.children) await visit(child)
-    }
-  }
-  for (const node of nodes) await visit(node)
-  return out
-}
 
 /* --------------------------------------------------------------------- ops */
 
@@ -306,12 +138,51 @@ export const CONTEXT_OPS: readonly OpDef[] = [
   },
 
   {
+    name: 'image.plate',
+    summary: 'A node rendered to PNG/JPG with every descendant hidden — the photo itself, not the badge baked over it.',
+    agent:
+      'A card thumbnail is routinely an instance whose own IMAGE fill is the photo and whose only child is an overlay ' +
+      '— a "10 min" reading-time chip, a rating badge — and node.screenshot/NODE_EXPORT bake that overlay into the ' +
+      'pixels, because exportAsync has no "skip children" switch. image.fills answers this without touching the ' +
+      'canvas at all when the photo is a plain paint (getImageByHash, no render), but its subtree walk can outrun a ' +
+      "large file's budget; reach for image.plate once a walk already has nodeId and the photo just needs to come " +
+      'back clean. Reach for node.screenshot/NODE_EXPORT instead when the overlay is actually wanted in the picture. ' +
+      'Costs a fleeting clone — created, hidden, exported, deleted — the document is back to itself once this returns.',
+    mutates: true,
+    params: {
+      nodeId: { type: 'string', required: true, description: 'Node to render without its descendants.' },
+      scale: { type: 'number', default: 1, min: 0.1, max: 4, description: 'Export scale. 2 for retina.' },
+      format: { type: 'string', default: 'PNG', enum: ['PNG', 'JPG'], description: 'Raster format.' },
+    },
+    async run(params) {
+      const node = await resolveSceneNode(params.nodeId)
+      const scale = params.scale as number
+      const format = params.format as 'PNG' | 'JPG'
+      const bytes = await exportPlate(node, { format, constraint: { type: 'SCALE', value: scale } })
+      const ext = format === 'JPG' ? 'jpg' : 'png'
+      return {
+        node: { id: node.id, name: node.name, type: node.type, width: node.width, height: node.height },
+        scale,
+        format,
+        bytes: bytes.length,
+        file: binaryFile(`${slugify(node.name)}.${ext}`, format === 'JPG' ? 'image/jpeg' : 'image/png', bytes),
+      }
+    },
+  },
+
+  {
     name: 'image.fills',
     summary: 'The original files behind a subtree’s image fills — the photo itself, not a render with text baked over it.',
     agent:
-      'A render (node.screenshot, NODE_EXPORT) flattens overlays and text into the pixels; this hands back the uploaded ' +
-      'source of each IMAGE paint under the node, deduplicated by hash, largest first. Read-only: no export settings on ' +
-      'the node, no write gate — `figma.getImageByHash` is a read. Answers with files, not payloads.',
+      'A render (node.screenshot, NODE_EXPORT, image.plate) flattens overlays and text into the pixels; this hands ' +
+      'back the uploaded source of each IMAGE paint under the node, deduplicated by hash, largest first. Read-only: ' +
+      'no export settings on the node, no write gate — `figma.getImageByHash` is a read. Pin one exact fill with ' +
+      '`imageHash` (add `paintIndex` when the same hash paints more than one slot on the same node) instead of ' +
+      "guessing it out of a ranked list; `self: true` skips the subtree walk when the node's own fills are already " +
+      'known to be the answer. On a large subtree the walk and the byte fetches can outrun `budgetMs` (default ' +
+      "60 s, capped at 170 s to fit inside the bridge's own deadline) — the call always answers within it, with " +
+      'whatever it reached in `images[]` and the rest named in `failed[]` alongside `timedOut: true`, never left ' +
+      'hanging.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'Subtree to search for image fills.' },
@@ -322,21 +193,50 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         min: 0,
         description: 'Skip images whose longer side is below this many pixels — icons and textures, not photos.',
       },
+      imageHash: {
+        type: 'string',
+        description: 'Only this image hash — narrows the whole subtree walk down to one exact fill.',
+      },
+      paintIndex: {
+        type: 'number',
+        min: 0,
+        description: "Only a paint sitting at this index in its node's own fill stack.",
+      },
+      self: {
+        type: 'boolean',
+        default: false,
+        description: "Check only nodeId's own fills — skip the subtree walk entirely.",
+      },
+      budgetMs: {
+        type: 'number',
+        default: 60000,
+        min: 1000,
+        max: 170000,
+        description: 'Total time the walk plus every byte fetch together may take before the call returns whatever it has.',
+      },
+      imageMs: {
+        type: 'number',
+        default: 15000,
+        min: 1000,
+        max: 170000,
+        description: 'Per-image deadline for one getBytesAsync — shortened further when budgetMs is close to running out.',
+      },
     },
     async run(params) {
       const root = await resolveSceneNode(params.nodeId)
       const limit = params.limit as number
       const minSide = params.minSide as number
-
-      // Image data belongs to a loaded page: with dynamic page loading, an image on a page the
-      // designer has not opened is a promise that never settles. Load it first.
-      let page: BaseNode | null = root
-      while (page && page.type !== 'PAGE') page = page.parent
-      if (page) await (page as PageNode).loadAsync()
+      const imageHash = params.imageHash as string | undefined
+      const paintIndex = params.paintIndex as number | undefined
+      const self = params.self === true
+      const budgetMs = params.budgetMs as number
+      const imageMs = params.imageMs as number
+      const start = Date.now()
+      const deadlineAt = start + budgetMs
 
       // A read that does not come back is worse than one that says it failed: every fetch
       // below is raced against a deadline and reported per image.
-      const deadline = <T,>(work: Promise<T>, what: string, ms = 20000): Promise<T> =>
+      const raceDeadline = <T,>(work: Promise<T>, what: string, ms: number): Promise<T> =>
         new Promise<T>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms)
           work.then(
@@ -351,23 +251,63 @@ export const CONTEXT_OPS: readonly OpDef[] = [
           )
         })
 
+      /* Image data belongs to a loaded page: with dynamic page loading, an image on a page the
+       * designer has not opened is a promise that never settles. Load it first - but under the
+       * call's own budget, because on a cold 200k-node page that load alone ran past three
+       * minutes and killed the call before a single byte was read. A lost race is not a lost
+       * page: Figma keeps loading it, so the retry this error asks for is the fast one. */
+      let page: BaseNode | null = root
+      while (page && page.type !== 'PAGE') page = page.parent
+      if (page) {
+        const loadStarted = Date.now()
+        try {
+          await raceDeadline((page as PageNode).loadAsync(), `loading page "${page.name}"`, budgetMs)
+        } catch {
+          throw new Error(
+            `"${page.name}" was still loading after ${budgetMs} ms — Figma keeps loading it in the ` +
+              'background, so calling again usually answers at once. Raise budgetMs to wait here instead.'
+          )
+        }
+        noteLoad(page.name, Date.now() - loadStarted)
+      }
+
       // One entry per distinct image: the same photo is often the fill of a frame and of the
-      // rectangle inside it, and the caller wants the file once.
+      // rectangle inside it, and the caller wants the file once. `imageHash`/`paintIndex`
+      // filter right here, before dedup, so a caller pinning one exact fill gets that one back
+      // instead of whichever node the walk happened to reach first.
       const hits = new Map<string, { node: SceneNode; paintIndex: number; scaleMode: string }>()
-      const visit = (node: SceneNode) => {
+      const record = (node: SceneNode): void => {
         if (node.visible === false) return
         const fills = (node as GeometryMixin).fills
-        if (Array.isArray(fills)) {
-          fills.forEach((paint, paintIndex) => {
-            if (paint.type !== 'IMAGE' || !paint.imageHash || paint.visible === false) return
-            if (!hits.has(paint.imageHash)) {
-              hits.set(paint.imageHash, { node, paintIndex, scaleMode: paint.scaleMode })
-            }
-          })
-        }
-        if ('children' in node) for (const child of node.children) visit(child)
+        if (!Array.isArray(fills)) return
+        fills.forEach((paint, index) => {
+          if (paint.type !== 'IMAGE' || !paint.imageHash || paint.visible === false) return
+          if (paintIndex !== undefined && index !== paintIndex) return
+          if (imageHash !== undefined && paint.imageHash !== imageHash) return
+          if (!hits.has(paint.imageHash)) hits.set(paint.imageHash, { node, paintIndex: index, scaleMode: paint.scaleMode })
+        })
       }
-      visit(root)
+
+      record(root)
+      let timedOut = false
+      if (!self && 'children' in root) {
+        // Iterative preorder DFS, the same order `findAllWithCriteria` walks in, but with its
+        // own deadline on top of the node-count yield cadence — a subtree small enough to never
+        // hit a yield can still sit on a ~200k-node live file long enough to outrun the whole
+        // call's own budget.
+        let visited = 0
+        const stack: SceneNode[] = [...root.children]
+        while (stack.length > 0) {
+          if (Date.now() > deadlineAt) {
+            timedOut = true
+            break
+          }
+          const node = stack.pop() as SceneNode
+          record(node)
+          if ('children' in node) for (const child of node.children) stack.push(child)
+          if (++visited % 500 === 0) await yieldToHost()
+        }
+      }
 
       // `getSizeAsync` is not consulted: on a live file it never settled, for any image. The
       // fills are ranked by the area of the layer they paint — the section photo is the big
@@ -379,19 +319,29 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       const failures: Array<{ node: string; hash: string; error: string }> = []
       let skipped = 0
       const images: Array<Record<string, unknown>> = []
-      for (const [hash, hit] of ranked) {
-        if (images.length >= limit) break
+      let index = 0
+      for (; index < ranked.length && images.length < limit; index++) {
+        if (Date.now() > deadlineAt) {
+          timedOut = true
+          break
+        }
+        const [hash, hit] = ranked[index]
         const image = figma.getImageByHash(hash)
         if (!image) continue
         let bytes: Uint8Array
         try {
-          bytes = await deadline(image.getBytesAsync(), `getBytesAsync ${hit.node.name}`, 60000)
+          const perImageMs = Math.max(1, Math.min(imageMs, deadlineAt - Date.now()))
+          bytes = await raceDeadline(image.getBytesAsync(), `getBytesAsync ${hit.node.name}`, perImageMs)
         } catch (error) {
           failures.push({ node: hit.node.id, hash, error: String(error) })
           continue
         }
         const format = detectImageFillFormat(bytes)
         const { width, height } = imageDimensions(bytes)
+        /* Photograph or cut-out figure: the one bit that decides how the picture is PLACED, and
+         * the Plugin API states it nowhere. The bytes are already here, so it costs a header
+         * read - see `imageAlpha` for what "alpha" does and does not promise. */
+        const alpha = imageAlpha(bytes)
         if (width && height && Math.max(width, height) < minSide) {
           skipped += 1
           continue
@@ -405,6 +355,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
           height,
           bytes: bytes.length,
           format,
+          alpha,
           file: binaryFile(
             `${slugify(hit.node.name)}-${hash.slice(0, 8)}.${format}`,
             format === 'jpg' ? 'image/jpeg' : `image/${format}`,
@@ -412,14 +363,28 @@ export const CONTEXT_OPS: readonly OpDef[] = [
           ),
         })
       }
+      if (timedOut) {
+        // Whatever the loop above never got to: named explicitly rather than folded into the
+        // same `truncated` count a `limit` cutoff produces — a caller retrying one hash out of
+        // `failed[]` is a different next step than a caller simply raising `limit`.
+        for (; index < ranked.length; index++) {
+          const [hash, hit] = ranked[index]
+          failures.push({ node: hit.node.id, hash, error: `budget exhausted (${budgetMs} ms) before this image was fetched` })
+        }
+      }
+
       const truncated = Math.max(0, ranked.length - images.length - failures.length - skipped)
       return {
         node: { id: root.id, name: root.name, type: root.type },
         count: images.length,
         truncated,
         skippedSmall: skipped,
-        /** Images Figma would not hand over in time — named, so the caller can retry or fall back. */
+        /** Images Figma would not hand over in time, or never reached because the budget ran
+         * out first — named, so the caller can retry (a narrower `imageHash`/`self`) or fall
+         * back (image.plate) instead of assuming the subtree simply has nothing left. */
         failed: failures,
+        timedOut,
+        elapsedMs: Date.now() - start,
         images,
       }
     },
@@ -480,6 +445,14 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       cssFile: { type: 'string', default: 'design.css', description: 'Name the emitted HTML links to.' },
       screenshot: { type: 'boolean', default: true, description: 'Also render a PNG reference.' },
       scale: { type: 'number', default: 1, min: 0.1, max: 4, description: 'Screenshot scale.' },
+      pair: {
+        type: 'string',
+        description:
+          "Node id of the OTHER breakpoint frame (e.g. the mobile frame when nodeId is the desktop one). " +
+          'When set, the response gets a `breakpoints` field: the narrower frame\'s @media CSS, merged ' +
+          "against nodeId's own tree by layer name+path (matchLayers) — no naming convention required, " +
+          "unlike the whole-site export's `<slug>/mobile` grouping.",
+      },
     },
     async run(params) {
       const root = await resolveSceneNode(params.nodeId)
@@ -506,6 +479,14 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       const { html, css } = await clock.time('emit', () =>
         emitDjango(irNodes, sceneNodesById, tokens.names, { cssFile: params.cssFile as string })
       )
+      // M9: emitDjango (single-node) never calls emitInteractions — only emitDjangoProject does
+      // (index.ts:294-299). Reusing the exact same call here surfaces a node's own hover/press
+      // CSS and overlay JS to design.context for the first time. Off-tree reaction destinations
+      // (a variant outside root's own subtree) still resolve to nothing — sceneNodesById here
+      // only covers root's own descendants, unlike the whole-site export's
+      // collectReactionDestinationIds pass — an existing single-node-op limitation, not a
+      // regression from this change.
+      const interactions = await clock.time('interactions', () => emitInteractions(irNodes, sceneNodesById))
 
       const slug = slugify(root.name)
       const files: unknown[] = [
@@ -525,6 +506,57 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         ms: clock.report(),
         files,
         assets,
+        // Only when there is anything to link — a node with no hover/press/overlay behaviour
+        // emits an empty string, and an empty stylesheet is not a file worth a caller opening.
+        ...(interactions.css.length > 0
+          ? { interactionsCss: textFile(`${slug}.interactions.css`, 'text/css', interactions.css) }
+          : {}),
+        ...(interactions.js.length > 0
+          ? { interactionsJs: textFile(`${slug}.interactions.js`, 'text/javascript', interactions.js) }
+          : {}),
+        ...(typeof params.pair === 'string' && params.pair !== ''
+          ? {
+              breakpoints: await clock.time('breakpoints', async () => {
+                if (!('children' in ir)) {
+                  throw new Error(`"${root.name}" (${root.type}) has no children — nothing to pair a breakpoint frame against`)
+                }
+                const pairRoot = await resolveSceneNode(params.pair)
+                // Same dynamic-page load dance as `root` above, for `pairRoot`.
+                let pairParent: BaseNode | null = pairRoot.parent
+                while (pairParent && pairParent.type !== 'PAGE') pairParent = pairParent.parent
+                if (pairParent) await (pairParent as PageNode).loadAsync()
+
+                const pairSceneNodesById = await indexSceneNodes([pairRoot])
+                const pairIr = await serializeNode(pairRoot)
+                if (!pairIr || !('children' in pairIr)) {
+                  throw new Error(`"${pairRoot.name}" (${pairRoot.type}) produced no exportable structure to pair against`)
+                }
+                const mergedSceneNodesById = new Map([...sceneNodesById, ...pairSceneNodesById])
+                // `tokens` above was collected over root's own subtree only — a variable the
+                // pair frame binds and root never does would otherwise render as a raw resolved
+                // value instead of a token reference for those properties. Re-collecting over
+                // the merged set costs one more walk, only paid when `pair` is actually asked
+                // for, and keeps this op's whole reason to exist (token references, not hex).
+                const pairTokens = await collectTokens(mergedSceneNodesById.values())
+                // `BreakpointGroup.frames` is widest-first (breakpoint-frames.ts's own doc) —
+                // sort instead of assuming nodeId is always the wider one; a caller may pass
+                // the mobile frame as `nodeId` and the desktop one as `pair`.
+                const group: BreakpointGroup = {
+                  slug,
+                  frames: [
+                    { width: root.width, breakpoint: 'a', node: ir as IrContainerNode },
+                    { width: pairRoot.width, breakpoint: 'b', node: pairIr as IrContainerNode },
+                  ].sort((x, y) => y.width - x.width),
+                }
+                const breakpointCss = await emitBreakpointCss(group, mergedSceneNodesById, pairTokens.names)
+                return {
+                  a: { id: root.id, name: root.name, width: root.width },
+                  b: { id: pairRoot.id, name: pairRoot.name, width: pairRoot.width },
+                  css: breakpointCss,
+                }
+              }),
+            }
+          : {}),
       }
     },
   },
@@ -595,6 +627,12 @@ export const CONTEXT_OPS: readonly OpDef[] = [
   {
     name: 'motion.context',
     summary: 'Keyframe tracks, the CSS/GSAP they compile to, and which backend fits — for a subtree.',
+    agent:
+      'Each keyframe reports `easing` as Figma stored it (a preset name, or a variable token when one is bound) ' +
+      'and `curve` as numbers - bezier control points, or a spring\'s damping ratio, stiffness and solved settle ' +
+      'time. Off the web, build from `curve` and pass `target: "native"`: the `backend` verdict (`css`/`gsap`) is a ' +
+      'choice between two WEB runtimes and the emitted files are a stylesheet and a GSAP timeline, none of which ' +
+      'means anything on iOS or Android - asking for them there is paying for an answer to someone else\'s question.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'Root to scan for animated layers.' },
@@ -605,6 +643,14 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         description: 'How the timeline is meant to start. Changes which backend fits.',
       },
       keyframes: { type: 'boolean', default: true, description: 'Include per-keyframe detail, not just counts.' },
+      target: {
+        type: 'string',
+        default: 'web',
+        enum: ['web', 'native'],
+        description:
+          'What you are building. `native` drops the CSS/GSAP verdict and the files that go with it, and leaves ' +
+          'the tracks and their curves - which is the whole answer off the web.',
+      },
     },
     async run(params) {
       if (!hasMotionApi()) {
@@ -632,6 +678,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
 
       const trigger = params.trigger as MotionTrigger
       const wantKeyframes = params.keyframes !== false
+      const web = params.target !== 'native'
 
       const animated = []
       for (const entry of motionNodes) {
@@ -640,30 +687,52 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         // Per node rather than per timeline: the same question ("CSS or GSAP, and why") is what
         // the export asks, and answering it here means an agent sees the reasoning instead of
         // just the output it produced.
-        const decision = pickBackend({ tracks, nodeCount: 1, trigger })
+        // Only asked for a web build: the verdict chooses between two browser runtimes, and
+        // stating one for a SwiftUI target would be an answer to a question nobody asked.
+        const decision = web ? pickBackend({ tracks, nodeCount: 1, trigger }) : null
         animated.push({
           nodeId: entry.nodeId,
           name: node?.name ?? entry.nodeId,
           type: node?.type ?? null,
           timelines: entry.snapshot.timelines.length,
-          backend: decision.backend,
-          reason: decision.reason,
+          ...(decision ? { backend: decision.backend, reason: decision.reason } : {}),
           tracks: await Promise.all(
             tracks.map(async (track) => ({
               field: track.field,
               duration: track.timelineDuration,
               keyframes: wantKeyframes
                 ? await Promise.all(
-                    track.keyframes.map(async (frame) => ({
-                      at: frame.timelinePosition,
-                      easing: await describeEasing(frame.easing),
-                      value: frame.value,
-                    }))
+                    track.keyframes.map(async (frame) => {
+                      // `easing` is what Figma stored (a preset name, a variable alias, a raw
+                      // spring); `curve` is what it means in numbers, for a consumer that is not
+                      // a stylesheet. A keyframe's segment duration is the gap to the next one,
+                      // which is what a bounce-only spring needs as its period.
+                      const curve = motionCurve(frame.easing as { type?: string } | undefined, track.timelineDuration)
+                      return {
+                        at: frame.timelinePosition,
+                        easing: await describeEasing(frame.easing),
+                        ...(curve ? { curve } : {}),
+                        value: frame.value,
+                      }
+                    })
                   )
                 : track.keyframes.length,
             }))
           ),
         })
+      }
+
+      if (!web) {
+        return {
+          available: true,
+          scanned: sceneNodesById.size,
+          target: 'native',
+          animated,
+          files: [],
+          note:
+            'No backend verdict and no files: `css`/`gsap` is a choice between two browser runtimes, and the ' +
+            'artifacts are a stylesheet and a GSAP timeline. The tracks and their `curve` are the whole answer here.',
+        }
       }
 
       const { animation } = emitMotionExportArtifacts(motionNodes)
