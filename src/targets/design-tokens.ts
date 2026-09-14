@@ -41,6 +41,7 @@ export function buildDesignTokens(
     typoScaleOnly: opts.tokens.typoScaleOnly,
     typoShorthand: opts.tokens.typoShorthand,
     typoNaming: opts.tokens.typoNaming,
+    emitNative: opts.tokens.emitNative,
   }
   const pkg: TokenPackage = buildPackage(graph, engineOptions, renames)
   const collectionRoles = parseCollectionRoles(opts.tokens.collectionRoles)

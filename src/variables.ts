@@ -68,9 +68,42 @@ export async function readLocalVariables(): Promise<VariableSnapshot> {
   }
 }
 
-export async function readLibraryVariables(): Promise<VariableSnapshot> {
+/**
+ * How much of the library sweep one call may do, and where a previous one stopped.
+ *
+ * Every library variable is a separate round trip to Figma's team-library service. Measured on a
+ * real file: 213 of them took 48 seconds on a good afternoon and ran past 400 on a bad one - so
+ * a sweep with no ceiling is a call that sometimes finishes and sometimes dies, and the token
+ * sync downstream inherits both moods. With a budget it always comes back, and says where to
+ * resume; with `collection` it imports one collection instead of every enabled library, which is
+ * what a caller after one palette actually wanted.
+ */
+export interface LibraryReadOptions {
+  /** Import only this collection, by name or by key. The filter runs BEFORE the network work,
+   * which is the whole point - filtering the result afterwards still pays for everything. */
+  readonly collection?: string
+  /** Stop importing after this long and hand back what was read. */
+  readonly budgetMs?: number
+  /** Skip this many variables of the (flattened, ordered) sweep - the `nextOffset` of the call
+   * before. */
+  readonly offset?: number
+}
+
+export interface LibraryReadProgress {
+  /** Variables imported so far across the whole sweep, or absent when it finished. */
+  readonly nextOffset?: number
+  /** Why it stopped short, when it did. */
+  readonly stoppedOn?: 'budgetMs'
+}
+
+export async function readLibraryVariables(options: LibraryReadOptions = {}): Promise<VariableSnapshot & LibraryReadProgress> {
   const collections: CollectionEntry[] = []
   const variables: VariableEntry[] = []
+  const wanted = options.collection?.trim().toLowerCase()
+  const deadline = options.budgetMs === undefined ? Infinity : Date.now() + options.budgetMs
+  const skip = Math.max(0, options.offset ?? 0)
+  let seen = 0
+  let ranOut = false
 
   let libraryCollections: LibraryVariableCollection[]
   try {
@@ -80,6 +113,10 @@ export async function readLibraryVariables(): Promise<VariableSnapshot> {
   }
 
   for (const libraryCollection of libraryCollections) {
+    if (ranOut) break
+    if (wanted && libraryCollection.name.toLowerCase() !== wanted && libraryCollection.key !== options.collection) {
+      continue
+    }
     try {
       const libraryVariables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(
         libraryCollection.key
@@ -87,6 +124,15 @@ export async function readLibraryVariables(): Promise<VariableSnapshot> {
 
       const importedVariables: Variable[] = []
       for (const libraryVariable of libraryVariables) {
+        // Counted before the skip so `nextOffset` means the same thing on every page: how many
+        // variables of this sweep are behind us, not how many this call imported.
+        seen += 1
+        if (seen <= skip) continue
+        if (Date.now() > deadline) {
+          ranOut = true
+          seen -= 1
+          break
+        }
         importedVariables.push(await figma.variables.importVariableByKeyAsync(libraryVariable.key))
       }
 
@@ -106,7 +152,11 @@ export async function readLibraryVariables(): Promise<VariableSnapshot> {
     }
   }
 
-  return { collections, variables }
+  return {
+    collections,
+    variables,
+    ...(ranOut ? { nextOffset: seen, stoppedOn: 'budgetMs' as const } : {}),
+  }
 }
 
 function mergeSnapshots(a: VariableSnapshot, b: VariableSnapshot): VariableSnapshot {
@@ -126,11 +176,16 @@ function mergeSnapshots(a: VariableSnapshot, b: VariableSnapshot): VariableSnaps
   }
 }
 
-export async function readAllVariables(): Promise<VariableSnapshot> {
-  const [local, library] = await Promise.all([readLocalVariables(), readLibraryVariables()])
+export async function readAllVariables(options: LibraryReadOptions = {}): Promise<VariableSnapshot & LibraryReadProgress> {
+  const [local, library] = await Promise.all([readLocalVariables(), readLibraryVariables(options)])
   // Folded at the single point every consumer reads through, so a theme split across two
   // collections (Figma's free plan caps a collection at one mode) is invisible downstream.
-  return foldSplitThemeCollections(mergeSnapshots(local, library))
+  const merged = foldSplitThemeCollections(mergeSnapshots(local, library))
+  return {
+    ...merged,
+    ...(library.nextOffset === undefined ? {} : { nextOffset: library.nextOffset }),
+    ...(library.stoppedOn === undefined ? {} : { stoppedOn: library.stoppedOn }),
+  }
 }
 
 export interface ResolvedVariableValue {

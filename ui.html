@@ -1221,6 +1221,16 @@
           <span class="set-text"><b>CSS Modules <code>:global()</code></b><i>Wrap module selectors for bundlers</i></span>
           <span class="switch"><input type="checkbox" id="set-css-global" /><span class="track"></span></span>
         </label>
+        <label class="set-row" for="set-emit-native">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM10 18h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="set-text"><b>iOS &amp; Android tokens</b><i>Asset catalogue, <code>values-night</code>, <code>Tokens.swift</code>, <code>Tokens.kt</code> &middot; one colorset per colour</i></span>
+          <span class="switch"><input type="checkbox" id="set-emit-native" /><span class="track"></span></span>
+        </label>
+        <label class="set-row" for="set-include-libraries">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5V5.5zM8 7h8M8 11h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="set-text"><b>Include library variables</b><i>Slow (a network read per token) &middot; the only way to export a theme this file consumes rather than owns</i></span>
+          <span class="switch"><input type="checkbox" id="set-include-libraries" /><span class="track"></span></span>
+        </label>
         <label class="set-row" data-needs-target="django" for="set-emit-json">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 1 2 2 2 2 0 0 1-2 2v5a2 2 0 0 1-2 2h-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="set-text"><b><code>tokens.json</code></b><i>Lossless DTCG source of truth</i></span>
@@ -1865,6 +1875,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('set-emit-scss', 'checked', OPTIONS.tokens.emitScss)
         setControl('set-emit-modules', 'checked', OPTIONS.tokens.emitModuleFiles)
         setControl('set-css-global', 'checked', OPTIONS.tokens.cssModulesGlobal)
+        setControl('set-emit-native', 'checked', OPTIONS.tokens.emitNative)
+        setControl('set-include-libraries', 'checked', OPTIONS.tokens.includeLibraries)
         setControl('set-typo-extract', 'checked', OPTIONS.tokens.typoExtract)
         setControl('set-typo-scale-only', 'checked', OPTIONS.tokens.typoScaleOnly)
         setControl('set-typo-shorthand', 'checked', OPTIONS.tokens.typoShorthand)
@@ -2004,6 +2016,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       bindSetting('set-emit-scss', function (el) { OPTIONS.tokens.emitScss = el.checked })
       bindSetting('set-emit-modules', function (el) { OPTIONS.tokens.emitModuleFiles = el.checked })
       bindSetting('set-css-global', function (el) { OPTIONS.tokens.cssModulesGlobal = el.checked })
+      bindSetting('set-emit-native', function (el) { OPTIONS.tokens.emitNative = el.checked })
+      bindSetting('set-include-libraries', function (el) { OPTIONS.tokens.includeLibraries = el.checked })
       bindSetting('set-typo-extract', function (el) { OPTIONS.tokens.typoExtract = el.checked })
       bindSetting('set-typo-scale-only', function (el) { OPTIONS.tokens.typoScaleOnly = el.checked })
       bindSetting('set-typo-shorthand', function (el) { OPTIONS.tokens.typoShorthand = el.checked })

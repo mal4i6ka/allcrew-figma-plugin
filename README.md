@@ -36,6 +36,9 @@ No build step — `code.js` and `ui.html` are ready to run as-is.
 | `<theme>.module.css` | The same blocks split **one CSS Module per theme** (`light.module.css`, `dark.module.css`, …), wrapped in `:global(…)`. Merged by your bundler (which strips `:global`), they're equivalent to `tokens.css`. |
 | `tokens.json` | Canonical W3C token tree — every mode under `$extensions.modes`, source collection under `$extensions.figma`. For diffing / re-import. |
 | `tokens.ts` | Typed `tokens` object (values are `var(--…)` refs) + a `themes` list and `Theme` type. |
+| `Assets.xcassets/<token>.colorset/Contents.json` | *(iOS & Android tokens on)* One colorset per colour, in sRGB components, with a `luminosity: dark` entry **only where the dark theme actually changes it** — so `Color("text-primary")` follows the system appearance with nothing in the app deciding. |
+| `res/values/colors.xml`, `res/values-night/colors.xml` | *(iOS & Android tokens on)* The same, by Android resource qualifier. The night file is an override list: it carries only the colours that differ. |
+| `Tokens.swift`, `Tokens.kt` | *(iOS & Android tokens on)* Constants for what a catalogue cannot hold (spacing, radii, the type scale) and for the colours too, for a build that themes in code. Values identical in every theme are declared once, above the per-theme blocks; a length gets `CGFloat`/`.dp`, a line-height ratio does not. |
 | `README.md` | Auto-generated usage notes for that specific export. |
 
 ##Settings
@@ -51,6 +54,8 @@ preferences (the choices persist per-user):
 | **Theme attribute** | `data-theme-name` | The attribute the theme blocks key off (`[<attr>="Dark"]`). Set it to `data-theme` to match the Altery board, or anything else. |
 | **Per-theme `.module.css`** | on | Whether to emit the per-theme module files alongside `tokens.css`. |
 | **CSS Modules `:global()`** | on | Wrap module-file selectors in `:global(…)` (valid CSS Modules) or leave them plain. |
+| **iOS & Android tokens** | off | Also emit the asset catalogue, `res/values{,-night}/colors.xml`, `Tokens.swift` and `Tokens.kt`. Off by default because a palette becomes one colorset *directory* per colour, which is noise in a package a web project unzips. |
+| **Include library variables** | off | Read the variables of every enabled **library**, not just the local ones. It is a network read per token — 44 s on a file with 213 of them — and the only way to export a theme this file *consumes* rather than owns. Left off, the export's summary names the library collections it skipped, so a package with no theme in it says so instead of looking complete. |
 
 ### tokens.css shape
 

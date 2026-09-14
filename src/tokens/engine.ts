@@ -13,6 +13,8 @@
  * Also includes text style extraction (typography scale) and breakpoint token extraction.
  */
 
+import { toNativeFiles } from './native.ts'
+
 /* ------------------------------------------------------------------ types */
 
 export interface TokenGraphCollection {
@@ -106,6 +108,9 @@ export interface TokenSummary {
   hasGeneratedBpCollection: boolean
   tokenCount: number
   themes: string[]
+  /** Things the package is missing and the reason, in the designer's words - e.g. the library
+   * collections a local-only read left out. Absent when there is nothing to say. */
+  notes?: string[]
 }
 
 export interface TokenPackage {
@@ -541,6 +546,18 @@ const LINE_HEIGHT_RATIO_MAX = 4
  * already beyond anything CSS can render differently, and the raw float noise reads as data. */
 function roundEmitted(value: number): number {
   return Math.round(value * 100) / 100
+}
+
+/**
+ * Whether a number token means pixels. The same question the CSS emitter answers by appending
+ * `px` or not - exported because the native emitters have to answer it too (Compose wants `.dp`
+ * on a length and a bare number on a line-height ratio), and two copies of this heuristic would
+ * drift the first time someone adds a token family to it.
+ */
+export function isLengthToken(value: number, path?: readonly string[]): boolean {
+  if (roundEmitted(value) === 0) return false
+  if (path && path.some((seg) => LINE_HEIGHT_TOKEN.test(seg))) return Math.abs(roundEmitted(value)) >= LINE_HEIGHT_RATIO_MAX
+  return !(path ? path.some((seg) => UNITLESS_TOKEN.test(seg)) : false)
 }
 
 export function cssValue(value: TokenValue, path?: readonly string[]): string {
@@ -1237,6 +1254,10 @@ export interface NormalizedOptions {
   themeAttr: string
   emitModuleFiles: boolean
   cssModulesGlobal: boolean
+  /** Also emit the asset catalogue, `values-night`, `Tokens.swift` and `Tokens.kt` - see
+   * `tokens/native.ts`. Off by default: a colour palette becomes one directory per token, which
+   * is noise in a package a web project will unzip. */
+  emitNative: boolean
   typoExtract: boolean
   typoScaleOnly: boolean
   typoNaming: 'tshirt' | 'value'
@@ -1268,6 +1289,7 @@ export const DEFAULT_OPTIONS: NormalizedOptions = {
   typoScaleOnly: true,
   typoNaming: 'tshirt',
   typoShorthand: false,
+  emitNative: false,
   delivery: {
     endpoint: '',
     secret: '',
@@ -1311,6 +1333,7 @@ export function normalizeOptions(o: unknown): NormalizedOptions {
     flattenAliases: pick('flattenAliases') as boolean,
     emitModuleFiles: pick('emitModuleFiles') as boolean,
     cssModulesGlobal: pick('cssModulesGlobal') as boolean,
+    emitNative: pick('emitNative') as boolean,
     typoExtract: pick('typoExtract') as boolean,
     typoScaleOnly: pick('typoScaleOnly') as boolean,
     typoNaming: obj.typoNaming === 'value' ? 'value' : 'tshirt',
@@ -1343,6 +1366,12 @@ export function buildPackage(graph: TokenGraph, options: unknown, renames?: Rena
     files['tokens.json'] = toTokensJson(sourceTree, renames)
     files['tokens.ts'] = toTokensTs(cssTree, ordered)
     files['README.md'] = buildReadme(summary, opts, cssTree, renames)
+    if (opts.emitNative) {
+      // The inlined tree, same as the CSS: a native constant cannot hold `var(--x)`, so an alias
+      // that was never resolved would land as a literal `{colors.blue.500}` in Swift.
+      const nativeFiles = toNativeFiles(cssTree, ordered, defaultTheme)
+      for (const name of Object.keys(nativeFiles)) files[name] = nativeFiles[name]
+    }
     emitted.tree = cssTree
     emitted.themes = ordered
     emitted.defaultTheme = defaultTheme

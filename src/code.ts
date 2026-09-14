@@ -9,7 +9,7 @@
  * original code.js pure functions. The Figma glue is guarded by `typeof figma`.
  */
 
-import { readAllVariables, readLocalVariables } from './variables'
+import { readAllVariables, readLibraryVariables, readLocalVariables, type CollectionEntry, type VariableEntry } from './variables'
 import { emitMotionTokensJs } from './targets/django/tokens'
 import { emitTokenArtifacts, tokenEmitOptionsFrom } from './tokens/index'
 import { emitBootstrapArtifacts } from './targets/django/bootstrap/map'
@@ -24,6 +24,7 @@ import { matchBootstrapComponent } from './targets/django/bootstrap/components'
 import { imageFillUrls, scaleBorderRadius } from './targets/django/css-emitter'
 import type { ThemableSetData, ThemableVariantData } from './targets/django/bootstrap/theme'
 import { findAllWithCriteria, walkSceneNodes, yieldToHost } from './utils/tree'
+import { exportPlate } from './canvas/plate'
 import { extractStrings, type ExtractedEntry } from './targets/django/i18n/extract'
 import { translationKey } from './targets/django/i18n/normalize'
 import { emitLocaleCatalogs, emitPo } from './targets/django/i18n/po'
@@ -226,6 +227,7 @@ type PluginMessage =
       fps?: number
       quality?: string
       loop?: number
+      withoutChildren?: boolean
     }
   | { type: 'MOTION_STYLES' }
   | { type: 'SHADER_LIST'; kind?: string; scope?: string }
@@ -274,7 +276,11 @@ type PluginMessage =
   | { type: 'MODULE_STATE_SET'; id: string; field: string; value: unknown }
   | { type: 'MODULE_RUN'; id: string; screen: 'main' | 'settings'; block: number; confirm?: boolean }
   // Design-tokens target messages
-  | { type: 'SCAN_TOKENS'; docs?: { componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number } }
+  | {
+      type: 'SCAN_TOKENS'
+      docs?: { componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }
+      tokens?: { includeLibraries?: boolean; emitNative?: boolean }
+    }
   | { type: 'GENERATE_TYPOGRAPHY' }
   | { type: 'DELIVER'; zipBase64: string }
   // DS Tools target messages
@@ -978,7 +984,17 @@ async function probeFontFacts(styles: readonly TextStyle[]): Promise<Map<string,
   return facts
 }
 
-async function readGraph(): Promise<TokenGraph> {
+/**
+ * The token graph the package is built from.
+ *
+ * Local variables only, unless asked otherwise. The reason is cost: library variables come from
+ * Figma's team-library service one import at a time - 48 seconds on a file with 213 of them - and
+ * a file that owns its tokens needs none of that. But a file that merely CONSUMES a library owns
+ * almost nothing, and the package it produced was a handful of stray local colours with no theme
+ * in it at all. `includeLibraries` is how that file gets its own design system; `libraryNote`
+ * is how the other one finds out there was something to include.
+ */
+async function readGraph(includeLibraries = false): Promise<{ graph: TokenGraph; libraryNote?: string }> {
   const [collections, variables, textStyles, effectStyles] = await Promise.all([
     figma.variables.getLocalVariableCollectionsAsync(),
     figma.variables.getLocalVariablesAsync(),
@@ -989,29 +1005,54 @@ async function readGraph(): Promise<TokenGraph> {
   // A theme split across `theme` + `theme-dark` (Figma's free plan caps a collection at one
   // mode) is folded back into one two-mode collection here, so every target downstream builds
   // the same package it would from a paid-plan file.
+  // Imported before the fold, so a library theme split across two collections is folded with the
+  // local ones rather than beside them.
+  const library = includeLibraries ? await readLibraryVariables().catch(() => null) : null
+  const libraryNote = includeLibraries ? undefined : await libraryCollectionsNote()
   const graph = foldSplitThemeCollections({
     fileName: figma.root.name,
-    collections: collections.map((c) => {
-      let generated = false
-      try { generated = c.getPluginData('altery-typo-collection') === '1' } catch { /* ignore */ }
-      return {
-        id: c.id,
-        name: c.name,
-        defaultModeId: c.defaultModeId,
-        modes: (c.modes || []).map((m) => ({ modeId: m.modeId, name: m.name })),
-        generated,
-      }
-    }),
-    variables: variables.map((v) => ({
-      id: v.id,
-      name: v.name,
-      collectionId: v.variableCollectionId,
-      resolvedType: v.resolvedType,
-      valuesByMode: v.valuesByMode,
-      // Scopes are the designer's own "where may this be applied" — DESIGN.md prefers them over
-      // guessing the role from the token name.
-      scopes: v.scopes,
-    })),
+    collections: collections
+      .map((c) => {
+        let generated = false
+        try { generated = c.getPluginData('altery-typo-collection') === '1' } catch { /* ignore */ }
+        return {
+          id: c.id,
+          name: c.name,
+          defaultModeId: c.defaultModeId,
+          modes: (c.modes || []).map((m) => ({ modeId: m.modeId, name: m.name })),
+          generated,
+        }
+      })
+      // A library collection imported into this file has a local id, so a collection reached both
+      // ways would otherwise appear twice with the same variables under it.
+      .concat(
+        (library?.collections ?? [])
+          .filter((entry: CollectionEntry) => !collections.some((local) => local.id === entry.id))
+          .map((entry: CollectionEntry) => ({ ...entry, generated: false }))
+      ),
+    variables: variables
+      .map((v) => ({
+        id: v.id,
+        name: v.name,
+        collectionId: v.variableCollectionId,
+        resolvedType: v.resolvedType,
+        valuesByMode: v.valuesByMode,
+        // Scopes are the designer's own "where may this be applied" — DESIGN.md prefers them over
+        // guessing the role from the token name.
+        scopes: v.scopes,
+      }))
+      .concat(
+        (library?.variables ?? [])
+          .filter((entry: VariableEntry) => !variables.some((local) => local.id === entry.id))
+          .map((entry: VariableEntry) => ({
+            id: entry.id,
+            name: entry.name,
+            collectionId: entry.collectionId,
+            resolvedType: entry.resolvedType,
+            valuesByMode: entry.valuesByMode,
+            scopes: entry.scopes,
+          }))
+      ),
     textStyles: textStyles.map((t) => ({
       id: t.id,
       name: t.name,
@@ -1043,7 +1084,29 @@ async function readGraph(): Promise<TokenGraph> {
       }),
     })),
   })
-  return graph
+  return { graph, ...(libraryNote ? { libraryNote } : {}) }
+}
+
+/**
+ * "Your theme is in a library, and this package does not have it."
+ *
+ * One call to the team-library service - the collection list, not the variables in them - so a
+ * file whose tokens are all remote stops silently exporting a package with no theme in it. The
+ * call can fail (no network, no library access) and that is not worth a word: the note exists to
+ * ADD information, never to explain its own absence.
+ */
+async function libraryCollectionsNote(): Promise<string | undefined> {
+  try {
+    const available = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync()
+    if (!available || available.length === 0) return undefined
+    const names = available.map((one) => one.name).join(', ')
+    return (
+      `${available.length} library variable collection(s) were NOT included (${names}) — ` +
+      'turn on Settings → Tokens → Include library variables to export a theme this file consumes rather than owns'
+    )
+  } catch {
+    return undefined
+  }
 }
 
 /* ------------------------------------------------------------------ component documentation */
@@ -1218,7 +1281,7 @@ function createTypographyVariable(name: string, collection: VariableCollection, 
 
 async function generateTypographyVariables(options: unknown): Promise<TypographyGenReport> {
   if (figma.editorType === 'dev') throw new Error("Switch to Design mode — Dev Mode can't create variables.")
-  const graph = await readGraph()
+  const { graph } = await readGraph()
   const opts = normalizeExportOptions(options)
   const plan: TypographyPlan = planTypographyVariables(graph, { typoNaming: opts.tokens.typoNaming })
   if (plan.variables.length === 0) throw new Error('No text styles with bindable values found.')
@@ -2258,10 +2321,21 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'SCAN_TOKENS': {
       // @agent read: build the design-token package (tokens, DESIGN.md, component docs) and hand back the files
       // @agent param docs: what goes into the documentation half — { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide
+      // @agent param tokens: overrides for this one build — { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide
       try {
-        const graph = await readGraph()
         const stored = await figma.clientStorage.getAsync('exportOptions')
-        const options = normalizeExportOptions(stored)
+        const saved = normalizeExportOptions(stored)
+        // The call's own flags win over the saved ones: an agent asking for a native package must
+        // not depend on what the designer last toggled in a UI it cannot see.
+        const options = {
+          ...saved,
+          tokens: {
+            ...saved.tokens,
+            ...(msg.tokens?.includeLibraries === undefined ? {} : { includeLibraries: msg.tokens.includeLibraries }),
+            ...(msg.tokens?.emitNative === undefined ? {} : { emitNative: msg.tokens.emitNative }),
+          },
+        }
+        const { graph, libraryNote } = await readGraph(options.tokens.includeLibraries)
         // Component configuration (description + doc link + props) is design intent that exists
         // nowhere in the token tree — collect it BEFORE building the package so DESIGN.md can
         // point at it, then ship COMPONENTS.md and the previews alongside the tokens.
@@ -2281,6 +2355,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         if (docsOptions.componentPreviews && Object.keys(componentDocs.files).length === 0) {
           const reason = componentDocs.docs.find((doc) => doc.previewError)?.previewError
           artifacts.summary.previewError = reason ?? 'no components found to capture'
+        }
+        if (libraryNote) {
+          const existing = Array.isArray(artifacts.summary.notes) ? artifacts.summary.notes : []
+          artifacts.summary.notes = [...existing, libraryNote]
         }
         postToUi({ type: 'TOKENS_RESULT', summary: artifacts.summary, files: artifacts.files, options })
       } catch (err) {
@@ -4134,7 +4212,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       break
     }
     case 'NODE_EXPORT': {
-      // @agent read: render nodes to PNG, JPG, SVG or PDF and hand the files back — nothing in the document changes
+      // @agent read: render nodes to PNG, JPG, SVG or PDF and hand the files back — nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)
       // @agent param nodes: the ids to render
       // @agent param width: render to this width in pixels and let the height follow — instead of scale, not beside it
       // @agent param height: render to this height in pixels and let the width follow
@@ -4144,6 +4222,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param fps: video only — MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30
       // @agent param quality: MP4 and WEBM only — LOW, MEDIUM or HIGH
       // @agent param loop: GIF only — how many times it repeats; 0 is forever
+      // @agent param withoutChildren: PNG or JPG only — renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly.
       // @agent cost: one render each, and a large frame at 4x is megabytes — the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation
       try {
         // `{"id": "1:2"}` is what every other node-taking command accepts, and an agent that sent
@@ -4183,6 +4262,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
         if (msg.loop !== undefined && format !== 'GIF') {
           refuse('NODE_EXPORT', 'loop belongs to a GIF')
+          break
+        }
+        const withoutChildren = msg.withoutChildren === true
+        if (withoutChildren && (format === 'SVG' || format === 'PDF' || video)) {
+          refuse('NODE_EXPORT', 'withoutChildren only works for PNG or JPG — SVG, PDF and the video formats have no "hide the children" clone to lean on')
           break
         }
 
@@ -4247,7 +4331,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             } else if (format === 'PDF') {
               bytes = await scene.exportAsync({ format: 'PDF' })
             } else {
-              bytes = await scene.exportAsync({ format: format as 'PNG' | 'JPG', constraint })
+              bytes = withoutChildren
+                ? await exportPlate(scene, { format: format as 'PNG' | 'JPG', constraint })
+                : await scene.exportAsync({ format: format as 'PNG' | 'JPG', constraint })
             }
             spent += bytes.length
             if (spent > EXPORT_BUDGET) {

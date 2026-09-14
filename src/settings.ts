@@ -48,6 +48,15 @@ export interface ExportTokensOptions {
   typoScaleOnly: boolean
   typoShorthand: boolean
   typoNaming: 'tshirt' | 'value'
+  /** Also emit the iOS asset catalogue, `res/values-night/colors.xml`, `Tokens.swift` and
+   * `Tokens.kt` (see `tokens/native.ts`). Off by default: a palette becomes one colorset
+   * directory per token, which is noise in a package a web project unzips. */
+  emitNative: boolean
+  /** Read the variables of every enabled LIBRARY as well as the local ones. Off by default
+   * because it is a network call to Figma's team-library service - measured at 48 s on a file
+   * with 213 library variables - and a file that owns its tokens needs none of it. On, it is the
+   * only way a package contains a theme the file merely CONSUMES. */
+  includeLibraries: boolean
   /** `Collection: role` pairs (`Mesure: spacing, Radii: radius`) — classifies a whole collection
    * for files where scoping the variables in Figma isn't practical. Parsed by
    * `parseCollectionRoles` (design-md/model.ts); unknown roles are ignored. */
@@ -152,7 +161,7 @@ const DJANGO_BOOTSTRAP_VALUES: PackageFormingOptions = {
     bootstrapVersion: '5.3',
     djangoScaffold: true,
   },
-  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: '', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', collectionRoles: '' },
+  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: '', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', emitNative: false, includeLibraries: false, collectionRoles: '' },
   i18n: { wrapTranslate: true, sourceLanguage: 'en', languages: '' },
 }
 
@@ -167,7 +176,7 @@ const DESIGN_TOKENS_VALUES: PackageFormingOptions = {
     bootstrapVersion: '5.3',
     djangoScaffold: false,
   },
-  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: 'data-theme-name', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', collectionRoles: '' },
+  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: 'data-theme-name', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', emitNative: false, includeLibraries: false, collectionRoles: '' },
   i18n: { wrapTranslate: true, sourceLanguage: 'en', languages: '' },
 }
 
@@ -187,7 +196,7 @@ const TAURI_APP_VALUES: PackageFormingOptions = {
     bootstrapVersion: '5.3',
     djangoScaffold: false,
   },
-  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: '', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', collectionRoles: '' },
+  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: '', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', emitNative: false, includeLibraries: false, collectionRoles: '' },
   i18n: { wrapTranslate: true, sourceLanguage: 'en', languages: '' },
 }
 
@@ -300,6 +309,8 @@ function normalizeTokens(raw: unknown): ExportTokensOptions {
     typoScaleOnly: typeof raw.typoScaleOnly === 'boolean' ? raw.typoScaleOnly : defaults.typoScaleOnly,
     typoShorthand: typeof raw.typoShorthand === 'boolean' ? raw.typoShorthand : defaults.typoShorthand,
     typoNaming: raw.typoNaming === 'value' ? 'value' : 'tshirt',
+    emitNative: typeof raw.emitNative === 'boolean' ? raw.emitNative : defaults.emitNative,
+    includeLibraries: typeof raw.includeLibraries === 'boolean' ? raw.includeLibraries : defaults.includeLibraries,
     collectionRoles: typeof raw.collectionRoles === 'string' ? raw.collectionRoles.trim() : defaults.collectionRoles,
   }
 }
