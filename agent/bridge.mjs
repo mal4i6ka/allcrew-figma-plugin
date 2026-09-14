@@ -194,6 +194,16 @@ const POLL_HOLD_MS = 25_000
  * only workaround from the agent's side is to split the batch, which costs one undo step per
  * chunk. Raise it rather than shred the batch. */
 const CALL_TIMEOUT_MS = Math.max(5_000, Number(process.env.ALTERY_AGENT_CALL_TIMEOUT_MS) || 180_000)
+/**
+ * What a plain `fetch` client will wait, whatever this bridge promises.
+ *
+ * Node's own `fetch` (undici) drops a request whose headers have not arrived in five minutes,
+ * and it does it without a word from the server. So raising `ALTERY_AGENT_CALL_TIMEOUT_MS` past
+ * this buys nothing for the clients that ship with this repo: the call dies at 300 s with a
+ * bare "fetch failed" while the bridge is still politely waiting. Measured the hard way, on a
+ * token sync that could not finish either way.
+ */
+export const CLIENT_CEILING_MS = 300_000
 /** No poll renewed within this window → treat that plugin as gone. */
 const OFFLINE_AFTER_MS = 45_000
 
@@ -352,9 +362,11 @@ const FILES_DIR = process.env.ALTERY_AGENT_FILES || path.join(os.homedir(), '.al
 const KEEP_RUNS = 40
 
 /** Only ever a basename, only ever these characters — the sandbox proposes a name, this
- * decides whether it may become a path. */
+ * decides whether it may become a path. `@` is allowed because asset names carry a density in
+ * it (`icon@2x.png`); it cannot form a separator or a traversal. Kept in step with
+ * `isSafeFileName` in src/agent/files.ts, which is the same rule on the sandbox side. */
 function safeName(name) {
-  return typeof name === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(name) && !name.startsWith('.')
+  return typeof name === 'string' && /^[A-Za-z0-9._@-]{1,128}$/.test(name) && !name.startsWith('.')
 }
 
 function sweepRuns() {
@@ -412,8 +424,14 @@ function dispatch(plugin, op, params) {
       resolve({
         ok: false,
         error:
-          `no answer from "${plugin.handle}" within ${CALL_TIMEOUT_MS / 1000}s ` +
-          '(the bridge ceiling — raise it with ALTERY_AGENT_CALL_TIMEOUT_MS, or narrow the scope)',
+          `no answer from "${plugin.handle}" within ${CALL_TIMEOUT_MS / 1000}s (the bridge ceiling). ` +
+          'If the file is big and the page was cold, this is Figma loading it: while that runs, the ' +
+          'plugin\'s own budgets cannot fire either, because nothing in the sandbox gets a turn. The ' +
+          'load continues after this call dies, so the same call often answers at once on a retry' +
+          (CALL_TIMEOUT_MS >= CLIENT_CEILING_MS
+            ? ' — raising it further will not help: a plain fetch client gives up at ' +
+              `${CLIENT_CEILING_MS / 1000}s. Narrow the scope, or use the op's own paging (limit/offset/budgetMs).`
+            : ' — raise it with ALTERY_AGENT_CALL_TIMEOUT_MS, or narrow the scope'),
       })
     }, CALL_TIMEOUT_MS)
     pending.set(id, { resolve, timer, op, session: plugin.session, startedAt: Date.now() })
@@ -548,6 +566,694 @@ function checkParams(entry, params) {
   return problems
 }
 
+/* -------------------------------------------------------------------- REST */
+/*
+ * What to answer when no plugin is open.
+ *
+ * The channel exists because a Figma plugin cannot be reached from outside — and the price is
+ * that it only exists while a person has the plugin open. That is fine for a designer working
+ * alongside an agent and useless for an agent that wakes up at three in the morning. Figma's
+ * REST API answers a slice of the same questions without anyone present, so the bridge falls
+ * back to it and SAYS SO in every answer: `source: "rest"`.
+ *
+ * The slice is genuinely smaller, and pretending otherwise would be the worst thing this could
+ * do. REST returns rendered values, never the variable behind them; it has no Motion, no
+ * variant state deltas, no prototype transition detail, no plugin commands, and no writes.
+ * An op that needs any of those is refused by name, with the sentence that says what to open.
+ */
+
+const FIGMA_TOKEN_FILE = process.env.FIGMA_TOKEN_FILE || path.join(os.homedir(), '.altery', 'figma-token')
+const DEFAULT_FILE_KEY = process.env.ALTERY_FIGMA_FILE_KEY || ''
+
+/** Personal access token: the environment first, then the file, whose comment lines are
+ * skipped — the same file the Code Connect CLI reads, so a machine set up for one is set up
+ * for both. */
+function figmaToken() {
+  if (process.env.FIGMA_TOKEN) return process.env.FIGMA_TOKEN.trim()
+  try {
+    const line = fs
+      .readFileSync(FIGMA_TOKEN_FILE, 'utf8')
+      .split('\n')
+      .map((row) => row.trim())
+      .find((row) => row && !row.startsWith('#') && !row.startsWith('PASTE'))
+    return line || ''
+  } catch {
+    return ''
+  }
+}
+
+/** A file key out of whatever the caller typed: the key itself, a Figma URL, or `rest:<key>`. */
+export function fileKeyOf(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  const prefixed = text.startsWith('rest:') ? text.slice(5) : text
+  const url = prefixed.match(/figma\.com\/(?:file|design|board)\/([A-Za-z0-9]+)/)
+  if (url) return url[1]
+  return /^[A-Za-z0-9]{10,}$/.test(prefixed) ? prefixed : ''
+}
+
+/** True when this call is addressed at REST rather than at an open plugin. */
+export function wantsRest(body, anyPluginOnline) {
+  if (body && typeof body.fileKey === 'string' && fileKeyOf(body.fileKey)) return true
+  if (typeof body?.target === 'string' && body.target.startsWith('rest:')) return true
+  return !anyPluginOnline && Boolean(DEFAULT_FILE_KEY)
+}
+
+/** Ops REST can answer, and — for everything else — the reason it cannot. Written out rather
+ * than derived: an agent deserves to read why, not to discover a 400. */
+export const REST_OPS = [
+  'document.info',
+  'page.frames',
+  'node.get',
+  'node.find',
+  'components.list',
+  'styles.list',
+  'node.screenshot',
+  // Three the file payload answers outright, and which used to be refused for no better reason
+  // than nobody having read it: REST carries `interactions` on a node in the SAME shape the
+  // plugin reports reactions, `characterStyleOverrides`/`styleOverrideTable` on a TEXT node, and
+  // an imageRef→URL map for every image fill in the file.
+  'flow.map',
+  'image.fills',
+  'text.segments',
+  // A fourth: half-answerable rather than answerable outright. `componentPropertyDefinitions`
+  // and a member's NAME give the signature — axes, options, defaults, non-variant properties —
+  // but not `changes` (needs getCSSAsync) or `targets` (needs componentPropertyReferences,
+  // absent from every REST node payload this bridge has read). See restComponentSignature for
+  // exactly what the note tells the caller is missing.
+  'component.api',
+]
+
+export const REST_REFUSALS = {
+  'variables.get': 'reading variable VALUES over REST is an Enterprise feature; the plugin reads them on any plan',
+  'design.ir': 'the tree is built by the plugin from the live document',
+  'design.context': 'needs the plugin: the value-to-token mapping is what makes it worth having',
+  'design.measure': 'needs the plugin: Figma computes the CSS, REST only stores the properties',
+  'assets.export': 'asset discovery comes from the IR — over REST, export one node with node.screenshot',
+  'motion.context': 'the Motion API exists only inside a plugin',
+  'motion.preview': 'the Motion API exists only inside a plugin',
+  'transition.context': 'variant state diffing happens in the plugin',
+  'node.states': 'variant state diffing happens in the plugin',
+  'frames.compare': 'layer matching happens in the plugin',
+  'guide.list': 'playbooks ship with the plugin build',
+  'guide.get': 'playbooks ship with the plugin build',
+  'plugin.commands': 'the panel’s command surface exists only while the panel is open',
+  'plugin.call': 'the panel’s command surface exists only while the panel is open',
+}
+
+/**
+ * Bezier control points for Figma's named easings.
+ *
+ * A copy of `BEZIER_PRESETS` in `src/targets/django/easing/index.ts`, because this file ships
+ * alone: a designer downloads `bridge.mjs` and runs it from any directory, so it cannot import
+ * the plugin's source. `bridge.test.mjs` asserts the two tables are identical, which is what
+ * keeps a copy from becoming a fork.
+ */
+export const REST_BEZIER_PRESETS = {
+  EASE_IN: { x1: 0.42, y1: 0, x2: 1, y2: 1 },
+  EASE_OUT: { x1: 0, y1: 0, x2: 0.58, y2: 1 },
+  EASE_IN_AND_OUT: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 },
+  EASE_IN_BACK: { x1: 0.36, y1: 0, x2: 0.66, y2: -0.56 },
+  EASE_OUT_BACK: { x1: 0.34, y1: 1.56, x2: 0.64, y2: 1 },
+  EASE_IN_AND_OUT_BACK: { x1: 0.68, y1: -0.6, x2: 0.32, y2: 1.6 },
+}
+
+/**
+ * The easing as numbers, for the cases that need no solver.
+ *
+ * The plugin answers this for springs too, by integrating their ODE. That solver is not worth
+ * copying into a file that has to stay readable in one sitting, so a spring gets `null` here and
+ * the transition says which easing it could not turn into numbers - an agent that knows a curve
+ * is missing falls back knowingly, one that is handed `linear` does not.
+ */
+export function restCurve(easing) {
+  const type = easing && typeof easing.type === 'string' ? easing.type : null
+  if (!type) return null
+  if (type === 'LINEAR') return { kind: 'linear' }
+  if (type === 'HOLD') return { kind: 'hold' }
+  if (type === 'CUSTOM_CUBIC_BEZIER') {
+    const points = easing.easingFunctionCubicBezier
+    if (!points) return null
+    return { kind: 'bezier', x1: points.x1, y1: points.y1, x2: points.x2, y2: points.y2 }
+  }
+  const preset = REST_BEZIER_PRESETS[type]
+  return preset ? { kind: 'bezier', ...preset, preset: type } : null
+}
+
+/** A REST `transition` as the bridge reports it: Figma's own name, the duration in seconds the
+ * plugin's own summary also uses, and the curve where this file can name one. */
+export function restTransition(transition) {
+  if (!transition || typeof transition !== 'object') return null
+  const curve = restCurve(transition.easing)
+  const easing = transition.easing && transition.easing.type ? transition.easing.type : 'LINEAR'
+  return {
+    type: transition.direction ? `${transition.type}_${transition.direction}` : transition.type,
+    duration: typeof transition.duration === 'number' ? Math.round(transition.duration * 1000) / 1000 : 0,
+    easing,
+    ...(curve ? { curve } : { curveUnavailable: `${easing} is a spring — the plugin solves it, REST does not carry it` }),
+  }
+}
+
+/**
+ * Every prototype edge under one page node, from the `interactions` REST puts on a node - the
+ * same `{trigger, actions[{type, destinationId, navigation, transition}]}` shape the plugin
+ * reports, so the two answers differ in what they carry, never in what they mean.
+ *
+ * The legacy `transitionNodeID`/`transitionDuration`/`transitionEasing` triple is read as well:
+ * Figma still fills it in beside `interactions`, and a file last touched by an older editor may
+ * have only that.
+ */
+export function restEdges(page) {
+  const named = new Map()
+  restWalk(page, (node) => named.set(node.id, node.name))
+  const edges = []
+  restWalk(page, (node) => {
+    const interactions = Array.isArray(node.interactions) ? node.interactions : []
+    for (const interaction of interactions) {
+      const actions = Array.isArray(interaction.actions) ? interaction.actions : []
+      for (const action of actions) {
+        if (!action || typeof action.destinationId !== 'string') continue
+        edges.push({
+          from: node.id,
+          fromName: node.name,
+          to: action.destinationId,
+          toName: named.get(action.destinationId) ?? null,
+          trigger: (interaction.trigger && interaction.trigger.type) || 'UNKNOWN',
+          action: action.type || 'UNKNOWN',
+          ...(action.navigation ? { navigation: action.navigation } : {}),
+          ...(action.type === 'NODE' ? { transition: restTransition(action.transition) } : {}),
+        })
+      }
+    }
+    if (interactions.length === 0 && typeof node.transitionNodeID === 'string') {
+      edges.push({
+        from: node.id,
+        fromName: node.name,
+        to: node.transitionNodeID,
+        toName: named.get(node.transitionNodeID) ?? null,
+        trigger: 'ON_CLICK',
+        action: 'NODE',
+        // The legacy field is milliseconds where the modern one is seconds.
+        transition: restTransition({
+          type: 'SMART_ANIMATE',
+          duration: (Number(node.transitionDuration) || 0) / 1000,
+          easing: { type: node.transitionEasing || 'LINEAR' },
+        }),
+      })
+    }
+  })
+  return edges
+}
+
+/**
+ * A TEXT node's styled runs, rebuilt from the two halves REST splits them into:
+ * `characterStyleOverrides` is one style id per CHARACTER (0 = the node's own style), and
+ * `styleOverrideTable` maps those ids to the properties they override.
+ *
+ * A run is consecutive characters sharing an id, which is what the plugin's
+ * `getStyledTextSegments` hands over directly. Variable bindings are not in this payload at all -
+ * the op says so rather than reporting every run as bound to nothing.
+ */
+export function restTextRuns(node) {
+  const characters = typeof (node && node.characters) === 'string' ? node.characters : ''
+  const overrides = Array.isArray(node && node.characterStyleOverrides) ? node.characterStyleOverrides : []
+  const table = (node && node.styleOverrideTable) || {}
+  if (characters.length === 0) return []
+  const runs = []
+  const idAt = (index) => overrides[index] || 0
+  let start = 0
+  for (let index = 1; index <= characters.length; index += 1) {
+    if (index < characters.length && idAt(index) === idAt(start)) continue
+    const id = idAt(start)
+    runs.push({
+      start,
+      end: index,
+      characters: characters.slice(start, index).replace(/\n/g, '\\n'),
+      // An override states only what it changes; the node's own `style` is the baseline under
+      // every run, which is how the plugin reports one too.
+      ...(id && table[id] ? { style: table[id] } : {}),
+    })
+    start = index
+  }
+  return runs
+}
+
+async function restFetch(route) {
+  const token = figmaToken()
+  if (!token) {
+    throw new Error(
+      `no Figma token — put one in ${FIGMA_TOKEN_FILE} or FIGMA_TOKEN (figma.com/developers/api#access-tokens)`
+    )
+  }
+  const response = await fetch(`https://api.figma.com${route}`, { headers: { 'X-Figma-Token': token } })
+  if (!response.ok) throw new Error(`Figma REST ${response.status} on ${route}`)
+  return response.json()
+}
+
+/** A REST read that is allowed to fail: the library endpoints need a scope a personal token
+ * often lacks, and an empty catalogue with the reason beats a failed call. */
+async function restTry(route) {
+  try {
+    return { data: await restFetch(route) }
+  } catch (err) {
+    return { error: (err && err.message) || String(err) }
+  }
+}
+
+/** Node → the same shape `node.get` answers with, minus what REST does not carry. */
+export function restNodeSummary(node) {
+  if (!node) return null
+  const box = node.absoluteBoundingBox || {}
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    ...(typeof box.width === 'number' ? { width: Math.round(box.width), height: Math.round(box.height) } : {}),
+    ...(node.layoutMode && node.layoutMode !== 'NONE'
+      ? {
+          layout: {
+            mode: node.layoutMode,
+            itemSpacing: node.itemSpacing,
+            padding: [node.paddingTop, node.paddingRight, node.paddingBottom, node.paddingLeft],
+            primaryAxisAlign: node.primaryAxisAlignItems,
+            counterAxisAlign: node.counterAxisAlignItems,
+          },
+        }
+      : {}),
+    ...(node.characters ? { text: { characters: node.characters } } : {}),
+    ...(node.componentId ? { instanceOf: { id: node.componentId } } : {}),
+    childCount: Array.isArray(node.children) ? node.children.length : 0,
+    children: Array.isArray(node.children)
+      ? node.children.map((child) => ({ id: child.id, name: child.name, type: child.type }))
+      : [],
+  }
+}
+
+/** Depth-first walk of a REST document tree — REST hands the whole subtree at once, so the
+ * search ops are a filter rather than a traversal of the canvas. */
+export function restWalk(node, visit) {
+  if (!node) return
+  visit(node)
+  for (const child of node.children || []) restWalk(child, visit)
+}
+
+/** A variant member's axis values, parsed off its NAME. REST's node payload never carries
+ * `variantProperties`, the structured map the plugin reads directly — verified empty on the
+ * Button set (node 819:95512) and on its members and on a Card instance's main component alike.
+ * Figma writes every variant's name as `Axis=Value, Axis=Value`, which is the only place the
+ * combination survives over REST. */
+export function restVariantValues(name) {
+  const values = {}
+  for (const part of String(name || '').split(',')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    const axis = part.slice(0, eq).trim()
+    const value = part.slice(eq + 1).trim()
+    if (axis) values[axis] = value
+  }
+  return values
+}
+
+function normaliseVariantValue(value) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+/** The member whose axes all sit at their declared defaults — the rule
+ * `src/agent/component-api.ts`'s `findDefaultVariant` applies to the plugin's live nodes, run
+ * here against `values` parsed off REST names instead of `variantProperties`. `undefined` when
+ * the set has no such combination, same as the plugin side. */
+function restDefaultVariant(members, axisDefaults) {
+  return members.find((member) =>
+    axisDefaults.every(([axis, value]) => normaliseVariantValue(member.values[axis]) === normaliseVariantValue(value))
+  )
+}
+
+/** The member with `axis = value` and every other axis at its default — see `restDefaultVariant`. */
+function restIsolatedVariant(members, axisDefaults, axis, value) {
+  return members.find(
+    (member) =>
+      normaliseVariantValue(member.values[axis]) === normaliseVariantValue(value) &&
+      axisDefaults.every(
+        ([otherAxis, otherValue]) =>
+          otherAxis === axis || normaliseVariantValue(member.values[otherAxis]) === normaliseVariantValue(otherValue)
+      )
+  )
+}
+
+/**
+ * The signature half of `component.api`, built from what REST actually carries: a component
+ * set's `componentPropertyDefinitions` (verified present on the Button set's file payload —
+ * axes, their options, their defaults, and non-variant properties with
+ * type/defaultValue/preferredValues) and its members' `values`, parsed off their names by
+ * `restVariantValues`. What this can never carry: a `getCSSAsync` diff per option (`changes`),
+ * and the layer a boolean/text/swap property drives (`targets`) — `componentPropertyReferences`
+ * is absent from every REST node payload this bridge has read (the set itself, a lone member,
+ * and an instance all came back without it). `note` says so by name, rather than leaving a thin
+ * answer to be mistaken for a complete one.
+ *
+ * `definitions` missing entirely — a component predating variant properties, or a file Figma
+ * genuinely answers without them — falls back to axes read off the member names alone: real
+ * axis names and real values, but no default and no isolated `variantId`, since neither is
+ * knowable without `componentPropertyDefinitions` to say which value is the baseline.
+ */
+export function restComponentSignature(members, definitions) {
+  const entries = Object.entries(definitions || {})
+  const haveDefinitions = entries.length > 0
+  const variantEntries = entries.filter(([, spec]) => spec.type === 'VARIANT')
+  const axisNames = haveDefinitions
+    ? variantEntries.map(([name]) => name)
+    : [...new Set(members.flatMap((member) => Object.keys(member.values)))]
+  const axisDefaults = variantEntries.map(([name, spec]) => [name, String(spec.defaultValue ?? '')])
+  const defaultVariant = haveDefinitions ? restDefaultVariant(members, axisDefaults) : undefined
+
+  const axes = axisNames.map((name) => {
+    const spec = variantEntries.find(([entryName]) => entryName === name)?.[1]
+    const values =
+      spec?.variantOptions ?? [...new Set(members.map((member) => member.values[name]).filter((value) => value !== undefined))]
+    const options = values.map((value) => {
+      const isDefault = Boolean(spec) && normaliseVariantValue(value) === normaliseVariantValue(spec.defaultValue)
+      const isolated = haveDefinitions
+        ? isDefault
+          ? defaultVariant
+          : restIsolatedVariant(members, axisDefaults, name, value)
+        : undefined
+      return {
+        value,
+        ...(isDefault ? { isDefault: true } : {}),
+        ...(isolated ? { variantId: isolated.id, variantName: isolated.name } : {}),
+      }
+    })
+    return { name, ...(spec ? { default: String(spec.defaultValue ?? '') } : {}), options }
+  })
+
+  const properties = entries
+    .filter(([, spec]) => spec.type !== 'VARIANT')
+    .map(([name, spec]) => ({
+      name,
+      type: spec.type,
+      ...(spec.defaultValue !== undefined ? { defaultValue: spec.defaultValue } : {}),
+      ...(spec.preferredValues ? { preferredValues: spec.preferredValues } : {}),
+    }))
+
+  const notes = []
+  if (axisNames.length > 0) {
+    notes.push(
+      haveDefinitions
+        ? 'no option carries `changes`, the CSS delta against the default variant — that needs getCSSAsync, which only runs inside the plugin'
+        : 'this component has no componentPropertyDefinitions in the REST payload, so axes come from variant NAMES alone: no default is known and no option gets isDefault or a variantId'
+    )
+  }
+  if (properties.length > 0) {
+    notes.push(
+      'no property carries `targets` — REST never serves componentPropertyReferences, the map from a property to the layer it drives'
+    )
+  }
+  const note =
+    notes.length > 0
+      ? `REST gives the declared signature, not the behaviour: ${notes.join('; ')}. Open the plugin for those.`
+      : 'this node declares no component properties over REST.'
+
+  return {
+    ...(defaultVariant ? { defaultVariant: { id: defaultVariant.id, name: defaultVariant.name } } : {}),
+    axes,
+    properties,
+    variants: members.map((member) => ({ id: member.id, name: member.name, values: member.values })),
+    note,
+  }
+}
+
+async function restCall(op, params = {}, fileKey) {
+  const key = fileKey
+  if (REST_REFUSALS[op]) {
+    throw new Error(`"${op}" needs the plugin open — ${REST_REFUSALS[op]}`)
+  }
+  if (!REST_OPS.includes(op)) {
+    throw new Error(`"${op}" is not answerable over REST — open the plugin. REST can do: ${REST_OPS.join(', ')}`)
+  }
+
+  if (op === 'document.info') {
+    const file = await restFetch(`/v1/files/${key}?depth=1`)
+    return {
+      fileName: file.name,
+      fileKey: key,
+      lastModified: file.lastModified,
+      editorType: file.editorType || null,
+      pages: (file.document?.children || []).map((page) => ({ id: page.id, name: page.name })),
+    }
+  }
+
+  if (op === 'page.frames') {
+    const file = await restFetch(`/v1/files/${key}?depth=2`)
+    const pages = file.document?.children || []
+    const page = params.pageId ? pages.find((entry) => entry.id === params.pageId) : pages[0]
+    if (!page) throw new Error(`no page ${params.pageId} in this file`)
+    return {
+      page: { id: page.id, name: page.name },
+      frames: (page.children || []).map(restNodeSummary),
+    }
+  }
+
+  if (op === 'node.get') {
+    const ids = encodeURIComponent(String(params.nodeId || ''))
+    if (!ids) throw new Error('nodeId is required')
+    const answer = await restFetch(`/v1/files/${key}/nodes?ids=${ids}&depth=${Number(params.depth) || 1}`)
+    const entry = Object.values(answer.nodes || {})[0]
+    if (!entry) throw new Error(`no node ${params.nodeId} in this file`)
+    return restNodeSummary(entry.document)
+  }
+
+  if (op === 'node.find') {
+    const file = await restFetch(`/v1/files/${key}?depth=${Number(params.depth) || 4}`)
+    const needle = String(params.name || '').toLowerCase()
+    const types = Array.isArray(params.types) ? params.types : null
+    const found = []
+    restWalk(file.document, (node) => {
+      if (found.length >= (Number(params.limit) || 50)) return
+      if (needle && !String(node.name || '').toLowerCase().includes(needle)) return
+      if (types && !types.includes(node.type)) return
+      found.push({ id: node.id, name: node.name, type: node.type })
+    })
+    return { count: found.length, nodes: found }
+  }
+
+  if (op === 'components.list') {
+    // The library endpoints need a token scope a plain personal token often lacks, and they
+    // only ever list PUBLISHED components anyway. A 403 here is a fact about the token, not a
+    // failed call — it is reported as such, with the way round it.
+    const [components, sets] = await Promise.all([
+      restTry(`/v1/files/${key}/components`),
+      restTry(`/v1/files/${key}/component_sets`),
+    ])
+    const list = {
+      sets: (sets.data?.meta?.component_sets || []).map((entry) => ({ key: entry.key, name: entry.name, description: entry.description })),
+      components: (components.data?.meta?.components || []).map((entry) => ({
+        key: entry.key,
+        name: entry.name,
+        nodeId: entry.node_id,
+        setId: entry.containing_frame?.containingStateGroup?.nodeId || null,
+        description: entry.description,
+      })),
+    }
+    // REST lists PUBLISHED components only. An unpublished library answers with an empty list,
+    // which reads exactly like "this file has no components" — the one thing it must not be
+    // mistaken for, since most files an agent meets have never been published.
+    if (list.sets.length === 0 && list.components.length === 0) {
+      const refused = [components.error, sets.error].filter(Boolean)
+      list.note =
+        (refused.length > 0
+          ? `Figma refused the library endpoints (${refused.join('; ')}) — a personal token often lacks that scope. `
+          : 'REST lists published library components only, and this file has none published — that is not the same as having none. ') +
+        'Open the plugin for the real catalogue, or use node.find with types ["COMPONENT_SET"], which reads the ' +
+        'document itself and needs no library scope.'
+    }
+    return list
+  }
+
+  if (op === 'component.api') {
+    // A SET, a member, or an instance — the same three the plugin op resolves. REST hands the
+    // resolution over for free, no library scope needed: fetching ANY of the three returns an
+    // `entry.components`/`entry.componentSets` metadata map alongside `document`, and a
+    // member's or an instance's main component's entry in `entry.components` carries
+    // `componentSetId` — verified on the Button set (819:95512), its member (819:95513), and
+    // the Card instance (4008:55636), whose `componentId` resolved straight to its set.
+    const nodeId = String(params.nodeId || '')
+    if (!nodeId) throw new Error('nodeId is required')
+    const first = await restFetch(`/v1/files/${key}/nodes?ids=${encodeURIComponent(nodeId)}&depth=1`)
+    const entry = first.nodes?.[nodeId]
+    if (!entry) throw new Error(`no node ${nodeId} in this file`)
+    let doc = entry.document
+    let meta = entry.componentSets?.[doc.id] || entry.components?.[doc.id] || null
+
+    const resolveTo = async (resolvedId) => {
+      if (!resolvedId || resolvedId === doc.id) return
+      const second = await restFetch(`/v1/files/${key}/nodes?ids=${encodeURIComponent(resolvedId)}&depth=1`)
+      const resolvedEntry = second.nodes?.[resolvedId]
+      if (!resolvedEntry) {
+        throw new Error(`resolved ${doc.name} to ${resolvedId}, but Figma has no such node — pass the COMPONENT_SET id directly`)
+      }
+      doc = resolvedEntry.document
+      meta = resolvedEntry.componentSets?.[doc.id] || resolvedEntry.components?.[doc.id] || null
+    }
+
+    if (doc.type === 'INSTANCE') {
+      const mainId = String(doc.componentId || '')
+      if (!mainId) throw new Error(`${doc.name} carries no componentId over REST — pass the COMPONENT_SET id directly`)
+      await resolveTo(entry.components?.[mainId]?.componentSetId || mainId)
+    } else if (doc.type === 'COMPONENT') {
+      await resolveTo(entry.components?.[doc.id]?.componentSetId)
+    } else if (doc.type !== 'COMPONENT_SET') {
+      throw new Error(`${doc.type} is not a component, a variant or an instance of one — pass a COMPONENT_SET id`)
+    }
+
+    const members =
+      doc.type === 'COMPONENT_SET'
+        ? (doc.children || []).map((child) => ({ id: child.id, name: child.name, values: restVariantValues(child.name) }))
+        : []
+    return {
+      id: doc.id,
+      name: doc.name,
+      ...(meta?.key ? { key: meta.key } : {}),
+      type: doc.type,
+      ...(meta?.description ? { description: meta.description } : {}),
+      ...(meta?.documentationLinks?.length ? { documentationLinks: meta.documentationLinks } : {}),
+      ...restComponentSignature(members, doc.componentPropertyDefinitions),
+    }
+  }
+
+  if (op === 'styles.list') {
+    const styles = await restTry(`/v1/files/${key}/styles`)
+    const list = {
+      styles: (styles.data?.meta?.styles || []).map((entry) => ({
+        key: entry.key,
+        name: entry.name,
+        type: entry.style_type,
+        nodeId: entry.node_id,
+      })),
+    }
+    if (list.styles.length === 0) {
+      list.note = styles.error
+        ? `Figma refused /styles (${styles.error}) — a personal token often lacks the library scope. The plugin reads local styles with none.`
+        : 'REST lists published styles only — an unpublished file answers empty. The plugin reads local styles.'
+    }
+    return list
+  }
+
+  if (op === 'flow.map') {
+    // One page, not the whole file: `/nodes` hands over a full subtree, and a prototype edge can
+    // sit on any depth of instance inside a frame, so a depth-limited file read would report a
+    // graph with holes in it and no way to tell.
+    let pageId = typeof params.pageId === 'string' && params.pageId !== '' ? params.pageId : null
+    if (!pageId) {
+      const shallow = await restFetch(`/v1/files/${key}?depth=1`)
+      pageId = (shallow.document?.children || [])[0]?.id
+      if (!pageId) throw new Error('this file has no pages')
+    }
+    const answer = await restFetch(`/v1/files/${key}/nodes?ids=${encodeURIComponent(pageId)}`)
+    const page = Object.values(answer.nodes || {})[0]?.document
+    if (!page) throw new Error(`no page ${pageId} in this file`)
+    return {
+      page: { id: page.id, name: page.name },
+      startingPoints: (page.flowStartingPoints || []).map((point) => ({ nodeId: point.nodeId, name: point.name })),
+      frames: (page.children || []).filter((node) => node.type === 'FRAME').map((node) => ({ id: node.id, name: node.name })),
+      edges: restEdges(page),
+    }
+  }
+
+  if (op === 'text.segments') {
+    const ids = encodeURIComponent(String(params.nodeId || ''))
+    if (!ids) throw new Error('nodeId is required')
+    const answer = await restFetch(`/v1/files/${key}/nodes?ids=${ids}&depth=1`)
+    const node = Object.values(answer.nodes || {})[0]?.document
+    if (!node) throw new Error(`no node ${params.nodeId} in this file`)
+    if (node.type !== 'TEXT') throw new Error(`${node.type} — need a TEXT node`)
+    return {
+      node: { id: node.id, name: node.name },
+      style: node.style || null,
+      segments: restTextRuns(node),
+      // The reason this op exists inside the plugin is bindings, and they are the one thing REST
+      // does not carry. Saying it beats answering "no run owns that binding", which is what a
+      // silent omission would mean to the caller.
+      note: 'REST carries the styling of each run but no variable bindings — open the plugin for those.',
+    }
+  }
+
+  if (op === 'image.fills') {
+    const ids = encodeURIComponent(String(params.nodeId || ''))
+    if (!ids) throw new Error('nodeId is required')
+    const limit = Math.min(100, Math.max(1, Number(params.limit) || 20))
+    const [answer, refs] = await Promise.all([
+      restFetch(`/v1/files/${key}/nodes?ids=${ids}`),
+      restFetch(`/v1/files/${key}/images`),
+    ])
+    const node = Object.values(answer.nodes || {})[0]?.document
+    if (!node) throw new Error(`no node ${params.nodeId} in this file`)
+    const urls = refs.meta?.images || {}
+    // Deduplicated by hash, like the plugin's own answer: one photo used on nine cards is one
+    // file, and the nodes that paint with it are listed beside it.
+    const byHash = new Map()
+    restWalk(node, (child) => {
+      for (const paint of child.fills || []) {
+        if (paint?.type !== 'IMAGE' || typeof paint.imageRef !== 'string') continue
+        const entry = byHash.get(paint.imageRef) || { imageHash: paint.imageRef, url: urls[paint.imageRef] || null, nodes: [] }
+        if (entry.nodes.length < 8) entry.nodes.push({ id: child.id, name: child.name })
+        byHash.set(paint.imageRef, entry)
+      }
+    })
+    const wanted = [...byHash.values()].slice(0, limit)
+    const dir = path.join(FILES_DIR, `rest-image-fills-${crypto.randomUUID().slice(0, 8)}`)
+    const images = []
+    const failed = []
+    for (const entry of wanted) {
+      if (!entry.url) {
+        // A hash the file references and the images endpoint does not list: the upload is gone,
+        // which is a fact about the file rather than a failure of this call.
+        failed.push({ imageHash: entry.imageHash, reason: 'Figma lists no URL for this image ref' })
+        continue
+      }
+      try {
+        const response = await fetch(entry.url)
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const bytes = Buffer.from(await response.arrayBuffer())
+        fs.mkdirSync(dir, { recursive: true })
+        const file = path.join(dir, `${entry.imageHash.slice(0, 12)}.png`)
+        fs.writeFileSync(file, bytes)
+        images.push({ ...entry, bytes: bytes.length, file: { path: file, bytes: bytes.length } })
+      } catch (err) {
+        failed.push({ imageHash: entry.imageHash, reason: (err && err.message) || String(err) })
+      }
+    }
+    sweepRuns()
+    return {
+      node: { id: node.id, name: node.name },
+      total: byHash.size,
+      truncated: byHash.size > wanted.length,
+      images,
+      ...(failed.length > 0 ? { failed } : {}),
+      // S3 links expire; the bytes are on disk either way, which is what the plugin's answer is.
+      note: 'The URLs Figma hands out are signed and short-lived — use the files written beside them.',
+    }
+  }
+
+  // node.screenshot — REST renders server-side and answers with a URL, so the bytes are
+  // fetched here and land in the same run directory an op's files would.
+  const nodeId = String(params.nodeId || '')
+  if (!nodeId) throw new Error('nodeId is required')
+  const format = String(params.format || 'png').toLowerCase()
+  const scale = Math.min(4, Math.max(0.01, Number(params.scale) || 1))
+  const rendered = await restFetch(
+    `/v1/images/${key}?ids=${encodeURIComponent(nodeId)}&scale=${scale}&format=${format}`
+  )
+  const url = Object.values(rendered.images || {})[0]
+  if (!url) throw new Error(`Figma rendered nothing for ${nodeId}`)
+  const bytes = Buffer.from(await (await fetch(url)).arrayBuffer())
+  const dir = path.join(FILES_DIR, `rest-${op.replace(/\W+/g, '-')}-${crypto.randomUUID().slice(0, 8)}`)
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `${nodeId.replace(/[^A-Za-z0-9]+/g, '-')}.${format}`)
+  fs.writeFileSync(file, bytes)
+  sweepRuns()
+  return { nodeId, scale, format, bytes: bytes.length, file: { path: file, bytes: bytes.length } }
+}
+
 /* ------------------------------------------------------------------ routes */
 
 const ROUTES = {
@@ -565,6 +1271,26 @@ const ROUTES = {
         count: files.length,
         inFlight: pending.size,
         callTimeoutMs: CALL_TIMEOUT_MS,
+        // What a plain fetch client can actually wait for, and a word about the gap when the
+        // configured ceiling is past it — a promise nobody can collect on is worse than a
+        // smaller promise.
+        clientCeilingMs: CLIENT_CEILING_MS,
+        ...(CALL_TIMEOUT_MS > CLIENT_CEILING_MS
+          ? {
+              ceilingNote:
+                `callTimeoutMs is ${Math.round(CALL_TIMEOUT_MS / 1000)}s, but Node's fetch drops a request ` +
+                `after ${CLIENT_CEILING_MS / 1000}s with "fetch failed" — page the work (limit/offset/budgetMs) ` +
+                'instead of waiting longer.',
+            }
+          : {}),
+        // What is available when nothing is open — so an agent can plan instead of discovering
+        // an empty roster as a failure.
+        rest: {
+          token: Boolean(figmaToken()),
+          defaultFileKey: DEFAULT_FILE_KEY || null,
+          ops: REST_OPS,
+          refuses: REST_REFUSALS,
+        },
       },
     }
   },
@@ -576,8 +1302,24 @@ const ROUTES = {
       if (found.error) return { code: 404, body: { ok: false, error: found.error, files: found.candidates || [] } }
       return { code: 200, body: { ...describe(found.plugin), ops: found.plugin.ops } }
     }
+    if (roster().length === 0) {
+      // Nothing open: say what REST can still answer rather than an empty list that reads as
+      // "this channel is dead".
+      return {
+        code: 200,
+        body: {
+          online: false,
+          count: 0,
+          files: [],
+          source: 'rest',
+          ops: REST_OPS.map((name) => ({ name, mutates: false, source: 'rest' })),
+          refuses: REST_REFUSALS,
+          token: Boolean(figmaToken()),
+        },
+      }
+    }
     const files = roster().map((plugin) => ({ ...describe(plugin), ops: plugin.ops }))
-    return { code: 200, body: { online: files.length > 0, count: files.length, files } }
+    return { code: 200, body: { online: true, count: files.length, files } }
   },
 
   'GET /skill': async (req, res, url) => {
@@ -605,6 +1347,25 @@ const ROUTES = {
     const body = await readBody(req)
     const op = typeof body.op === 'string' ? body.op : ''
     if (!op) return { code: 400, body: { ok: false, error: 'missing "op"' } }
+
+    /* REST before the roster: either the caller addressed a file key outright, or nothing is
+     * open and a default key is configured. The answer is marked `source: "rest"` — an agent
+     * that cannot tell which half answered cannot tell a thin answer from a complete one. */
+    if (wantsRest(body, roster().length > 0)) {
+      const key = fileKeyOf(body.fileKey || body.target) || DEFAULT_FILE_KEY
+      if (!key) {
+        return {
+          code: 400,
+          body: { ok: false, error: 'no file key — pass fileKey (or target "rest:<key>"), or set ALTERY_FIGMA_FILE_KEY' },
+        }
+      }
+      try {
+        const result = await restCall(op, body.params || {}, key)
+        return { code: 200, body: { ok: true, op, source: 'rest', fileKey: key, result } }
+      } catch (err) {
+        return { code: 400, body: { ok: false, op, source: 'rest', fileKey: key, error: (err && err.message) || String(err) } }
+      }
+    }
 
     /* Broadcast: one question, every connected file, one answer each. This is the whole point
      * of holding a registry — "which of my open files still paints raw hexes" is one call.
@@ -891,7 +1652,12 @@ setInterval(() => {
   }
 }, 5_000).unref()
 
-server.listen(PORT, HOST, () => {
+/* Started only when this file is what was run. Imported — by a test, or by a wrapper that
+ * wants the REST helpers — it defines everything and listens on nothing: a second process
+ * binding 8788 would take the port away from the bridge the plugin is already talking to. */
+const RUN_AS_MAIN = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false
+
+if (RUN_AS_MAIN) server.listen(PORT, HOST, () => {
   console.log(`altery-agent-bridge listening on http://${HOST}:${PORT}`)
   const where =
     SECRET_SOURCE === 'env'
@@ -905,5 +1671,14 @@ server.listen(PORT, HOST, () => {
   } else {
     console.log('  pairing closed (secret came from the environment) — restart with --pair to open it.')
   }
+  if (CALL_TIMEOUT_MS > CLIENT_CEILING_MS) {
+    console.log(
+      `  NOTE: call ceiling is ${Math.round(CALL_TIMEOUT_MS / 1000)}s, but Node's fetch drops a request after ` +
+        `${CLIENT_CEILING_MS / 1000}s — the extra window only exists for clients that set their own dispatcher.`
+    )
+  }
   console.log('  open the plugin in as many files as you want — each one registers separately.')
+  if (figmaToken()) {
+    console.log('  figma REST:           token found — reads answer even with no plugin open (source: "rest")')
+  }
 })

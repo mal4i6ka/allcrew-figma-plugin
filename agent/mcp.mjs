@@ -39,7 +39,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const BASE = (process.env.ALTERY_AGENT_URL || 'http://127.0.0.1:8788').replace(/\/+$/, '')
 const SECRET_FILE =
@@ -126,6 +126,16 @@ const TARGET_PROP = {
     "Optional when exactly one file is connected. \"*\" asks every file at once (reads only; a broadcast write is refused).",
 }
 
+/** The other way to name a file: its key, for when no plugin is open and the bridge answers
+ * from Figma's REST API. Reads only, and a thinner answer — REST has no variable bindings, no
+ * Motion and no panel commands — but it works at three in the morning. */
+const FILE_KEY_PROP = {
+  type: 'string',
+  description:
+    'Figma file key (or a file URL) to read over the REST API when no plugin is open. ' +
+    'Answers are marked source: "rest" and cover fewer ops — the bridge says which.',
+}
+
 /** ParamSpec (src/agent/protocol.ts) → JSON Schema. Faithful to what the bridge will actually
  * enforce, so a client that respects the schema never sends the bridge something it will reject. */
 function paramToSchema(spec) {
@@ -162,6 +172,7 @@ function opToTool(op) {
     if (spec.required) required.push(key)
   }
   properties.target = TARGET_PROP
+  properties.fileKey = FILE_KEY_PROP
   const description = [op.mutates ? '[writes to the document] ' : '', op.summary || '', op.agent ? '\n\n' + op.agent : '']
     .join('')
     .trim()
@@ -197,6 +208,7 @@ const META_TOOLS = [
         op: { type: 'string', description: 'The op name, e.g. document.info or plugin.call.' },
         params: { type: 'object', description: "The op's parameters, as an object.", additionalProperties: true },
         target: TARGET_PROP,
+        fileKey: FILE_KEY_PROP,
       },
       required: ['op'],
     },
@@ -220,6 +232,20 @@ async function listTools() {
         claimed.add(op.name)
         ops.push(op)
       }
+    }
+  }
+  // Nothing open: the bridge publishes what Figma's REST API can still answer. A client that
+  // listed zero tools would look broken, and an agent would never learn that half the reads
+  // are available with no plugin at all — it just has to name a `fileKey`.
+  if (ops.length === 0 && result.ok && Array.isArray(result.body?.ops)) {
+    for (const op of result.body.ops) {
+      if (!op || typeof op.name !== 'string' || claimed.has(op.name)) continue
+      claimed.add(op.name)
+      ops.push({
+        ...op,
+        summary: `${op.name} — answered from Figma's REST API (no plugin open); pass fileKey.`,
+        params: { fileKey: { type: 'string', description: 'Figma file key or URL — REST needs it named.' } },
+      })
     }
   }
   toolToOp.clear()
@@ -266,7 +292,15 @@ async function callTool(name, args) {
     const op = typeof params.op === 'string' ? params.op : ''
     if (!op) return { content: [{ type: 'text', text: 'altery_call needs an "op".' }], isError: true }
     const target = pickTarget(params.target)
-    return toResult(await bridge('POST', '/call', { op, params: params.params || {}, ...(target ? { target } : {}) }))
+    const fileKey = typeof params.fileKey === 'string' ? params.fileKey : ''
+    return toResult(
+      await bridge('POST', '/call', {
+        op,
+        params: params.params || {},
+        ...(target ? { target } : {}),
+        ...(fileKey ? { fileKey } : {}),
+      })
+    )
   }
 
   // Resolve the tool to its op. If the map does not know it yet — a call that raced the first
@@ -280,7 +314,13 @@ async function callTool(name, args) {
   if (!op) return { content: [{ type: 'text', text: `unknown tool "${name}" — call tools/list again; the connected files may have changed.` }], isError: true }
   const target = pickTarget(params.target)
   delete params.target
-  return toResult(await bridge('POST', '/call', { op, params, ...(target ? { target } : {}) }))
+  // `fileKey` travels beside the params, not inside them: it addresses the FILE, the same slot
+  // `target` fills for an open plugin, and the bridge reads it there.
+  const fileKey = typeof params.fileKey === 'string' ? params.fileKey : ''
+  delete params.fileKey
+  return toResult(
+    await bridge('POST', '/call', { op, params, ...(target ? { target } : {}), ...(fileKey ? { fileKey } : {}) })
+  )
 }
 
 /** An explicit target wins; otherwise the env default, if any. Empty string means "let the
@@ -433,9 +473,76 @@ function main() {
   log(`altery-figma MCP server ready — bridge ${BASE}${SECRET ? '' : ' (no secret found; run the bridge once, or set ALTERY_AGENT_SECRET)'}`)
 }
 
+/* ------------------------------------------------------------------ install */
+/*
+ * `node mcp.mjs --install claude` and the agent is wired up.
+ *
+ * Every MCP client stores the same three facts — a server name, a command, its arguments — in
+ * its own file, and the four steps of finding that file, creating it, merging rather than
+ * overwriting, and getting the absolute path right are exactly the four a person gets wrong
+ * once and blames the tool for. The entry is merged into whatever is already there; an
+ * existing `altery-figma` entry is replaced, everything else is left alone.
+ */
+
+/** Client → where it keeps its MCP servers. JSON only: Codex keeps TOML, and rewriting
+ * someone's TOML by hand is how configs get mangled — it gets the snippet printed instead. */
+export const MCP_CLIENTS = {
+  claude: {
+    label: 'Claude Desktop',
+    file: ['Library', 'Application Support', 'Claude', 'claude_desktop_config.json'],
+  },
+  cursor: { label: 'Cursor', file: ['.cursor', 'mcp.json'] },
+  windsurf: { label: 'Windsurf', file: ['.codeium', 'windsurf', 'mcp_config.json'] },
+  vscode: { label: 'VS Code (user)', file: ['.vscode', 'mcp.json'] },
+}
+
+export const SERVER_NAME = 'altery-figma'
+
+/** The entry itself — one absolute path, so it works whatever directory the client starts in. */
+export function serverEntry(scriptPath) {
+  return { command: process.execPath, args: [scriptPath] }
+}
+
+/** Merges the entry into a client config without touching anything else in it. */
+export function mergeServers(existing, name, entry) {
+  const config = existing && typeof existing === 'object' ? { ...existing } : {}
+  const servers = { ...(config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {}) }
+  servers[name] = entry
+  config.mcpServers = servers
+  return config
+}
+
+function install(client) {
+  const spec = MCP_CLIENTS[client]
+  if (!spec) {
+    log(`unknown client "${client}". Known: ${Object.keys(MCP_CLIENTS).join(', ')}`)
+    log('For Codex (TOML) or anything else, add this by hand:')
+    log(JSON.stringify({ mcpServers: { [SERVER_NAME]: serverEntry(fileURLToPath(import.meta.url)) } }, null, 2))
+    process.exitCode = 1
+    return
+  }
+  const target = path.join(os.homedir(), ...spec.file)
+  let existing = null
+  try {
+    existing = JSON.parse(fs.readFileSync(target, 'utf8'))
+  } catch {
+    /* no config yet, or one we cannot read — either way the merge starts from nothing, and
+       the write below is what creates the directory */
+  }
+  const merged = mergeServers(existing, SERVER_NAME, serverEntry(fileURLToPath(import.meta.url)))
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, JSON.stringify(merged, null, 2) + '\n')
+  log(`${spec.label}: ${SERVER_NAME} → ${target}`)
+  log('Restart the client, then ask it to list tools. The bridge must be running and the plugin open.')
+}
+
 /* Guarded so the module can be imported — by a test, or by anything that wants the pure
  * schema/result helpers — without the import itself starting to read stdin. */
 const RUNNING_AS_CLI = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
-if (RUNNING_AS_CLI) main()
+if (RUNNING_AS_CLI) {
+  const flag = process.argv.indexOf('--install')
+  if (flag >= 0) install(process.argv[flag + 1] || '')
+  else main()
+}
 
 export { paramToSchema, opToTool, toResult, toolName, toolToOp, META_TOOLS }
