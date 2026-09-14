@@ -28,35 +28,15 @@ import { toClassName, type DjangoNodeSource } from './css-emitter.ts'
 import { escapeHtml } from './html-emitter.ts'
 import { matchLayers, indexTree } from './smart-animate/match-layers.ts'
 import type { DiffableNode, NodePath } from './smart-animate/types.ts'
-
-/** CSS properties the IR layout model owns — the interaction emitter must not transition these,
- * or a `:hover`/`:active` rule would fight the structural CSS (reflowing siblings, breaking the
- * grid/flex algorithm) rather than just restyling the node. This used to ALSO exclude the node's
- * own box model (width/height/margin/padding/gap) and typography (font-size/weight/letter-
- * spacing/line-height) — which meant a hover state that grew, re-padded, or re-weighted text was
- * silently LOST rather than merely un-transitioned (the destination's value never made it into
- * the diff at all). Only genuinely structural properties stay excluded now: placement (position/
- * inset/float/clear/box-sizing/overflow/aspect-ratio/display) and the flex/grid ALGORITHM
- * (track/alignment definitions — changing these on one interaction state would reflow every
- * sibling, not just the node carrying the interaction). Size, spacing, font metrics, color, and
- * transform are all real visual state now and are allowed to change and transition. */
-const IR_OWNED_CSS = new Set<string>([
-  'position', 'top', 'right', 'bottom', 'left', 'inset', 'float', 'clear', 'box-sizing',
-  'overflow', 'overflow-x', 'overflow-y', 'aspect-ratio', 'display',
-  'flex', 'flex-grow', 'flex-shrink', 'flex-basis', 'flex-direction', 'flex-wrap', 'flex-flow',
-  'align-items', 'align-self', 'align-content', 'justify-content', 'justify-items', 'justify-self',
-  'place-items', 'place-content', 'place-self', 'order',
-  'grid', 'grid-template', 'grid-template-columns', 'grid-template-rows', 'grid-template-areas',
-  'grid-column', 'grid-row', 'grid-area', 'grid-auto-flow', 'grid-auto-columns', 'grid-auto-rows',
-  'font', 'font-family', 'font-style', 'font-variant', 'font-stretch',
-  'text-align', 'text-indent', 'white-space', 'word-break', 'word-wrap', 'text-overflow',
-  'writing-mode', '-webkit-line-clamp', '-webkit-box-orient',
-])
+import { diffCssProperties } from './state-diff.ts'
 
 /** Diffs two `getCSSAsync` result maps, returning only the properties that differ and aren't
- * IR-owned. Each entry is `{ property, value }` where value is the destination's CSS value — the
- * `:hover`/`:active` rule applies the destination's values, and the base class already carries
- * the source's. Properties absent from the destination are skipped (no `unset`/`initial`). */
+ * IR-owned (`diffCssProperties`, `state-diff.ts` — shared with the agent bridge's `node.states`
+ * op, which needs the identical exclusion list so an interaction hover rule and an agent's read
+ * of "what hover changes" never disagree). Each entry is `{ property, value }` where value is the
+ * destination's CSS value — the `:hover`/`:active` rule applies the destination's values, and the
+ * base class already carries the source's. Properties absent from the destination are skipped
+ * (no `unset`/`initial`). */
 function diffCss(
   sourceCss: Record<string, string>,
   destCss: Record<string, string>,
@@ -67,14 +47,12 @@ function diffCss(
   nodeLabel = ''
 ): { property: string; value: string }[] {
   const decls: { property: string; value: string }[] = []
-  for (const [property, value] of Object.entries(destCss)) {
-    if (IR_OWNED_CSS.has(property)) continue
-    if (sourceCss[property] === value) continue
+  for (const { property, to } of diffCssProperties(sourceCss, destCss)) {
     // Skip properties where the source didn't have it either — no visual change to transition.
-    if (!(property in sourceCss) && !value) continue
+    if (!(property in sourceCss) && !to) continue
     // Plain substring, not the /g/ regex: `RegExp.test` on a global pattern carries `lastIndex`
     // between calls and would skip every other match.
-    if (value.includes('<path-to-image>')) {
+    if (to.includes('<path-to-image>')) {
       // `getCSSAsync` writes every image fill as the literal `url(<path-to-image>)`. Shipped as-is
       // it is a guaranteed 404 (`/static/css/%3Cpath-to-image%3E`) that blanks the element on
       // hover — worse than not animating the swap at all.
@@ -82,10 +60,10 @@ function diffCss(
         console.warn(`${nodeLabel || 'a state'} changes an image fill whose asset was not exported — dropping "${property}" from the state rule`)
         continue
       }
-      decls.push({ property, value: resolveImagePlaceholders(value, imageUrls) })
+      decls.push({ property, value: resolveImagePlaceholders(to, imageUrls) })
       continue
     }
-    decls.push({ property, value })
+    decls.push({ property, value: to })
   }
   return decls
 }

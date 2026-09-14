@@ -10,6 +10,7 @@ import { resolveExportSettings, type ExportMarkedInstanceNode } from '../../util
 import { needsSvg, ellipseArcPath, isDefaultArc } from './geometry.ts'
 import { rgbaToCss } from './tokens.ts'
 import { transitionToCssTiming } from './smart-animate/easing-adapter.ts'
+import type { MotionCurve } from './easing/index.ts'
 import type { SpringPresetObservation, SpringSource } from './easing/index.ts'
 import {
   primaryDesignerSetting,
@@ -262,6 +263,10 @@ export interface IrNavigateTransition {
   direction?: 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM'
   durationMs: number
   timingFunction: string
+  /** The same easing as numbers rather than as CSS: bezier control points, or a spring's
+   * ζ/ω₀/response/stiffness/settle time. `timingFunction` is the web's projection of this - a
+   * SwiftUI or Compose consumer of this tree cannot use `linear(0, 0.018, …)` at all. */
+  curve: MotionCurve
   /** Springs only: where the solved curve's numbers came from (`preset-table` = the estimated
    * `NAMED_SPRING_BOUNCE` entry). Collected into `export-report.json` so an estimated curve is
    * visible in the package rather than only in the motion. */
@@ -295,6 +300,8 @@ export interface IrInteraction {
   /** CSS timing-function string (e.g. `cubic-bezier(0.42, 0, 0.58, 1)`) — resolved from the
    * transition's `Easing` via `src/smart-animate/easing-adapter.ts`'s `transitionToCssTiming`. */
   timingFunction: string
+  /** The same easing as numbers - see `IrNavigateTransition.curve`. */
+  curve: MotionCurve
   /** Springs only — see `IrNavigateTransition.springSource`. */
   springSource?: SpringSource
   /** Springs only — see `IrNavigateTransition.springPreset`. */
@@ -1138,6 +1145,7 @@ function readNavigateTransition(transition: Transition | null): { transition?: I
         ...direction,
         durationMs: timing.durationMs,
         timingFunction: timing.timingFunction,
+        curve: timing.curve,
         ...(timing.springSource ? { springSource: timing.springSource } : {}),
         ...(timing.springPreset ? { springPreset: timing.springPreset } : {}),
         ...(timing.springObservation ? { springObservation: timing.springObservation } : {}),
@@ -1185,6 +1193,7 @@ function readInteractions(
         destinationId: action.destinationId,
         durationMs: timing.durationMs,
         timingFunction: timing.timingFunction,
+        curve: timing.curve,
         ...(timing.springSource ? { springSource: timing.springSource } : {}),
         ...(timing.springPreset ? { springPreset: timing.springPreset } : {}),
         ...(timing.springObservation ? { springObservation: timing.springObservation } : {}),

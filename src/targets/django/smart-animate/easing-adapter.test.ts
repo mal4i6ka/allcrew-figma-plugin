@@ -4,7 +4,41 @@ import { transitionToCssTiming } from './easing-adapter.ts'
 
 test('transitionToCssTiming converts LINEAR and duration seconds to ms', () => {
   const result = transitionToCssTiming({ easing: { type: 'LINEAR' }, duration: 0.3 })
-  assert.deepEqual(result, { timingFunction: 'linear', durationMs: 300 })
+  assert.deepEqual(result, { timingFunction: 'linear', durationMs: 300, curve: { kind: 'linear' } })
+})
+
+test('a bezier preset hands over its control points, not only the CSS string it renders as', () => {
+  // `EASE_OUT` is an opaque name off the web: the points live in this repo's reverse-engineered
+  // table, so they travel with the answer instead of being hardcoded again downstream.
+  const result = transitionToCssTiming({ easing: { type: 'EASE_OUT' }, duration: 0.2 })
+  assert.deepEqual(result.curve, { kind: 'bezier', x1: 0, y1: 0, x2: 0.58, y2: 1, preset: 'EASE_OUT' })
+})
+
+test('a spring hands over the numbers a native animation API takes', () => {
+  // mass 1, k 100, c 15 → ω₀ = 10 rad/s, ζ = 0.75. A consumer cannot recover these from the
+  // eighty sampled points of `linear(...)`, which is the only thing it used to get.
+  const result = transitionToCssTiming({
+    easing: { type: 'CUSTOM_SPRING', easingFunctionSpring: { mass: 1, stiffness: 100, damping: 15, initialVelocity: 0 } },
+    duration: 0.3,
+  })
+  assert.deepEqual(result.curve, {
+    kind: 'spring',
+    dampingRatio: 0.75,
+    angularFrequency: 10,
+    responseMs: 628,
+    stiffness: 100,
+    damping: 15,
+    mass: 1,
+    initialVelocity: 0,
+    settlingMs: Math.round(result.durationMs),
+    source: 'physical',
+  })
+})
+
+test('an estimated spring says so in the curve, not only in the export report', () => {
+  const result = transitionToCssTiming({ easing: { type: 'GENTLE' }, duration: 0.3 })
+  assert.equal(result.curve.kind === 'spring' && result.curve.source, 'preset-table')
+  assert.equal(result.curve.kind === 'spring' && result.curve.preset, 'GENTLE')
 })
 
 test('transitionToCssTiming converts a named bezier preset', () => {

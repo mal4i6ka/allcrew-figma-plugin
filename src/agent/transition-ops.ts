@@ -17,6 +17,7 @@ import {
   emitFlipToggle,
   emitTransitionCss,
   emitViewTransition,
+  countInstantVariantLinks,
   extractSmartAnimatePairs,
   mapTriggerToMechanism,
   namesForPaths,
@@ -263,6 +264,16 @@ async function resolveImageUrls(
 
 /* --------------------------------------------------------------------- ops */
 
+/** The set's variant axis names, guarded: `componentPropertyDefinitions` is a getter that throws
+ * on a set Figma cannot resolve, and this is a courtesy line in an answer that already exists. */
+function readVariantAxes(node: ComponentSetNode): Record<string, unknown> {
+  try {
+    return node.componentPropertyDefinitions ?? {}
+  } catch {
+    return {}
+  }
+}
+
 export const TRANSITION_OPS: readonly OpDef[] = [
   {
     name: 'transition.context',
@@ -297,8 +308,27 @@ export const TRANSITION_OPS: readonly OpDef[] = [
       const pairs = extractSmartAnimatePairs(node)
       if (pairs.length === 0) {
         // A component set with no Smart Animate is a normal, correct answer — say which set,
-        // so the caller can tell it apart from having named the wrong node.
-        return { componentSet: { id: node.id, name: node.name }, transitions: [], files: [] }
+        // so the caller can tell it apart from having named the wrong node. And say WHICH empty
+        // it is: a set whose states are linked with instant swaps reads identically to one with
+        // no prototype at all, and the difference decides where the caller looks next.
+        const instant = countInstantVariantLinks(node)
+        // The other way a set holds states: a `State=` axis with no prototype at all. Pointing
+        // at the op that DOES answer beats a true sentence the caller cannot act on.
+        const stateAxis = Object.keys(readVariantAxes(node)).find((axis) => /state/i.test(axis)) ?? null
+        return {
+          componentSet: { id: node.id, name: node.name },
+          transitions: [],
+          files: [],
+          reason:
+            instant > 0
+              ? `${instant} variant link(s) here change state instantly — no Smart Animate transition to read. ` +
+                'node.states reports what each one changes.'
+              : stateAxis
+                ? `no variant carries a reaction to another: this set's states live in the "${stateAxis}" variant ` +
+                  'axis, which is a state a consumer sets rather than a transition the prototype plays. ' +
+                  'node.states diffs those siblings; component.api reports the axis itself.'
+                : 'no variant of this set carries a reaction to another — nothing was linked in the prototype',
+        }
       }
 
       const strategy = params.strategy as string
@@ -377,6 +407,14 @@ export const TRANSITION_OPS: readonly OpDef[] = [
           mechanism: mechanism.kind,
           durationMs: timing.durationMs,
           timingFunction: timing.timingFunction,
+          // The numbers behind that string. `timingFunction` is a web answer - a spring reaches it
+          // as eighty sampled points - and the three spring fields below used to be computed and
+          // dropped here, so an agent could not tell a measured curve from the reverse-engineered
+          // preset table it rests on.
+          curve: timing.curve,
+          ...(timing.springSource ? { springSource: timing.springSource } : {}),
+          ...(timing.springPreset ? { springPreset: timing.springPreset } : {}),
+          ...(timing.springObservation ? { springObservation: timing.springObservation } : {}),
           diff: describeDiff(diff),
           emitted,
         })

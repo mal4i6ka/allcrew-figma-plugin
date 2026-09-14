@@ -13,6 +13,7 @@
  */
 
 import type { FlowCondition, FlowLink, FlowOperand } from './props.ts'
+import { motionCurve, type MotionCurve } from '../targets/django/easing/index.ts'
 
 /** Figma's trigger types, spelled the way the write spells them. */
 const TRIGGER_WORDS: Readonly<Record<string, string>> = {
@@ -212,4 +213,30 @@ function easingOf(easing: Easing | undefined): Partial<ReadLink> {
     }
   }
   return { easing: easing.type }
+}
+
+/**
+ * A transition as `{ type, duration, easing }` — the shape `node.get` reports a reaction's
+ * transition in. Built from the exact fields `transitionOf`/`easingOf` already compute for a
+ * link's own `animation`/`duration`/curve, so a read summary and the link a write would recreate
+ * from it never disagree about the timing. `null` when the action carries no transition at all.
+ */
+export function transitionSummary(
+  transition: Transition | null | undefined
+): { type: string; duration: number; easing: unknown; curve?: MotionCurve } | null {
+  if (!transition) return null
+  const link = transitionOf(transition)
+  // `easing` says what the designer picked (a preset name, or the raw bezier/spring the write
+  // vocabulary takes); `curve` says what it IS, in the numbers a native animation API asks for.
+  // A name alone made every consumer off the web hardcode Figma's preset table itself.
+  const curve = motionCurve(
+    transition.easing as { type?: string } | undefined,
+    typeof transition.duration === 'number' ? transition.duration : undefined
+  )
+  return {
+    type: link.animation ?? transition.type,
+    duration: link.duration ?? 0.3,
+    easing: link.easing ?? (link.bezier ? { bezier: link.bezier } : link.spring ? { spring: link.spring } : null),
+    ...(curve ? { curve } : {}),
+  }
 }

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { extractSmartAnimatePairs } from './reactions.ts'
+import { countInstantVariantLinks, extractSmartAnimatePairs } from './reactions.ts'
 
 function setFigma(mock: unknown) {
   ;(globalThis as any).figma = mock
@@ -109,4 +109,50 @@ test('extractSmartAnimatePairs skips a destinationId that no longer resolves to 
   const componentSet = { children: [variant] } as unknown as ComponentSetNode
 
   assert.deepEqual(extractSmartAnimatePairs(componentSet), [])
+})
+
+test('a set whose states swap instantly is counted, not silently empty', () => {
+  // The pair list is empty either way; "linked with no animation" and "nothing linked at all"
+  // send a caller to two different places, so the empty answer has to be able to say which.
+  setFigma({ getNodeById: () => ({ id: 'dest-1', type: 'COMPONENT' }) })
+  const linked = {
+    children: [
+      {
+        id: 'var-idle',
+        type: 'COMPONENT',
+        reactions: [
+          {
+            trigger: { type: 'ON_PRESS' },
+            actions: [{ type: 'NODE', destinationId: 'dest-1', navigation: 'CHANGE_TO', transition: null }],
+          },
+        ],
+      },
+    ],
+  } as unknown as ComponentSetNode
+
+  assert.equal(extractSmartAnimatePairs(linked).length, 0)
+  assert.equal(countInstantVariantLinks(linked), 1)
+  assert.equal(countInstantVariantLinks({ children: [{ id: 'v', type: 'COMPONENT' }] } as unknown as ComponentSetNode), 0)
+})
+
+test('an animated link is not counted as an instant one', () => {
+  setFigma({ getNodeById: () => ({ id: 'dest-1', type: 'COMPONENT' }) })
+  const animated = {
+    children: [
+      {
+        id: 'var-idle',
+        type: 'COMPONENT',
+        reactions: [
+          {
+            trigger: { type: 'ON_HOVER' },
+            actions: [
+              { type: 'NODE', destinationId: 'dest-1', navigation: 'CHANGE_TO', transition: smartAnimateTransition() },
+            ],
+          },
+        ],
+      },
+    ],
+  } as unknown as ComponentSetNode
+
+  assert.equal(countInstantVariantLinks(animated), 0)
 })

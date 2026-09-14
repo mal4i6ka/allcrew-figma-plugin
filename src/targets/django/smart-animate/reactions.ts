@@ -41,3 +41,25 @@ function collectFromNode(node: SceneNode): SmartAnimatePair[] {
 export function extractSmartAnimatePairs(componentSet: ComponentSetNode): SmartAnimatePair[] {
   return componentSet.children.flatMap((variant) => collectFromNode(variant as SceneNode))
 }
+
+/**
+ * Variant-to-variant links that exist but do NOT animate: a `CHANGE_TO` whose transition is
+ * absent (an instant swap) or of a type Smart Animate does not cover.
+ *
+ * Without this an empty pair list has two meanings a caller cannot tell apart - "this set has no
+ * prototype at all" and "the designer linked the states and chose no animation" - and the second
+ * one is common enough that the first reading sends an agent looking for a bug in the reader.
+ */
+export function countInstantVariantLinks(componentSet: ComponentSetNode): number {
+  let instant = 0
+  for (const variant of componentSet.children) {
+    const reactions = (variant as SceneNode & { reactions?: ReadonlyArray<Reaction> }).reactions ?? []
+    for (const reaction of reactions) {
+      for (const action of reaction.actions ?? []) {
+        if (action.type !== 'NODE' || !action.destinationId) continue
+        if (!isSmartAnimateTransition(action.transition)) instant += 1
+      }
+    }
+  }
+  return instant
+}

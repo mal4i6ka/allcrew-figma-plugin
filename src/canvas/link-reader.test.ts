@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { sendableLinks } from './link-reader.ts'
+import { sendableLinks, transitionSummary } from './link-reader.ts'
 
 const reaction = (trigger: unknown, ...actions: unknown[]) =>
   ({ trigger, actions }) as unknown as Reaction
@@ -84,4 +84,44 @@ test('a conditional reads as if / then / else, and says when there is more', () 
   assert.deepEqual(link.then, { to: '1:2' })
   assert.deepEqual(link.else, { to: '1:3' })
   assert.match(link.unread![0], /else-if/)
+})
+
+test('transitionSummary reports a Smart Animate\'s duration and easing by name', () => {
+  const summary = transitionSummary({ type: 'SMART_ANIMATE', duration: 0.4, easing: { type: 'EASE_IN_AND_OUT' } })
+  assert.equal(summary?.type, 'SMART_ANIMATE')
+  assert.equal(summary?.duration, 0.4)
+  assert.equal(summary?.easing, 'EASE_IN_AND_OUT')
+})
+
+test('a preset name travels with the control points it stands for', () => {
+  // The name is what the designer picked; off the web it is opaque, and the points behind it live
+  // in this repo's reverse-engineered table rather than in anything Figma hands over.
+  const summary = transitionSummary({ type: 'SMART_ANIMATE', duration: 0.4, easing: { type: 'EASE_IN_AND_OUT' } })
+  assert.deepEqual(summary?.curve, {
+    kind: 'bezier',
+    x1: 0.42,
+    y1: 0,
+    x2: 0.58,
+    y2: 1,
+    preset: 'EASE_IN_AND_OUT',
+  })
+})
+
+test('transitionSummary reports a custom curve as the curve, not a name', () => {
+  const summary = transitionSummary({
+    type: 'DISSOLVE',
+    duration: 0.2,
+    easing: { type: 'CUSTOM_CUBIC_BEZIER', easingFunctionCubicBezier: { x1: 0.1, y1: 0.2, x2: 0.3, y2: 0.4 } },
+  })
+  assert.deepEqual(summary, {
+    type: 'DISSOLVE',
+    duration: 0.2,
+    easing: { bezier: [0.1, 0.2, 0.3, 0.4] },
+    curve: { kind: 'bezier', x1: 0.1, y1: 0.2, x2: 0.3, y2: 0.4 },
+  })
+})
+
+test('transitionSummary is null when there is no transition at all', () => {
+  assert.equal(transitionSummary(null), null)
+  assert.equal(transitionSummary(undefined), null)
 })

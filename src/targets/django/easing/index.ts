@@ -101,6 +101,134 @@ export function easingToCss(easing: MotionEasing): string {
   }
 }
 
+/* ------------------------------------------------------------------ curve */
+
+/**
+ * The same easing as numbers instead of a CSS string.
+ *
+ * `easingToCss` and `springParamsToCssLinear` answer the web: a preset becomes
+ * `cubic-bezier(...)` and a spring becomes eighty sampled points inside `linear(...)`. Neither is
+ * usable off the web. `Animation.spring(response:dampingFraction:)` and Compose's
+ * `spring(dampingRatio, stiffness)` take the numbers the solver already had in hand - handing
+ * them the sampled curve instead forces a consumer to re-fit a spring from its own output, or
+ * (what actually happens) to give up and substitute `easeOut`.
+ *
+ * A bezier preset is the same problem one size down: `EASE_OUT` is an opaque name, and its
+ * control points are in this file's reverse-engineered table - so they travel here rather than
+ * being hardcoded a second time by every consumer.
+ */
+export type MotionCurve =
+  | { readonly kind: 'linear' }
+  /** `HOLD`: the value stays put and jumps at the next keyframe - CSS `step-end`. */
+  | { readonly kind: 'hold' }
+  | {
+      readonly kind: 'bezier'
+      readonly x1: number
+      readonly y1: number
+      readonly x2: number
+      readonly y2: number
+      /** The preset these control points came from (`EASE_OUT`, …); absent for a custom bezier.
+       * A preset's points are this module's estimate - `BEZIER_PRESETS` is reverse-engineered. */
+      readonly preset?: string
+    }
+  | {
+      readonly kind: 'spring'
+      /** ζ - SwiftUI's `dampingFraction`, Compose's `dampingRatio`. */
+      readonly dampingRatio: number
+      /** ω₀ in rad/s, the solver's own unit. */
+      readonly angularFrequency: number
+      /** SwiftUI's `response`: the period `2π/ω₀`, in ms. */
+      readonly responseMs: number
+      /** Compose's `stiffness` and its damping coefficient, for `mass: 1`. The ODE is
+       * mass-normalised (ω₀ and ζ already absorb it), so a heavy stiff spring and the light soft
+       * one that moves identically arrive as the same numbers - which is the point. */
+      readonly stiffness: number
+      readonly damping: number
+      readonly mass: 1
+      /** Progress units per second at t=0 - a prototype reaction can kick the layer. */
+      readonly initialVelocity: number
+      /** How long the spring actually runs, solved rather than nominal: a spring ignores the
+       * duration field, so this is the only honest answer to "how long is this animation". */
+      readonly settlingMs: number
+      /** `preset-table` means these numbers rest on the reverse-engineered `NAMED_SPRING_BOUNCE`
+       * estimate - the one thing a consumer should be told before trusting them. */
+      readonly source: SpringSource
+      readonly preset?: string
+    }
+
+/** A spring's resolved parameters as the numbers a native animation API takes. */
+export function springCurve(resolved: ResolvedSpring, settlingMs: number): MotionCurve {
+  const { dampingRatio, angularFrequency, initialVelocity } = resolved.params
+  return {
+    kind: 'spring',
+    dampingRatio: round(dampingRatio, 4),
+    angularFrequency: round(angularFrequency, 4),
+    responseMs: Math.round(((2 * Math.PI) / angularFrequency) * 1000),
+    stiffness: round(angularFrequency * angularFrequency, 4),
+    damping: round(2 * dampingRatio * angularFrequency, 4),
+    mass: 1,
+    initialVelocity: round(initialVelocity, 4),
+    settlingMs: Math.round(settlingMs),
+    source: resolved.source,
+    ...(resolved.preset ? { preset: resolved.preset } : {}),
+  }
+}
+
+/** A prototyping `Easing` or a Motion `MotionEasing` - the two carry the same preset names, and
+ * this only reads the fields both may fill in. */
+interface EasingLike {
+  /** Optional because the callers are raw Figma payloads narrowed by hand - a missing type is
+   * exactly the case `motionCurve` answers `null` to. */
+  readonly type?: string
+  readonly easingFunctionCubicBezier?: EasingFunctionBezier
+  readonly easingFunctionSpring?: {
+    readonly bounce?: number
+    readonly mass?: number
+    readonly stiffness?: number
+    readonly damping?: number
+    readonly initialVelocity?: number
+  }
+}
+
+/**
+ * Any easing as a neutral curve. `durationSec` is the duration the designer typed beside it,
+ * which a bounce-only spring needs as its period (see `perceptualAngularFrequency`) and
+ * everything else ignores.
+ *
+ * An easing this module cannot name (a variable alias, or a preset added by a Figma release)
+ * returns `null` rather than a wrong curve: a consumer that gets nothing falls back knowingly,
+ * one that gets `linear` does not.
+ */
+export function motionCurve(easing: EasingLike | null | undefined, durationSec?: number): MotionCurve | null {
+  if (!easing || typeof easing.type !== 'string') return null
+  // `type` is now known to be a string; the spring resolver requires that much of its input.
+  const spring = easing as EasingLike & { readonly type: string }
+  switch (easing.type) {
+    case 'LINEAR':
+      return { kind: 'linear' }
+    case 'HOLD':
+      return { kind: 'hold' }
+    case 'CUSTOM_CUBIC_BEZIER': {
+      const bezier = easing.easingFunctionCubicBezier
+      if (!bezier) return null
+      return { kind: 'bezier', x1: bezier.x1, y1: bezier.y1, x2: bezier.x2, y2: bezier.y2 }
+    }
+    case 'GENTLE':
+    case 'QUICK':
+    case 'BOUNCY':
+    case 'SLOW':
+    case 'CUSTOM_SPRING': {
+      const resolved = springParamsFromEasing(spring, durationSec)
+      return springCurve(resolved, sampleSpringParams(resolved.params).settlingTimeMs)
+    }
+    default: {
+      const bezier = BEZIER_PRESETS[easing.type as BezierPresetType]
+      if (!bezier) return null
+      return { kind: 'bezier', x1: bezier.x1, y1: bezier.y1, x2: bezier.x2, y2: bezier.y2, preset: easing.type }
+    }
+  }
+}
+
 /** `figma.motion.physicalSpringToNormalized()` reimplemented for use outside the plugin sandbox. */
 export function physicalSpringToNormalized(spring: PhysicalSpring): number {
   const dampingRatio = spring.damping / (2 * Math.sqrt(spring.stiffness * spring.mass))
