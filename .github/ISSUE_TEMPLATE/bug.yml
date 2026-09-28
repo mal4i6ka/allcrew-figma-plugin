@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a reproducible problem in AllCrew Channel
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include Figma tokens, pairing secrets, exported customer files, or private document content. Report security issues through GitHub Security Advisories.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: v1.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Plugin UI
+        - Design token export
+        - Django / React / Tauri export
+        - Agent Listener / bridge
+        - MCP
+        - Delivery receiver
+        - AllCrew SDK module
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true

@@ -11,3 +11,7 @@ __pycache__/
 *.egg-info/
 # CocoIndex Code (ccc)
 /.cocoindex_code/
+
+# generated release artifacts
+/build/*.zip
+/build/SHA256SUMS

@@ -35401,6 +35401,30 @@ ${scripts}`, "");
     postToUi({ type: "AGENT_ACTIVITY", op, ok, ms, error });
   }
 
+  // src/agent/gate-storage.ts
+  var CLOSED_GATES = { read: false, write: false };
+  function parseStoredGates(entry) {
+    if (entry && typeof entry === "object") {
+      const record2 = entry;
+      return { read: record2.read === true, write: record2.write === true };
+    }
+    if (entry === true) return { read: true, write: false };
+    return null;
+  }
+  function storedGatesFor(storage, fileKey) {
+    var _a;
+    if (!fileKey || !storage || typeof storage !== "object") return __spreadValues({}, CLOSED_GATES);
+    return (_a = parseStoredGates(storage[fileKey])) != null ? _a : __spreadValues({}, CLOSED_GATES);
+  }
+  function withStoredGates(storage, fileKey, legacyFileName, gates2) {
+    const current = storage && typeof storage === "object" ? __spreadValues({}, storage) : {};
+    if (!fileKey) return current;
+    if (gates2.read || gates2.write) current[fileKey] = { read: gates2.read, write: gates2.write };
+    else delete current[fileKey];
+    delete current[legacyFileName];
+    return current;
+  }
+
   // src/modules/registry.ts
   var MODULE_SIZE_LIMIT = 2e5;
   var MODULE_STATE_SIZE_LIMIT = 32e3;
@@ -37791,40 +37815,21 @@ createRoot(document.getElementById('root')!).render(
   var USER_PRESETS_KEY = "allcrewChannel.v1.userPresets";
   var PALETTE_SETTINGS_KEY = "allcrewChannel.v1.paletteSettings";
   var GATES_KEY = "allcrewChannel.v1.agentGates";
-  function gateKeys() {
-    const key = figma.fileKey;
-    return key ? [key, figma.root.name] : [figma.root.name];
-  }
-  function readStoredGates(entry) {
-    if (entry && typeof entry === "object") {
-      const record2 = entry;
-      return { read: record2.read === true, write: record2.write === true };
-    }
-    if (entry === true) return { read: true, write: false };
-    return null;
-  }
   async function gatesFor() {
     try {
-      const stored = await figma.clientStorage.getAsync(GATES_KEY);
-      if (!stored || typeof stored !== "object") return { read: false, write: false };
-      const all = stored;
-      for (const key of gateKeys()) {
-        const gates2 = readStoredGates(all[key]);
-        if (gates2) return gates2;
-      }
+      return storedGatesFor(await figma.clientStorage.getAsync(GATES_KEY), figma.fileKey);
     } catch (e) {
+      return { read: false, write: false };
     }
-    return { read: false, write: false };
   }
   async function rememberGates(gates2) {
+    if (!figma.fileKey) return;
     try {
       const stored = await figma.clientStorage.getAsync(GATES_KEY);
-      const all = stored && typeof stored === "object" ? __spreadValues({}, stored) : {};
-      const [primary, ...rest] = gateKeys();
-      if (gates2.read || gates2.write) all[primary] = { read: gates2.read, write: gates2.write };
-      else delete all[primary];
-      for (const stale of rest) delete all[stale];
-      await figma.clientStorage.setAsync(GATES_KEY, all);
+      await figma.clientStorage.setAsync(
+        GATES_KEY,
+        withStoredGates(stored, figma.fileKey, figma.root.name, gates2)
+      );
     } catch (e) {
     }
   }

@@ -102,6 +102,7 @@ import { buildComponentsMd, COMPONENTS_FILE, type ComponentDoc, type ComponentPr
 import { buildTokenEntries } from './targets/design-md/model'
 import { deliverPackage } from './delivery'
 import { agentManifest, handleAgentRequest, setGates } from './agent/listener.ts'
+import { storedGatesFor, withStoredGates, type StoredGates } from './agent/gate-storage.ts'
 import { postToUi } from './agent/ui-post.ts'
 import { setModuleProvider, setUiMessageRunner } from './agent/plugin-ops.ts'
 import { setModuleAdminProvider } from './agent/module-ops.ts'
@@ -1417,67 +1418,30 @@ const USER_PRESETS_KEY = 'allcrewChannel.v1.userPresets'
 const PALETTE_SETTINGS_KEY = 'allcrewChannel.v1.paletteSettings'
 
 /**
- * Remembered gates, keyed by file. `figma.fileKey` is the real identity and is what a private
- * plugin on an Organization plan gets; everywhere else it reads null and the file *name* has to
- * stand in, which means two files called the same thing share one answer. Preferring the key
- * when it exists costs nothing and quietly removes that collision on publish — and the name is
- * still read as a fallback so nobody's existing grant is forgotten in the move.
- *
- * Both halves are remembered. Writes were session-only at first, on the reasoning that the half
- * which changes the document deserves a deliberate arming — but re-arming it eight times in one
- * afternoon is not deliberation either. The switches stay in the panel and revoking is one
- * click; that, not the re-asking, is what keeps the grant real.
+ * Agent gates persist only when Figma exposes a stable `fileKey` (private organization plugins).
+ * Development plugins imported from GitHub receive no key, so their consent is deliberately
+ * session-only. A file name is not an identity: two unrelated files named \"Untitled\" must never
+ * inherit each other's read or write grant.
  */
 const GATES_KEY = 'allcrewChannel.v1.agentGates'
 
-interface StoredGates {
-  read: boolean
-  write: boolean
-}
-
-/** The key first, the name second — see `gatesFor` for why both are read. */
-function gateKeys(): string[] {
-  const key = figma.fileKey
-  return key ? [key, figma.root.name] : [figma.root.name]
-}
-
-function readStoredGates(entry: unknown): StoredGates | null {
-  if (entry && typeof entry === 'object') {
-    const record = entry as Record<string, unknown>
-    return { read: record.read === true, write: record.write === true }
-  }
-  // The first shape stored a bare `true` for the read gate; honour it rather than silently
-  // locking out anyone who granted before this changed.
-  if (entry === true) return { read: true, write: false }
-  return null
-}
-
 async function gatesFor(): Promise<StoredGates> {
   try {
-    const stored = await figma.clientStorage.getAsync(GATES_KEY)
-    if (!stored || typeof stored !== 'object') return { read: false, write: false }
-    const all = stored as Record<string, unknown>
-    for (const key of gateKeys()) {
-      const gates = readStoredGates(all[key])
-      if (gates) return gates
-    }
+    return storedGatesFor(await figma.clientStorage.getAsync(GATES_KEY), figma.fileKey)
   } catch {
-    /* fall through to closed */
+    return { read: false, write: false }
   }
-  return { read: false, write: false }
 }
 
 async function rememberGates(gates: StoredGates): Promise<void> {
+  // Development-plugin consent lasts for this open panel only.
+  if (!figma.fileKey) return
   try {
     const stored = await figma.clientStorage.getAsync(GATES_KEY)
-    const all: Record<string, unknown> = stored && typeof stored === 'object' ? { ...(stored as Record<string, unknown>) } : {}
-    // Written under the best key available, and the weaker one is dropped so a rename cannot
-    // resurrect a grant the designer already revoked.
-    const [primary, ...rest] = gateKeys()
-    if (gates.read || gates.write) all[primary] = { read: gates.read, write: gates.write }
-    else delete all[primary]
-    for (const stale of rest) delete all[stale]
-    await figma.clientStorage.setAsync(GATES_KEY, all)
+    await figma.clientStorage.setAsync(
+      GATES_KEY,
+      withStoredGates(stored, figma.fileKey, figma.root.name, gates)
+    )
   } catch {
     /* a listener that works but forgets is better than one that fails to open */
   }

@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a concrete AllCrew Channel workflow
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow is currently blocked or repetitive?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior rather than an implementation preference.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Plugin UI
+        - Export target
+        - Agent operation
+        - MCP
+        - AllCrew SDK module format
+        - CLI / receiver
+    validations:
+      required: true

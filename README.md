@@ -1,23 +1,42 @@
 # AllCrew Channel
 
-A self-contained Figma plugin that exports the current file's **local variables**
-as a design-token package — mode-aware CSS, JSON and TypeScript — ready to drop
-into a frontend.
+AllCrew Channel is a local-first Figma development plugin for design tokens, code generation,
+project export, design-system maintenance, and agent-driven work against the file open in Figma.
 
-It reads variables **in-editor via the Figma Plugin API**, so it works on **any
-Figma plan** (no Enterprise Variables REST access, no server, no network).
+Core extraction and generation run inside Figma. Optional features connect to services chosen by
+the user: Delivery can send an exported package to a configured receiver, and Agent Listener
+connects to a user-run loopback bridge for Claude Code, Codex, Cursor, MCP clients, or `curl`.
 
----
+<p align="center">
+  <img src="docs/screenshots/agent-listener.png" alt="AllCrew Channel Agent Listener" width="360">
+  <img src="docs/screenshots/sdk-builder.png" alt="AllCrew SDK screen builder" width="360">
+</p>
 
-## Install (development plugin)
+## Install from a GitHub Release
 
-1. In Figma desktop: **Menu → Plugins → Development → Import plugin from manifest…**
-2. Pick `manifest.json` from this folder.
-3. The plugin now shows under **Plugins → Development → AllCrew Channel**.
+1. Download `allcrew-channel-plugin-v<version>.zip` and `SHA256SUMS` from the
+   [latest release](https://github.com/mal4i6ka/allcrew-figma-plugin/releases/latest).
+2. Verify the archive:
+   ```bash
+   shasum -a 256 -c SHA256SUMS
+   ```
+3. Unzip it without flattening the directory structure.
+4. In Figma Desktop, open **Menu → Plugins → Development → Import plugin from manifest…**.
+5. Select `manifest.json` in the extracted folder.
+6. Run **AllCrew Channel** from **Plugins → Development**.
 
-Run `npm run build` first: `manifest.json` points at `dist/code.js` and `dist/ui.html`, which
-`build.mjs` bundles from `src/**/*.ts`. `npm run dev` rebuilds on change, and `npm run package`
-refuses to ship an archive whose `dist/` is older than any tracked source.
+Figma's browser app cannot import development plugins. Updating means downloading the new
+release, replacing the extracted directory, and restarting the plugin.
+
+### Build and install from source
+
+```bash
+npm ci
+npm run build
+```
+
+Import this checkout's `manifest.json`. `npm run dev` rebuilds on change; `npm run package`
+creates the release archive and refuses to package stale bundles.
 
 ## Use
 
@@ -29,6 +48,24 @@ refuses to ship an archive whose `dist/` is older than any tracked source.
    re-apply on every run.
 4. **Download package (.zip)** — or grab any single file. **Rescan** after you
    edit variables.
+
+## Agent Listener quick start
+
+The release archive includes the exact bridge and MCP front built with the plugin:
+
+```bash
+node tools/bridge.mjs
+```
+
+Open **Agent Listener** in the plugin, pair during the five-minute window, then enable **Allow
+reads**. Enable **Allow writes** only while an intended automation is running. For an MCP client:
+
+```bash
+node tools/mcp.mjs --install claude
+# cursor, windsurf and vscode are also supported
+```
+
+Development-plugin grants are session-only. Restarting the plugin closes both gates.
 
 ## What you get
 
@@ -43,7 +80,7 @@ refuses to ship an archive whose `dist/` is older than any tracked source.
 | `Tokens.swift`, `Tokens.kt` | *(iOS & Android tokens on)* Constants for what a catalogue cannot hold (spacing, radii, the type scale) and for the colours too, for a build that themes in code. Values identical in every theme are declared once, above the per-theme blocks; a length gets `CGFloat`/`.dp`, a line-height ratio does not. |
 | `README.md` | Auto-generated usage notes for that specific export. |
 
-##Settings
+## Settings
 
 The **Export Settings** page (open it from the gear in the header) isolates the
 opinionated parts of the output so different consumers can keep their own
@@ -501,6 +538,31 @@ curl http://localhost:8787
 - **`tokens.json` is always the full, un-inlined tree** regardless of the Inline
   primitives setting, so it stays lossless for diffing / re-import.
 
+
+## Agent Listener security
+
+- The bridge listens on `127.0.0.1` by default. Do not expose it on a public interface.
+- Read and write access are separate switches, and both start off.
+- Figma development plugins do not expose a stable file key. Agent grants therefore last only
+  for the current plugin session and are never restored by file name.
+- Treat `~/.allcrew-channel/agent-secret`, receiver secrets, and Figma tokens as credentials.
+- Stop the listener before opening an untrusted file. Enable writes only while an intended
+  automation is running.
+
+See [SECURITY.md](SECURITY.md) for the trust model and private vulnerability reporting.
+
+## Support
+
+
+Data handling: [PRIVACY.md](PRIVACY.md).
+
+- Bugs and feature requests: https://github.com/mal4i6ka/allcrew-figma-plugin/issues
+- Security reports: https://github.com/mal4i6ka/allcrew-figma-plugin/security/advisories/new
+
+## License
+
+[MIT](LICENSE) © 2026 Alexander Lugachev.
+
 ## Maintenance
 
 The transform in `code.js` is a dependency-free port of the AllCrew Channel board's
@@ -512,7 +574,9 @@ transform; keep the core in sync with the board if the token format changes.
 Files:
 
 ```
-manifest.json   plugin manifest (Figma)
-code.js         sandbox: reads variables → builds the token package
-ui.html         the panel UI (styles, fonts, preview, zip download — all inlined)
+manifest.json   plugin manifest
+dist/code.js    sandbox and Codegen runtime
+dist/ui.html    plugin panel
+agent/          local bridge, MCP front, and channel documentation
+server/         optional Delivery receiver
 ```

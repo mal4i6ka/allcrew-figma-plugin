@@ -20,15 +20,21 @@
 ## Содержимое архива
 
 ```
-manifest.json   — манифест плагина (main: dist/code.js, ui: dist/ui.html)
-dist/code.js    — собранный код плагина (main thread)
-dist/ui.html    — собранный UI плагина (iframe)
-README.md       — этот файл
+manifest.json       — манифест development plugin
+dist/code.js        — собранный main thread
+dist/ui.html        — собранный UI
+tools/bridge.mjs    — локальный Agent bridge
+tools/mcp.mjs       — MCP front для bridge
+tools/receiver.mjs  — необязательный Delivery receiver
+README.md           — эта инструкция
+LICENSE             — MIT
+PRIVACY.md          — обработка данных
+SECURITY.md         — trust model и security reporting
+CHANGELOG.md        — изменения по версиям
 ```
 
-Все три файла обязательны и должны оставаться **в этой же относительной
-структуре** (`manifest.json` рядом с папкой `dist/`) — манифест ссылается на
-`dist/code.js` и `dist/ui.html` относительными путями.
+Не перемещай `manifest.json` относительно папки `dist/`: Figma разрешает `main` и
+`ui` относительно расположения манифеста.
 
 ---
 
@@ -57,20 +63,25 @@ README.md       — этот файл
 Нужен, только если файл будет читать агент. Плагин без него работает как
 обычный экспортёр.
 
-1. В плагине: **Settings → Agent listener → Download bridge.mjs**, затем
-   `node ~/Downloads/bridge.mjs` в терминале. Мост слушает петлю
-   (`127.0.0.1:8788`) и ничего не публикует наружу.
-2. Первый запуск моста печатает секрет и открывает пятиминутное окно
-   спаривания — нажми **Pair with bridge** в плагине. Секрет лежит в
-   `~/.allcrew-channel/agent-secret` и никогда не попадает в сборку.
-3. Включи **Allow reads** (и **Allow writes**, если агенту можно менять файл).
-   Каждый вызов виден в окне плагина — канал, за которым нельзя следить, это
-   канал, на который нельзя осознанно согласиться.
+1. Запусти мост из распакованного архива:
+   ```bash
+   node tools/bridge.mjs
+   ```
+   Он слушает только loopback (`127.0.0.1:8788`) и ничего не публикует наружу.
+2. Первый запуск создаёт секрет и открывает пятиминутное окно pairing. В плагине
+   выбери **Agent Listener → Pair with bridge**.
+3. Включи **Allow reads** и, только когда агент должен менять файл, **Allow writes**.
 
-MCP-клиенту (Claude Desktop, Cursor, Codex) моста достаточно: скачай
-`mcp.mjs` той же кнопкой и выполни `node ~/Downloads/mcp.mjs --install claude`
-(или `cursor`, `windsurf`, `vscode`) — он допишет себя в конфиг клиента, не
-затирая чужие серверы.
+Development plugin не получает стабильный `figma.fileKey`, поэтому разрешения не
+переносятся между запусками панели и не восстанавливаются по имени файла. После
+перезапуска включи нужные gates заново.
+
+Для MCP-клиента:
+
+```bash
+node tools/mcp.mjs --install claude
+# также поддерживаются cursor, windsurf и vscode
+```
 
 С закрытым плагином часть чтений отвечает через REST API Figma: назови файл
 (`fileKey` или переменная `ALLCREW_CHANNEL_FIGMA_FILE_KEY`) и положи токен в
@@ -90,7 +101,7 @@ API для установки dev-плагина у Figma нет. Агент г�
 
 1. Распаковать архив:
    ```bash
-   unzip allcrew-channel-plugin.zip -d ~/figma-plugins/allcrew-channel-design-system-export
+   unzip allcrew-channel-plugin-v1.1.0.zip -d ~/figma-plugins/allcrew-channel
    ```
 2. Проверить целостность пакета перед тем, как просить человека его
    импортировать:
