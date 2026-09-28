@@ -1,5 +1,5 @@
 {
-  "$comment": "Bootstrap variable → design-token mapping (paths are dotted keys into tokens.json). Edit and run `altery-dj tokens` to rebuild bootstrap-tokens.css / _tokens.scss without a Figma re-export.",
+  "$comment": "Bootstrap variable → design-token mapping (paths are dotted keys into tokens.json). Edit and run `allcrew-channel tokens` to rebuild bootstrap-tokens.css / _tokens.scss without a Figma re-export.",
   "map": {
     "--bs-primary": "color.primary",
     "--bs-secondary": "color.secondary",

@@ -12,7 +12,7 @@
  */
 
 /** The marker the bridge looks for. Deliberately ugly — it must never collide with a real key. */
-export const FILE_ENVELOPE = '__alteryFile'
+export const FILE_ENVELOPE = '__allcrewChannelFile'
 
 export interface FileEnvelope {
   [FILE_ENVELOPE]: {

@@ -13,6 +13,8 @@
  * than the flat SCREAMING_CASE the UI↔sandbox channel uses.
  */
 
+import { failure, type AgentFailure } from './errors.ts'
+
 /* ------------------------------------------------------------------ params */
 
 export type ParamType = 'string' | 'number' | 'boolean' | 'string[]' | 'json'
@@ -38,7 +40,7 @@ export type ParamSpecs = Readonly<Record<string, ParamSpec>>
 export interface OpDef {
   /** `subject.verb`, e.g. `node.get`. */
   name: string
-  /** One line, shown by `altery-figma ops`. This is what an agent reads to choose an op. */
+  /** One line, shown by `allcrew-channel ops`. This is what an agent reads to choose an op. */
   summary: string
   /** True when the op writes to the document. Gated separately from reads — see `authorize`. */
   mutates: boolean
@@ -83,7 +85,7 @@ export interface AgentGates {
   write: boolean
 }
 
-export type Authorization = { ok: true } | { ok: false; error: string }
+export type Authorization = { ok: true } | ({ ok: false } & AgentFailure)
 
 /**
  * Both gates are opt-in and independent of each other: reading a file is already a
@@ -91,12 +93,16 @@ export type Authorization = { ok: true } | { ok: false; error: string }
  * rides along with it.
  */
 export function authorize(op: OpDef | undefined, gates: AgentGates, raw?: unknown): Authorization {
-  if (!op) return { ok: false, error: 'unknown op' }
+  if (!op) return { ok: false, ...failure('unknown_op', 'unknown op') }
   if (op.mutatesWhen ? op.mutatesWhen(raw) : op.mutates) {
-    if (!gates.write) return { ok: false, error: 'writes are off — enable "Allow changes" in the plugin' }
+    if (!gates.write) {
+      return { ok: false, ...failure('gate_closed', 'writes are off — enable "Allow changes" in the plugin') }
+    }
     return { ok: true }
   }
-  if (!gates.read) return { ok: false, error: 'reads are off — enable "Allow reads" in the plugin' }
+  if (!gates.read) {
+    return { ok: false, ...failure('gate_closed', 'reads are off — enable "Allow reads" in the plugin') }
+  }
   return { ok: true }
 }
 

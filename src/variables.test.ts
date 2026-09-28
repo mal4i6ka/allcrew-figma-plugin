@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readLibraryVariables } from './variables.ts'
+import { readAllVariables, readLibraryVariables, resolveVariableValue } from './variables.ts'
 
 /**
  * The sweep is network-bound by construction — one round trip per variable — so what is worth
@@ -112,4 +112,143 @@ test('a library service that refuses answers empty rather than throwing', async 
   const snapshot = await readLibraryVariables()
 
   assert.deepEqual(snapshot, { collections: [], variables: [] })
+})
+
+test('configured free-plan collections read back as one Light/Dark structure', async (t) => {
+  const previousFigma = globalThis.figma
+  ;(globalThis as unknown as { figma: unknown }).figma = {
+    teamLibrary: {
+      getAvailableLibraryVariableCollectionsAsync: async () => [],
+    },
+    variables: {
+      getLocalVariableCollectionsAsync: async () => [
+        {
+          id: 'light-collection',
+          name: 'Semantic day',
+          defaultModeId: 'light-mode',
+          modes: [{ modeId: 'light-mode', name: 'Mode 1' }],
+        },
+        {
+          id: 'dark-collection',
+          name: 'Semantic night',
+          defaultModeId: 'dark-mode',
+          modes: [{ modeId: 'dark-mode', name: 'Mode 1' }],
+        },
+      ],
+      getLocalVariablesAsync: async () => [
+        {
+          id: 'light-token',
+          key: 'light-token',
+          name: 'surface/canvas',
+          variableCollectionId: 'light-collection',
+          scopes: [],
+          resolvedType: 'COLOR',
+          valuesByMode: { 'light-mode': { r: 1, g: 1, b: 1 } },
+        },
+        {
+          id: 'dark-token',
+          key: 'dark-token',
+          name: 'surface/canvas',
+          variableCollectionId: 'dark-collection',
+          scopes: [],
+          resolvedType: 'COLOR',
+          valuesByMode: { 'dark-mode': { r: 0, g: 0, b: 0 } },
+        },
+      ],
+    },
+  }
+  t.after(() => {
+    ;(globalThis as unknown as { figma: unknown }).figma = previousFigma
+  })
+
+  const snapshot = await readAllVariables({
+    collectionMerges: [{
+      name: 'Theme',
+      modes: [
+        { collection: 'Semantic day', name: 'Light' },
+        { collection: 'Semantic night', name: 'Dark' },
+      ],
+    }],
+  })
+
+  assert.deepEqual(snapshot.collections, [
+    {
+      id: 'light-collection',
+      name: 'Theme',
+      defaultModeId: 'light-mode',
+      modes: [
+        { modeId: 'light-mode', name: 'Light' },
+        { modeId: 'dark-mode', name: 'Dark' },
+      ],
+    },
+  ])
+  assert.deepEqual(snapshot.variables[0].valuesByMode, {
+    'light-mode': { r: 1, g: 1, b: 1 },
+    'dark-mode': { r: 0, g: 0, b: 0 },
+  })
+})
+
+test('composed color variables resolve both channels to rendered RGBA', async (t) => {
+  const baseColor = {
+    id: 'VariableID:base',
+    name: 'brand/primary',
+    variableCollectionId: 'VariableCollectionId:1',
+    resolvedType: 'COLOR',
+    valuesByMode: { m1: { r: 0.2, g: 0.4, b: 1 } },
+  } as unknown as Variable
+  const opacity = {
+    id: 'VariableID:opacity',
+    name: 'opacity/subtle',
+    variableCollectionId: 'VariableCollectionId:1',
+    resolvedType: 'FLOAT',
+    valuesByMode: { m1: 40 },
+  } as unknown as Variable
+  const aliasedColor = {
+    id: 'VariableID:composed-alias',
+    name: 'brand/primary/subtle',
+    variableCollectionId: 'VariableCollectionId:1',
+    resolvedType: 'COLOR',
+    valuesByMode: {
+      m1: {
+        color: { type: 'VARIABLE_ALIAS', id: baseColor.id },
+        opacity: { type: 'VARIABLE_ALIAS', id: opacity.id },
+      },
+    },
+  } as unknown as Variable
+  const rawColor = {
+    id: 'VariableID:composed-raw',
+    name: 'surface/subtle',
+    variableCollectionId: 'VariableCollectionId:1',
+    resolvedType: 'COLOR',
+    valuesByMode: {
+      m1: {
+        color: { r: 1, g: 0.5, b: 0 },
+        opacity: { type: 'VARIABLE_ALIAS', id: opacity.id },
+      },
+    },
+  } as unknown as Variable
+  const variables = new Map([baseColor, opacity, aliasedColor, rawColor].map((variable) => [variable.id, variable]))
+  const previousFigma = globalThis.figma
+  ;(globalThis as unknown as { figma: unknown }).figma = {
+    variables: {
+      getVariableByIdAsync: async (id: string) => variables.get(id) ?? null,
+      getVariableCollectionByIdAsync: async () => ({
+        id: 'VariableCollectionId:1',
+        defaultModeId: 'm1',
+        modes: [{ modeId: 'm1', name: 'Mode 1' }],
+      }),
+    },
+  }
+  t.after(() => {
+    ;(globalThis as unknown as { figma: unknown }).figma = previousFigma
+  })
+
+  assert.deepEqual(await resolveVariableValue(aliasedColor, 'm1'), {
+    value: { r: 0.2, g: 0.4, b: 1, a: 0.4 },
+    resolvedType: 'COLOR',
+  })
+  assert.deepEqual(await resolveVariableValue(rawColor, 'm1'), {
+    value: { r: 1, g: 0.5, b: 0, a: 0.4 },
+    resolvedType: 'COLOR',
+  })
 })

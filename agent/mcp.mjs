@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * altery-agent-mcp — an MCP (Model Context Protocol) front for the Altery agent bridge.
+ * allcrew-channel-mcp — an MCP (Model Context Protocol) front for the AllCrew Channel bridge.
  *
  * The bridge already gives a CLI something conventional to talk to (POST /call over loopback).
  * This process gives an *MCP client* — Claude Desktop, Claude Code, Cursor, Codex — the same
@@ -13,7 +13,7 @@
  *      mcp.mjs ── POST /call {op, params, target} ──▶ bridge.mjs ──┤
  *        ◄──────────── the op's answer ─────────────────────┘  POST /plugin/result
  *
- * It is a *client* of the bridge, exactly like agent/altery-figma.mjs is — not a replacement.
+ * It is a *client* of the bridge, exactly like agent/allcrew-channel.mjs is — not a replacement.
  * The bridge is what the plugin dials out to and where the read/write gates, the op registry
  * and the file-delivery live; this only translates. So the model is the same one the bridge
  * already has: one bridge per machine, and as many MCP clients as you like, each spawning its
@@ -25,15 +25,15 @@
  *
  * Configure it in an MCP client (path is this file, wherever it was saved):
  *
- *     { "mcpServers": { "altery-figma": { "command": "node",
+ *     { "mcpServers": { "allcrew-channel": { "command": "node",
  *                                         "args": ["/abs/path/to/mcp.mjs"] } } }
  *
- * Environment (shared with agent/altery-figma.mjs, so a machine that ran the bridge needs no
+ * Environment (shared with agent/allcrew-channel.mjs, so a machine that ran the bridge needs no
  * setup):
- *   ALTERY_AGENT_URL          default http://127.0.0.1:8788
- *   ALTERY_AGENT_SECRET       optional — else the file the bridge minted
- *   ALTERY_AGENT_SECRET_FILE  default ~/.altery/agent-secret
- *   ALTERY_AGENT_FILE         optional default target (a handle, part of a name, or "*")
+ *   ALLCREW_CHANNEL_AGENT_URL          default http://127.0.0.1:8788
+ *   ALLCREW_CHANNEL_AGENT_SECRET       optional — else the file the bridge minted
+ *   ALLCREW_CHANNEL_AGENT_SECRET_FILE  default ~/.allcrew-channel/agent-secret
+ *   ALLCREW_CHANNEL_AGENT_FILE         optional default target (a handle, part of a name, or "*")
  */
 
 import fs from 'node:fs'
@@ -41,21 +41,21 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const BASE = (process.env.ALTERY_AGENT_URL || 'http://127.0.0.1:8788').replace(/\/+$/, '')
+const BASE = (process.env.ALLCREW_CHANNEL_AGENT_URL || 'http://127.0.0.1:8788').replace(/\/+$/, '')
 const SECRET_FILE =
-  process.env.ALTERY_AGENT_SECRET_FILE || path.join(os.homedir(), '.altery', 'agent-secret')
-const DEFAULT_TARGET = process.env.ALTERY_AGENT_FILE || ''
+  process.env.ALLCREW_CHANNEL_AGENT_SECRET_FILE || path.join(os.homedir(), '.allcrew-channel', 'agent-secret')
+const DEFAULT_TARGET = process.env.ALLCREW_CHANNEL_AGENT_FILE || ''
 
 /** The MCP revision we answer with when a client does not pin one of its own. Kept old enough
  * that a client on an older revision still recognises it; a client that sends a newer one gets
  * it echoed back, which is what the spec asks for. */
 const PROTOCOL_VERSION = '2024-11-05'
-const SERVER_INFO = { name: 'altery-figma', version: '1.0.0' }
+const SERVER_INFO = { name: 'allcrew-channel', version: '1.0.0' }
 
 /** Same order the bridge and the CLI resolve in, so none of the three needs configuring on a
  * machine that already has one of the others. */
 function resolveSecret() {
-  if (process.env.ALTERY_AGENT_SECRET) return process.env.ALTERY_AGENT_SECRET
+  if (process.env.ALLCREW_CHANNEL_AGENT_SECRET) return process.env.ALLCREW_CHANNEL_AGENT_SECRET
   try {
     return fs.readFileSync(SECRET_FILE, 'utf8').trim()
   } catch {
@@ -77,21 +77,21 @@ async function bridge(method, route, body) {
   try {
     response = await fetch(BASE + route, {
       method,
-      headers: { 'content-type': 'application/json', 'x-altery-secret': SECRET },
+      headers: { 'content-type': 'application/json', 'x-allcrew-channel-secret': SECRET },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     })
   } catch (err) {
     return {
       ok: false,
       error:
-        `cannot reach the Altery bridge at ${BASE} — is it running?  node ~/Downloads/bridge.mjs\n` +
+        `cannot reach the AllCrew Channel bridge at ${BASE} — is it running?  node ~/Downloads/bridge.mjs\n` +
         `(${err.message})`,
     }
   }
   if (response.status === 401) {
     return {
       ok: false,
-      error: `the bridge rejected the secret (401) — it is running with a different secret than ${SECRET_FILE} holds. Re-pair, or align ALTERY_AGENT_SECRET.`,
+      error: `the bridge rejected the secret (401) — it is running with a different secret than ${SECRET_FILE} holds. Re-pair, or align ALLCREW_CHANNEL_AGENT_SECRET.`,
     }
   }
   const text = await response.text()
@@ -122,7 +122,7 @@ function toolName(op) {
 const TARGET_PROP = {
   type: 'string',
   description:
-    "Which connected Figma file to act on — a handle from altery_status, or part of its name. " +
+    "Which connected Figma file to act on — a handle from allcrew_channel_status, or part of its name. " +
     "Optional when exactly one file is connected. \"*\" asks every file at once (reads only; a broadcast write is refused).",
 }
 
@@ -188,20 +188,20 @@ function opToTool(op) {
 }
 
 /** The two tools that do not depend on a connected plugin, so the surface an MCP client caches
- * at startup is never empty even when Figma is not open yet. `altery_call` is also the escape
+ * at startup is never empty even when Figma is not open yet. `allcrew_channel_call` is also the escape
  * hatch: it reaches any op — including `plugin.call`, the doorway to every panel command — by
  * name, so nothing is unreachable if the typed tool for it is momentarily absent. */
 const META_TOOLS = [
   {
-    name: 'altery_status',
+    name: 'allcrew_channel_status',
     description:
-      'List the Figma files currently connected through the Altery bridge and what each one allows (read / write). Call this first: the other tools act on one of these files.',
+      'List the Figma files currently connected through the AllCrew Channel bridge and what each one allows (read / write). Call this first: the other tools act on one of these files.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
-    name: 'altery_call',
+    name: 'allcrew_channel_call',
     description:
-      'Run any Altery op by name against a connected Figma file — the universal doorway. Prefer the named tool for an op when one is listed; use this for ops not surfaced as their own tool (e.g. plugin.call, which runs a panel command). Discover ops from altery_status → the per-op tools, or by calling plugin.commands through this.',
+      'Run any AllCrew Channel op by name against a connected Figma file — the universal doorway. Prefer the named tool for an op when one is listed; use this for ops not surfaced as their own tool (e.g. plugin.call, which runs a panel command). Discover ops from allcrew_channel_status → the per-op tools, or by calling plugin.commands through this.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -211,6 +211,36 @@ const META_TOOLS = [
         fileKey: FILE_KEY_PROP,
       },
       required: ['op'],
+    },
+  },
+  {
+    name: 'allcrew_channel_batch',
+    description:
+      'Run several ops against one Figma file in a single round trip, strictly in order. Use this whenever you are composing something — a screen is dozens of writes, and one call each means one poll wake-up, one undo entry for the designer and one timeout gamble each. Stops at the first failure unless continueOnError is set, and the answer says how far it got (`ran`, `of`, `failedAt`) so a half-applied batch is never ambiguous. Max 32 ops; send more as several batches.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        calls: {
+          type: 'array',
+          description: 'The ops to run, in order.',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', description: 'The op name, e.g. node.bind.' },
+              params: { type: 'object', description: "That op's parameters.", additionalProperties: true },
+            },
+            required: ['op'],
+          },
+        },
+        continueOnError: {
+          type: 'boolean',
+          description:
+            'Keep going after a call fails. Off by default: a batch that keeps writing after step three refused leaves a half-built screen.',
+        },
+        target: TARGET_PROP,
+        fileKey: FILE_KEY_PROP,
+      },
+      required: ['calls'],
     },
   },
 ]
@@ -264,15 +294,24 @@ function toResult(answer) {
   const body = answer.body
   if (!body || body.ok === false) {
     let text = body?.error || `the op failed (HTTP ${answer.status})`
+    /* The machine-readable half, spelled out for a model: `code` is what to branch on and
+     * `retryable` is the branch it almost always wants. Without these a model reads English and
+     * guesses whether "reads are off" is worth trying again. */
+    if (body?.code) text += `\n\ncode: ${body.code}` + (body.retryable === true ? ' (retryable)' : ' (not retryable)')
     if (answer.status === 409 && Array.isArray(body?.files)) {
       text +=
         '\n\nConnected files:\n' + body.files.map((f) => `  ${f.handle}  ${f.file}`).join('\n') + '\n\nPass "target" to choose one.'
     }
     return { content: [{ type: 'text', text }], isError: true }
   }
-  // A broadcast answers per file; a single call names the one that replied. Either way the
-  // document that answered is part of the answer — a model that cannot see it cannot tell a
-  // right answer from a right-looking one.
+  /* A batch answers per call, a broadcast per file, a single call names the one that replied.
+   * Either way the document that answered is part of the answer — a model that cannot see it
+   * cannot tell a right answer from a right-looking one. A batch whose `ok` is false is an
+   * error even though the HTTP status is 200: the batch RAN, and something in it did not. */
+  if (body.batch) {
+    const payload = { batch: true, ran: body.ran, of: body.of, ...(body.failedAt !== undefined ? { failedAt: body.failedAt } : {}), results: body.results }
+    return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], ...(body.ok ? {} : { isError: true }) }
+  }
   const payload = body.broadcast
     ? { op: body.op, broadcast: true, count: body.count, results: body.results }
     : { op: body.op, file: body.file, handle: body.handle, result: body.result }
@@ -282,21 +321,38 @@ function toResult(answer) {
 async function callTool(name, args) {
   const params = args && typeof args === 'object' ? { ...args } : {}
 
-  if (name === 'altery_status') {
+  if (name === 'allcrew_channel_status') {
     const answer = await bridge('GET', '/status')
     if (!answer.ok) return { content: [{ type: 'text', text: answer.error }], isError: true }
     return { content: [{ type: 'text', text: JSON.stringify(answer.body, null, 2) }] }
   }
 
-  if (name === 'altery_call') {
+  if (name === 'allcrew_channel_call') {
     const op = typeof params.op === 'string' ? params.op : ''
-    if (!op) return { content: [{ type: 'text', text: 'altery_call needs an "op".' }], isError: true }
+    if (!op) return { content: [{ type: 'text', text: 'allcrew_channel_call needs an "op".' }], isError: true }
     const target = pickTarget(params.target)
     const fileKey = typeof params.fileKey === 'string' ? params.fileKey : ''
     return toResult(
       await bridge('POST', '/call', {
         op,
         params: params.params || {},
+        ...(target ? { target } : {}),
+        ...(fileKey ? { fileKey } : {}),
+      })
+    )
+  }
+
+  if (name === 'allcrew_channel_batch') {
+    const calls = Array.isArray(params.calls) ? params.calls : null
+    if (!calls || calls.length === 0) {
+      return { content: [{ type: 'text', text: 'allcrew_channel_batch needs a non-empty "calls" array of { op, params }.' }], isError: true }
+    }
+    const target = pickTarget(params.target)
+    const fileKey = typeof params.fileKey === 'string' ? params.fileKey : ''
+    return toResult(
+      await bridge('POST', '/calls', {
+        calls,
+        ...(params.continueOnError === true ? { continueOnError: true } : {}),
         ...(target ? { target } : {}),
         ...(fileKey ? { fileKey } : {}),
       })
@@ -470,7 +526,7 @@ function main() {
     inputEnded = true
     exitWhenDrained()
   })
-  log(`altery-figma MCP server ready — bridge ${BASE}${SECRET ? '' : ' (no secret found; run the bridge once, or set ALTERY_AGENT_SECRET)'}`)
+  log(`allcrew-channel MCP server ready — bridge ${BASE}${SECRET ? '' : ' (no secret found; run the bridge once, or set ALLCREW_CHANNEL_AGENT_SECRET)'}`)
 }
 
 /* ------------------------------------------------------------------ install */
@@ -481,7 +537,7 @@ function main() {
  * its own file, and the four steps of finding that file, creating it, merging rather than
  * overwriting, and getting the absolute path right are exactly the four a person gets wrong
  * once and blames the tool for. The entry is merged into whatever is already there; an
- * existing `altery-figma` entry is replaced, everything else is left alone.
+ * existing `allcrew-channel` entry is replaced, everything else is left alone.
  */
 
 /** Client → where it keeps its MCP servers. JSON only: Codex keeps TOML, and rewriting
@@ -496,7 +552,7 @@ export const MCP_CLIENTS = {
   vscode: { label: 'VS Code (user)', file: ['.vscode', 'mcp.json'] },
 }
 
-export const SERVER_NAME = 'altery-figma'
+export const SERVER_NAME = 'allcrew-channel'
 
 /** The entry itself — one absolute path, so it works whatever directory the client starts in. */
 export function serverEntry(scriptPath) {

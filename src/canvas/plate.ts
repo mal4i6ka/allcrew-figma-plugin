@@ -15,6 +15,12 @@
 export interface PlateSettings {
   format: 'PNG' | 'JPG'
   constraint: ExportSettingsConstraints
+  /** The rest of Figma's export row — `contentsOnly`, `useAbsoluteBounds`, `colorProfile`.
+   * The plate is the same render as any other, minus the children: dropping these here would
+   * make `withoutChildren` silently ignore settings the same call honours without it. */
+  contentsOnly?: boolean
+  useAbsoluteBounds?: boolean
+  colorProfile?: string
 }
 
 function hasChildren(node: SceneNode): node is SceneNode & ChildrenMixin {
@@ -69,7 +75,13 @@ export async function exportPlate(node: SceneNode, settings: PlateSettings): Pro
     clone.x = transform[0][2]
     clone.y = transform[1][2]
     hideDescendants(clone)
-    return await clone.exportAsync({ format: settings.format, constraint: settings.constraint })
+    return await clone.exportAsync({
+      format: settings.format,
+      constraint: settings.constraint,
+      ...(settings.contentsOnly === undefined ? {} : { contentsOnly: settings.contentsOnly }),
+      ...(settings.useAbsoluteBounds === undefined ? {} : { useAbsoluteBounds: settings.useAbsoluteBounds }),
+      ...(settings.colorProfile === undefined ? {} : { colorProfile: settings.colorProfile }),
+    } as ExportSettingsImage)
   } finally {
     if (!clone.removed) clone.remove()
   }

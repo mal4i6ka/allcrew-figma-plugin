@@ -1,6 +1,6 @@
 /**
  * Design Tokens target — wraps the token engine to produce a design-token package.
- * Ported from altery-figma-ds code.js:1129-1165 (buildPackage).
+ * Ported from allcrew-channel code.js:1129-1165 (buildPackage).
  *
  * The token engine (`normalizeOptions`) reads a FLAT options object (`inlinePrimitives`,
  * `themeAttr`, `typoExtract`, …). The plugin persists the nested `ExportOptions` shape,

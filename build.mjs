@@ -23,9 +23,9 @@ const commonOptions = {
  * stays readable and diffable on its own.
  */
 const EMBEDS = [
-  { marker: "'__ALTERY_BRIDGE_SOURCE__'", file: "agent/bridge.mjs" },
-  { marker: "'__ALTERY_MCP_SOURCE__'", file: "agent/mcp.mjs" },
-  { marker: "'__ALTERY_RECEIVER_SOURCE__'", file: "server/receiver.mjs" },
+  { marker: "'__ALLCREW_CHANNEL_BRIDGE_SOURCE__'", file: "agent/bridge.mjs" },
+  { marker: "'__ALLCREW_CHANNEL_MCP_SOURCE__'", file: "agent/mcp.mjs" },
+  { marker: "'__ALLCREW_CHANNEL_RECEIVER_SOURCE__'", file: "server/receiver.mjs" },
 ];
 
 function copyUi() {
@@ -35,7 +35,8 @@ function copyUi() {
       // Loud, because the alternative is shipping a download button that writes an empty file.
       throw new Error(`ui.html no longer contains ${marker} — the ${file} download would ship empty`);
     }
-    ui = ui.replace(marker, JSON.stringify(readFileSync(file, "utf8")));
+    const embedded = JSON.stringify(readFileSync(file, "utf8")).replace(/<\/script/gi, "<\\/script");
+    ui = ui.replace(marker, embedded);
   }
   writeFileSync("dist/ui.html", ui);
 }
@@ -46,8 +47,8 @@ function copyUi() {
  * code.ts is callable by an agent as soon as it is built — there is no registry to update and
  * no generated file that can fall behind.
  */
-const UI_COMMANDS_MARKER = "'__ALTERY_UI_COMMANDS__'";
-const PROPS_MARKER = "'__ALTERY_PROPS__'";
+const UI_COMMANDS_MARKER = "'__ALLCREW_CHANNEL_UI_COMMANDS__'";
+const PROPS_MARKER = "'__ALLCREW_CHANNEL_PROPS__'";
 
 /**
  * Every non-test source, concatenated, as the dictionary the extractor resolves param types

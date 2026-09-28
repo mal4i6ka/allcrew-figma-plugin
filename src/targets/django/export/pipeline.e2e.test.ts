@@ -2,7 +2,7 @@
  * End-to-end pipeline test (T7.2, docs/PLAN.md E7): эталонный Figma-файл (tests/fixtures/
  * figma-reference.json — токены + `Card` компонент) прогоняется через весь реальный конвейер
  * (`emitDjangoProject` → `emitTokenArtifacts` → `buildExportTree` → zip) и применяется поверх
- * копии эталонного Django-проекта (tests/fixtures/django-reference) настоящим `altery-dj apply`
+ * копии эталонного Django-проекта (tests/fixtures/django-reference) настоящим `allcrew-channel apply`
  * (cli/, REFORM фаза 5), затем проверяется, что итоговая структура файлов manage.py-совместима
  * и что содержимое, дошедшее до диска, побайтово совпадает с тем, что выдали эмиттеры.
  * Полноценное визуальное (пиксельное) сравнение недоступно в этой среде без headless-браузера;
@@ -156,23 +156,23 @@ test('full pipeline: figma-reference.json + Card component → Django export →
     await cp(path.join(fixturesDir, 'django-reference'), projectDir, { recursive: true })
     const appDir = path.join(projectDir, 'pages')
 
-    // REFORM phase 5: the layout step is the REAL `altery-dj apply` (cli/altery_dj) run the way
+    // REFORM phase 5: the layout step is the REAL `allcrew-channel apply` (cli/allcrew_channel) run the way
     // users run it — this test is the parity gate that replaced scripts/apply-django-export.mjs.
     const zipPath = path.join(workRoot, 'export.zip')
     await writeFile(zipPath, zipBuffer)
     const cliDir = fileURLToPath(new URL('../../../../cli/', import.meta.url))
-    const applyResult = spawnSync('python3', ['-m', 'altery_dj', 'apply', zipPath, '--app', appDir], {
+    const applyResult = spawnSync('python3', ['-m', 'allcrew_channel', 'apply', zipPath, '--app', appDir], {
       encoding: 'utf8',
       env: { ...process.env, PYTHONPATH: cliDir },
     })
     if (applyResult.error && (applyResult.error as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error('python3 not found on PATH — required for the altery-dj apply e2e step')
+      throw new Error('python3 not found on PATH — required for the allcrew-channel apply e2e step')
     }
 
     // The CLI prints fully-resolved paths; macOS tempdirs are symlinks (/var → /private/var).
     const realProjectDir = await realpath(projectDir)
 
-    await t.test('altery-dj apply lays the zip onto the reference project\'s manage.py-relative app dir', () => {
+    await t.test('allcrew-channel apply lays the zip onto the reference project\'s manage.py-relative app dir', () => {
       assert.equal(applyResult.status, 0, applyResult.stdout + applyResult.stderr)
       assert.ok(applyResult.stdout.includes(`manage.py found at ${realProjectDir}`))
       for (const written of ['templates/base.html', landingPath, cardPath, 'static/css/tokens.css', 'static/css/site.css']) {

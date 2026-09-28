@@ -44,8 +44,18 @@ export interface FindAllWithCriteriaOptions {
  * Yield to the host every this many visited nodes so large pages stay responsive. */
 const YIELD_EVERY = 500
 
+/**
+ * Waits `ms` and resolves. The executor form is deliberate: the plugin sandbox is pinned to
+ * ES2020 (see `tsconfig.json`), so `Promise.withResolvers` does not exist there, and raising the
+ * whole target to shorten one helper would be trading a real constraint for a style preference.
+ */
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Hand the main thread back for one turn. */
 export function yieldToHost(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0))
+  return sleep(0)
 }
 
 export async function findAllWithCriteria<T extends SceneNode>(
@@ -180,6 +190,26 @@ export async function walkSceneNodes(
     return { visited, insideInstances }
   } finally {
     figma.skipInvisibleInstanceChildren = false
+  }
+}
+
+/**
+ * Returns the scene node directly under a page.
+ *
+ * Figma can emit `selectionchange` with a stale instance sublayer immediately after its
+ * component was replaced. Reading `.parent` on that proxy throws `get_parent` instead of
+ * returning null, so ancestry consumers must fail closed for that one transient event.
+ */
+export function topLevelAncestorOrNull(node: SceneNode): SceneNode | null {
+  let current = node
+  try {
+    while (true) {
+      const parent = current.parent
+      if (!parent || parent.type === 'PAGE' || parent.type === 'DOCUMENT') return current
+      current = parent as SceneNode
+    }
+  } catch {
+    return null
   }
 }
 

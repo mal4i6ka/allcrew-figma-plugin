@@ -1,5 +1,5 @@
 /**
- * Altery Design System Export — unified plugin sandbox (main thread).
+ * AllCrew Channel — unified plugin sandbox (main thread).
  *
  * Reads the file's LOCAL variables + collections + text styles via the Figma Plugin API
  * and builds either a design-token package or a Django project, depending on the
@@ -9,7 +9,14 @@
  * original code.js pure functions. The Figma glue is guarded by `typeof figma`.
  */
 
-import { readAllVariables, readLibraryVariables, readLocalVariables, type CollectionEntry, type VariableEntry } from './variables'
+import {
+  readAllVariables,
+  readLibraryVariables,
+  readLocalVariables,
+  type CollectionEntry,
+  type VariableEntry,
+  type VariableSnapshot,
+} from './variables'
 import { emitMotionTokensJs } from './targets/django/tokens'
 import { emitTokenArtifacts, tokenEmitOptionsFrom } from './tokens/index'
 import { emitBootstrapArtifacts } from './targets/django/bootstrap/map'
@@ -23,7 +30,7 @@ import { collectReactionDestinationIds } from './targets/django/interactions'
 import { matchBootstrapComponent } from './targets/django/bootstrap/components'
 import { imageFillUrls, scaleBorderRadius } from './targets/django/css-emitter'
 import type { ThemableSetData, ThemableVariantData } from './targets/django/bootstrap/theme'
-import { findAllWithCriteria, walkSceneNodes, yieldToHost } from './utils/tree'
+import { findAllWithCriteria, topLevelAncestorOrNull, walkSceneNodes, yieldToHost } from './utils/tree'
 import { exportPlate } from './canvas/plate'
 import { extractStrings, type ExtractedEntry } from './targets/django/i18n/extract'
 import { translationKey } from './targets/django/i18n/normalize'
@@ -65,7 +72,7 @@ import { buildDesignTokens } from './targets/design-tokens'
 import { buildTauriExportTree } from './targets/tauri/index'
 import { applyPaletteFix, generatePalette, suggestHarmoniousSpectrum, type PaletteSettings } from './tokens/palette'
 import { normalizePaletteFix, normalizePaletteSettings } from './tokens/palette-settings'
-import { foldSplitThemeCollections } from './tokens/split-theme'
+import { foldSplitThemeCollections, singleModeCollectionState, type CollectionMerge } from './tokens/split-theme'
 import { applyPalette, DEFAULT_APPLY_OPTIONS, type PaletteApplyOptions } from './targets/ds-tools/palette-apply'
 import { readRemapInventory, type RemapInventory, type ScanDepth } from './targets/ds-tools/remap-inventory'
 import {
@@ -97,17 +104,24 @@ import { deliverPackage } from './delivery'
 import { agentManifest, handleAgentRequest, setGates } from './agent/listener.ts'
 import { postToUi } from './agent/ui-post.ts'
 import { setModuleProvider, setUiMessageRunner } from './agent/plugin-ops.ts'
+import { setModuleAdminProvider } from './agent/module-ops.ts'
 import { UI_COMMANDS } from './agent/ui-commands.ts'
 import {
+  compareModuleVersions,
   describeModules,
   findModuleCommand,
+  migrateModuleState,
   moduleCommandDefs,
+  moduleStorageProblems,
+  redactModuleState,
   registerModules,
+  MODULE_COUNT_LIMIT,
   MODULE_SIZE_LIMIT,
   type RegisteredModule,
   type StoredModule,
 } from './modules/registry.ts'
-import { moduleCapabilities, parseUserModule } from './modules/contract.ts'
+import { conditionMatches, moduleCapabilities, moduleStateValueError, parseUserModule, type ModuleProblem, type UserModule } from './modules/contract.ts'
+import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TEMPLATE, moduleAgentPrompt } from './modules/schema.ts'
 import { planProps } from './canvas/props.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
 import { componentName as reactComponentName } from './targets/react/jsx.ts'
@@ -170,6 +184,7 @@ type PluginMessage =
   | { type: 'IMPORT_TRANSLATIONS'; content: string; format: ImportFormat; scope: ExportScope }
   | { type: 'CONFIRM_EXPORT'; scope: ExportScope; modules: ExportModules; cssFile: string; existingFiles?: Record<string, string> }
   | { type: 'SAVE_EXPORT_OPTIONS'; options: Partial<ExportOptions> }
+  | { type: 'LIST_VARIABLE_COLLECTIONS' }
   | { type: 'SYNC_BREAKPOINT_FRAMES' }
   | { type: 'SAVE_USER_PRESET'; label: string; values: unknown }
   | { type: 'DELETE_USER_PRESET'; id: string }
@@ -228,6 +243,11 @@ type PluginMessage =
       quality?: string
       loop?: number
       withoutChildren?: boolean
+      contentsOnly?: boolean
+      useAbsoluteBounds?: boolean
+      colorProfile?: string
+      svgIdAttribute?: boolean
+      svgSimplifyStroke?: boolean
     }
   | { type: 'MOTION_STYLES' }
   | { type: 'SHADER_LIST'; kind?: string; scope?: string }
@@ -267,8 +287,9 @@ type PluginMessage =
     }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
+  | { type: 'MODULE_SCHEMA' }
   | { type: 'MODULE_INSPECT'; file: unknown }
-  | { type: 'MODULE_INSTALL'; file: unknown; replace?: boolean }
+  | { type: 'MODULE_INSTALL'; file: unknown; replace?: boolean; allowDowngrade?: boolean }
   | { type: 'MODULE_REMOVE'; id: string }
   | { type: 'MODULE_ENABLE'; id: string; enabled: boolean }
   | { type: 'MODULE_EXPORT'; id: string }
@@ -605,18 +626,20 @@ async function variableNamesForExport(): Promise<{
   css: string
   gaps: string[]
 }> {
-  const asCss = async (snapshot: Awaited<ReturnType<typeof readAllVariables>>): Promise<string> => {
-    const stored = await figma.clientStorage.getAsync('exportOptions')
-    return emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored), readRenameMap())).css
-  }
+  const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions'))
+  const asCss = (snapshot: VariableSnapshot): string =>
+    emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions, readRenameMap())).css
   try {
-    const snapshot = await readAllVariables()
-    return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), css: await asCss(snapshot), gaps: [] }
+    const snapshot = await readAllVariables({ collectionMerges: exportOptions.themeMerges.groups })
+    return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), css: asCss(snapshot), gaps: [] }
   } catch (error) {
-    const local = await readLocalVariables()
+    const local = foldSplitThemeCollections(
+      await readLocalVariables(),
+      exportOptions.themeMerges.groups
+    )
     return {
       names: new Map(local.variables.map((one) => [one.id, one.name])),
-      css: await asCss(local),
+      css: asCss(local),
       gaps: [
         'the library variables could not be read (' +
           String((error as Error)?.message || error) +
@@ -965,7 +988,7 @@ async function probeFontFacts(styles: readonly TextStyle[]): Promise<Map<string,
   let probe: TextNode | null = null
   try {
     probe = figma.createText()
-    probe.name = '[altery] font probe'
+    probe.name = '[allcrew-channel] font probe'
     probe.visible = false
     for (const [key, fontName] of fonts) {
       try {
@@ -994,7 +1017,10 @@ async function probeFontFacts(styles: readonly TextStyle[]): Promise<Map<string,
  * in it at all. `includeLibraries` is how that file gets its own design system; `libraryNote`
  * is how the other one finds out there was something to include.
  */
-async function readGraph(includeLibraries = false): Promise<{ graph: TokenGraph; libraryNote?: string }> {
+async function readGraph(
+  includeLibraries = false,
+  collectionMerges: readonly CollectionMerge[] = []
+): Promise<{ graph: TokenGraph; libraryNote?: string }> {
   const [collections, variables, textStyles, effectStyles] = await Promise.all([
     figma.variables.getLocalVariableCollectionsAsync(),
     figma.variables.getLocalVariablesAsync(),
@@ -1014,7 +1040,7 @@ async function readGraph(includeLibraries = false): Promise<{ graph: TokenGraph;
     collections: collections
       .map((c) => {
         let generated = false
-        try { generated = c.getPluginData('altery-typo-collection') === '1' } catch { /* ignore */ }
+        try { generated = c.getPluginData('allcrew-channel-typo-collection') === '1' } catch { /* ignore */ }
         return {
           id: c.id,
           name: c.name,
@@ -1083,7 +1109,7 @@ async function readGraph(includeLibraries = false): Promise<{ graph: TokenGraph;
         }
       }),
     })),
-  })
+  }, collectionMerges)
   return { graph, ...(libraryNote ? { libraryNote } : {}) }
 }
 
@@ -1260,7 +1286,7 @@ async function collectComponentDocs(
 
 /* ------------------------------------------------------------------ sandbox entry */
 
-const TYPO_COLLECTION_PLUGIN_KEY = 'altery-typo-collection'
+const TYPO_COLLECTION_PLUGIN_KEY = 'allcrew-channel-typo-collection'
 
 export interface TypographyGenReport {
   collection: string
@@ -1383,8 +1409,12 @@ if (figma.mode === 'codegen') {
     }
   })
 } else {
-  figma.showUI(__html__, { width: 420, height: 660, themeColors: true })
+  figma.showUI(__html__, { width: 426, height: 958, themeColors: true })
 }
+
+const EXPORT_OPTIONS_KEY = 'allcrewChannel.v1.exportOptions'
+const USER_PRESETS_KEY = 'allcrewChannel.v1.userPresets'
+const PALETTE_SETTINGS_KEY = 'allcrewChannel.v1.paletteSettings'
 
 /**
  * Remembered gates, keyed by file. `figma.fileKey` is the real identity and is what a private
@@ -1398,7 +1428,7 @@ if (figma.mode === 'codegen') {
  * afternoon is not deliberation either. The switches stay in the panel and revoking is one
  * click; that, not the re-asking, is what keeps the grant real.
  */
-const GATES_KEY = 'agentGates'
+const GATES_KEY = 'allcrewChannel.v1.agentGates'
 
 interface StoredGates {
   read: boolean
@@ -1456,9 +1486,9 @@ async function rememberGates(gates: StoredGates): Promise<void> {
 const isRelaunch = figma.command === 'reexport'
 
 Promise.all([
-  figma.clientStorage.getAsync('exportOptions'),
-  figma.clientStorage.getAsync('userPresets'),
-  figma.clientStorage.getAsync('paletteSettings'),
+  figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY),
+  figma.clientStorage.getAsync(USER_PRESETS_KEY),
+  figma.clientStorage.getAsync(PALETTE_SETTINGS_KEY),
 ]).then(async ([storedOptions, storedPresets, storedPalette]) => {
   // Before anything answers: a module command has to be callable from the first request, and
   // the channel's command list is assembled per call from whatever this holds.
@@ -1485,17 +1515,13 @@ Promise.all([
   })
 })
 
-function topLevelAncestorOf(node: SceneNode): SceneNode {
-  let current: SceneNode = node
-  while (current.parent && current.parent.type !== 'PAGE') current = current.parent as SceneNode
-  return current
-}
 
 function postSelectionToUi(): void {
   const selection = figma.currentPage.selection
   if (selection.length === 0) return
   const node = selection[0]
-  const top = topLevelAncestorOf(node)
+  const top = topLevelAncestorOrNull(node)
+  if (!top) return
   postToUi({
     type: 'SELECTION_CHANGED',
     nodeId: node.id,
@@ -2119,7 +2145,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
  * is *usable* — whether it parses, what it may call, whether one of its steps names a command
  * this build does not have — is decided in `src/modules/`, which knows nothing about Figma.
  */
-const MODULES_KEY = 'userModules'
+const MODULES_KEY = 'allcrewChannel.v1.userModules'
 
 let userModules: RegisteredModule[] = []
 
@@ -2146,21 +2172,119 @@ function versionOf(entry: StoredModule | undefined): string | null {
   return typeof version === 'string' ? version : null
 }
 
-/** Declared defaults with whatever the module has kept laid over them — what a field shows, and
- * what a run starts from. A stored value for a field the module no longer declares is dropped
- * rather than carried forward by an upgrade. */
+/** Declared defaults overlaid with compatible persisted values. */
 function moduleStateOf(entry: RegisteredModule): Record<string, unknown> {
-  const state: Record<string, unknown> = {}
-  for (const [name, field] of Object.entries(entry.module?.state ?? {})) {
-    const kept = entry.stored?.state?.[name]
-    state[name] = typeof kept === field.type ? kept : field.default
-  }
-  return state
+  return entry.module ? migrateModuleState(entry.module, entry.stored?.state) : {}
+}
+
+function redactedModuleState(entry: RegisteredModule): Record<string, unknown> {
+  return entry.module ? redactModuleState(entry.module, moduleStateOf(entry)) : {}
+}
+
+function moduleSecretsSet(entry: RegisteredModule): string[] {
+  const state = moduleStateOf(entry)
+  return Object.entries(entry.module?.state ?? {})
+    .filter(([name, field]) => field.secret && typeof state[name] === 'string' && state[name] !== '')
+    .map(([name]) => name)
 }
 
 async function writeStoredModules(next: Record<string, StoredModule>): Promise<void> {
+  const problems = moduleStorageProblems(next)
+  if (problems.length > 0) throw new Error(problems.join('; '))
   await figma.clientStorage.setAsync(MODULES_KEY, next)
   userModules = registerModules(next, UI_COMMANDS)
+}
+
+class ModuleValidationError extends Error {
+  constructor(readonly problems: ModuleProblem[]) {
+    super(problems.map((problem) => `${problem.path || '(root)'}: ${problem.message}`).join('\n'))
+  }
+}
+
+async function installUserModule(
+  file: unknown,
+  options: { replace: boolean; allowDowngrade: boolean },
+): Promise<{ module: UserModule; replaced: boolean; previousVersion: string | null }> {
+  const storedFile = typeof file === 'string' ? JSON.parse(file) as unknown : file
+  const size = JSON.stringify(storedFile ?? null).length
+  if (size > MODULE_SIZE_LIMIT) throw new Error(`the module is ${size} bytes; the limit is ${MODULE_SIZE_LIMIT}`)
+  const { module, problems } = parseUserModule(storedFile, UI_COMMANDS)
+  if (!module) throw new ModuleValidationError(problems)
+
+  const stored = await readStoredModules()
+  const existing = stored[module.id]
+  if (existing && !options.replace) throw new Error(`"${module.id}" is already installed — pass replace: true to overwrite it`)
+  if (!existing && Object.keys(stored).length >= MODULE_COUNT_LIMIT) {
+    throw new Error(`module count limit ${MODULE_COUNT_LIMIT} reached`)
+  }
+  const previousVersion = versionOf(existing)
+  if (previousVersion && compareModuleVersions(module.version, previousVersion) < 0 && !options.allowDowngrade) {
+    throw new Error(`refusing downgrade from ${previousVersion} to ${module.version} — pass allowDowngrade: true to make that explicit`)
+  }
+  const now = new Date().toISOString()
+  await writeStoredModules({
+    ...stored,
+    [module.id]: {
+      file: storedFile,
+      state: migrateModuleState(module, existing?.state),
+      installedAt: existing?.installedAt ?? now,
+      ...(existing ? { updatedAt: now } : {}),
+      ...(existing?.disabled === true ? { disabled: true } : {}),
+    },
+  })
+  return { module, replaced: Boolean(existing), previousVersion }
+}
+
+async function configureUserModule(
+  id: string,
+  enabled: boolean | undefined,
+  rawState: unknown,
+): Promise<Record<string, unknown>> {
+  const entry = userModules.find((candidate) => candidate.id === id)
+  if (!entry?.module) throw new Error(`no usable module "${id}"`)
+  const stored = await readStoredModules()
+  const held = stored[id]
+  if (!held) throw new Error(`module "${id}" is not installed`)
+  const state = moduleStateOf(entry)
+  if (rawState !== undefined) {
+    if (typeof rawState !== 'object' || rawState === null || Array.isArray(rawState)) throw new Error('state must be an object')
+    for (const [name, value] of Object.entries(rawState as Record<string, unknown>)) {
+      const field = entry.module.state[name]
+      if (!field) throw new Error(`module "${id}" declares no field "${name}"`)
+      const error = moduleStateValueError(field, value)
+      if (error) throw new Error(`"${name}" ${error}`)
+      state[name] = value
+    }
+  }
+  await writeStoredModules({
+    ...stored,
+    [id]: {
+      ...held,
+      state,
+      ...(enabled === undefined ? {} : { disabled: !enabled }),
+      updatedAt: new Date().toISOString(),
+    },
+  })
+  const updated = userModules.find((candidate) => candidate.id === id)!
+  return { module: describeModules([updated])[0], state: redactedModuleState(updated) }
+}
+
+async function setUserModuleEnabled(id: string, enabled: boolean): Promise<RegisteredModule> {
+  const stored = await readStoredModules()
+  const held = stored[id]
+  if (!held) throw new Error(`no module "${id}" is installed`)
+  await writeStoredModules({
+    ...stored,
+    [id]: { ...held, disabled: !enabled, updatedAt: new Date().toISOString() },
+  })
+  return userModules.find((candidate) => candidate.id === id)!
+}
+
+async function removeUserModule(id: string): Promise<void> {
+  const stored = await readStoredModules()
+  if (!(id in stored)) throw new Error(`no module "${id}" is installed`)
+  const { [id]: _removed, ...rest } = stored
+  await writeStoredModules(rest)
 }
 
 /**
@@ -2207,7 +2331,70 @@ setModuleProvider({
       const entry = stored[found.entry.id]
       if (entry) await writeStoredModules({ ...stored, [found.entry.id]: { ...entry, state: report.state } })
     }
-    return report
+    return { ...report, state: redactModuleState(found.module, report.state) }
+  },
+})
+
+setModuleAdminProvider({
+  list: () => describeModules(userModules),
+  inspect(id) {
+    const entry = userModules.find((candidate) => candidate.id === id)
+    if (!entry) throw new Error(`no module "${id}" is installed`)
+    return {
+      ...describeModules([entry])[0],
+      file: entry.stored.file,
+      state: redactedModuleState(entry),
+      secretFields: Object.entries(entry.module?.state ?? {}).filter(([, field]) => field.secret).map(([name]) => name),
+    }
+  },
+  async install(file, allowDowngrade) {
+    const result = await installUserModule(file, { replace: true, allowDowngrade })
+    const capabilities = moduleCapabilities(result.module, UI_COMMANDS)
+    postToUi({
+      type: 'MODULE_INSTALLED',
+      id: result.module.id,
+      replaced: result.replaced,
+      capabilities,
+      modules: describeModules(userModules),
+    })
+    figma.notify(`${result.replaced ? 'Updated' : 'Installed'} "${result.module.name}"`)
+    return {
+      id: result.module.id,
+      version: result.module.version,
+      replaced: result.replaced,
+      ...(result.previousVersion ? { previousVersion: result.previousVersion } : {}),
+      capabilities,
+    }
+  },
+  async configure(id, enabled, state) {
+    let result: Record<string, unknown>
+    if (state === undefined && enabled !== undefined) {
+      const updated = await setUserModuleEnabled(id, enabled)
+      result = { module: describeModules([updated])[0], state: redactedModuleState(updated) }
+    } else {
+      result = await configureUserModule(id, enabled, state)
+    }
+    const entry = userModules.find((candidate) => candidate.id === id)
+    postToUi({ type: 'MODULES', modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT })
+    postToUi({ type: 'MODULE_STATE', id, state: result.state, secretsSet: entry ? moduleSecretsSet(entry) : [] })
+    return result
+  },
+  async remove(id) {
+    await removeUserModule(id)
+    postToUi({ type: 'MODULE_REMOVED', id, modules: describeModules(userModules) })
+    figma.notify(`Removed "${id}"`)
+    return { id, removed: true }
+  },
+  export(id, includeState) {
+    const entry = userModules.find((candidate) => candidate.id === id)
+    if (!entry) throw new Error(`no module "${id}" is installed`)
+    return {
+      id,
+      file: entry.stored.file,
+      json: JSON.stringify(entry.stored.file, null, 2),
+      ...(includeState ? { state: redactedModuleState(entry) } : {}),
+      secretFieldsOmitted: Object.entries(entry.module?.state ?? {}).filter(([, field]) => field.secret).map(([name]) => name),
+    }
   },
 })
 
@@ -2323,7 +2510,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param docs: what goes into the documentation half — { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide
       // @agent param tokens: overrides for this one build — { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide
       try {
-        const stored = await figma.clientStorage.getAsync('exportOptions')
+        const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)
         const saved = normalizeExportOptions(stored)
         // The call's own flags win over the saved ones: an agent asking for a native package must
         // not depend on what the designer last toggled in a UI it cannot see.
@@ -2335,7 +2522,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             ...(msg.tokens?.emitNative === undefined ? {} : { emitNative: msg.tokens.emitNative }),
           },
         }
-        const { graph, libraryNote } = await readGraph(options.tokens.includeLibraries)
+        const { graph, libraryNote } = await readGraph(
+          options.tokens.includeLibraries,
+          options.themeMerges.groups
+        )
         // Component configuration (description + doc link + props) is design intent that exists
         // nowhere in the token tree — collect it BEFORE building the package so DESIGN.md can
         // point at it, then ship COMPONENTS.md and the previews alongside the tokens.
@@ -2431,7 +2621,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         break
       }
       const settings = applyPaletteFix(normalizePaletteSettings(msg.settings), fix)
-      await figma.clientStorage.setAsync('paletteSettings', settings)
+      await figma.clientStorage.setAsync(PALETTE_SETTINGS_KEY, settings)
       // Unlike a preview, this one carries settings the UI must adopt — the fix changed them.
       postToUi({ type: 'PALETTE_FIXED', palette: generatePalette(settings), settings })
       break
@@ -2439,7 +2629,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'SAVE_PALETTE_SETTINGS': {
       // @agent write: store palette settings in clientStorage
       // @agent param settings: PaletteSettings — unrecognised input is replaced by defaults rather than refused
-      await figma.clientStorage.setAsync('paletteSettings', normalizePaletteSettings(msg.settings))
+      await figma.clientStorage.setAsync(PALETTE_SETTINGS_KEY, normalizePaletteSettings(msg.settings))
       break
     }
     case 'APPLY_PALETTE': {
@@ -2453,7 +2643,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
         const options: PaletteApplyOptions = { ...DEFAULT_APPLY_OPTIONS, ...(msg.applyOptions ?? {}) }
         const report = await applyPalette(generatePalette(settings), options)
-        await figma.clientStorage.setAsync('paletteSettings', settings)
+        await figma.clientStorage.setAsync(PALETTE_SETTINGS_KEY, settings)
         const parts: string[] = []
         if (options.variables) parts.push(`${report.created} new · ${report.updated} updated variables`)
         if (report.themeRoles) parts.push(`${report.themeRoles} theme roles`)
@@ -2757,6 +2947,18 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
 
     /* ---- shared ---- */
+    case 'LIST_VARIABLE_COLLECTIONS': {
+      // @agent read: local variable collections for the settings table, plus whether this file has only single-mode collections
+      const collections = await figma.variables.getLocalVariableCollectionsAsync()
+      const state = singleModeCollectionState(collections.map((collection) => ({
+        id: collection.id,
+        name: collection.name,
+        defaultModeId: collection.defaultModeId,
+        modes: collection.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name })),
+      })))
+      postToUi({ type: 'VARIABLE_COLLECTIONS', ...state })
+      break
+    }
     case 'READ_VARIABLES': {
       // @agent read: the raw variable snapshot: collections, modes, values, aliases
       // @agent cost: imports every variable of every enabled library one at a time — 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.
@@ -2767,11 +2969,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'EMIT_TOKENS': {
       // @agent read: emit tokens.json / tokens.css / _tokens.scss from the current variables
       // @agent cost: same library import as READ_VARIABLES — 80-90s on a large file
-      const [snapshot, stored] = await Promise.all([
-        readAllVariables(),
-        figma.clientStorage.getAsync('exportOptions'),
-      ])
-      const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored), readRenameMap())).css
+      const stored = await figma.clientStorage.getAsync('exportOptions')
+      const options = normalizeExportOptions(stored)
+      const snapshot = await readAllVariables({ collectionMerges: options.themeMerges.groups })
+      const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(options, readRenameMap())).css
       postToUi({ type: 'TOKENS_CSS', css })
       break
     }
@@ -3101,7 +3302,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           : undefined
       // The breakpoint collection lives in this file, and only the token artifacts below need the
       // library — so the expensive snapshot is read only when they are actually emitted.
-      const snapshot = tokensOn ? await readAllVariables() : await readLocalVariables()
+      const snapshot = tokensOn
+        ? await readAllVariables({ collectionMerges: previewOptions.themeMerges.groups })
+        : await readLocalVariables()
       const previewBreakpointTokens = extractBreakpointTokens(snapshot)
       const { baseHtml, pages, partials, css, interactionsCss, interactionsJs, themeCss, transitionsCss, transitionsJs, fileNodeIds } = await emitDjangoProject(
         pageRoots, sceneNodesById, variableNamesById,
@@ -3342,26 +3545,26 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'SAVE_EXPORT_OPTIONS': {
       // @agent write: store export options in clientStorage
       // @agent param options: the export settings to store, in part or whole — target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs
-      const stored = await figma.clientStorage.getAsync('exportOptions')
-      await figma.clientStorage.setAsync('exportOptions', mergeExportOptions(stored, msg.options))
+      const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)
+      await figma.clientStorage.setAsync(EXPORT_OPTIONS_KEY, mergeExportOptions(stored, msg.options))
       break
     }
     case 'SAVE_USER_PRESET': {
       // @agent write: store a user preset in clientStorage
       // @agent param label: what the preset is called in the list
       // @agent param values: the settings it holds
-      const stored = normalizeUserPresets(await figma.clientStorage.getAsync('userPresets'))
+      const stored = normalizeUserPresets(await figma.clientStorage.getAsync(USER_PRESETS_KEY))
       const updated = upsertUserPreset(stored, msg.label, msg.values)
-      await figma.clientStorage.setAsync('userPresets', updated)
+      await figma.clientStorage.setAsync(USER_PRESETS_KEY, updated)
       postToUi({ type: 'USER_PRESETS', userPresets: updated })
       break
     }
     case 'DELETE_USER_PRESET': {
       // @agent write: delete a stored user preset
       // @agent param id: the preset to delete, as the preset list gives it
-      const stored = normalizeUserPresets(await figma.clientStorage.getAsync('userPresets'))
+      const stored = normalizeUserPresets(await figma.clientStorage.getAsync(USER_PRESETS_KEY))
       const updated = stored.filter((preset) => preset.id !== msg.id)
-      await figma.clientStorage.setAsync('userPresets', updated)
+      await figma.clientStorage.setAsync(USER_PRESETS_KEY, updated)
       postToUi({ type: 'USER_PRESETS', userPresets: updated })
       break
     }
@@ -3577,7 +3780,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param source: local, library or all (default all)
       // @agent param scope: page (default) or document — the page is what a caller building a flow is working on, and loading every page is the expensive half
       // @agent param usage: false skips the instance census — quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents
-      // @agent cost: the current page is quick; scope "document" loads every page first and can take a minute or more on a large file — the older components.list op times out at 180s doing that on Altery Mobile DS
+      // @agent cost: the current page is quick; scope "document" loads every page first and can take a minute or more on a large file — the older components.list op times out at 180s doing that on AllCrew Channel
 
       // @agent param limit: how many components come back — 100 by default, 500 at most; the reply says when it had more
       try {
@@ -4223,6 +4426,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param quality: MP4 and WEBM only — LOW, MEDIUM or HIGH
       // @agent param loop: GIF only — how many times it repeats; 0 is forever
       // @agent param withoutChildren: PNG or JPG only — renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly.
+      // @agent param contentsOnly: PNG, JPG or SVG — false renders what overlaps the node from outside it too (Figma's "Ignore overlapping layers" switch, inverted); true is Figma's default
+      // @agent param useAbsoluteBounds: render the node's full bounds even where a parent clips or a mask crops it — the way to get a layer whose art spills outside its frame
+      // @agent param colorProfile: DOCUMENT (default), SRGB or DISPLAY_P3_V4 — the profile the raster is written in
+      // @agent param svgIdAttribute: SVG only — keep Figma's layer ids as `id=` attributes, so a build can address a part of the drawing
+      // @agent param svgSimplifyStroke: SVG only — true (the default) collapses a stroke into an outlined path; false keeps it a stroked path
       // @agent cost: one render each, and a large frame at 4x is megabytes — the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation
       try {
         // `{"id": "1:2"}` is what every other node-taking command accepts, and an agent that sent
@@ -4277,6 +4485,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               ? { type: 'HEIGHT', value: msg.height }
               : { type: 'SCALE', value: scale }
 
+        // Fields Figma's own export panel carries and this command used to drop. Collected once:
+        // every branch below needs the same ones, and a per-branch spread drifted apart.
+        const extras: Record<string, unknown> = {
+          ...(msg.contentsOnly === undefined ? {} : { contentsOnly: msg.contentsOnly === true }),
+          ...(msg.useAbsoluteBounds === undefined ? {} : { useAbsoluteBounds: msg.useAbsoluteBounds === true }),
+          ...(typeof msg.colorProfile === 'string' ? { colorProfile: msg.colorProfile.toUpperCase() } : {}),
+        }
+
         const files: unknown[] = []
         const reports: Array<Record<string, unknown>> = []
         const taken = new Set<string>()
@@ -4306,7 +4522,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           }
           try {
             if (format === 'SVG') {
-              const svg = await scene.exportAsync({ format: 'SVG_STRING', svgOutlineText: msg.outlineText !== false })
+              const svg = await scene.exportAsync({
+                ...extras,
+                format: 'SVG_STRING',
+                svgOutlineText: msg.outlineText !== false,
+                ...(msg.svgIdAttribute === undefined ? {} : { svgIdAttribute: msg.svgIdAttribute === true }),
+                ...(msg.svgSimplifyStroke === undefined ? {} : { svgSimplifyStroke: msg.svgSimplifyStroke === true }),
+              } as ExportSettingsSVGString)
               spent += svg.length
               if (spent > EXPORT_BUDGET) {
                 reports.push({ node: id, name: scene.name, ok: false, error: 'the 12 MB budget for this call was already spent' })
@@ -4332,8 +4554,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               bytes = await scene.exportAsync({ format: 'PDF' })
             } else {
               bytes = withoutChildren
-                ? await exportPlate(scene, { format: format as 'PNG' | 'JPG', constraint })
-                : await scene.exportAsync({ format: format as 'PNG' | 'JPG', constraint })
+                ? await exportPlate(scene, { format: format as 'PNG' | 'JPG', constraint, ...extras })
+                : await scene.exportAsync({ format: format as 'PNG' | 'JPG', constraint, ...extras } as ExportSettingsImage)
             }
             spent += bytes.length
             if (spent > EXPORT_BUDGET) {
@@ -5164,6 +5386,20 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       postToUi({ type: 'MODULES', modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT })
       break
     }
+    case 'MODULE_SCHEMA': {
+      // @agent read: the canonical user-module JSON Schema, starter file, runtime rules and limits
+      postToUi({
+        type: 'MODULE_SCHEMA',
+        schemaId: MODULE_SCHEMA_ID,
+        schema: MODULE_JSON_SCHEMA,
+        template: MODULE_TEMPLATE,
+        guide: MODULE_AUTHORING_GUIDE,
+        schemaJson: JSON.stringify(MODULE_JSON_SCHEMA, null, 2),
+        templateJson: JSON.stringify(MODULE_TEMPLATE, null, 2),
+        agentPrompt: moduleAgentPrompt(),
+      })
+      break
+    }
     case 'MODULE_INSPECT': {
       // @agent read: what a module file would be and what it would be allowed to run — installs nothing
       // @agent param file: the module document, object or JSON text; nothing is stored either way
@@ -5173,6 +5409,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         break
       }
       const stored = await readStoredModules()
+      const installedVersion = versionOf(stored[parsed.id])
       postToUi({
         type: 'MODULE_INSPECTED',
         id: parsed.id,
@@ -5191,88 +5428,63 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         // rather than against what it says about itself.
         capabilities: moduleCapabilities(parsed, UI_COMMANDS),
         installed: parsed.id in stored,
-        ...(stored[parsed.id] ? { installedVersion: versionOf(stored[parsed.id]) } : {}),
+        ...(installedVersion ? { installedVersion } : {}),
+        downgrade: installedVersion ? compareModuleVersions(parsed.version, installedVersion) < 0 : false,
       })
       break
     }
     case 'MODULE_INSTALL': {
       // @agent write: validate a module file and install it — refused whole if anything in it does not check out
-      // @agent param file: the module document itself (see TASK-user-modules.md), object or JSON text
-      // @agent param replace: true overwrites a module already installed under the same id; without it a clash is refused
+      // @agent param file: the complete declarative module object
+      // @agent param replace: true overwrites a module already installed under the same id
+      // @agent param allowDowngrade: true explicitly permits replacing a newer SemVer
       try {
-        const size = JSON.stringify(msg.file ?? null).length
-        if (size > MODULE_SIZE_LIMIT) {
-          throw new Error(`the module is ${size} bytes; the limit is ${MODULE_SIZE_LIMIT}`)
-        }
-        // Validated on its own terms: which key it will be stored under is decided *by* the id
-        // in the file, so checking the two against each other here — as the registry does for
-        // what is already stored — would refuse every install.
-        const { module: parsed, problems } = parseUserModule(msg.file, UI_COMMANDS)
-        if (!parsed) {
-          postToUi({ type: 'MODULE_REJECTED', problems })
-          figma.notify(`Module refused: ${problems.length} problem(s)`, { error: true })
-          break
-        }
-
-        const stored = await readStoredModules()
-        const existing = stored[parsed.id]
-        if (existing && msg.replace !== true) {
-          // Replacing carries away whatever the old one kept, so it is asked for rather than
-          // assumed — the version that is already there may be the one somebody is using.
-          refuse('MODULE_INSTALL', `"${parsed.id}" is already installed — pass replace: true to overwrite it`)
-          break
-        }
-        await writeStoredModules({
-          ...stored,
-          [parsed.id]: {
-            file: msg.file,
-            // An upgrade keeps what the old version stored; the module decides what to make of
-            // fields it no longer declares.
-            ...(existing?.state ? { state: existing.state } : {}),
-            installedAt: new Date().toISOString(),
-          },
+        const result = await installUserModule(msg.file, {
+          replace: msg.replace === true,
+          allowDowngrade: msg.allowDowngrade === true,
         })
-        figma.notify(`Installed "${parsed.name}"`)
+        figma.notify(`${result.replaced ? 'Updated' : 'Installed'} "${result.module.name}"`)
         postToUi({
           type: 'MODULE_INSTALLED',
-          id: parsed.id,
-          replaced: Boolean(existing),
-          capabilities: moduleCapabilities(parsed, UI_COMMANDS),
+          id: result.module.id,
+          replaced: result.replaced,
+          capabilities: moduleCapabilities(result.module, UI_COMMANDS),
           modules: describeModules(userModules),
         })
       } catch (error) {
-        const message = String((error as Error)?.message || error)
-        figma.notify('Install failed: ' + message, { error: true })
-        postToUi({ type: 'MODULE_ERROR', message })
+        if (error instanceof ModuleValidationError) {
+          figma.notify(`Module refused: ${error.problems.length} problem(s)`, { error: true })
+          postToUi({ type: 'MODULE_REJECTED', problems: error.problems })
+        } else {
+          const message = String((error as Error)?.message || error)
+          figma.notify('Install failed: ' + message, { error: true })
+          postToUi({ type: 'MODULE_ERROR', message })
+        }
       }
       break
     }
     case 'MODULE_REMOVE': {
       // @agent write: uninstall a module, and forget what it stored
       // @agent param id: the module to uninstall, as MODULES_LIST names it
-      const stored = await readStoredModules()
-      if (!(msg.id in stored)) {
-        refuse('MODULE_REMOVE', `no module "${msg.id}" is installed`)
-        break
+      try {
+        await removeUserModule(msg.id)
+        figma.notify(`Removed "${msg.id}"`)
+        postToUi({ type: 'MODULE_REMOVED', id: msg.id, modules: describeModules(userModules) })
+      } catch (error) {
+        refuse('MODULE_REMOVE', String((error as Error)?.message || error))
       }
-      const { [msg.id]: gone, ...rest } = stored
-      await writeStoredModules(rest)
-      figma.notify(`Removed "${msg.id}"`)
-      postToUi({ type: 'MODULE_REMOVED', id: msg.id, modules: describeModules(userModules) })
       break
     }
     case 'MODULE_ENABLE': {
       // @agent write: switch a module on or off without uninstalling it
       // @agent param id: the module, as MODULES_LIST names it
       // @agent param enabled: true to switch it on, false to leave it installed and inert
-      const stored = await readStoredModules()
-      const entry = stored[msg.id]
-      if (!entry) {
-        refuse('MODULE_ENABLE', `no module "${msg.id}" is installed`)
-        break
+      try {
+        await setUserModuleEnabled(msg.id, msg.enabled)
+        postToUi({ type: 'MODULES', modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT })
+      } catch (error) {
+        refuse('MODULE_ENABLE', String((error as Error)?.message || error))
       }
-      await writeStoredModules({ ...stored, [msg.id]: { ...entry, disabled: msg.enabled === false } })
-      postToUi({ type: 'MODULES', modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT })
       break
     }
     case 'MODULE_VIEW': {
@@ -5296,8 +5508,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           main: entry.module.screens.main.blocks,
           ...(entry.module.screens.settings ? { settings: entry.module.screens.settings.blocks } : {}),
         },
-        // Declared defaults, overlaid with whatever it has kept — what a field should show.
-        state: moduleStateOf(entry),
+        fields: entry.module.state,
+        // Secrets are write-only outside the sandbox: the password field renders empty and
+        // MODULE_VIEW cannot be used through plugin.call to recover one.
+        state: redactedModuleState(entry),
+        secretsSet: moduleSecretsSet(entry),
       })
       break
     }
@@ -5305,28 +5520,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent write: set one field of a module's own state, checked against the type it declared
       // @agent param id: the module, as MODULES_LIST names it
       // @agent param field: the state field it declared
-      // @agent param value: the new value, checked against the type the module declared for that field
-      const entry = userModules.find((candidate) => candidate.id === msg.id)
-      const declared = entry?.module?.state[msg.field]
-      if (!entry?.module || !declared) {
-        refuse('MODULE_STATE_SET', `module "${msg.id}" declares no field "${msg.field}"`)
-        break
+      // @agent param value: the new value, checked against the declared type and numeric bounds
+      try {
+        const result = await configureUserModule(msg.id, undefined, { [msg.field]: msg.value })
+        const updated = userModules.find((candidate) => candidate.id === msg.id)
+        postToUi({ type: 'MODULE_STATE', id: msg.id, state: result.state, secretsSet: updated ? moduleSecretsSet(updated) : [] })
+      } catch (error) {
+        refuse('MODULE_STATE_SET', String((error as Error)?.message || error))
       }
-      if (typeof msg.value !== declared.type) {
-        // The same rule the runner enforces on `set`: a declared type is a promise to whoever
-        // renders the field and to whoever reads the storage next time.
-        refuse('MODULE_STATE_SET', `"${msg.field}" is declared ${declared.type}, not ${typeof msg.value}`)
-        break
-      }
-      const stored = await readStoredModules()
-      const held = stored[msg.id]
-      if (!held) {
-        refuse('MODULE_STATE_SET', `module "${msg.id}" is not installed`)
-        break
-      }
-      const state = { ...moduleStateOf(entry), [msg.field]: msg.value }
-      await writeStoredModules({ ...stored, [msg.id]: { ...held, state } })
-      postToUi({ type: 'MODULE_STATE', id: msg.id, state })
       break
     }
     case 'MODULE_RUN': {
@@ -5344,6 +5545,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       }
       if (block.block !== 'button') {
         refuse('MODULE_RUN', `block ${msg.block} is a ${block.block}, not a button`)
+        break
+      }
+      const currentState = moduleStateOf(entry)
+      if (!conditionMatches(block.when, currentState) || (block.disabledWhen && conditionMatches(block.disabledWhen, currentState))) {
+        refuse('MODULE_RUN', `button "${block.label}" is not currently available`)
         break
       }
       try {
@@ -5365,7 +5571,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               return sink
             },
             confirmed: msg.confirm === true,
-            state: moduleStateOf(entry),
+            state: currentState,
           }
         )
         if (report.ok) {
@@ -5373,7 +5579,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           const held = stored[msg.id]
           if (held) await writeStoredModules({ ...stored, [msg.id]: { ...held, state: report.state } })
         }
-        postToUi({ type: 'MODULE_RUN_REPORT', id: msg.id, screen: msg.screen, block: msg.block, report })
+        postToUi({
+          type: 'MODULE_RUN_REPORT',
+          id: msg.id,
+          screen: msg.screen,
+          block: msg.block,
+          report: { ...report, state: redactModuleState(entry.module, report.state) },
+        })
         if (report.error) figma.notify(`${block.label}: ${report.error}`, { error: true })
       } catch (error) {
         const message = String((error as Error)?.message || error)
@@ -5385,9 +5597,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'MODULE_EXPORT': {
       // @agent read: hand back a module's file exactly as it was installed, to save or pass on
       // @agent param id: the module to hand back as its manifest
-      const stored = await readStoredModules()
-      const entry = stored[msg.id]
-      if (!entry) {
+      const registered = userModules.find((candidate) => candidate.id === msg.id)
+      if (!registered) {
         refuse('MODULE_EXPORT', `no module "${msg.id}" is installed`)
         break
       }
@@ -5401,9 +5612,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         // "nested too deep to quote" and cannot be installed anywhere. A long string does not
         // get summarised, it gets written to disk verbatim. Observed, not guessed: the first
         // export read back through the bridge would not re-validate.
-        file: entry.file,
-        json: JSON.stringify(entry.file, null, 1),
-        state: entry.state ?? null,
+        file: registered.stored.file,
+        json: JSON.stringify(registered.stored.file, null, 1),
+        state: redactedModuleState(registered),
       })
       break
     }
@@ -5475,7 +5686,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         const [irNodes, sceneNodesById, snapshot] = await Promise.all([
           Promise.all(roots.map((root) => serializeNode(root))),
           indexSceneNodes(roots),
-          modules.tokens ? readAllVariables() : readLocalVariables(),
+          modules.tokens
+            ? readAllVariables({ collectionMerges: exportOptions.themeMerges.groups })
+            : readLocalVariables(),
         ])
         const nodes = irNodes.filter((node): node is IrNode => node !== null)
         const pageRoots = nodes.filter((node): node is IrContainerNode => node.type === 'container')

@@ -1,6 +1,6 @@
 """E2E render check (T7.2, docs/PLAN.md E7): applies the plugin's emitted `Card` partial and
 `tokens.css` (tests/fixtures/expected/*, the same golden output the Node emitters produce and
-`altery-dj apply` (cli/) lays down under `<app>/templates/` and `<app>/static/`) onto a
+`allcrew-channel apply` (cli/) lays down under `<app>/templates/` and `<app>/static/`) onto a
 disposable copy of the reference Django project, then actually renders the template through
 Django's template engine and confirms staticfiles resolves the emitted stylesheet. Complements
 src/export/pipeline.e2e.test.ts (which checks the Node pipeline writes the right files at the

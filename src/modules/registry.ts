@@ -12,13 +12,14 @@
  */
 
 import type { UiCommandDef } from '../agent/ui-commands.ts'
-import { moduleCapabilities, parseUserModule, type ModuleCapability, type ModuleProblem, type UserModule } from './contract.ts'
+import { moduleCapabilities, moduleStateValueError, parseUserModule, type ModuleCapability, type ModuleProblem, type UserModule } from './contract.ts'
 
 /** One module as it sits in storage: the file exactly as imported, plus what it has kept. */
 export interface StoredModule {
   file: unknown
   state?: Record<string, unknown>
   installedAt?: string
+  updatedAt?: string
   disabled?: boolean
 }
 
@@ -36,6 +37,88 @@ export interface RegisteredModule {
  * remembers, and a module is a form and a few steps — a megabyte of one is a mistake, not a
  * feature. */
 export const MODULE_SIZE_LIMIT = 200_000
+export const MODULE_STATE_SIZE_LIMIT = 32_000
+export const MODULE_STORAGE_LIMIT = 1_000_000
+export const MODULE_COUNT_LIMIT = 64
+
+/** Keeps compatible values across upgrades, adds new defaults, and drops removed or invalid fields. */
+export function migrateModuleState(module: UserModule, previous?: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const state: Record<string, unknown> = {}
+  for (const [name, field] of Object.entries(module.state)) {
+    const value = previous?.[name]
+    state[name] = moduleStateValueError(field, value) === null ? value : field.default
+  }
+  return state
+}
+/** Removes write-only fields before state crosses the sandbox boundary. */
+export function redactModuleState(
+  module: UserModule,
+  current: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const state = { ...current }
+  for (const [name, field] of Object.entries(module.state)) if (field.secret) delete state[name]
+  return state
+}
+
+
+export function moduleStorageProblems(stored: Readonly<Record<string, StoredModule>>): string[] {
+  const problems: string[] = []
+  const entries = Object.entries(stored)
+  if (entries.length > MODULE_COUNT_LIMIT) problems.push(`module count ${entries.length} exceeds limit ${MODULE_COUNT_LIMIT}`)
+  for (const [id, entry] of entries) {
+    let stateBytes = 0
+    try {
+      stateBytes = JSON.stringify(entry.state ?? {}).length
+    } catch {
+      problems.push(`module "${id}" state is not serializable`)
+    }
+    if (stateBytes > MODULE_STATE_SIZE_LIMIT) {
+      problems.push(`module "${id}" state is ${stateBytes} bytes; limit is ${MODULE_STATE_SIZE_LIMIT}`)
+    }
+  }
+  let totalBytes = 0
+  try {
+    totalBytes = JSON.stringify(stored).length
+  } catch {
+    problems.push('module storage is not serializable')
+  }
+  if (totalBytes > MODULE_STORAGE_LIMIT) problems.push(`module storage is ${totalBytes} bytes; limit is ${MODULE_STORAGE_LIMIT}`)
+  return problems
+}
+
+/** SemVer precedence for upgrade guards. Build metadata does not affect order. */
+export function compareModuleVersions(left: string, right: string): number {
+  const parse = (version: string): { core: number[]; prerelease: string[] } => {
+    const withoutBuild = version.split('+', 1)[0]
+    const dash = withoutBuild.indexOf('-')
+    const core = dash < 0 ? withoutBuild : withoutBuild.slice(0, dash)
+    const prerelease = dash < 0 ? '' : withoutBuild.slice(dash + 1)
+    return { core: core.split('.').map(Number), prerelease: prerelease === '' ? [] : prerelease.split('.') }
+  }
+  const a = parse(left)
+  const b = parse(right)
+  for (let index = 0; index < 3; index += 1) {
+    if (a.core[index] !== b.core[index]) return (a.core[index] ?? 0) > (b.core[index] ?? 0) ? 1 : -1
+  }
+  if (a.prerelease.length === 0 || b.prerelease.length === 0) {
+    return a.prerelease.length === b.prerelease.length ? 0 : a.prerelease.length === 0 ? 1 : -1
+  }
+  const length = Math.max(a.prerelease.length, b.prerelease.length)
+  for (let index = 0; index < length; index += 1) {
+    const av = a.prerelease[index]
+    const bv = b.prerelease[index]
+    if (av === bv) continue
+    if (av === undefined) return -1
+    if (bv === undefined) return 1
+    const an = /^\d+$/.test(av) ? Number(av) : null
+    const bn = /^\d+$/.test(bv) ? Number(bv) : null
+    if (an !== null && bn !== null) return an > bn ? 1 : -1
+    if (an !== null) return -1
+    if (bn !== null) return 1
+    return av > bv ? 1 : -1
+  }
+  return 0
+}
 
 export function registerModules(
   stored: Readonly<Record<string, StoredModule>>,

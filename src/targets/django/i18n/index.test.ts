@@ -43,7 +43,7 @@ test('round-trip: exporting a node then importing its own PO restores identical 
   // tagged with an explicit i18nKey context, whose original text becomes the PO msgid.
   const originalText = 'Place order'
   const node = makeTextNode({ id: 'text:1', characters: originalText })
-  node.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ context: 'checkout.submit' }))
+  node.setSharedPluginData('allcrewChannel', 'i18nKey', JSON.stringify({ context: 'checkout.submit' }))
 
   const exportedPo = `
 #: figma://AbC123?node-id=text:1 Page 1/Checkout/CTA
@@ -62,7 +62,7 @@ msgstr "${originalText}"
   assert.equal(node.characters, 'Оформить заказ')
 
   // Revert using the backup import.ts/apply.ts wrote before the first mutation.
-  const backup = JSON.parse(node.getSharedPluginData('altery', 'i18nOriginal'))
+  const backup = JSON.parse(node.getSharedPluginData('allcrewChannel', 'i18nOriginal'))
   node.characters = backup
   assert.equal(node.characters, originalText, 'identity round-trip: original text is recoverable after translation')
 })

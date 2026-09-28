@@ -1,4 +1,4 @@
-# Altery Design System Export — установка плагина
+# AllCrew Channel — установка плагина
 
 Готовый к запуску Figma-плагин. Собран заранее — билд не нужен, достаточно
 импортировать манифест.
@@ -42,7 +42,7 @@ README.md       — этот файл
    (если пункта «Development» нет — включи Developer mode в настройках
    аккаунта Figma).
 4. Выбери файл `manifest.json` из распакованной папки.
-5. Плагин появится в **Plugins → Development → Altery Design System Export**.
+5. Плагин появится в **Plugins → Development → AllCrew Channel**.
 6. Открой Figma-файл с нужными переменными/коллекциями и запусти плагин —
    он сразу сканирует документ и показывает сводку. Настройки экспорта —
    через шестерёнку в шапке плагина.
@@ -62,7 +62,7 @@ README.md       — этот файл
    (`127.0.0.1:8788`) и ничего не публикует наружу.
 2. Первый запуск моста печатает секрет и открывает пятиминутное окно
    спаривания — нажми **Pair with bridge** в плагине. Секрет лежит в
-   `~/.altery/agent-secret` и никогда не попадает в сборку.
+   `~/.allcrew-channel/agent-secret` и никогда не попадает в сборку.
 3. Включи **Allow reads** (и **Allow writes**, если агенту можно менять файл).
    Каждый вызов виден в окне плагина — канал, за которым нельзя следить, это
    канал, на который нельзя осознанно согласиться.
@@ -73,8 +73,8 @@ MCP-клиенту (Claude Desktop, Cursor, Codex) моста достаточн
 затирая чужие серверы.
 
 С закрытым плагином часть чтений отвечает через REST API Figma: назови файл
-(`fileKey` или переменная `ALTERY_FIGMA_FILE_KEY`) и положи токен в
-`~/.altery/figma-token`. Такие ответы помечены `source: "rest"`, и канал прямо
+(`fileKey` или переменная `ALLCREW_CHANNEL_FIGMA_FILE_KEY`) и положи токен в
+`~/.allcrew-channel/figma-token`. Такие ответы помечены `source: "rest"`, и канал прямо
 говорит, чего в них нет.
 
 Полная документация канала — `agent/README.md` в репозитории плагина;
@@ -90,12 +90,12 @@ API для установки dev-плагина у Figma нет. Агент г�
 
 1. Распаковать архив:
    ```bash
-   unzip altery-figma-ds-plugin.zip -d ~/figma-plugins/altery-design-system-export
+   unzip allcrew-channel-plugin.zip -d ~/figma-plugins/allcrew-channel-design-system-export
    ```
 2. Проверить целостность пакета перед тем, как просить человека его
    импортировать:
    ```bash
-   cd ~/figma-plugins/altery-design-system-export
+   cd ~/figma-plugins/allcrew-channel-design-system-export
    test -f manifest.json && test -f dist/code.js && test -f dist/ui.html && echo OK
    python3 -c "import json; m=json.load(open('manifest.json')); \
      assert m['main']=='dist/code.js' and m['ui']=='dist/ui.html'; print('manifest OK')"

@@ -8,5 +8,6 @@ node_modules/
 # python bytecode (cli/, tests/)
 __pycache__/
 *.pyc
+*.egg-info/
 # CocoIndex Code (ccc)
 /.cocoindex_code/

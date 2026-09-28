@@ -1,6 +1,6 @@
 /**
  * Shared delivery — POSTs the generated package to a user-configured receiver endpoint.
- * Ported from altery-figma-ds code.js:1092-1109 + altery-figma-django delivery.
+ * Ported from allcrew-channel code.js:1092-1109 + allcrew-channel-django delivery.
  */
 
 export interface DeliveryConfig {
@@ -36,12 +36,12 @@ export async function deliverPackage(
       method: 'POST',
       headers: {
         'Content-Type': 'application/zip',
-        'X-Altery-Secret': config.secret,
-        'X-Altery-Target': config.target,
-        'X-Altery-Route-Repo': config.route.repo,
-        'X-Altery-Route-Branch': config.route.branch,
-        'X-Altery-Route-Path': config.route.path,
-        'X-Altery-Route-Package': config.route.package,
+        'X-AllCrew-Channel-Secret': config.secret,
+        'X-AllCrew-Channel-Target': config.target,
+        'X-AllCrew-Channel-Route-Repo': config.route.repo,
+        'X-AllCrew-Channel-Route-Branch': config.route.branch,
+        'X-AllCrew-Channel-Route-Path': config.route.path,
+        'X-AllCrew-Channel-Route-Package': config.route.package,
       },
       body: zipBytes,
     })

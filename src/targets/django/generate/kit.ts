@@ -18,7 +18,7 @@ import { COLOR, FONT, ROLES, type Rgb } from './metrics.ts'
  * a slot (SlotNode extends the same frame mixins). */
 type Container = FrameNode | ComponentNode | SlotNode
 
-const KIT_PAGE_NAME = 'Altery Bootstrap Kit'
+const KIT_PAGE_NAME = 'AllCrew Channel Bootstrap Kit'
 
 // Sticker-sheet layout constants (px).
 const HEADER_OFFSET = 140 // clusters start below the page header
@@ -425,7 +425,7 @@ function addClusterBackground(page: PageNode, cluster: Cluster, at: Placed): voi
 function pageHeader(page: PageNode, ctx: BuildCtx, plans: readonly ComponentPlan[], variants: number): void {
   const title = figma.createText()
   title.fontName = ctx.fonts.bold
-  title.characters = 'Altery Bootstrap Kit'
+  title.characters = 'AllCrew Channel Bootstrap Kit'
   title.fontSize = 32
   title.fills = [solidPaint(COLOR.bodyText)]
   title.x = 0

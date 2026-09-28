@@ -1,7 +1,7 @@
 /**
  * `mapping.json` — the record of a remap, and the contract between its two executors.
  *
- * The Figma side writes it; the repository side (`altery-dj remap`) reads it and rewrites
+ * The Figma side writes it; the repository side (`allcrew-channel remap`) reads it and rewrites
  * developer files. Because those two live in different languages and different repositories,
  * the record is deliberately rich rather than minimal: variable id, both names, both colors
  * per mode, family, step and flags. A file that only carried `old hex → new hex` would work
@@ -15,7 +15,7 @@ import { toHex } from './color-literal.ts'
 import { parseHex } from '../color.ts'
 import type { RemapEntry, RemapFlag, RemapPlan, SiteKind } from './plan.ts'
 
-export const MAPPING_FORMAT = 'altery-color-remap'
+export const MAPPING_FORMAT = 'allcrew-channel-color-remap'
 export const MAPPING_VERSION = 1
 
 export interface MappingRecord {

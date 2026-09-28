@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { darkCompanionName, foldSplitThemeCollections, isDarkCompanionOf } from './split-theme.ts'
+import {
+  darkCompanionName,
+  foldSplitThemeCollections,
+  isDarkCompanionOf,
+  parseCollectionMerges,
+  singleModeCollectionState,
+} from './split-theme.ts'
 import { emitTokenArtifacts } from './index.ts'
 
 const alias = (id: string) => ({ type: 'VARIABLE_ALIAS', id })
@@ -143,6 +149,117 @@ test('a generic mode name on the companion is replaced with "Dark"', () => {
   )
 })
 
+test('generic single modes are named Light and Dark after an automatic fold', () => {
+  const snapshot = split()
+  snapshot.collections[1].modes = [{ modeId: 'm-light', name: 'Mode 1' }]
+  snapshot.collections[2].modes = [{ modeId: 'm-dark', name: 'Mode 1' }]
+  const theme = foldSplitThemeCollections(snapshot).collections.find((collection) => collection.name === 'theme')!
+  assert.deepEqual(
+    theme.modes.map((mode) => mode.name),
+    ['Light', 'Dark']
+  )
+})
+
+test('an explicit pair folds arbitrarily named free-plan collections', () => {
+  const snapshot = split()
+  snapshot.collections[1].name = 'Semantic day'
+  snapshot.collections[1].modes = [{ modeId: 'm-light', name: 'Mode 1' }]
+  snapshot.collections[2].name = 'Semantic night'
+  snapshot.collections[2].modes = [{ modeId: 'm-dark', name: 'Mode 1' }]
+
+  const folded = foldSplitThemeCollections(snapshot, [{
+    name: 'theme',
+    modes: [
+      { collection: 'Semantic day', name: 'Light' },
+      { collection: 'Semantic night', name: 'Dark' },
+    ],
+  }])
+  const theme = folded.collections.find((collection) => collection.name === 'theme')!
+  assert.deepEqual(
+    theme.modes.map((mode) => mode.name),
+    ['Light', 'Dark']
+  )
+  assert.equal(cssOf(folded).css, cssOf(twoModes()).css)
+})
+
+test('merge declarations are semicolon separated and malformed rows are ignored', () => {
+  assert.deepEqual(
+    parseCollectionMerges(
+      'Theme = Semantic light + Semantic dark; invalid; Brand = Brand day + Brand night'
+    ),
+    [
+      {
+        name: 'Theme',
+        modes: [
+          { collection: 'Semantic light', name: 'Light' },
+          { collection: 'Semantic dark', name: 'Dark' },
+        ],
+      },
+      {
+        name: 'Brand',
+        modes: [
+          { collection: 'Brand day', name: 'Light' },
+          { collection: 'Brand night', name: 'Dark' },
+        ],
+      },
+    ]
+  )
+})
+
+test('one logical collection can contain more than two free-plan themes', () => {
+  const snapshot = split()
+  snapshot.collections[1].name = 'theme-light'
+  snapshot.collections.push({
+    id: 'c-contrast',
+    name: 'theme-contrast',
+    defaultModeId: 'm-contrast',
+    modes: [{ modeId: 'm-contrast', name: 'Mode 1' }],
+  })
+  snapshot.variables.push({
+    id: 'v-canvas-contrast',
+    name: 'bg/canvas',
+    collectionId: 'c-contrast',
+    resolvedType: 'COLOR',
+    scopes: [],
+    valuesByMode: { 'm-contrast': alias('v-n1000') },
+  })
+
+  const folded = foldSplitThemeCollections(snapshot, [{
+    name: 'Theme',
+    modes: [
+      { collection: 'theme-light', name: 'Light' },
+      { collection: 'theme-dark', name: 'Dark' },
+      { collection: 'theme-contrast', name: 'High contrast' },
+    ],
+  }])
+  const theme = folded.collections.find((collection) => collection.name === 'Theme')!
+  assert.deepEqual(theme.modes.map((mode) => mode.name), ['Light', 'Dark', 'High contrast'])
+  assert.deepEqual(
+    folded.variables.find((variable) => variable.name === 'bg/canvas')!.valuesByMode,
+    {
+      'm-light': alias('v-n0'),
+      'm-dark': alias('v-n1000'),
+      'm-contrast': alias('v-n1000'),
+    }
+  )
+})
+
+test('a companion-only token survives with the modes it actually has', () => {
+  const snapshot = split()
+  snapshot.variables.push({
+    id: 'v-dark-only',
+    name: 'accent/rose/base',
+    collectionId: 'c-dark',
+    resolvedType: 'COLOR',
+    scopes: [],
+    valuesByMode: { 'm-dark': alias('v-n1000') },
+  })
+  const folded = foldSplitThemeCollections(snapshot)
+  const rose = folded.variables.find((variable) => variable.name === 'accent/rose/base')!
+  assert.equal(rose.collectionId, 'c-theme')
+  assert.deepEqual(rose.valuesByMode, { 'm-dark': alias('v-n1000') })
+})
+
 test('a lookalike name is left alone when the two collections share no variables', () => {
   // "Surface" and "Surface dark" that describe different things are a naming coincidence,
   // not a split theme — folding them would silently corrupt both.
@@ -210,4 +327,14 @@ test('the companion name and its recogniser agree', () => {
   assert.ok(isDarkCompanionOf('Theme Dark', 'theme'))
   assert.equal(isDarkCompanionOf('theme', 'theme'), false)
   assert.equal(isDarkCompanionOf('other-dark', 'theme'), false)
+})
+
+test('the free-plan workaround is offered only for an all-single-mode file', () => {
+  const free = singleModeCollectionState(split().collections)
+  assert.equal(free.singleModeOnly, true)
+  assert.deepEqual(free.collections.map((collection) => collection.name), ['colors', 'theme', 'theme-dark'])
+
+  const paid = singleModeCollectionState(twoModes().collections)
+  assert.equal(paid.singleModeOnly, false)
+  assert.deepEqual(paid.collections.map((collection) => collection.name), ['colors'])
 })

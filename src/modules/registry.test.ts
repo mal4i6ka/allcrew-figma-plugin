@@ -1,7 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { MODULE_FORMAT } from './contract.ts'
-import { describeModules, findModuleCommand, moduleCommandDefs, registerModules } from './registry.ts'
+import { MODULE_FORMAT, parseUserModule } from './contract.ts'
+import {
+  compareModuleVersions,
+  describeModules,
+  findModuleCommand,
+  migrateModuleState,
+  moduleCommandDefs,
+  redactModuleState,
+  moduleStorageProblems,
+  registerModules,
+  MODULE_COUNT_LIMIT,
+  MODULE_STATE_SIZE_LIMIT,
+} from './registry.ts'
 import type { UiCommandDef } from '../agent/ui-commands.ts'
 
 const KNOWN: UiCommandDef[] = [
@@ -122,4 +133,42 @@ test('the listing carries what an install screen needs and not the file itself',
     ]
   )
   assert.equal(described.file, undefined, 'the listing is a description, not a copy of the module')
+})
+
+test('upgrades preserve compatible state, add defaults and redact secrets', () => {
+  const upgraded = file({
+    version: '2.0.0',
+    state: {
+      name: { type: 'string', default: 'new' },
+      count: { type: 'number', default: 4, min: 0, max: 10 },
+      enabled: { type: 'boolean', default: true },
+      token: { type: 'string', default: '', secret: true },
+    },
+  })
+  const parsed = parseUserModule(upgraded, KNOWN).module!
+  assert.deepEqual(
+    migrateModuleState(parsed, { name: 'kept', count: 99, removed: 'gone', token: 'private' }),
+    { name: 'kept', count: 4, enabled: true, token: 'private' }
+  )
+  assert.deepEqual(
+    redactModuleState(parsed, { name: 'visible', count: 3, enabled: true, token: 'private' }),
+    { name: 'visible', count: 3, enabled: true }
+  )
+})
+
+test('SemVer comparison guards downgrades including prereleases', () => {
+  assert.equal(compareModuleVersions('2.0.0', '1.9.9'), 1)
+  assert.equal(compareModuleVersions('1.0.0', '1.0.0-beta.2'), 1)
+  assert.equal(compareModuleVersions('1.0.0-beta.2', '1.0.0-beta.10'), -1)
+  assert.equal(compareModuleVersions('1.0.0+build.2', '1.0.0+build.1'), 0)
+  assert.equal(compareModuleVersions('1.0.0-rc-2', '1.0.0-rc-1'), 1)
+})
+
+test('storage budgets reject oversized state and excessive module counts', () => {
+  const large = { 'acme.pipe': { file: file(), state: { text: 'x'.repeat(MODULE_STATE_SIZE_LIMIT + 1) } } }
+  assert.ok(moduleStorageProblems(large).some((problem) => /state is .* bytes; limit/.test(problem)))
+
+  const many: Record<string, { file: unknown }> = {}
+  for (let index = 0; index <= MODULE_COUNT_LIMIT; index += 1) many[`mod.${index}`] = { file: file() }
+  assert.ok(moduleStorageProblems(many).some((problem) => /module count/.test(problem)))
 })

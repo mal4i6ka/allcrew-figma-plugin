@@ -22,7 +22,7 @@ const EMPTY_AUDIT = buildTokenAudit({ collections: [], variables: [] })
 
 function render(overrides: Partial<Parameters<typeof buildTokensDesignMd>[0]> = {}): string {
   return buildTokensDesignMd({
-    fileName: 'Altery DS',
+    fileName: 'AllCrew Channel',
     tree: TREE,
     themes: ['Light', 'Dark'],
     defaultTheme: 'Light',
@@ -62,7 +62,7 @@ test('section numbering has no gaps when a section has nothing to say', () => {
 
 test('the design-tokens package ships DESIGN.md alongside tokens.css', () => {
   const graph: TokenGraph = {
-    fileName: 'Altery DS',
+    fileName: 'AllCrew Channel',
     collections: [
       { id: 'c1', name: 'Colors', defaultModeId: 'm1', modes: [{ modeId: 'm1', name: 'Light' }] },
     ],
@@ -97,7 +97,7 @@ test('recipes omit roles that have no tokens instead of inventing a fallback nam
 /** The observed export shape: colors + an unscoped worded numeric scale (`Mesure`), floats with
  * Figma noise, and a near-duplicate pair in the would-be type scale. */
 const MESURE_GRAPH: TokenGraph = {
-  fileName: 'Altery DS',
+  fileName: 'AllCrew Channel',
   collections: [
     { id: 'c1', name: 'Colors', defaultModeId: 'm1', modes: [{ modeId: 'm1', name: 'Light' }] },
     { id: 'c2', name: 'Mesure', defaultModeId: 'm2', modes: [{ modeId: 'm2', name: 'Mode 1' }] },

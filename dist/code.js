@@ -10,7 +10,7 @@
   var __typeError = (msg) => {
     throw TypeError(msg);
   };
-  var __defNormalProp = (obj2, key, value) => key in obj2 ? __defProp(obj2, key, { enumerable: true, configurable: true, writable: true, value }) : obj2[key] = value;
+  var __defNormalProp = (obj2, key, value2) => key in obj2 ? __defProp(obj2, key, { enumerable: true, configurable: true, writable: true, value: value2 }) : obj2[key] = value2;
   var __spreadValues = (a, b) => {
     for (var prop in b || (b = {}))
       if (__hasOwnProp.call(b, prop))
@@ -40,13 +40,13 @@
     this[0] = promise;
     this[1] = isYieldStar;
   };
-  var __yieldStar = (value) => {
-    var obj2 = value[__knownSymbol("asyncIterator")], isAwait = false, method, it = {};
+  var __yieldStar = (value2) => {
+    var obj2 = value2[__knownSymbol("asyncIterator")], isAwait = false, method, it = {};
     if (obj2 == null) {
-      obj2 = value[__knownSymbol("iterator")]();
+      obj2 = value2[__knownSymbol("iterator")]();
       method = (k) => it[k] = (x) => obj2[k](x);
     } else {
-      obj2 = obj2.call(value);
+      obj2 = obj2.call(value2);
       method = (k) => it[k] = (v) => {
         if (isAwait) {
           isAwait = false;
@@ -70,18 +70,27 @@
   };
 
   // src/tokens/split-theme.ts
+  function singleModeCollectionState(collections) {
+    return {
+      collections: collections.filter((collection) => collection.modes.length === 1).map((collection) => {
+        var _a;
+        return { name: collection.name, mode: ((_a = collection.modes[0]) == null ? void 0 : _a.name) || "Mode 1" };
+      }),
+      singleModeOnly: collections.length > 0 && collections.every((collection) => collection.modes.length <= 1)
+    };
+  }
   var DARK_COMPANION = /^(.+?)[ _-]dark$/i;
+  var LIGHT_COLLECTION = /^(.+?)[ _-]light$/i;
   var GENERIC_MODE_NAMES = ["mode 1", "mode", "value", "default"];
   var normalize = (name) => name.trim().toLowerCase();
-  function darkModeNameOf(collection) {
+  var isGenericModeName = (name) => name === "" || GENERIC_MODE_NAMES.indexOf(name.toLowerCase()) !== -1;
+  function defaultModeNameOf(collection, fallback) {
     var _a, _b, _c;
-    const mode = (_a = collection.modes.find((m) => m.modeId === collection.defaultModeId)) != null ? _a : collection.modes[0];
+    const mode = (_a = collection.modes.find((entry) => entry.modeId === collection.defaultModeId)) != null ? _a : collection.modes[0];
     const name = (_c = (_b = mode == null ? void 0 : mode.name) == null ? void 0 : _b.trim()) != null ? _c : "";
-    return name === "" || GENERIC_MODE_NAMES.indexOf(name.toLowerCase()) !== -1 ? "Dark" : name;
+    return isGenericModeName(name) ? fallback : name;
   }
-  function pairCompanions(snapshot) {
-    const byName = /* @__PURE__ */ new Map();
-    for (const collection of snapshot.collections) byName.set(normalize(collection.name), collection);
+  function variableNamesByCollection(snapshot) {
     const namesByCollection = /* @__PURE__ */ new Map();
     for (const variable of snapshot.variables) {
       let names = namesByCollection.get(variable.collectionId);
@@ -91,59 +100,127 @@
       }
       names.add(variable.name);
     }
-    const pairs = /* @__PURE__ */ new Map();
-    for (const companion of snapshot.collections) {
-      const match = DARK_COMPANION.exec(companion.name.trim());
-      if (!match) continue;
-      const base = byName.get(normalize(match[1]));
-      if (!base || base.id === companion.id) continue;
-      const baseNames = namesByCollection.get(base.id);
-      const companionNames = namesByCollection.get(companion.id);
-      if (!baseNames || !companionNames) continue;
-      let overlaps = false;
-      for (const name of companionNames) {
-        if (baseNames.has(name)) {
-          overlaps = true;
+    return namesByCollection;
+  }
+  function collectionsOverlap(a, b, namesByCollection) {
+    const aNames = namesByCollection.get(a.id);
+    const bNames = namesByCollection.get(b.id);
+    if (!aNames || !bNames) return false;
+    for (const name of bNames) if (aNames.has(name)) return true;
+    return false;
+  }
+  function resolveConfiguredMerges(snapshot, configured, used) {
+    var _a;
+    const byName = new Map(snapshot.collections.map((collection) => [normalize(collection.name), collection]));
+    const namesByCollection = variableNamesByCollection(snapshot);
+    const resolved = [];
+    for (const merge of configured) {
+      const outputName = merge.name.trim();
+      if (!outputName || merge.modes.length < 2) continue;
+      const modeNames = /* @__PURE__ */ new Set();
+      const members = [];
+      let invalid = false;
+      for (const mode of merge.modes) {
+        const collection = byName.get(normalize(mode.collection));
+        const modeName = mode.name.trim();
+        const modeId = (collection == null ? void 0 : collection.defaultModeId) || ((_a = collection == null ? void 0 : collection.modes[0]) == null ? void 0 : _a.modeId);
+        if (!collection || !modeName || !modeId || used.has(collection.id) || modeNames.has(normalize(modeName))) {
+          invalid = true;
           break;
         }
+        modeNames.add(normalize(modeName));
+        members.push({ collection, name: modeName, modeId });
       }
-      if (overlaps) pairs.set(companion.id, base);
+      if (invalid || members.length < 2) continue;
+      if (members.slice(1).some((member) => !collectionsOverlap(members[0].collection, member.collection, namesByCollection))) {
+        continue;
+      }
+      const outputOwner = byName.get(normalize(outputName));
+      if (outputOwner && !members.some((member) => member.collection.id === outputOwner.id)) continue;
+      resolved.push({ name: outputName, modes: members });
+      for (const member of members) used.add(member.collection.id);
     }
-    return pairs;
+    return resolved;
   }
-  function foldSplitThemeCollections(snapshot) {
-    var _a, _b;
-    const pairs = pairCompanions(snapshot);
-    if (pairs.size === 0) return snapshot;
-    const darkModeByBase = /* @__PURE__ */ new Map();
-    for (const companion of snapshot.collections) {
-      const base = pairs.get(companion.id);
-      if (!base) continue;
-      const modeId = companion.defaultModeId || ((_a = companion.modes[0]) == null ? void 0 : _a.modeId);
-      if (modeId) darkModeByBase.set(base.id, { modeId, name: darkModeNameOf(companion) });
+  function automaticMerges(snapshot, used) {
+    const byName = new Map(snapshot.collections.map((collection) => [normalize(collection.name), collection]));
+    const namesByCollection = variableNamesByCollection(snapshot);
+    const resolved = [];
+    const add2 = (name, light, dark) => {
+      var _a, _b;
+      if (!light || !dark || light.id === dark.id || used.has(light.id) || used.has(dark.id)) return;
+      if (!collectionsOverlap(light, dark, namesByCollection)) return;
+      const lightModeId = light.defaultModeId || ((_a = light.modes[0]) == null ? void 0 : _a.modeId);
+      const darkModeId = dark.defaultModeId || ((_b = dark.modes[0]) == null ? void 0 : _b.modeId);
+      if (!lightModeId || !darkModeId) return;
+      resolved.push({
+        name,
+        modes: [
+          { collection: light, name: defaultModeNameOf(light, "Light"), modeId: lightModeId },
+          { collection: dark, name: defaultModeNameOf(dark, "Dark"), modeId: darkModeId }
+        ]
+      });
+      used.add(light.id);
+      used.add(dark.id);
+    };
+    for (const light of snapshot.collections) {
+      const match = LIGHT_COLLECTION.exec(light.name.trim());
+      if (!match) continue;
+      add2(match[1], light, byName.get(normalize(`${match[1]}-dark`)));
     }
-    const darkValues = /* @__PURE__ */ new Map();
-    for (const variable of snapshot.variables) {
-      const base = pairs.get(variable.collectionId);
-      if (!base) continue;
-      const dark = darkModeByBase.get(base.id);
-      if (!dark) continue;
-      const value = (_b = variable.valuesByMode[dark.modeId]) != null ? _b : Object.values(variable.valuesByMode)[0];
-      if (value !== void 0) darkValues.set(`${base.id}\0${variable.name}`, value);
+    for (const dark of snapshot.collections) {
+      const match = DARK_COMPANION.exec(dark.name.trim());
+      if (!match) continue;
+      add2(match[1], byName.get(normalize(match[1])), dark);
     }
-    const collections = snapshot.collections.filter((collection) => !pairs.has(collection.id)).map((collection) => {
-      const dark = darkModeByBase.get(collection.id);
-      if (!dark || collection.modes.some((mode) => mode.modeId === dark.modeId)) return collection;
-      return __spreadProps(__spreadValues({}, collection), { modes: [...collection.modes, dark] });
+    return resolved;
+  }
+  function foldSplitThemeCollections(snapshot, configured = []) {
+    var _a, _b, _c;
+    const used = /* @__PURE__ */ new Set();
+    const merges = [
+      ...resolveConfiguredMerges(snapshot, configured, used),
+      ...automaticMerges(snapshot, used)
+    ];
+    if (merges.length === 0) return snapshot;
+    const memberIds = new Set(merges.flatMap((merge) => merge.modes.map((mode) => mode.collection.id)));
+    const mergeByMemberId = /* @__PURE__ */ new Map();
+    for (const merge of merges) for (const mode of merge.modes) mergeByMemberId.set(mode.collection.id, merge);
+    const collections = snapshot.collections.filter((collection) => {
+      const merge = mergeByMemberId.get(collection.id);
+      return !merge || merge.modes[0].collection.id === collection.id;
+    }).map((collection) => {
+      const merge = mergeByMemberId.get(collection.id);
+      if (!merge) return collection;
+      return __spreadProps(__spreadValues({}, collection), {
+        name: merge.name,
+        defaultModeId: merge.modes[0].modeId,
+        modes: merge.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name }))
+      });
     });
-    const variables = snapshot.variables.filter((variable) => !pairs.has(variable.collectionId)).map((variable) => {
-      const dark = darkModeByBase.get(variable.collectionId);
-      if (!dark) return variable;
-      const value = darkValues.get(`${variable.collectionId}\0${variable.name}`);
-      if (value === void 0) return variable;
-      return __spreadProps(__spreadValues({}, variable), { valuesByMode: __spreadProps(__spreadValues({}, variable.valuesByMode), { [dark.modeId]: value }) });
-    });
-    return __spreadProps(__spreadValues({}, snapshot), { collections, variables });
+    const variablesOutsideMerges = snapshot.variables.filter((variable) => !memberIds.has(variable.collectionId));
+    const mergedVariables = [];
+    for (const merge of merges) {
+      const byVariableName = /* @__PURE__ */ new Map();
+      for (const variable of snapshot.variables) {
+        if (!mergeByMemberId.has(variable.collectionId) || mergeByMemberId.get(variable.collectionId) !== merge) continue;
+        const entries = (_a = byVariableName.get(variable.name)) != null ? _a : [];
+        entries.push(variable);
+        byVariableName.set(variable.name, entries);
+      }
+      for (const entries of byVariableName.values()) {
+        const base = (_b = entries.find((variable) => variable.collectionId === merge.modes[0].collection.id)) != null ? _b : entries[0];
+        const valuesByMode = {};
+        for (const mode of merge.modes) {
+          const source = entries.find((variable) => variable.collectionId === mode.collection.id);
+          if (!source) continue;
+          const value2 = (_c = source.valuesByMode[mode.modeId]) != null ? _c : Object.values(source.valuesByMode)[0];
+          if (value2 !== void 0) valuesByMode[mode.modeId] = value2;
+        }
+        mergedVariables.push(__spreadProps(__spreadValues({}, base), { collectionId: merge.modes[0].collection.id, valuesByMode }));
+      }
+    }
+    return __spreadProps(__spreadValues({}, snapshot), { collections, variables: [...variablesOutsideMerges, ...mergedVariables] });
   }
   var darkCompanionName = (themeCollectionName) => `${themeCollectionName.trim()}-dark`;
 
@@ -157,7 +234,7 @@
     };
   }
   function toVariableEntry(variable) {
-    return __spreadValues(__spreadValues({
+    return __spreadValues(__spreadValues(__spreadValues({
       id: variable.id,
       key: variable.key,
       name: variable.name,
@@ -165,7 +242,7 @@
       scopes: variable.scopes,
       resolvedType: variable.resolvedType,
       valuesByMode: variable.valuesByMode
-    }, variable.description ? { description: variable.description } : {}), variable.codeSyntax && Object.keys(variable.codeSyntax).length > 0 ? { codeSyntax: variable.codeSyntax } : {});
+    }, variable.description ? { description: variable.description } : {}), variable.hiddenFromPublishing ? { hiddenFromPublishing: true } : {}), variable.codeSyntax && Object.keys(variable.codeSyntax).length > 0 ? { codeSyntax: variable.codeSyntax } : {});
   }
   async function readLocalVariables() {
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
@@ -242,39 +319,78 @@
   }
   async function readAllVariables(options = {}) {
     const [local, library] = await Promise.all([readLocalVariables(), readLibraryVariables(options)]);
-    const merged = foldSplitThemeCollections(mergeSnapshots(local, library));
+    const merged = foldSplitThemeCollections(mergeSnapshots(local, library), options.collectionMerges);
     return __spreadValues(__spreadValues(__spreadValues({}, merged), library.nextOffset === void 0 ? {} : { nextOffset: library.nextOffset }), library.stoppedOn === void 0 ? {} : { stoppedOn: library.stoppedOn });
   }
-  function isVariableAlias(value) {
-    return typeof value === "object" && value !== null && "type" in value && value.type === "VARIABLE_ALIAS";
+  function isVariableAlias(value2) {
+    return typeof value2 === "object" && value2 !== null && "type" in value2 && value2.type === "VARIABLE_ALIAS";
+  }
+  function isVariableComposedColor(value2) {
+    if (typeof value2 !== "object" || value2 === null || !("color" in value2) || !("opacity" in value2)) return false;
+    const composed = value2;
+    return isVariableAlias(composed.color) || isVariableAlias(composed.opacity);
   }
   async function resolveVariableValue(variable, modeId, visited = /* @__PURE__ */ new Set()) {
     if (visited.has(variable.id)) {
       throw new Error(`Circular variable alias detected at "${variable.name}" (${variable.id})`);
     }
     visited.add(variable.id);
-    let value = variable.valuesByMode[modeId];
-    if (value === void 0) {
+    let value2 = variable.valuesByMode[modeId];
+    if (value2 === void 0) {
       const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
       if (!collection) {
         throw new Error(`Variable collection not found for "${variable.name}" (${variable.variableCollectionId})`);
       }
-      value = variable.valuesByMode[collection.defaultModeId];
+      value2 = variable.valuesByMode[collection.defaultModeId];
     }
-    if (isVariableAlias(value)) {
-      const target = await figma.variables.getVariableByIdAsync(value.id);
-      if (!target) throw new Error(`Broken alias: ${value.id}`);
+    if (isVariableAlias(value2)) {
+      const target = await figma.variables.getVariableByIdAsync(value2.id);
+      if (!target) throw new Error(`Broken alias: ${value2.id}`);
       return resolveVariableValue(target, modeId, visited);
     }
-    return { value, resolvedType: variable.resolvedType };
+    if (isVariableComposedColor(value2)) {
+      let color;
+      if (isVariableAlias(value2.color)) {
+        const target = await figma.variables.getVariableByIdAsync(value2.color.id);
+        if (!target) throw new Error(`Broken composed color alias: ${value2.color.id}`);
+        const resolved = await resolveVariableValue(target, modeId, new Set(visited));
+        if (typeof resolved.value !== "object" || resolved.value === null || !("r" in resolved.value)) {
+          throw new Error(`Composed color alias "${target.name}" did not resolve to a color`);
+        }
+        color = resolved.value;
+      } else {
+        color = value2.color;
+      }
+      let opacity;
+      if (isVariableAlias(value2.opacity)) {
+        const target = await figma.variables.getVariableByIdAsync(value2.opacity.id);
+        if (!target) throw new Error(`Broken composed opacity alias: ${value2.opacity.id}`);
+        const resolved = await resolveVariableValue(target, modeId, new Set(visited));
+        if (typeof resolved.value !== "number") {
+          throw new Error(`Composed opacity alias "${target.name}" did not resolve to a number`);
+        }
+        opacity = resolved.value;
+      } else {
+        opacity = value2.opacity;
+      }
+      if (!Number.isFinite(opacity) || opacity < 0 || opacity > 100) {
+        throw new Error(`Composed opacity must be between 0% and 100% \u2014 got ${opacity}%`);
+      }
+      const baseAlpha = "a" in color ? color.a : 1;
+      return {
+        value: { r: color.r, g: color.g, b: color.b, a: baseAlpha * (opacity / 100) },
+        resolvedType: "COLOR"
+      };
+    }
+    return { value: value2, resolvedType: variable.resolvedType };
   }
 
   // src/targets/django/tokens.ts
-  function isVariableAlias2(value) {
-    return typeof value === "object" && value !== null && "type" in value && value.type === "VARIABLE_ALIAS";
+  function isVariableAlias2(value2) {
+    return typeof value2 === "object" && value2 !== null && "type" in value2 && value2.type === "VARIABLE_ALIAS";
   }
-  function isRgbColor(value) {
-    return typeof value === "object" && value !== null && "r" in value && "g" in value && "b" in value;
+  function isRgbColor(value2) {
+    return typeof value2 === "object" && value2 !== null && "r" in value2 && "g" in value2 && "b" in value2;
   }
   function kebabSegment(segment) {
     return segment.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-+|-+$)/g, "");
@@ -298,9 +414,9 @@
   }
   var MOTION_DURATION_PREFIX = "motion/duration/";
   var MOTION_EASING_PREFIX = "motion/easing/";
-  function literalValue(variable, value) {
-    if (variable.resolvedType === "COLOR" && isRgbColor(value)) return rgbaToCss(value);
-    return value;
+  function literalValue(variable, value2) {
+    if (variable.resolvedType === "COLOR" && isRgbColor(value2)) return rgbaToCss(value2);
+    return value2;
   }
   function toCamelCaseName(figmaName) {
     return toDtcgPath(figmaName).join("-").replace(/-([a-z0-9])/g, (_, char) => char.toUpperCase());
@@ -308,14 +424,14 @@
   function resolveLiteralValue(variable, modeId, variablesById, visited = /* @__PURE__ */ new Set()) {
     if (visited.has(variable.id)) throw new Error(`Circular variable alias detected at "${variable.name}"`);
     visited.add(variable.id);
-    const value = variable.valuesByMode[modeId];
-    if (value === void 0) throw new Error(`Missing value for mode "${modeId}" on "${variable.name}"`);
-    if (isVariableAlias2(value)) {
-      const target = variablesById.get(value.id);
-      if (!target) throw new Error(`Broken alias: ${value.id}`);
+    const value2 = variable.valuesByMode[modeId];
+    if (value2 === void 0) throw new Error(`Missing value for mode "${modeId}" on "${variable.name}"`);
+    if (isVariableAlias2(value2)) {
+      const target = variablesById.get(value2.id);
+      if (!target) throw new Error(`Broken alias: ${value2.id}`);
       return resolveLiteralValue(target, modeId, variablesById, visited);
     }
-    return literalValue(variable, value);
+    return literalValue(variable, value2);
   }
   function emitMotionTokensJs(snapshot) {
     var _a;
@@ -338,10 +454,15 @@
     return lines.join("\n");
   }
 
+  // src/utils/type-guards.ts
+  function isRecord(value2) {
+    return typeof value2 === "object" && value2 !== null && !Array.isArray(value2);
+  }
+
   // src/tokens/native.ts
-  function parseColor(value) {
-    if (typeof value !== "string") return null;
-    const text4 = value.trim();
+  function parseColor(value2) {
+    if (typeof value2 !== "string") return null;
+    const text4 = value2.trim();
     const hex = /^#([0-9a-f]{3,8})$/i.exec(text4);
     if (hex) {
       const digits = hex[1];
@@ -382,21 +503,33 @@
   function sameColor(a, b) {
     return a.r === b.r && a.g === b.g && a.b === b.b && round(a.a) === round(b.a);
   }
-  function round(value, decimals = 3) {
+  function round(value2, decimals = 3) {
     const factor = 10 ** decimals;
-    return Math.round(value * factor) / factor;
+    return Math.round(value2 * factor) / factor;
   }
   function toArgbHex(color) {
     const byte = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0").toUpperCase();
     return `#${byte(color.a * 255)}${byte(color.r)}${byte(color.g)}${byte(color.b)}`;
   }
-  function camelIdentifier(path) {
-    const kebab = varName(path);
-    const camel = kebab.replace(/-+([0-9a-z])/gi, (_, chr) => chr.toUpperCase());
+  function words(name) {
+    return name.replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").split(/[^0-9A-Za-z]+/).filter((part) => part !== "");
+  }
+  function committedWords(codeSyntax, key) {
+    const name = codeSyntax == null ? void 0 : codeSyntax[key];
+    if (typeof name !== "string") return null;
+    const parts = words(name);
+    return parts.length > 0 ? parts : null;
+  }
+  function camelIdentifier(path, codeSyntax) {
+    const committed = committedWords(codeSyntax, "iOS");
+    const camel = committed ? committed.map(
+      (word, index2) => index2 === 0 ? word.toLowerCase() : word[0].toUpperCase() + word.slice(1).toLowerCase()
+    ).join("") : varName(path).replace(/-+([0-9a-z])/gi, (_, chr) => chr.toUpperCase());
     return /^[0-9]/.test(camel) ? `_${camel}` : camel;
   }
-  function resourceName(path) {
-    const snake = varName(path).replace(/-+/g, "_").toLowerCase().replace(/[^a-z0-9_]/g, "");
+  function resourceName(path, codeSyntax) {
+    const committed = committedWords(codeSyntax, "ANDROID");
+    const snake = (committed ? committed.join("-") : varName(path)).replace(/-+/g, "_").toLowerCase().replace(/[^a-z0-9_]/g, "");
     return /^[0-9]/.test(snake) ? `_${snake}` : snake;
   }
   function darkThemeOf(ordered, defaultTheme) {
@@ -410,12 +543,18 @@
       const values = {};
       for (const theme of ordered) values[theme] = valueForTheme(leaf.token, theme);
       const distinct = new Set(ordered.map((theme) => JSON.stringify(values[theme])));
-      if (distinct.size <= 1) shared.push({ path: leaf.path, type: leaf.token.$type, value: values[ordered[0]] });
-      else themed.push({ path: leaf.path, type: leaf.token.$type, values });
+      const codeSyntax = codeSyntaxOf(leaf.token);
+      const entry = __spreadValues({
+        path: leaf.path,
+        type: leaf.token.$type,
+        kind: tokenKind(leaf.token, leaf.path)
+      }, codeSyntax ? { codeSyntax } : {});
+      if (distinct.size <= 1) shared.push(__spreadProps(__spreadValues({}, entry), { value: values[ordered[0]] }));
+      else themed.push(__spreadProps(__spreadValues({}, entry), { values }));
     }
     return { shared, themed };
   }
-  var HEADER = "Generated by Altery Design System Export - edit the Figma variables, not this file.";
+  var HEADER = "Generated by AllCrew Channel - edit the Figma variables, not this file.";
   function toColorSets(tree, ordered, defaultTheme) {
     const dark = darkThemeOf(ordered, defaultTheme);
     const files = {};
@@ -441,7 +580,7 @@
       if (darkColor && !sameColor(light, darkColor)) colors.push(entry(darkColor, "dark"));
       const name = varName(leaf.path);
       files[`Assets.xcassets/${name}.colorset/Contents.json`] = JSON.stringify(
-        { colors, info: { author: "altery-figma", version: 1 } },
+        { colors, info: { author: "allcrew-channel", version: 1 } },
         null,
         2
       );
@@ -460,7 +599,9 @@
           const base = parseColor(valueForTheme(leaf.token, defaultTheme));
           if (base && sameColor(base, color)) continue;
         }
-        out.push(`    <color name="${resourceName(leaf.path)}">${toArgbHex(color)}</color>`);
+        out.push(
+          `    <color name="${resourceName(leaf.path, codeSyntaxOf(leaf.token))}">${toArgbHex(color)}</color>`
+        );
       }
       return out;
     };
@@ -477,28 +618,35 @@ ${lines.join("\n")}
     if (night.length > 0) files["res/values-night/colors.xml"] = document(night);
     return files;
   }
-  function swiftValue(type, value, path) {
-    if (type === "color") {
-      const color = parseColor(value);
+  function swiftValue(entry, value2) {
+    if (entry.type === "color") {
+      const color = parseColor(value2);
       if (!color) return null;
       return `Color(.sRGB, red: ${round(color.r / 255)}, green: ${round(color.g / 255)}, blue: ${round(color.b / 255)}, opacity: ${round(color.a)})`;
     }
-    if (typeof value === "number") return isLengthToken(value, path) ? `CGFloat(${round(value, 4)})` : `${round(value, 4)}`;
-    if (typeof value === "boolean") return String(value);
-    return JSON.stringify(cssValue(value, path));
+    if (typeof value2 === "number") {
+      return isLengthKind(entry.kind, value2) ? `CGFloat(${round(value2, 4)})` : `${round(value2, 4)}`;
+    }
+    if (typeof value2 === "boolean") return String(value2);
+    return JSON.stringify(cssValue(value2, entry.path));
   }
-  function kotlinValue(type, value, path) {
-    if (type === "color") {
-      const color = parseColor(value);
+  function kotlinValue(entry, value2) {
+    if (entry.type === "color") {
+      const color = parseColor(value2);
       if (!color) return null;
       return `Color(0x${toArgbHex(color).slice(1)})`;
     }
-    if (typeof value === "number") return isLengthToken(value, path) ? `${round(value, 4)}.dp` : `${round(value, 4)}f`;
-    if (typeof value === "boolean") return String(value);
-    return JSON.stringify(cssValue(value, path));
+    if (typeof value2 === "number") {
+      if (!isLengthKind(entry.kind, value2)) return `${round(value2, 4)}f`;
+      return isTextMetricKind(entry.kind) ? `${round(value2, 4)}.sp` : `${round(value2, 4)}.dp`;
+    }
+    if (typeof value2 === "boolean") return String(value2);
+    return JSON.stringify(cssValue(value2, entry.path));
   }
   function block(indent2, entries, declare) {
-    return entries.map((entry) => `${indent2}${declare(camelIdentifier(entry.path), entry.rendered)}`);
+    return entries.map(
+      (row) => `${indent2}${declare(camelIdentifier(row.entry.path, row.entry.codeSyntax), row.rendered)}`
+    );
   }
   function themeType(theme) {
     const parts = theme.split(/[^0-9a-z]+/i).filter((part) => part !== "");
@@ -508,23 +656,13 @@ ${lines.join("\n")}
   function toTokensSwift(tree, ordered) {
     const { shared, themed } = group(tree, ordered);
     const declare = (name, rendered) => `public static let ${name} = ${rendered}`;
-    const sharedLines = block(
-      "    ",
-      shared.flatMap((entry) => {
-        const rendered = swiftValue(entry.type, entry.value, entry.path);
-        return rendered ? [{ path: entry.path, rendered }] : [];
-      }),
-      declare
-    );
+    const render = (entry, value2) => {
+      const rendered = swiftValue(entry, value2);
+      return rendered ? [{ entry, rendered }] : [];
+    };
+    const sharedLines = block("    ", shared.flatMap((entry) => render(entry, entry.value)), declare);
     const themeBlocks = ordered.map((theme) => {
-      const lines = block(
-        "        ",
-        themed.flatMap((entry) => {
-          const rendered = swiftValue(entry.type, entry.values[theme], entry.path);
-          return rendered ? [{ path: entry.path, rendered }] : [];
-        }),
-        declare
-      );
+      const lines = block("        ", themed.flatMap((entry) => render(entry, entry.values[theme])), declare);
       return `    public enum ${themeType(theme)} {
 ${lines.join("\n")}
     }`;
@@ -542,31 +680,26 @@ ${sharedLines.join("\n")}
   }
   function toTokensKotlin(tree, ordered) {
     const { shared, themed } = group(tree, ordered);
-    const declare = (name, rendered) => `val ${name} = ${rendered}`;
-    const sharedLines = block(
-      "    ",
-      shared.flatMap((entry) => {
-        const rendered = kotlinValue(entry.type, entry.value, entry.path);
-        return rendered ? [{ path: entry.path, rendered }] : [];
-      }),
-      declare
-    );
-    const themeBlocks = ordered.map((theme) => {
-      const lines = block(
-        "        ",
-        themed.flatMap((entry) => {
-          const rendered = kotlinValue(entry.type, entry.values[theme], entry.path);
-          return rendered ? [{ path: entry.path, rendered }] : [];
-        }),
-        declare
-      );
+    const declare = (name, rendered2) => `val ${name} = ${rendered2}`;
+    const render = (entry, value2) => {
+      const rendered2 = kotlinValue(entry, value2);
+      return rendered2 ? [{ entry, rendered: rendered2 }] : [];
+    };
+    const sharedRows = shared.flatMap((entry) => render(entry, entry.value));
+    const themedRows = ordered.map((theme) => themed.flatMap((entry) => render(entry, entry.values[theme])));
+    const sharedLines = block("    ", sharedRows, declare);
+    const themeBlocks = ordered.map((theme, index2) => {
+      const lines = block("        ", themedRows[index2], declare);
       return `    object ${themeType(theme)} {
 ${lines.join("\n")}
     }`;
     });
+    const rendered = sharedRows.concat(...themedRows).map((row) => row.rendered);
+    const imports = ["import androidx.compose.ui.graphics.Color"];
+    if (rendered.some((line) => /\.dp$/.test(line))) imports.push("import androidx.compose.ui.unit.dp");
+    if (rendered.some((line) => /\.sp$/.test(line))) imports.push("import androidx.compose.ui.unit.sp");
     return `// ${HEADER}
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
+${imports.join("\n")}
 
 object Tokens {
 ` + (sharedLines.length > 0 ? `    // The same in every theme.
@@ -584,43 +717,40 @@ ${sharedLines.join("\n")}
   }
 
   // src/tokens/engine.ts
-  function isRecord(v) {
-    return typeof v === "object" && v !== null && !Array.isArray(v);
-  }
   function slugSegments(name) {
     return String(name).trim().replace(/^--/, "").split(/[/.\s_-]+/).map((p) => p.trim()).filter(Boolean);
   }
   function groupSegments(name) {
     return String(name).trim().replace(/^--/, "").split("/").map((p) => p.trim()).filter(Boolean);
   }
-  function figmaColorToCss(value) {
-    const r = value.r, g = value.g, b = value.b;
-    if (typeof r !== "number" || typeof g !== "number" || typeof b !== "number") return String(value);
-    const a = typeof value.a === "number" ? value.a : 1;
+  function figmaColorToCss(value2) {
+    const r = value2.r, g = value2.g, b = value2.b;
+    if (typeof r !== "number" || typeof g !== "number" || typeof b !== "number") return String(value2);
+    const a = typeof value2.a === "number" ? value2.a : 1;
     const toByte = (n) => Math.max(0, Math.min(255, Math.round(n * 255)));
     const hex = [toByte(r), toByte(g), toByte(b)].map((n) => n.toString(16).padStart(2, "0")).join("");
     if (a >= 1) return "#" + hex;
     return `rgba(${toByte(r)}, ${toByte(g)}, ${toByte(b)}, ${Number(a.toFixed(3))})`;
   }
-  function figmaTypeToW3C(type, value) {
+  function figmaTypeToW3C(type, value2) {
     const n = typeof type === "string" ? type.toUpperCase() : "";
     if (n === "COLOR") return "color";
     if (n === "FLOAT" || n === "NUMBER") return "number";
     if (n === "BOOLEAN") return "boolean";
-    if (typeof value === "number") return "number";
-    if (typeof value === "boolean") return "boolean";
-    if (typeof value === "string" && /^#|rgb\(|hsl\(/i.test(value.trim())) return "color";
+    if (typeof value2 === "number") return "number";
+    if (typeof value2 === "boolean") return "boolean";
+    if (typeof value2 === "string" && /^#|rgb\(|hsl\(/i.test(value2.trim())) return "color";
     return "string";
   }
-  function normalizeVariableValue(value, idToName) {
-    if (isRecord(value) && "type" in value && value.type === "VARIABLE_ALIAS") {
-      const id = typeof value.id === "string" ? value.id : "";
+  function normalizeVariableValue(value2, idToName) {
+    if (isRecord(value2) && "type" in value2 && value2.type === "VARIABLE_ALIAS") {
+      const id = typeof value2.id === "string" ? value2.id : "";
       const name = idToName.get(id);
       return name ? `{${name}}` : `{${id}}`;
     }
-    if (isRecord(value) && "r" in value && "g" in value && "b" in value) return figmaColorToCss(value);
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-    return isRecord(value) ? value : String(value != null ? value : "");
+    if (isRecord(value2) && "r" in value2 && "g" in value2 && "b" in value2) return figmaColorToCss(value2);
+    if (typeof value2 === "string" || typeof value2 === "number" || typeof value2 === "boolean") return value2;
+    return isRecord(value2) ? value2 : String(value2 != null ? value2 : "");
   }
   function setToken(root, path, token2) {
     let cursor = root;
@@ -716,9 +846,9 @@ ${sharedLines.join("\n")}
   function textStyleLeaves(ts, idToName) {
     const bv = ts.boundVariables;
     const out = [];
-    const push = (prop, value, type) => {
-      if (value === void 0 || value === null) return;
-      out.push({ prop, token: { $type: type, $value: value, $extensions: { modes: {}, figma: { collection: TEXT_STYLE_COLLECTION, defaultMode: "" } } } });
+    const push = (prop, value2, type) => {
+      if (value2 === void 0 || value2 === null) return;
+      out.push({ prop, token: { $type: type, $value: value2, $extensions: { modes: {}, figma: { collection: TEXT_STYLE_COLLECTION, defaultMode: "" } } } });
     };
     let family = boundAlias(bv, "fontFamily", idToName);
     if (family === void 0 && ts.fontName && typeof ts.fontName.family === "string") family = ts.fontName.family;
@@ -775,8 +905,8 @@ ${sharedLines.join("\n")}
   var EFFECT_STYLE_COLLECTION = "Effect Styles";
   var SHADOW_ROOT = "shadow";
   var BLUR_ROOT = "blur";
-  function round2(value) {
-    return Number(Number(value).toFixed(3));
+  function round2(value2) {
+    return Number(Number(value2).toFixed(3));
   }
   function stripLeadingGroup(segments, groups) {
     if (segments.length > 1 && groups.indexOf(segments[0].trim().toLowerCase()) !== -1) return segments.slice(1);
@@ -855,6 +985,15 @@ ${sharedLines.join("\n")}
         $extensions.figma = { collection: collectionName, defaultMode: defaultMode.name };
         const scopes = Array.isArray(variable.scopes) ? variable.scopes.filter((scope) => scope !== "ALL_SCOPES") : [];
         if (scopes.length > 0) $extensions.figma.scopes = scopes;
+        const codeSyntax = isRecord(variable.codeSyntax) ? variable.codeSyntax : void 0;
+        if (codeSyntax) {
+          const kept2 = {};
+          for (const key of ["WEB", "ANDROID", "iOS"]) {
+            const name = codeSyntax[key];
+            if (typeof name === "string" && name.trim() !== "") kept2[key] = name.trim();
+          }
+          if (Object.keys(kept2).length > 0) $extensions.figma.codeSyntax = kept2;
+        }
       }
       setToken(out, path, { $type: explicitType, $value: defaultValue, $extensions });
     }
@@ -862,16 +1001,16 @@ ${sharedLines.join("\n")}
     addEffectStyleTokens(out, graph.effectStyles);
     return out;
   }
-  function isTokenLeaf(value) {
-    return isRecord(value) && "$value" in value;
+  function isTokenLeaf(value2) {
+    return isRecord(value2) && "$value" in value2;
   }
   function leaves(tree, prefix = []) {
     const out = [];
     for (const key of Object.keys(tree)) {
-      const value = tree[key];
+      const value2 = tree[key];
       const path = prefix.concat([key]);
-      if (isTokenLeaf(value)) out.push({ path, token: value });
-      else if (isRecord(value)) out.push(...leaves(value, path));
+      if (isTokenLeaf(value2)) out.push({ path, token: value2 });
+      else if (isRecord(value2)) out.push(...leaves(value2, path));
     }
     return out;
   }
@@ -879,41 +1018,98 @@ ${sharedLines.join("\n")}
   function varName(segments) {
     return segments.reduce((acc, segment) => acc.concat(slugSegments(segment)), []).map((segment) => segment.toLowerCase().replace(NON_IDENT_CHARS, "-").replace(/^-+|-+$/g, "")).filter(Boolean).join("-");
   }
-  function aliasTarget(value) {
-    if (typeof value !== "string") return null;
-    const match = value.match(/^\{(.+)\}$/);
+  function aliasTarget(value2) {
+    if (typeof value2 !== "string") return null;
+    const match = value2.match(/^\{(.+)\}$/);
     if (!match) return null;
     return match[1].split(".").map((p) => p.trim()).filter(Boolean);
   }
-  var UNITLESS_TOKEN = /(^|[-_])(opacity|z-?index|font-?weight|weight|line-?height|lineheight|flex|order|aspect|ratio|count|columns?)([-_]|$)/i;
-  var LINE_HEIGHT_TOKEN = /(^|[-_])line-?height([-_]|$)/i;
   var LINE_HEIGHT_RATIO_MAX = 4;
-  function roundEmitted(value) {
-    return Math.round(value * 100) / 100;
+  function roundEmitted(value2) {
+    return Math.round(value2 * 100) / 100;
   }
-  function isLengthToken(value, path) {
-    if (roundEmitted(value) === 0) return false;
-    if (path && path.some((seg) => LINE_HEIGHT_TOKEN.test(seg))) return Math.abs(roundEmitted(value)) >= LINE_HEIGHT_RATIO_MAX;
-    return !(path ? path.some((seg) => UNITLESS_TOKEN.test(seg)) : false);
+  var KIND_BY_SCOPE = {
+    CORNER_RADIUS: "radius",
+    GAP: "spacing",
+    WIDTH_HEIGHT: "spacing",
+    PARAGRAPH_SPACING: "spacing",
+    PARAGRAPH_INDENT: "spacing",
+    STROKE_FLOAT: "borderWidth",
+    EFFECT_FLOAT: "length",
+    FONT_SIZE: "fontSize",
+    LINE_HEIGHT: "lineHeight",
+    LETTER_SPACING: "letterSpacing",
+    FONT_WEIGHT: "fontWeight",
+    FONT_FAMILY: "fontFamily",
+    FONT_STYLE: "fontFamily",
+    OPACITY: "opacity",
+    TEXT_CONTENT: "string"
+  };
+  var KIND_BY_NAME = [
+    [/(^|[-_])line-?height([-_]|$)/i, "lineHeight"],
+    [/(^|[-_])opacity([-_]|$)/i, "opacity"],
+    [/(^|[-_])(font-?weight|weight)([-_]|$)/i, "fontWeight"],
+    [/(^|[-_])(z-?index|flex|order|aspect|ratio|count|columns?)([-_]|$)/i, "number"],
+    [/(^|[-_])(font-?size|text-?size)([-_]|$)/i, "fontSize"],
+    [/(^|[-_])(letter-?spacing|tracking)([-_]|$)/i, "letterSpacing"],
+    [/(^|[-_])(radius|radii|rounded)([-_]|$)/i, "radius"],
+    [/(^|[-_])(duration|delay)([-_]|$)/i, "duration"],
+    [/(^|[-_])(font-?family|typeface)([-_]|$)/i, "fontFamily"]
+  ];
+  var TEXT_METRIC_KINDS = /* @__PURE__ */ new Set([
+    "fontSize",
+    "lineHeight",
+    "letterSpacing"
+  ]);
+  function isTextMetricKind(kind) {
+    return TEXT_METRIC_KINDS.has(kind);
   }
-  function cssValue(value, path) {
-    const alias = aliasTarget(value);
-    if (alias) return `var(--${varName(alias)})`;
-    if (typeof value === "number") {
-      const rounded = roundEmitted(value);
-      if (rounded === 0) return "0";
-      if (path && path.some((seg) => LINE_HEIGHT_TOKEN.test(seg))) {
-        return Math.abs(rounded) < LINE_HEIGHT_RATIO_MAX ? String(rounded) : `${rounded}px`;
+  function tokenKind(token2, path = []) {
+    var _a;
+    if (token2) {
+      if (token2.$type === "color") return "color";
+      if (token2.$type === "boolean") return "boolean";
+      const figma2 = (_a = token2.$extensions) == null ? void 0 : _a.figma;
+      const scopes = figma2 && Array.isArray(figma2.scopes) ? figma2.scopes : [];
+      for (const scope of scopes) {
+        const kind = KIND_BY_SCOPE[scope];
+        if (kind) return kind;
       }
-      const unitless = path ? path.some((seg) => UNITLESS_TOKEN.test(seg)) : false;
-      return unitless ? String(rounded) : `${rounded}px`;
+      if (token2.$type === "string" && scopes.length === 0) {
+        for (const [pattern, kind] of KIND_BY_NAME) {
+          if (kind === "fontFamily" && path.some((seg) => pattern.test(seg))) return "fontFamily";
+        }
+        return "string";
+      }
     }
-    if (typeof value === "boolean") return String(value);
-    if (typeof value === "string") return value;
-    return String(value != null ? value : "");
+    for (const [pattern, kind] of KIND_BY_NAME) {
+      if (path.some((seg) => pattern.test(seg))) return kind;
+    }
+    return "length";
   }
-  function isAliasValue(value) {
-    return typeof value === "string" && /^\{.+\}$/.test(value);
+  function isLengthKind(kind, value2) {
+    if (roundEmitted(value2) === 0) return false;
+    if (kind === "lineHeight") return Math.abs(roundEmitted(value2)) >= LINE_HEIGHT_RATIO_MAX;
+    return kind !== "opacity" && kind !== "fontWeight" && kind !== "number" && kind !== "duration";
+  }
+  function isLengthToken(value2, path) {
+    return isLengthKind(tokenKind(void 0, path != null ? path : []), value2);
+  }
+  function cssValue(value2, path) {
+    const alias = aliasTarget(value2);
+    if (alias) return `var(--${varName(alias)})`;
+    if (typeof value2 === "number") {
+      const rounded = roundEmitted(value2);
+      if (rounded === 0) return "0";
+      if (tokenKind(void 0, path != null ? path : []) === "duration") return `${rounded}ms`;
+      return isLengthToken(value2, path) ? `${rounded}px` : String(rounded);
+    }
+    if (typeof value2 === "boolean") return String(value2);
+    if (typeof value2 === "string") return value2;
+    return String(value2 != null ? value2 : "");
+  }
+  function isAliasValue(value2) {
+    return typeof value2 === "string" && /^\{.+\}$/.test(value2);
   }
   function modesOf(token2) {
     var _a;
@@ -925,6 +1121,16 @@ ${sharedLines.join("\n")}
     const figma2 = (_a = token2.$extensions) == null ? void 0 : _a.figma;
     if (isRecord(figma2) && typeof figma2.collection === "string") return figma2.collection;
     return void 0;
+  }
+  function codeSyntaxOf(token2) {
+    var _a;
+    const figma2 = (_a = token2.$extensions) == null ? void 0 : _a.figma;
+    if (!isRecord(figma2) || !isRecord(figma2.codeSyntax)) return void 0;
+    const out = {};
+    for (const [key, value2] of Object.entries(figma2.codeSyntax)) {
+      if (typeof value2 === "string" && value2.trim() !== "") out[key] = value2.trim();
+    }
+    return Object.keys(out).length > 0 ? out : void 0;
   }
   function collectionDefaultModeOf(token2) {
     var _a;
@@ -965,7 +1171,7 @@ ${sharedLines.join("\n")}
   function themeSlug(theme) {
     return varName([theme]) || theme;
   }
-  var SCALE_TOKEN_KEY = "altery-typo-scale";
+  var SCALE_TOKEN_KEY = "allcrew-channel-typo-scale";
   function isScaleToken(token2) {
     var _a;
     const figma2 = (_a = token2.$extensions) == null ? void 0 : _a.figma;
@@ -1082,9 +1288,9 @@ ${sharedLines.join("\n")}
     const primitive = /* @__PURE__ */ new Set();
     for (const e of all) if (!participatesInTheming(e.token) && !isScaleToken(e.token)) primitive.add(e.path.join("."));
     const referenced = /* @__PURE__ */ new Set();
-    const noteRef = (value) => {
-      if (!isAliasValue(value)) return;
-      const target = aliasTarget(value).join(".");
+    const noteRef = (value2) => {
+      if (!isAliasValue(value2)) return;
+      const target = aliasTarget(value2).join(".");
       if (primitive.has(target)) referenced.add(target);
     };
     for (const e of all) {
@@ -1092,13 +1298,13 @@ ${sharedLines.join("\n")}
       const modes = modesOf(e.token);
       for (const k of Object.keys(modes)) noteRef(modes[k]);
     }
-    const inline = (value, theme, seen, originPath) => {
-      if (!isAliasValue(value)) {
-        return originPath && typeof value === "number" ? cssValue(value, originPath) : value;
+    const inline = (value2, theme, seen, originPath) => {
+      if (!isAliasValue(value2)) {
+        return originPath && typeof value2 === "number" ? cssValue(value2, originPath) : value2;
       }
-      const target = aliasTarget(value).join(".");
-      if (!byName.has(target) || seen.has(target)) return value;
-      if (!flattenAll && !primitive.has(target)) return value;
+      const target = aliasTarget(value2).join(".");
+      if (!byName.has(target) || seen.has(target)) return value2;
+      if (!flattenAll && !primitive.has(target)) return value2;
       const entry = byName.get(target);
       const next = new Set(seen);
       next.add(target);
@@ -1156,10 +1362,10 @@ ${sharedLines.join("\n")}
 ${themeDeclarations(allLeaves, theme).join("\n")}
 }`;
   }
-  function cssAttrValue(value) {
-    return String(value).replace(/[\\"]/g, "\\$&");
+  function cssAttrValue(value2) {
+    return String(value2).replace(/[\\"]/g, "\\$&");
   }
-  var RENAMES_EXTENSION = "altery";
+  var RENAMES_EXTENSION = "allcrewChannel";
   var segmentsOf = (name) => name.split("/").filter((segment) => segment.trim() !== "");
   function legacyAliasPairs(tree, renames) {
     if (!renames) return [];
@@ -1190,14 +1396,14 @@ ${lines.join("\n")}
     const a = attr || "data-theme-name";
     const allLeaves = leaves(tree);
     if (allLeaves.length === 0) return "";
-    const blocks = ordered.map((theme) => {
+    const blocks2 = ordered.map((theme) => {
       const themeSel = `[${a}="${cssAttrValue(theme)}"]`;
       const selector = theme === defaultTheme ? `:root,
 ${themeSel}` : themeSel;
       return themeBlock(allLeaves, theme, selector);
     });
     const legacy = toLegacyAliasCss(legacyAliasPairs(tree, renames));
-    return blocks.join("\n\n") + "\n" + (legacy === "" ? "" : "\n" + legacy);
+    return blocks2.join("\n\n") + "\n" + (legacy === "" ? "" : "\n" + legacy);
   }
   function toThemeModuleCssFiles(tree, ordered, defaultTheme, attr, useGlobal, renames) {
     const a = attr || "data-theme-name";
@@ -1237,10 +1443,10 @@ ${themeSel}` : themeSel;
   function renderTsTree(tree, indent2) {
     const inner = indent2 + "  ";
     const entries = Object.keys(tree).map((key) => {
-      const value = tree[key];
+      const value2 = tree[key];
       const renderedKey = JSON.stringify(key);
-      if (typeof value === "string") return `${inner}${renderedKey}: ${JSON.stringify(value)},`;
-      return `${inner}${renderedKey}: ${renderTsTree(value, inner)},`;
+      if (typeof value2 === "string") return `${inner}${renderedKey}: ${JSON.stringify(value2)},`;
+      return `${inner}${renderedKey}: ${renderTsTree(value2, inner)},`;
     });
     return `{
 ${entries.join("\n")}
@@ -1273,12 +1479,12 @@ export type Theme = (typeof themes)[number];
       for (const v of graph.variables) {
         if (v.collectionId !== coll.id || v.resolvedType !== "FLOAT") continue;
         for (const mode of coll.modes || []) {
-          const value = v.valuesByMode[mode.modeId];
-          if (typeof value !== "number" || !isFinite(value) || value <= 0) continue;
+          const value2 = v.valuesByMode[mode.modeId];
+          if (typeof value2 !== "number" || !isFinite(value2) || value2 <= 0) continue;
           const key = mode.name.trim().toLowerCase();
           if (!key) continue;
           const existing = tokens[key];
-          if (existing === void 0 || value > existing) tokens[key] = Math.round(value);
+          if (existing === void 0 || value2 > existing) tokens[key] = Math.round(value2);
         }
       }
       if (Object.keys(tokens).length > 0) return tokens;
@@ -1286,11 +1492,11 @@ export type Theme = (typeof themes)[number];
     const tokens2 = {};
     for (const v of graph.variables) {
       if (v.collectionId !== coll.id || v.resolvedType !== "FLOAT") continue;
-      const value = v.valuesByMode[coll.defaultModeId || ""];
-      if (typeof value !== "number" || !isFinite(value) || value <= 0) continue;
+      const value2 = v.valuesByMode[coll.defaultModeId || ""];
+      if (typeof value2 !== "number" || !isFinite(value2) || value2 <= 0) continue;
       const segs = v.name.split("/");
       const key = segs[segs.length - 1].trim().toLowerCase();
-      if (key) tokens2[key] = Math.round(value);
+      if (key) tokens2[key] = Math.round(value2);
     }
     return tokens2;
   }
@@ -1428,9 +1634,9 @@ import "./${varName([defaultTheme])}.module.css";
 
 For **runtime** switching keep every theme present (use \`tokens.css\`, or import
 all \`*.module.css\`) and toggle \`${attr}\` on an ancestor.` : "";
-    return `# Altery Design Tokens
+    return `# AllCrew Channel Design Tokens
 
-Generated by the **Altery Design System Export** Figma plugin from **${summary.fileName}**.
+Generated by the **AllCrew Channel** Figma plugin from **${summary.fileName}**.
 
 - ${summary.totalVariables} variables across ${summary.collections.length} collection(s)${summary.textStyleCount ? `
 - ${summary.textStyleCount} text styles \u2192 \`typography/\u2026\` tokens` : ""}
@@ -1485,8 +1691,8 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       onOpen: false
     }
   };
-  function sanitizeAttr(value) {
-    const cleaned = typeof value === "string" ? value.trim().replace(/[^A-Za-z0-9_-]/g, "") : "";
+  function sanitizeAttr(value2) {
+    const cleaned = typeof value2 === "string" ? value2.trim().replace(/[^A-Za-z0-9_-]/g, "") : "";
     return cleaned || DEFAULT_OPTIONS.themeAttr;
   }
   function normalizeDelivery(d) {
@@ -1635,25 +1841,25 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
   };
   var DEFAULT_LINT = { maxNestingDepth: 8 };
   var DEFAULT_DOCS = { componentDocs: true, componentPreviews: false, previewBudgetMb: 8 };
-  var DEFAULT_EXPORT_OPTIONS = __spreadValues({
+  var DEFAULT_EXPORT_OPTIONS = __spreadProps(__spreadValues({
     scopeMode: "page",
     delivery: __spreadValues({}, DEFAULT_DELIVERY),
     agent: __spreadValues({}, DEFAULT_AGENT),
     lint: __spreadValues({}, DEFAULT_LINT),
-    docs: __spreadValues({}, DEFAULT_DOCS)
-  }, clonePackage(DJANGO_BOOTSTRAP_VALUES));
-  function isRecord2(value) {
-    return typeof value === "object" && value !== null;
+    docs: __spreadValues({}, DEFAULT_DOCS),
+    themeMerges: { groups: [] }
+  }, clonePackage(DJANGO_BOOTSTRAP_VALUES)), {
+    target: "agent"
+  });
+  function isScopeMode(value2) {
+    return value2 === "page" || value2 === "selection" || value2 === "frame";
   }
-  function isScopeMode(value) {
-    return value === "page" || value === "selection" || value === "frame";
-  }
-  function isTargetId(value) {
-    return value === "design-tokens" || value === "django" || value === "ds-tools" || value === "agent";
+  function isTargetId(value2) {
+    return value2 === "design-tokens" || value2 === "django" || value2 === "ds-tools" || value2 === "agent";
   }
   function normalizeModules(raw) {
     const defaults = DJANGO_BOOTSTRAP_VALUES.modules;
-    if (!isRecord2(raw)) return __spreadValues({}, defaults);
+    if (!isRecord(raw)) return __spreadValues({}, defaults);
     return {
       tokens: typeof raw.tokens === "boolean" ? raw.tokens : defaults.tokens,
       templates: typeof raw.templates === "boolean" ? raw.templates : defaults.templates,
@@ -1663,7 +1869,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
   }
   function normalizeTargetOptions(raw) {
     const defaults = DJANGO_BOOTSTRAP_VALUES.targetOptions;
-    if (!isRecord2(raw)) return __spreadValues({}, defaults);
+    if (!isRecord(raw)) return __spreadValues({}, defaults);
     return {
       platform: raw.platform === "django" || raw.platform === "tauri" ? raw.platform : defaults.platform,
       framework: raw.framework === "none" || raw.framework === "bootstrap" ? raw.framework : defaults.framework,
@@ -1675,7 +1881,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
   }
   function normalizeTokens(raw) {
     const defaults = DJANGO_BOOTSTRAP_VALUES.tokens;
-    if (!isRecord2(raw)) return __spreadValues({}, defaults);
+    if (!isRecord(raw)) return __spreadValues({}, defaults);
     return {
       inlinePrimitives: typeof raw.inlinePrimitives === "boolean" ? raw.inlinePrimitives : defaults.inlinePrimitives,
       flattenAliases: typeof raw.flattenAliases === "boolean" ? raw.flattenAliases : defaults.flattenAliases,
@@ -1693,9 +1899,41 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       collectionRoles: typeof raw.collectionRoles === "string" ? raw.collectionRoles.trim() : defaults.collectionRoles
     };
   }
+  function normalizeThemeMerges(raw, legacyTokens) {
+    const groups = [];
+    if (isRecord(raw) && Array.isArray(raw.groups)) {
+      for (const entry of raw.groups) {
+        if (!isRecord(entry) || typeof entry.name !== "string" || !Array.isArray(entry.modes)) continue;
+        const name = entry.name.trim();
+        const modes = [];
+        for (const mode of entry.modes) {
+          if (!isRecord(mode) || typeof mode.collection !== "string" || typeof mode.name !== "string") continue;
+          const collection = mode.collection.trim();
+          const modeName = mode.name.trim();
+          if (collection && modeName) modes.push({ collection, name: modeName });
+        }
+        if (name && modes.length > 0) groups.push({ name, modes });
+      }
+    }
+    if (groups.length > 0) return { groups };
+    if (isRecord(legacyTokens) && typeof legacyTokens.collectionMerges === "string") {
+      for (const row of legacyTokens.collectionMerges.split(/[;\n]+/)) {
+        const match = /^\s*(.+?)\s*=\s*(.+?)\s*\+\s*(.+?)\s*$/.exec(row);
+        if (!match) continue;
+        groups.push({
+          name: match[1].trim(),
+          modes: [
+            { collection: match[2].trim(), name: "Light" },
+            { collection: match[3].trim(), name: "Dark" }
+          ]
+        });
+      }
+    }
+    return { groups };
+  }
   function normalizeI18n(raw) {
     const defaults = DJANGO_BOOTSTRAP_VALUES.i18n;
-    if (!isRecord2(raw)) return __spreadValues({}, defaults);
+    if (!isRecord(raw)) return __spreadValues({}, defaults);
     return {
       wrapTranslate: typeof raw.wrapTranslate === "boolean" ? raw.wrapTranslate : defaults.wrapTranslate,
       sourceLanguage: typeof raw.sourceLanguage === "string" && raw.sourceLanguage.trim() !== "" ? raw.sourceLanguage.trim() : defaults.sourceLanguage,
@@ -1718,7 +1956,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     return codes;
   }
   function normalizeDelivery2(raw) {
-    if (!isRecord2(raw)) return __spreadValues({}, DEFAULT_DELIVERY);
+    if (!isRecord(raw)) return __spreadValues({}, DEFAULT_DELIVERY);
     return {
       endpoint: typeof raw.endpoint === "string" ? raw.endpoint.trim() : DEFAULT_DELIVERY.endpoint,
       secret: typeof raw.secret === "string" ? raw.secret : DEFAULT_DELIVERY.secret,
@@ -1726,7 +1964,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     };
   }
   function normalizeAgent(raw) {
-    if (!isRecord2(raw)) return __spreadValues({}, DEFAULT_AGENT);
+    if (!isRecord(raw)) return __spreadValues({}, DEFAULT_AGENT);
     return {
       endpoint: typeof raw.endpoint === "string" ? raw.endpoint.trim() : DEFAULT_AGENT.endpoint,
       secret: typeof raw.secret === "string" ? raw.secret : DEFAULT_AGENT.secret,
@@ -1735,7 +1973,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     };
   }
   function normalizeDocs(raw) {
-    if (!isRecord2(raw)) return __spreadValues({}, DEFAULT_DOCS);
+    if (!isRecord(raw)) return __spreadValues({}, DEFAULT_DOCS);
     return {
       componentDocs: typeof raw.componentDocs === "boolean" ? raw.componentDocs : DEFAULT_DOCS.componentDocs,
       componentPreviews: typeof raw.componentPreviews === "boolean" ? raw.componentPreviews : DEFAULT_DOCS.componentPreviews,
@@ -1743,20 +1981,21 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     };
   }
   function normalizeLint(raw) {
-    if (!isRecord2(raw)) return __spreadValues({}, DEFAULT_LINT);
+    if (!isRecord(raw)) return __spreadValues({}, DEFAULT_LINT);
     const depth = raw.maxNestingDepth;
     return {
       maxNestingDepth: typeof depth === "number" && Number.isFinite(depth) ? Math.min(32, Math.max(1, Math.round(depth))) : DEFAULT_LINT.maxNestingDepth
     };
   }
   function normalizeExportOptions(raw) {
-    const candidate = isRecord2(raw) ? raw : {};
+    const candidate = isRecord(raw) ? raw : {};
     return {
       target: isTargetId(candidate.target) ? candidate.target : DEFAULT_EXPORT_OPTIONS.target,
       scopeMode: isScopeMode(candidate.scopeMode) ? candidate.scopeMode : DEFAULT_EXPORT_OPTIONS.scopeMode,
       modules: normalizeModules(candidate.modules),
       targetOptions: normalizeTargetOptions(candidate.targetOptions),
       tokens: normalizeTokens(candidate.tokens),
+      themeMerges: normalizeThemeMerges(candidate.themeMerges, candidate.tokens),
       i18n: normalizeI18n(candidate.i18n),
       delivery: normalizeDelivery2(candidate.delivery),
       agent: normalizeAgent(candidate.agent),
@@ -1765,8 +2004,8 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     };
   }
   function mergeExportOptions(stored, incoming) {
-    const base = isRecord2(stored) ? stored : {};
-    const patch = isRecord2(incoming) ? incoming : {};
+    const base = isRecord(stored) ? stored : {};
+    const patch = isRecord(incoming) ? incoming : {};
     return normalizeExportOptions(__spreadValues(__spreadValues({}, base), patch));
   }
   var BUILT_IN_IDS = /* @__PURE__ */ new Set([...EXPORT_PRESETS.map((preset) => preset.id), "custom"]);
@@ -1774,7 +2013,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     return "user-" + label3.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   }
   function normalizePackageForming(raw) {
-    if (!isRecord2(raw)) return clonePackage(DJANGO_BOOTSTRAP_VALUES);
+    if (!isRecord(raw)) return clonePackage(DJANGO_BOOTSTRAP_VALUES);
     return {
       target: isTargetId(raw.target) ? raw.target : DJANGO_BOOTSTRAP_VALUES.target,
       modules: normalizeModules(raw.modules),
@@ -1788,7 +2027,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     const seen = /* @__PURE__ */ new Set();
     const out = [];
     for (const entry of raw) {
-      if (!isRecord2(entry)) continue;
+      if (!isRecord(entry)) continue;
       const label3 = typeof entry.label === "string" ? entry.label.trim() : "";
       if (!label3) continue;
       const id = presetIdForLabel(label3);
@@ -1855,13 +2094,13 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     { bsVar: "--bs-border-radius-lg", candidates: ["radius-lg", "radius-large", "corner-radius-lg", "border-radius-lg"] },
     { bsVar: "--bs-border-radius-xl", candidates: ["radius-xl", "corner-radius-xl", "border-radius-xl"] }
   ];
-  function cssColorToRgbTriplet(value) {
-    const hex = value.match(/^#([0-9a-f]{6})$/i);
+  function cssColorToRgbTriplet(value2) {
+    const hex = value2.match(/^#([0-9a-f]{6})$/i);
     if (hex) {
       const n = parseInt(hex[1], 16);
       return `${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255}`;
     }
-    const rgb = value.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+    const rgb = value2.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
     if (rgb) return `${rgb[1]}, ${rgb[2]}, ${rgb[3]}`;
     return void 0;
   }
@@ -1907,10 +2146,10 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
   function themeBlockDeclarations(matched, theme) {
     const lines = [];
     for (const match of matched) {
-      const value = cssValue(valueForTheme(match.leaf.token, theme), match.leaf.path);
-      lines.push(`  ${match.bsVar}: ${value};`);
+      const value2 = cssValue(valueForTheme(match.leaf.token, theme), match.leaf.path);
+      lines.push(`  ${match.bsVar}: ${value2};`);
       if (match.rgb) {
-        const triplet = typeof value === "string" ? cssColorToRgbTriplet(value) : void 0;
+        const triplet = typeof value2 === "string" ? cssColorToRgbTriplet(value2) : void 0;
         if (triplet) lines.push(`  ${match.bsVar}-rgb: ${triplet};`);
       }
     }
@@ -1920,7 +2159,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     const flat = leaves(inlinePrimitivesTree(source, true));
     const { matched, unmatched } = matchBootstrapMap(flat);
     const attr = options.themeAttribute || "data-bs-theme";
-    const blocks = themes.ordered.map((theme) => {
+    const blocks2 = themes.ordered.map((theme) => {
       const selector = theme === themes.defaultTheme ? `:root,
 [${attr}="${themeSlug(theme)}"]` : `[${attr}="${themeSlug(theme)}"]`;
       return `${selector} {
@@ -1928,11 +2167,11 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
 }`;
     });
     const css = matched.length === 0 ? "" : `/* Bootstrap variable overrides generated from design tokens \u2014 link AFTER bootstrap.css.
-   Mapping: bootstrap.map.json (edit + \`altery-dj tokens\` to rebuild without Figma). */
-` + blocks.join("\n\n") + "\n";
+   Mapping: bootstrap.map.json (edit + \`allcrew-channel tokens\` to rebuild without Figma). */
+` + blocks2.join("\n\n") + "\n";
     const mapJson = JSON.stringify(
       {
-        $comment: "Bootstrap variable \u2192 design-token mapping (paths are dotted keys into tokens.json). Edit and run `altery-dj tokens` to rebuild bootstrap-tokens.css / _tokens.scss without a Figma re-export.",
+        $comment: "Bootstrap variable \u2192 design-token mapping (paths are dotted keys into tokens.json). Edit and run `allcrew-channel tokens` to rebuild bootstrap-tokens.css / _tokens.scss without a Figma re-export.",
         map: Object.fromEntries(matched.map((match) => [match.bsVar, match.leaf.path.join(".")])),
         unmatched
       },
@@ -1940,8 +2179,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       2
     ) + "\n";
     const scssLines = matched.map((match) => {
-      const value = cssValue(valueForTheme(match.leaf.token, themes.defaultTheme), match.leaf.path);
-      return `$${match.scssVar}: ${value};`;
+      const value2 = cssValue(valueForTheme(match.leaf.token, themes.defaultTheme), match.leaf.path);
+      return `$${match.scssVar}: ${value2};`;
     });
     const scss = matched.length === 0 ? "" : `// Design-token overrides for Bootstrap's _variables.scss \u2014 @import BEFORE bootstrap.
 // Values are the "${themes.defaultTheme}" theme; runtime theming uses bootstrap-tokens.css.
@@ -1971,7 +2210,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     return rows;
   }
   function variantName(values) {
-    return Object.entries(values).map(([prop, value]) => `${prop}=${value}`).join(", ");
+    return Object.entries(values).map(([prop, value2]) => `${prop}=${value2}`).join(", ");
   }
   function componentProperties(spec) {
     var _a, _b, _c;
@@ -2011,8 +2250,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   }
 
   // src/targets/django/generate/build.ts
-  function bootstrapVarForVariantValue(value) {
-    const slug2 = value.trim().toLowerCase();
+  function bootstrapVarForVariantValue(value2) {
+    const slug2 = value2.trim().toLowerCase();
     const bsVar = `--bs-${slug2}`;
     return DEFAULT_BOOTSTRAP_MAP.some((entry) => entry.bsVar === bsVar) ? bsVar : null;
   }
@@ -3267,7 +3506,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const checked = state === "checked";
     const disabled = state === "disabled";
     const boxChildren = checked && !isSwitch ? [txt("Glyph", isRadio ? "\u25CF" : "\u2713", { fontSize: 10, color: solid(roleTextColor("Primary")) })] : [];
-    const box = frame("Field", {
+    const box2 = frame("Field", {
       direction: "horizontal",
       primaryAlign: isSwitch ? "max" : "center",
       counterAlign: "center",
@@ -3285,7 +3524,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       counterAlign: "center",
       width: "hug",
       opacity: disabled ? 0.5 : 1,
-      children: [box, txt("Label", `${spec.name} label`, {})]
+      children: [box2, txt("Label", `${spec.name} label`, {})]
     });
   };
   var range = () => {
@@ -3355,7 +3594,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const control = ((_a = v.Control) != null ? _a : "Input").trim().toLowerCase();
     const isTextarea = control === "textarea";
     const h = isTextarea ? 88 : 58;
-    const value = control === "select" ? "Open this select menu" : control === "textarea" ? "Comments" : "name@example.com";
+    const value2 = control === "select" ? "Open this select menu" : control === "textarea" ? "Comments" : "name@example.com";
     return frame(spec.name, {
       direction: "none",
       width: 260,
@@ -3370,7 +3609,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
           fill: solid(COLOR.surface),
           stroke: { color: COLOR.inputBorder, weight: 1 },
           radius: RADIUS.base,
-          children: [txt("FieldText", value, { x: 12, y: h - 26, muted: true })]
+          children: [txt("FieldText", value2, { x: 12, y: h - 26, muted: true })]
         }),
         // The floated (resting-small) label — sits at the top-left, mapped to <label> on export.
         txt("Label", "Email address", { x: 12, y: 6, fontSize: 12, muted: true })
@@ -4015,7 +4254,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   ];
 
   // src/targets/django/generate/kit.ts
-  var KIT_PAGE_NAME = "Altery Bootstrap Kit";
+  var KIT_PAGE_NAME = "AllCrew Channel Bootstrap Kit";
   var HEADER_OFFSET = 140;
   var CLUSTER_HEAD_H = 68;
   var CLUSTER_MIN_W = 260;
@@ -4137,8 +4376,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     el.fontName = node.bold ? ctx.fonts.bold : ctx.fonts.regular;
     el.characters = node.text;
     el.fontSize = node.fontSize;
-    const paints = resolveFill(node.color, ctx);
-    el.fills = paints.length ? paints : [solidPaint(COLOR.bodyText)];
+    const paints2 = resolveFill(node.color, ctx);
+    el.fills = paints2.length ? paints2 : [solidPaint(COLOR.bodyText)];
     el.textAlignHorizontal = ((_a = node.align) != null ? _a : "left").toUpperCase();
     el.textAutoResize = node.grow ? "HEIGHT" : "WIDTH_AND_HEIGHT";
     return el;
@@ -4331,7 +4570,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   function pageHeader(page, ctx, plans, variants) {
     const title = figma.createText();
     title.fontName = ctx.fonts.bold;
-    title.characters = "Altery Bootstrap Kit";
+    title.characters = "AllCrew Channel Bootstrap Kit";
     title.fontSize = 32;
     title.fills = [solidPaint(COLOR.bodyText)];
     title.x = 0;
@@ -4460,8 +4699,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   function isDefaultArc(arc) {
     return approx(arc.startingAngle, 0) && approx(arc.endingAngle, TWO_PI) && approx(arc.innerRadius, 0);
   }
-  function round3(value) {
-    return Math.round(value * 100) / 100;
+  function round3(value2) {
+    return Math.round(value2 * 100) / 100;
   }
   function polar(cx, cy, rx, ry, angle) {
     return [round3(cx + rx * Math.cos(angle)), round3(cy + ry * Math.sin(angle))];
@@ -4487,8 +4726,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     return `M ${ox0} ${oy0} A ${round3(rx)} ${round3(ry)} 0 ${largeArc} ${sweep} ${ox1} ${oy1} L ${ix1} ${iy1} A ${round3(irx)} ${round3(iry)} 0 ${largeArc} ${innerSweep} ${ix0} ${iy0} Z`;
   }
   var PLAIN_STROKE_CAPS = /* @__PURE__ */ new Set(["NONE", "ROUND", "SQUARE"]);
-  function isMixed(value) {
-    return typeof value === "symbol";
+  function isMixed(value2) {
+    return typeof value2 === "symbol";
   }
   function needsSvg(node) {
     if (isMixed(node.strokeCap) || isMixed(node.strokeJoin)) return true;
@@ -4523,12 +4762,12 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     if (!(durationSec > 0) || !Number.isFinite(durationSec)) return BASE_SPRING_ANGULAR_FREQUENCY;
     return 2 * Math.PI / durationSec;
   }
-  function clamp(value, lo, hi) {
-    return Math.min(hi, Math.max(lo, value));
+  function clamp(value2, lo, hi) {
+    return Math.min(hi, Math.max(lo, value2));
   }
-  function round4(value, decimals) {
+  function round4(value2, decimals) {
     const factor = 10 ** decimals;
-    return Math.round(value * factor) / factor;
+    return Math.round(value2 * factor) / factor;
   }
   function bezierToCss(bezier) {
     return `cubic-bezier(${bezier.x1}, ${bezier.y1}, ${bezier.x2}, ${bezier.y2})`;
@@ -4711,9 +4950,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const maxSteps = Math.ceil(MAX_SETTLE_TIME_SEC / dt);
     let state = { d: -1, v: params.initialVelocity };
     let lastUnsettledStep = 0;
-    for (let step = 1; step <= maxSteps; step++) {
+    for (let step2 = 1; step2 <= maxSteps; step2++) {
       state = rk4Step(state, dt, params.dampingRatio, params.angularFrequency);
-      if (Math.abs(state.d) > SETTLE_TOLERANCE) lastUnsettledStep = step;
+      if (Math.abs(state.d) > SETTLE_TOLERANCE) lastUnsettledStep = step2;
     }
     return Math.min(lastUnsettledStep * dt, MAX_SETTLE_TIME_SEC);
   }
@@ -4729,7 +4968,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const points = [0];
     let state = { d: -1, v: params.initialVelocity };
     for (let i = 1; i < SAMPLE_COUNT; i++) {
-      for (let step = 0; step < stepsPerSample; step++) {
+      for (let step2 = 0; step2 < stepsPerSample; step2++) {
         state = rk4Step(state, dt, params.dampingRatio, params.angularFrequency);
       }
       points.push(1 + state.d);
@@ -4835,7 +5074,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     return assets;
   }
   function bytesMatch(bytes, offset, signature) {
-    return signature.every((byte, index) => bytes[offset + index] === byte);
+    return signature.every((byte, index2) => bytes[offset + index2] === byte);
   }
   function detectImageFillFormat(bytes) {
     if (bytesMatch(bytes, 0, [137, 80, 78, 71])) return "png";
@@ -4844,8 +5083,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     if (bytesMatch(bytes, 0, [82, 73, 70, 70]) && bytesMatch(bytes, 8, [87, 69, 66, 80])) return "webp";
     return "png";
   }
-  function containerFillFilename(id, name, format, index = 0) {
-    const suffix = index > 0 ? `-${index + 1}` : "";
+  function containerFillFilename(id, name, format, index2 = 0) {
+    const suffix = index2 > 0 ? `-${index2 + 1}` : "";
     return `${idSegment(id)}-${slugify(name)}-fill${suffix}.${format}`;
   }
   function imageFillLeafFilename(id, name, format) {
@@ -5038,17 +5277,17 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const imageFills = visibleImageFills(node);
     if (imageFills.length === 0) return {};
     const backgroundImages = await Promise.all(
-      imageFills.map(async (fill, index) => {
+      imageFills.map(async (fill, index2) => {
         const format = await imageFillFormat(fill.imageHash);
-        const assetSrc = `img/${containerFillFilename(node.id, node.name, format, index)}`;
+        const assetSrc = `img/${containerFillFilename(node.id, node.name, format, index2)}`;
         return { imageHash: fill.imageHash, assetSrc };
       })
     );
     return { backgroundImages };
   }
   function styleIdOf(node, key) {
-    const value = node[key];
-    return typeof value === "string" && value !== "" ? value : void 0;
+    const value2 = node[key];
+    return typeof value2 === "string" && value2 !== "" ? value2 : void 0;
   }
   async function resolveStyleId(styleId) {
     var _a;
@@ -5074,7 +5313,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     MIN: "flex-start",
     MAX: "flex-end",
     CENTER: "center",
-    SPACE_BETWEEN: "space-between"
+    SPACE_BETWEEN: "space-between",
+    SPACE_EVENLY: "space-evenly",
+    SPACE_AROUND: "space-around"
   };
   var ALIGN_ITEMS = {
     MIN: "flex-start",
@@ -5185,10 +5426,10 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       warnings: [`"${node.name}" is a Group without Auto Layout \u2014 children fall back to absolute positioning`]
     };
   }
-  function normalizeSize(sizing, value) {
+  function normalizeSize(sizing, value2) {
     if (sizing === "HUG") return { mode: "hug" };
     if (sizing === "FILL") return { mode: "fill" };
-    return { mode: "fixed", value };
+    return { mode: "fixed", value: value2 };
   }
   function minMax(node) {
     const constraints = {
@@ -5198,8 +5439,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       maxHeight: node.maxHeight
     };
     const out = {};
-    for (const [key, value] of Object.entries(constraints)) {
-      if (typeof value === "number") out[key] = value;
+    for (const [key, value2] of Object.entries(constraints)) {
+      if (typeof value2 === "number") out[key] = value2;
     }
     return out;
   }
@@ -5222,8 +5463,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     };
   }
   function stripPropertySuffix(name) {
-    const index = name.lastIndexOf("#");
-    return index === -1 ? name : name.slice(0, index);
+    const index2 = name.lastIndexOf("#");
+    return index2 === -1 ? name : name.slice(0, index2);
   }
   function normalizeComponentPropertyReferences(refs) {
     if (!refs) return {};
@@ -5487,8 +5728,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   function isMaskNode(node) {
     return node.isMask === true;
   }
-  function radiusNumber(value) {
-    return typeof value === "number" ? value : 0;
+  function radiusNumber(value2) {
+    return typeof value2 === "number" ? value2 : 0;
   }
   function maskClipRadius(node) {
     const uniform = node.cornerRadius;
@@ -5591,8 +5832,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     CENTER: "center",
     BOTTOM: "flex-end"
   };
-  function mixedOrNumber(value) {
-    return typeof value === "number" ? value : void 0;
+  function mixedOrNumber(value2) {
+    return typeof value2 === "number" ? value2 : void 0;
   }
   function textTruncate(node) {
     if (node.textTruncation !== "ENDING") return {};
@@ -5610,9 +5851,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       characters: node.characters
     }), textAlign ? { textAlign } : {}), textAlignVertical ? { textAlignVertical } : {}), textTruncate(node)), node.textAutoResize === "WIDTH_AND_HEIGHT" ? { noWrap: true } : {}), node.textAutoResize && node.textAutoResize !== "NONE" ? { autoResize: true } : {}), paragraphSpacing ? { paragraphSpacing } : {}), paragraphIndent ? { paragraphIndent } : {}), listSpacing ? { listSpacing } : {}), node.leadingTrim === "CAP_HEIGHT" ? { leadingTrim: "CAP_HEIGHT" } : {}), node.hangingPunctuation ? { hangingPunctuation: true } : {}), node.hangingList ? { hangingList: true } : {});
   }
-  function firstSolidCss(paints) {
-    if (!Array.isArray(paints)) return void 0;
-    const solid6 = paints.find((p) => (p == null ? void 0 : p.type) === "SOLID" && p.visible !== false);
+  function firstSolidCss(paints2) {
+    if (!Array.isArray(paints2)) return void 0;
+    const solid6 = paints2.find((p) => (p == null ? void 0 : p.type) === "SOLID" && p.visible !== false);
     if (!(solid6 == null ? void 0 : solid6.color)) return void 0;
     return rgbaToCss(solid6.opacity != null && solid6.opacity < 1 ? __spreadProps(__spreadValues({}, solid6.color), { a: solid6.opacity }) : solid6.color);
   }
@@ -5823,8 +6064,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     "listOptions",
     "indentation"
   ];
-  function segmentClassName(baseClassName, index) {
-    return `${baseClassName}--segment-${index}`;
+  function segmentClassName(baseClassName, index2) {
+    return `${baseClassName}--segment-${index2}`;
   }
   function lineHeightToCss(lineHeight) {
     if (lineHeight.unit === "AUTO") return "normal";
@@ -5916,9 +6157,9 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     return declarations;
   }
   function segmentsToCss(baseClassName, segments, overrides = {}) {
-    return segments.map((segment, index) => {
+    return segments.map((segment, index2) => {
       const body = segmentToDeclarations(segment, overrides).map((declaration) => `  ${declaration}`).join("\n");
-      return `.${segmentClassName(baseClassName, index)} {
+      return `.${segmentClassName(baseClassName, index2)} {
 ${body}
 }`;
     });
@@ -5927,7 +6168,7 @@ ${body}
     const paragraphs = [
       { runs: [], listType: "NONE", listDepth: 0 }
     ];
-    segments.forEach((segment, index) => {
+    segments.forEach((segment, index2) => {
       const parts = segment.characters.split("\n");
       parts.forEach((part, partIndex) => {
         var _a, _b, _c;
@@ -5936,7 +6177,7 @@ ${body}
         const current = paragraphs[paragraphs.length - 1];
         current.listType = (_b = (_a = segment.listOptions) == null ? void 0 : _a.type) != null ? _b : "NONE";
         current.listDepth = (_c = segment.indentation) != null ? _c : 0;
-        current.runs.push({ segment: __spreadProps(__spreadValues({}, segment), { characters: part }), index });
+        current.runs.push({ segment: __spreadProps(__spreadValues({}, segment), { characters: part }), index: index2 });
       });
     });
     return paragraphs;
@@ -5954,8 +6195,8 @@ ${body}
     for (const segment of name.split(",")) {
       const [rawKey, rawValue] = segment.split("=");
       if (rawValue === void 0) {
-        const value = rawKey.trim().toLowerCase();
-        if (value) props.set("variant", value);
+        const value2 = rawKey.trim().toLowerCase();
+        if (value2) props.set("variant", value2);
         continue;
       }
       props.set(rawKey.trim().toLowerCase(), rawValue.trim().toLowerCase());
@@ -5963,7 +6204,7 @@ ${body}
     return props;
   }
   function findProp2(props, names) {
-    for (const [key, value] of props) if (names.has(key)) return value;
+    for (const [key, value2] of props) if (names.has(key)) return value2;
     return null;
   }
   function normalizeState(state) {
@@ -6005,7 +6246,7 @@ ${body}
     };
   }
   function declBlock(selector, decls) {
-    const lines = [...decls].map(([prop, value]) => `  ${prop}: ${value};`);
+    const lines = [...decls].map(([prop, value2]) => `  ${prop}: ${value2};`);
     return `${selector} {
 ${lines.join("\n")}
 }`;
@@ -6054,8 +6295,8 @@ ${lines.join("\n")}
       const hover = pick("hover") ? buttonStateValues(pick("hover")) : base;
       const active = pick("active") ? buttonStateValues(pick("active")) : base;
       const decls = /* @__PURE__ */ new Map();
-      const put = (name, value, fallback = null) => {
-        const resolved = value != null ? value : fallback;
+      const put = (name, value2, fallback = null) => {
+        const resolved = value2 != null ? value2 : fallback;
         if (resolved) decls.set(name, resolved);
       };
       put("--bs-btn-color", base.color);
@@ -6121,12 +6362,12 @@ ${lines.join("\n")}
     for (const node of nodes) visit(node);
     return masters;
   }
-  function isVarSafeBackground(value) {
-    return !/gradient\(|url\(/.test(value);
+  function isVarSafeBackground(value2) {
+    return !/gradient\(|url\(/.test(value2);
   }
-  function normalizeValue(value) {
-    if (value === void 0 || value === null) return null;
-    let v = value.trim().toLowerCase().replace(/\s+/g, " ");
+  function normalizeValue(value2) {
+    if (value2 === void 0 || value2 === null) return null;
+    let v = value2.trim().toLowerCase().replace(/\s+/g, " ");
     for (let i = 0; i < 3 && v.includes("var("); i += 1) {
       v = v.replace(/var\(--[^,()]+,\s*([^()]*(?:\([^()]*\))?[^()]*)\)/g, "$1").trim();
     }
@@ -6136,12 +6377,12 @@ ${lines.join("\n")}
     return normalizeValue(a) === normalizeValue(b);
   }
   function sameRadius(a, b) {
-    const collapse2 = (value) => {
-      if (value === null) return null;
-      const parts = value.split(" ");
-      return parts.every((part) => part === parts[0]) ? parts[0] : value;
+    const collapse3 = (value2) => {
+      if (value2 === null) return null;
+      const parts = value2.split(" ");
+      return parts.every((part) => part === parts[0]) ? parts[0] : value2;
     };
-    return collapse2(normalizeValue(a)) === collapse2(normalizeValue(b));
+    return collapse3(normalizeValue(a)) === collapse3(normalizeValue(b));
   }
   function samePadding(a, b) {
     var _a, _b;
@@ -6305,42 +6546,42 @@ ${rules.join("\n\n")}
     "-webkit-line-clamp",
     "-webkit-box-orient"
   ]);
-  function sanitizeTransform(value) {
-    const kept2 = value.match(/(?:rotate|skew|scale|matrix)[a-zA-Z]*\([^)]*\)/g);
+  function sanitizeTransform(value2) {
+    const kept2 = value2.match(/(?:rotate|skew|scale|matrix)[a-zA-Z]*\([^)]*\)/g);
     return kept2 ? kept2.join(" ") : void 0;
   }
-  function splitTopLevelCommas(value) {
+  function splitTopLevelCommas(value2) {
     const parts = [];
     let depth = 0;
     let start = 0;
-    for (let i = 0; i < value.length; i++) {
-      const ch = value[i];
+    for (let i = 0; i < value2.length; i++) {
+      const ch = value2[i];
       if (ch === "(") depth++;
       else if (ch === ")") depth--;
       else if (ch === "," && depth === 0) {
-        parts.push(value.slice(start, i));
+        parts.push(value2.slice(start, i));
         start = i + 1;
       }
     }
-    parts.push(value.slice(start));
+    parts.push(value2.slice(start));
     return parts;
   }
-  function sanitizeBackgroundLayers(value) {
-    return splitTopLevelCommas(value).map((layer) => layer.replace(/(^|\s)lightgray(\s|$)/, " ").replace(/\s{2,}/g, " ").trim()).filter((layer) => layer.length > 0).join(", ");
+  function sanitizeBackgroundLayers(value2) {
+    return splitTopLevelCommas(value2).map((layer) => layer.replace(/(^|\s)lightgray(\s|$)/, " ").replace(/\s{2,}/g, " ").trim()).filter((layer) => layer.length > 0).join(", ");
   }
   function pickVisualDeclarations(css) {
     const picked = {};
-    for (const [property, value] of Object.entries(css)) {
+    for (const [property, value2] of Object.entries(css)) {
       if (IR_OWNED_CSS.has(property)) continue;
       if (property === "transform") {
-        const transform = sanitizeTransform(value);
+        const transform = sanitizeTransform(value2);
         if (transform) {
           picked["transform"] = transform;
           picked["transform-origin"] = "0 0";
         }
         continue;
       }
-      const sanitized = property === "background" ? sanitizeBackgroundLayers(value) : value;
+      const sanitized = property === "background" ? sanitizeBackgroundLayers(value2) : value2;
       if (sanitized.length > 0) picked[property] = sanitized;
     }
     if (picked["backdrop-filter"] && !picked["-webkit-backdrop-filter"]) {
@@ -6359,23 +6600,23 @@ ${rules.join("\n\n")}
   }
   function resolveImageFillPlaceholders(declarations, fillUrls) {
     const resolved = {};
-    for (const [property, value] of Object.entries(declarations)) {
-      let index = 0;
-      resolved[property] = value.replace(IMAGE_FILL_PLACEHOLDER, () => {
+    for (const [property, value2] of Object.entries(declarations)) {
+      let index2 = 0;
+      resolved[property] = value2.replace(IMAGE_FILL_PLACEHOLDER, () => {
         if (fillUrls.length === 0) return "none";
-        const url = fillUrls[Math.min(index, fillUrls.length - 1)];
-        index++;
+        const url = fillUrls[Math.min(index2, fillUrls.length - 1)];
+        index2++;
         return `url(${url})`;
       });
     }
     return resolved;
   }
-  function px(value) {
-    const rounded = Math.round(value * 100) / 100;
+  function px(value2) {
+    const rounded = Math.round(value2 * 100) / 100;
     return `${rounded}px`;
   }
-  function pct(value) {
-    const rounded = Math.round(value * 100) / 100;
+  function pct(value2) {
+    const rounded = Math.round(value2 * 100) / 100;
     return `${rounded}%`;
   }
   function maskRadiusCss(radius) {
@@ -6600,10 +6841,10 @@ ${rules.join("\n\n")}
   function withFallback(varName2, fallback) {
     return fallback ? `var(${varName2}, ${fallback})` : `var(${varName2})`;
   }
-  function singleLayer(value) {
-    if (!value) return true;
+  function singleLayer(value2) {
+    if (!value2) return true;
     let depth = 0;
-    for (const character of value) {
+    for (const character of value2) {
       if (character === "(") depth += 1;
       else if (character === ")") depth -= 1;
       else if (character === "," && depth === 0) return false;
@@ -6633,7 +6874,7 @@ ${rules.join("\n\n")}
   function formatRule(className, declarations) {
     const entries = Object.entries(declarations);
     if (entries.length === 0) return null;
-    const body = entries.map(([property, value]) => `  ${property}: ${value};`).join("\n");
+    const body = entries.map(([property, value2]) => `  ${property}: ${value2};`).join("\n");
     return `.${className} {
 ${body}
 }`;
@@ -6709,11 +6950,11 @@ ${body}
     }
     return { outline: `${px(weight)} solid ${color}`, "outline-offset": "0px" };
   }
-  function splitRadiusComponents(value) {
+  function splitRadiusComponents(value2) {
     const parts = [];
     let depth = 0;
     let current = "";
-    for (const char of value) {
+    for (const char of value2) {
       if (char === "(") depth++;
       else if (char === ")") depth--;
       if (depth === 0 && (/\s/.test(char) || char === "/")) {
@@ -6727,9 +6968,9 @@ ${body}
     if (current) parts.push(current);
     return parts;
   }
-  function scaleBorderRadius(value, smoothing) {
+  function scaleBorderRadius(value2, smoothing) {
     const factor = Math.round((1 + smoothing * 0.6) * 1e3) / 1e3;
-    return splitRadiusComponents(value).map((part) => {
+    return splitRadiusComponents(value2).map((part) => {
       if (part === "/") return "/";
       if (part.includes("var(")) return `calc(${part} * ${factor})`;
       return part.replace(/(-?\d*\.?\d+)px/g, (_match, n) => `${Math.round(parseFloat(n) * factor * 100) / 100}px`);
@@ -6749,9 +6990,9 @@ ${body}
   var UNSUPPORTED_FILL_TYPES = /* @__PURE__ */ new Set(["SHADER", "PATTERN"]);
   function warnUnsupportedFills(source, nodeId, notes) {
     for (const field of ["fills", "strokes"]) {
-      const paints = source[field];
-      if (!Array.isArray(paints)) continue;
-      for (const paint of paints) {
+      const paints2 = source[field];
+      if (!Array.isArray(paints2)) continue;
+      for (const paint of paints2) {
         const entry = paint;
         if ((entry == null ? void 0 : entry.visible) === false) continue;
         if (typeof (entry == null ? void 0 : entry.type) !== "string" || !UNSUPPORTED_FILL_TYPES.has(entry.type)) continue;
@@ -6865,9 +7106,9 @@ ${body}
         const TYPOGRAPHY_KEYS = /* @__PURE__ */ new Set(["margin", "text-align", "text-indent"]);
         const boxDecl = {};
         const typographyDecl = {};
-        for (const [property, value] of Object.entries(layout)) {
+        for (const [property, value2] of Object.entries(layout)) {
           ;
-          (TYPOGRAPHY_KEYS.has(property) ? typographyDecl : boxDecl)[property] = value;
+          (TYPOGRAPHY_KEYS.has(property) ? typographyDecl : boxDecl)[property] = value2;
         }
         const boxRule = formatRule(`${className}--box`, boxDecl);
         if (boxRule) rules.push(boxRule);
@@ -6895,8 +7136,8 @@ ${body}
       const ownLayout = "layout" in node ? node.layout : null;
       const ownSize = fixedPixelSize(node);
       const firstFixedIndex = node.children.length - ((_e = node.fixedChildrenCount) != null ? _e : 0);
-      for (const [index, child] of node.children.entries()) {
-        await collectNodeCss(child, ownLayout, ownSize, sceneNodesById, variableNamesById, rules, options, index >= firstFixedIndex, index);
+      for (const [index2, child] of node.children.entries()) {
+        await collectNodeCss(child, ownLayout, ownSize, sceneNodesById, variableNamesById, rules, options, index2 >= firstFixedIndex, index2);
       }
     }
   }
@@ -6966,7 +7207,7 @@ ${body}
       if ("children" in n) {
         const ownLayout = "layout" in n ? n.layout : null;
         const ownSize = fixedPixelSize(n);
-        for (const [index, child] of n.children.entries()) await visit(child, ownLayout, ownSize, index);
+        for (const [index2, child] of n.children.entries()) await visit(child, ownLayout, ownSize, index2);
       }
     };
     await visit(node, null, void 0);
@@ -6974,9 +7215,9 @@ ${body}
   }
   function diffVariantDeclarations(defaultDecl, siblingDecl) {
     const diff = {};
-    for (const [property, value] of Object.entries(siblingDecl)) {
-      if (defaultDecl[property] === value) continue;
-      diff[property] = value;
+    for (const [property, value2] of Object.entries(siblingDecl)) {
+      if (defaultDecl[property] === value2) continue;
+      diff[property] = value2;
     }
     return diff;
   }
@@ -7050,7 +7291,7 @@ ${body}
   }
 
   // src/utils/plugin-data.ts
-  var PLUGIN_DATA_NAMESPACE = "altery";
+  var PLUGIN_DATA_NAMESPACE = "allcrewChannel";
   var MAX_PLUGIN_DATA_BYTES = 1e5;
   function parsePluginData(raw) {
     if (!raw) return null;
@@ -7063,8 +7304,8 @@ ${body}
   function getPluginData(node, key) {
     return parsePluginData(node.getSharedPluginData(PLUGIN_DATA_NAMESPACE, key));
   }
-  function setPluginData(node, key, value) {
-    const serialized = JSON.stringify(value);
+  function setPluginData(node, key, value2) {
+    const serialized = JSON.stringify(value2);
     if (serialized.length > MAX_PLUGIN_DATA_BYTES) {
       throw new Error("pluginData limit 100KB exceeded");
     }
@@ -7072,8 +7313,8 @@ ${body}
   }
 
   // src/targets/django/html-emitter.ts
-  function escapeHtml(value) {
-    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  function escapeHtml(value2) {
+    return value2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
   var PLACEHOLDER_PATTERN = /%\((\w+)\)s/g;
   function wrapTranslatable(escaped, msgctxt = "") {
@@ -7093,17 +7334,17 @@ ${body}
     );
     return typeof (annotation == null ? void 0 : annotation.context) === "string" ? annotation.context : "";
   }
-  function renderSegmentSpan(className, index, segment, msgctxt = "") {
+  function renderSegmentSpan(className, index2, segment, msgctxt = "") {
     var _a;
-    const span = `<span class="${segmentClassName(className, index)}">${wrapTranslatable(escapeHtml(segment.characters), msgctxt)}</span>`;
+    const span = `<span class="${segmentClassName(className, index2)}">${wrapTranslatable(escapeHtml(segment.characters), msgctxt)}</span>`;
     if (((_a = segment.hyperlink) == null ? void 0 : _a.type) === "URL") return `<a href="${escapeHtml(segment.hyperlink.value)}">${span}</a>`;
     return span;
   }
   function renderTextSpans(className, segments, msgctxt = "") {
-    return segments.map((segment, index) => renderSegmentSpan(className, index, segment, msgctxt)).join("");
+    return segments.map((segment, index2) => renderSegmentSpan(className, index2, segment, msgctxt)).join("");
   }
   function renderParagraphRuns(className, runs, msgctxt) {
-    return runs.map(({ segment, index }) => renderSegmentSpan(className, index, segment, msgctxt)).join("");
+    return runs.map(({ segment, index: index2 }) => renderSegmentSpan(className, index2, segment, msgctxt)).join("");
   }
   function renderTextList(items, className, indent2, msgctxt) {
     let i = 0;
@@ -7127,11 +7368,11 @@ ${ind}  `;
     return parseLevel(items[0].listDepth, indent2);
   }
   function renderTextBody(paragraphs, className, indent2, msgctxt) {
-    const blocks = [];
+    const blocks2 = [];
     let i = 0;
     while (i < paragraphs.length) {
       if (paragraphs[i].listType === "NONE") {
-        blocks.push(`${indent2}<p class="${className}">${renderParagraphRuns(className, paragraphs[i].runs, msgctxt)}</p>`);
+        blocks2.push(`${indent2}<p class="${className}">${renderParagraphRuns(className, paragraphs[i].runs, msgctxt)}</p>`);
         i++;
         continue;
       }
@@ -7140,9 +7381,9 @@ ${ind}  `;
         run.push(paragraphs[i]);
         i++;
       }
-      blocks.push(renderTextList(run, className, indent2, msgctxt));
+      blocks2.push(renderTextList(run, className, indent2, msgctxt));
     }
-    return blocks.join("\n");
+    return blocks2.join("\n");
   }
   function createHeadingState() {
     return { usedH1: false };
@@ -7347,11 +7588,11 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
   function textOverrideVarName(mainComponentNodeId2) {
     return `text_${mainComponentNodeId2.replace(/[^a-zA-Z0-9]+/g, "_")}`;
   }
-  function escapeDjangoString(value) {
-    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  function escapeDjangoString(value2) {
+    return value2.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
-  function djangoStringLiteral(value) {
-    return `"${escapeDjangoString(value)}"`;
+  function djangoStringLiteral(value2) {
+    return `"${escapeDjangoString(value2)}"`;
   }
   function collectComponents(nodes) {
     const found = [];
@@ -7411,8 +7652,8 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
     return null;
   }
   function mainComponentNodeId(instanceDescendantId) {
-    const index = instanceDescendantId.lastIndexOf(";");
-    return index === -1 ? instanceDescendantId : instanceDescendantId.slice(index + 1);
+    const index2 = instanceDescendantId.lastIndexOf(";");
+    return index2 === -1 ? instanceDescendantId : instanceDescendantId.slice(index2 + 1);
   }
   function collectTextOverrides(instanceNode, mainComponent) {
     const overrides = {};
@@ -7445,17 +7686,17 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
     roots.forEach(visit);
     return result;
   }
-  function componentPropertyLiteral(value, registry) {
-    if (value.type === "BOOLEAN") return value.value ? "True" : "False";
-    if (value.type === "INSTANCE_SWAP") {
-      const path = registry.nodeByComponentId.get(value.value);
-      return djangoStringLiteral(path ? partialPath(path) : value.value);
+  function componentPropertyLiteral(value2, registry) {
+    if (value2.type === "BOOLEAN") return value2.value ? "True" : "False";
+    if (value2.type === "INSTANCE_SWAP") {
+      const path = registry.nodeByComponentId.get(value2.value);
+      return djangoStringLiteral(path ? partialPath(path) : value2.value);
     }
-    return djangoStringLiteral(value.value);
+    return djangoStringLiteral(value2.value);
   }
   function buildIncludeParams(node, registry) {
     const params = Object.entries(node.componentProperties).map(
-      ([name, value]) => `${toVarName(name)}=${componentPropertyLiteral(value, registry)}`
+      ([name, value2]) => `${toVarName(name)}=${componentPropertyLiteral(value2, registry)}`
     );
     const mainComponent = node.componentId ? registry.nodeByComponentId.get(node.componentId) : void 0;
     if (mainComponent) {
@@ -7513,25 +7754,25 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
   }
   function findScopeNodes(root, scopeKey) {
     const out = [];
-    const walk2 = (node, isRoot) => {
+    const walk3 = (node, isRoot) => {
       if (!isRoot && node.type === "instance-ref") return;
       if (!isRoot && node.type === "container" && partKeyForName(node.name) === scopeKey) {
         out.push(node);
         return;
       }
-      if ("children" in node) for (const child of node.children) walk2(child, false);
+      if ("children" in node) for (const child of node.children) walk3(child, false);
     };
-    walk2(root, true);
+    walk3(root, true);
     return out;
   }
   function findAllPartNodes(root, partKey) {
     const out = [];
-    const walk2 = (node, isRoot) => {
+    const walk3 = (node, isRoot) => {
       if (!isRoot && node.type === "instance-ref") return;
       if (!isRoot && node.type === "container" && partKeyForName(node.name) === partKey) out.push(node);
-      if ("children" in node) for (const child of node.children) walk2(child, false);
+      if ("children" in node) for (const child of node.children) walk3(child, false);
     };
-    walk2(root, true);
+    walk3(root, true);
     return out;
   }
   function buildCollapseWiring(map, root, spec) {
@@ -7592,7 +7833,7 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
   }
   function findAllInstanceRefs(root, registry, kind) {
     const out = [];
-    const walk2 = (node) => {
+    const walk3 = (node) => {
       var _a, _b;
       if (node.type === "instance-ref") {
         const main = node.componentId ? registry.nodeByComponentId.get(node.componentId) : void 0;
@@ -7600,9 +7841,9 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
         if (mkind === kind) out.push(node);
         return;
       }
-      if ("children" in node) for (const child of node.children) walk2(child);
+      if ("children" in node) for (const child of node.children) walk3(child);
     };
-    for (const child of root.children) walk2(child);
+    for (const child of root.children) walk3(child);
     return out;
   }
   function buildItemIdParams(map, root, spec, registry) {
@@ -7753,7 +7994,7 @@ ${body}`;
     if (node.type === "instance-ref" && node.componentSetName) {
       const hasPartial = node.componentKey != null && registry.pathByComponentKey.has(node.componentKey);
       if (hasPartial) return null;
-      const properties = Object.entries(node.componentProperties).filter((entry) => entry[1].type === "VARIANT").map(([name, value]) => ({ name, type: "VARIANT", defaultValue: value.value, variantOptions: [value.value] }));
+      const properties = Object.entries(node.componentProperties).filter((entry) => entry[1].type === "VARIANT").map(([name, value2]) => ({ name, type: "VARIANT", defaultValue: value2.value, variantOptions: [value2.value] }));
       return __spreadProps(__spreadValues({}, node), {
         type: "container",
         component: { key: (_a = node.componentKey) != null ? _a : node.id, setName: node.componentSetName, properties }
@@ -7851,7 +8092,7 @@ ${indent2}</${tag}>`;
       ...framework.source === "cdn" ? [
         `  <style>@import url("https://cdn.jsdelivr.net/npm/bootstrap@${framework.version}/dist/css/bootstrap.min.css") layer(bootstrap);</style>`
       ] : framework.source === "vendored" ? [`  <style>@import url("{% static 'vendor/bootstrap/bootstrap.min.css' %}") layer(bootstrap);</style>`] : [
-        "  {# Bootstrap CSS is expected from the project (Settings \u2192 Bootstrap source: In project). Override this block to link it, or run `altery-dj bootstrap vendor`. #}"
+        "  {# Bootstrap CSS is expected from the project (Settings \u2192 Bootstrap source: In project). Override this block to link it, or run `allcrew-channel bootstrap vendor`. #}"
       ],
       "  {% endblock %}",
       ...framework.bootstrapTokensCssFile ? [`  <link rel="stylesheet" href="{% static '${framework.bootstrapTokensCssFile}' %}">`] : [],
@@ -7919,7 +8160,7 @@ ${indent2}</${tag}>`;
   // src/targets/django/smart-animate/match-layers.ts
   function indexTree(root) {
     const map = /* @__PURE__ */ new Map();
-    const walk2 = (node, prefix) => {
+    const walk3 = (node, prefix) => {
       var _a, _b;
       const seen = /* @__PURE__ */ new Map();
       for (const child of (_a = node.children) != null ? _a : []) {
@@ -7927,10 +8168,10 @@ ${indent2}</${tag}>`;
         seen.set(child.name, dupIndex + 1);
         const path = `${prefix}${child.name}#${dupIndex}`;
         map.set(path, child);
-        walk2(child, `${path}/`);
+        walk3(child, `${path}/`);
       }
     };
-    walk2(root, "");
+    walk3(root, "");
     return map;
   }
   function matchLayers(base, target) {
@@ -8229,9 +8470,9 @@ ${indent2}</${tag}>`;
     }
     return null;
   }
-  function singleSolidPaint(paints, requireVisible) {
-    if (paints === void 0 || paints === MIXED || paints.length !== 1) return null;
-    const paint = paints[0];
+  function singleSolidPaint(paints2, requireVisible) {
+    if (paints2 === void 0 || paints2 === MIXED || paints2.length !== 1) return null;
+    const paint = paints2[0];
     if (paint.type !== "SOLID" || !paint.color) return null;
     if (requireVisible && paint.visible === false) return null;
     return paint;
@@ -8265,8 +8506,8 @@ ${indent2}</${tag}>`;
   function isRenderedPaint(paint) {
     return paint.visible !== false;
   }
-  function imagePaints(paints) {
-    return paints.filter((paint) => paint.type === "IMAGE" && typeof paint.imageHash === "string").map((paint) => ({ imageHash: paint.imageHash, scaleMode: paint.scaleMode, opacity: paint.opacity }));
+  function imagePaints(paints2) {
+    return paints2.filter((paint) => paint.type === "IMAGE" && typeof paint.imageHash === "string").map((paint) => ({ imageHash: paint.imageHash, scaleMode: paint.scaleMode, opacity: paint.opacity }));
   }
   function diffProperties(a, b) {
     const out = [];
@@ -8449,9 +8690,9 @@ ${indent2}</${tag}>`;
   }
 
   // src/targets/django/smart-animate/css-emitter.ts
-  function round5(value, decimals) {
+  function round5(value2, decimals) {
     const factor = 10 ** decimals;
-    return Math.round(value * factor) / factor;
+    return Math.round(value2 * factor) / factor;
   }
   function rgbaToCss2(color) {
     const to255 = (channel) => Math.round(channel * 255);
@@ -8543,10 +8784,10 @@ ${indent2}</${tag}>`;
 }`;
     return { restRule, activeRule };
   }
-  function topSolidColor(paints) {
+  function topSolidColor(paints2) {
     var _a;
-    for (let i = paints.length - 1; i >= 0; i--) {
-      const paint = paints[i];
+    for (let i = paints2.length - 1; i >= 0; i--) {
+      const paint = paints2[i];
       if (paint.type === "SOLID" && paint.color) return __spreadProps(__spreadValues({}, paint.color), { a: (_a = paint.opacity) != null ? _a : 1 });
     }
     return { r: 0, g: 0, b: 0, a: 0 };
@@ -8611,8 +8852,8 @@ ${indent2}</${tag}>`;
             const gradient = change.to.find((paint) => paint.visible !== false && paint.type.startsWith("GRADIENT"));
             const image = gradient ? void 0 : change.to.find((paint) => paint.visible !== false && paint.type === "IMAGE");
             if (gradient) {
-              const value = gradientCss(gradient);
-              if (value !== void 0) decls.push({ cssProperty: "background-image", value, interpolable: false });
+              const value2 = gradientCss(gradient);
+              if (value2 !== void 0) decls.push({ cssProperty: "background-image", value: value2, interpolable: false });
             } else if (image) {
             }
           }
@@ -8837,12 +9078,12 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
         if (v.collectionId !== collection.id) continue;
         if (v.resolvedType !== "FLOAT") continue;
         for (const mode of collection.modes) {
-          const value = v.valuesByMode[mode.modeId];
-          if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) continue;
+          const value2 = v.valuesByMode[mode.modeId];
+          if (typeof value2 !== "number" || !Number.isFinite(value2) || value2 <= 0) continue;
           const key = mode.name.trim().toLowerCase();
           if (key) {
             const existing = tokens2.get(key);
-            if (existing === void 0 || value > existing) tokens2.set(key, Math.round(value));
+            if (existing === void 0 || value2 > existing) tokens2.set(key, Math.round(value2));
           }
         }
       }
@@ -8852,10 +9093,10 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
     for (const v of snapshot.variables) {
       if (v.collectionId !== collection.id) continue;
       if (v.resolvedType !== "FLOAT") continue;
-      const value = v.valuesByMode[collection.defaultModeId];
-      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) continue;
+      const value2 = v.valuesByMode[collection.defaultModeId];
+      if (typeof value2 !== "number" || !Number.isFinite(value2) || value2 <= 0) continue;
       const key = v.name.split("/").pop().trim().toLowerCase();
-      if (key) tokens.set(key, Math.round(value));
+      if (key) tokens.set(key, Math.round(value2));
     }
     return tokens;
   }
@@ -8920,7 +9161,7 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
   function indexRealTree(root) {
     const byPath = /* @__PURE__ */ new Map();
     const byId = /* @__PURE__ */ new Map();
-    const walk2 = (node, prefix) => {
+    const walk3 = (node, prefix) => {
       if (!("children" in node)) return;
       const seen = /* @__PURE__ */ new Map();
       node.children.forEach((child, indexInParent) => {
@@ -8931,10 +9172,10 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
         const entry = { node: child, parent: node, indexInParent, path };
         byPath.set(path, entry);
         byId.set(child.id, entry);
-        walk2(child, `${path}/`);
+        walk3(child, `${path}/`);
       });
     };
-    walk2(root, "");
+    walk3(root, "");
     return { byPath, byId };
   }
   function parentPathOf(path) {
@@ -8964,35 +9205,35 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
       const mergedOrder = mergedFlow.map((c) => c.id).filter((id) => commonMergedIds.has(id));
       const frameOrder = frameFlow.map((c) => frameIdToMergedId.get(c.id)).filter((id) => Boolean(id));
       if (mergedOrder.length < 2 || mergedOrder.join("|") === frameOrder.join("|")) continue;
-      frameFlow.forEach((child, index) => {
+      frameFlow.forEach((child, index2) => {
         var _a2;
-        overrides.set((_a2 = frameIdToMergedId.get(child.id)) != null ? _a2 : child.id, index);
+        overrides.set((_a2 = frameIdToMergedId.get(child.id)) != null ? _a2 : child.id, index2);
       });
     }
     return overrides;
   }
   function computeRevealDisplay(root, ids) {
     const result = /* @__PURE__ */ new Map();
-    const walk2 = (node, parentLayout) => {
+    const walk3 = (node, parentLayout) => {
       var _a;
       if (ids.has(node.id)) result.set(node.id, (_a = layoutDeclarations(node, parentLayout)["display"]) != null ? _a : "block");
       if ("children" in node) {
         const layout = "layout" in node ? node.layout : null;
-        for (const child of node.children) walk2(child, layout);
+        for (const child of node.children) walk3(child, layout);
       }
     };
-    walk2(root, null);
+    walk3(root, null);
     return result;
   }
   function collectFixedWidthInterpolationIds(root, desktopWidth) {
     const ids = [];
-    const walk2 = (node) => {
+    const walk3 = (node) => {
       if ((node.type === "container" || node.type === "instance-ref") && node.sizing.width.mode === "fixed" && node.sizing.width.value === desktopWidth) {
         ids.push(node.id);
       }
-      if ("children" in node) for (const child of node.children) walk2(child);
+      if ("children" in node) for (const child of node.children) walk3(child);
     };
-    walk2(root);
+    walk3(root);
     return ids.sort();
   }
   function cloneIr(node) {
@@ -9070,7 +9311,7 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
   display: none;
 }`);
     }
-    const blocks = [];
+    const blocks2 = [];
     for (const fr of merged.frames) {
       const overrides = await emitCss([fr.frame.node], sceneNodesById, variableNamesById, {
         idAliases: fr.idAliases,
@@ -9090,7 +9331,7 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
 }`);
       const body = [overrides, ...revealed, ...hidden, ...orders].filter((part) => part.length > 0).join("\n\n");
       if (body.length === 0) continue;
-      blocks.push(`@media (max-width: ${fr.nextWiderWidth - 1}px) {
+      blocks2.push(`@media (max-width: ${fr.nextWiderWidth - 1}px) {
 ${indent(body)}
 }`);
     }
@@ -9098,7 +9339,7 @@ ${indent(body)}
       const mobileWidth = group2.frames[group2.frames.length - 1].width;
       const px2 = group2.frames[0].width;
       const selector = merged.interpolatedFixedWidthIds.map((id) => `.${toClassName(id)}`).join(",\n");
-      blocks.push(
+      blocks2.push(
         `/* M4b missing-tablet interpolation: no frame exists between desktop and mobile, so a
    desktop-width fixed container is bounded-fluid instead of showing mobile's cramped
    design across the whole gap (see emitBreakpointCss's doc comment). */
@@ -9110,9 +9351,9 @@ ${indent(`${selector} {
 }`
       );
     }
-    return [...baseParts, ...blocks].join("\n\n");
+    return [...baseParts, ...blocks2].join("\n\n");
   }
-  var BREAKPOINT_COLLECTION_PLUGIN_KEY = "alteryBreakpointsGenerated";
+  var BREAKPOINT_COLLECTION_PLUGIN_KEY = "allcrewChannelBreakpointsGenerated";
   var DEFAULT_BREAKPOINTS = {
     Desktop: 1440,
     Tablet: 834,
@@ -9147,24 +9388,24 @@ ${indent(`${selector} {
     const [first, ...rest] = steps;
     collection.renameMode(collection.defaultModeId, first.mode);
     const modeIds = [collection.defaultModeId];
-    for (const step of rest) {
-      modeIds.push(collection.addMode(step.mode));
+    for (const step2 of rest) {
+      modeIds.push(collection.addMode(step2.mode));
     }
     const widthVar = figma.variables.createVariable("Width", collection, "FLOAT");
-    widthVar.description = "Breakpoint viewport width (px) per mode. Generated by Altery plugin.";
+    widthVar.description = "Breakpoint viewport width (px) per mode. Generated by AllCrew Channel plugin.";
     widthVar.hiddenFromPublishing = false;
     for (let i = 0; i < steps.length; i++) {
       widthVar.setValueForMode(modeIds[i], steps[i].width);
     }
     const layoutVar = figma.variables.createVariable("Layout", collection, "STRING");
-    layoutVar.description = "Breakpoint layout label (mode name) per mode. Generated by Altery plugin.";
+    layoutVar.description = "Breakpoint layout label (mode name) per mode. Generated by AllCrew Channel plugin.";
     layoutVar.hiddenFromPublishing = false;
     for (let i = 0; i < steps.length; i++) {
       layoutVar.setValueForMode(modeIds[i], steps[i].mode);
     }
     collection.setPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY, (/* @__PURE__ */ new Date()).toISOString());
     const widths = {};
-    for (const step of steps) widths[step.mode] = step.width;
+    for (const step2 of steps) widths[step2.mode] = step2.width;
     return {
       collectionName: collection.name,
       regenerated: Boolean(existing && isOurs),
@@ -9180,9 +9421,9 @@ ${indent(`${selector} {
       const v = await figma.variables.getVariableByIdAsync(varId);
       if (!v || v.resolvedType !== "FLOAT") continue;
       for (const mode of collection.modes) {
-        const value = v.valuesByMode[mode.modeId];
-        if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-          widths[mode.name] = Math.round(value);
+        const value2 = v.valuesByMode[mode.modeId];
+        if (typeof value2 === "number" && Number.isFinite(value2) && value2 > 0) {
+          widths[mode.name] = Math.round(value2);
         }
       }
       break;
@@ -9285,11 +9526,11 @@ ${indent(`${selector} {
     return decls;
   }
   var IMAGE_FILL_PLACEHOLDER2 = /url\(\s*(["']?)<path-to-image>\1\s*\)/g;
-  function resolveImagePlaceholders(value, imageUrls) {
-    let index = 0;
-    return value.replace(IMAGE_FILL_PLACEHOLDER2, () => {
-      const url = imageUrls[Math.min(index, imageUrls.length - 1)];
-      index++;
+  function resolveImagePlaceholders(value2, imageUrls) {
+    let index2 = 0;
+    return value2.replace(IMAGE_FILL_PLACEHOLDER2, () => {
+      const url = imageUrls[Math.min(index2, imageUrls.length - 1)];
+      index2++;
       return `url(${url})`;
     });
   }
@@ -9595,8 +9836,8 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
       const prop = node.component.properties.find(
         (p) => p.type === "VARIANT" && p.name.trim().toLowerCase() === "placement"
       );
-      const value = prop ? String(prop.defaultValue).trim().toLowerCase() : "";
-      if (placements.includes(value)) return value;
+      const value2 = prop ? String(prop.defaultValue).trim().toLowerCase() : "";
+      if (placements.includes(value2)) return value2;
     }
     return "start";
   }
@@ -9773,12 +10014,12 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
     scroll: "overflow-scroll",
     visible: "overflow-visible"
   };
-  function spacingSuffix(value) {
+  function spacingSuffix(value2) {
     var _a;
-    return (_a = SPACING_SUFFIX[value]) != null ? _a : null;
+    return (_a = SPACING_SUFFIX[value2]) != null ? _a : null;
   }
-  function sideUtilities(prefix, value) {
-    const parts = value.trim().split(/\s+/);
+  function sideUtilities(prefix, value2) {
+    const parts = value2.trim().split(/\s+/);
     if (parts.length === 0 || parts.length > 4) return null;
     if (prefix === "m" && parts.some((part) => part.startsWith("-"))) return null;
     const suffixes = parts.map(spacingSuffix);
@@ -9788,8 +10029,8 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
     if (top === bottom && right === left) return [`${prefix}y-${top}`, `${prefix}x-${right}`];
     return [`${prefix}t-${top}`, `${prefix}e-${right}`, `${prefix}b-${bottom}`, `${prefix}s-${left}`];
   }
-  function gapUtilities(value) {
-    const parts = value.trim().split(/\s+/);
+  function gapUtilities(value2) {
+    const parts = value2.trim().split(/\s+/);
     if (parts.length === 1) {
       const suffix = spacingSuffix(parts[0]);
       return suffix === null ? null : [`gap-${suffix}`];
@@ -9801,50 +10042,50 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
     }
     return null;
   }
-  function declarationUtilities(property, value) {
+  function declarationUtilities(property, value2) {
     switch (property) {
       case "display":
-        return DISPLAY[value] ? [DISPLAY[value]] : null;
+        return DISPLAY[value2] ? [DISPLAY[value2]] : null;
       case "flex-direction":
-        return FLEX_DIRECTION[value] ? [FLEX_DIRECTION[value]] : null;
+        return FLEX_DIRECTION[value2] ? [FLEX_DIRECTION[value2]] : null;
       case "flex-wrap":
-        return FLEX_WRAP[value] ? [FLEX_WRAP[value]] : null;
+        return FLEX_WRAP[value2] ? [FLEX_WRAP[value2]] : null;
       case "justify-content":
-        return JUSTIFY_CONTENT2[value] ? [JUSTIFY_CONTENT2[value]] : null;
+        return JUSTIFY_CONTENT2[value2] ? [JUSTIFY_CONTENT2[value2]] : null;
       case "align-items":
-        return ALIGN_ITEMS2[value] ? [ALIGN_ITEMS2[value]] : null;
+        return ALIGN_ITEMS2[value2] ? [ALIGN_ITEMS2[value2]] : null;
       case "align-self":
-        return ALIGN_SELF[value] ? [ALIGN_SELF[value]] : null;
+        return ALIGN_SELF[value2] ? [ALIGN_SELF[value2]] : null;
       case "flex-grow":
-        return value === "0" || value === "1" ? [`flex-grow-${value}`] : null;
+        return value2 === "0" || value2 === "1" ? [`flex-grow-${value2}`] : null;
       case "flex-shrink":
-        return value === "0" || value === "1" ? [`flex-shrink-${value}`] : null;
+        return value2 === "0" || value2 === "1" ? [`flex-shrink-${value2}`] : null;
       case "gap":
-        return gapUtilities(value);
+        return gapUtilities(value2);
       case "row-gap": {
-        const suffix = spacingSuffix(value);
+        const suffix = spacingSuffix(value2);
         return suffix === null ? null : [`row-gap-${suffix}`];
       }
       case "column-gap": {
-        const suffix = spacingSuffix(value);
+        const suffix = spacingSuffix(value2);
         return suffix === null ? null : [`column-gap-${suffix}`];
       }
       case "padding":
-        return sideUtilities("p", value);
+        return sideUtilities("p", value2);
       case "margin":
-        return sideUtilities("m", value);
+        return sideUtilities("m", value2);
       case "width":
-        return SIZE[value] ? [`w-${SIZE[value]}`] : null;
+        return SIZE[value2] ? [`w-${SIZE[value2]}`] : null;
       case "height":
-        return SIZE[value] ? [`h-${SIZE[value]}`] : null;
+        return SIZE[value2] ? [`h-${SIZE[value2]}`] : null;
       case "text-align":
-        return value === "center" ? ["text-center"] : value === "justify" ? ["text-justify"] : null;
+        return value2 === "center" ? ["text-center"] : value2 === "justify" ? ["text-justify"] : null;
       case "font-weight":
-        return FONT_WEIGHT[value] ? [FONT_WEIGHT[value]] : null;
+        return FONT_WEIGHT[value2] ? [FONT_WEIGHT[value2]] : null;
       case "position":
-        return POSITION[value] ? [POSITION[value]] : null;
+        return POSITION[value2] ? [POSITION[value2]] : null;
       case "overflow":
-        return OVERFLOW[value] ? [OVERFLOW[value]] : null;
+        return OVERFLOW[value2] ? [OVERFLOW[value2]] : null;
       default:
         return null;
     }
@@ -9862,26 +10103,26 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
     return property;
   }
   function scanTopLevelBlocks(css) {
-    const blocks = [];
+    const blocks2 = [];
     let cursor = 0;
     while (cursor < css.length) {
       const open = css.indexOf("{", cursor);
       if (open === -1) break;
       let depth = 1;
-      let index = open + 1;
-      while (index < css.length && depth > 0) {
-        if (css[index] === "{") depth += 1;
-        else if (css[index] === "}") depth -= 1;
-        index += 1;
+      let index2 = open + 1;
+      while (index2 < css.length && depth > 0) {
+        if (css[index2] === "{") depth += 1;
+        else if (css[index2] === "}") depth -= 1;
+        index2 += 1;
       }
       const prefix = css.slice(cursor, open);
       const afterComment = prefix.lastIndexOf("*/");
       const selector = (afterComment === -1 ? prefix : prefix.slice(afterComment + 2)).trim();
       const selectorStart = selector.length > 0 ? cursor + prefix.lastIndexOf(selector) : open;
-      blocks.push({ selector, body: css.slice(open + 1, index - 1), start: selectorStart, end: index });
-      cursor = index;
+      blocks2.push({ selector, body: css.slice(open + 1, index2 - 1), start: selectorStart, end: index2 });
+      cursor = index2;
     }
-    return blocks;
+    return blocks2;
   }
   var DECLARATION_LINE = /^\s{2}([a-zA-Z-]+):\s(.+);$/;
   function collectProtections(selector, body, protectedFamilies) {
@@ -9909,16 +10150,16 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
     }
   }
   function appendUtilityClasses(html, utilities) {
-    return html.replace(/class="([^"]*)"/g, (full, value) => {
+    return html.replace(/class="([^"]*)"/g, (full, value2) => {
       var _a;
-      const tokens = value.split(/\s+/).filter(Boolean);
+      const tokens = value2.split(/\s+/).filter(Boolean);
       const additions = [];
       for (const token2 of tokens) {
         for (const utility of (_a = utilities.get(token2)) != null ? _a : []) {
           if (!tokens.includes(utility) && !additions.includes(utility)) additions.push(utility);
         }
       }
-      return additions.length > 0 ? `class="${value} ${additions.join(" ")}"` : full;
+      return additions.length > 0 ? `class="${value2} ${additions.join(" ")}"` : full;
     });
   }
   function applyBootstrapUtilities(input) {
@@ -9939,8 +10180,8 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
       for (const line of block3.body.split("\n")) {
         const declaration = DECLARATION_LINE.exec(line);
         if (!declaration) continue;
-        const [, property, value] = declaration;
-        const wouldMap = (families == null ? void 0 : families.has(propertyFamily(property))) ? null : declarationUtilities(property, value);
+        const [, property, value2] = declaration;
+        const wouldMap = (families == null ? void 0 : families.has(propertyFamily(property))) ? null : declarationUtilities(property, value2);
         if (!wouldMap) keptFamilies.add(conflictFamily(property));
       }
       const keptLines = [];
@@ -9952,8 +10193,8 @@ if (_d${dialogId.replace(/-/g, "_")}) _d${dialogId.replace(/-/g, "_")}.addEventL
           keptLines.push(line);
           continue;
         }
-        const [, property, value] = declaration;
-        const mapped = (families == null ? void 0 : families.has(propertyFamily(property))) || keptFamilies.has(conflictFamily(property)) ? null : declarationUtilities(property, value);
+        const [, property, value2] = declaration;
+        const mapped = (families == null ? void 0 : families.has(propertyFamily(property))) || keptFamilies.has(conflictFamily(property)) ? null : declarationUtilities(property, value2);
         if (mapped) {
           extracted.push(...mapped.filter((utility) => !extracted.includes(utility)));
           stats.extractedDeclarations += 1;
@@ -10204,8 +10445,11 @@ ${mediaCss}`;
     await ((_a = figma.loadAllPagesAsync) == null ? void 0 : _a.call(figma));
   }
   var YIELD_EVERY = 500;
+  function sleep(ms) {
+    return new Promise((resolve2) => setTimeout(resolve2, ms));
+  }
   function yieldToHost() {
-    return new Promise((resolve2) => setTimeout(resolve2, 0));
+    return sleep(0);
   }
   async function findAllWithCriteria(root, predicate, opts) {
     figma.skipInvisibleInstanceChildren = true;
@@ -10276,6 +10520,18 @@ ${mediaCss}`;
       figma.skipInvisibleInstanceChildren = false;
     }
   }
+  function topLevelAncestorOrNull(node) {
+    let current = node;
+    try {
+      while (true) {
+        const parent = current.parent;
+        if (!parent || parent.type === "PAGE" || parent.type === "DOCUMENT") return current;
+        current = parent;
+      }
+    } catch (e) {
+      return null;
+    }
+  }
   function hasChildren(node) {
     return "children" in node;
   }
@@ -10311,7 +10567,10 @@ ${mediaCss}`;
       clone2.x = transform[0][2];
       clone2.y = transform[1][2];
       hideDescendants(clone2);
-      return await clone2.exportAsync({ format: settings.format, constraint: settings.constraint });
+      return await clone2.exportAsync(__spreadValues(__spreadValues(__spreadValues({
+        format: settings.format,
+        constraint: settings.constraint
+      }, settings.contentsOnly === void 0 ? {} : { contentsOnly: settings.contentsOnly }), settings.useAbsoluteBounds === void 0 ? {} : { useAbsoluteBounds: settings.useAbsoluteBounds }), settings.colorProfile === void 0 ? {} : { colorProfile: settings.colorProfile }));
     } finally {
       if (!clone2.removed) clone2.remove();
     }
@@ -10544,71 +10803,71 @@ ${mediaCss}`;
       return this.ternary();
     }
     ternary() {
-      const condition = this.logicalOr();
-      if (this.tokens[this.position] !== "?") return condition;
+      const condition2 = this.logicalOr();
+      if (this.tokens[this.position] !== "?") return condition2;
       this.position++;
       const whenTrue = this.ternary();
       if (this.tokens[this.position] === ":") this.position++;
       const whenFalse = this.ternary();
-      return condition !== 0 ? whenTrue : whenFalse;
+      return condition2 !== 0 ? whenTrue : whenFalse;
     }
     logicalOr() {
-      let value = this.logicalAnd();
+      let value2 = this.logicalAnd();
       while (this.tokens[this.position] === "||") {
         this.position++;
-        value = value !== 0 || this.logicalAnd() !== 0 ? 1 : 0;
+        value2 = value2 !== 0 || this.logicalAnd() !== 0 ? 1 : 0;
       }
-      return value;
+      return value2;
     }
     logicalAnd() {
-      let value = this.equality();
+      let value2 = this.equality();
       while (this.tokens[this.position] === "&&") {
         this.position++;
-        value = value !== 0 && this.equality() !== 0 ? 1 : 0;
+        value2 = value2 !== 0 && this.equality() !== 0 ? 1 : 0;
       }
-      return value;
+      return value2;
     }
     equality() {
-      let value = this.relational();
+      let value2 = this.relational();
       for (; ; ) {
         const op = this.tokens[this.position];
-        if (op !== "==" && op !== "!=") return value;
+        if (op !== "==" && op !== "!=") return value2;
         this.position++;
         const rhs = this.relational();
-        value = op === "==" ? value === rhs ? 1 : 0 : value !== rhs ? 1 : 0;
+        value2 = op === "==" ? value2 === rhs ? 1 : 0 : value2 !== rhs ? 1 : 0;
       }
     }
     relational() {
-      let value = this.additive();
+      let value2 = this.additive();
       for (; ; ) {
         const op = this.tokens[this.position];
-        if (op !== "<" && op !== "<=" && op !== ">" && op !== ">=") return value;
+        if (op !== "<" && op !== "<=" && op !== ">" && op !== ">=") return value2;
         this.position++;
         const rhs = this.additive();
-        if (op === "<") value = value < rhs ? 1 : 0;
-        else if (op === "<=") value = value <= rhs ? 1 : 0;
-        else if (op === ">") value = value > rhs ? 1 : 0;
-        else value = value >= rhs ? 1 : 0;
+        if (op === "<") value2 = value2 < rhs ? 1 : 0;
+        else if (op === "<=") value2 = value2 <= rhs ? 1 : 0;
+        else if (op === ">") value2 = value2 > rhs ? 1 : 0;
+        else value2 = value2 >= rhs ? 1 : 0;
       }
     }
     additive() {
-      let value = this.multiplicative();
+      let value2 = this.multiplicative();
       for (; ; ) {
         const op = this.tokens[this.position];
-        if (op !== "+" && op !== "-") return value;
+        if (op !== "+" && op !== "-") return value2;
         this.position++;
         const rhs = this.multiplicative();
-        value = op === "+" ? value + rhs : value - rhs;
+        value2 = op === "+" ? value2 + rhs : value2 - rhs;
       }
     }
     multiplicative() {
-      let value = this.unary();
+      let value2 = this.unary();
       for (; ; ) {
         const op = this.tokens[this.position];
-        if (op !== "%" && op !== "*" && op !== "/") return value;
+        if (op !== "%" && op !== "*" && op !== "/") return value2;
         this.position++;
         const rhs = this.unary();
-        value = op === "%" ? value % rhs : op === "*" ? value * rhs : Math.trunc(value / rhs);
+        value2 = op === "%" ? value2 % rhs : op === "*" ? value2 * rhs : Math.trunc(value2 / rhs);
       }
     }
     unary() {
@@ -10625,9 +10884,9 @@ ${mediaCss}`;
     primary() {
       const token2 = this.tokens[this.position++];
       if (token2 === "(") {
-        const value = this.ternary();
+        const value2 = this.ternary();
         if (this.tokens[this.position] === ")") this.position++;
-        return value;
+        return value2;
       }
       if (token2 === "n") return this.n;
       return Number(token2);
@@ -10641,11 +10900,11 @@ ${mediaCss}`;
   }
 
   // src/targets/django/i18n/po.ts
-  function escapePoString(value) {
-    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+  function escapePoString(value2) {
+    return value2.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\t/g, "\\t");
   }
-  function quoted(value) {
-    return `"${escapePoString(value)}"`;
+  function quoted(value2) {
+    return `"${escapePoString(value2)}"`;
   }
   function buildHeader(options, forms) {
     var _a;
@@ -10679,7 +10938,7 @@ ${mediaCss}`;
     lines.push(`msgid ${quoted((_a = entry.markup) != null ? _a : entry.msgid)}`);
     if (entry.msgidPlural) {
       lines.push(`msgid_plural ${quoted(entry.msgidPlural)}`);
-      for (let index = 0; index < nplurals; index++) lines.push(`msgstr[${index}] ""`);
+      for (let index2 = 0; index2 < nplurals; index2++) lines.push(`msgstr[${index2}] ""`);
     } else {
       lines.push('msgstr ""');
     }
@@ -10763,9 +11022,9 @@ ${mediaCss}`;
       }
       const pluralForm = trimmed.match(/^msgstr\[(\d+)\]\s*(.*)$/);
       if (pluralForm) {
-        const index = Number(pluralForm[1]);
-        pluralMsgstrs[index] = parseQuoted(trimmed);
-        field = index;
+        const index2 = Number(pluralForm[1]);
+        pluralMsgstrs[index2] = parseQuoted(trimmed);
+        field = index2;
         continue;
       }
       if (trimmed.startsWith("msgstr ")) {
@@ -10788,10 +11047,10 @@ ${mediaCss}`;
   }
   function parsePo(content) {
     var _a, _b;
-    const blocks = content.split(/\r?\n\s*\r?\n/);
+    const blocks2 = content.split(/\r?\n\s*\r?\n/);
     let pluralForms = null;
     const entries = [];
-    for (const block3 of blocks) {
+    for (const block3 of blocks2) {
       const parsed = parsePoBlock(block3);
       if (!parsed) continue;
       if (parsed.isHeader) {
@@ -10835,25 +11094,25 @@ ${mediaCss}`;
   }
 
   // src/targets/django/i18n/apply.ts
-  function resolveNode(entry, index) {
+  function resolveNode(entry, index2) {
     if (entry.nodeId) {
-      const byId = index.byNodeId.get(entry.nodeId);
+      const byId = index2.byNodeId.get(entry.nodeId);
       if (byId) return byId;
     }
     if (entry.msgctxt) {
-      const byContext = index.byContext.get(entry.msgctxt);
+      const byContext = index2.byContext.get(entry.msgctxt);
       if (byContext) return byContext;
     }
     if (entry.msgid) {
-      return index.byText.get(translationKey(entry.msgctxt, entry.msgid));
+      return index2.byText.get(translationKey(entry.msgctxt, entry.msgid));
     }
     return void 0;
   }
-  async function applyTranslations(entries, index) {
+  async function applyTranslations(entries, index2) {
     const applied = [];
     const skipped = [];
     for (const entry of entries) {
-      const node = resolveNode(entry, index);
+      const node = resolveNode(entry, index2);
       if (!node) {
         skipped.push({ entry, reason: "not-found" });
         continue;
@@ -10906,18 +11165,18 @@ ${mediaCss}`;
   }
   function detectSelfClippedText(node) {
     if (node.textAutoResize !== "NONE") return null;
-    const box = node.absoluteBoundingBox;
-    if (!box || typeof node.fontSize !== "number") return null;
+    const box2 = node.absoluteBoundingBox;
+    if (!box2 || typeof node.fontSize !== "number") return null;
     const fontSize = node.fontSize;
     const lineHeight = typeof node.lineHeight === "object" ? node.lineHeight : void 0;
     const linePx = lineHeightPx(fontSize, lineHeight);
-    const charsPerLine = Math.max(1, Math.floor(box.width / (fontSize * AVERAGE_GLYPH_WIDTH_FACTOR)));
-    const maxLines = Math.max(1, Math.floor(box.height / linePx));
+    const charsPerLine = Math.max(1, Math.floor(box2.width / (fontSize * AVERAGE_GLYPH_WIDTH_FACTOR)));
+    const maxLines = Math.max(1, Math.floor(box2.height / linePx));
     const capacity = charsPerLine * maxLines;
     const length = node.characters.length;
     if (length <= capacity) return null;
     const neededLines = Math.ceil(length / charsPerLine);
-    return { nodeId: node.id, nodeName: node.name, axis: "vertical", expected: box.height, actual: neededLines * linePx };
+    return { nodeId: node.id, nodeName: node.name, axis: "vertical", expected: box2.height, actual: neededLines * linePx };
   }
   function detectOverflows(nodes) {
     const reports = [];
@@ -10947,8 +11206,8 @@ ${mediaCss}`;
   // src/targets/django/i18n/index.ts
   async function importTranslations(content, format, textNodes) {
     const entries = parseTranslations(content, format);
-    const index = buildNodeIndex(textNodes);
-    const { applied, skipped } = await applyTranslations(entries, index);
+    const index2 = buildNodeIndex(textNodes);
+    const { applied, skipped } = await applyTranslations(entries, index2);
     const overflows = detectOverflows(applied.map((a) => a.node));
     return { applied, skipped, overflows };
   }
@@ -11003,11 +11262,11 @@ ${mediaCss}`;
   async function tokeniseInlineSvg(svg, source) {
     var _a, _b;
     const byColor = /* @__PURE__ */ new Map();
-    const channel = (value) => Math.round(value * 255).toString(16).padStart(2, "0");
+    const channel = (value2) => Math.round(value2 * 255).toString(16).padStart(2, "0");
     for (const prop of ["fills", "strokes"]) {
-      const paints = source[prop];
-      if (!Array.isArray(paints)) continue;
-      for (const paint of paints) {
+      const paints2 = source[prop];
+      if (!Array.isArray(paints2)) continue;
+      for (const paint of paints2) {
         if (paint.type !== "SOLID" || paint.visible === false) continue;
         const aliasId = (_b = (_a = paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
         if (!aliasId) continue;
@@ -11235,12 +11494,12 @@ ${mediaCss}`;
   }
 
   // src/targets/django/project/python.ts
-  function pyStr(value) {
-    const escaped = value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+  function pyStr(value2) {
+    const escaped = value2.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "\\r");
     return `'${escaped}'`;
   }
-  function toPascalCase(value) {
-    return value.split(/[^a-zA-Z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("");
+  function toPascalCase(value2) {
+    return value2.split(/[^a-zA-Z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("");
   }
 
   // src/targets/django/project/index.ts
@@ -11755,10 +12014,10 @@ ${mediaCss}`;
   function channelToHex2(channel) {
     return Math.round(channel * 255).toString(16).padStart(2, "0");
   }
-  function paintDetail(paint, index) {
+  function paintDetail(paint, index2) {
     const detail = {
       value: `#${channelToHex2(paint.color.r)}${channelToHex2(paint.color.g)}${channelToHex2(paint.color.b)}`,
-      paintIndex: index
+      paintIndex: index2
     };
     if (typeof paint.opacity === "number" && paint.opacity < 1) detail.alpha = paint.opacity;
     return detail;
@@ -11790,7 +12049,7 @@ ${mediaCss}`;
     if ("fills" in node && Array.isArray(node.fills) && !paintStyleSet(node.fillStyleId)) {
       const boundFills = "boundVariables" in node ? (_a = node.boundVariables) == null ? void 0 : _a.fills : void 0;
       const unboundFill = node.fills.findIndex(
-        (fill, index) => fill.type === "SOLID" && fill.visible !== false && !paintBound(fill) && !(boundFills == null ? void 0 : boundFills[index])
+        (fill, index2) => fill.type === "SOLID" && fill.visible !== false && !paintBound(fill) && !(boundFills == null ? void 0 : boundFills[index2])
       );
       if (unboundFill !== -1) {
         findings.push(__spreadValues({
@@ -11804,7 +12063,7 @@ ${mediaCss}`;
     if ("strokes" in node && Array.isArray(node.strokes) && !paintStyleSet(node.strokeStyleId)) {
       const boundStrokes = "boundVariables" in node ? (_b = node.boundVariables) == null ? void 0 : _b.strokes : void 0;
       const unboundStroke = node.strokes.findIndex(
-        (stroke, index) => stroke.type === "SOLID" && stroke.visible !== false && !paintBound(stroke) && !(boundStrokes == null ? void 0 : boundStrokes[index])
+        (stroke, index2) => stroke.type === "SOLID" && stroke.visible !== false && !paintBound(stroke) && !(boundStrokes == null ? void 0 : boundStrokes[index2])
       );
       if (unboundStroke !== -1) {
         findings.push(__spreadValues({
@@ -11909,8 +12168,8 @@ ${mediaCss}`;
     return null;
   }
   function mainComponentSubId(nodeId) {
-    const index = nodeId.lastIndexOf(";");
-    return index === -1 ? null : nodeId.slice(index + 1);
+    const index2 = nodeId.lastIndexOf(";");
+    return index2 === -1 ? null : nodeId.slice(index2 + 1);
   }
   async function resolveEditableTarget(node) {
     const instance = enclosingInstance(node);
@@ -11985,11 +12244,11 @@ ${mediaCss}`;
     const innerSize = horizontal ? frameHeight - layout.paddingTop - layout.paddingBottom : frameWidth - layout.paddingLeft - layout.paddingRight;
     const out = children.map((rect) => __spreadValues({}, rect));
     let primary = horizontal ? layout.paddingLeft : layout.paddingTop;
-    for (const index of layout.order) {
-      const child = children[index];
+    for (const index2 of layout.order) {
+      const child = children[index2];
       const childCross = horizontal ? child.height : child.width;
       const cross = layout.counterAlign === "MIN" ? innerStart : layout.counterAlign === "CENTER" ? innerStart + (innerSize - childCross) / 2 : innerStart + innerSize - childCross;
-      out[index] = horizontal ? { x: primary, y: cross, width: child.width, height: child.height } : { x: cross, y: primary, width: child.width, height: child.height };
+      out[index2] = horizontal ? { x: primary, y: cross, width: child.width, height: child.height } : { x: cross, y: primary, width: child.width, height: child.height };
       primary += (horizontal ? child.width : child.height) + layout.itemSpacing;
     }
     return out;
@@ -12075,9 +12334,9 @@ ${mediaCss}`;
     const valueByMode = /* @__PURE__ */ new Map();
     for (const modeId of Object.keys(variable.valuesByMode)) {
       try {
-        const { value } = await resolveVariableValue(variable, modeId);
-        if (typeof value === "object" && value !== null && "r" in value) {
-          const color = value;
+        const { value: value2 } = await resolveVariableValue(variable, modeId);
+        if (typeof value2 === "object" && value2 !== null && "r" in value2) {
+          const color = value2;
           valueByMode.set(modeId, __spreadProps(__spreadValues({}, color), { a: "a" in color ? color.a : 1 }));
         }
       } catch (e) {
@@ -12123,8 +12382,8 @@ ${mediaCss}`;
   function pickColorCandidate(pool, color, consumer, usage) {
     let best = null;
     for (const candidate of pool) {
-      const value = candidateValueFor(candidate, consumer);
-      if (!value || !colorsMatch(value, color)) continue;
+      const value2 = candidateValueFor(candidate, consumer);
+      if (!value2 || !colorsMatch(value2, color)) continue;
       const tier = (scopeAllows(candidate.scopes, usage, consumer.type) ? 0 : 2) + (candidate.hidden ? 1 : 0);
       if (tier === 0) return { variable: candidate.variable, library: candidate.library };
       if (!best || tier < best.tier) best = { candidate, tier };
@@ -12132,9 +12391,9 @@ ${mediaCss}`;
     if (best) return { variable: best.candidate.variable, library: best.candidate.library };
     let near = null;
     for (const candidate of pool) {
-      const value = candidateValueFor(candidate, consumer);
-      if (!value || Math.abs(value.a - color.a) > SNAP_ALPHA_EPSILON) continue;
-      const delta = colorDeltaE(value, color);
+      const value2 = candidateValueFor(candidate, consumer);
+      if (!value2 || Math.abs(value2.a - color.a) > SNAP_ALPHA_EPSILON) continue;
+      const delta = colorDeltaE(value2, color);
       if (delta > SNAP_DELTA_E) continue;
       if (!near || delta < near.delta) near = { candidate, delta };
     }
@@ -12216,12 +12475,12 @@ ${mediaCss}`;
     if (styleId !== void 0 && styleId !== "") {
       return { status: "skipped", detail: `${prop} come from a paint style \u2014 already tokenized, re-scan the scope` };
     }
-    const paints = node[prop];
-    if (!Array.isArray(paints)) {
+    const paints2 = node[prop];
+    if (!Array.isArray(paints2)) {
       return { status: "failed", detail: `${prop} are unreadable on this node` };
     }
     const boundPaints = "boundVariables" in node ? (_a = node.boundVariables) == null ? void 0 : _a[prop] : void 0;
-    const next = paints.slice();
+    const next = paints2.slice();
     const boundNames = [];
     for (let i = 0; i < next.length; i++) {
       const paint = next[i];
@@ -12340,7 +12599,7 @@ ${mediaCss}`;
       };
     }
     const { width, height } = node;
-    const ordered = inferred.order.map((index) => node.children[index]);
+    const ordered = inferred.order.map((index2) => node.children[index2]);
     for (const child of ordered) node.appendChild(child);
     node.layoutMode = inferred.layoutMode;
     node.primaryAxisSizingMode = "FIXED";
@@ -12357,8 +12616,8 @@ ${mediaCss}`;
       detail: `${inferred.layoutMode.toLowerCase()} Auto Layout, spacing ${inferred.itemSpacing}px`
     };
   }
-  function anyVisible(paints) {
-    return Array.isArray(paints) && paints.some((p) => p.visible !== false);
+  function anyVisible(paints2) {
+    return Array.isArray(paints2) && paints2.some((p) => p.visible !== false);
   }
   function clippingHasEffect(node) {
     var _a;
@@ -12452,10 +12711,10 @@ ${mediaCss}`;
     const parent = wrapper.parent;
     if (!parent || !("children" in parent)) throw new Error("wrapper has no container parent");
     const child = wrapper.children[0];
-    const index = parent.children.indexOf(wrapper);
+    const index2 = parent.children.indexOf(wrapper);
     const parentAutoLayout = (parent.type === "FRAME" || parent.type === "COMPONENT" || parent.type === "INSTANCE") && parent.layoutMode !== "NONE";
     if (parentAutoLayout) {
-      parent.insertChild(index, child);
+      parent.insertChild(index2, child);
       const w = wrapper;
       for (const copy of [
         () => child.layoutPositioning = w.layoutPositioning,
@@ -12472,7 +12731,7 @@ ${mediaCss}`;
     } else {
       const x = wrapper.type === "GROUP" ? child.x : wrapper.x + child.x;
       const y = wrapper.type === "GROUP" ? child.y : wrapper.y + child.y;
-      parent.insertChild(index, child);
+      parent.insertChild(index2, child);
       try {
         child.x = x;
         child.y = y;
@@ -12490,7 +12749,7 @@ ${mediaCss}`;
   function dissolveWrapper(wrapper) {
     const parent = wrapper.parent;
     if (!parent || !("children" in parent)) throw new Error("wrapper has no container parent");
-    const index = parent.children.indexOf(wrapper);
+    const index2 = parent.children.indexOf(wrapper);
     const isGroup = wrapper.type === "GROUP";
     const offsetX = isGroup ? 0 : wrapper.x;
     const offsetY = isGroup ? 0 : wrapper.y;
@@ -12498,7 +12757,7 @@ ${mediaCss}`;
     children.forEach((child, i) => {
       const x = child.x + offsetX;
       const y = child.y + offsetY;
-      parent.insertChild(index + i, child);
+      parent.insertChild(index2 + i, child);
       try {
         child.x = x;
         child.y = y;
@@ -12520,9 +12779,9 @@ ${mediaCss}`;
   }
   function nodeAtPath(root, path) {
     let current = root;
-    for (const index of path) {
+    for (const index2 of path) {
       if (!("children" in current)) return null;
-      const next = current.children[index];
+      const next = current.children[index2];
       if (!next) return null;
       current = next;
     }
@@ -12734,8 +12993,8 @@ ${mediaCss}`;
   function applyAnnotationForm(node, form) {
     setAnnotation(node, formToAnnotation(form));
   }
-  function escapeHtml3(value) {
-    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  function escapeHtml3(value2) {
+    return value2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
   function renderAnnotationPanel(form, viewModel = {}) {
     if (viewModel.boundVariableName) {
@@ -12924,31 +13183,31 @@ ${mediaCss}`;
     ROTATION: { cssProperty: "rotate", unit: "deg" },
     OPACITY: { cssProperty: "opacity", unit: "" }
   };
-  function round6(value, decimals) {
+  function round6(value2, decimals) {
     const factor = 10 ** decimals;
-    return Math.round(value * factor) / factor;
+    return Math.round(value2 * factor) / factor;
   }
-  function formatNumber(value) {
-    return String(round6(value, 4));
+  function formatNumber(value2) {
+    return String(round6(value2, 4));
   }
-  function formatTransformDeclaration(mapping, value) {
+  function formatTransformDeclaration(mapping, value2) {
     const { cssProperty, axis, unit, identity } = mapping;
     const identityFormatted = `${identity}${unit}`;
     if (axis === "xy") {
-      if (value.type !== "VECTOR") throw new Error(`Expected a VECTOR value for ${cssProperty} (XY), got ${value.type}`);
-      return `${cssProperty}: ${formatNumber(value.value.x)}${unit} ${formatNumber(value.value.y)}${unit}`;
+      if (value2.type !== "VECTOR") throw new Error(`Expected a VECTOR value for ${cssProperty} (XY), got ${value2.type}`);
+      return `${cssProperty}: ${formatNumber(value2.value.x)}${unit} ${formatNumber(value2.value.y)}${unit}`;
     }
-    if (value.type !== "FLOAT") throw new Error(`Expected a FLOAT value for ${cssProperty} (${axis}), got ${value.type}`);
-    const formatted = `${formatNumber(value.value)}${unit}`;
+    if (value2.type !== "FLOAT") throw new Error(`Expected a FLOAT value for ${cssProperty} (${axis}), got ${value2.type}`);
+    const formatted = `${formatNumber(value2.value)}${unit}`;
     return axis === "x" ? `${cssProperty}: ${formatted} ${identityFormatted}` : `${cssProperty}: ${identityFormatted} ${formatted}`;
   }
-  function formatDeclaration(field, value) {
+  function formatDeclaration(field, value2) {
     const transform = TRANSFORM_FIELD_MAPPING[field];
-    if (transform) return formatTransformDeclaration(transform, value);
+    if (transform) return formatTransformDeclaration(transform, value2);
     const scalar = SCALAR_FIELD_MAPPING[field];
     if (scalar) {
-      if (value.type !== "FLOAT") throw new Error(`Expected a FLOAT value for ${field}, got ${value.type}`);
-      return `${scalar.cssProperty}: ${formatNumber(value.value)}${scalar.unit}`;
+      if (value2.type !== "FLOAT") throw new Error(`Expected a FLOAT value for ${field}, got ${value2.type}`);
+      return `${scalar.cssProperty}: ${formatNumber(value2.value)}${scalar.unit}`;
     }
     throw new Error(`No CSS mapping for Motion field "${field}" \u2014 not supported by the CSS keyframes emitter`);
   }
@@ -13007,8 +13266,8 @@ ${mediaCss}`;
 ${frames.map(formatFrame).join("\n")}
 }`;
   }
-  function sanitizeIdentPart(value) {
-    return value.replace(/[^a-zA-Z0-9_-]/g, "");
+  function sanitizeIdentPart(value2) {
+    return value2.replace(/[^a-zA-Z0-9_-]/g, "");
   }
   function defaultTrackName(selector, track) {
     return `${sanitizeIdentPart(selector)}-${track.field.toLowerCase().replace(/_/g, "-")}`;
@@ -13040,9 +13299,9 @@ ${frames.map(formatFrame).join("\n")}
   }
 
   // src/targets/django/motion/gsap-emitter.ts
-  function round7(value, decimals) {
+  function round7(value2, decimals) {
     const factor = 10 ** decimals;
-    return Math.round(value * factor) / factor;
+    return Math.round(value2 * factor) / factor;
   }
   var NODE_ID_ATTRIBUTE = "data-node-id";
   function nodeSelector(nodeId) {
@@ -13089,17 +13348,17 @@ ${frames.map(formatFrame).join("\n")}
     const scalar = SCALAR_PROPERTY_MAP[field];
     return scalar ? [scalar] : void 0;
   }
-  function requireFloat(value, context) {
-    if (value.type !== "FLOAT") throw new Error(`Expected FLOAT value for ${context}, got ${value.type}`);
-    return value.value;
+  function requireFloat(value2, context) {
+    if (value2.type !== "FLOAT") throw new Error(`Expected FLOAT value for ${context}, got ${value2.type}`);
+    return value2.value;
   }
-  function requireVector(value, context) {
-    if (value.type !== "VECTOR") throw new Error(`Expected VECTOR value for ${context}, got ${value.type}`);
-    return value.value;
+  function requireVector(value2, context) {
+    if (value2.type !== "VECTOR") throw new Error(`Expected VECTOR value for ${context}, got ${value2.type}`);
+    return value2.value;
   }
-  function requireTextData(value, context) {
-    if (value.type !== "TEXT_DATA") throw new Error(`Expected TEXT_DATA value for ${context}, got ${value.type}`);
-    return value.value;
+  function requireTextData(value2, context) {
+    if (value2.type !== "TEXT_DATA") throw new Error(`Expected TEXT_DATA value for ${context}, got ${value2.type}`);
+    return value2.value;
   }
   var EaseRegistry = class {
     constructor() {
@@ -13161,12 +13420,12 @@ ${frames.map(formatFrame).join("\n")}
       keyframes["100%"] = __spreadProps(__spreadValues({}, lastVars), { ease: "none" });
     }
   }
-  function trackValueVars(value, gsapKeys, context) {
+  function trackValueVars(value2, gsapKeys, context) {
     if (gsapKeys.length === 2) {
-      const vector = requireVector(value, context);
+      const vector = requireVector(value2, context);
       return { [gsapKeys[0]]: vector.x, [gsapKeys[1]]: vector.y };
     }
-    return { [gsapKeys[0]]: requireFloat(value, context) };
+    return { [gsapKeys[0]]: requireFloat(value2, context) };
   }
   function buildPropertyTween(track, gsapKeys, timelineDuration, registry, plugins) {
     const fromVars = trackValueVars(track.baseValue, gsapKeys, `${track.field} baseValue`);
@@ -13219,14 +13478,14 @@ ${frames.map(formatFrame).join("\n")}
   }
   function valueAtOrBefore(track, position, fallback) {
     if (!track) return { value: fallback };
-    let value = requireFloat(track.baseValue, `${track.field} baseValue`);
+    let value2 = requireFloat(track.baseValue, `${track.field} baseValue`);
     let easing;
     for (const keyframe of [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition)) {
       if (keyframe.timelinePosition > position) break;
-      value = requireFloat(keyframe.value, `${track.field} keyframe ${keyframe.id}`);
+      value2 = requireFloat(keyframe.value, `${track.field} keyframe ${keyframe.id}`);
       if (keyframe.timelinePosition === position) easing = keyframe.easing;
     }
-    return { value, easing };
+    return { value: value2, easing };
   }
   function buildDrawSvgTween(startTrack, endTrack, timelineDuration, registry, plugins) {
     var _a, _b, _c, _d;
@@ -13386,8 +13645,8 @@ ${tweenStatements.join("\n")}
     }
     return [...groups.values()];
   }
-  function cssIdentPart(value) {
-    return value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "motion";
+  function cssIdentPart(value2) {
+    return value2.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "motion";
   }
   function nodeSelector2(nodeId) {
     return `.${toClassName(nodeId)}`;
@@ -13409,12 +13668,12 @@ ${tweenStatements.join("\n")}
     }
   }
   function emitCssTimeline(group2) {
-    const blocks = [];
+    const blocks2 = [];
     for (const node of group2.nodes.values()) {
       const selector = nodeSelector2(node.nodeId);
       const tracks = node.tracks.filter((track) => isCssTrackSupported(selector, group2.id, node.nodeId, track));
       if (tracks.length === 0) continue;
-      blocks.push(
+      blocks2.push(
         emitNodeAnimationCss({
           selector,
           tracks,
@@ -13422,7 +13681,7 @@ ${tweenStatements.join("\n")}
         })
       );
     }
-    return blocks.join("\n\n");
+    return blocks2.join("\n\n");
   }
   function emitGsapTimelineGroup(group2) {
     const nodes = [...group2.nodes.values()].map((node) => ({
@@ -13613,8 +13872,8 @@ ${tweenStatements.join("\n")}
     flag: { label: "Boolean flag", css: "\u2014 (build-time switch)", rule: "Not a CSS value: a design-system switch. Read it, do not render it." },
     other: { label: "Unclassified", css: "\u2014", rule: "No role keyword in the name \u2014 inspect the path before using it." }
   };
-  function keywords(...words) {
-    return new RegExp(`(^|-)(?:${words.join("|")})(?:es|s)?(-|$)`);
+  function keywords(...words2) {
+    return new RegExp(`(^|-)(?:${words2.join("|")})(?:es|s)?(-|$)`);
   }
   var ROLE_RULES = [
     { role: "font-family", test: keywords("font-family", "font-familie", "typeface", "font-stack") },
@@ -13909,32 +14168,32 @@ ${tweenStatements.join("\n")}
   }
   var BASE_VARIANT = "(base)";
   function componentSegmentIndex(path) {
-    for (let index = 0; index < path.length - 1; index++) {
-      const segment = path[index].toLowerCase();
-      if ((segment === "component" || segment === "components") && index + 1 < path.length - 1) return index + 1;
-      if (isComponentWord(segment)) return index;
+    for (let index2 = 0; index2 < path.length - 1; index2++) {
+      const segment = path[index2].toLowerCase();
+      if ((segment === "component" || segment === "components") && index2 + 1 < path.length - 1) return index2 + 1;
+      if (isComponentWord(segment)) return index2;
     }
     return -1;
   }
   function detectComponentBlocks(entries) {
-    const blocks = /* @__PURE__ */ new Map();
+    const blocks2 = /* @__PURE__ */ new Map();
     const leftovers = [];
     for (const entry of entries) {
       if (entry.path.length < 3) continue;
       if (entry.path[0].toLowerCase() === "typography") continue;
-      const index = componentSegmentIndex(entry.path);
-      if (index === -1) {
+      const index2 = componentSegmentIndex(entry.path);
+      if (index2 === -1) {
         leftovers.push(entry);
         continue;
       }
-      const prefix = entry.path.slice(0, index + 1);
+      const prefix = entry.path.slice(0, index2 + 1);
       const key = prefix.join("/");
-      let block3 = blocks.get(key);
+      let block3 = blocks2.get(key);
       if (!block3) {
         block3 = { name: titleCase(prefix[prefix.length - 1]), prefix, variants: [], entryCount: 0 };
-        blocks.set(key, block3);
+        blocks2.set(key, block3);
       }
-      const variantName2 = entry.path.slice(index + 1, -1).map(titleCase).join(" \xB7 ") || BASE_VARIANT;
+      const variantName2 = entry.path.slice(index2 + 1, -1).map(titleCase).join(" \xB7 ") || BASE_VARIANT;
       let variant2 = block3.variants.find((candidate) => candidate.name === variantName2);
       if (!variant2) {
         variant2 = { name: variantName2, entries: [] };
@@ -13955,17 +14214,17 @@ ${tweenStatements.join("\n")}
       const hasStates = bucket.some((entry) => entry.state);
       if (bucket.length < 2 || roles.size < 2 && !hasStates) continue;
       const segments = prefix.split("/");
-      blocks.set(prefix, {
+      blocks2.set(prefix, {
         name: titleCase(segments[segments.length - 1]),
         prefix: segments,
         variants: [{ name: BASE_VARIANT, entries: bucket }],
         entryCount: bucket.length
       });
     }
-    for (const block3 of blocks.values()) {
+    for (const block3 of blocks2.values()) {
       block3.variants.sort((a, b) => a.name === BASE_VARIANT ? -1 : b.name === BASE_VARIANT ? 1 : a.name.localeCompare(b.name));
     }
-    return [...blocks.values()].sort(
+    return [...blocks2.values()].sort(
       (a, b) => b.entryCount - a.entryCount || a.prefix.join("/").localeCompare(b.prefix.join("/"))
     );
   }
@@ -13979,7 +14238,7 @@ ${tweenStatements.join("\n")}
       else byValue.set(entry.value, [entry.slug]);
     }
     const out = [];
-    for (const [value, slugs] of byValue) if (slugs.length > 1) out.push({ value, slugs });
+    for (const [value2, slugs] of byValue) if (slugs.length > 1) out.push({ value: value2, slugs });
     return out.sort((a, b) => b.slugs.length - a.slugs.length);
   }
   function buildTokenModel(tree, themes, defaultTheme, collectionRoles = {}) {
@@ -14003,8 +14262,8 @@ ${tweenStatements.join("\n")}
 
   // src/targets/design-md/sections.ts
   var MAX_ROWS = 120;
-  function escapeCell(value) {
-    return String(value).replace(/\|/g, "\\|").replace(/\n+/g, " ");
+  function escapeCell(value2) {
+    return String(value2).replace(/\|/g, "\\|").replace(/\n+/g, " ");
   }
   function mdTable(headers, rows) {
     const head = `| ${headers.join(" | ")} |`;
@@ -14012,22 +14271,22 @@ ${tweenStatements.join("\n")}
     const body = rows.map((row) => `| ${row.map(escapeCell).join(" | ")} |`);
     return [head, sep, ...body].join("\n");
   }
-  function pxToRem(value) {
-    const match = /^(-?\d*\.?\d+)px$/.exec(value.trim());
+  function pxToRem(value2) {
+    const match = /^(-?\d*\.?\d+)px$/.exec(value2.trim());
     if (!match) return null;
     const rem = Number(match[1]) / 16;
     if (!isFinite(rem)) return null;
     return `${Number(rem.toFixed(4))}rem`;
   }
-  function withRem(value) {
-    const rem = pxToRem(value);
-    return rem ? `${value} / ${rem}` : value;
+  function withRem(value2) {
+    const rem = pxToRem(value2);
+    return rem ? `${value2} / ${rem}` : value2;
   }
   function bullet(lines) {
     return lines.map((line) => `- ${line}`).join("\n");
   }
   function renderSections(sections) {
-    return sections.filter(([, content]) => content.trim().length > 0).map(([title, content], index) => `## ${index}. ${title}
+    return sections.filter(([, content]) => content.trim().length > 0).map(([title, content], index2) => `## ${index2}. ${title}
 
 ${content}`).join("\n\n");
   }
@@ -14120,14 +14379,14 @@ Apply: ${applyLine}` : "") + `
 
 ${mdTable(headers, rows)}${unscopedNote}${dropped}`;
   }
-  function componentBlocksSection(blocks, limit = COMPONENT_DETAIL_LIMIT) {
-    if (blocks.length === 0) {
+  function componentBlocksSection(blocks2, limit = COMPONENT_DETAIL_LIMIT) {
+    if (blocks2.length === 0) {
       return "_No component-scoped token groups found._ Tokens are grouped by type only, so pick them by role (previous section) and keep the choice consistent across a component.";
     }
-    const shown = blocks.slice(0, limit);
+    const shown = blocks2.slice(0, limit);
     const chunks = shown.map(componentMatrix);
-    if (blocks.length > shown.length) {
-      const rest = blocks.slice(limit);
+    if (blocks2.length > shown.length) {
+      const rest = blocks2.slice(limit);
       chunks.push(
         `### Further component groups (${rest.length})
 
@@ -14257,11 +14516,11 @@ These are the only breakpoints. CSS custom properties do not work inside a media
       rules.push(
         `**DO NOT** interpolate font sizes. The type scale has ${sizes.length} step(s); pick the closest existing one.`
       );
-      const ordered = sizes.map((entry) => ({ entry, px: parseFloat(entry.value) })).filter((step) => isFinite(step.px)).sort((a, b) => a.px - b.px);
+      const ordered = sizes.map((entry) => ({ entry, px: parseFloat(entry.value) })).filter((step2) => isFinite(step2.px)).sort((a, b) => a.px - b.px);
       const nearDuplicates = [];
-      for (let index = 1; index < ordered.length; index++) {
-        const previous = ordered[index - 1];
-        const current = ordered[index];
+      for (let index2 = 1; index2 < ordered.length; index2++) {
+        const previous = ordered[index2 - 1];
+        const current = ordered[index2];
         if (current.px - previous.px < 0.5) {
           nearDuplicates.push(
             `\`--${previous.entry.slug}\` (${previous.entry.value}) vs \`--${current.entry.slug}\` (${current.entry.value})`
@@ -14319,7 +14578,7 @@ These are the only breakpoints. CSS custom properties do not work inside a media
     return rules;
   }
   function agentPromptSection(options) {
-    const steps = options.steps.map((step, index) => `${index + 1}. ${step}`).join("\n");
+    const steps = options.steps.map((step2, index2) => `${index2 + 1}. ${step2}`).join("\n");
     const never = options.never.map((rule) => `- ${rule}`).join("\n");
     return `\`\`\`text
 You are ${options.role}. The design system documented in DESIGN.md is authoritative.
@@ -14338,7 +14597,7 @@ If a required value has no token, stop and report the gap instead of inventing a
      generated: ${options.generatedAt}` : "";
     return `# DESIGN.md \u2014 ${options.fileName}
 
-<!-- GENERATED by the Altery Design System Export Figma plugin.
+<!-- GENERATED by the AllCrew Channel plugin.
      target: ${options.target}
      source of truth: Figma file "${options.fileName}"${stamp}
      Do not hand-edit: re-export from Figma instead. -->
@@ -14347,24 +14606,24 @@ ${options.intro}`;
   }
 
   // src/targets/design-md/token-mentions.ts
-  function add(index, key, entry) {
+  function add(index2, key, entry) {
     if (!key) return;
-    const existing = index.byKey.get(key);
+    const existing = index2.byKey.get(key);
     if (existing === void 0) {
-      index.byKey.set(key, entry);
+      index2.byKey.set(key, entry);
       return;
     }
-    if (existing !== entry) index.byKey.set(key, null);
+    if (existing !== entry) index2.byKey.set(key, null);
   }
   function buildMentionIndex(entries) {
-    const index = { byKey: /* @__PURE__ */ new Map() };
+    const index2 = { byKey: /* @__PURE__ */ new Map() };
     for (const entry of entries) {
-      add(index, entry.slug, entry);
+      add(index2, entry.slug, entry);
       for (let start = 1; start < entry.path.length; start++) {
-        add(index, varName(entry.path.slice(start)), entry);
+        add(index2, varName(entry.path.slice(start)), entry);
       }
     }
-    return index;
+    return index2;
   }
   function mentionKey(text4) {
     return varName([
@@ -14375,7 +14634,7 @@ ${options.intro}`;
   var CANDIDATE = /--[A-Za-z0-9-]+|\{[^}\n]+\}|[A-Za-z0-9][A-Za-z0-9_-]*(?:[/.][A-Za-z0-9_-]+)*/g;
   var HAS_LETTER = /[A-Za-z]/;
   var RAMP_STEP = /^[A-Za-z]{1,2}\d{2,4}$/;
-  function findTokenMentions(description, entries, index = buildMentionIndex(entries)) {
+  function findTokenMentions(description, entries, index2 = buildMentionIndex(entries)) {
     var _a;
     const resolved = [];
     const unresolved = [];
@@ -14387,7 +14646,7 @@ ${options.intro}`;
       if (!referenceShaped && !HAS_LETTER.test(text4)) continue;
       const key = mentionKey(text4);
       if (!key || seen.has(key)) continue;
-      const entry = index.byKey.get(key);
+      const entry = index2.byKey.get(key);
       if (entry) {
         seen.add(key);
         resolved.push({ text: text4, entry });
@@ -14431,8 +14690,8 @@ ${options.intro}`;
     if (description) return classifyDescription(description, doc.properties) === "tags";
     return doc.properties.length === 0 && /\bicons?\b/i.test(`${(_a = doc.page) != null ? _a : ""} ${doc.name}`);
   }
-  function anchorSlug(value) {
-    return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  function anchorSlug(value2) {
+    return value2.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   }
   function buildAnchors(docs) {
     var _a, _b;
@@ -14492,11 +14751,11 @@ ${mdTable(["Property", "Type", "Options", "Default"], rows)}`;
 ${parts.join("\n\n")}` : "";
   }
   function analyzeDocs(docs, tokens) {
-    const index = tokens.length > 0 ? buildMentionIndex(tokens) : void 0;
+    const index2 = tokens.length > 0 ? buildMentionIndex(tokens) : void 0;
     return docs.map((doc) => {
       var _a;
       const description = doc.description.trim();
-      const mentions = description && index ? findTokenMentions(description, tokens, index) : null;
+      const mentions = description && index2 ? findTokenMentions(description, tokens, index2) : null;
       const kind = description ? classifyDescription(description, doc.properties, (_a = mentions == null ? void 0 : mentions.resolved.length) != null ? _a : 0) : null;
       return { doc, description, kind, mentions };
     });
@@ -14519,7 +14778,7 @@ ${parts.join("\n\n")}` : "";
     const previewNote = analyzed.some((entry) => entry.doc.preview) ? "" : analyzed.some((entry) => entry.doc.previewError) ? `
 
 _No previews in this package: ${analyzed.find((entry) => entry.doc.previewError).doc.previewError}._` : "\n\n_No previews in this package \u2014 enable Settings \u2192 Documentation \u2192 Component previews and re-scan._";
-    const index = mdTable(
+    const index2 = mdTable(
       ["Component", "Behaviour documented", "Props", "Preview"],
       analyzed.map(({ doc, kind }) => [
         `[${doc.name}](#${anchors.get(doc.id)})`,
@@ -14567,7 +14826,7 @@ ${quoteDescription(description)}` + mentionsBlock(mentions)
      generated: ${options.generatedAt}` : "";
     return `# Components \u2014 ${options.fileName}
 
-<!-- GENERATED by the Altery Design System Export Figma plugin.
+<!-- GENERATED by the AllCrew Channel plugin.
      source of truth: the Component configuration of each Figma component${stamp}
      Do not hand-edit: re-export from Figma instead. -->
 
@@ -14583,7 +14842,7 @@ ${options.usage}
 
 ## Index
 
-${index}${previewNote}
+${index2}${previewNote}
 
 ${sections.join("\n\n")}
 `;
@@ -14604,7 +14863,7 @@ ${sections.join("\n\n")}
      generated: ${options.generatedAt}` : "";
     return `# Icons \u2014 ${options.fileName}
 
-<!-- GENERATED by the Altery Design System Export Figma plugin.${stamp}
+<!-- GENERATED by the AllCrew Channel plugin.${stamp}
      Do not hand-edit: re-export from Figma instead. -->
 
 ${sorted.length} icon component(s). Descriptions on icons are **search keywords**, not behaviour contracts \u2014 use this table to find the right glyph, and color it with an \`icon\` role token (see DESIGN.md).
@@ -14889,19 +15148,19 @@ ${body}
 
   // src/targets/tauri/render-static.ts
   var EMPTY_CTX = /* @__PURE__ */ new Map();
-  function escapeHtml4(value) {
-    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  function escapeHtml4(value2) {
+    return value2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
-  function unescapeDjangoString(value) {
-    return value.replace(/\\(["\\])/g, "$1");
+  function unescapeDjangoString(value2) {
+    return value2.replace(/\\(["\\])/g, "$1");
   }
   function stripComments(src) {
     return src.replace(/\{#[\s\S]*?#\}/g, "");
   }
-  function truthy(value) {
-    if (value === void 0) return false;
-    if (typeof value === "boolean") return value;
-    return value !== "" && value !== "False";
+  function truthy(value2) {
+    if (value2 === void 0) return false;
+    if (typeof value2 === "boolean") return value2;
+    return value2 !== "" && value2 !== "False";
   }
   function parseParamValue(raw, ctx) {
     var _a;
@@ -14920,23 +15179,23 @@ ${body}
   function resolveExpr(expr, ctx, opts) {
     const parts = expr.split("|").map((part) => part.trim());
     const head = parts[0];
-    let value;
+    let value2;
     const navMatch = head.match(/^navMap\.(\w+)$/);
     if (navMatch) {
-      value = opts.navHref(navMatch[1]);
+      value2 = opts.navHref(navMatch[1]);
     } else {
-      value = ctx.get(head);
+      value2 = ctx.get(head);
     }
     for (const filter of parts.slice(1)) {
       const defaultMatch = filter.match(/^default:(.*)$/);
       if (defaultMatch) {
-        if (!truthy(value)) value = parseParamValue(defaultMatch[1], ctx);
+        if (!truthy(value2)) value2 = parseParamValue(defaultMatch[1], ctx);
         continue;
       }
-      if (filter === "lower" && typeof value === "string") value = value.toLowerCase();
+      if (filter === "lower" && typeof value2 === "string") value2 = value2.toLowerCase();
     }
-    if (value === void 0 || typeof value === "boolean") return typeof value === "boolean" && value ? "True" : "";
-    return value;
+    if (value2 === void 0 || typeof value2 === "boolean") return typeof value2 === "boolean" && value2 ? "True" : "";
+    return value2;
   }
   function findMatchingEnd(src, from, openPattern, endTag) {
     let depth = 0;
@@ -14958,8 +15217,8 @@ ${body}
   }
   function renderBlocktranslateBody(body, ctx) {
     return body.replace(/\{\{\s*(\w+)\s*\}\}/g, (_m, name) => {
-      const value = ctx.get(name);
-      return typeof value === "string" ? escapeHtml4(value) : `{${name}}`;
+      const value2 = ctx.get(name);
+      return typeof value2 === "string" ? escapeHtml4(value2) : `{${name}}`;
     });
   }
   function renderFragment(src, ctx, opts) {
@@ -15017,8 +15276,8 @@ ${body}
           const bound = new Map(ctx);
           for (const pair2 of splitParams(withMatch[1])) {
             const [name, raw] = pair2.split("\0");
-            const value = parseParamValue(raw, ctx);
-            if (value !== void 0) bound.set(name, value);
+            const value2 = parseParamValue(raw, ctx);
+            if (value2 !== void 0) bound.set(name, value2);
           }
           blockCtx = bound;
         }
@@ -15064,8 +15323,8 @@ ${body}
       const params = new Map(only ? [] : ctx);
       for (const pair2 of splitParams(withClause)) {
         const [name, raw] = pair2.split("\0");
-        const value = parseParamValue(raw, ctx);
-        if (value !== void 0) params.set(name, value);
+        const value2 = parseParamValue(raw, ctx);
+        if (value2 !== void 0) params.set(name, value2);
       }
       childCtx = params;
     } else {
@@ -15405,7 +15664,7 @@ ${scrollGuards}` : project.css;
   }
 
   // src/tokens/color.ts
-  var clamp01 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
+  var clamp01 = (value2) => value2 < 0 ? 0 : value2 > 1 ? 1 : value2;
   function parseHex(input) {
     const hex = input.trim().replace(/^#/, "");
     if (/^[0-9a-fA-F]{3}$/.test(hex)) {
@@ -15424,18 +15683,18 @@ ${scrollGuards}` : project.css;
     }
     return null;
   }
-  var channelToHex4 = (value) => {
-    const byte = Math.round(clamp01(value) * 255);
+  var channelToHex4 = (value2) => {
+    const byte = Math.round(clamp01(value2) * 255);
     return byte.toString(16).toUpperCase().padStart(2, "0");
   };
   function formatHex(rgb) {
     return `#${channelToHex4(rgb.r)}${channelToHex4(rgb.g)}${channelToHex4(rgb.b)}`;
   }
-  function srgbToLinear(value) {
-    return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+  function srgbToLinear(value2) {
+    return value2 <= 0.04045 ? value2 / 12.92 : Math.pow((value2 + 0.055) / 1.055, 2.4);
   }
-  function linearToSrgb(value) {
-    return value <= 31308e-7 ? value * 12.92 : 1.055 * Math.pow(value, 1 / 2.4) - 0.055;
+  function linearToSrgb(value2) {
+    return value2 <= 31308e-7 ? value2 * 12.92 : 1.055 * Math.pow(value2, 1 / 2.4) - 0.055;
   }
   function rgbToOklab(rgb) {
     const r = srgbToLinear(rgb.r);
@@ -15554,7 +15813,7 @@ ${scrollGuards}` : project.css;
       { id: "blue", label: "Blue", prefix: "B", keyHex: "#2364AA", anchorStep: 500 }
     ]
   };
-  var clamp2 = (value, min, max) => value < min ? min : value > max ? max : value;
+  var clamp2 = (value2, min, max) => value2 < min ? min : value2 > max ? max : value2;
   function autoHueTorsion(hue) {
     const h = (hue % 360 + 360) % 360;
     if (h >= 20 && h < 110) return -10;
@@ -15611,12 +15870,12 @@ ${scrollGuards}` : project.css;
     });
   }
   var normalizeSteps = (steps) => Array.from(new Set(steps.filter((s) => Number.isFinite(s)))).sort((a, b) => a - b);
-  function indexOfStep(steps, step) {
-    const exact = steps.indexOf(step);
+  function indexOfStep(steps, step2) {
+    const exact = steps.indexOf(step2);
     if (exact !== -1) return exact;
     let best = 0;
     for (let i = 1; i < steps.length; i++) {
-      if (Math.abs(steps[i] - step) < Math.abs(steps[best] - step)) best = i;
+      if (Math.abs(steps[i] - step2) < Math.abs(steps[best] - step2)) best = i;
     }
     return best;
   }
@@ -15716,10 +15975,10 @@ ${scrollGuards}` : project.css;
       );
       colors = oklchRamp.map(oklchToRgb);
     }
-    const markIndex = (step, fallback) => {
-      if (step === void 0) return fallback >= 0 && fallback < safeSteps.length ? fallback : -1;
-      const index = indexOfStep(safeSteps, step);
-      return index === anchor ? -1 : index;
+    const markIndex = (step2, fallback) => {
+      if (step2 === void 0) return fallback >= 0 && fallback < safeSteps.length ? fallback : -1;
+      const index2 = indexOfStep(safeSteps, step2);
+      return index2 === anchor ? -1 : index2;
     };
     const lightIndex = markIndex(spec.lightStep, anchor - 2);
     const darkIndex = markIndex(spec.darkStep, anchor + 2);
@@ -15753,9 +16012,9 @@ ${scrollGuards}` : project.css;
     }
     return { spectra, warnings };
   }
-  function shiftMark(steps, step, delta) {
-    if (step === void 0) return void 0;
-    const moved = indexOfStep(steps, step) + delta;
+  function shiftMark(steps, step2, delta) {
+    if (step2 === void 0) return void 0;
+    const moved = indexOfStep(steps, step2) + delta;
     return moved >= 0 && moved < steps.length ? steps[moved] : void 0;
   }
   function applyPaletteFix(settings, fix) {
@@ -15870,7 +16129,7 @@ ${scrollGuards}` : project.css;
     }
     return best;
   }
-  var stepAt = (spectrum, index) => spectrum.swatches[clamp2(index, 0, spectrum.swatches.length - 1)].name;
+  var stepAt = (spectrum, index2) => spectrum.swatches[clamp2(index2, 0, spectrum.swatches.length - 1)].name;
   var pathOf = (spectrum, name) => `${spectrum.label}/${name}`;
   function themeRoles(palette) {
     var _a;
@@ -15878,9 +16137,9 @@ ${scrollGuards}` : project.css;
     const roles = [];
     if (!neutral) return roles;
     const last = neutral.swatches.length - 1;
-    const mirror = (index) => ({
-      light: pathOf(neutral, stepAt(neutral, index)),
-      dark: pathOf(neutral, stepAt(neutral, last - index))
+    const mirror = (index2) => ({
+      light: pathOf(neutral, stepAt(neutral, index2)),
+      dark: pathOf(neutral, stepAt(neutral, last - index2))
     });
     roles.push(__spreadValues({ name: "bg/canvas" }, mirror(0)));
     roles.push(__spreadValues({ name: "bg/surface" }, mirror(1)));
@@ -15916,16 +16175,15 @@ ${scrollGuards}` : project.css;
   }
 
   // src/tokens/palette-settings.ts
-  var isRecord3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-  var number = (value, fallback, min, max) => {
-    const parsed = typeof value === "string" ? Number(value) : value;
+  var number = (value2, fallback, min, max) => {
+    const parsed = typeof value2 === "string" ? Number(value2) : value2;
     if (typeof parsed !== "number" || !Number.isFinite(parsed)) return fallback;
     return Math.min(max, Math.max(min, parsed));
   };
-  var text = (value, fallback) => typeof value === "string" && value.trim() !== "" ? value.trim() : fallback;
-  var flag = (value, fallback) => typeof value === "boolean" ? value : fallback;
-  function parseSteps(value, fallback) {
-    const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(/[,\s]+/).filter(Boolean) : null;
+  var text = (value2, fallback) => typeof value2 === "string" && value2.trim() !== "" ? value2.trim() : fallback;
+  var flag = (value2, fallback) => typeof value2 === "boolean" ? value2 : fallback;
+  function parseSteps(value2, fallback) {
+    const raw = Array.isArray(value2) ? value2 : typeof value2 === "string" ? value2.split(/[,\s]+/).filter(Boolean) : null;
     if (!raw) return fallback;
     const steps = Array.from(
       new Set(
@@ -15934,58 +16192,58 @@ ${scrollGuards}` : project.css;
     ).sort((a, b) => a - b);
     return steps.length >= 2 ? steps : fallback;
   }
-  function normalizeSpectrum(value, index) {
-    if (!isRecord3(value)) return null;
-    const label3 = text(value.label, "");
+  function normalizeSpectrum(value2, index2) {
+    if (!isRecord(value2)) return null;
+    const label3 = text(value2.label, "");
     if (label3 === "") return null;
-    const neutral = flag(value.neutral, false);
-    const steps = value.steps === void 0 ? void 0 : parseSteps(value.steps, []);
+    const neutral = flag(value2.neutral, false);
+    const steps = value2.steps === void 0 ? void 0 : parseSteps(value2.steps, []);
     const spec = {
-      id: text(value.id, `spectrum-${index}`),
+      id: text(value2.id, `spectrum-${index2}`),
       label: label3,
-      prefix: text(value.prefix, "").toUpperCase() || void 0,
-      keyHex: text(value.keyHex, "#808080"),
-      anchorStep: number(value.anchorStep, neutral ? 500 : 500, 0, 1e5),
+      prefix: text(value2.prefix, "").toUpperCase() || void 0,
+      keyHex: text(value2.keyHex, "#808080"),
+      anchorStep: number(value2.anchorStep, neutral ? 500 : 500, 0, 1e5),
       neutral
     };
     if (steps && steps.length >= 2) spec.steps = steps;
-    if (typeof value.lightStep === "number") spec.lightStep = value.lightStep;
-    if (typeof value.darkStep === "number") spec.darkStep = value.darkStep;
-    if (value.hueTorsion !== void 0 && value.hueTorsion !== "auto") {
-      spec.hueTorsion = number(value.hueTorsion, 0, -60, 60);
+    if (typeof value2.lightStep === "number") spec.lightStep = value2.lightStep;
+    if (typeof value2.darkStep === "number") spec.darkStep = value2.darkStep;
+    if (value2.hueTorsion !== void 0 && value2.hueTorsion !== "auto") {
+      spec.hueTorsion = number(value2.hueTorsion, 0, -60, 60);
     }
     return spec;
   }
-  function normalizePaletteFix(value) {
-    if (!isRecord3(value)) return null;
-    if (value.kind === "anchor-step") {
-      const spectrumId = text(value.spectrumId, "");
-      if (spectrumId === "" || typeof value.step !== "number" || !Number.isFinite(value.step)) return null;
-      return { kind: "anchor-step", spectrumId, step: Math.round(value.step) };
+  function normalizePaletteFix(value2) {
+    if (!isRecord(value2)) return null;
+    if (value2.kind === "anchor-step") {
+      const spectrumId = text(value2.spectrumId, "");
+      if (spectrumId === "" || typeof value2.step !== "number" || !Number.isFinite(value2.step)) return null;
+      return { kind: "anchor-step", spectrumId, step: Math.round(value2.step) };
     }
-    if (value.kind === "reset-steps") return { kind: "reset-steps", neutral: flag(value.neutral, false) };
-    if (value.kind === "rename-duplicates") return { kind: "rename-duplicates" };
-    if (value.kind === "split-dark-theme") return { kind: "split-dark-theme" };
+    if (value2.kind === "reset-steps") return { kind: "reset-steps", neutral: flag(value2.neutral, false) };
+    if (value2.kind === "rename-duplicates") return { kind: "rename-duplicates" };
+    if (value2.kind === "split-dark-theme") return { kind: "split-dark-theme" };
     return null;
   }
-  function normalizePaletteSettings(value) {
+  function normalizePaletteSettings(value2) {
     const defaults = DEFAULT_PALETTE_SETTINGS;
-    if (!isRecord3(value)) return __spreadProps(__spreadValues({}, defaults), { spectra: defaults.spectra.map((s) => __spreadValues({}, s)) });
-    const rawSpectra = Array.isArray(value.spectra) ? value.spectra : null;
+    if (!isRecord(value2)) return __spreadProps(__spreadValues({}, defaults), { spectra: defaults.spectra.map((s) => __spreadValues({}, s)) });
+    const rawSpectra = Array.isArray(value2.spectra) ? value2.spectra : null;
     const spectra = rawSpectra ? rawSpectra.map(normalizeSpectrum).filter((spec) => spec !== null) : [];
-    const lightnessMax = number(value.lightnessMax, defaults.lightnessMax, 0.5, 1);
-    const lightnessMin = number(value.lightnessMin, defaults.lightnessMin, 0, 0.5);
+    const lightnessMax = number(value2.lightnessMax, defaults.lightnessMax, 0.5, 1);
+    const lightnessMin = number(value2.lightnessMin, defaults.lightnessMin, 0, 0.5);
     return {
-      formula: value.formula === "mix" ? "mix" : "oklch",
-      steps: parseSteps(value.steps, DEFAULT_STEPS),
-      neutralSteps: parseSteps(value.neutralSteps, DEFAULT_NEUTRAL_STEPS),
+      formula: value2.formula === "mix" ? "mix" : "oklch",
+      steps: parseSteps(value2.steps, DEFAULT_STEPS),
+      neutralSteps: parseSteps(value2.neutralSteps, DEFAULT_NEUTRAL_STEPS),
       lightnessMax,
       // A collapsed or inverted range would flatten every ramp into one shade.
       lightnessMin: lightnessMin < lightnessMax - 0.1 ? lightnessMin : defaults.lightnessMin,
-      lightnessCurve: number(value.lightnessCurve, defaults.lightnessCurve, 0.6, 2.5),
-      chromaCurve: number(value.chromaCurve, defaults.chromaCurve, 0, 1),
-      hueTorsion: value.hueTorsion === "auto" ? "auto" : number(value.hueTorsion, 0, -60, 60),
-      neutralChroma: number(value.neutralChroma, defaults.neutralChroma, 0, 1),
+      lightnessCurve: number(value2.lightnessCurve, defaults.lightnessCurve, 0.6, 2.5),
+      chromaCurve: number(value2.chromaCurve, defaults.chromaCurve, 0, 1),
+      hueTorsion: value2.hueTorsion === "auto" ? "auto" : number(value2.hueTorsion, 0, -60, 60),
+      neutralChroma: number(value2.neutralChroma, defaults.neutralChroma, 0, 1),
       // An empty list is a choice: the operator cleared the board to build their own set, and
       // quietly refilling it with the default three makes the preview show ramps that no
       // longer exist. The defaults return only when the field is missing entirely or every
@@ -16003,8 +16261,8 @@ ${scrollGuards}` : project.css;
     themeCollectionName: "theme",
     splitDarkTheme: false
   };
-  var SECTION_PLUGIN_KEY = "altery-palette-section";
-  var SWATCH_COMPONENT_PLUGIN_KEY = "altery-palette-swatch";
+  var SECTION_PLUGIN_KEY = "allcrew-channel-palette-section";
+  var SWATCH_COMPONENT_PLUGIN_KEY = "allcrew-channel-palette-swatch";
   function createVariable(name, collection, type) {
     try {
       return figma.variables.createVariable(name, collection, type);
@@ -16215,11 +16473,11 @@ ${scrollGuards}` : project.css;
     labelRow.resize(SWATCH_WIDTH, LABEL_HEIGHT);
     labelRow.paddingLeft = 10;
     labelRow.counterAxisAlignItems = "CENTER";
-    const step = label("500", fonts, LABEL_SIZE, "#1A1A1A");
-    step.name = PART.step;
-    step.textAutoResize = "HEIGHT";
-    step.resize(44, LABEL_SIZE * 1.4);
-    labelRow.appendChild(step);
+    const step2 = label("500", fonts, LABEL_SIZE, "#1A1A1A");
+    step2.name = PART.step;
+    step2.textAutoResize = "HEIGHT";
+    step2.resize(44, LABEL_SIZE * 1.4);
+    labelRow.appendChild(step2);
     const hex = label("#000000", fonts, LABEL_SIZE, "#1A1A1A");
     hex.name = PART.hex;
     labelRow.appendChild(hex);
@@ -16247,8 +16505,8 @@ ${scrollGuards}` : project.css;
       if (variable) paint = figma.variables.setBoundVariableForPaint(paint, "color", variable);
       block3.fills = [paint];
     }
-    const step = findPart(instance, PART.step);
-    if (step && step.type === "TEXT") step.characters = String(swatch.step);
+    const step2 = findPart(instance, PART.step);
+    if (step2 && step2.type === "TEXT") step2.characters = String(swatch.step);
     const hex = findPart(instance, PART.hex);
     if (hex && hex.type === "TEXT") hex.characters = swatch.hex;
     const mark = findPart(instance, PART.mark);
@@ -16405,11 +16663,11 @@ ${scrollGuards}` : project.css;
   var MAX_LOOSE_COLORS = 400;
   var MAX_NODES = 2e5;
   var siteId = (variableId, modeId) => `${variableId}|${modeId}`;
-  var styleSiteId = (styleId, property, index, stop) => `style:${styleId}#${property}:${index}${stop === void 0 ? "" : `.${stop}`}`;
+  var styleSiteId = (styleId, property, index2, stop) => `style:${styleId}#${property}:${index2}${stop === void 0 ? "" : `.${stop}`}`;
   var looseSiteId = (hex, alpha) => `loose:${hex}:${alpha.toFixed(3)}`;
   var isLooseSite = (id) => id.slice(0, 6) === "loose:";
-  var isAlias = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
-  var isRgb = (value) => typeof value === "object" && value !== null && "r" in value && "g" in value && "b" in value;
+  var isAlias = (value2) => typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
+  var isRgb = (value2) => typeof value2 === "object" && value2 !== null && "r" in value2 && "g" in value2 && "b" in value2;
   var withAlpha = (color) => ({
     r: color.r,
     g: color.g,
@@ -16422,39 +16680,39 @@ ${scrollGuards}` : project.css;
   var GRADIENTS = ["GRADIENT_LINEAR", "GRADIENT_RADIAL", "GRADIENT_ANGULAR", "GRADIENT_DIAMOND"];
   var isGradient = (paint) => GRADIENTS.indexOf(paint.type) !== -1;
   var isShadow = (effect) => effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW";
-  var boundIdsOf = (value) => {
-    if (!value) return [];
-    const list2 = Array.isArray(value) ? value : [value];
+  var boundIdsOf = (value2) => {
+    if (!value2) return [];
+    const list2 = Array.isArray(value2) ? value2 : [value2];
     return list2.map((entry) => entry && typeof entry === "object" ? entry.id : null).filter((id) => typeof id === "string");
   };
   var paintsOf = (node, property) => {
-    const value = node[property];
-    return Array.isArray(value) ? value : [];
+    const value2 = node[property];
+    return Array.isArray(value2) ? value2 : [];
   };
   var styleIdOf2 = (node, property) => {
     const key = property === "fills" ? "fillStyleId" : property === "strokes" ? "strokeStyleId" : "effectStyleId";
-    const value = node[key];
-    return typeof value === "string" ? value : "";
+    const value2 = node[key];
+    return typeof value2 === "string" ? value2 : "";
   };
   var nodeLevelBindings = (node, property) => {
     const bound = "boundVariables" in node ? node.boundVariables : void 0;
     return Array.isArray(bound == null ? void 0 : bound[property]) ? bound[property] : [];
   };
-  function noteLoose(walk2, color) {
+  function noteLoose(walk3, color) {
     const hex = hexOf(color);
     const id = looseSiteId(hex, color.a);
-    const existing = walk2.loose.get(id);
+    const existing = walk3.loose.get(id);
     if (existing) existing.count++;
-    else if (walk2.loose.size < MAX_LOOSE_COLORS) walk2.loose.set(id, { hex, alpha: color.a, rgba: color, count: 1 });
-    else walk2.looseDropped++;
-    walk2.loosePlaces++;
+    else if (walk3.loose.size < MAX_LOOSE_COLORS) walk3.loose.set(id, { hex, alpha: color.a, rgba: color, count: 1 });
+    else walk3.looseDropped++;
+    walk3.loosePlaces++;
     return id;
   }
   var pairKey = (a, b, text4) => (a < b ? `${a} ${b}` : `${b} ${a}`) + (text4 ? " t" : " n");
   var EMPTY = [];
   async function walkDocument(localIds, depth, progress2) {
     var _a;
-    const walk2 = {
+    const walk3 = {
       usage: /* @__PURE__ */ new Map(),
       styleUsage: /* @__PURE__ */ new Map(),
       foreign: /* @__PURE__ */ new Set(),
@@ -16466,30 +16724,30 @@ ${scrollGuards}` : project.css;
       instances: 0,
       truncated: false
     };
-    if (depth === "tokens") return walk2;
+    if (depth === "tokens") return walk3;
     const noteVariable = (id) => {
       var _a2;
-      walk2.usage.set(id, ((_a2 = walk2.usage.get(id)) != null ? _a2 : 0) + 1);
-      if (!localIds.has(id)) walk2.foreign.add(id);
+      walk3.usage.set(id, ((_a2 = walk3.usage.get(id)) != null ? _a2 : 0) + 1);
+      if (!localIds.has(id)) walk3.foreign.add(id);
     };
     const notePair = (a, b, text4) => {
-      if (walk2.neighbours.size >= MAX_ADJACENT_PAIRS) return;
+      if (walk3.neighbours.size >= MAX_ADJACENT_PAIRS) return;
       const key = pairKey(a, b, text4);
-      if (!walk2.neighbours.has(key)) walk2.neighbours.set(key, { a, b, text: text4 });
+      if (!walk3.neighbours.has(key)) walk3.neighbours.set(key, { a, b, text: text4 });
     };
     const noteStyle = (styleId) => {
       var _a2;
-      if (styleId !== "") walk2.styleUsage.set(styleId, ((_a2 = walk2.styleUsage.get(styleId)) != null ? _a2 : 0) + 1);
+      if (styleId !== "") walk3.styleUsage.set(styleId, ((_a2 = walk3.styleUsage.get(styleId)) != null ? _a2 : 0) + 1);
     };
-    const refsOf = (paints, nodeLevel, boundOnly) => {
+    const refsOf = (paints2, nodeLevel, boundOnly) => {
       var _a2, _b;
       const refs = [];
-      for (let index = 0; index < paints.length; index++) {
-        const paint = paints[index];
+      for (let index2 = 0; index2 < paints2.length; index2++) {
+        const paint = paints2[index2];
         if (paint.visible === false) continue;
         const bound = [
           ...boundIdsOf((_a2 = paint.boundVariables) == null ? void 0 : _a2.color),
-          ...boundIdsOf(nodeLevel[index])
+          ...boundIdsOf(nodeLevel[index2])
         ];
         if (bound.length > 0) {
           refs.push(...bound);
@@ -16497,10 +16755,10 @@ ${scrollGuards}` : project.css;
         }
         if (boundOnly) continue;
         if (paint.type === "SOLID") {
-          refs.push(noteLoose(walk2, __spreadProps(__spreadValues({}, paint.color), { a: (_b = paint.opacity) != null ? _b : 1 })));
+          refs.push(noteLoose(walk3, __spreadProps(__spreadValues({}, paint.color), { a: (_b = paint.opacity) != null ? _b : 1 })));
           continue;
         }
-        if (isGradient(paint)) for (const stop of paint.gradientStops) noteLoose(walk2, withAlpha(stop.color));
+        if (isGradient(paint)) for (const stop of paint.gradientStops) noteLoose(walk3, withAlpha(stop.color));
       }
       return refs;
     };
@@ -16513,13 +16771,13 @@ ${scrollGuards}` : project.css;
         const roots = page.children;
         for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], behind: EMPTY });
         while (stack.length > 0) {
-          if (walk2.nodes >= MAX_NODES) {
-            walk2.truncated = true;
+          if (walk3.nodes >= MAX_NODES) {
+            walk3.truncated = true;
             break;
           }
           const pending2 = stack.pop();
           const node = pending2.node;
-          walk2.nodes++;
+          walk3.nodes++;
           const type = node.type;
           const record2 = node;
           const fillStyle = record2.fillStyleId;
@@ -16534,7 +16792,7 @@ ${scrollGuards}` : project.css;
           noteStyle(typeof strokeStyle === "string" ? strokeStyle : "");
           noteStyle(typeof effectStyle === "string" ? effectStyle : "");
           const isInstance = type === "INSTANCE";
-          if (isInstance) walk2.instances++;
+          if (isInstance) walk3.instances++;
           const fills = typeof fillStyle === "string" && fillStyle !== "" ? EMPTY : Array.isArray(fillPaints) ? refsOf(fillPaints, Array.isArray(bound == null ? void 0 : bound.fills) ? bound.fills : [], isInstance) : EMPTY;
           const strokes = typeof strokeStyle === "string" && strokeStyle !== "" ? EMPTY : Array.isArray(strokePaints) ? refsOf(
             strokePaints,
@@ -16549,14 +16807,14 @@ ${scrollGuards}` : project.css;
                 for (const id of boundEffect) noteVariable(id);
                 continue;
               }
-              if (!isInstance) noteLoose(walk2, withAlpha(effect.color));
+              if (!isInstance) noteLoose(walk3, withAlpha(effect.color));
             }
           }
           for (const ref of fills) if (!isLooseSite(ref)) noteVariable(ref);
           for (const ref of strokes) if (!isLooseSite(ref)) noteVariable(ref);
           if (isInstance) {
-            if (walk2.nodes % 500 === 0) {
-              progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk2.nodes} nodes`);
+            if (walk3.nodes % 500 === 0) {
+              progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk3.nodes} nodes`);
               await yieldToHost();
             }
             continue;
@@ -16572,8 +16830,8 @@ ${scrollGuards}` : project.css;
             const passes = fills.length > 0 ? fills : behind;
             for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], behind: passes });
           }
-          if (walk2.nodes % 500 === 0) {
-            progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk2.nodes} nodes`);
+          if (walk3.nodes % 500 === 0) {
+            progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk3.nodes} nodes`);
             await yieldToHost();
           }
         }
@@ -16581,21 +16839,21 @@ ${scrollGuards}` : project.css;
     } finally {
       figma.skipInvisibleInstanceChildren = false;
     }
-    return walk2;
+    return walk3;
   }
-  async function readStyles(walk2, sites) {
+  async function readStyles(walk3, sites) {
     var _a, _b, _c;
     let paintStyles = 0;
     let effectStyles = 0;
     try {
       for (const style of await figma.getLocalPaintStylesAsync()) {
         paintStyles++;
-        const usage = (_a = walk2.styleUsage.get(style.id)) != null ? _a : 0;
-        for (const [index, paint] of style.paints.entries()) {
+        const usage = (_a = walk3.styleUsage.get(style.id)) != null ? _a : 0;
+        for (const [index2, paint] of style.paints.entries()) {
           if (paint.visible === false) continue;
           if (paint.type === "SOLID") {
             sites.push({
-              id: styleSiteId(style.id, "paints", index),
+              id: styleSiteId(style.id, "paints", index2),
               groupId: style.id,
               kind: "style",
               name: style.name,
@@ -16611,7 +16869,7 @@ ${scrollGuards}` : project.css;
           if (!isGradient(paint)) continue;
           for (const [stopIndex, stop] of paint.gradientStops.entries()) {
             sites.push({
-              id: styleSiteId(style.id, "paints", index, stopIndex),
+              id: styleSiteId(style.id, "paints", index2, stopIndex),
               groupId: style.id,
               kind: "gradient-stop",
               name: `${style.name} \xB7 stop ${stopIndex + 1}`,
@@ -16630,14 +16888,14 @@ ${scrollGuards}` : project.css;
     try {
       for (const style of await figma.getLocalEffectStylesAsync()) {
         effectStyles++;
-        const usage = (_c = walk2.styleUsage.get(style.id)) != null ? _c : 0;
-        for (const [index, effect] of style.effects.entries()) {
+        const usage = (_c = walk3.styleUsage.get(style.id)) != null ? _c : 0;
+        for (const [index2, effect] of style.effects.entries()) {
           if (!isShadow(effect) || effect.visible === false) continue;
           sites.push({
-            id: styleSiteId(style.id, "effects", index),
+            id: styleSiteId(style.id, "effects", index2),
             groupId: style.id,
             kind: "effect",
-            name: `${style.name} \xB7 ${effect.type === "DROP_SHADOW" ? "shadow" : "inner shadow"} ${index + 1}`,
+            name: `${style.name} \xB7 ${effect.type === "DROP_SHADOW" ? "shadow" : "inner shadow"} ${index2 + 1}`,
             modeId: null,
             modeName: null,
             rgba: withAlpha(effect.color),
@@ -16672,7 +16930,7 @@ ${scrollGuards}` : project.css;
         warnings.push("some pages could not be loaded \u2014 their colors are missing from this reading");
       }
     }
-    const walk2 = await walkDocument(localIds, depth, progress2);
+    const walk3 = await walkDocument(localIds, depth, progress2);
     progress2 == null ? void 0 : progress2("building the inventory\u2026");
     const sites = [];
     const modesByVariable = /* @__PURE__ */ new Map();
@@ -16680,12 +16938,12 @@ ${scrollGuards}` : project.css;
       const collection = collectionById.get(variable.variableCollectionId);
       if (!collection) continue;
       const values = Object.entries(variable.valuesByMode);
-      const themed = collection.modes.length >= 2 || values.some(([, value]) => isAlias(value));
-      const usage = (_a = walk2.usage.get(variable.id)) != null ? _a : 0;
+      const themed = collection.modes.length >= 2 || values.some(([, value2]) => isAlias(value2));
+      const usage = (_a = walk3.usage.get(variable.id)) != null ? _a : 0;
       const owned = [];
       for (const mode of collection.modes) {
-        const value = variable.valuesByMode[mode.modeId];
-        if (value === void 0 || isAlias(value) || !isRgb(value)) continue;
+        const value2 = variable.valuesByMode[mode.modeId];
+        if (value2 === void 0 || isAlias(value2) || !isRgb(value2)) continue;
         sites.push({
           id: siteId(variable.id, mode.modeId),
           groupId: variable.id,
@@ -16693,7 +16951,7 @@ ${scrollGuards}` : project.css;
           name: variable.name,
           modeId: mode.modeId,
           modeName: mode.name,
-          rgba: withAlpha(value),
+          rgba: withAlpha(value2),
           usage,
           editable: true,
           primitive: !themed
@@ -16703,15 +16961,15 @@ ${scrollGuards}` : project.css;
       if (owned.length > 0) modesByVariable.set(variable.id, owned);
     }
     let libraryVariables = 0;
-    for (const id of walk2.foreign) {
+    for (const id of walk3.foreign) {
       const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
       if (!variable || variable.resolvedType !== "COLOR") continue;
       libraryVariables++;
       const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId).catch(() => null);
       const owned = [];
       for (const mode of (_b = collection == null ? void 0 : collection.modes) != null ? _b : []) {
-        const value = variable.valuesByMode[mode.modeId];
-        if (value === void 0 || isAlias(value) || !isRgb(value)) continue;
+        const value2 = variable.valuesByMode[mode.modeId];
+        if (value2 === void 0 || isAlias(value2) || !isRgb(value2)) continue;
         sites.push({
           id: siteId(variable.id, mode.modeId),
           groupId: variable.id,
@@ -16719,8 +16977,8 @@ ${scrollGuards}` : project.css;
           name: variable.name,
           modeId: mode.modeId,
           modeName: mode.name,
-          rgba: withAlpha(value),
-          usage: (_c = walk2.usage.get(id)) != null ? _c : 0,
+          rgba: withAlpha(value2),
+          usage: (_c = walk3.usage.get(id)) != null ? _c : 0,
           editable: false,
           primitive: false
         });
@@ -16728,8 +16986,8 @@ ${scrollGuards}` : project.css;
       }
       if (owned.length > 0) modesByVariable.set(variable.id, owned);
     }
-    const styles = await readStyles(walk2, sites);
-    for (const [id, color] of walk2.loose) {
+    const styles = await readStyles(walk3, sites);
+    for (const [id, color] of walk3.loose) {
       sites.push({
         id,
         groupId: id,
@@ -16749,7 +17007,7 @@ ${scrollGuards}` : project.css;
       return isLooseSite(ref) ? [ref] : ((_a2 = modesByVariable.get(ref)) != null ? _a2 : []).map((mode) => siteId(ref, mode));
     };
     const modeOf = (site) => isLooseSite(site) ? null : site.slice(site.lastIndexOf("|") + 1);
-    for (const pair2 of walk2.neighbours.values()) {
+    for (const pair2 of walk3.neighbours.values()) {
       for (const a of expand(pair2.a)) {
         for (const b of expand(pair2.b)) {
           const modeA = modeOf(a);
@@ -16771,22 +17029,22 @@ ${scrollGuards}` : project.css;
     } else if (depth === "page") {
       warnings.push(`read this page only \u2014 loose colors on other pages are not in this mapping`);
     }
-    if (walk2.looseDropped > 0) {
+    if (walk3.looseDropped > 0) {
       warnings.push(
-        `${walk2.looseDropped} rarely used loose color(s) beyond the first ${MAX_LOOSE_COLORS} were left out of this reading \u2014 they stay as they are`
+        `${walk3.looseDropped} rarely used loose color(s) beyond the first ${MAX_LOOSE_COLORS} were left out of this reading \u2014 they stay as they are`
       );
     }
-    if (walk2.instances > 0) {
+    if (walk3.instances > 0) {
       warnings.push(
-        `${walk2.instances} instance(s) were skipped \u2014 their colors belong to a main component, which is read and written on its own; a color overridden by hand on one instance stays as it is`
+        `${walk3.instances} instance(s) were skipped \u2014 their colors belong to a main component, which is read and written on its own; a color overridden by hand on one instance stays as it is`
       );
     }
-    if (walk2.truncated) {
+    if (walk3.truncated) {
       warnings.push(
         `this file is larger than one pass can read (stopped at ${MAX_NODES} nodes) \u2014 variables and styles are complete, but loose colors on layers beyond that point are missing`
       );
     }
-    if (walk2.neighbours.size >= MAX_ADJACENT_PAIRS) {
+    if (walk3.neighbours.size >= MAX_ADJACENT_PAIRS) {
       warnings.push(
         `this file has more touching colour pairs than one pass can hold \u2014 duplicate separation and the contrast audit ran on the first ${MAX_ADJACENT_PAIRS}`
       );
@@ -16802,10 +17060,10 @@ ${scrollGuards}` : project.css;
         collections: collections.length,
         paintStyles: styles.paints,
         effectStyles: styles.effects,
-        looseColors: walk2.loose.size,
-        loosePlaces: walk2.loosePlaces,
-        nodes: walk2.nodes,
-        instances: walk2.instances
+        looseColors: walk3.loose.size,
+        loosePlaces: walk3.loosePlaces,
+        nodes: walk3.nodes,
+        instances: walk3.instances
       },
       warnings
     };
@@ -16834,14 +17092,14 @@ ${scrollGuards}` : project.css;
     if (parsed.path.length === 0) return name;
     const path = [...parsed.path];
     const leafIndex = path.length - 1;
-    const step = newStep != null ? newStep : parsed.step;
+    const step2 = newStep != null ? newStep : parsed.step;
     if (parsed.group !== null) path[leafIndex - 1] = newFamily;
     const match = STEP_RE.exec(parsed.leaf);
     if (match) {
       const prefix = ((_a = match[1]) != null ? _a : "").replace(/[\s_-]+$/, "").trim();
       const separator = (_c = (_b = /[\s._-]/.exec(parsed.leaf.slice(prefix.length))) == null ? void 0 : _b[0]) != null ? _c : "";
       const newPrefix = prefix === "" ? "" : abbreviate(prefix, newFamily);
-      path[leafIndex] = `${newPrefix}${separator}${step != null ? step : match[2]}`;
+      path[leafIndex] = `${newPrefix}${separator}${step2 != null ? step2 : match[2]}`;
     }
     return path.join("/");
   }
@@ -17082,9 +17340,9 @@ ${scrollGuards}` : project.css;
         let nextCol = 0;
         for (let j = 1; j <= cols; j++) {
           if (used[j]) continue;
-          const value = cost[currentRow - 1][j - 1] - u[currentRow] - v[j];
-          if (value < minimum[j]) {
-            minimum[j] = value;
+          const value2 = cost[currentRow - 1][j - 1] - u[currentRow] - v[j];
+          if (value2 < minimum[j]) {
+            minimum[j] = value2;
             way[j] = col;
           }
           if (minimum[j] < delta) {
@@ -17125,19 +17383,19 @@ ${scrollGuards}` : project.css;
       assignments.push({ from: from[row], to: to[column2], cost: matrix[row][column2], shared: false, overflow });
     };
     if (from.length <= to.length) {
-      for (const [index, column2] of hungarian(matrix).entries()) if (column2 >= 0) take(index, column2, false);
+      for (const [index2, column2] of hungarian(matrix).entries()) if (column2 >= 0) take(index2, column2, false);
     } else {
       const transposed = to.map((_, column2) => from.map((_source, row) => matrix[row][column2]));
       for (const [column2, row] of hungarian(transposed).entries()) if (row >= 0) take(row, column2, false);
     }
-    for (const [index, source] of from.entries()) {
-      if (placed.has(index)) continue;
+    for (const [index2, source] of from.entries()) {
+      if (placed.has(index2)) continue;
       let best = -1;
       for (let column2 = 0; column2 < to.length; column2++) {
         if (!compatible(source, to[column2])) continue;
-        if (best < 0 || matrix[index][column2] < matrix[index][best]) best = column2;
+        if (best < 0 || matrix[index2][column2] < matrix[index2][best]) best = column2;
       }
-      if (best >= 0) take(index, best, true);
+      if (best >= 0) take(index2, best, true);
     }
     const perTarget = /* @__PURE__ */ new Map();
     for (const assignment of assignments) {
@@ -17147,7 +17405,7 @@ ${scrollGuards}` : project.css;
       if (((_b = perTarget.get(assignment.to.key)) != null ? _b : 0) > 1) assignment.shared = true;
     }
     const used = new Set(assignments.map((assignment) => assignment.to.key));
-    const order = new Map(from.map((spectrum, index) => [spectrum.key, index]));
+    const order = new Map(from.map((spectrum, index2) => [spectrum.key, index2]));
     assignments.sort((a, b) => {
       var _a2, _b2;
       return ((_a2 = order.get(a.from.key)) != null ? _a2 : 0) - ((_b2 = order.get(b.from.key)) != null ? _b2 : 0);
@@ -17191,33 +17449,33 @@ ${scrollGuards}` : project.css;
     }
     return outliers;
   }
-  function fitLadder(source, target, anchorOf, allowProportional) {
+  function fitLadder(source, target, anchorOf2, allowProportional) {
     const assigned = /* @__PURE__ */ new Map();
     const span = source.length - 1;
     const reach = target.length - 1;
-    const indexOf = new Map(target.map((stop, index2) => [stop, index2]));
+    const indexOf = new Map(target.map((stop, index3) => [stop, index3]));
     const at = (stop) => {
       var _a;
       return stop === null ? -1 : (_a = indexOf.get(stop)) != null ? _a : -1;
     };
-    const anchors = source.map((stop) => at(anchorOf(stop)));
-    if (source.length > target.length && !anchors.some((index2) => index2 >= 0)) {
+    const anchors = source.map((stop) => at(anchorOf2(stop)));
+    if (source.length > target.length && !anchors.some((index3) => index3 >= 0)) {
       if (!allowProportional) return assigned;
-      for (const [index2, stop] of source.entries()) {
-        assigned.set(stop, target[span === 0 ? 0 : Math.round(index2 * reach / span)]);
+      for (const [index3, stop] of source.entries()) {
+        assigned.set(stop, target[span === 0 ? 0 : Math.round(index3 * reach / span)]);
       }
       return assigned;
     }
     let floor = -1;
-    let index = 0;
-    while (index < source.length) {
-      if (anchors[index] >= 0) {
-        assigned.set(source[index], target[anchors[index]]);
-        floor = Math.max(floor, anchors[index]);
-        index++;
+    let index2 = 0;
+    while (index2 < source.length) {
+      if (anchors[index2] >= 0) {
+        assigned.set(source[index2], target[anchors[index2]]);
+        floor = Math.max(floor, anchors[index2]);
+        index2++;
         continue;
       }
-      let end = index;
+      let end = index2;
       while (end < source.length && anchors[end] < 0) end++;
       const nextAnchor = end < source.length ? anchors[end] : -1;
       const positions = [];
@@ -17226,7 +17484,7 @@ ${scrollGuards}` : project.css;
       for (let position = floor + 1; position <= upper; position++) positions.push(position);
       if (nextAnchor >= 0) positions.push(nextAnchor);
       if (positions.length === 0) positions.push(Math.max(0, Math.min(floor, reach)));
-      const run = source.slice(index, end);
+      const run = source.slice(index2, end);
       const width = positions.length;
       let previous = new Array(width).fill(0);
       const picks = [];
@@ -17258,7 +17516,7 @@ ${scrollGuards}` : project.css;
         assigned.set(stop, target[position]);
         floor = Math.max(floor, position);
       }
-      index = end;
+      index2 = end;
     }
     return assigned;
   }
@@ -17282,7 +17540,7 @@ ${scrollGuards}` : project.css;
       }
       return byNumber;
     };
-    const anchorOf = (stop) => {
+    const anchorOf2 = (stop) => {
       var _a;
       return (_a = stop.step === null ? void 0 : byStep.get(stop.step)) != null ? _a : null;
     };
@@ -17291,7 +17549,7 @@ ${scrollGuards}` : project.css;
     const fitted = sourceLadder.length >= 3 && targetLadder.length >= 2 ? fitLadder(
       [...sourceLadder].sort(byStepAscending),
       [...targetLadder].sort(byStepAscending),
-      anchorOf,
+      anchorOf2,
       !from.neutral && !to.neutral
     ) : /* @__PURE__ */ new Map();
     const matches = [];
@@ -17319,22 +17577,22 @@ ${scrollGuards}` : project.css;
     bind: true,
     scope: "document"
   };
-  var SNAPSHOT_KEY = "altery-remap-snapshot";
-  var SNAPSHOT_COUNT_KEY = "altery-remap-snapshot-chunks";
-  var RENAME_KEY = "altery-remap-renames";
+  var SNAPSHOT_KEY = "allcrew-channel-remap-snapshot";
+  var SNAPSHOT_COUNT_KEY = "allcrew-channel-remap-snapshot-chunks";
+  var RENAME_KEY = "allcrew-channel-remap-renames";
   var CHUNK_BYTES = 8e4;
   var MAX_CHUNKS = 32;
   var channelKey = (channels) => channels.join(",");
   function packSnapshot(snapshot) {
-    const paints = {};
+    const paints2 = {};
     for (const place of snapshot.paints) {
       const key = channelKey([place[4], place[5], place[6], place[7]]);
       const packed = place[8] === 1 ? [place[0], place[1], place[2], place[3], 1] : [place[0], place[1], place[2], place[3]];
-      const group2 = paints[key];
+      const group2 = paints2[key];
       if (group2) group2.push(packed);
-      else paints[key] = [packed];
+      else paints2[key] = [packed];
     }
-    return { version: 3, values: snapshot.values, names: snapshot.names, styles: snapshot.styles, paints };
+    return { version: 3, values: snapshot.values, names: snapshot.names, styles: snapshot.styles, paints: paints2 };
   }
   function unpackSnapshot(parsed) {
     var _a;
@@ -17342,14 +17600,14 @@ ${scrollGuards}` : project.css;
     if (raw.version === 2) return parsed;
     if (raw.version !== 3) throw new Error(`the undo snapshot has version ${String(raw.version)}, which this build cannot read`);
     const packed = parsed;
-    const paints = [];
+    const paints2 = [];
     for (const [key, group2] of Object.entries(packed.paints)) {
       const channels = key.split(",").map(Number);
       for (const place of group2) {
-        paints.push([place[0], place[1], place[2], place[3], channels[0], channels[1], channels[2], channels[3], (_a = place[4]) != null ? _a : 0]);
+        paints2.push([place[0], place[1], place[2], place[3], channels[0], channels[1], channels[2], channels[3], (_a = place[4]) != null ? _a : 0]);
       }
     }
-    return { version: 2, values: packed.values, names: packed.names, styles: packed.styles, paints };
+    return { version: 2, values: packed.values, names: packed.names, styles: packed.styles, paints: paints2 };
   }
   function writeChunked(text4) {
     const chunks = [];
@@ -17358,20 +17616,20 @@ ${scrollGuards}` : project.css;
       throw new Error(`the undo snapshot needs ${chunks.length} slots, more than the ${MAX_CHUNKS} available`);
     }
     const previous = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
-    for (const [index, chunk] of chunks.entries()) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index}`, chunk);
-    for (let index = chunks.length; index < previous; index++) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index}`, "");
+    for (const [index2, chunk] of chunks.entries()) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index2}`, chunk);
+    for (let index2 = chunks.length; index2 < previous; index2++) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index2}`, "");
     figma.root.setPluginData(SNAPSHOT_COUNT_KEY, String(chunks.length));
     return text4.length;
   }
   function readChunked() {
     const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
     let text4 = "";
-    for (let index = 0; index < count; index++) text4 += figma.root.getPluginData(`${SNAPSHOT_KEY}-${index}`);
+    for (let index2 = 0; index2 < count; index2++) text4 += figma.root.getPluginData(`${SNAPSHOT_KEY}-${index2}`);
     return text4;
   }
   function clearSnapshot() {
     const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
-    for (let index = 0; index < count; index++) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index}`, "");
+    for (let index2 = 0; index2 < count; index2++) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index2}`, "");
     figma.root.setPluginData(SNAPSHOT_COUNT_KEY, "0");
   }
   function hasRemapSnapshot() {
@@ -17390,10 +17648,10 @@ ${scrollGuards}` : project.css;
   function foldRenames(existing, applied) {
     const next = __spreadValues({}, existing);
     for (const { from, to } of applied) {
-      for (const [key, value] of Object.entries(next)) if (value === from) next[key] = to;
+      for (const [key, value2] of Object.entries(next)) if (value2 === from) next[key] = to;
       if (from !== to) next[from] = to;
     }
-    for (const [key, value] of Object.entries(next)) if (key === value) delete next[key];
+    for (const [key, value2] of Object.entries(next)) if (key === value2) delete next[key];
     return next;
   }
   function writeRenameMap(map) {
@@ -17412,12 +17670,12 @@ ${scrollGuards}` : project.css;
     const [property, rest] = id.slice(hash + 1).split(":");
     if (property !== "paints" && property !== "effects") return null;
     const [indexText, stopText] = rest.split(".");
-    const index = Number(indexText);
-    if (!Number.isFinite(index)) return null;
+    const index2 = Number(indexText);
+    if (!Number.isFinite(index2)) return null;
     const stop = stopText === void 0 ? null : Number(stopText);
-    return { styleId, property, index, stop: stop === null || !Number.isFinite(stop) ? null : stop };
+    return { styleId, property, index: index2, stop: stop === null || !Number.isFinite(stop) ? null : stop };
   }
-  var round42 = (value) => Math.round(value * 1e4) / 1e4;
+  var round42 = (value2) => Math.round(value2 * 1e4) / 1e4;
   var channelsOf = (color) => {
     var _a;
     return [
@@ -17491,13 +17749,13 @@ ${scrollGuards}` : project.css;
       const before = report2.paints;
       try {
         if (style.type === "PAINT") {
-          const paints = style.paints.map((paint) => __spreadValues({}, paint));
+          const paints2 = style.paints.map((paint) => __spreadValues({}, paint));
           for (const { entry, address } of group2) {
-            const paint = paints[address.index];
+            const paint = paints2[address.index];
             if (!paint) continue;
             if (address.stop === null && paint.type === "SOLID") {
               snapshot.styles.push({ s: styleId, p: "paints", i: address.index, j: -1, c: channelsOf(__spreadProps(__spreadValues({}, paint.color), { a: (_a = paint.opacity) != null ? _a : 1 })) });
-              paints[address.index] = __spreadProps(__spreadValues({}, paint), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b }, opacity: entry.to.a });
+              paints2[address.index] = __spreadProps(__spreadValues({}, paint), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b }, opacity: entry.to.a });
               report2.paints++;
             } else if (address.stop !== null && isGradient(paint)) {
               const stops = paint.gradientStops.map((stop2) => __spreadValues({}, stop2));
@@ -17505,12 +17763,12 @@ ${scrollGuards}` : project.css;
               if (!stop) continue;
               snapshot.styles.push({ s: styleId, p: "paints", i: address.index, j: address.stop, c: channelsOf(withAlpha(stop.color)) });
               stops[address.stop] = __spreadProps(__spreadValues({}, stop), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
-              paints[address.index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+              paints2[address.index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
               report2.paints++;
             }
           }
           ;
-          style.paints = paints;
+          style.paints = paints2;
         } else if (style.type === "EFFECT") {
           const effects = style.effects.map((effect) => __spreadValues({}, effect));
           for (const { entry, address } of group2) {
@@ -17552,16 +17810,16 @@ ${scrollGuards}` : project.css;
   function rewritePaints(node, property, context) {
     var _a, _b;
     if (styleIdOf2(node, property) !== "") return false;
-    const paints = paintsOf(node, property);
-    if (paints.length === 0) return false;
+    const paints2 = paintsOf(node, property);
+    if (paints2.length === 0) return false;
     const nodeLevel = nodeLevelBindings(node, property);
-    const next = paints.map((paint) => __spreadValues({}, paint));
+    const next = paints2.map((paint) => __spreadValues({}, paint));
     const code = property === "fills" ? 0 : 1;
     let touched = false;
-    for (const [index, paint] of paints.entries()) {
+    for (const [index2, paint] of paints2.entries()) {
       if (paint.visible === false) continue;
       const paintBound2 = (_a = paint.boundVariables) == null ? void 0 : _a.color;
-      if (paintBound2 || nodeLevel[index]) continue;
+      if (paintBound2 || nodeLevel[index2]) continue;
       if (paint.type === "SOLID") {
         const alpha = (_b = paint.opacity) != null ? _b : 1;
         const entry = context.targets.get(looseSiteId(hexOf(paint.color), alpha));
@@ -17576,8 +17834,8 @@ ${scrollGuards}` : project.css;
           replacement = figma.variables.setBoundVariableForPaint(replacement, "color", variable);
           context.report.bound++;
         }
-        next[index] = replacement;
-        context.snapshot.paints.push([node.id, code, index, -1, ...channelsOf(__spreadProps(__spreadValues({}, paint.color), { a: alpha })), variable ? 1 : 0]);
+        next[index2] = replacement;
+        context.snapshot.paints.push([node.id, code, index2, -1, ...channelsOf(__spreadProps(__spreadValues({}, paint.color), { a: alpha })), variable ? 1 : 0]);
         context.report.paints++;
         touched = true;
         continue;
@@ -17594,12 +17852,12 @@ ${scrollGuards}` : project.css;
           continue;
         }
         stops[stopIndex] = __spreadProps(__spreadValues({}, stop), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
-        context.snapshot.paints.push([node.id, code, index, stopIndex, ...channelsOf(color), 0]);
+        context.snapshot.paints.push([node.id, code, index2, stopIndex, ...channelsOf(color), 0]);
         context.report.paints++;
         stopTouched = true;
       }
       if (stopTouched) {
-        next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+        next[index2] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
         touched = true;
       }
     }
@@ -17613,7 +17871,7 @@ ${scrollGuards}` : project.css;
     if (!("effects" in node) || !Array.isArray(node.effects) || node.effects.length === 0) return false;
     const next = node.effects.map((effect) => __spreadValues({}, effect));
     let touched = false;
-    for (const [index, effect] of node.effects.entries()) {
+    for (const [index2, effect] of node.effects.entries()) {
       if (!isShadow(effect) || effect.visible === false) continue;
       if ((_a = effect.boundVariables) == null ? void 0 : _a.color) continue;
       const color = withAlpha(effect.color);
@@ -17623,8 +17881,8 @@ ${scrollGuards}` : project.css;
         context.report.paints++;
         continue;
       }
-      next[index] = __spreadProps(__spreadValues({}, effect), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
-      context.snapshot.paints.push([node.id, 2, index, -1, ...channelsOf(color), 0]);
+      next[index2] = __spreadProps(__spreadValues({}, effect), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
+      context.snapshot.paints.push([node.id, 2, index2, -1, ...channelsOf(color), 0]);
       context.report.paints++;
       touched = true;
     }
@@ -17683,8 +17941,8 @@ ${scrollGuards}` : project.css;
     const values = options.values ? plan.entries.filter(writableVariable).length : 0;
     const names = options.rename ? plan.renames.length : 0;
     const styles = options.styles ? plan.entries.filter(writableStyle).length : 0;
-    const paints = options.canvas ? plan.entries.filter(writableLoose).reduce((total, entry) => total + Math.max(1, entry.site.usage), 0) : 0;
-    return values * BYTES.value + names * BYTES.name + styles * BYTES.style + paints * BYTES.paint;
+    const paints2 = options.canvas ? plan.entries.filter(writableLoose).reduce((total, entry) => total + Math.max(1, entry.site.usage), 0) : 0;
+    return values * BYTES.value + names * BYTES.name + styles * BYTES.style + paints2 * BYTES.paint;
   }
   var SNAPSHOT_BUDGET_BYTES = CHUNK_BYTES * MAX_CHUNKS;
   async function applyRemap(plan, options = DEFAULT_REMAP_APPLY_OPTIONS, progress2) {
@@ -17783,7 +18041,7 @@ ${scrollGuards}` : project.css;
       progress2 == null ? void 0 : progress2("renaming\u2026");
       const applied = [];
       const staged = [];
-      for (const [index, rename] of renames.entries()) {
+      for (const [index2, rename] of renames.entries()) {
         const address = splitSiteId(rename.siteId);
         const variable = address ? await loader.variable(address.variableId) : null;
         if (!variable) {
@@ -17792,7 +18050,7 @@ ${scrollGuards}` : project.css;
         }
         const from = variable.name;
         try {
-          variable.name = `__altery-remap-${index}`;
+          variable.name = `__allcrew-channel-remap-${index2}`;
           staged.push({ variable, to: rename.to, from, legacy: rename.legacy });
         } catch (error) {
           report2.failed++;
@@ -17860,23 +18118,23 @@ ${scrollGuards}` : project.css;
       if (!style) continue;
       try {
         if (style.type === "PAINT") {
-          const paints = style.paints.map((paint) => __spreadValues({}, paint));
+          const paints2 = style.paints.map((paint) => __spreadValues({}, paint));
           for (const entry of group2) {
-            const paint = paints[entry.i];
+            const paint = paints2[entry.i];
             if (!paint) continue;
             const color = colorOf(entry.c);
             if (entry.j < 0 && paint.type === "SOLID") {
-              paints[entry.i] = __spreadProps(__spreadValues({}, paint), { color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
+              paints2[entry.i] = __spreadProps(__spreadValues({}, paint), { color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
             } else if (entry.j >= 0 && isGradient(paint)) {
               const stops = paint.gradientStops.map((stop) => __spreadValues({}, stop));
               if (!stops[entry.j]) continue;
               stops[entry.j] = __spreadProps(__spreadValues({}, stops[entry.j]), { color });
-              paints[entry.i] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+              paints2[entry.i] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
             }
             restored++;
           }
           ;
-          style.paints = paints;
+          style.paints = paints2;
         } else if (style.type === "EFFECT") {
           const effects = style.effects.map((effect) => __spreadValues({}, effect));
           for (const entry of group2) {
@@ -17912,25 +18170,25 @@ ${scrollGuards}` : project.css;
           const code = property === "fills" ? 0 : 1;
           const mine = group2.filter((entry) => entry[1] === code);
           if (mine.length === 0) continue;
-          const paints = paintsOf(scene, property).map((paint) => __spreadValues({}, paint));
+          const paints2 = paintsOf(scene, property).map((paint) => __spreadValues({}, paint));
           for (const entry of mine) {
-            const paint = paints[entry[2]];
+            const paint = paints2[entry[2]];
             if (!paint) continue;
             const color = colorOf([entry[4], entry[5], entry[6], entry[7]]);
             if (entry[3] < 0 && paint.type === "SOLID") {
               let restoredPaint = __spreadProps(__spreadValues({}, paint), { color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
               if (entry[8] === 1) restoredPaint = figma.variables.setBoundVariableForPaint(restoredPaint, "color", null);
-              paints[entry[2]] = restoredPaint;
+              paints2[entry[2]] = restoredPaint;
             } else if (entry[3] >= 0 && isGradient(paint)) {
               const stops = paint.gradientStops.map((stop) => __spreadValues({}, stop));
               if (!stops[entry[3]]) continue;
               stops[entry[3]] = __spreadProps(__spreadValues({}, stops[entry[3]]), { color });
-              paints[entry[2]] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+              paints2[entry[2]] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
             }
             restored++;
           }
           ;
-          scene[property] = paints;
+          scene[property] = paints2;
         }
         const shadows = group2.filter((entry) => entry[1] === 2);
         if (shadows.length > 0 && "effects" in scene && Array.isArray(scene.effects)) {
@@ -17970,11 +18228,11 @@ ${scrollGuards}` : project.css;
     const loader = makeLoader();
     let names = 0;
     const staged = [];
-    for (const [index, entry] of ((_a = snapshot.names) != null ? _a : []).entries()) {
+    for (const [index2, entry] of ((_a = snapshot.names) != null ? _a : []).entries()) {
       const variable = await loader.variable(entry.v);
       if (!variable) continue;
       try {
-        variable.name = `__altery-revert-${index}`;
+        variable.name = `__allcrew-channel-revert-${index2}`;
         staged.push({ variable, to: entry.n });
       } catch (error) {
         warnings.push(`${entry.n}: ${String(error.message)}`);
@@ -17989,7 +18247,7 @@ ${scrollGuards}` : project.css;
       }
     }
     let values = 0;
-    for (const [index, entry] of ((_b = snapshot.values) != null ? _b : []).entries()) {
+    for (const [index2, entry] of ((_b = snapshot.values) != null ? _b : []).entries()) {
       const variable = await loader.variable(entry.v);
       if (!variable) continue;
       try {
@@ -17998,23 +18256,23 @@ ${scrollGuards}` : project.css;
       } catch (error) {
         warnings.push(`${variable.name}: ${String(error.message)}`);
       }
-      if ((index + 1) % 100 === 0) {
-        progress2 == null ? void 0 : progress2(`restoring values\u2026 ${index + 1}/${snapshot.values.length}`);
+      if ((index2 + 1) % 100 === 0) {
+        progress2 == null ? void 0 : progress2(`restoring values\u2026 ${index2 + 1}/${snapshot.values.length}`);
         await yieldToHost();
       }
     }
     const styles = snapshot.styles ? await revertStyles(snapshot, warnings) : 0;
-    const paints = snapshot.paints ? await revertPaints(snapshot, warnings, progress2) : 0;
+    const paints2 = snapshot.paints ? await revertPaints(snapshot, warnings, progress2) : 0;
     clearSnapshot();
     const restored = new Set(((_c = snapshot.names) != null ? _c : []).map((entry) => entry.n));
     const map = readRenameMap();
     for (const key of Object.keys(map)) if (restored.has(key)) delete map[key];
     writeRenameMap(map);
-    return { values, names, styles, paints, warnings };
+    return { values, names, styles, paints: paints2, warnings };
   }
 
   // src/tokens/remap/color-literal.ts
-  var clamp012 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
+  var clamp012 = (value2) => value2 < 0 ? 0 : value2 > 1 ? 1 : value2;
   function hslToRgb(h, s, l) {
     const hue = (h % 360 + 360) % 360 / 60;
     const chroma = (1 - Math.abs(2 * l - 1)) * clamp012(s);
@@ -18241,8 +18499,8 @@ ${scrollGuards}` : project.css;
     const text4 = raw.trim();
     if (text4 === "") return null;
     const percent = text4.endsWith("%");
-    const value = Number(percent ? text4.slice(0, -1) : text4);
-    return Number.isFinite(value) ? { value, percent } : null;
+    const value2 = Number(percent ? text4.slice(0, -1) : text4);
+    return Number.isFinite(value2) ? { value: value2, percent } : null;
   }
   function splitArguments(body) {
     const slash = body.split("/");
@@ -18346,11 +18604,11 @@ ${scrollGuards}` : project.css;
     const found = findColorLiterals(text4);
     return found.length === 1 ? found[0] : null;
   }
-  var round8 = (value, places = 4) => {
+  var round8 = (value2, places = 4) => {
     const factor = Math.pow(10, places);
-    return Math.round(value * factor) / factor;
+    return Math.round(value2 * factor) / factor;
   };
-  var hexPair = (value) => Math.round(clamp012(value) * 255).toString(16).toUpperCase().padStart(2, "0");
+  var hexPair = (value2) => Math.round(clamp012(value2) * 255).toString(16).toUpperCase().padStart(2, "0");
   function formatColorLiteral(rgba, notation) {
     const opaque = rgba.a >= 1 - 1e-6;
     switch (notation) {
@@ -18361,7 +18619,7 @@ ${scrollGuards}` : project.css;
       case "hex8":
         return formatHex(rgba) + hexPair(rgba.a);
       case "rgb": {
-        const channel = (value) => Math.round(clamp012(value) * 255);
+        const channel = (value2) => Math.round(clamp012(value2) * 255);
         const parts = [channel(rgba.r), channel(rgba.g), channel(rgba.b)];
         return opaque ? `rgb(${parts.join(", ")})` : `rgba(${parts.join(", ")}, ${round8(rgba.a)})`;
       }
@@ -18396,7 +18654,7 @@ ${scrollGuards}` : project.css;
   var toHex = (rgba) => formatHex(rgba);
 
   // src/targets/ds-tools/remap-board.ts
-  var SECTION_KEY = "altery-remap-board";
+  var SECTION_KEY = "allcrew-channel-remap-board";
   var SECTION_NAME = "Color remap";
   var SWATCH_WIDTH2 = 96;
   var SWATCH_HEIGHT = 46;
@@ -18623,9 +18881,9 @@ ${scrollGuards}` : project.css;
       row.appendChild(label2(group2.title, fonts, LABEL_SIZE2, "#1A1A1A"));
       const strip = autoLayout2("strip", "HORIZONTAL", 6);
       strip.appendChild(gutter(fonts));
-      for (const [index, entry] of group2.entries.entries()) {
-        strip.appendChild(pair(entry, fonts, bindings, group2.counts[index]));
-        omitted += group2.counts[index] - 1;
+      for (const [index2, entry] of group2.entries.entries()) {
+        strip.appendChild(pair(entry, fonts, bindings, group2.counts[index2]));
+        omitted += group2.counts[index2] - 1;
       }
       row.appendChild(strip);
       rows += group2.entries.length;
@@ -18726,8 +18984,8 @@ ${scrollGuards}` : project.css;
 
   // src/targets/ds-tools/remap-rebind.ts
   var DEFAULT_REBIND_OPTIONS = { scope: "document" };
-  var SNAPSHOT_KEY2 = "altery-rebind-snapshot";
-  var SNAPSHOT_COUNT_KEY2 = "altery-rebind-snapshot-chunks";
+  var SNAPSHOT_KEY2 = "allcrew-channel-rebind-snapshot";
+  var SNAPSHOT_COUNT_KEY2 = "allcrew-channel-rebind-snapshot-chunks";
   var CHUNK_BYTES2 = 8e4;
   var MAX_CHUNKS2 = 12;
   var REBIND_BUDGET_BYTES = CHUNK_BYTES2 * MAX_CHUNKS2;
@@ -18738,25 +18996,25 @@ ${scrollGuards}` : project.css;
       throw new Error(`the rebind snapshot needs ${chunks.length} slots, more than the ${MAX_CHUNKS2} available`);
     }
     const previous = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
-    for (const [index, chunk] of chunks.entries()) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, chunk);
-    for (let index = chunks.length; index < previous; index++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, "");
+    for (const [index2, chunk] of chunks.entries()) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index2}`, chunk);
+    for (let index2 = chunks.length; index2 < previous; index2++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index2}`, "");
     figma.root.setPluginData(SNAPSHOT_COUNT_KEY2, String(chunks.length));
   }
   function readChunked2() {
     const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
     let text4 = "";
-    for (let index = 0; index < count; index++) text4 += figma.root.getPluginData(`${SNAPSHOT_KEY2}-${index}`);
+    for (let index2 = 0; index2 < count; index2++) text4 += figma.root.getPluginData(`${SNAPSHOT_KEY2}-${index2}`);
     return text4;
   }
   function clearChunked() {
     const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
-    for (let index = 0; index < count; index++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index}`, "");
+    for (let index2 = 0; index2 < count; index2++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index2}`, "");
     figma.root.setPluginData(SNAPSHOT_COUNT_KEY2, "0");
   }
   var hasRebindSnapshot = () => Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0") > 0;
-  var isAliasValue2 = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
-  var isRgbValue = (value) => typeof value === "object" && value !== null && "r" in value;
-  var alphaOf = (value) => "a" in value ? value.a : 1;
+  var isAliasValue2 = (value2) => typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
+  var isRgbValue = (value2) => typeof value2 === "object" && value2 !== null && "r" in value2;
+  var alphaOf = (value2) => "a" in value2 ? value2.a : 1;
   var boundColorId = (holder) => {
     var _a;
     const alias = (_a = holder == null ? void 0 : holder.boundVariables) == null ? void 0 : _a.color;
@@ -18795,9 +19053,9 @@ ${scrollGuards}` : project.css;
       if (!variable) return null;
       const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId).catch(() => null);
       const mode = (_a = collection == null ? void 0 : collection.defaultModeId) != null ? _a : Object.keys(variable.valuesByMode)[0];
-      const value = mode === void 0 ? void 0 : variable.valuesByMode[mode];
-      if (!isRgbValue(value)) return null;
-      return { rgba: { r: value.r, g: value.g, b: value.b, a: alphaOf(value) }, id: variable.id };
+      const value2 = mode === void 0 ? void 0 : variable.valuesByMode[mode];
+      if (!isRgbValue(value2)) return null;
+      return { rgba: { r: value2.r, g: value2.g, b: value2.b, a: alphaOf(value2) }, id: variable.id };
     };
     const foreignIds = /* @__PURE__ */ new Set();
     const divergentIds = new Set(divergent);
@@ -18816,11 +19074,11 @@ ${scrollGuards}` : project.css;
       warnings.push("variables and styles are file-global \u2014 they move only on a whole-document rebind");
     }
     const planBySite = new Map(plan.entries.map((entry) => [entry.site.id, entry]));
-    for (const [index, variable] of wholeFile ? locals.entries() : []) {
-      if (index % 50 === 0) await yieldToHost();
-      for (const [modeId, value] of Object.entries(variable.valuesByMode)) {
-        if (isAliasValue2(value)) {
-          const decision = rebindOf(value.id);
+    for (const [index2, variable] of wholeFile ? locals.entries() : []) {
+      if (index2 % 50 === 0) await yieldToHost();
+      for (const [modeId, value2] of Object.entries(variable.valuesByMode)) {
+        if (isAliasValue2(value2)) {
+          const decision = rebindOf(value2.id);
           if (decision === "already") {
             counts.skipped.already++;
             continue;
@@ -18829,18 +19087,18 @@ ${scrollGuards}` : project.css;
             counts.skipped.noTarget++;
             continue;
           }
-          ops.push({ kind: "variable", variableId: variable.id, modeId, old: value.id, key: decision.key });
+          ops.push({ kind: "variable", variableId: variable.id, modeId, old: value2.id, key: decision.key });
           counts.aliases++;
           if (decision.foreign) counts.thirdParty++;
           continue;
         }
-        if (!isRgbValue(value)) continue;
+        if (!isRgbValue(value2)) continue;
         if (divergentIds.has(variable.id)) continue;
         const entry = planBySite.get(`${variable.id}|${modeId}`);
         if (!entry || entry.toVariableKey === null || entry.flags.includes("excluded")) continue;
         const landing = await valueOfKey(entry.toVariableKey);
         if (!landing) continue;
-        const current = { r: value.r, g: value.g, b: value.b, a: alphaOf(value) };
+        const current = { r: value2.r, g: value2.g, b: value2.b, a: alphaOf(value2) };
         const target = __spreadValues({}, entry.to);
         if (!sameRgba(target, landing.rgba)) {
           if (sameRgba(__spreadProps(__spreadValues({}, target), { a: landing.rgba.a }), landing.rgba)) counts.skipped.alphaMismatch++;
@@ -18860,7 +19118,7 @@ ${scrollGuards}` : project.css;
     progress2 == null ? void 0 : progress2("reading styles\u2026");
     const paintStyles = wholeFile ? await figma.getLocalPaintStylesAsync() : [];
     for (const style of paintStyles) {
-      for (const [index, paint] of style.paints.entries()) {
+      for (const [index2, paint] of style.paints.entries()) {
         if (paint.type === "SOLID") {
           const oldId = boundColorId(paint);
           if (!oldId) continue;
@@ -18868,7 +19126,7 @@ ${scrollGuards}` : project.css;
           if (decision === "already") counts.skipped.already++;
           else if (decision === "no-target") counts.skipped.noTarget++;
           else {
-            ops.push({ kind: "style", styleId: style.id, property: "paints", index, stop: -1, old: oldId, key: decision.key });
+            ops.push({ kind: "style", styleId: style.id, property: "paints", index: index2, stop: -1, old: oldId, key: decision.key });
             counts.styles++;
             if (decision.foreign) counts.thirdParty++;
           }
@@ -18886,7 +19144,7 @@ ${scrollGuards}` : project.css;
               kind: "style",
               styleId: style.id,
               property: "paints",
-              index,
+              index: index2,
               stop: stopIndex,
               old: oldId,
               key: decision.key
@@ -18899,14 +19157,14 @@ ${scrollGuards}` : project.css;
     }
     const effectStyles = wholeFile ? await figma.getLocalEffectStylesAsync() : [];
     for (const style of effectStyles) {
-      for (const [index, effect] of style.effects.entries()) {
+      for (const [index2, effect] of style.effects.entries()) {
         const oldId = boundColorId(effect);
         if (!oldId) continue;
         const decision = rebindOf(oldId);
         if (decision === "already") counts.skipped.already++;
         else if (decision === "no-target") counts.skipped.noTarget++;
         else {
-          ops.push({ kind: "style", styleId: style.id, property: "effects", index, stop: -1, old: oldId, key: decision.key });
+          ops.push({ kind: "style", styleId: style.id, property: "effects", index: index2, stop: -1, old: oldId, key: decision.key });
           counts.styles++;
           if (decision.foreign) counts.thirdParty++;
         }
@@ -18932,22 +19190,22 @@ ${scrollGuards}` : project.css;
       var _a, _b, _c, _d;
       const styleId = node[property === "fills" ? "fillStyleId" : "strokeStyleId"];
       if (typeof styleId === "string" && styleId !== "") return;
-      const paints = node[property];
-      if (!Array.isArray(paints)) return;
+      const paints2 = node[property];
+      if (!Array.isArray(paints2)) return;
       if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has(property))) return;
       const nodeLevel = (_b = node.boundVariables) == null ? void 0 : _b[property];
       const nodeLevelIds = Array.isArray(nodeLevel) ? nodeLevel.map(
         (alias) => alias && alias.type === "VARIABLE_ALIAS" ? alias.id : null
       ) : [];
-      for (const [index, paint] of paints.entries()) {
+      for (const [index2, paint] of paints2.entries()) {
         if (paint.type === "SOLID") {
-          const oldId = (_d = (_c = boundColorId(paint)) != null ? _c : nodeLevelIds[index]) != null ? _d : null;
+          const oldId = (_d = (_c = boundColorId(paint)) != null ? _c : nodeLevelIds[index2]) != null ? _d : null;
           if (!oldId) continue;
           const decision = rebindOf(oldId);
           if (decision === "already") counts.skipped.already++;
           else if (decision === "no-target") counts.skipped.noTarget++;
           else {
-            ops.push({ kind: "node", nodeId: node.id, property, index, stop: -1, old: oldId, key: decision.key, instance: inInstance });
+            ops.push({ kind: "node", nodeId: node.id, property, index: index2, stop: -1, old: oldId, key: decision.key, instance: inInstance });
             counts.nodes++;
             if (inInstance) counts.instanceOverrides++;
             if (decision.foreign) counts.thirdParty++;
@@ -18962,7 +19220,7 @@ ${scrollGuards}` : project.css;
           if (decision === "already") counts.skipped.already++;
           else if (decision === "no-target") counts.skipped.noTarget++;
           else {
-            ops.push({ kind: "node", nodeId: node.id, property, index, stop: stopIndex, old: oldId, key: decision.key, instance: inInstance });
+            ops.push({ kind: "node", nodeId: node.id, property, index: index2, stop: stopIndex, old: oldId, key: decision.key, instance: inInstance });
             counts.nodes++;
             if (inInstance) counts.instanceOverrides++;
             if (decision.foreign) counts.thirdParty++;
@@ -18977,14 +19235,14 @@ ${scrollGuards}` : project.css;
       const effects = node.effects;
       if (!Array.isArray(effects)) return;
       if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has("effects"))) return;
-      for (const [index, effect] of effects.entries()) {
+      for (const [index2, effect] of effects.entries()) {
         const oldId = boundColorId(effect);
         if (!oldId) continue;
         const decision = rebindOf(oldId);
         if (decision === "already") counts.skipped.already++;
         else if (decision === "no-target") counts.skipped.noTarget++;
         else {
-          ops.push({ kind: "node", nodeId: node.id, property: "effects", index, stop: -1, old: oldId, key: decision.key, instance: inInstance });
+          ops.push({ kind: "node", nodeId: node.id, property: "effects", index: index2, stop: -1, old: oldId, key: decision.key, instance: inInstance });
           counts.nodes++;
           if (inInstance) counts.instanceOverrides++;
           if (decision.foreign) counts.thirdParty++;
@@ -19021,33 +19279,33 @@ ${scrollGuards}` : project.css;
     return { ops, counts, warnings };
   }
   var aliasTo = (variable) => ({ type: "VARIABLE_ALIAS", id: variable.id });
-  async function writePaintBinding(holder, property, index, stop, variable, restoreId) {
+  async function writePaintBinding(holder, property, index2, stop, variable, restoreId) {
     const record2 = holder;
-    const paints = record2[property];
-    if (!Array.isArray(paints) || !paints[index]) return false;
-    const next = [...paints];
-    const paint = next[index];
+    const paints2 = record2[property];
+    if (!Array.isArray(paints2) || !paints2[index2]) return false;
+    const next = [...paints2];
+    const paint = next[index2];
     const target = variable != null ? variable : restoreId ? await figma.variables.getVariableByIdAsync(restoreId).catch(() => null) : null;
     if (!target) return false;
     if (stop < 0) {
       if (paint.type !== "SOLID") return false;
-      next[index] = figma.variables.setBoundVariableForPaint(paint, "color", target);
+      next[index2] = figma.variables.setBoundVariableForPaint(paint, "color", target);
     } else {
       if (!isGradient(paint)) return false;
       const stops = paint.gradientStops.map((gradientStop) => __spreadValues({}, gradientStop));
       if (!stops[stop]) return false;
       stops[stop] = __spreadProps(__spreadValues({}, stops[stop]), { boundVariables: { color: aliasTo(target) } });
-      next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
+      next[index2] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
     }
     record2[property] = next;
     return true;
   }
-  async function writeEffectBinding(holder, index, variable) {
+  async function writeEffectBinding(holder, index2, variable) {
     const record2 = holder;
     const effects = record2.effects;
-    if (!Array.isArray(effects) || !effects[index]) return false;
+    if (!Array.isArray(effects) || !effects[index2]) return false;
     const next = [...effects];
-    next[index] = figma.variables.setBoundVariableForEffect(next[index], "color", variable);
+    next[index2] = figma.variables.setBoundVariableForEffect(next[index2], "color", variable);
     record2.effects = next;
     return true;
   }
@@ -19061,9 +19319,9 @@ ${scrollGuards}` : project.css;
       }
       return (_a = importedByKey.get(key)) != null ? _a : null;
     };
-    for (const [index, op] of ops.entries()) {
-      if (index % 25 === 0) {
-        progress2 == null ? void 0 : progress2(`${undo ? "restoring" : "rebinding"}\u2026 ${index}/${ops.length}`);
+    for (const [index2, op] of ops.entries()) {
+      if (index2 % 25 === 0) {
+        progress2 == null ? void 0 : progress2(`${undo ? "restoring" : "rebinding"}\u2026 ${index2}/${ops.length}`);
         await yieldToHost();
       }
       if (op.kind === "variable") {
@@ -19149,7 +19407,7 @@ ${scrollGuards}` : project.css;
   // src/tokens/remap/audit.ts
   var TEXT_CONTRAST_MIN = 4.5;
   var NON_TEXT_CONTRAST_MIN = 3;
-  var round9 = (value) => Math.round(value * 100) / 100;
+  var round9 = (value2) => Math.round(value2 * 100) / 100;
   var MEANINGFUL_DROP = 0.1;
   function auditContrast(plan, pairs) {
     var _a;
@@ -19200,7 +19458,6 @@ ${scrollGuards}` : project.css;
   // src/tokens/remap/input.ts
   var NAME_KEYS = ["name", "token", "key", "id", "label", "title"];
   var VALUE_KEYS = ["$value", "value", "hex", "color", "colour", "rgb", "fill"];
-  var isRecord4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
   function swatchFrom(text4, name) {
     const literals = findColorLiterals(text4);
     if (literals.length !== 1) return null;
@@ -19236,7 +19493,7 @@ ${scrollGuards}` : project.css;
       }
       return;
     }
-    if (!isRecord4(node)) return;
+    if (!isRecord(node)) return;
     const valueKey = VALUE_KEYS.find((key) => typeof node[key] === "string");
     if (valueKey) {
       const nameKey2 = NAME_KEYS.find((key) => typeof node[key] === "string");
@@ -19244,25 +19501,25 @@ ${scrollGuards}` : project.css;
       const swatch = swatchFrom(String(node[valueKey]), name);
       if (swatch) {
         const family = typeof node.family === "string" ? node.family : typeof node.group === "string" ? node.group : null;
-        const step = typeof node.step === "number" ? node.step : null;
-        out.push(__spreadProps(__spreadValues({}, swatch), { family: family != null ? family : swatch.family, step: step != null ? step : swatch.step }));
+        const step2 = typeof node.step === "number" ? node.step : null;
+        out.push(__spreadProps(__spreadValues({}, swatch), { family: family != null ? family : swatch.family, step: step2 != null ? step2 : swatch.step }));
       } else {
         warnings.push(`${name || "entry"}: "${node[valueKey]}" is not a color`);
       }
       return;
     }
-    for (const [key, value] of Object.entries(node)) {
+    for (const [key, value2] of Object.entries(node)) {
       if (key.startsWith("$") && key !== "$value") continue;
-      readJsonNode(value, joinName(prefix, key), out, warnings);
+      readJsonNode(value2, joinName(prefix, key), out, warnings);
     }
   }
   function cleanName(text4) {
     return text4.replace(/["'`]/g, " ").replace(/[,;\t|]+/g, " ").replace(/[:=]+/g, " ").replace(/^\s*[-*•]\s*/, "").replace(/\s+/g, " ").trim();
   }
-  function readTextLine(line, index, out, warnings) {
+  function readTextLine(line, index2, out, warnings) {
     const literals = findColorLiterals(line);
     if (literals.length === 0) {
-      if (line.trim() !== "") warnings.push(`line ${index + 1}: no color found \u2014 "${line.trim().slice(0, 40)}"`);
+      if (line.trim() !== "") warnings.push(`line ${index2 + 1}: no color found \u2014 "${line.trim().slice(0, 40)}"`);
       return;
     }
     if (literals.length === 1) {
@@ -19272,7 +19529,7 @@ ${scrollGuards}` : project.css;
       if (swatch) out.push(swatch);
       return;
     }
-    warnings.push(`line ${index + 1}: ${literals.length} colors on one line \u2014 names ignored`);
+    warnings.push(`line ${index2 + 1}: ${literals.length} colors on one line \u2014 names ignored`);
     for (const literal of literals) {
       const swatch = swatchFrom(literal.source, "");
       if (swatch) out.push(swatch);
@@ -19308,7 +19565,7 @@ ${scrollGuards}` : project.css;
         warnings.push("looks like JSON but does not parse \u2014 read line by line instead");
       }
     }
-    for (const [index, line] of text4.split(/\r?\n/).entries()) readTextLine(line, index, swatches, warnings);
+    for (const [index2, line] of text4.split(/\r?\n/).entries()) readTextLine(line, index2, swatches, warnings);
     return { swatches: dedupe(swatches, warnings), warnings, format: "text" };
   }
 
@@ -19330,10 +19587,10 @@ ${scrollGuards}` : project.css;
       step: parsed.step
     };
   };
-  var swatchMember = (swatch, index) => {
+  var swatchMember = (swatch, index2) => {
     var _a;
     return {
-      ref: `new:${index}`,
+      ref: `new:${index2}`,
       name: swatch.name,
       rgba: swatch.rgba,
       family: swatch.family,
@@ -19404,11 +19661,11 @@ ${scrollGuards}` : project.css;
     }
     const identityOf = (color) => {
       const channels = [color.r, color.g, color.b].map((channel) => channel * 255);
-      const options = channels.map((value) => {
-        const rounded = Math.round(value);
+      const options = channels.map((value2) => {
+        const rounded = Math.round(value2);
         const keys = [rounded];
-        if (Math.abs(value - rounded + 0.5) < 0.51) keys.push(rounded - 1);
-        if (Math.abs(rounded + 0.5 - value) < 0.51) keys.push(rounded + 1);
+        if (Math.abs(value2 - rounded + 0.5) < 0.51) keys.push(rounded - 1);
+        if (Math.abs(rounded + 0.5 - value2) < 0.51) keys.push(rounded + 1);
         return keys;
       });
       for (const r of options[0]) {
@@ -19482,8 +19739,8 @@ ${scrollGuards}` : project.css;
         warnings.push(`${mover.site.name} and ${anchor.site.name} land on the same color and touch on canvas`);
         continue;
       }
-      const index = stops.findIndex((stop) => sameColor2(__spreadProps(__spreadValues({}, stop.rgba), { a: mover.to.a }), mover.to));
-      const neighbours = index < 0 ? [] : [stops[index - 1], stops[index + 1]].filter(Boolean);
+      const index2 = stops.findIndex((stop) => sameColor2(__spreadProps(__spreadValues({}, stop.rgba), { a: mover.to.a }), mover.to));
+      const neighbours = index2 < 0 ? [] : [stops[index2 - 1], stops[index2 + 1]].filter(Boolean);
       if (neighbours.length === 0) {
         warnings.push(`${mover.site.name} and ${anchor.site.name} land on the same color and touch on canvas`);
         continue;
@@ -19675,11 +19932,11 @@ ${scrollGuards}` : project.css;
   }
 
   // src/tokens/remap/contract.ts
-  var MAPPING_FORMAT = "altery-color-remap";
+  var MAPPING_FORMAT = "allcrew-channel-color-remap";
   var MAPPING_VERSION = 1;
-  var round10 = (value, places = 3) => {
+  var round10 = (value2, places = 3) => {
     const factor = Math.pow(10, places);
-    return Math.round(value * factor) / factor;
+    return Math.round(value2 * factor) / factor;
   };
   function buildMappingFile(plan, meta = {}) {
     var _a, _b, _c;
@@ -19721,8 +19978,8 @@ ${scrollGuards}` : project.css;
       warnings: plan.warnings
     };
   }
-  var csvCell = (value) => {
-    const text4 = value === null || value === void 0 ? "" : String(value);
+  var csvCell = (value2) => {
+    const text4 = value2 === null || value2 === void 0 ? "" : String(value2);
     return /[",\n]/.test(text4) ? `"${text4.replace(/"/g, '""')}"` : text4;
   };
   var CSV_COLUMNS = [
@@ -19752,7 +20009,7 @@ ${scrollGuards}` : project.css;
     const siteIdByName = /* @__PURE__ */ new Map();
     for (const record2 of file.records) if (!siteIdByName.has(record2.name)) siteIdByName.set(record2.name, record2.id);
     return {
-      entries: file.records.map((record2, index) => entryFromRecord(record2, index)),
+      entries: file.records.map((record2, index2) => entryFromRecord(record2, index2)),
       // Renames are per entity, so they are addressed by the site id the name belonged to.
       renames: file.renames.map((rename) => {
         var _a;
@@ -19776,9 +20033,9 @@ ${scrollGuards}` : project.css;
       warnings: file.warnings
     };
   }
-  function entryFromRecord(record2, index) {
-    const from = rgbaOf(record2.from, record2.fromAlpha, `records[${index}].from`);
-    const to = rgbaOf(record2.to, record2.toAlpha, `records[${index}].to`);
+  function entryFromRecord(record2, index2) {
+    const from = rgbaOf(record2.from, record2.fromAlpha, `records[${index2}].from`);
+    const to = rgbaOf(record2.to, record2.toAlpha, `records[${index2}].to`);
     return {
       site: {
         id: record2.id,
@@ -19814,9 +20071,9 @@ ${scrollGuards}` : project.css;
   }
   function parseMappingFile(raw) {
     var _a, _b, _c, _d, _e;
-    const value = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (typeof value !== "object" || value === null) throw new Error("mapping: not an object");
-    const file = value;
+    const value2 = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (typeof value2 !== "object" || value2 === null) throw new Error("mapping: not an object");
+    const file = value2;
     if (file.format !== MAPPING_FORMAT) throw new Error(`mapping: unknown format "${String(file.format)}"`);
     if (typeof file.version !== "number" || file.version > MAPPING_VERSION) {
       throw new Error(`mapping: version ${String(file.version)} is newer than this build understands`);
@@ -19933,11 +20190,11 @@ ${scrollGuards}` : project.css;
   var JSON_DECLARATION_RE = /("([^"\\]+)"\s*:\s*")([^"\\]*)(")/g;
   function nameEdits(text4, lookup) {
     const edits = [];
-    const claim = (name, valueStart, value) => {
+    const claim = (name, valueStart, value2) => {
       const target = lookup.byName.get(nameKey(name));
       if (!target) return;
-      const literals = findColorLiterals(value);
-      if (literals.length !== 1 || literals[0].source.trim() !== value.trim()) return;
+      const literals = findColorLiterals(value2);
+      if (literals.length !== 1 || literals[0].source.trim() !== value2.trim()) return;
       const literal = literals[0];
       const to = formatColorLiteral(__spreadProps(__spreadValues({}, target.rgb), { a: literal.rgba.a }), literal.notation);
       if (to === literal.source) return;
@@ -19985,10 +20242,10 @@ ${scrollGuards}` : project.css;
   }
 
   // src/tokens/remap/sources.ts
-  function swatchOf(hex, name, family, step) {
+  function swatchOf(hex, name, family, step2) {
     const rgb = parseHex(hex);
     if (!rgb) return null;
-    return { hex: hex.toUpperCase(), alpha: 1, rgba: __spreadProps(__spreadValues({}, rgb), { a: 1 }), name, family, step };
+    return { hex: hex.toUpperCase(), alpha: 1, rgba: __spreadProps(__spreadValues({}, rgb), { a: 1 }), name, family, step: step2 };
   }
   function swatchesFromPalette(palette) {
     const swatches = [];
@@ -20000,7 +20257,7 @@ ${scrollGuards}` : project.css;
     }
     return swatches;
   }
-  var describes = (family, step) => family !== null && step !== null ? 2 : family !== null ? 1 : 0;
+  var describes = (family, step2) => family !== null && step2 !== null ? 2 : family !== null ? 1 : 0;
   function swatchesFromNamedColors(entries) {
     var _a, _b, _c, _d;
     const at = /* @__PURE__ */ new Map();
@@ -20057,9 +20314,9 @@ ${scrollGuards}` : project.css;
             continue;
           }
           if (!isGradient(paint)) continue;
-          for (const [index, stop] of paint.gradientStops.entries()) {
+          for (const [index2, stop] of paint.gradientStops.entries()) {
             const color = withAlpha(stop.color);
-            entries.push({ hex: hexOf(color), alpha: color.a, name: `${node.name}/${index + 1}` });
+            entries.push({ hex: hexOf(color), alpha: color.a, name: `${node.name}/${index2 + 1}` });
           }
         }
       }
@@ -20089,8 +20346,8 @@ ${scrollGuards}` : project.css;
       return { collections: [], warnings: [`libraries are unreadable here: ${String(error.message)}`] };
     }
   }
-  var isAlias2 = (value) => typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
-  var isRgb2 = (value) => typeof value === "object" && value !== null && "r" in value && "g" in value && "b" in value;
+  var isAlias2 = (value2) => typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
+  var isRgb2 = (value2) => typeof value2 === "object" && value2 !== null && "r" in value2 && "g" in value2 && "b" in value2;
   var IMPORT_CHUNK = 50;
   var ALIAS_DEPTH = 6;
   async function resolveColor(variable, modeId) {
@@ -20098,11 +20355,11 @@ ${scrollGuards}` : project.css;
     let current = variable;
     let mode = modeId;
     for (let depth = 0; depth < ALIAS_DEPTH; depth++) {
-      const value = (_a = current.valuesByMode[mode]) != null ? _a : await defaultValueOf(current);
-      if (value === void 0) return null;
-      if (isRgb2(value)) return value;
-      if (!isAlias2(value)) return null;
-      const next = await figma.variables.getVariableByIdAsync(value.id).catch(() => null);
+      const value2 = (_a = current.valuesByMode[mode]) != null ? _a : await defaultValueOf(current);
+      if (value2 === void 0) return null;
+      if (isRgb2(value2)) return value2;
+      if (!isAlias2(value2)) return null;
+      const next = await figma.variables.getVariableByIdAsync(value2.id).catch(() => null);
       if (!next) return null;
       current = next;
       if (!(mode in current.valuesByMode)) {
@@ -20133,9 +20390,9 @@ ${scrollGuards}` : project.css;
     let modeId = null;
     let chosenMode = null;
     let unresolved = 0;
-    for (const [index, candidate] of colors.entries()) {
-      if (index % IMPORT_CHUNK === 0) {
-        progress2 == null ? void 0 : progress2(`importing library colors\u2026 ${index}/${colors.length}`);
+    for (const [index2, candidate] of colors.entries()) {
+      if (index2 % IMPORT_CHUNK === 0) {
+        progress2 == null ? void 0 : progress2(`importing library colors\u2026 ${index2}/${colors.length}`);
         await yieldToHost();
       }
       const variable = await figma.variables.importVariableByKeyAsync(candidate.key).catch(() => null);
@@ -20151,12 +20408,12 @@ ${scrollGuards}` : project.css;
         chosenMode = mode.name;
         if (modeName && !wanted) warnings.push(`that library has no "${modeName}" mode \u2014 read "${mode.name}" instead`);
       }
-      const value = await resolveColor(variable, modeId);
-      if (value === null) {
+      const value2 = await resolveColor(variable, modeId);
+      if (value2 === null) {
         unresolved++;
         continue;
       }
-      const color = withAlpha(value);
+      const color = withAlpha(value2);
       entries.push({ hex: hexOf(color), alpha: color.a, name: variable.name, key: variable.key });
     }
     const { swatches, duplicates } = swatchesFromNamedColors(entries);
@@ -20255,7 +20512,7 @@ ${table2}${unmatched}
 
 ` + bullet([
       "Bootstrap loads inside a CSS cascade layer, so un-layered project CSS wins over Bootstrap declarations regardless of specificity. Do not add `!important` to beat Bootstrap.",
-      "Change brand values through `bootstrap.map.json` + `tokens.json` (`altery-dj tokens`) or in Figma \u2014 never by editing `bootstrap-tokens.css`."
+      "Change brand values through `bootstrap.map.json` + `tokens.json` (`allcrew-channel tokens`) or in Figma \u2014 never by editing `bootstrap-tokens.css`."
     ]);
   }
   function i18nSection(input) {
@@ -20265,7 +20522,7 @@ ${table2}${unmatched}
     return bullet([
       `${input.i18n.entryCount} source string(s) extracted to \`locale/figma.po\` (source language \`${input.i18n.sourceLanguage}\`).`,
       "Generated text is already wrapped in `{% translate %}` / `{% blocktranslate %}`. **Every new user-visible string you write must be wrapped too.**",
-      "Do not translate inside `figma.po` \u2014 merge it into the project catalog (`altery-dj po merge`), then translate there. `figma.po` is regenerated on every export.",
+      "Do not translate inside `figma.po` \u2014 merge it into the project catalog (`allcrew-channel po merge`), then translate there. `figma.po` is regenerated on every export.",
       "Translated text is usually longer than the Figma source: never rely on a fixed width or a single-line assumption for a translatable string."
     ]);
   }
@@ -20289,9 +20546,9 @@ ${table2}${unmatched}
   }
   var WORKFLOW = bullet([
     "The design source of truth is Figma. To change a generated value, change it in Figma and re-export \u2014 do not patch the generated file.",
-    "Apply a fresh export over the project with `altery-dj apply export.zip`, or `altery-dj rebuild export.zip --diff` to merge it while preserving edits outside the `{# GENERATED #}` markers.",
-    "Rebuild derived stylesheets from `tokens.json` without a Figma round-trip: `altery-dj tokens --format all`.",
-    "Verify a project after an apply: `altery-dj check` (Django system check + a smoke render of every template + `msgfmt` over the locales)."
+    "Apply a fresh export over the project with `allcrew-channel apply export.zip`, or `allcrew-channel rebuild export.zip --diff` to merge it while preserving edits outside the `{# GENERATED #}` markers.",
+    "Rebuild derived stylesheets from `tokens.json` without a Figma round-trip: `allcrew-channel tokens --format all`.",
+    "Verify a project after an apply: `allcrew-channel check` (Django system check + a smoke render of every template + `msgfmt` over the locales)."
   ]);
   function buildDjangoDesignMd(input) {
     var _a, _b, _c, _d;
@@ -20315,7 +20572,7 @@ ${table2}${unmatched}
       "Never hardcode a template path or asset URL: use `{% include %}` / `{% static %}`."
     ];
     const agentPrompt = agentPromptSection({
-      role: "an expert Django + frontend engineer working in a project generated from Figma by the Altery exporter",
+      role: "an expert Django + frontend engineer working in a project generated from Figma by the AllCrew Channel exporter",
       steps: [
         "Locate the generated template that owns the UI you are changing (`templates/pages/\u2026` or `templates/components/\u2026`) and read its `{# GENERATED #}` markers before editing anything.",
         'Identify every visual requirement \u2014 surface, text, border, spacing, radius, type, motion \u2014 and map each to a token from the "Token \u2192 CSS property" table.',
@@ -20365,12 +20622,12 @@ ${renderSections(sections)}
         method: "POST",
         headers: {
           "Content-Type": "application/zip",
-          "X-Altery-Secret": config.secret,
-          "X-Altery-Target": config.target,
-          "X-Altery-Route-Repo": config.route.repo,
-          "X-Altery-Route-Branch": config.route.branch,
-          "X-Altery-Route-Path": config.route.path,
-          "X-Altery-Route-Package": config.route.package
+          "X-AllCrew-Channel-Secret": config.secret,
+          "X-AllCrew-Channel-Target": config.target,
+          "X-AllCrew-Channel-Route-Repo": config.route.repo,
+          "X-AllCrew-Channel-Route-Branch": config.route.branch,
+          "X-AllCrew-Channel-Route-Path": config.route.path,
+          "X-AllCrew-Channel-Route-Package": config.route.package
         },
         body: zipBytes
       });
@@ -20384,6 +20641,26 @@ ${renderSections(sections)}
     }
   }
 
+  // src/agent/errors.ts
+  var RETRYABLE = /* @__PURE__ */ new Set([
+    "unauthorized",
+    "gate_closed",
+    "no_plugin",
+    "figma_threw",
+    "timeout",
+    "disconnected",
+    "reconnected",
+    "listener_off",
+    "file_write_failed",
+    "internal"
+  ]);
+  function isRetryable(code) {
+    return RETRYABLE.has(code);
+  }
+  function failure(code, error) {
+    return { error, code, retryable: isRetryable(code) };
+  }
+
   // src/agent/protocol.ts
   function toManifest(ops) {
     return ops.map((op) => __spreadProps(__spreadValues({
@@ -20395,12 +20672,16 @@ ${renderSections(sections)}
     }));
   }
   function authorize(op, gates2, raw) {
-    if (!op) return { ok: false, error: "unknown op" };
+    if (!op) return __spreadValues({ ok: false }, failure("unknown_op", "unknown op"));
     if (op.mutatesWhen ? op.mutatesWhen(raw) : op.mutates) {
-      if (!gates2.write) return { ok: false, error: 'writes are off \u2014 enable "Allow changes" in the plugin' };
+      if (!gates2.write) {
+        return __spreadValues({ ok: false }, failure("gate_closed", 'writes are off \u2014 enable "Allow changes" in the plugin'));
+      }
       return { ok: true };
     }
-    if (!gates2.read) return { ok: false, error: 'reads are off \u2014 enable "Allow reads" in the plugin' };
+    if (!gates2.read) {
+      return __spreadValues({ ok: false }, failure("gate_closed", 'reads are off \u2014 enable "Allow reads" in the plugin'));
+    }
     return { ok: true };
   }
   var ParamError = class extends Error {
@@ -20414,27 +20695,27 @@ ${renderSections(sections)}
     }
     const out = {};
     for (const [key, spec] of Object.entries(specs)) {
-      const value = input[key];
-      if (value === void 0 || value === null) {
+      const value2 = input[key];
+      if (value2 === void 0 || value2 === null) {
         if (spec.required) throw new ParamError(`missing required param "${key}" (${spec.type})`);
         if (spec.default !== void 0) out[key] = spec.default;
         continue;
       }
-      out[key] = coerce(key, spec, value);
+      out[key] = coerce(key, spec, value2);
     }
     return out;
   }
-  function coerce(key, spec, value) {
+  function coerce(key, spec, value2) {
     switch (spec.type) {
       case "string": {
-        if (typeof value !== "string") throw new ParamError(`param "${key}" must be a string`);
-        if (spec.enum && !spec.enum.includes(value)) {
+        if (typeof value2 !== "string") throw new ParamError(`param "${key}" must be a string`);
+        if (spec.enum && !spec.enum.includes(value2)) {
           throw new ParamError(`param "${key}" must be one of: ${spec.enum.join(", ")}`);
         }
-        return value;
+        return value2;
       }
       case "number": {
-        const num2 = typeof value === "string" ? Number(value) : value;
+        const num2 = typeof value2 === "string" ? Number(value2) : value2;
         if (typeof num2 !== "number" || !Number.isFinite(num2)) {
           throw new ParamError(`param "${key}" must be a number`);
         }
@@ -20443,23 +20724,23 @@ ${renderSections(sections)}
         return num2;
       }
       case "boolean": {
-        if (typeof value === "boolean") return value;
-        if (value === "true") return true;
-        if (value === "false") return false;
+        if (typeof value2 === "boolean") return value2;
+        if (value2 === "true") return true;
+        if (value2 === "false") return false;
         throw new ParamError(`param "${key}" must be a boolean`);
       }
       case "string[]": {
-        if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+        if (!Array.isArray(value2) || value2.some((entry) => typeof entry !== "string")) {
           throw new ParamError(`param "${key}" must be an array of strings`);
         }
-        return value;
+        return value2;
       }
       // Batch writes and board specs are trees, not scalars. Nothing to coerce — the op that
       // asked for the tree is the only thing that knows its shape, so it does its own checking
       // and reports failures per entry instead of losing the whole batch to one bad row.
       case "json": {
-        if (typeof value !== "object") throw new ParamError(`param "${key}" must be a JSON object or array`);
-        return value;
+        if (typeof value2 !== "object") throw new ParamError(`param "${key}" must be a JSON object or array`);
+        return value2;
       }
     }
   }
@@ -20628,8 +20909,8 @@ ${renderSections(sections)}
     "index"
   ];
   var KNOWN = new Set(ORDER);
-  function dependsOnChildren(step) {
-    return step.step === "assign" && step.property === "numberOfFixedChildren";
+  function dependsOnChildren(step2) {
+    return step2.step === "assign" && step2.property === "numberOfFixedChildren";
   }
   var PLACED = [
     "layoutPositioning",
@@ -20639,14 +20920,14 @@ ${renderSections(sections)}
     "gridColumnSpan",
     "gridChildVerticalAlign"
   ];
-  function movesToAnotherParent(step) {
-    return step.step === "reparent" && step.parent !== "";
+  function movesToAnotherParent(step2) {
+    return step2.step === "reparent" && step2.parent !== "";
   }
-  function dependsOnPlacement(step) {
-    if (step.step === "sizing" || step.step === "resize") return true;
-    if (step.step === "reparent" && step.parent === "") return true;
-    if (step.step === "timeline") return true;
-    return step.step === "assign" && PLACED.includes(step.property);
+  function dependsOnPlacement(step2) {
+    if (step2.step === "sizing" || step2.step === "resize") return true;
+    if (step2.step === "reparent" && step2.parent === "") return true;
+    if (step2.step === "timeline") return true;
+    return step2.step === "assign" && PLACED.includes(step2.property);
   }
   function planProps(raw, where = "props") {
     var _a, _b, _c;
@@ -20665,20 +20946,20 @@ ${renderSections(sections)}
     }
     const fail2 = (message) => problems.push(`${where}.${message}`);
     const number2 = (key, min, max) => {
-      const value = props[key];
-      if (typeof value !== "number" || !Number.isFinite(value)) {
+      const value2 = props[key];
+      if (typeof value2 !== "number" || !Number.isFinite(value2)) {
         fail2(`${key} must be a number`);
         return null;
       }
-      if (min !== void 0 && value < min) {
+      if (min !== void 0 && value2 < min) {
         fail2(`${key} must be >= ${min}`);
         return null;
       }
-      if (max !== void 0 && value > max) {
+      if (max !== void 0 && value2 > max) {
         fail2(`${key} must be <= ${max}`);
         return null;
       }
-      return value;
+      return value2;
     };
     for (const key of ORDER) {
       if (!(key in props)) continue;
@@ -20696,24 +20977,24 @@ ${renderSections(sections)}
           break;
         }
         case "opacity": {
-          const value = number2("opacity", 0, 1);
-          if (value !== null) steps.push({ step: "assign", property: "opacity", value });
+          const value2 = number2("opacity", 0, 1);
+          if (value2 !== null) steps.push({ step: "assign", property: "opacity", value: value2 });
           break;
         }
         case "rotation": {
-          const value = number2("rotation", -180, 180);
-          if (value !== null) steps.push({ step: "assign", property: "rotation", value });
+          const value2 = number2("rotation", -180, 180);
+          if (value2 !== null) steps.push({ step: "assign", property: "rotation", value: value2 });
           break;
         }
         case "x":
         case "y": {
-          const value = number2(key);
-          if (value !== null) steps.push({ step: "assign", property: key, value });
+          const value2 = number2(key);
+          if (value2 !== null) steps.push({ step: "assign", property: key, value: value2 });
           break;
         }
         case "width":
         case "height": {
-          if (steps.some((step) => step.step === "resize")) break;
+          if (steps.some((step2) => step2.step === "resize")) break;
           const width = "width" in props ? number2("width", 0.01) : void 0;
           const height = "height" in props ? number2("height", 0.01) : void 0;
           const wanted = __spreadValues(__spreadValues({}, typeof width === "number" ? { width } : {}), typeof height === "number" ? { height } : {});
@@ -20737,12 +21018,12 @@ ${renderSections(sections)}
           break;
         }
         case "gridSpan": {
-          const value = props.gridSpan;
-          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          const value2 = props.gridSpan;
+          if (typeof value2 !== "object" || value2 === null || Array.isArray(value2)) {
             fail2("gridSpan must be { rows, columns }");
             break;
           }
-          const span = value;
+          const span = value2;
           if (span.rows === void 0 && span.columns === void 0) {
             fail2("gridSpan must name rows, columns or both");
             break;
@@ -20760,19 +21041,19 @@ ${renderSections(sections)}
         }
         case "gridAlign": {
           const allowed = ["MIN", "CENTER", "MAX", "AUTO"];
-          const value = props.gridAlign;
-          if (typeof value !== "string" || !allowed.includes(value)) fail2(`gridAlign must be one of: ${allowed.join(", ")}`);
-          else steps.push({ step: "assign", property: "gridChildVerticalAlign", value });
+          const value2 = props.gridAlign;
+          if (typeof value2 !== "string" || !allowed.includes(value2)) fail2(`gridAlign must be one of: ${allowed.join(", ")}`);
+          else steps.push({ step: "assign", property: "gridChildVerticalAlign", value: value2 });
           break;
         }
         case "strokeWeight": {
-          const value = number2("strokeWeight", 0);
-          if (value !== null) steps.push({ step: "assign", property: "strokeWeight", value });
+          const value2 = number2("strokeWeight", 0);
+          if (value2 !== null) steps.push({ step: "assign", property: "strokeWeight", value: value2 });
           break;
         }
         case "fontSize": {
-          const value = number2("fontSize", 1);
-          if (value !== null) steps.push({ step: "assign", property: "fontSize", value });
+          const value2 = number2("fontSize", 1);
+          if (value2 !== null) steps.push({ step: "assign", property: "fontSize", value: value2 });
           break;
         }
         case "letterSpacing": {
@@ -20800,9 +21081,9 @@ ${renderSections(sections)}
         case "textDecoration":
         case "leadingTrim": {
           const allowed = BLEND_FREE_ENUMS[key];
-          const value = props[key];
-          if (typeof value !== "string" || !allowed.includes(value)) fail2(`${key} must be one of: ${allowed.join(", ")}`);
-          else steps.push({ step: "assign", property: FIGMA_TEXT_NAMES[key], value });
+          const value2 = props[key];
+          if (typeof value2 !== "string" || !allowed.includes(value2)) fail2(`${key} must be one of: ${allowed.join(", ")}`);
+          else steps.push({ step: "assign", property: FIGMA_TEXT_NAMES[key], value: value2 });
           break;
         }
         case "text": {
@@ -20813,8 +21094,8 @@ ${renderSections(sections)}
         case "paragraphSpacing":
         case "paragraphIndent":
         case "listSpacing": {
-          const value = number2(key, 0);
-          if (value !== null) steps.push({ step: "assign", property: key, value });
+          const value2 = number2(key, 0);
+          if (value2 !== null) steps.push({ step: "assign", property: key, value: value2 });
           break;
         }
         case "hangingPunctuation":
@@ -20854,12 +21135,12 @@ ${renderSections(sections)}
           break;
         }
         case "cornerRadius": {
-          const value = props.cornerRadius;
-          if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-            steps.push({ step: "radius", corners: { topLeft: value, topRight: value, bottomRight: value, bottomLeft: value } });
-          } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+          const value2 = props.cornerRadius;
+          if (typeof value2 === "number" && Number.isFinite(value2) && value2 >= 0) {
+            steps.push({ step: "radius", corners: { topLeft: value2, topRight: value2, bottomRight: value2, bottomLeft: value2 } });
+          } else if (typeof value2 === "object" && value2 !== null && !Array.isArray(value2)) {
             const corners = {};
-            for (const [corner, amount] of Object.entries(value)) {
+            for (const [corner, amount] of Object.entries(value2)) {
               if (!["topLeft", "topRight", "bottomRight", "bottomLeft"].includes(corner)) {
                 fail2(`cornerRadius: unknown corner "${corner}"`);
                 continue;
@@ -20875,13 +21156,13 @@ ${renderSections(sections)}
           break;
         }
         case "constraints": {
-          const value = props.constraints;
-          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          const value2 = props.constraints;
+          if (typeof value2 !== "object" || value2 === null || Array.isArray(value2)) {
             fail2("constraints must be { horizontal, vertical }");
             break;
           }
-          const entry = value;
-          const step = { step: "constraints" };
+          const entry = value2;
+          const step2 = { step: "constraints" };
           for (const axis of ["horizontal", "vertical"]) {
             const kind = entry[axis];
             if (kind === void 0) continue;
@@ -20889,9 +21170,9 @@ ${renderSections(sections)}
               fail2(`constraints.${axis} must be one of: ${CONSTRAINTS.join(", ")}`);
               continue;
             }
-            step[axis] = kind;
+            step2[axis] = kind;
           }
-          if (step.horizontal || step.vertical) steps.push(step);
+          if (step2.horizontal || step2.vertical) steps.push(step2);
           break;
         }
         case "layout": {
@@ -20925,22 +21206,22 @@ ${renderSections(sections)}
         }
         case "path":
         case "paths": {
-          if (steps.some((step) => step.step === "paths")) break;
+          if (steps.some((step2) => step2.step === "paths")) break;
           const wanted = "path" in props ? [{ data: props.path }] : props.paths;
           if (!Array.isArray(wanted) || wanted.length === 0) {
             fail2("paths must be a non-empty array of { data } \u2014 or use path for a single one");
             break;
           }
           const paths = [];
-          for (const [index, entry] of wanted.entries()) {
+          for (const [index2, entry] of wanted.entries()) {
             const one = entry;
             if (typeof (one == null ? void 0 : one.data) !== "string" || one.data.trim() === "") {
-              fail2(`paths[${index}].data must be SVG path data, e.g. "M 0 0 L 10 0 L 10 10 Z"`);
+              fail2(`paths[${index2}].data must be SVG path data, e.g. "M 0 0 L 10 0 L 10 10 Z"`);
               continue;
             }
             const rule = one.windingRule === void 0 ? "NONZERO" : one.windingRule;
             if (rule !== "NONZERO" && rule !== "EVENODD") {
-              fail2(`paths[${index}].windingRule must be NONZERO or EVENODD`);
+              fail2(`paths[${index2}].windingRule must be NONZERO or EVENODD`);
               continue;
             }
             paths.push({ data: one.data.trim().replace(/,/g, " "), windingRule: rule });
@@ -20958,8 +21239,8 @@ ${renderSections(sections)}
         case "textStyle":
         case "effectStyle":
         case "gridStyle": {
-          const value = props[key];
-          if (value !== null && (typeof value !== "string" || value.trim() === "")) {
+          const value2 = props[key];
+          if (value2 !== null && (typeof value2 !== "string" || value2.trim() === "")) {
             fail2(`${key} must be a style name, id or key \u2014 or null to detach`);
             break;
           }
@@ -20967,7 +21248,7 @@ ${renderSections(sections)}
             step: "style",
             kind: STYLE_SLOTS[key],
             slot: key,
-            ref: value === null ? null : value.trim()
+            ref: value2 === null ? null : value2.trim()
           });
           break;
         }
@@ -20977,14 +21258,14 @@ ${renderSections(sections)}
           break;
         }
         case "scroll": {
-          const value = typeof props.scroll === "string" ? normaliseEnum(props.scroll) : "";
-          if (!OVERFLOW2.includes(value)) fail2(`scroll must be one of: ${OVERFLOW2.join(", ")}`);
-          else steps.push({ step: "assign", property: "overflowDirection", value });
+          const value2 = typeof props.scroll === "string" ? normaliseEnum(props.scroll) : "";
+          if (!OVERFLOW2.includes(value2)) fail2(`scroll must be one of: ${OVERFLOW2.join(", ")}`);
+          else steps.push({ step: "assign", property: "overflowDirection", value: value2 });
           break;
         }
         case "fixedChildren": {
-          const value = number2("fixedChildren", 0);
-          if (value !== null) steps.push({ step: "assign", property: "numberOfFixedChildren", value });
+          const value2 = number2("fixedChildren", 0);
+          if (value2 !== null) steps.push({ step: "assign", property: "numberOfFixedChildren", value: value2 });
           break;
         }
         case "links": {
@@ -20993,13 +21274,13 @@ ${renderSections(sections)}
           break;
         }
         case "data": {
-          const value = props.data;
-          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          const value2 = props.data;
+          if (typeof value2 !== "object" || value2 === null || Array.isArray(value2)) {
             fail2('data must be an object of { key: "value" }');
             break;
           }
           const data = {};
-          for (const [name, note] of Object.entries(value)) {
+          for (const [name, note] of Object.entries(value2)) {
             if (typeof note === "string" || note === null) data[name] = note;
             else fail2(`data.${name} must be a string, or null to clear it`);
           }
@@ -21033,14 +21314,14 @@ ${renderSections(sections)}
             break;
           }
           const points = [];
-          for (const [index, entry] of asked2.entries()) {
+          for (const [index2, entry] of asked2.entries()) {
             const one = entry;
             if (typeof (one == null ? void 0 : one.at) !== "number" || one.at < 0 || one.at > 1) {
-              fail2(`strokeProfile[${index}].at must be between 0 and 1 \u2014 where along the line the point sits`);
+              fail2(`strokeProfile[${index2}].at must be between 0 and 1 \u2014 where along the line the point sits`);
               continue;
             }
             if (typeof one.width !== "number" || one.width < 0) {
-              fail2(`strokeProfile[${index}].width must be a number >= 0`);
+              fail2(`strokeProfile[${index2}].width must be a number >= 0`);
               continue;
             }
             points.push({ position: one.at, width: one.width });
@@ -21065,13 +21346,13 @@ ${renderSections(sections)}
             break;
           }
           const planned = [];
-          for (const [index, entry] of asked2.entries()) {
+          for (const [index2, entry] of asked2.entries()) {
             const one = entry;
             if (typeof (one == null ? void 0 : one.at) !== "string" || one.at.trim() === "") {
-              fail2(`overrides[${index}].at must name a node inside the instance`);
+              fail2(`overrides[${index2}].at must name a node inside the instance`);
               continue;
             }
-            const inner = planProps(one.props, `${where}.overrides[${index}].props`);
+            const inner = planProps(one.props, `${where}.overrides[${index2}].props`);
             problems.push(...inner.problems);
             if (inner.steps.length > 0) planned.push({ at: one.at.trim(), steps: inner.steps });
           }
@@ -21079,18 +21360,18 @@ ${renderSections(sections)}
           break;
         }
         case "properties": {
-          const value = props.properties;
-          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          const value2 = props.properties;
+          if (typeof value2 !== "object" || value2 === null || Array.isArray(value2)) {
             fail2("properties must be an object of { propertyName: value }");
             break;
           }
           const wanted = {};
-          for (const [name, setting] of Object.entries(value)) {
+          for (const [name, setting] of Object.entries(value2)) {
             if (typeof setting === "string" || typeof setting === "boolean") wanted[name] = setting;
             else fail2(`properties.${name} must be a string or a boolean`);
           }
           if (Object.keys(wanted).length > 0) steps.push({ step: "properties", properties: wanted });
-          else if (Object.keys(value).length === 0) fail2("properties must name at least one property");
+          else if (Object.keys(value2).length === 0) fail2("properties must name at least one property");
           break;
         }
         case "strokeAlign":
@@ -21098,16 +21379,16 @@ ${renderSections(sections)}
         case "strokeJoin":
         case "blendMode": {
           const allowed = key === "strokeAlign" ? STROKE_ALIGN : key === "strokeCap" ? STROKE_CAP : key === "strokeJoin" ? STROKE_JOIN : BLEND_MODES;
-          const value = props[key];
-          if (typeof value !== "string" || !allowed.includes(value)) fail2(`${key} must be one of: ${allowed.join(", ")}`);
-          else steps.push({ step: "assign", property: key, value });
+          const value2 = props[key];
+          if (typeof value2 !== "string" || !allowed.includes(value2)) fail2(`${key} must be one of: ${allowed.join(", ")}`);
+          else steps.push({ step: "assign", property: key, value: value2 });
           break;
         }
         case "strokeDashes": {
-          const value = props.strokeDashes;
-          if (!Array.isArray(value) || value.some((one) => typeof one !== "number" || !Number.isFinite(one) || one < 0)) {
+          const value2 = props.strokeDashes;
+          if (!Array.isArray(value2) || value2.some((one) => typeof one !== "number" || !Number.isFinite(one) || one < 0)) {
             fail2("strokeDashes must be an array of numbers >= 0 \u2014 [] is a solid line");
-          } else steps.push({ step: "dashes", dashes: value });
+          } else steps.push({ step: "dashes", dashes: value2 });
           break;
         }
         case "brush": {
@@ -21133,15 +21414,15 @@ ${renderSections(sections)}
         case "parent": {
           if (typeof props.parent !== "string" || props.parent === "") fail2('parent must be a node id or "page"');
           else {
-            const index = "index" in props ? number2("index", 0) : null;
-            steps.push(__spreadValues({ step: "reparent", parent: props.parent }, index !== null ? { index } : {}));
+            const index2 = "index" in props ? number2("index", 0) : null;
+            steps.push(__spreadValues({ step: "reparent", parent: props.parent }, index2 !== null ? { index: index2 } : {}));
           }
           break;
         }
         case "index": {
           if (!("parent" in props)) {
-            const index = number2("index", 0);
-            if (index !== null) steps.push({ step: "reparent", parent: "", index });
+            const index2 = number2("index", 0);
+            if (index2 !== null) steps.push({ step: "reparent", parent: "", index: index2 });
           }
           break;
         }
@@ -21160,7 +21441,7 @@ ${renderSections(sections)}
       if (vertical === "FIXED") pin.vertical = "FIXED";
       else if (vertical) fit.vertical = vertical;
       if (pin.horizontal || pin.vertical) {
-        const resize = steps.findIndex((step) => step.step === "resize");
+        const resize = steps.findIndex((step2) => step2.step === "resize");
         steps.splice(resize === -1 ? steps.length : resize, 0, pin);
       }
       if (fit.horizontal || fit.vertical) steps.push(fit);
@@ -21194,16 +21475,16 @@ ${renderSections(sections)}
     "SLOW"
   ];
   var DEFAULT_EASING = "EASE_OUT";
-  function measure(value) {
-    if (typeof value === "number" && Number.isFinite(value)) return { value, unit: "PIXELS" };
-    if (typeof value === "string") {
-      const written = /^(-?\d+(?:\.\d+)?)\s*(%|px)?$/.exec(value.trim());
+  function measure(value2) {
+    if (typeof value2 === "number" && Number.isFinite(value2)) return { value: value2, unit: "PIXELS" };
+    if (typeof value2 === "string") {
+      const written = /^(-?\d+(?:\.\d+)?)\s*(%|px)?$/.exec(value2.trim());
       if (written) return { value: Number(written[1]), unit: written[2] === "%" ? "PERCENT" : "PIXELS" };
     }
     return null;
   }
-  function normaliseEnum(value) {
-    return value.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  function normaliseEnum(value2) {
+    return value2.trim().toUpperCase().replace(/[\s-]+/g, "_");
   }
   var NAVIGATIONS = ["NAVIGATE", "SWAP", "OVERLAY", "SCROLL_TO", "CHANGE_TO"];
   var OVERFLOW2 = ["NONE", "HORIZONTAL", "VERTICAL", "BOTH"];
@@ -21263,8 +21544,8 @@ ${renderSections(sections)}
     }
     const links = [];
     const destinations = [];
-    for (const [index, entry] of raw.entries()) {
-      const at = `${where}[${index}]`;
+    for (const [index2, entry] of raw.entries()) {
+      const at = `${where}[${index2}]`;
       const fail2 = (message) => problems.push(`${at}: ${message}`);
       if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
         fail2("must be { on, to, \u2026 }");
@@ -21290,11 +21571,11 @@ ${renderSections(sections)}
         fail2("an `if` needs a `then` \u2014 what should happen when it holds");
         return null;
       }
-      const condition = planCondition(link.if, fail2, "if");
-      if (!condition) return null;
+      const condition2 = planCondition(link.if, fail2, "if");
+      if (!condition2) return null;
       const yes = planActions(link.then, fail2, destinations);
       if (!yes) return null;
-      const blocks = [{ condition, actions: yes }];
+      const blocks2 = [{ condition: condition2, actions: yes }];
       if (link.else !== void 0) {
         if (((_a = link.else) == null ? void 0 : _a.if) !== void 0) {
           fail2(
@@ -21304,9 +21585,9 @@ ${renderSections(sections)}
         }
         const otherwise = planActions(link.else, fail2, destinations);
         if (!otherwise) return null;
-        blocks.push({ actions: otherwise });
+        blocks2.push({ actions: otherwise });
       }
-      actions.push({ kind: "conditional", blocks });
+      actions.push({ kind: "conditional", blocks: blocks2 });
     }
     if (link.set !== void 0) {
       const set = link.set;
@@ -21314,9 +21595,9 @@ ${renderSections(sections)}
         fail2("set.variable must name a variable");
         return null;
       }
-      const value = set.value;
-      const alias = value;
-      const usable = typeof value === "string" || typeof value === "number" || typeof value === "boolean" || typeof value === "object" && value !== null && typeof (alias == null ? void 0 : alias.variable) === "string";
+      const value2 = set.value;
+      const alias = value2;
+      const usable = typeof value2 === "string" || typeof value2 === "number" || typeof value2 === "boolean" || typeof value2 === "object" && value2 !== null && typeof (alias == null ? void 0 : alias.variable) === "string";
       if (!usable) {
         fail2("set.value must be a string, a number, a boolean, or { variable } to copy another one");
         return null;
@@ -21324,7 +21605,7 @@ ${renderSections(sections)}
       actions.push({
         kind: "setVariable",
         variable: set.variable.trim(),
-        value
+        value: value2
       });
     }
     if (link.mode !== void 0) {
@@ -21482,18 +21763,18 @@ ${renderSections(sections)}
       transition
     }, typeof link.resetScroll === "boolean" ? { resetScroll: link.resetScroll } : {}), typeof link.resetVideo === "boolean" ? { resetVideo: link.resetVideo } : {}), typeof link.resetInteractive === "boolean" ? { resetInteractive: link.resetInteractive } : {});
   }
-  async function describeBranches(blocks, nameOf, depth = 0) {
+  async function describeBranches(blocks2, nameOf, depth = 0) {
     const parts = [];
-    for (const [index, block3] of blocks.entries()) {
+    for (const [index2, block3] of blocks2.entries()) {
       const inside = [];
       for (const action of block3.actions) inside.push(await describeAction(action, nameOf, depth + 1));
-      const label3 = block3.condition ? index === 0 && depth === 0 ? "if" : "else if" : "else";
+      const label3 = block3.condition ? index2 === 0 && depth === 0 ? "if" : "else if" : "else";
       parts.push(`${label3} {${inside.join(" \xB7 ") || "nothing"}}`);
     }
     return parts.join(" ");
   }
-  function seconds(value) {
-    return `${Math.round(value * 1e3) / 1e3}s`;
+  function seconds(value2) {
+    return `${Math.round(value2 * 1e3) / 1e3}s`;
   }
   async function describeLinks(reactions, nameOf) {
     var _a, _b, _c;
@@ -21519,8 +21800,8 @@ ${renderSections(sections)}
     if (action.type === "URL") return `open ${action.url}`;
     if (action.type === "SET_VARIABLE") {
       const named2 = action.variableId && nameOf ? await nameOf(action.variableId) : null;
-      const value = (_a = action.variableValue) == null ? void 0 : _a.value;
-      const shown = value !== null && typeof value === "object" && "id" in value ? `var:${(_b = nameOf ? await nameOf(value.id) : null) != null ? _b : value.id}` : JSON.stringify(value);
+      const value2 = (_a = action.variableValue) == null ? void 0 : _a.value;
+      const shown = value2 !== null && typeof value2 === "object" && "id" in value2 ? `var:${(_b = nameOf ? await nameOf(value2.id) : null) != null ? _b : value2.id}` : JSON.stringify(value2);
       return `set ${named2 != null ? named2 : action.variableId} = ${shown}`;
     }
     if (action.type === "SET_VARIABLE_MODE") {
@@ -21631,8 +21912,8 @@ ${renderSections(sections)}
       return null;
     }
     const runs = [];
-    for (const [index, entry] of raw.entries()) {
-      const at = `${where}[${index}]`;
+    for (const [index2, entry] of raw.entries()) {
+      const at = `${where}[${index2}]`;
       const fail2 = (message) => problems.push(`${at}: ${message}`);
       if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
         fail2("must be an object");
@@ -21738,16 +22019,16 @@ ${renderSections(sections)}
     }
     return { ranges: [[from, Math.min(to, characters.length)]] };
   }
-  function pointOf(value, where, problems) {
-    if (value === void 0) return null;
-    if (!Array.isArray(value) || value.length !== 2 || value.some((one) => typeof one !== "number")) {
+  function pointOf(value2, where, problems) {
+    if (value2 === void 0) return null;
+    if (!Array.isArray(value2) || value2.length !== 2 || value2.some((one) => typeof one !== "number")) {
       problems.push(`${where} must be [x, y]`);
       return null;
     }
-    return { x: value[0], y: value[1] };
+    return { x: value2[0], y: value2[1] };
   }
-  function colourOf(value, fallback, where, problems) {
-    const hex = value === void 0 ? fallback : value;
+  function colourOf(value2, fallback, where, problems) {
+    const hex = value2 === void 0 ? fallback : value2;
     if (typeof hex !== "string" || !HEX.test(hex)) {
       problems.push(`${where} must be a #RRGGBB colour`);
       return null;
@@ -21764,18 +22045,18 @@ ${renderSections(sections)}
     const effects = [];
     const bind = [];
     const summary = [];
-    for (const [index, entry] of raw.entries()) {
-      const at = `${where}[${index}]`;
+    for (const [index2, entry] of raw.entries()) {
+      const at = `${where}[${index2}]`;
       const fail2 = (message) => problems.push(`${at}: ${message}`);
       if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
         fail2("must be { shadow } or { blur }");
         continue;
       }
       const spec = entry;
-      const measure2 = (value, fallback, field, label3) => {
-        if (value === void 0) return fallback;
-        if (typeof value === "number" && Number.isFinite(value)) return value;
-        const named2 = value;
+      const measure2 = (value2, fallback, field, label3) => {
+        if (value2 === void 0) return fallback;
+        if (typeof value2 === "number" && Number.isFinite(value2)) return value2;
+        const named2 = value2;
         if (typeof (named2 == null ? void 0 : named2.variable) === "string" && named2.variable.trim() !== "") {
           bind.push({ index: effects.length, field, variable: named2.variable.trim() });
           return fallback;
@@ -21981,8 +22262,8 @@ ${renderSections(sections)}
       return null;
     }
     const tracks = [];
-    for (const [index, entry] of raw.entries()) {
-      const at = `${where}[${index}]`;
+    for (const [index2, entry] of raw.entries()) {
+      const at = `${where}[${index2}]`;
       const one = entry;
       const field = typeof (one == null ? void 0 : one.field) === "string" ? KEYFRAME_FIELDS[one.field.trim()] : void 0;
       if (!field) {
@@ -21994,20 +22275,20 @@ ${renderSections(sections)}
         continue;
       }
       const wantsVector = VECTOR_FIELDS.includes(field);
-      const valueOf = (value, at2) => {
+      const valueOf = (value2, at2) => {
         if (wantsVector) {
-          const pair2 = value;
+          const pair2 = value2;
           if (typeof (pair2 == null ? void 0 : pair2.x) !== "number" || typeof (pair2 == null ? void 0 : pair2.y) !== "number") {
             problems.push(`${at2} must be { x, y } \u2014 ${field} moves in two directions at once`);
             return null;
           }
           return { type: "VECTOR", value: { x: pair2.x, y: pair2.y } };
         }
-        if (typeof value !== "number" || !Number.isFinite(value)) {
+        if (typeof value2 !== "number" || !Number.isFinite(value2)) {
           problems.push(`${at2} must be a number`);
           return null;
         }
-        return { type: "FLOAT", value };
+        return { type: "FLOAT", value: value2 };
       };
       const keyframes = [];
       for (const [k, frame3] of one.at.entries()) {
@@ -22017,12 +22298,12 @@ ${renderSections(sections)}
           problems.push(`${spot}.time must be a number of seconds from the start`);
           continue;
         }
-        const value = valueOf(asked.value, `${spot}.value`);
-        if (value === null) continue;
+        const value2 = valueOf(asked.value, `${spot}.value`);
+        if (value2 === null) continue;
         const easing = asked.easing === void 0 && asked.bezier === void 0 ? null : buildEasing(asked, (message) => problems.push(`${spot}: ${message}`));
         keyframes.push(__spreadValues({
           timelinePosition: asked.time,
-          value
+          value: value2
         }, easing ? { easing } : {}));
       }
       if (keyframes.length === 0) continue;
@@ -22038,8 +22319,8 @@ ${renderSections(sections)}
     const wanted = raw === null ? [] : Array.isArray(raw) ? raw : [raw];
     const styles = [];
     const summary = [];
-    for (const [index, entry] of wanted.entries()) {
-      const at = `${where}[${index}]`;
+    for (const [index2, entry] of wanted.entries()) {
+      const at = `${where}[${index2}]`;
       const fail2 = (message) => problems.push(`${at}: ${message}`);
       if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
         fail2("must be { style, duration?, offset?, props? }");
@@ -22057,8 +22338,8 @@ ${renderSections(sections)}
       }
       let wrong = false;
       for (const seconds2 of ["duration", "offset"]) {
-        const value = spec[seconds2];
-        if (value !== void 0 && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+        const value2 = spec[seconds2];
+        if (value2 !== void 0 && (typeof value2 !== "number" || !Number.isFinite(value2) || value2 < 0)) {
           fail2(`${seconds2} must be a number of seconds >= 0`);
           wrong = true;
         }
@@ -22070,15 +22351,15 @@ ${renderSections(sections)}
           fail2("props must be an object of the settings that style takes");
           continue;
         }
-        for (const [name, value] of Object.entries(spec.props)) {
-          const alias = value;
+        for (const [name, value2] of Object.entries(spec.props)) {
+          const alias = value2;
           if (name === "easing" && typeof (alias == null ? void 0 : alias.variable) === "string" && alias.variable.trim() !== "") {
             settings.easing = { variable: alias.variable.trim() };
             continue;
           }
           if (name === "easing") {
             const easing = buildEasing(
-              typeof value === "string" ? { easing: value } : value,
+              typeof value2 === "string" ? { easing: value2 } : value2,
               (message) => fail2(`props.easing: ${message}`)
             );
             if (!easing) {
@@ -22088,8 +22369,8 @@ ${renderSections(sections)}
             settings.easing = easing;
             continue;
           }
-          if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-            settings[name] = value;
+          if (typeof value2 === "string" || typeof value2 === "number" || typeof value2 === "boolean") {
+            settings[name] = value2;
             continue;
           }
           if (typeof (alias == null ? void 0 : alias.variable) === "string" && alias.variable.trim() !== "") {
@@ -22107,7 +22388,7 @@ ${renderSections(sections)}
       }, spec.duration === void 0 ? {} : { duration: spec.duration }), spec.offset === void 0 ? {} : { offset: spec.offset }), {
         props: settings
       }));
-      const said = Object.entries(settings).map(([name, value]) => `${name}=${typeof value === "object" ? JSON.stringify(value) : value}`).join(", ");
+      const said = Object.entries(settings).map(([name, value2]) => `${name}=${typeof value2 === "object" ? JSON.stringify(value2) : value2}`).join(", ");
       summary.push(
         `${spec.style.trim()}${spec.duration === void 0 ? "" : ` ${spec.duration}s`}${said ? ` (${said})` : ""}`
       );
@@ -22148,13 +22429,13 @@ ${renderSections(sections)}
       return null;
     }
     const spec = raw;
-    const within = (value, fallback, min, max, name) => {
-      if (value === void 0) return fallback;
-      if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+    const within = (value2, fallback, min, max, name) => {
+      if (value2 === void 0) return fallback;
+      if (typeof value2 !== "number" || !Number.isFinite(value2) || value2 < min || value2 > max) {
         problems.push(`${where}.${name} must be a number between ${min} and ${max}`);
         return null;
       }
-      return value;
+      return value2;
     };
     if (spec.dynamic !== void 0) {
       if (typeof spec.dynamic !== "object" || spec.dynamic === null) {
@@ -22252,8 +22533,8 @@ ${renderSections(sections)}
       return null;
     }
     const vertices = [];
-    for (const [index, entry] of spec.vertices.entries()) {
-      const at = `${where}.vertices[${index}]`;
+    for (const [index2, entry] of spec.vertices.entries()) {
+      const at = `${where}.vertices[${index2}]`;
       if (Array.isArray(entry)) {
         if (entry.length !== 2 || entry.some((one) => typeof one !== "number" || !Number.isFinite(one))) {
           problems.push(`${at} must be [x, y]`);
@@ -22289,8 +22570,8 @@ ${renderSections(sections)}
       }, point2.cap ? { strokeCap: point2.cap } : {}), point2.join ? { strokeJoin: point2.join } : {}), point2.cornerRadius === void 0 ? {} : { cornerRadius: point2.cornerRadius }));
     }
     const segments = [];
-    for (const [index, entry] of spec.segments.entries()) {
-      const at = `${where}.segments[${index}]`;
+    for (const [index2, entry] of spec.segments.entries()) {
+      const at = `${where}.segments[${index2}]`;
       const pair2 = Array.isArray(entry) ? { start: entry[0], end: entry[1], curve: void 0 } : entry;
       if (typeof (pair2 == null ? void 0 : pair2.start) !== "number" || typeof (pair2 == null ? void 0 : pair2.end) !== "number") {
         problems.push(`${at} must be [start, end] or { start, end }`);
@@ -22326,8 +22607,8 @@ ${renderSections(sections)}
         problems.push(`${where}.regions must be an array of { loops }`);
         return null;
       }
-      for (const [index, entry] of spec.regions.entries()) {
-        const at = `${where}.regions[${index}]`;
+      for (const [index2, entry] of spec.regions.entries()) {
+        const at = `${where}.regions[${index2}]`;
         const region = entry;
         if (!Array.isArray(region == null ? void 0 : region.loops) || region.loops.length === 0) {
           problems.push(`${at}.loops must be an array of loops, each a list of segment indices`);
@@ -22370,8 +22651,8 @@ ${renderSections(sections)}
     }
     const grids = [];
     const summary = [];
-    for (const [index, entry] of raw.entries()) {
-      const at = `${where}[${index}]`;
+    for (const [index2, entry] of raw.entries()) {
+      const at = `${where}[${index2}]`;
       const fail2 = (message) => problems.push(`${at}: ${message}`);
       if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
         fail2("must be { columns }, { rows } or { square }");
@@ -22464,66 +22745,66 @@ ${renderSections(sections)}
       problems.push(`${where} must be an object`);
       return null;
     }
-    const value = raw;
+    const value2 = raw;
     const layout = {};
     const fail2 = (message) => problems.push(`${where}.${message}`);
-    for (const key of Object.keys(value)) {
+    for (const key of Object.keys(value2)) {
       if (!LAYOUT_KEYS.includes(key)) fail2(`unknown key "${key}" \u2014 accepted: ${LAYOUT_KEYS.join(", ")}`);
     }
-    if (value.mode !== void 0) {
-      if (typeof value.mode !== "string" || !LAYOUT_MODES.includes(value.mode)) fail2(`mode must be one of: ${LAYOUT_MODES.join(", ")}`);
-      else layout.mode = value.mode;
+    if (value2.mode !== void 0) {
+      if (typeof value2.mode !== "string" || !LAYOUT_MODES.includes(value2.mode)) fail2(`mode must be one of: ${LAYOUT_MODES.join(", ")}`);
+      else layout.mode = value2.mode;
     }
-    if (value.gap !== void 0) {
-      if (typeof value.gap !== "number" || !Number.isFinite(value.gap)) fail2("gap must be a number");
-      else layout.gap = value.gap;
+    if (value2.gap !== void 0) {
+      if (typeof value2.gap !== "number" || !Number.isFinite(value2.gap)) fail2("gap must be a number");
+      else layout.gap = value2.gap;
     }
-    if (value.padding !== void 0) {
-      if (typeof value.padding === "number" && Number.isFinite(value.padding)) {
-        layout.padding = [value.padding, value.padding, value.padding, value.padding];
-      } else if (Array.isArray(value.padding) && value.padding.length === 4 && value.padding.every((one) => typeof one === "number" && Number.isFinite(one))) {
-        layout.padding = value.padding;
+    if (value2.padding !== void 0) {
+      if (typeof value2.padding === "number" && Number.isFinite(value2.padding)) {
+        layout.padding = [value2.padding, value2.padding, value2.padding, value2.padding];
+      } else if (Array.isArray(value2.padding) && value2.padding.length === 4 && value2.padding.every((one) => typeof one === "number" && Number.isFinite(one))) {
+        layout.padding = value2.padding;
       } else fail2("padding must be a number or [top, right, bottom, left]");
     }
-    if (value.primaryAxis !== void 0) {
-      if (typeof value.primaryAxis !== "string" || !PRIMARY_AXIS.includes(value.primaryAxis)) {
+    if (value2.primaryAxis !== void 0) {
+      if (typeof value2.primaryAxis !== "string" || !PRIMARY_AXIS.includes(value2.primaryAxis)) {
         fail2(`primaryAxis must be one of: ${PRIMARY_AXIS.join(", ")}`);
-      } else layout.primaryAxis = value.primaryAxis;
+      } else layout.primaryAxis = value2.primaryAxis;
     }
-    if (value.counterAxis !== void 0) {
-      if (typeof value.counterAxis !== "string" || !COUNTER_AXIS.includes(value.counterAxis)) {
+    if (value2.counterAxis !== void 0) {
+      if (typeof value2.counterAxis !== "string" || !COUNTER_AXIS.includes(value2.counterAxis)) {
         fail2(`counterAxis must be one of: ${COUNTER_AXIS.join(", ")}`);
-      } else layout.counterAxis = value.counterAxis;
+      } else layout.counterAxis = value2.counterAxis;
     }
-    if (value.wrap !== void 0) {
-      if (typeof value.wrap !== "boolean") fail2("wrap must be a boolean");
-      else layout.wrap = value.wrap;
+    if (value2.wrap !== void 0) {
+      if (typeof value2.wrap !== "boolean") fail2("wrap must be a boolean");
+      else layout.wrap = value2.wrap;
     }
-    if (value.wrapGap !== void 0) {
-      if (typeof value.wrapGap !== "number" || !Number.isFinite(value.wrapGap) || value.wrapGap < 0) {
+    if (value2.wrapGap !== void 0) {
+      if (typeof value2.wrapGap !== "number" || !Number.isFinite(value2.wrapGap) || value2.wrapGap < 0) {
         fail2("wrapGap must be a number >= 0");
-      } else layout.wrapGap = value.wrapGap;
+      } else layout.wrapGap = value2.wrapGap;
     }
     for (const flag2 of ["reverseZ", "strokesInLayout"]) {
-      if (value[flag2] === void 0) continue;
-      if (typeof value[flag2] !== "boolean") fail2(`${flag2} must be true or false`);
-      else layout[flag2] = value[flag2];
+      if (value2[flag2] === void 0) continue;
+      if (typeof value2[flag2] !== "boolean") fail2(`${flag2} must be true or false`);
+      else layout[flag2] = value2[flag2];
     }
     for (const track of ["rows", "columns"]) {
-      if (value[track] === void 0) continue;
-      const count = value[track];
+      if (value2[track] === void 0) continue;
+      const count = value2[track];
       if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
         fail2(`${track} must be a whole number of at least 1`);
       } else layout[track] = count;
     }
-    if (value.autoTracks !== void 0) {
-      if (value.autoTracks !== "NONE" && value.autoTracks !== "ROWS") fail2("autoTracks must be NONE or ROWS");
-      else layout.autoTracks = value.autoTracks;
+    if (value2.autoTracks !== void 0) {
+      if (value2.autoTracks !== "NONE" && value2.autoTracks !== "ROWS") fail2("autoTracks must be NONE or ROWS");
+      else layout.autoTracks = value2.autoTracks;
     }
-    if (value.sizing !== void 0) {
-      if (typeof value.sizing !== "object" || value.sizing === null) fail2("sizing must be { horizontal, vertical }");
+    if (value2.sizing !== void 0) {
+      if (typeof value2.sizing !== "object" || value2.sizing === null) fail2("sizing must be { horizontal, vertical }");
       else {
-        const sizing = value.sizing;
+        const sizing = value2.sizing;
         layout.sizing = {};
         for (const axis of ["horizontal", "vertical"]) {
           const mode = sizing[axis];
@@ -22596,7 +22877,7 @@ ${renderSections(sections)}
       return null;
     }
     const bindings = [];
-    for (const [asked, value] of Object.entries(raw)) {
+    for (const [asked, value2] of Object.entries(raw)) {
       if (BOUND_ELSEWHERE[asked]) {
         problems.push(`${where}.${asked}: ${BOUND_ELSEWHERE[asked]}`);
         continue;
@@ -22608,11 +22889,11 @@ ${renderSections(sections)}
         );
         continue;
       }
-      if (value !== null && (typeof value !== "string" || value.trim() === "")) {
+      if (value2 !== null && (typeof value2 !== "string" || value2.trim() === "")) {
         problems.push(`${where}.${asked} must be a variable name, id or key \u2014 or null to unbind`);
         continue;
       }
-      for (const field of fields) bindings.push({ field, variable: value === null ? null : value.trim(), wants: BINDABLE[field] });
+      for (const field of fields) bindings.push({ field, variable: value2 === null ? null : value2.trim(), wants: BINDABLE[field] });
     }
     if (bindings.length === 0 && problems.length === 0) {
       problems.push(`${where} names nothing to bind`);
@@ -22639,18 +22920,18 @@ ${renderSections(sections)}
     const origin = centred ? 0.5 : 0;
     const a = reach * dx / squared;
     const b = reach * dy / squared;
-    const zeroed = (value) => value + 0;
+    const zeroed = (value2) => value2 + 0;
     return [
       [zeroed(a), zeroed(b), zeroed(origin - (a * from[0] + b * from[1]))],
       [zeroed(-b), zeroed(a), zeroed(origin - (-b * from[0] + a * from[1]))]
     ];
   }
-  function sizingProblem(value) {
-    if (value === void 0) return null;
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  function sizingProblem(value2) {
+    if (value2 === void 0) return null;
+    if (typeof value2 !== "object" || value2 === null || Array.isArray(value2)) {
       return "must be { horizontal?, vertical? }";
     }
-    for (const [axis, mode] of Object.entries(value)) {
+    for (const [axis, mode] of Object.entries(value2)) {
       if (axis !== "horizontal" && axis !== "vertical") return `unknown axis "${axis}" \u2014 accepted: horizontal, vertical`;
       if (typeof mode !== "string" || !SIZING.includes(mode)) {
         return `${axis} must be one of: ${SIZING.join(", ")}`;
@@ -22673,9 +22954,9 @@ ${renderSections(sections)}
   }
   function paintProblem(ref) {
     if (Array.isArray(ref)) {
-      for (const [index, one] of ref.entries()) {
+      for (const [index2, one] of ref.entries()) {
         const problem = paintProblem(one);
-        if (problem) return `[${index}] ${problem}`;
+        if (problem) return `[${index2}] ${problem}`;
       }
       return null;
     }
@@ -22725,26 +23006,26 @@ ${renderSections(sections)}
     if (!Array.isArray(entry.stops) || entry.stops.length < 2) {
       return "stops must be an array of at least two colours";
     }
-    for (const [index, stop] of entry.stops.entries()) {
+    for (const [index2, stop] of entry.stops.entries()) {
       if (typeof stop === "string") {
-        if (!HEX.test(stop)) return `stops[${index}]: "${stop}" is not a #RRGGBB colour`;
+        if (!HEX.test(stop)) return `stops[${index2}]: "${stop}" is not a #RRGGBB colour`;
         continue;
       }
       if (typeof stop !== "object" || stop === null || Array.isArray(stop)) {
-        return `stops[${index}] must be "#RRGGBB" or { at, color }`;
+        return `stops[${index2}] must be "#RRGGBB" or { at, color }`;
       }
       const one = stop;
-      if (typeof one.at !== "number" || one.at < 0 || one.at > 1) return `stops[${index}].at must be between 0 and 1`;
+      if (typeof one.at !== "number" || one.at < 0 || one.at > 1) return `stops[${index2}].at must be between 0 and 1`;
       if (typeof one.color === "object" && one.color !== null) {
         const bound = one.color;
         if (typeof bound.variable !== "string" || bound.variable === "") {
-          return `stops[${index}].color must be "#RRGGBB" or { variable }`;
+          return `stops[${index2}].color must be "#RRGGBB" or { variable }`;
         }
       } else if (typeof one.color !== "string" || !HEX.test(one.color)) {
-        return `stops[${index}].color must be "#RRGGBB" or { variable }`;
+        return `stops[${index2}].color must be "#RRGGBB" or { variable }`;
       }
       if (one.opacity !== void 0 && (typeof one.opacity !== "number" || one.opacity < 0 || one.opacity > 1)) {
-        return `stops[${index}].opacity must be between 0 and 1`;
+        return `stops[${index2}].opacity must be between 0 and 1`;
       }
     }
     if (entry.angle !== void 0 && (typeof entry.angle !== "number" || !Number.isFinite(entry.angle))) {
@@ -22786,7 +23067,7 @@ ${renderSections(sections)}
   }
 
   // src/agent/values.ts
-  var clamp013 = (value) => value < 0 ? 0 : value > 1 ? 1 : value;
+  var clamp013 = (value2) => value2 < 0 ? 0 : value2 > 1 ? 1 : value2;
   function parseColor2(input) {
     if (typeof input === "object" && input !== null) {
       const raw = input;
@@ -22940,22 +23221,37 @@ ${renderSections(sections)}
       `collection "${collection.name}" has no mode "${ref}" \u2014 have: ${collection.modes.map((m) => m.name).join(", ")}`
     );
   }
-  function isAlias3(value) {
-    return typeof value === "object" && value !== null && value.type === "VARIABLE_ALIAS";
+  function isAlias3(value2) {
+    return typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
   }
-  async function describeValue(value) {
-    if (value === void 0) return "(unset)";
-    if (isAlias3(value)) {
-      const target = await figma.variables.getVariableByIdAsync(value.id);
-      if (!target) return `\u2192 ${value.id}`;
+  function composedColorValue(value2) {
+    if (typeof value2 !== "object" || value2 === null) return null;
+    const entry = value2;
+    const color = isAlias3(entry.color) ? entry.color : parseColor2(entry.color);
+    const opacity = isAlias3(entry.opacity) ? entry.opacity : typeof entry.opacity === "number" ? entry.opacity : null;
+    if (!color || opacity === null) return null;
+    if (isAlias3(color)) return { color, opacity };
+    return isAlias3(opacity) ? { color, opacity } : null;
+  }
+  async function describeValue(value2) {
+    if (value2 === void 0) return "(unset)";
+    if (isAlias3(value2)) {
+      const target = await figma.variables.getVariableByIdAsync(value2.id);
+      if (!target) return `\u2192 ${value2.id}`;
       return target.remote ? `\u2192 ${target.name} (library)` : `\u2192 ${target.name}`;
     }
-    if (typeof value === "object" && value !== null && "r" in value) {
-      const color = value;
+    const composedColor = composedColorValue(value2);
+    if (composedColor) {
+      const color = isAlias3(composedColor.color) ? await describeValue(composedColor.color) : describeColor(__spreadProps(__spreadValues({}, composedColor.color), { a: "a" in composedColor.color ? composedColor.color.a : 1 }));
+      const opacity = isAlias3(composedColor.opacity) ? await describeValue(composedColor.opacity) : `${composedColor.opacity}%`;
+      return `${color} \xB7 opacity ${opacity}`;
+    }
+    if (typeof value2 === "object" && value2 !== null && "r" in value2) {
+      const color = value2;
       return describeColor({ r: color.r, g: color.g, b: color.b, a: "a" in color ? color.a : 1 });
     }
-    if (typeof value === "object" && value !== null && "type" in value) {
-      const easing = value;
+    if (typeof value2 === "object" && value2 !== null && "type" in value2) {
+      const easing = value2;
       if (easing.type === "CUSTOM_CUBIC_BEZIER" && easing.easingFunctionCubicBezier) {
         const { x1, y1, x2, y2 } = easing.easingFunctionCubicBezier;
         return `bezier(${x1}, ${y1}, ${x2}, ${y2})`;
@@ -22964,9 +23260,9 @@ ${renderSections(sections)}
       if (spring && typeof spring.bounce === "number") return `${easing.type} (bounce ${Math.round(spring.bounce * 1e3) / 1e3})`;
       return easing.type;
     }
-    return String(value);
+    return String(value2);
   }
-  async function coerceVariableValue(variable, raw) {
+  async function coerceVariableValue(variable, raw, scopeOverride) {
     if (typeof raw === "object" && raw !== null && "alias" in raw) {
       const target = await resolveVariableRef(raw.alias);
       if (target.id === variable.id) throw new Error(`"${variable.name}" cannot alias itself`);
@@ -22977,6 +23273,39 @@ ${renderSections(sections)}
       }
       return figma.variables.createVariableAlias(target);
     }
+    if (variable.resolvedType === "COLOR" && typeof raw === "object" && raw !== null && "color" in raw) {
+      const input = raw;
+      let color;
+      if (typeof input.color === "object" && input.color !== null && "alias" in input.color) {
+        const target = await resolveVariableRef(input.color.alias);
+        if (target.id === variable.id) throw new Error(`"${variable.name}" cannot use itself as its composed color`);
+        if (target.resolvedType !== "COLOR") {
+          throw new Error(`"${variable.name}" color needs a COLOR variable \u2014 "${target.name}" is ${target.resolvedType}`);
+        }
+        color = figma.variables.createVariableAlias(target);
+      } else {
+        const parsed = parseColor2(input.color);
+        if (!parsed) throw new Error(`"${variable.name}" needs a base colour or COLOR alias in "color"`);
+        color = parsed;
+      }
+      let opacity;
+      if (typeof input.opacity === "object" && input.opacity !== null && "alias" in input.opacity) {
+        const target = await resolveVariableRef(input.opacity.alias);
+        if (target.resolvedType !== "FLOAT") {
+          throw new Error(`"${variable.name}" opacity needs a FLOAT variable \u2014 "${target.name}" is ${target.resolvedType}`);
+        }
+        opacity = figma.variables.createVariableAlias(target);
+      } else {
+        const percent = typeof input.opacity === "string" && input.opacity.trim().endsWith("%") ? Number(input.opacity.trim().slice(0, -1)) : input.opacity;
+        if (typeof percent !== "number" || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+          throw new Error(`"${variable.name}" composed opacity must be between 0% and 100%`);
+        }
+        opacity = percent;
+      }
+      if (isAlias3(color)) return { color, opacity };
+      if (isAlias3(opacity)) return { color, opacity };
+      throw new Error(`"${variable.name}" composed color needs a variable alias in "color" or "opacity"`);
+    }
     switch (variable.resolvedType) {
       case "COLOR": {
         const color = parseColor2(raw);
@@ -22984,9 +23313,19 @@ ${renderSections(sections)}
         return { r: color.r, g: color.g, b: color.b, a: color.a };
       }
       case "FLOAT": {
-        const num2 = typeof raw === "string" ? Number(raw) : raw;
+        const opacityScoped = (scopeOverride != null ? scopeOverride : variable.scopes).some(
+          (scope) => scope === "OPACITY" || scope === "COLOR_OPACITY"
+        );
+        const percent = typeof raw === "string" && raw.trim().endsWith("%") ? Number(raw.trim().slice(0, -1)) : null;
+        if (percent !== null && !opacityScoped) {
+          throw new Error(`"${variable.name}" accepts a percent only when scoped OPACITY or COLOR_OPACITY`);
+        }
+        const num2 = percent != null ? percent : typeof raw === "string" ? Number(raw) : raw;
         if (typeof num2 !== "number" || !Number.isFinite(num2)) {
           throw new Error(`"${variable.name}" needs a number \u2014 got ${JSON.stringify(raw)}`);
+        }
+        if (opacityScoped && (num2 < 0 || num2 > 100)) {
+          throw new Error(`"${variable.name}" opacity must be between 0% and 100% \u2014 got ${num2}%`);
         }
         return num2;
       }
@@ -23055,9 +23394,9 @@ ${renderSections(sections)}
     }
     return parts.join(" \xB7 ");
   }
-  function describeDefault(value) {
-    if (value === void 0 || value === null || value === "") return "";
-    const text4 = String(value);
+  function describeDefault(value2) {
+    if (value2 === void 0 || value2 === null || value2 === "") return "";
+    const text4 = String(value2);
     const short = text4.length > MAX_DEFAULT_TEXT ? `${text4.slice(0, MAX_DEFAULT_TEXT)}\u2026` : text4;
     return ` (=${short})`;
   }
@@ -23065,7 +23404,7 @@ ${renderSections(sections)}
     const resolved = {};
     const problems = [];
     const keys = Object.keys(defined);
-    for (const [asked, value] of Object.entries(wanted)) {
+    for (const [asked, value2] of Object.entries(wanted)) {
       const exact = keys.includes(asked) ? [asked] : [];
       const byName = exact.length > 0 ? exact : keys.filter((key2) => humanPropertyName(key2) === asked);
       const matches = byName.length > 0 ? byName : keys.filter((key2) => humanPropertyName(key2).toLowerCase() === asked.toLowerCase());
@@ -23081,15 +23420,15 @@ ${renderSections(sections)}
       const key = matches[0];
       const type = defined[key].type;
       if (type === "BOOLEAN") {
-        if (typeof value !== "boolean") {
-          problems.push(`${humanPropertyName(key)} is a boolean property, and ${JSON.stringify(value)} is not a boolean`);
+        if (typeof value2 !== "boolean") {
+          problems.push(`${humanPropertyName(key)} is a boolean property, and ${JSON.stringify(value2)} is not a boolean`);
           continue;
         }
-      } else if (typeof value !== "string") {
+      } else if (typeof value2 !== "string") {
         problems.push(`${humanPropertyName(key)} is a ${type.toLowerCase()} property, so its value must be a string`);
         continue;
       }
-      resolved[key] = value;
+      resolved[key] = value2;
     }
     return { resolved, problems };
   }
@@ -23240,9 +23579,9 @@ ${renderSections(sections)}
       if (spec[flag2] !== void 0 && typeof spec[flag2] !== "boolean") return `${flag2} must be true or false`;
     }
     for (const limit of ["minChildren", "maxChildren"]) {
-      const value = spec[limit];
-      if (value === void 0 || value === null) continue;
-      if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+      const value2 = spec[limit];
+      if (value2 === void 0 || value2 === null) continue;
+      if (typeof value2 !== "number" || !Number.isInteger(value2) || value2 < 0) {
         return `${limit} must be a whole number >= 0, or null for no limit`;
       }
     }
@@ -23257,16 +23596,16 @@ ${renderSections(sections)}
     }
     const spec = raw;
     const list2 = (key) => {
-      const value = spec[key];
-      if (value === void 0) return null;
-      if (!Array.isArray(value)) {
+      const value2 = spec[key];
+      if (value2 === void 0) return null;
+      if (!Array.isArray(value2)) {
         plan.problems.push(`${key} must be an array`);
         return null;
       }
-      return value;
+      return value2;
     };
-    for (const [index, entry] of ((_a = list2("add")) != null ? _a : []).entries()) {
-      const at = `add[${index}]`;
+    for (const [index2, entry] of ((_a = list2("add")) != null ? _a : []).entries()) {
+      const at = `add[${index2}]`;
       const one = entry;
       if (typeof (one == null ? void 0 : one.name) !== "string" || one.name.trim() === "") {
         plan.problems.push(`${at}.name must be a non-empty string`);
@@ -23317,8 +23656,8 @@ ${renderSections(sections)}
         type
       }, type === "SLOT" ? {} : { default: fallback }), one.settings ? { settings: one.settings } : {}), one.preferred ? { preferred: one.preferred } : {}), one.bind ? { bind: one.bind } : {}));
     }
-    for (const [index, entry] of ((_b = list2("edit")) != null ? _b : []).entries()) {
-      const at = `edit[${index}]`;
+    for (const [index2, entry] of ((_b = list2("edit")) != null ? _b : []).entries()) {
+      const at = `edit[${index2}]`;
       const one = entry;
       if (typeof (one == null ? void 0 : one.name) !== "string" || one.name.trim() === "") {
         plan.problems.push(`${at}.name must name the property to change`);
@@ -23340,17 +23679,17 @@ ${renderSections(sections)}
         name: one.name.trim()
       }, one.rename ? { rename: one.rename.trim() } : {}), one.default === void 0 ? {} : { default: one.default }), one.preferred ? { preferred: one.preferred } : {}));
     }
-    for (const [index, entry] of ((_c = list2("remove")) != null ? _c : []).entries()) {
+    for (const [index2, entry] of ((_c = list2("remove")) != null ? _c : []).entries()) {
       if (typeof entry !== "string" || entry.trim() === "") {
-        plan.problems.push(`remove[${index}] must be a property name`);
+        plan.problems.push(`remove[${index2}] must be a property name`);
         continue;
       }
       plan.remove.push(entry.trim());
     }
-    for (const [index, entry] of ((_d = list2("bind")) != null ? _d : []).entries()) {
+    for (const [index2, entry] of ((_d = list2("bind")) != null ? _d : []).entries()) {
       const one = entry;
       if (typeof (one == null ? void 0 : one.node) !== "string" || typeof (one == null ? void 0 : one.property) !== "string") {
-        plan.problems.push(`bind[${index}] must be { node: "<layer id>", property: "<property name>" }`);
+        plan.problems.push(`bind[${index2}] must be { node: "<layer id>", property: "<property name>" }`);
         continue;
       }
       plan.bind.push({ node: one.node, property: one.property });
@@ -23505,11 +23844,11 @@ ${renderSections(sections)}
       `no ${kind} style called "${wanted}"${names.length > 0 ? ` \u2014 this file has ${names.join(", ")}` : " in this file"}`
     );
   }
-  async function describeStyle(style, paints, effects, grids) {
+  async function describeStyle(style, paints2, effects, grids) {
     var _a;
     switch (style.type) {
       case "PAINT":
-        return (_a = await paints(style.paints)) != null ? _a : "none";
+        return (_a = await paints2(style.paints)) != null ? _a : "none";
       case "EFFECT":
         return effects(style.effects);
       case "TEXT": {
@@ -23527,23 +23866,23 @@ ${renderSections(sections)}
   async function applyProps(node, steps, dry = false) {
     const applied = [];
     let failed = 0;
-    for (const step of steps) {
+    for (const step2 of steps) {
       try {
-        const result = await applyStep(node, step, dry);
+        const result = await applyStep(node, step2, dry);
         if (result.error) failed++;
         applied.push(result);
       } catch (error) {
         failed++;
-        applied.push({ property: propertyOf(step), error: String((error == null ? void 0 : error.message) || error) });
+        applied.push({ property: propertyOf(step2), error: String((error == null ? void 0 : error.message) || error) });
       }
     }
     return { applied, failed };
   }
-  var propertyOf = (step) => {
-    switch (step.step) {
+  var propertyOf = (step2) => {
+    switch (step2.step) {
       case "assign":
       case "paint":
-        return step.property;
+        return step2.property;
       case "overrides":
         return "overrides";
       case "keyframes":
@@ -23565,43 +23904,43 @@ ${renderSections(sections)}
       // A refusal should name the slot the caller wrote, the way a success does — "style" tells
       // them nothing about which of the five they got wrong.
       case "style":
-        return step.slot;
+        return step2.slot;
       // `layout`, `constraints` and `lineHeight` are named after themselves.
       default:
-        return step.step;
+        return step2.step;
     }
   };
-  async function applyStep(node, step, dry) {
+  async function applyStep(node, step2, dry) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r;
     const bag = node;
-    switch (step.step) {
+    switch (step2.step) {
       case "assign": {
-        if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`);
-        const before = bag[step.property];
-        if (isText(node) && TEXT_PROPERTIES.includes(step.property)) await loadNodeFont(node);
-        if (!dry) bag[step.property] = step.value;
-        return { property: step.property, before, after: step.value };
+        if (!(step2.property in bag)) throw new Error(`a ${node.type} has no ${step2.property}`);
+        const before = bag[step2.property];
+        if (isText(node) && TEXT_PROPERTIES.includes(step2.property)) await loadNodeFont(node);
+        if (!dry) bag[step2.property] = step2.value;
+        return { property: step2.property, before, after: step2.value };
       }
       case "font": {
         if (!isText(node)) throw new Error(`only a text node has a font, not a ${node.type}`);
         const before = describeFont(node.fontName);
-        const font = { family: step.family, style: step.style };
+        const font = { family: step2.family, style: step2.style };
         await figma.loadFontAsync(font);
         if (!dry) node.fontName = font;
-        return { property: "fontName", before, after: `${step.family} ${step.style}` };
+        return { property: "fontName", before, after: `${step2.family} ${step2.style}` };
       }
       case "text": {
         if (!isText(node)) throw new Error(`only a text node has characters, not a ${node.type}`);
         await loadNodeFont(node);
         const before = node.characters;
-        if (!dry) node.characters = step.characters;
-        return { property: "characters", before, after: step.characters };
+        if (!dry) node.characters = step2.characters;
+        return { property: "characters", before, after: step2.characters };
       }
       case "lineHeight": {
         if (!isText(node)) throw new Error(`only a text node has a line height, not a ${node.type}`);
         await loadNodeFont(node);
         const before = node.lineHeight;
-        const after = step.value === "AUTO" ? { unit: "AUTO" } : { value: step.value, unit: (_a = step.unit) != null ? _a : "PIXELS" };
+        const after = step2.value === "AUTO" ? { unit: "AUTO" } : { value: step2.value, unit: (_a = step2.unit) != null ? _a : "PIXELS" };
         if (!dry) node.lineHeight = after;
         return { property: "lineHeight", before: describeMeasure(before), after: describeMeasure(after) };
       }
@@ -23609,7 +23948,7 @@ ${renderSections(sections)}
         if (!isText(node)) throw new Error(`only a text node has letter spacing, not a ${node.type}`);
         await loadNodeFont(node);
         const before = node.letterSpacing;
-        const after = { value: step.value, unit: step.unit };
+        const after = { value: step2.value, unit: step2.unit };
         if (!dry) node.letterSpacing = after;
         return { property: "letterSpacing", before: describeMeasure(before), after: describeMeasure(after) };
       }
@@ -23618,8 +23957,8 @@ ${renderSections(sections)}
           throw new Error(`a ${node.type} cannot be resized`);
         }
         const before = { width: round11(node.width), height: round11(node.height) };
-        const width = (_b = step.width) != null ? _b : node.width;
-        const height = (_c = step.height) != null ? _c : node.height;
+        const width = (_b = step2.width) != null ? _b : node.width;
+        const height = (_c = step2.height) != null ? _c : node.height;
         if (!dry) node.resizeWithoutConstraints(width, height);
         const after = dry ? { width: round11(width), height: round11(height) } : { width: round11(node.width), height: round11(node.height) };
         return { property: "size", before, after };
@@ -23630,7 +23969,7 @@ ${renderSections(sections)}
         const before = {};
         const after = {};
         for (const corner of corners) {
-          const amount = step.corners[corner];
+          const amount = step2.corners[corner];
           if (amount === void 0) continue;
           const property = `${corner}Radius`;
           before[property] = bag[property];
@@ -23644,8 +23983,8 @@ ${renderSections(sections)}
         const before = bag.constraints;
         const current = before != null ? before : { horizontal: "MIN", vertical: "MIN" };
         const after = {
-          horizontal: (_d = step.horizontal) != null ? _d : current.horizontal,
-          vertical: (_e = step.vertical) != null ? _e : current.vertical
+          horizontal: (_d = step2.horizontal) != null ? _d : current.horizontal,
+          vertical: (_e = step2.vertical) != null ? _e : current.vertical
         };
         if (!dry) bag.constraints = after;
         return { property: "constraints", before, after };
@@ -23658,7 +23997,7 @@ ${renderSections(sections)}
           gap: frame3.itemSpacing,
           padding: [frame3.paddingTop, frame3.paddingRight, frame3.paddingBottom, frame3.paddingLeft]
         };
-        const layout = step.layout;
+        const layout = step2.layout;
         if (!dry) {
           if (layout.mode) frame3.layoutMode = layout.mode;
           if (layout.gap !== void 0) frame3.itemSpacing = layout.gap;
@@ -23683,11 +24022,11 @@ ${renderSections(sections)}
         return { property: "layout", before, after: layout };
       }
       case "paint": {
-        if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`);
-        const before = await describePaints(bag[step.property]);
-        const paints = await buildPaints(step.ref);
-        if (!dry) bag[step.property] = paints;
-        return { property: step.property, before, after: await describePaints(paints) };
+        if (!(step2.property in bag)) throw new Error(`a ${node.type} has no ${step2.property}`);
+        const before = await describePaints(bag[step2.property]);
+        const paints2 = await buildPaints(step2.ref);
+        if (!dry) bag[step2.property] = paints2;
+        return { property: step2.property, before, after: await describePaints(paints2) };
       }
       case "reset": {
         const instance = asInstance(node, "overrides to reset");
@@ -23705,7 +24044,7 @@ ${renderSections(sections)}
       }
       case "swap": {
         const instance = asInstance(node, "a component to swap");
-        const target = await componentFor(step.component);
+        const target = await componentFor(step2.component);
         const before = componentName(await instance.getMainComponentAsync());
         if (!dry) instance.swapComponent(target);
         return { property: "swap", before, after: componentName(target) };
@@ -23713,16 +24052,16 @@ ${renderSections(sections)}
       case "properties": {
         const instance = asInstance(node, "component properties");
         const defined = instance.componentProperties;
-        const { resolved, problems } = resolveProperties(step.properties, defined);
+        const { resolved, problems } = resolveProperties(step2.properties, defined);
         const before = {};
         for (const key of Object.keys(resolved)) before[humanPropertyName(key)] = (_f = defined[key]) == null ? void 0 : _f.value;
         if (!dry && Object.keys(resolved).length > 0) {
           try {
             instance.setProperties(resolved);
           } catch (e) {
-            for (const [key, value] of Object.entries(resolved)) {
+            for (const [key, value2] of Object.entries(resolved)) {
               try {
-                instance.setProperties({ [key]: value });
+                instance.setProperties({ [key]: value2 });
               } catch (one) {
                 problems.push(`${humanPropertyName(key)}: ${String((one == null ? void 0 : one.message) || one)}`);
               }
@@ -23731,9 +24070,9 @@ ${renderSections(sections)}
         }
         const now = dry ? null : byHumanName(instance.componentProperties);
         const after = {};
-        for (const [key, value] of Object.entries(resolved)) {
+        for (const [key, value2] of Object.entries(resolved)) {
           const name = humanPropertyName(key);
-          after[name] = now && name in now ? now[name] : value;
+          after[name] = now && name in now ? now[name] : value2;
         }
         return __spreadValues({
           property: "properties",
@@ -23746,12 +24085,12 @@ ${renderSections(sections)}
         if (typeof holder.setReactionsAsync !== "function") {
           throw new Error(`a ${node.type} cannot carry prototype links`);
         }
-        for (const id of step.destinations) {
+        for (const id of step2.destinations) {
           const target = await figma.getNodeByIdAsync(id).catch(() => null);
           if (!target) throw new Error(`no node with id ${id} to link to`);
         }
         const reactions = [];
-        for (const link of step.links) {
+        for (const link of step2.links) {
           const actions = [];
           for (const action of link.actions) actions.push(await buildAction(action));
           reactions.push({ trigger: link.trigger, actions });
@@ -23763,24 +24102,24 @@ ${renderSections(sections)}
       }
       case "data": {
         const before = {};
-        for (const key of Object.keys(step.data)) {
+        for (const key of Object.keys(step2.data)) {
           const held = node.getPluginData(key);
           if (held !== "") before[key] = held;
         }
-        if (!dry) for (const [key, value] of Object.entries(step.data)) node.setPluginData(key, value != null ? value : "");
-        return { property: "data", before, after: step.data };
+        if (!dry) for (const [key, value2] of Object.entries(step2.data)) node.setPluginData(key, value2 != null ? value2 : "");
+        return { property: "data", before, after: step2.data };
       }
       case "effects": {
         if (!("effects" in bag)) throw new Error(`a ${node.type} takes no effects`);
         const before = await describeEffects(bag.effects);
-        let effects = step.effects;
+        let effects = step2.effects;
         const failures = [];
         for (const effect of effects) {
           if (effect.type === "SHADER") {
             await figma.importShaderById(effect.id).catch(() => void 0);
           }
         }
-        for (const binding of step.bind) {
+        for (const binding of step2.bind) {
           try {
             const variable = await resolveVariableRef(binding.variable);
             const wants = binding.field === "color" ? "COLOR" : "FLOAT";
@@ -23792,7 +24131,7 @@ ${renderSections(sections)}
               binding.field,
               variable
             );
-            effects = effects.map((effect, index) => index === binding.index ? bound : effect);
+            effects = effects.map((effect, index2) => index2 === binding.index ? bound : effect);
           } catch (error) {
             failures.push(`${binding.field}: ${String((error == null ? void 0 : error.message) || error)}`);
           }
@@ -23801,7 +24140,7 @@ ${renderSections(sections)}
         return __spreadValues({
           property: "effects",
           before,
-          after: step.summary
+          after: step2.summary
         }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
       }
       case "animation": {
@@ -23812,24 +24151,24 @@ ${renderSections(sections)}
         const held = (_g = holder.animationStyles) != null ? _g : [];
         const before = held.map((one) => one.styleId).join(", ") || "none";
         const available = figma.motion.figmaAnimationStyles().map((style) => style.styleId);
-        const unknown = step.styles.map((one) => one.style).filter((name) => !available.includes(name));
+        const unknown = step2.styles.map((one) => one.style).filter((name) => !available.includes(name));
         if (unknown.length > 0) {
           throw new Error(`no animation style called ${unknown.join(", ")} \u2014 Figma has ${available.join(", ")}`);
         }
         const failures = [];
         if (!dry) {
           for (const applied of [...held]) (_h = holder.removeAnimationStyle) == null ? void 0 : _h.call(holder, applied.id);
-          for (const one of step.styles) {
+          for (const one of step2.styles) {
             try {
               const settings = {};
-              for (const [name, value] of Object.entries(one.props)) {
-                const named = value;
+              for (const [name, value2] of Object.entries(one.props)) {
+                const named = value2;
                 if (named && typeof named === "object" && typeof named.variable === "string") {
                   const variable = await resolveVariableRef(named.variable);
                   settings[name] = { type: "VARIABLE_ALIAS", id: variable.id };
                   continue;
                 }
-                settings[name] = value;
+                settings[name] = value2;
               }
               holder.applyAnimationStyle(one.style, __spreadValues(__spreadValues(__spreadValues({}, one.duration === void 0 ? {} : { duration: one.duration }), one.offset === void 0 ? {} : { timelineOffset: one.offset }), Object.keys(settings).length > 0 ? { props: settings } : {}));
             } catch (error) {
@@ -23840,59 +24179,59 @@ ${renderSections(sections)}
         return __spreadValues({
           property: "animation",
           before,
-          after: step.summary
+          after: step2.summary
         }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
       }
       case "grid": {
         if (!("layoutGrids" in bag)) throw new Error(`a ${node.type} takes no layout grids`);
         const before = Array.isArray(bag.layoutGrids) ? `${bag.layoutGrids.length} grid(s)` : "none";
-        if (!dry) bag.layoutGrids = step.grids;
-        return { property: "grid", before, after: step.summary };
+        if (!dry) bag.layoutGrids = step2.grids;
+        return { property: "grid", before, after: step2.summary };
       }
       case "brush": {
         if (!("complexStrokeProperties" in bag)) throw new Error(`a ${node.type} has no stroke to draw with`);
         const before = describeBrush(bag.complexStrokeProperties);
-        if (step.loads) await figma.loadBrushesAsync(step.loads);
-        if (!dry) bag.complexStrokeProperties = step.brush;
-        return { property: "brush", before, after: step.summary };
+        if (step2.loads) await figma.loadBrushesAsync(step2.loads);
+        if (!dry) bag.complexStrokeProperties = step2.brush;
+        return { property: "brush", before, after: step2.summary };
       }
       case "bound": {
-        if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`);
-        const before = bag[step.property];
-        if (!dry) bag[step.property] = step.value;
-        return { property: step.property, before, after: step.value };
+        if (!(step2.property in bag)) throw new Error(`a ${node.type} has no ${step2.property}`);
+        const before = bag[step2.property];
+        if (!dry) bag[step2.property] = step2.value;
+        return { property: step2.property, before, after: step2.value };
       }
       case "dashes": {
         if (!("dashPattern" in bag)) throw new Error(`a ${node.type} has no stroke to dash`);
         const before = bag.dashPattern;
-        if (!dry) bag.dashPattern = step.dashes;
-        return { property: "strokeDashes", before, after: step.dashes };
+        if (!dry) bag.dashPattern = step2.dashes;
+        return { property: "strokeDashes", before, after: step2.dashes };
       }
       case "link": {
         if (!isText(node)) throw new Error(`only a text node carries a link, not a ${node.type}`);
         await loadNodeFont(node);
         const before = node.hyperlink;
-        if (!dry) node.hyperlink = step.url === null ? null : { type: "URL", value: step.url };
-        return { property: "hyperlink", before, after: (_i = step.url) != null ? _i : "none" };
+        if (!dry) node.hyperlink = step2.url === null ? null : { type: "URL", value: step2.url };
+        return { property: "hyperlink", before, after: (_i = step2.url) != null ? _i : "none" };
       }
       case "runs": {
         if (!isText(node)) throw new Error(`only a text node has runs, not a ${node.type}`);
         await loadNodeFont(node);
         const applied = [];
         const problems = [];
-        for (const run of step.runs) {
+        for (const run of step2.runs) {
           const { ranges, problem } = resolveRanges(node.characters, run);
           if (problem) {
             problems.push(problem);
             continue;
           }
           if (run.fontName) await figma.loadFontAsync(run.fontName);
-          const paints = run.fill === void 0 ? null : await buildPaints(run.fill);
+          const paints2 = run.fill === void 0 ? null : await buildPaints(run.fill);
           for (const [from, to] of ranges) {
             if (dry) continue;
             if (run.fontName) node.setRangeFontName(from, to, run.fontName);
             if (run.fontSize !== void 0) node.setRangeFontSize(from, to, run.fontSize);
-            if (paints) node.setRangeFills(from, to, paints);
+            if (paints2) node.setRangeFills(from, to, paints2);
             if (run.textDecoration) node.setRangeTextDecoration(from, to, run.textDecoration);
             if (run.textCase) node.setRangeTextCase(from, to, run.textCase);
             if (run.textWrap) node.setRangeTextWrapStyle(from, to, run.textWrap);
@@ -23919,7 +24258,7 @@ ${renderSections(sections)}
         const before = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical };
         const failures = [];
         for (const axis of ["horizontal", "vertical"]) {
-          const mode = step[axis];
+          const mode = step2[axis];
           if (!mode) continue;
           try {
             if (!dry) applySizing(node, axis, mode);
@@ -23930,7 +24269,7 @@ ${renderSections(sections)}
         return __spreadValues({
           property: "sizing",
           before,
-          after: { horizontal: step.horizontal, vertical: step.vertical }
+          after: { horizontal: step2.horizontal, vertical: step2.vertical }
         }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
       }
       case "bind": {
@@ -23940,7 +24279,7 @@ ${renderSections(sections)}
         const after = {};
         const failures = [];
         const bound = (_j = node.boundVariables) != null ? _j : {};
-        for (const entry of step.bindings) {
+        for (const entry of step2.bindings) {
           try {
             const held = (_k = bound[entry.field]) == null ? void 0 : _k.id;
             if (held) {
@@ -23969,20 +24308,20 @@ ${renderSections(sections)}
         }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
       }
       case "style": {
-        const setter = STYLE_SETTERS[step.slot];
+        const setter = STYLE_SETTERS[step2.slot];
         const holder = node;
         if (typeof holder[setter] !== "function") {
-          throw new Error(`a ${node.type} takes no ${step.slot}`);
+          throw new Error(`a ${node.type} takes no ${step2.slot}`);
         }
-        const held = holder[`${step.slot}Id`];
+        const held = holder[`${step2.slot}Id`];
         const was = typeof held === "string" && held !== "" ? await figma.getStyleByIdAsync(held).catch(() => null) : null;
-        if (step.ref === null) {
+        if (step2.ref === null) {
           if (!dry) await holder[setter]("");
-          return { property: step.slot, before: (_m = was == null ? void 0 : was.name) != null ? _m : null, after: "detached" };
+          return { property: step2.slot, before: (_m = was == null ? void 0 : was.name) != null ? _m : null, after: "detached" };
         }
-        const style = await styleFor(step.ref, step.kind);
+        const style = await styleFor(step2.ref, step2.kind);
         if (!dry) await holder[setter](style.id);
-        return { property: step.slot, before: (_n = was == null ? void 0 : was.name) != null ? _n : null, after: style.name };
+        return { property: step2.slot, before: (_n = was == null ? void 0 : was.name) != null ? _n : null, after: style.name };
       }
       case "network": {
         const holder = node;
@@ -23990,28 +24329,28 @@ ${renderSections(sections)}
           throw new Error(`a ${node.type} has no vector network \u2014 only a vector does`);
         }
         const before = node.vectorNetwork;
-        if (!dry) await holder.setVectorNetworkAsync(step.network);
+        if (!dry) await holder.setVectorNetworkAsync(step2.network);
         return {
           property: "network",
           before: before ? `${before.vertices.length} point(s), ${before.segments.length} segment(s)` : "none",
-          after: step.summary
+          after: step2.summary
         };
       }
       case "paths": {
         if (!("vectorPaths" in bag)) throw new Error(`a ${node.type} has no paths \u2014 only a vector does`);
         const before = (_p = (_o = bag.vectorPaths) == null ? void 0 : _o.length) != null ? _p : 0;
-        if (!dry) bag.vectorPaths = step.paths;
+        if (!dry) bag.vectorPaths = step2.paths;
         return {
           property: "paths",
           before: `${before} path(s)`,
-          after: step.paths.map((path) => `${path.windingRule} ${path.data}`).join(" \xB7 ")
+          after: step2.paths.map((path) => `${path.windingRule} ${path.data}`).join(" \xB7 ")
         };
       }
       case "strokeProfile": {
         if (!("variableWidthStrokeProperties" in bag)) throw new Error(`a ${node.type} has no stroke to shape`);
         const before = describeProfile(bag.variableWidthStrokeProperties);
-        if (!dry) bag.variableWidthStrokeProperties = step.profile;
-        return { property: "strokeProfile", before, after: describeProfile(step.profile) };
+        if (!dry) bag.variableWidthStrokeProperties = step2.profile;
+        return { property: "strokeProfile", before, after: describeProfile(step2.profile) };
       }
       case "keyframes": {
         const motion = node;
@@ -24020,7 +24359,7 @@ ${renderSections(sections)}
         }
         const applied = [];
         const failures = [];
-        for (const one of step.tracks) {
+        for (const one of step2.tracks) {
           try {
             if (!dry) motion.applyManualKeyframeTrack({ type: "PROPERTY", name: one.name }, one.track);
             applied.push(one.name);
@@ -24041,13 +24380,13 @@ ${renderSections(sections)}
           throw new Error(`a ${node.type} has no timeline of its own \u2014 only a top-level frame does`);
         }
         const before = timeline.duration;
-        if (!dry) motion.setTimelineDuration(timeline.id, step.seconds);
-        return { property: "timeline", before: `${before}s`, after: `${step.seconds}s` };
+        if (!dry) motion.setTimelineDuration(timeline.id, step2.seconds);
+        return { property: "timeline", before: `${before}s`, after: `${step2.seconds}s` };
       }
       case "overrides": {
         const applied = [];
         const failures = [];
-        for (const one of step.overrides) {
+        for (const one of step2.overrides) {
           const id = addressIn(node, one.at);
           const child = await figma.getNodeByIdAsync(id).catch(() => null);
           if (!child || !("type" in child)) {
@@ -24061,21 +24400,21 @@ ${renderSections(sections)}
         }
         return __spreadValues({
           property: "overrides",
-          before: `${step.overrides.length} to apply`,
+          before: `${step2.overrides.length} to apply`,
           after: applied.join(" \xB7 ")
         }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
       }
       case "reparent": {
         const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null;
-        const parent = step.parent === "" ? node.parent : await resolveParent(step.parent);
+        const parent = step2.parent === "" ? node.parent : await resolveParent(step2.parent);
         if (!parent) throw new Error("the node has no parent to move within");
         if (!("appendChild" in parent)) throw new Error(`a ${parent.type} cannot hold children`);
         if (!dry) {
           const container = parent;
-          if (step.index === void 0) container.appendChild(node);
-          else container.insertChild(Math.min(step.index, container.children.length), node);
+          if (step2.index === void 0) container.appendChild(node);
+          else container.insertChild(Math.min(step2.index, container.children.length), node);
         }
-        return { property: "parent", before, after: { id: parent.id, name: parent.name, index: step.index } };
+        return { property: "parent", before, after: { id: parent.id, name: parent.name, index: step2.index } };
       }
     }
   }
@@ -24098,9 +24437,9 @@ ${renderSections(sections)}
         return { type: "URL", url: action.url, openInNewTab: action.newTab };
       case "setVariable": {
         const variable = await resolveVariableRef(action.variable);
-        const value = action.value;
-        if (typeof value === "object" && value !== null) {
-          const other = await resolveVariableRef(value.variable);
+        const value2 = action.value;
+        if (typeof value2 === "object" && value2 !== null) {
+          const other = await resolveVariableRef(value2.variable);
           if (other.resolvedType !== variable.resolvedType) {
             throw new Error(`"${other.name}" is a ${other.resolvedType} and "${variable.name}" holds a ${variable.resolvedType}`);
           }
@@ -24110,14 +24449,14 @@ ${renderSections(sections)}
             variableValue: { type: "VARIABLE_ALIAS", resolvedType: variable.resolvedType, value: { type: "VARIABLE_ALIAS", id: other.id } }
           };
         }
-        const held = typeof value === "boolean" ? "BOOLEAN" : typeof value === "number" ? "FLOAT" : "STRING";
+        const held = typeof value2 === "boolean" ? "BOOLEAN" : typeof value2 === "number" ? "FLOAT" : "STRING";
         if (held !== variable.resolvedType) {
-          throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${JSON.stringify(value)} is a ${held}`);
+          throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${JSON.stringify(value2)} is a ${held}`);
         }
         return {
           type: "SET_VARIABLE",
           variableId: variable.id,
-          variableValue: { type: held, resolvedType: variable.resolvedType, value }
+          variableValue: { type: held, resolvedType: variable.resolvedType, value: value2 }
         };
       }
       case "setMode": {
@@ -24127,13 +24466,13 @@ ${renderSections(sections)}
         return { type: "SET_VARIABLE_MODE", variableCollectionId: collection.id, variableModeId: modes[0].modeId };
       }
       case "conditional": {
-        const blocks = [];
+        const blocks2 = [];
         for (const block3 of action.blocks) {
           const actions = [];
           for (const one of block3.actions) actions.push(await buildAction(one));
-          blocks.push(__spreadProps(__spreadValues({}, block3.condition ? { condition: await buildCondition(block3.condition) } : {}), { actions }));
+          blocks2.push(__spreadProps(__spreadValues({}, block3.condition ? { condition: await buildCondition(block3.condition) } : {}), { actions }));
         }
-        return { type: "CONDITIONAL", conditionalBlocks: blocks };
+        return { type: "CONDITIONAL", conditionalBlocks: blocks2 };
       }
       default:
         return __spreadValues(__spreadValues(__spreadValues({
@@ -24144,13 +24483,13 @@ ${renderSections(sections)}
         }, action.resetScroll === void 0 ? {} : { resetScrollPosition: action.resetScroll }), action.resetVideo === void 0 ? {} : { resetVideoPosition: action.resetVideo }), action.resetInteractive === void 0 ? {} : { resetInteractiveComponents: action.resetInteractive });
     }
   }
-  async function buildCondition(condition) {
+  async function buildCondition(condition2) {
     const args = [];
-    for (const operand of condition.args) args.push(await buildOperand(operand));
+    for (const operand of condition2.args) args.push(await buildOperand(operand));
     return {
       type: "EXPRESSION",
       resolvedType: "BOOLEAN",
-      value: { expressionFunction: condition.fn, expressionArguments: args }
+      value: { expressionFunction: condition2.fn, expressionArguments: args }
     };
   }
   async function buildOperand(operand) {
@@ -24163,9 +24502,9 @@ ${renderSections(sections)}
         value: { type: "VARIABLE_ALIAS", id: variable.id }
       };
     }
-    const value = operand.value;
-    const type = typeof value === "boolean" ? "BOOLEAN" : typeof value === "number" ? "FLOAT" : "STRING";
-    return { type, resolvedType: type, value };
+    const value2 = operand.value;
+    const type = typeof value2 === "boolean" ? "BOOLEAN" : typeof value2 === "number" ? "FLOAT" : "STRING";
+    return { type, resolvedType: type, value: value2 };
   }
   async function variableName(id, withinCollection) {
     var _a, _b, _c, _d, _e, _f;
@@ -24185,14 +24524,14 @@ ${renderSections(sections)}
     }
     return out;
   }
-  function measured(value) {
-    const result = measure(value);
-    if (result === null) throw new Error(`${JSON.stringify(value)} is neither pixels nor a percentage`);
+  function measured(value2) {
+    const result = measure(value2);
+    if (result === null) throw new Error(`${JSON.stringify(value2)} is neither pixels nor a percentage`);
     return result;
   }
-  function describeMeasure(value) {
-    if (typeof value !== "object" || value === null || !("unit" in value)) return "mixed";
-    const { unit, value: amount } = value;
+  function describeMeasure(value2) {
+    if (typeof value2 !== "object" || value2 === null || !("unit" in value2)) return "mixed";
+    const { unit, value: amount } = value2;
     if (unit === "AUTO") return "auto";
     return unit === "PERCENT" ? `${round11(amount != null ? amount : 0)}%` : `${round11(amount != null ? amount : 0)}px`;
   }
@@ -24250,8 +24589,8 @@ ${renderSections(sections)}
     }
     const fonts = /* @__PURE__ */ new Set();
     const wanted = [];
-    for (let index = 0; index < node.characters.length; index++) {
-      const font = node.getRangeFontName(index, index + 1);
+    for (let index2 = 0; index2 < node.characters.length; index2++) {
+      const font = node.getRangeFontName(index2, index2 + 1);
       if (font === figma.mixed) continue;
       const key = `${font.family}|${font.style}`;
       if (fonts.has(key)) continue;
@@ -24297,8 +24636,8 @@ ${renderSections(sections)}
     const { from, to } = gradientHandles(ref);
     const spread = ref.stops.length - 1;
     const stops = [];
-    for (const [index, entry] of ref.stops.entries()) {
-      const stop = typeof entry === "string" ? { at: spread === 0 ? 0 : index / spread, color: entry } : entry;
+    for (const [index2, entry] of ref.stops.entries()) {
+      const stop = typeof entry === "string" ? { at: spread === 0 ? 0 : index2 / spread, color: entry } : entry;
       const alpha = (_a = stop.opacity) != null ? _a : 1;
       if (typeof stop.color === "object") {
         const variable = await resolveVariableRef(stop.color.variable);
@@ -24356,13 +24695,13 @@ ${renderSections(sections)}
     if (!node) throw new Error(`no node with id ${id}`);
     return node;
   }
-  async function describePaints(value) {
+  async function describePaints(value2) {
     var _a, _b, _c, _d, _e, _f, _g, _h;
-    if (value === figma.mixed) return "mixed";
-    if (!Array.isArray(value)) return value === void 0 ? null : String(value);
-    if (value.length === 0) return "none";
+    if (value2 === figma.mixed) return "mixed";
+    if (!Array.isArray(value2)) return value2 === void 0 ? null : String(value2);
+    if (value2.length === 0) return "none";
     const parts = [];
-    for (const paint of value) {
+    for (const paint of value2) {
       if (typeof paint !== "object" || paint === null) {
         parts.push(String(paint));
         continue;
@@ -24414,10 +24753,10 @@ ${renderSections(sections)}
     const hex = `#${[color.r, color.g, color.b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
     return color.a !== void 0 && color.a < 1 ? `${hex} @${round11(color.a)}` : hex;
   }
-  async function describeAnimation(value) {
-    if (!Array.isArray(value) || value.length === 0) return "none";
+  async function describeAnimation(value2) {
+    if (!Array.isArray(value2) || value2.length === 0) return "none";
     const lines = [];
-    for (const style of value) {
+    for (const style of value2) {
       lines.push(await (async () => {
         var _a, _b, _c, _d, _e;
         const entries = Object.entries((_a = style.props) != null ? _a : {}).sort(
@@ -24459,10 +24798,10 @@ ${renderSections(sections)}
     }
     return (_a = styleWords.get(key)) != null ? _a : null;
   }
-  function describeShaderPaints(value) {
-    if (!Array.isArray(value)) return [];
+  function describeShaderPaints(value2) {
+    if (!Array.isArray(value2)) return [];
     const shaders = [];
-    for (const paint of value) {
+    for (const paint of value2) {
       if ((paint == null ? void 0 : paint.type) !== "SHADER") continue;
       const shader = paint;
       shaders.push(__spreadValues({
@@ -24471,23 +24810,23 @@ ${renderSections(sections)}
     }
     return shaders;
   }
-  function describeProfile(value) {
+  function describeProfile(value2) {
     var _a;
-    const one = value;
+    const one = value2;
     if (!(one == null ? void 0 : one.widthProfile)) return null;
     if (one.widthProfile !== "CUSTOM") return one.widthProfile;
     return ((_a = one.variableWidthPoints) != null ? _a : []).map((point2) => ({ at: round11(point2.position), width: round11(point2.width) }));
   }
-  function describeBrush(value) {
-    const brush = value;
+  function describeBrush(value2) {
+    const brush = value2;
     if (!brush || brush.type === "BASIC") return "basic";
     if (brush.type === "DYNAMIC") return `dynamic ${brush.frequency}/${brush.wiggle}/${brush.smoothen}`;
     return `${brush.brushType.toLowerCase()} ${brush.brushName}`;
   }
-  function describeGrids(value) {
-    if (!Array.isArray(value) || value.length === 0) return "none";
+  function describeGrids(value2) {
+    if (!Array.isArray(value2) || value2.length === 0) return "none";
     const parts = [];
-    for (const grid of value) {
+    for (const grid of value2) {
       if (grid.pattern === "GRID") {
         parts.push(`square ${grid.sectionSize}`);
         continue;
@@ -24500,12 +24839,12 @@ ${renderSections(sections)}
     }
     return parts.join(" \xB7 ");
   }
-  async function describeEffects(value) {
+  async function describeEffects(value2) {
     var _a, _b;
-    if (!Array.isArray(value)) return value === figma.mixed ? "mixed" : "none";
-    if (value.length === 0) return "none";
+    if (!Array.isArray(value2)) return value2 === figma.mixed ? "mixed" : "none";
+    if (value2.length === 0) return "none";
     const parts = [];
-    for (const effect of value) {
+    for (const effect of value2) {
       const bound = (_a = effect.boundVariables) != null ? _a : {};
       const named = async (field, fallback) => {
         var _a2, _b2;
@@ -24538,7 +24877,7 @@ ${renderSections(sections)}
     return parts.join(" \xB7 ");
   }
   var describeFont = (font) => font === figma.mixed ? "mixed" : `${font.family} ${font.style}`;
-  var round11 = (value) => Math.round(value * 100) / 100;
+  var round11 = (value2) => Math.round(value2 * 100) / 100;
 
   // src/canvas/text-runs.ts
   var RUN_FIELDS = [
@@ -24566,7 +24905,7 @@ ${renderSections(sections)}
     const runs = [];
     for (const segment of segments) {
       const run = { from: segment.start, to: segment.end };
-      const differs = (field, value) => JSON.stringify(bag[field]) !== JSON.stringify(value);
+      const differs = (field, value2) => JSON.stringify(bag[field]) !== JSON.stringify(value2);
       if (differs("fontName", segment.fontName)) {
         const font = segment.fontName;
         run.fontName = { family: font.family, style: font.style };
@@ -24586,25 +24925,25 @@ ${renderSections(sections)}
     }
     return runs;
   }
-  function writableMeasure(value) {
-    if (typeof value !== "object" || value === null || !("unit" in value)) return 0;
-    const { unit, value: amount } = value;
+  function writableMeasure(value2) {
+    if (typeof value2 !== "object" || value2 === null || !("unit" in value2)) return 0;
+    const { unit, value: amount } = value2;
     if (unit === "AUTO") return "AUTO";
     const size = Math.round((amount != null ? amount : 0) * 100) / 100;
     return unit === "PERCENT" ? `${size}%` : size;
   }
 
   // src/canvas/effect-reader.ts
-  var point = (value) => value ? [round12(value.x), round12(value.y)] : void 0;
-  var round12 = (value) => Math.round(value * 100) / 100;
+  var point = (value2) => value2 ? [round12(value2.x), round12(value2.y)] : void 0;
+  var round12 = (value2) => Math.round(value2 * 100) / 100;
   function colourWords(colour) {
     return formatHex({ r: colour.r, g: colour.g, b: colour.b }).toUpperCase();
   }
-  async function readEffects(value) {
+  async function readEffects(value2) {
     var _a, _b, _c, _d, _e, _f;
-    if (!Array.isArray(value) || value.length === 0) return null;
+    if (!Array.isArray(value2) || value2.length === 0) return null;
     const out = [];
-    for (const effect of value) {
+    for (const effect of value2) {
       const bound = (_a = effect.boundVariables) != null ? _a : {};
       const field = async (name, held) => {
         var _a2, _b2;
@@ -24682,6 +25021,143 @@ ${renderSections(sections)}
     return out;
   }
 
+  // src/agent/paints.ts
+  var paintChannel = (value2) => Math.round(value2 * 255).toString(16).toUpperCase().padStart(2, "0");
+  var paintHex = (color) => `#${paintChannel(color.r)}${paintChannel(color.g)}${paintChannel(color.b)}`;
+  var figmaVariableName = async (id) => {
+    const variable = await figma.variables.getVariableByIdAsync(id);
+    return variable ? variable.name : id;
+  };
+  async function boundTokenName(holder, resolve2 = figmaVariableName) {
+    var _a, _b;
+    const id = (_b = (_a = holder == null ? void 0 : holder.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
+    if (!id) return null;
+    return resolve2(id);
+  }
+  async function nameAliasesWithin(value2) {
+    var _a;
+    if (Array.isArray(value2)) {
+      const out2 = [];
+      for (const item of value2) out2.push(await nameAliasesWithin(item));
+      return out2;
+    }
+    if (!value2 || typeof value2 !== "object") return value2;
+    const record2 = value2;
+    if (record2.type === "VARIABLE_ALIAS" && typeof record2.id === "string") {
+      let variable = null;
+      try {
+        variable = await figma.variables.getVariableByIdAsync(record2.id);
+      } catch (e) {
+      }
+      return __spreadValues({ token: (_a = variable == null ? void 0 : variable.name) != null ? _a : record2.id, id: record2.id }, (variable == null ? void 0 : variable.key) ? { key: variable.key } : {});
+    }
+    const out = {};
+    for (const [key, item] of Object.entries(record2)) out[key] = await nameAliasesWithin(item);
+    return out;
+  }
+  async function describeShader(shader, definitions) {
+    var _a;
+    const id = typeof (shader == null ? void 0 : shader.id) === "string" ? shader.id : "";
+    const known = definitions == null ? void 0 : definitions.get(id);
+    const declared = (_a = known == null ? void 0 : known.propertyDefinitions) != null ? _a : {};
+    const out = __spreadValues({
+      id,
+      named: known !== void 0
+    }, known ? { name: known.name, kind: known.type } : {});
+    const properties = shader == null ? void 0 : shader.properties;
+    if (properties && typeof properties === "object") {
+      const described = [];
+      for (const [defId, value2] of Object.entries(properties)) {
+        const definition = declared[defId];
+        described.push(__spreadProps(__spreadValues({
+          id: defId
+        }, definition ? { name: definition.name, type: definition.type } : {}), {
+          value: await nameAliasesWithin(value2)
+        }));
+      }
+      if (described.length > 0) out.properties = described;
+    }
+    return out;
+  }
+  function imagePlacement(scaleMode, transform, scalingFactor) {
+    if (scaleMode === "FILL") return { fit: "cover" };
+    if (scaleMode === "FIT") return { fit: "contain" };
+    if (scaleMode === "TILE") {
+      return __spreadValues({ fit: "tile" }, typeof scalingFactor === "number" ? { scalingFactor } : {});
+    }
+    if (scaleMode !== "CROP") return null;
+    const rows = transform;
+    if (!Array.isArray(rows) || rows.length < 2 || !Array.isArray(rows[0]) || !Array.isArray(rows[1])) return null;
+    const [[a, b, tx], [c, d, ty]] = rows;
+    if (b !== 0 || c !== 0 || !a || !d) return { fit: "matrix" };
+    const round15 = (value2) => Math.round(value2 * 1e4) / 1e4;
+    return {
+      fit: "crop",
+      scale: { x: round15(1 / a), y: round15(1 / d) },
+      offset: { x: round15(-tx / a), y: round15(-ty / d) }
+    };
+  }
+  async function describePaint(paint, index2, shaders, resolve2) {
+    var _a, _b;
+    const out = { type: String((_a = paint == null ? void 0 : paint.type) != null ? _a : "UNKNOWN"), index: index2 };
+    if ((paint == null ? void 0 : paint.visible) === false) out.visible = false;
+    if (typeof (paint == null ? void 0 : paint.opacity) === "number" && paint.opacity < 1) out.opacity = paint.opacity;
+    if (typeof (paint == null ? void 0 : paint.blendMode) === "string" && paint.blendMode !== "NORMAL") out.blendMode = paint.blendMode;
+    if ((paint == null ? void 0 : paint.type) === "SOLID" && paint.color) {
+      out.color = paintHex(paint.color);
+      if (typeof paint.opacity === "number" && paint.opacity < 1) out.alpha = paint.opacity;
+      out.bound = await boundTokenName(paint, resolve2);
+      return out;
+    }
+    if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
+      out.bound = null;
+      if (Array.isArray(paint.gradientTransform)) out.transform = paint.gradientTransform;
+      out.stops = [];
+      for (const stop of paint.gradientStops) {
+        const described = {
+          position: Math.round(stop.position * 100),
+          color: paintHex(stop.color),
+          bound: await boundTokenName(stop, resolve2)
+        };
+        if (typeof ((_b = stop.color) == null ? void 0 : _b.a) === "number" && stop.color.a < 1) described.alpha = stop.color.a;
+        out.stops.push(described);
+      }
+      return out;
+    }
+    if ((paint == null ? void 0 : paint.type) === "IMAGE" || (paint == null ? void 0 : paint.type) === "VIDEO") {
+      if (paint.type === "IMAGE" && typeof paint.imageHash === "string") out.imageHash = paint.imageHash;
+      if (paint.type === "VIDEO" && typeof paint.videoHash === "string") out.videoHash = paint.videoHash;
+      if (typeof paint.scaleMode === "string") out.scaleMode = paint.scaleMode;
+      const transform = paint.type === "IMAGE" ? paint.imageTransform : paint.videoTransform;
+      if (Array.isArray(transform)) out.imageTransform = transform;
+      if (typeof paint.scalingFactor === "number") out.scalingFactor = paint.scalingFactor;
+      const placement = imagePlacement(paint.scaleMode, transform, paint.scalingFactor);
+      if (placement) out.placement = placement;
+      if (typeof paint.rotation === "number" && paint.rotation !== 0) out.rotation = paint.rotation;
+      if (paint.filters && typeof paint.filters === "object") {
+        const filters = {};
+        for (const [name, value2] of Object.entries(paint.filters)) {
+          if (typeof value2 === "number" && value2 !== 0) filters[name] = value2;
+        }
+        if (Object.keys(filters).length > 0) out.filters = filters;
+      }
+      out.bound = null;
+      return out;
+    }
+    if ((paint == null ? void 0 : paint.type) === "PATTERN") {
+      out.pattern = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({}, typeof paint.sourceNodeId === "string" ? { sourceNodeId: paint.sourceNodeId } : {}), typeof paint.tileType === "string" ? { tileType: paint.tileType } : {}), typeof paint.scalingFactor === "number" ? { scalingFactor: paint.scalingFactor } : {}), paint.spacing ? { spacing: { x: paint.spacing.x, y: paint.spacing.y } } : {}), typeof paint.horizontalAlignment === "string" ? { horizontalAlignment: paint.horizontalAlignment } : {}), typeof paint.verticalAlignment === "string" ? { verticalAlignment: paint.verticalAlignment } : {});
+      out.bound = null;
+      return out;
+    }
+    if ((paint == null ? void 0 : paint.type) === "SHADER") {
+      out.shader = await describeShader(paint, shaders);
+      out.bound = null;
+      return out;
+    }
+    out.bound = await boundTokenName(paint, resolve2);
+    return out;
+  }
+
   // src/canvas/link-reader.ts
   var TRIGGER_WORDS = {
     ON_CLICK: "click",
@@ -24738,8 +25214,8 @@ ${renderSections(sections)}
       }
       case "SET_VARIABLE": {
         if (!action.variableId) return { unread: ["a variable action with no variable"] };
-        const value = action.variableValue;
-        const resolved = value && typeof value === "object" && "type" in value && value.type === "VARIABLE_ALIAS" ? { variable: value.id } : value;
+        const value2 = action.variableValue;
+        const resolved = value2 && typeof value2 === "object" && "type" in value2 && value2.type === "VARIABLE_ALIAS" ? { variable: value2.id } : value2;
         return { set: { variable: action.variableId, value: resolved } };
       }
       case "SET_VARIABLE_MODE": {
@@ -24747,9 +25223,9 @@ ${renderSections(sections)}
         return { mode: { collection: action.variableCollectionId, mode: action.variableModeId } };
       }
       case "CONDITIONAL": {
-        const blocks = (_a = action.conditionalBlocks) != null ? _a : [];
-        if (blocks.length === 0) return { unread: ["an empty conditional"] };
-        const [first, second, ...rest] = blocks;
+        const blocks2 = (_a = action.conditionalBlocks) != null ? _a : [];
+        if (blocks2.length === 0) return { unread: ["an empty conditional"] };
+        const [first, second, ...rest] = blocks2;
         const then = firstOf((_b = first.actions) != null ? _b : []);
         if (!then) return { unread: ["a conditional whose branch does nothing the write can say"] };
         const asked = expressionOf(first.condition);
@@ -24771,9 +25247,9 @@ ${renderSections(sections)}
     }
     return null;
   };
-  function expressionOf(condition) {
+  function expressionOf(condition2) {
     var _a;
-    const node = condition;
+    const node = condition2;
     if (!(node == null ? void 0 : node.expressionFunction)) return null;
     const args = (_a = node.expressionArguments) != null ? _a : [];
     const is = COMPARISONS2[node.expressionFunction];
@@ -24787,8 +25263,8 @@ ${renderSections(sections)}
     if (!one) return null;
     if (one.type === "VARIABLE_ALIAS") return { variable: String(one.id) };
     if (one.type === "EXPRESSION") return expressionOf(one.value);
-    const value = one.value;
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+    const value2 = one.value;
+    if (typeof value2 === "string" || typeof value2 === "number" || typeof value2 === "boolean") return value2;
     return null;
   }
   var COMPARISONS2 = {
@@ -24993,12 +25469,12 @@ ${renderSections(sections)}
   }
   function indexById(root) {
     const map = /* @__PURE__ */ new Map();
-    const walk2 = (node) => {
+    const walk3 = (node) => {
       var _a;
       map.set(node.id, node);
-      for (const child of (_a = node.children) != null ? _a : []) walk2(child);
+      for (const child of (_a = node.children) != null ? _a : []) walk3(child);
     };
-    walk2(root);
+    walk3(root);
     return map;
   }
   var REACTION_TRIGGERS = {
@@ -25095,8 +25571,8 @@ ${renderSections(sections)}
   };
   function stateEntryOf(props) {
     if (!props) return null;
-    for (const [key, value] of Object.entries(props)) {
-      if (/state/i.test(key)) return { key, value };
+    for (const [key, value2] of Object.entries(props)) {
+      if (/state/i.test(key)) return { key, value: value2 };
     }
     return null;
   }
@@ -25119,7 +25595,7 @@ ${renderSections(sections)}
       const siblingProps = sibling.variantProperties;
       if (!siblingProps) continue;
       const sameElsewhere = Object.entries((_c = self.variantProperties) != null ? _c : {}).every(
-        ([key, value]) => key === ownState.key || siblingProps[key] === value
+        ([key, value2]) => key === ownState.key || siblingProps[key] === value2
       );
       if (!sameElsewhere) continue;
       const siblingValue = siblingProps[ownState.key];
@@ -25143,7 +25619,7 @@ ${renderSections(sections)}
     const resting = members.find((member) => {
       var _a2;
       const values = Object.values((_a2 = member.variantProperties) != null ? _a2 : {});
-      return values.some((value) => /^(default|standart|standard|idle|normal|rest|enabled)$/i.test(value));
+      return values.some((value2) => /^(default|standart|standard|idle|normal|rest|enabled)$/i.test(value2));
     });
     return resting != null ? resting : members[0];
   }
@@ -25157,11 +25633,11 @@ ${renderSections(sections)}
     const [fromReactions, fromVariants] = await Promise.all([reactionStates(node, resolve2), variantStates(node)]);
     return { states: [...fromReactions, ...fromVariants] };
   }
-  function round22(value) {
-    return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) / 100 : 0;
+  function round22(value2) {
+    return typeof value2 === "number" && Number.isFinite(value2) ? Math.round(value2 * 100) / 100 : 0;
   }
-  function numberOrUndefined(value) {
-    return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+  function numberOrUndefined(value2) {
+    return typeof value2 === "number" && Number.isFinite(value2) ? value2 : void 0;
   }
   function buildFrameDiffable(node, parents) {
     var _a;
@@ -25297,22 +25773,22 @@ ${renderSections(sections)}
 
   // src/agent/component-api.ts
   var REFERENCE_FIELDS = ["visible", "characters", "mainComponent"];
-  function normalise(value) {
-    return String(value != null ? value : "").trim().toLowerCase();
+  function normalise(value2) {
+    return String(value2 != null ? value2 : "").trim().toLowerCase();
   }
   function findDefaultVariant(members, axes) {
     return members.find(
-      (member) => axes.every(([axis, value]) => {
+      (member) => axes.every(([axis, value2]) => {
         var _a;
-        return normalise((_a = member.variantProperties) == null ? void 0 : _a[axis]) === normalise(value);
+        return normalise((_a = member.variantProperties) == null ? void 0 : _a[axis]) === normalise(value2);
       })
     );
   }
-  function findIsolated(members, axes, axis, value) {
+  function findIsolated(members, axes, axis, value2) {
     return members.find(
       (member) => axes.every(([name, fallback]) => {
         var _a;
-        const wanted = name === axis ? value : fallback;
+        const wanted = name === axis ? value2 : fallback;
         return normalise((_a = member.variantProperties) == null ? void 0 : _a[name]) === normalise(wanted);
       })
     );
@@ -25371,11 +25847,11 @@ ${renderSections(sections)}
     for (const [name, spec] of variantEntries) {
       const defaultValue = String((_c = spec.defaultValue) != null ? _c : "");
       const options_ = [];
-      for (const value of (_d = spec.variantOptions) != null ? _d : []) {
-        const isDefault = normalise(value) === normalise(defaultValue);
-        const member = isDefault ? defaultVariant : findIsolated(members, axisDefaults, name, value);
+      for (const value2 of (_d = spec.variantOptions) != null ? _d : []) {
+        const isDefault = normalise(value2) === normalise(defaultValue);
+        const member = isDefault ? defaultVariant : findIsolated(members, axisDefaults, name, value2);
         options_.push(__spreadValues(__spreadValues(__spreadValues({
-          value
+          value: value2
         }, isDefault ? { isDefault: true } : {}), member ? { variantId: member.id, variantName: member.name } : {}), wantChanges && member && !isDefault && !ranOut ? Date.now() > deadline2 ? (ranOut = true, {}) : { changes: await diffNodeSubtrees(defaultVariant, member, resolveToken) } : {}));
       }
       axes.push({ name, default: defaultValue, options: options_ });
@@ -25539,13 +26015,13 @@ ${scripts}`, "");
   }
 
   // src/agent/files.ts
-  var FILE_ENVELOPE = "__alteryFile";
+  var FILE_ENVELOPE = "__allcrewChannelFile";
   function isSafeFileName(name) {
     return name.length > 0 && name.length <= 128 && /^[A-Za-z0-9._@-]+$/.test(name) && !name.startsWith(".");
   }
-  function isFileEnvelope(value) {
-    if (typeof value !== "object" || value === null) return false;
-    const inner = value[FILE_ENVELOPE];
+  function isFileEnvelope(value2) {
+    if (typeof value2 !== "object" || value2 === null) return false;
+    const inner = value2[FILE_ENVELOPE];
     if (typeof inner !== "object" || inner === null) return false;
     const spec = inner;
     return typeof spec.name === "string" && typeof spec.data === "string";
@@ -25572,14 +26048,14 @@ ${scripts}`, "");
     return node;
   }
   async function indexSceneNodes(roots) {
-    const index = /* @__PURE__ */ new Map();
+    const index2 = /* @__PURE__ */ new Map();
     for (const root of roots) {
-      index.set(root.id, root);
+      index2.set(root.id, root);
       for (const node of await findAllWithCriteria(root, (candidate) => true)) {
-        index.set(node.id, node);
+        index2.set(node.id, node);
       }
     }
-    return index;
+    return index2;
   }
   async function collectTokens(nodes) {
     var _a;
@@ -25826,9 +26302,9 @@ ${scripts}`, "");
         const raceDeadline = (work, what, ms) => new Promise((resolve2, reject) => {
           const timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms);
           work.then(
-            (value) => {
+            (value2) => {
               clearTimeout(timer);
-              resolve2(value);
+              resolve2(value2);
             },
             (error) => {
               clearTimeout(timer);
@@ -25854,11 +26330,11 @@ ${scripts}`, "");
           if (node.visible === false) return;
           const fills = node.fills;
           if (!Array.isArray(fills)) return;
-          fills.forEach((paint, index2) => {
+          fills.forEach((paint, index3) => {
             if (paint.type !== "IMAGE" || !paint.imageHash || paint.visible === false) return;
-            if (paintIndex !== void 0 && index2 !== paintIndex) return;
+            if (paintIndex !== void 0 && index3 !== paintIndex) return;
             if (imageHash !== void 0 && paint.imageHash !== imageHash) return;
-            if (!hits.has(paint.imageHash)) hits.set(paint.imageHash, { node, paintIndex: index2, scaleMode: paint.scaleMode });
+            if (!hits.has(paint.imageHash)) hits.set(paint.imageHash, { node, paintIndex: index3, scaleMode: paint.scaleMode });
           });
         };
         record2(root);
@@ -25883,13 +26359,13 @@ ${scripts}`, "");
         const failures = [];
         let skipped = 0;
         const images = [];
-        let index = 0;
-        for (; index < ranked.length && images.length < limit; index++) {
+        let index2 = 0;
+        for (; index2 < ranked.length && images.length < limit; index2++) {
           if (Date.now() > deadlineAt) {
             timedOut = true;
             break;
           }
-          const [hash, hit] = ranked[index];
+          const [hash, hit] = ranked[index2];
           const image = figma.getImageByHash(hash);
           if (!image) continue;
           let bytes;
@@ -25925,8 +26401,8 @@ ${scripts}`, "");
           });
         }
         if (timedOut) {
-          for (; index < ranked.length; index++) {
-            const [hash, hit] = ranked[index];
+          for (; index2 < ranked.length; index2++) {
+            const [hash, hit] = ranked[index2];
             failures.push({ node: hit.node.id, hash, error: `budget exhausted (${budgetMs} ms) before this image was fetched` });
           }
         }
@@ -26240,12 +26716,12 @@ ${scripts}`, "");
         const catalogue = {};
         const seen = /* @__PURE__ */ new Map();
         const paintsOf2 = async (node, field) => {
-          const paints = node[field];
-          if (!Array.isArray(paints) || paints.length === 0) return null;
-          const shaders2 = paints.some((paint) => (paint == null ? void 0 : paint.type) === "SHADER") ? await shadersFor(catalogue) : void 0;
+          const paints2 = node[field];
+          if (!Array.isArray(paints2) || paints2.length === 0) return null;
+          const shaders2 = paints2.some((paint) => (paint == null ? void 0 : paint.type) === "SHADER") ? await shadersFor(catalogue) : void 0;
           const out = [];
-          for (const [index, paint] of paints.entries()) {
-            const described = await describePaint(paint, index, shaders2);
+          for (const [index2, paint] of paints2.entries()) {
+            const described = await describePaint(paint, index2, shaders2);
             if (described.shader) seen.set(described.shader.id, described.shader);
             out.push(described);
           }
@@ -26386,13 +26862,354 @@ ${scripts}`, "");
     }
   ];
 
-  // src/agent/ir-mobile.ts
-  function single(value) {
-    return typeof value === "symbol" || value === void 0 || value === null ? void 0 : value;
+  // src/agent/export-ops.ts
+  var FORMATS = ["PNG", "JPG", "SVG", "PDF"];
+  var CONSTRAINTS2 = ["SCALE", "WIDTH", "HEIGHT"];
+  var PROFILES = ["DOCUMENT", "SRGB", "DISPLAY_P3_V4"];
+  function summarize(setting) {
+    const raw = setting;
+    return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+      format: String(raw.format)
+    }, raw.constraint ? { constraint: { type: String(raw.constraint.type), value: Number(raw.constraint.value) } } : {}), raw.suffix ? { suffix: raw.suffix } : {}), raw.contentsOnly === void 0 ? {} : { contentsOnly: raw.contentsOnly }), raw.useAbsoluteBounds === void 0 ? {} : { useAbsoluteBounds: raw.useAbsoluteBounds }), raw.colorProfile === void 0 ? {} : { colorProfile: String(raw.colorProfile) }), raw.svgOutlineText === void 0 ? {} : { svgOutlineText: raw.svgOutlineText }), raw.svgIdAttribute === void 0 ? {} : { svgIdAttribute: raw.svgIdAttribute }), raw.svgSimplifyStroke === void 0 ? {} : { svgSimplifyStroke: raw.svgSimplifyStroke });
   }
-  function measureText(value) {
+  function toSetting(raw, where) {
     var _a, _b;
-    const measure2 = single(value);
+    if (!raw || typeof raw !== "object") throw new Error(`${where}: expected an object`);
+    const entry = raw;
+    const format = String((_a = entry.format) != null ? _a : "PNG").toUpperCase();
+    if (!FORMATS.includes(format)) {
+      throw new Error(`${where}: format must be one of ${FORMATS.join(", ")}`);
+    }
+    const out = { format };
+    if (entry.constraint !== void 0) {
+      const c = entry.constraint;
+      const type = String((_b = c == null ? void 0 : c.type) != null ? _b : "").toUpperCase();
+      if (!CONSTRAINTS2.includes(type)) {
+        throw new Error(`${where}: constraint.type must be one of ${CONSTRAINTS2.join(", ")}`);
+      }
+      const value2 = Number(c == null ? void 0 : c.value);
+      if (!Number.isFinite(value2) || value2 <= 0) throw new Error(`${where}: constraint.value must be a positive number`);
+      out.constraint = { type, value: value2 };
+    }
+    if (entry.suffix !== void 0) out.suffix = String(entry.suffix);
+    if (entry.contentsOnly !== void 0) out.contentsOnly = entry.contentsOnly === true;
+    if (entry.useAbsoluteBounds !== void 0) out.useAbsoluteBounds = entry.useAbsoluteBounds === true;
+    if (entry.colorProfile !== void 0) {
+      const profile = String(entry.colorProfile).toUpperCase();
+      if (!PROFILES.includes(profile)) {
+        throw new Error(`${where}: colorProfile must be one of ${PROFILES.join(", ")}`);
+      }
+      out.colorProfile = profile;
+    }
+    if (format === "SVG") {
+      if (entry.svgOutlineText !== void 0) out.svgOutlineText = entry.svgOutlineText === true;
+      if (entry.svgIdAttribute !== void 0) out.svgIdAttribute = entry.svgIdAttribute === true;
+      if (entry.svgSimplifyStroke !== void 0) out.svgSimplifyStroke = entry.svgSimplifyStroke === true;
+    } else if (entry.svgOutlineText !== void 0 || entry.svgIdAttribute !== void 0 || entry.svgSimplifyStroke !== void 0) {
+      throw new Error(`${where}: svg* flags belong to an SVG row`);
+    }
+    return out;
+  }
+  function hasExports(node) {
+    return "exportSettings" in node;
+  }
+  function box(node) {
+    const bounds = node.absoluteBoundingBox;
+    if (!bounds || !bounds.width || !bounds.height) return null;
+    return bounds;
+  }
+  async function resolveScene(id) {
+    const node = await figma.getNodeByIdAsync(String(id));
+    if (!node) throw new Error(`no node with id ${String(id)}`);
+    if (node.type === "DOCUMENT" || node.type === "PAGE") throw new Error(`${String(id)} is a ${node.type}, not a layer`);
+    return node;
+  }
+  function* descend(root, maxDepth) {
+    const stack = [{ node: root, depth: 0, path: root.name }];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      yield current;
+      if (current.depth >= maxDepth || !("children" in current.node)) continue;
+      const children = current.node.children;
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push({ node: children[i], depth: current.depth + 1, path: `${current.path}/${children[i].name}` });
+      }
+    }
+  }
+  var EXPORT_OPS = [
+    {
+      name: "export.settings",
+      summary: "The export marks a designer set on a subtree \u2014 what Figma's export panel holds, which no other read reports.",
+      agent: 'The op for "which frames did the designer mark, and how". A mark is an instruction about the ASSET: SVG means do not bake this into a raster, a 2x SCALE row means ship it at that density, a suffix names the file. Each marked node reports its settings in full plus `box` (pixels) and `share` (percent of the root\'s box) \u2014 the numbers a build needs to place a vector over a raster plate at any width. `allChildrenMarked` answers the one question a plate export turns on: NODE_EXPORT can hide every child or none, so a partly marked parent cannot be split and stays a flat render. Without this op the marks are readable only over REST, with a token.',
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "Root of the subtree to inspect." },
+        format: {
+          type: "string",
+          description: "Keep only nodes carrying a row of this format (PNG, JPG, SVG, PDF). Omitted \u2014 every marked node.",
+          enum: [...FORMATS]
+        },
+        depth: { type: "number", default: 6, min: 0, max: 24, description: "How deep to walk below the root." },
+        limit: { type: "number", default: 200, min: 1, max: 2e3, description: "Maximum marked nodes reported." }
+      },
+      async run(params) {
+        const root = await resolveScene(params.nodeId);
+        const wanted = typeof params.format === "string" ? params.format.toUpperCase() : null;
+        const limit = params.limit;
+        const frame3 = box(root);
+        const marked = [];
+        let scanned = 0;
+        for (const { node, depth, path } of descend(root, params.depth)) {
+          scanned += 1;
+          if (!hasExports(node)) continue;
+          const settings = [...node.exportSettings].map(summarize);
+          if (settings.length === 0) continue;
+          if (wanted && !settings.some((s) => s.format === wanted)) continue;
+          if (marked.length >= limit) break;
+          const own = box(node);
+          const children = "children" in node ? node.children.filter((child) => child.visible !== false) : [];
+          marked.push(__spreadProps(__spreadValues(__spreadValues({
+            id: node.id,
+            name: node.name,
+            type: node.type,
+            depth,
+            path,
+            visible: node.visible !== false,
+            settings
+          }, own ? { box: { x: Math.round(own.x), y: Math.round(own.y), width: own.width, height: own.height } } : {}), own && frame3 ? {
+            share: {
+              left: Number(((own.x - frame3.x) / frame3.width * 100).toFixed(4)),
+              top: Number(((own.y - frame3.y) / frame3.height * 100).toFixed(4)),
+              width: Number((own.width / frame3.width * 100).toFixed(4)),
+              height: Number((own.height / frame3.height * 100).toFixed(4))
+            }
+          } : {}), {
+            childrenMarked: children.filter((child) => hasExports(child) && child.exportSettings.length > 0).length,
+            children: children.length
+          }));
+        }
+        const kids = "children" in root ? root.children.filter((child) => child.visible !== false) : [];
+        return {
+          node: __spreadValues({ id: root.id, name: root.name, type: root.type }, frame3 ? { width: frame3.width, height: frame3.height } : {}),
+          scanned,
+          marked,
+          truncated: marked.length >= limit,
+          // A plate export ("render the parent, hide the children, ship the children as files")
+          // is only sound when every visible child is marked: `withoutChildren` hides all of
+          // them, so one unmarked sibling would silently vanish from the picture.
+          allChildrenMarked: kids.length > 0 && kids.every((child) => hasExports(child) && child.exportSettings.length > 0)
+        };
+      }
+    },
+    {
+      name: "export.run",
+      summary: "Render nodes by THEIR OWN export settings \u2014 the designer's format, density and suffix, not the caller's guess.",
+      agent: "The companion to export.settings: that one says what the designer asked for, this one produces it. A node with three rows comes back as three files, each named with its own suffix, so a 1x/2x/3x set arrives in one call. Nodes with no settings are reported, not silently skipped. Use NODE_EXPORT instead when the caller \u2014 not the file \u2014 decides the format.",
+      mutates: false,
+      params: {
+        nodes: { type: "string[]", required: true, description: "Node ids to render by their own export rows." },
+        format: { type: "string", enum: [...FORMATS], description: "Only render rows of this format." },
+        budgetBytes: { type: "number", default: 8e6, min: 1e5, max: 12e6, description: "Stop once the answer reaches this size." }
+      },
+      async run(params) {
+        var _a;
+        const ids = (_a = params.nodes) != null ? _a : [];
+        const wanted = typeof params.format === "string" ? params.format.toUpperCase() : null;
+        const budget = params.budgetBytes;
+        const files = [];
+        const reports = [];
+        let spent = 0;
+        for (const id of ids) {
+          let node;
+          try {
+            node = await resolveScene(id);
+          } catch (error) {
+            reports.push({ node: id, ok: false, error: String((error == null ? void 0 : error.message) || error) });
+            continue;
+          }
+          if (!hasExports(node) || node.exportSettings.length === 0) {
+            reports.push({ node: id, name: node.name, ok: false, error: "no export settings on this node" });
+            continue;
+          }
+          for (const [index2, setting] of [...node.exportSettings].entries()) {
+            const summary = summarize(setting);
+            if (wanted && summary.format !== wanted) continue;
+            if (spent >= budget) {
+              reports.push({ node: id, name: node.name, row: index2, ok: false, error: "budget spent before this row" });
+              continue;
+            }
+            try {
+              const stem = `${slugify2(node.name)}${summary.suffix ? slugify2(summary.suffix) : ""}`;
+              if (summary.format === "SVG") {
+                const svg = await node.exportAsync(__spreadProps(__spreadValues({}, setting), { format: "SVG_STRING" }));
+                spent += svg.length;
+                const name2 = `${stem}.svg`;
+                files.push(textFile(name2, "image/svg+xml", svg));
+                reports.push({ node: id, name: node.name, row: index2, ok: true, file: name2, bytes: svg.length, settings: summary });
+                continue;
+              }
+              const bytes = await node.exportAsync(setting);
+              spent += bytes.length;
+              const ext = summary.format.toLowerCase();
+              const mime = summary.format === "JPG" ? "image/jpeg" : summary.format === "PDF" ? "application/pdf" : "image/png";
+              const name = `${stem}.${ext}`;
+              files.push(binaryFile(name, mime, bytes));
+              reports.push({ node: id, name: node.name, row: index2, ok: true, file: name, bytes: bytes.length, settings: summary });
+            } catch (error) {
+              reports.push({ node: id, name: node.name, row: index2, ok: false, error: String((error == null ? void 0 : error.message) || error) });
+            }
+          }
+        }
+        return { files, nodes: reports, bytes: spent, budgetSpent: spent >= budget };
+      }
+    },
+    {
+      name: "export.configure",
+      summary: "Set, add or clear a layer's export rows \u2014 the export panel, in batch, with a before/after report.",
+      agent: "Rows are the whole panel: `set` replaces them, `add` appends one, `clear` empties. A row is { format, constraint: { type: SCALE|WIDTH|HEIGHT, value }, suffix?, contentsOnly?, useAbsoluteBounds?, colorProfile?, svg* flags }. Every entry reports `before` and `after`, because a write this API accepts is not yet a write the file kept. Marking a frame here is a design statement \u2014 it tells every downstream importer to ship that frame as its own asset \u2014 so prefer dryRun first and tell the designer what changed.",
+      mutates: true,
+      params: {
+        nodes: {
+          type: "json",
+          required: true,
+          description: "Array of { node, set?: [row], add?: row, clear?: true }. Exactly one action per entry. A row is the object described above; `constraint` defaults to SCALE 1 as Figma's own panel does."
+        },
+        dryRun: { type: "boolean", default: false, description: "Report what would change without writing anything." }
+      },
+      async run(params) {
+        var _a;
+        const entries = Array.isArray(params.nodes) ? params.nodes : [params.nodes];
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const results = [];
+        for (const [index2, raw] of entries.entries()) {
+          const where = `nodes[${index2}]`;
+          try {
+            const entry = raw != null ? raw : {};
+            const node = await resolveScene(entry.node);
+            const before = [...node.exportSettings].map(summarize);
+            const actions = ["set", "add", "clear"].filter((key) => entry[key] !== void 0);
+            if (actions.length !== 1) throw new Error(`${where}: name exactly one of set, add, clear`);
+            let next;
+            if (entry.clear !== void 0) {
+              if (entry.clear !== true) throw new Error(`${where}: clear takes true`);
+              next = [];
+            } else if (entry.add !== void 0) {
+              next = [...node.exportSettings, toSetting(entry.add, `${where}.add`)];
+            } else {
+              const rows = Array.isArray(entry.set) ? entry.set : [entry.set];
+              next = rows.map((row, i) => toSetting(row, `${where}.set[${i}]`));
+            }
+            if (!dryRun) {
+              node.exportSettings = next;
+            }
+            const after = dryRun ? next.map((s) => summarize(s)) : [...node.exportSettings].map(summarize);
+            results.push({
+              node: node.id,
+              name: node.name,
+              ok: true,
+              before,
+              after,
+              // Read back rather than echoed: Figma normalises a row (a missing constraint becomes
+              // SCALE 1), and an agent that trusted the echo would describe settings the file
+              // does not hold.
+              verified: dryRun ? null : JSON.stringify(after) === JSON.stringify(next.map((s) => summarize(s)))
+            });
+          } catch (error) {
+            results.push({ node: String((_a = raw == null ? void 0 : raw.node) != null ? _a : where), ok: false, error: String((error == null ? void 0 : error.message) || error) });
+          }
+        }
+        const written = results.filter((r) => r.ok === true).length;
+        return { dryRun, nodes: results, written: dryRun ? 0 : written };
+      }
+    }
+  ];
+  var HOP_BYTES = 3 * 1024 * 1024;
+  var PNG_BYTES_PER_MEGAPIXEL = 1e6;
+  function hasImageFill(node) {
+    const fills = node.fills;
+    if (!Array.isArray(fills)) return false;
+    return fills.some((paint) => (paint == null ? void 0 : paint.type) === "IMAGE" && paint.visible !== false);
+  }
+  var EXPORT_PLAN_OPS = [
+    {
+      name: "export.plan",
+      summary: "How to get this slot out of Figma: vector, photo plate plus vector, or flat render \u2014 and at which density it still fits through the channel.",
+      agent: "Reach for this BEFORE exporting a screen: it turns four facts that are each cheap to read \u2014 the node size, whether it paints a bitmap, which children the designer marked for export, and the 3 MB one answer carries \u2014 into one strategy plus the exact calls to make. `plate+vector` means the children are all marked: render the node with `withoutChildren` and ship each child as its own SVG, which is the only combination that keeps a vector widget crisp over a photo. `raster` means they are marked only in part, and `withoutChildren` is all-or-nothing, so splitting would drop the unmarked siblings. A node that paints a bitmap is never a whole-SVG candidate: Figma embeds the photo as base64 and a hero frame comes out at 9 MB. `bytes` is an estimate from measured renders, and it only picks the density to try first \u2014 the export itself still reports the truth.",
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "The illustration slot to plan for." },
+        scale: { type: "number", default: 2, min: 1, max: 4, description: "Density the build wants (2 for a retina web build)." }
+      },
+      async run(params) {
+        const node = await resolveScene(params.nodeId);
+        const wanted = params.scale;
+        const frame3 = box(node);
+        const children = "children" in node ? node.children.filter((child) => child.visible !== false) : [];
+        const marked = children.filter((child) => hasExports(child) && child.exportSettings.length > 0);
+        const allMarked = children.length > 0 && marked.length === children.length;
+        const photo = hasImageFill(node);
+        const megapixels = frame3 ? frame3.width * frame3.height / 1e6 : 0;
+        const estimate = (scale) => Math.round(megapixels * scale * scale * PNG_BYTES_PER_MEGAPIXEL);
+        const densities = [wanted, 1.5, 1].filter((scale, index2, all) => all.indexOf(scale) === index2);
+        const fitting = densities.find((scale) => estimate(scale) <= HOP_BYTES);
+        const fits = fitting != null ? fitting : 1;
+        const oversized2 = fitting === void 0;
+        const strategy = allMarked ? photo ? "plate+vector" : "vector-over-plate" : "raster";
+        const calls = [];
+        if (allMarked) {
+          calls.push({
+            op: "plugin.call",
+            params: {
+              command: "NODE_EXPORT",
+              params: { nodes: [node.id], format: "PNG", scale: fits, withoutChildren: true }
+            },
+            why: "the plate under the marked children \u2014 the photo or the flat background, nothing drawn on top of it"
+          });
+          calls.push({
+            op: "export.run",
+            params: { nodes: marked.map((child) => child.id) },
+            why: "each marked child by its own export row \u2014 the vectors that go over the plate"
+          });
+        } else {
+          calls.push({
+            op: "plugin.call",
+            params: { command: "NODE_EXPORT", params: { nodes: [node.id], format: "PNG", scale: fits } },
+            why: children.length > 0 && marked.length > 0 ? "only some children are marked, and withoutChildren hides all of them \u2014 the whole slot renders flat" : "no export marks on the children: the slot is one picture"
+          });
+        }
+        if (oversized2) {
+          calls[0].why = `${calls[0].why} \u2014 but at ${Math.round(megapixels)} megapixels even 1\xD7 is past the hop: export the sections separately, or render this node outside the plugin channel`;
+        }
+        return {
+          node: __spreadValues({ id: node.id, name: node.name, type: node.type }, frame3 ? { width: frame3.width, height: frame3.height } : {}),
+          strategy,
+          paintsBitmap: photo,
+          children: { total: children.length, marked: marked.length, allMarked },
+          density: {
+            wanted,
+            fits,
+            // Named so a caller can tell a refusal from a plan that already knew: at `wanted`
+            // density this node is over the hop, and the plan stepped down before asking.
+            steppedDown: fits !== wanted,
+            oversized: oversized2,
+            estimatedBytes: Object.fromEntries(densities.map((scale) => [String(scale), estimate(scale)])),
+            hopBytes: HOP_BYTES,
+            estimate: "PNG bytes extrapolated from measured renders \u2014 the export reports the real size"
+          },
+          calls
+        };
+      }
+    }
+  ];
+
+  // src/agent/ir-mobile.ts
+  function single(value2) {
+    return typeof value2 === "symbol" || value2 === void 0 || value2 === null ? void 0 : value2;
+  }
+  function measureText(value2) {
+    var _a, _b;
+    const measure2 = single(value2);
     if (!measure2 || !measure2.unit) return "mixed";
     if (measure2.unit === "AUTO") return "auto";
     if (measure2.unit === "PERCENT") return `${Math.round(((_a = measure2.value) != null ? _a : 0) * 100) / 100}%`;
@@ -26452,10 +27269,10 @@ ${scripts}`, "");
   function pixels(size) {
     return size && size.mode === "fixed" ? Math.round(size.value) : 0;
   }
-  function screenSummary(root, box) {
+  function screenSummary(root, box2) {
     var _a, _b, _c, _d, _e, _f, _g;
-    const width = pixels((_a = root.sizing) == null ? void 0 : _a.width) || Math.round((_b = box == null ? void 0 : box.width) != null ? _b : 0);
-    const height = pixels((_c = root.sizing) == null ? void 0 : _c.height) || Math.round((_d = box == null ? void 0 : box.height) != null ? _d : 0);
+    const width = pixels((_a = root.sizing) == null ? void 0 : _a.width) || Math.round((_b = box2 == null ? void 0 : box2.width) != null ? _b : 0);
+    const height = pixels((_c = root.sizing) == null ? void 0 : _c.height) || Math.round((_d = box2 == null ? void 0 : box2.height) != null ? _d : 0);
     const children = root.type === "container" || root.type === "instance-ref" ? root.children : [];
     const top = [];
     const bottom = [];
@@ -26488,11 +27305,252 @@ ${scripts}`, "");
         images: files.map(
           (entry) => vector ? { idiom: "universal", filename: entry.file } : { idiom: "universal", filename: entry.file, scale: `${entry.scale}x` }
         ),
-        info: { author: "altery-figma", version: 1 }
+        info: { author: "allcrew-channel", version: 1 }
       }, vector ? { properties: { "preserves-vector-representation": true } } : {}),
       null,
       2
     );
+  }
+
+  // src/agent/appearance.ts
+  var SCALAR_TOKEN_FIELDS = [
+    "topLeftRadius",
+    "topRightRadius",
+    "bottomRightRadius",
+    "bottomLeftRadius",
+    "strokeWeight",
+    "strokeTopWeight",
+    "strokeRightWeight",
+    "strokeBottomWeight",
+    "strokeLeftWeight",
+    "opacity"
+  ];
+  var LAYOUT_TOKEN_FIELDS = [
+    "itemSpacing",
+    "counterAxisSpacing",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "width",
+    "height",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight"
+  ];
+  function bindingId(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    const id = entry.id;
+    return typeof id === "string" && id !== "" ? id : null;
+  }
+  async function tokensByField(node, fields, resolve2) {
+    const bound = node.boundVariables;
+    if (!bound || typeof bound !== "object") return {};
+    const out = {};
+    for (const field of fields) {
+      const id = bindingId(bound[field]);
+      if (!id) continue;
+      const name = await resolve2(id);
+      if (name) out[field] = name;
+    }
+    return out;
+  }
+  function value(raw, token2) {
+    if (typeof raw !== "number" || !Number.isFinite(raw)) return void 0;
+    return token2 ? { token: token2, value: round13(raw) } : { value: round13(raw) };
+  }
+  function round13(n) {
+    return Math.round(n * 100) / 100;
+  }
+  function collapse2(parts) {
+    const present = parts.filter((entry) => entry[1] !== void 0);
+    if (present.length === 0) return void 0;
+    if (present.length === parts.length) {
+      const first = present[0][1];
+      const uniform = present.every(
+        (entry) => entry[1].value === first.value && entry[1].token === first.token
+      );
+      if (uniform) return first;
+    }
+    const out = {};
+    for (const [key, entry] of present) out[key] = entry;
+    return out;
+  }
+  function plain(raw) {
+    return typeof raw === "number" && Number.isFinite(raw) ? raw : void 0;
+  }
+  var DEFAULT_BLEND_MODES = /* @__PURE__ */ new Set(["NORMAL", "PASS_THROUGH"]);
+  var TYPE_TOKEN_FIELDS = [
+    "fontFamily",
+    "fontStyle",
+    "fontSize",
+    "fontWeight",
+    "lineHeight",
+    "letterSpacing"
+  ];
+  async function typeTokenNames(node, resolve2) {
+    const out = /* @__PURE__ */ new Map();
+    const bound = node.boundVariables;
+    if (!bound || typeof bound !== "object") return out;
+    for (const field of TYPE_TOKEN_FIELDS) {
+      const raw = bound[field];
+      const id = bindingId(Array.isArray(raw) ? raw[0] : raw);
+      if (!id || out.has(id)) continue;
+      const name = await resolve2(id);
+      if (name) out.set(id, name);
+    }
+    return out;
+  }
+  async function paints(raw, resolve2) {
+    if (!Array.isArray(raw)) return void 0;
+    const out = [];
+    for (let index2 = 0; index2 < raw.length; index2++) {
+      out.push(await describePaint(raw[index2], index2, void 0, resolve2));
+    }
+    return out;
+  }
+  async function appearanceOf(source, resolve2, text4) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+    const out = {};
+    const scalars = await tokensByField(source, SCALAR_TOKEN_FIELDS, resolve2);
+    const layout = await tokensByField(source, LAYOUT_TOKEN_FIELDS, resolve2);
+    const fills = await paints(source.fills, resolve2);
+    if (fills) out.fills = fills;
+    const strokes = await paints(source.strokes, resolve2);
+    if (strokes && strokes.length > 0) out.strokes = strokes;
+    if (strokes && strokes.length > 0) {
+      const weight = collapse2([
+        ["top", value((_a = plain(source.strokeTopWeight)) != null ? _a : plain(source.strokeWeight), (_b = scalars.strokeTopWeight) != null ? _b : scalars.strokeWeight)],
+        ["right", value((_c = plain(source.strokeRightWeight)) != null ? _c : plain(source.strokeWeight), (_d = scalars.strokeRightWeight) != null ? _d : scalars.strokeWeight)],
+        ["bottom", value((_e = plain(source.strokeBottomWeight)) != null ? _e : plain(source.strokeWeight), (_f = scalars.strokeBottomWeight) != null ? _f : scalars.strokeWeight)],
+        ["left", value((_g = plain(source.strokeLeftWeight)) != null ? _g : plain(source.strokeWeight), (_h = scalars.strokeLeftWeight) != null ? _h : scalars.strokeWeight)]
+      ]);
+      if (weight) out.strokeWeight = weight;
+      if (typeof source.strokeAlign === "string") out.strokeAlign = source.strokeAlign;
+      if (Array.isArray(source.dashPattern) && source.dashPattern.length > 0) {
+        out.dashPattern = source.dashPattern.map(round13);
+      }
+      if (typeof source.strokeCap === "string" && source.strokeCap !== "NONE") out.strokeCap = source.strokeCap;
+      if (typeof source.strokeJoin === "string" && source.strokeJoin !== "MITER") out.strokeJoin = source.strokeJoin;
+    }
+    const uniform = plain(source.cornerRadius);
+    const radius = collapse2([
+      ["topLeft", value((_i = plain(source.topLeftRadius)) != null ? _i : uniform, scalars.topLeftRadius)],
+      ["topRight", value((_j = plain(source.topRightRadius)) != null ? _j : uniform, scalars.topRightRadius)],
+      ["bottomRight", value((_k = plain(source.bottomRightRadius)) != null ? _k : uniform, scalars.bottomRightRadius)],
+      ["bottomLeft", value((_l = plain(source.bottomLeftRadius)) != null ? _l : uniform, scalars.bottomLeftRadius)]
+    ]);
+    if (radius && !(isValue(radius) && radius.value === 0 && radius.token === void 0)) {
+      out.radius = radius;
+    }
+    const smoothing = plain(source.cornerSmoothing);
+    if (smoothing !== void 0 && smoothing > 0) out.cornerSmoothing = round13(smoothing);
+    const effects = await readEffects(source.effects);
+    if (effects && effects.length > 0) out.effects = effects;
+    const opacity = plain(source.opacity);
+    if (opacity !== void 0 && opacity < 1 || scalars.opacity) {
+      const described = value(opacity != null ? opacity : 1, scalars.opacity);
+      if (described) out.opacity = described;
+    }
+    if (typeof source.blendMode === "string" && !DEFAULT_BLEND_MODES.has(source.blendMode)) {
+      out.blendMode = source.blendMode;
+    }
+    const rotation = plain(source.rotation);
+    if (rotation !== void 0 && round13(rotation) !== 0) out.rotation = round13(rotation);
+    if (source.isMask === true) out.mask = { type: typeof source.maskType === "string" ? source.maskType : "ALPHA" };
+    if (Object.keys(layout).length > 0) out.layoutTokens = layout;
+    if (text4) out.typography = typeStyleOf(text4, await typeTokenNames(text4, resolve2));
+    return Object.keys(out).length > 0 ? out : void 0;
+  }
+  function isValue(candidate) {
+    return typeof candidate.value === "number";
+  }
+  function walk(node, into = []) {
+    into.push(node);
+    const children = node.children;
+    if (Array.isArray(children)) for (const child of children) walk(child, into);
+    return into;
+  }
+  async function annotateAppearance(roots, sceneNodesById, resolve2) {
+    let annotated = 0;
+    let unmatched = 0;
+    for (const root of roots) {
+      for (const node of walk(root)) {
+        const source = sceneNodesById.get(node.id);
+        if (!source) {
+          unmatched++;
+          continue;
+        }
+        const isText2 = node.type === "text";
+        const appearance = await appearanceOf(
+          source,
+          resolve2,
+          isText2 ? source : void 0
+        );
+        if (appearance) {
+          node.appearance = appearance;
+          annotated++;
+        }
+      }
+    }
+    return { annotated, unmatched };
+  }
+
+  // src/agent/platform.ts
+  var LOGICAL_WIDTHS = {
+    // iPhone SE through Pro Max, then iPad mini through Pro 12.9 in points.
+    ios: [320, 375, 390, 393, 402, 414, 428, 430, 440, 744, 768, 810, 820, 834, 1024, 1032, 1210],
+    // Compose's own reference widths plus the common vendor ones, in dp.
+    android: [360, 384, 392, 393, 400, 411, 412, 432, 448, 600, 672, 800, 840, 1280],
+    // The breakpoint widths this plugin already uses when a file declares none
+    // (`breakpoint-frames.ts` NAMED_WIDTHS), plus the phone widths a responsive design starts at.
+    web: [320, 360, 375, 390, 414, 768, 1024, 1280, 1440, 1536, 1920]
+  };
+  var ASSET_SCALES = {
+    ios: [1, 2, 3],
+    android: [1, 1.5, 2, 3, 4],
+    web: [1, 2]
+  };
+  var UNITS = {
+    ios: { unit: "pt", textUnit: "pt" },
+    android: { unit: "dp", textUnit: "sp" },
+    web: { unit: "px", textUnit: "px" }
+  };
+  var CANDIDATE_SCALES = [1, 2, 3];
+  var WIDTH_TOLERANCE = 0.5;
+  function isPlatform(value2) {
+    return value2 === "web" || value2 === "ios" || value2 === "android";
+  }
+  function unitProfile(platform, width) {
+    const { unit, textUnit } = UNITS[platform];
+    const base = {
+      platform,
+      unit,
+      textUnit,
+      assetScales: ASSET_SCALES[platform],
+      assetNaming: platform
+    };
+    const measured2 = typeof width === "number" && Number.isFinite(width) && width > 0 ? width : 0;
+    if (measured2 === 0) {
+      return __spreadProps(__spreadValues({}, base), { scale: 1, basis: "no frame width to reason from \u2014 treated as 1\xD7" });
+    }
+    for (const scale of CANDIDATE_SCALES) {
+      const logical = measured2 / scale;
+      const match = LOGICAL_WIDTHS[platform].find((candidate) => Math.abs(candidate - logical) <= WIDTH_TOLERANCE);
+      if (match === void 0) continue;
+      if (scale === 1) {
+        return __spreadProps(__spreadValues({}, base), { scale: 1, basis: `${measured2}px matches a ${match}${unit} ${platform} width` });
+      }
+      return __spreadProps(__spreadValues({}, base), {
+        scale,
+        basis: `${measured2}px is ${scale}\xD7 a ${match}${unit} ${platform} width \u2014 divide every length by ${scale}`
+      });
+    }
+    return __spreadProps(__spreadValues({}, base), {
+      scale: 1,
+      basis: `${measured2}px matches no standard ${platform} width \u2014 treated as 1\xD7, check the artboard`
+    });
   }
 
   // src/agent/ir-ops.ts
@@ -26577,7 +27635,7 @@ ${scripts}`, "");
   function requestedScales(raw, format) {
     if (format.toUpperCase() === "SVG" || format.toUpperCase() === "PDF") return [1];
     const list2 = Array.isArray(raw) ? raw : [raw];
-    const scales = list2.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value >= 0.1 && value <= 4);
+    const scales = list2.map((value2) => Number(value2)).filter((value2) => Number.isFinite(value2) && value2 >= 0.1 && value2 <= 4);
     const unique = [...new Set(scales)];
     return unique.length > 0 ? unique.sort((a, b) => a - b) : [1];
   }
@@ -26638,8 +27696,8 @@ ${scripts}`, "");
   var IR_OPS = [
     {
       name: "design.ir",
-      summary: "A screen as a framework-neutral tree: stacks, sizing, type, paints by token name, text, interactions.",
-      agent: "Reach for this when the target is not a web page \u2014 a mobile screen, a desktop view, any stack with its own component model. It is the same tree the plugin's own exporters compile, handed over before any of them turns it into a language: no HTML, no JSX, no assumption about a framework. Layout is flexbox vocabulary (row/column, gap, padding, justify/align, fixed/hug/fill), which maps one-to-one onto React Native, SwiftUI stacks and Compose rows. Colours and spacing carry the TOKEN that produced them where one exists \u2014 build from those, not from hex. The tree arrives as a JSON file (they are big); `stats`, `tokens`, `components` and `assets` come back inline so you can decide what to open. Pictures are only POINTED at here \u2014 call assets.export for the files. `type` is the table of distinct text styles with the token behind each value: the tree carries what the text SAYS, this says how it is set, and a mobile build needs both. `screen` is the phone-shaped half \u2014 what sits in the system bands top and bottom, what the designer pinned while the rest scrolls, how many children are placed by coordinates rather than by a stack. Figma has no safe-area concept, so those bands are reported as the layers that are actually there, never as an inset. Motion is not in the tree: motion.context and transition.context answer that, and flow.map has the navigation graph.",
+      summary: "A screen as a framework-neutral tree: stacks, sizing, type, text, interactions \u2014 and paint by token on request.",
+      agent: "Reach for this when the target is not a web page \u2014 a mobile screen, a desktop view, any stack with its own component model. It is the same tree the plugin's own exporters compile, handed over before any of them turns it into a language: no HTML, no JSX, no assumption about a framework. Layout is flexbox vocabulary (row/column, gap, padding, justify/align, fixed/hug/fill), which maps one-to-one onto React Native, SwiftUI stacks and Compose rows. The tree arrives as a JSON file (they are big); `stats`, `tokens`, `components` and `assets` come back inline so you can decide what to open. Pictures are only POINTED at here \u2014 call assets.export for the files. `type` is the table of distinct text styles with the token behind each value: the tree carries what the text SAYS, this says how it is set, and a mobile build needs both. `screen` is the phone-shaped half \u2014 what sits in the system bands top and bottom, what the designer pinned while the rest scrolls, how many children are placed by coordinates rather than by a stack. Figma has no safe-area concept, so those bands are reported as the layers that are actually there, never as an inset. The tree carries NO COLOUR unless you ask: `appearance: true` puts fills, strokes, radii, effects, opacity and rotation on every node, each value as `{ token, value }` so you build from the token and fall back to the literal. It is off by default because the web emitter reads paint off the live node instead, and carrying it doubles the tree \u2014 but a build that runs after this window has closed cannot read the node, so a SwiftUI or Compose target wants it on. `platform` adds `units`: what one Figma pixel is in that platform's unit, the reference density DERIVED from the frame width (a 750px artboard is 2\xD7 an iPhone, and every length in the tree is twice what you should emit), and the unit text is sized in \u2014 `sp` on Android, which is not the same as `dp` and is the difference between a screen that respects the system font size and one that ignores it. `painted` reports how many nodes got an appearance and how many this pass could not reach, so a node without one is never ambiguous. Motion is not in the tree: motion.context and transition.context answer that, and flow.map has the navigation graph.",
       mutates: false,
       params: {
         nodeId: { type: "string", required: true, description: "Frame, component or any layer to describe." },
@@ -26672,6 +27730,16 @@ ${scripts}`, "");
           type: "boolean",
           default: true,
           description: "System bands, pinned layers, scrolling and how much of the screen is absolutely positioned."
+        },
+        appearance: {
+          type: "boolean",
+          default: false,
+          description: "Also carry how each layer is PAINTED \u2014 fills, strokes, radii, effects, opacity, rotation \u2014 with the token behind each value. Off by default: a web target reads this from CSS, and it roughly doubles the tree."
+        },
+        platform: {
+          type: "string",
+          enum: ["web", "ios", "android"],
+          description: "The platform that will build this. Adds a `units` profile: what one Figma pixel is in that platform's unit, the reference density derived from the frame width, the unit text is sized in, and the asset densities to request."
         }
       },
       async run(params) {
@@ -26687,17 +27755,23 @@ ${scripts}`, "");
         const assetSourceNodes = sceneNodesById;
         await annotateVectorLeaves(irNodes, assetSourceNodes);
         await annotateVideoFills(irNodes, assetSourceNodes);
+        const painted = params.appearance === true ? await annotateAppearance(
+          irNodes,
+          sceneNodesById,
+          variableNameResolver()
+        ) : null;
+        const platform = isPlatform(params.platform) ? params.platform : null;
         const assets = params.assets === false ? [] : await collectContextAssets(irNodes, sceneNodesById);
         const slug2 = slugify2(root.name);
         const tree = JSON.stringify(ir, null, 2);
         const componentUses = params.components === false ? [] : collectComponentUses(ir);
         if (componentUses.length > 0) await annotateComponentUses(componentUses);
-        return __spreadValues(__spreadValues(__spreadProps(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+        return __spreadValues(__spreadValues(__spreadProps(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
           node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
           layers: sceneNodesById.size,
           stats: countIrNodes(ir),
           tokens: tokens.usage
-        }, params.components === false ? {} : { components: componentUses }), params.assets === false ? {} : { assets }), params.type === false ? {} : { type: await typographyOf(sceneNodesById.values(), tokens.names) }), params.screen === false ? {} : { screen: screenSummary(ir, { width: root.width, height: root.height }) }), {
+        }, params.components === false ? {} : { components: componentUses }), params.assets === false ? {} : { assets }), params.type === false ? {} : { type: await typographyOf(sceneNodesById.values(), tokens.names) }), params.screen === false ? {} : { screen: screenSummary(ir, { width: root.width, height: root.height }) }), platform ? { units: unitProfile(platform, root.width) } : {}), painted ? { painted } : {}), {
           bytes: tree.length
         }), params.inline === true ? { ir } : { ir: textFile(`${slug2}.ir.json`, "application/json", tree) }), params.screenshot === true ? { preview: binaryFile(`${slug2}.png`, "image/png", await screenshot(root, 2)) } : {});
       }
@@ -26723,14 +27797,12 @@ ${scripts}`, "");
         },
         scales: {
           type: "json",
-          default: [1, 2, 3],
-          description: "Raster densities, e.g. [1,2,3] for mobile or [1,2] for web. Ignored for SVG/PDF."
+          description: "Raster densities, e.g. [1,2,3] for mobile or [1,2] for web. Ignored for SVG/PDF. Defaulted from `platform` when one is given, else [1,2,3]. The default lives in `run` rather than here precisely so a platform profile can supply it \u2014 a spec default is applied before the op sees the call and would always win."
         },
         naming: {
           type: "string",
-          default: "plain",
           enum: ["plain", "web", "ios", "android"],
-          description: "Which platform\u2019s file layout the manifest should advise."
+          description: "Which platform\u2019s file layout the manifest should advise. Defaulted from `platform` when one is given, else `plain`."
         },
         limit: {
           type: "number",
@@ -26771,18 +27843,24 @@ ${scripts}`, "");
           type: "boolean",
           default: false,
           description: 'Report each raster asset\u2019s own alpha ("none"/"alpha"/"unknown") \u2014 the difference between a cut-out figure and a photograph, read from the SOURCE image (figma.getImageByHash), never the exported PNG (which always carries a channel and would say "alpha" for everything). Off by default: unlike exportAsync this fetch is not bounded by maxPixels \u2014 it hands back the WHOLE original upload \u2014 so turning it on for every asset would double the unbounded work this op otherwise refuses to do. Cheap once asked for: cached per image hash within the call and charged against budgetMs, so a photo reused across several assets is only read once. Never set for SVG/PDF, which have no bitmap source to answer from.'
+        },
+        platform: {
+          type: "string",
+          enum: ["web", "ios", "android"],
+          description: "Set `naming` and `scales` from the platform profile instead of by hand \u2014 the same profile design.ir reports under `units`, so the two calls cannot disagree about where a file goes or which densities exist. An explicit `naming` or `scales` still wins."
         }
       },
       async run(params) {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
         const root = await resolveSceneNode(params.nodeId);
         let parent = root.parent;
         while (parent && parent.type !== "PAGE") parent = parent.parent;
         if (parent) await parent.loadAsync();
         const format = String((_a = params.format) != null ? _a : "PNG").toUpperCase();
-        const naming = String((_b = params.naming) != null ? _b : "plain");
-        const scales = requestedScales(params.scales, format);
-        const limit = Number((_c = params.limit) != null ? _c : 24);
+        const profile = isPlatform(params.platform) ? unitProfile(params.platform, root.width) : null;
+        const naming = String((_c = (_b = params.naming) != null ? _b : profile == null ? void 0 : profile.assetNaming) != null ? _c : "plain");
+        const scales = requestedScales((_e = (_d = params.scales) != null ? _d : profile == null ? void 0 : profile.assetScales) != null ? _e : [1, 2, 3], format);
+        const limit = Number((_f = params.limit) != null ? _f : 24);
         const targets = [];
         if (params.select === "assets") {
           const sceneNodesById = await indexSceneNodes([root]);
@@ -26800,9 +27878,9 @@ ${scripts}`, "");
             const node = sceneNodesById.get(asset.nodeId);
             targets.push(__spreadValues({
               nodeId: asset.nodeId,
-              name: (_d = node == null ? void 0 : node.name) != null ? _d : asset.filename,
+              name: (_g = node == null ? void 0 : node.name) != null ? _g : asset.filename,
               kind: asset.kind
-            }, asset.exportable === false ? { reason: (_e = asset.reason) != null ? _e : "Figma refuses to export this asset" } : {}));
+            }, asset.exportable === false ? { reason: (_h = asset.reason) != null ? _h : "Figma refuses to export this asset" } : {}));
           }
         } else {
           targets.push({ nodeId: root.id, name: root.name, kind: root.type.toLowerCase() });
@@ -26813,10 +27891,10 @@ ${scripts}`, "");
         const taken = /* @__PURE__ */ new Set();
         const wantAlpha = params.alpha === true;
         const imageAlphaCache = /* @__PURE__ */ new Map();
-        const budget = Number((_f = params.budgetBytes) != null ? _f : 25e5);
-        const deadline2 = Date.now() + Number((_g = params.budgetMs) != null ? _g : 6e4);
-        const maxPixels = Number((_h = params.maxPixels) != null ? _h : 4e6);
-        const offset = Number((_i = params.offset) != null ? _i : 0);
+        const budget = Number((_i = params.budgetBytes) != null ? _i : 25e5);
+        const deadline2 = Date.now() + Number((_j = params.budgetMs) != null ? _j : 6e4);
+        const maxPixels = Number((_k = params.maxPixels) != null ? _k : 4e6);
+        const offset = Number((_l = params.offset) != null ? _l : 0);
         const page = targets.slice(offset, offset + limit);
         let spent = 0;
         let ranOut = null;
@@ -26936,7 +28014,7 @@ ${scripts}`, "");
         "You can name the token behind at least one colour on the screen."
       ],
       notes: [
-        'Open the plugin in Figma and this answers from the live document. With it closed, name the file (`fileKey`, or the `ALTERY_FIGMA_FILE_KEY` default) and the bridge answers the read-only half over Figma\u2019s REST API instead \u2014 every such answer is marked `source: "rest"`, and `GET /ops` lists what REST can still do.',
+        'Open the plugin in Figma and this answers from the live document. With it closed, name the file (`fileKey`, or the `ALLCREW_CHANNEL_FIGMA_FILE_KEY` default) and the bridge answers the read-only half over Figma\u2019s REST API instead \u2014 every such answer is marked `source: "rest"`, and `GET /ops` lists what REST can still do.',
         'Reads are gated: "Allow reads" in the plugin panel. Writes never ride along with it.'
       ]
     },
@@ -26950,6 +28028,16 @@ ${scripts}`, "");
           op: "design.ir",
           why: "The whole screen as a tree: stacks, sizing, typography, paints with their token names, text, interactions.",
           params: { nodeId: "1:16" }
+        },
+        {
+          op: "text.inventory",
+          why: "Every string the screen says, split into copy and text drawn inside an illustration. The copy is what needs a field and a translation entry; the drawn text must NOT be duplicated there \u2014 it ships in the picture.",
+          params: { nodeId: "1:16", role: "content" }
+        },
+        {
+          op: "export.plan",
+          why: "Before exporting anything: which slot is a vector over a plate, which is one flat render, and at which density it still fits through the channel. Skipping this is how an export is refused whole, or a crisp widget arrives baked into a photo.",
+          params: { nodeId: "1:16", scale: 2 }
         },
         {
           op: "assets.export",
@@ -26987,10 +28075,15 @@ ${scripts}`, "");
           why: "Mobile screens are frames on a page; this names them and their sizes."
         },
         {
+          op: "tokens.emit",
+          why: "The design system in the form the platform compiles \u2014 an asset catalogue and Tokens.swift for iOS, values/ + values-night/ and Tokens.kt for Android. Ask before you write the first screen: a colour hard-coded now is a colour that will not follow the theme later, and tokens.css cannot help a native build.",
+          params: { platform: "ios" }
+        },
+        {
           op: "design.ir",
-          why: "One call per screen. Auto-layout comes back as stacks with gap/padding/alignment, which is the model RN, SwiftUI and Compose all express, `type` is the table of text styles it is set in, and `screen` names what sits in the system bands, what is pinned and how much is placed by coordinates.",
+          why: "One call per screen, and for a native target ALWAYS with `appearance: true` and `platform`. Auto-layout comes back as stacks with gap/padding/alignment, which is the model RN, SwiftUI and Compose all express. `appearance` is the half that is off by default and that you cannot do without: the tree carries no colour, stroke, radius, shadow or opacity unless you ask, because the web emitter reads those off the live node on its way out \u2014 and your build runs after this window has closed. Every value arrives as `{ token, value }`: build from the token, fall back to the literal. `platform` adds `units` \u2014 what one Figma pixel is in your unit, the reference density derived from the frame width (a 750px artboard is 2\xD7 an iPhone, and every length in the tree is then twice what you should emit), and the unit TEXT is sized in, which on Android is `sp` and not `dp`. `type` is the table of text styles the screen is set in, and `screen` names what sits in the system bands, what is pinned, and how much is placed by coordinates.",
           each: "screen",
-          params: { nodeId: "1:16" }
+          params: { nodeId: "1:16", appearance: true, platform: "ios" }
         },
         {
           op: "component.api",
@@ -26999,10 +28092,16 @@ ${scripts}`, "");
           params: { nodeId: "819:95512" }
         },
         {
+          op: "export.plan",
+          why: "One call per illustration slot before exporting it: whether the designer marked its children for export (then it is a plate plus vectors, not one flat picture) and which density still fits through the channel.",
+          each: "illustration slot",
+          params: { nodeId: "1:16", scale: 3 }
+        },
+        {
           op: "assets.export",
-          why: "Icons and images at the densities the platform asks for, with a manifest that already names where each file goes.",
+          why: "Icons and images at the densities the platform asks for, with a manifest that already names where each file goes. Pass the same `platform` you gave design.ir and the naming and densities come from one profile, so the manifest and the tree cannot disagree.",
           each: "screen",
-          params: { nodeId: "1:16", select: "assets", naming: "ios", scales: [1, 2, 3] }
+          params: { nodeId: "1:16", select: "assets", platform: "ios" }
         },
         {
           op: "flow.map",
@@ -27012,16 +28111,26 @@ ${scripts}`, "");
           op: "transition.context",
           why: "Smart Animate between variants \u2014 what actually moves between two states, and which mechanism reproduces it.",
           params: { nodeId: "1:16" }
+        },
+        {
+          op: "design.audit",
+          why: "The last step, and the one that makes the rest checkable. Report what you actually emitted per layer and this names the differences: `dropped` is a value the design had and you did not use, `diverged` is a value you disagree on (usually a unit), and `missing` is a property YOU needed and the CHANNEL could not answer \u2014 those collect in `wanted`, and reporting them is how the channel learns what to carry next. Pass the same `platform` so lengths are judged at the artboard's own density.",
+          each: "screen",
+          params: { nodeId: "1:16", platform: "ios", built: [{ nodeId: "1:17", properties: { fill: "#112233" } }] }
         }
       ],
       checks: [
         "Every tap target in your build corresponds to a reaction reported by flow.map, and every destination exists.",
-        "Assets land at every density the manifest lists \u2014 a missing @3x is a blurry icon on the newest phone."
+        "Assets land at every density the manifest lists \u2014 a missing @3x is a blurry icon on the newest phone.",
+        "design.audit reports no `dropped` and no `diverged` for the screen. A `missing` is not your bug \u2014 report it.",
+        "Every colour, radius and spacing in your build came from a token where design.ir gave one. A literal where a token exists is a value that will not follow a theme."
       ],
       notes: [
         "Figma has no safe-area concept: a status bar drawn in the frame is a layer like any other, and it is your call whether to build it or to inset for the real one.",
         'Vector assets export as SVG; converting them to Android vector drawables or SF Symbols is the build\u2019s job, not the plugin\u2019s. With `naming: "ios"` each imageset also comes with the Contents.json that makes it one - a vector goes in single-scale, with `preserves-vector-representation`.',
-        "Animate from a transition\u2019s `curve`, not from the CSS `timingFunction` beside it: a spring arrives there as eighty sampled points, and `curve` carries the damping ratio, stiffness and solved settle time instead."
+        "Animate from a transition\u2019s `curve`, not from the CSS `timingFunction` beside it: a spring arrives there as eighty sampled points, and `curve` carries the damping ratio, stiffness and solved settle time instead.",
+        "Read `units.scale` before you emit a single number. It is 1 for a logical artboard and 2 or 3 for one drawn at density, and nothing else in the answer will tell you \u2014 a build that ignores it is correct in proportion and twice the size.",
+        "On Android a font size, a line height and a letter spacing go in `sp`; everything else goes in `dp`. `units.textUnit` says so. A text metric in `dp` ignores the system font-size setting, which is the most common accessibility defect in a generated Android UI."
       ]
     },
     {
@@ -27112,6 +28221,11 @@ ${scripts}`, "");
           params: { nodeId: "1:16" }
         },
         {
+          op: "design.audit",
+          why: "The same question for a build that has no browser to measure: report what you emitted and it names what you dropped, what diverged, and what this channel could not tell you. `design.measure` is the web half; this is the one a SwiftUI or Compose build can answer.",
+          params: { nodeId: "1:16", built: [{ nodeId: "1:17", properties: { fill: "#112233" } }] }
+        },
+        {
           op: "frames.compare",
           why: "When two widths disagree, this says which layers differ and which exist on one side only.",
           params: { a: "1:16", b: "1:20" }
@@ -27162,15 +28276,393 @@ ${scripts}`, "");
     }
   ];
 
-  // src/agent/spec-ops.ts
+  // src/agent/audit.ts
+  var COMPARABLE = {
+    fill: { from: "appearance" },
+    stroke: { from: "appearance" },
+    strokeWeight: { from: "appearance", unit: true },
+    radius: { from: "appearance", unit: true },
+    opacity: { from: "appearance" },
+    blendMode: { from: "appearance" },
+    rotation: { from: "appearance" },
+    effects: { from: "appearance" },
+    fontFamily: { from: "appearance" },
+    fontSize: { from: "appearance", unit: true },
+    fontWeight: { from: "appearance" },
+    lineHeight: { from: "appearance" },
+    letterSpacing: { from: "appearance" },
+    gap: { from: "layout", unit: true },
+    paddingTop: { from: "layout", unit: true },
+    paddingRight: { from: "layout", unit: true },
+    paddingBottom: { from: "layout", unit: true },
+    paddingLeft: { from: "layout", unit: true },
+    direction: { from: "layout" },
+    width: { from: "layout", unit: true },
+    height: { from: "layout", unit: true },
+    text: { from: "text" },
+    /* Added because the judge asked for them: auditing a real screen returned `unknown` for
+     * `textTruncation` while `IrTextNode` was carrying `truncate` and `textAlign` all along. That
+     * is the loop working — a build reached for something the tree held and the vocabulary did
+     * not expose, and the fix is four lines rather than a guess about what a generator might
+     * want. */
+    textAlign: { from: "text" },
+    maxLines: { from: "text" },
+    noWrap: { from: "text" }
+  };
+  function comparableProperties() {
+    return Object.keys(COMPARABLE);
+  }
+  function heldValue(value2) {
+    if (!value2) return null;
+    return value2.token ? { token: value2.token, value: value2.value } : { value: value2.value };
+  }
+  function collapsedValue(value2) {
+    if (!value2) return null;
+    if (typeof value2.value === "number") return heldValue(value2);
+    return { value: "mixed" };
+  }
+  function appearanceHolds(property, appearance) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    if (!appearance) return null;
+    switch (property) {
+      case "fill": {
+        const paint = (_a = appearance.fills) == null ? void 0 : _a.find((entry) => entry.visible !== false);
+        if (!paint) return null;
+        if (paint.bound) return __spreadValues({ token: paint.bound }, paint.color ? { value: paint.color } : {});
+        return paint.color ? { value: paint.color } : { value: paint.type };
+      }
+      case "stroke": {
+        const paint = (_b = appearance.strokes) == null ? void 0 : _b.find((entry) => entry.visible !== false);
+        if (!paint) return null;
+        if (paint.bound) return __spreadValues({ token: paint.bound }, paint.color ? { value: paint.color } : {});
+        return paint.color ? { value: paint.color } : { value: paint.type };
+      }
+      case "strokeWeight":
+        return collapsedValue(appearance.strokeWeight);
+      case "radius":
+        return collapsedValue(appearance.radius);
+      case "opacity":
+        return heldValue(appearance.opacity);
+      case "blendMode":
+        return appearance.blendMode ? { value: appearance.blendMode } : null;
+      case "rotation":
+        return appearance.rotation === void 0 ? null : { value: appearance.rotation };
+      case "effects":
+        return appearance.effects ? { value: appearance.effects.length } : null;
+      case "fontFamily": {
+        const type = appearance.typography;
+        return type ? __spreadProps(__spreadValues({}, ((_c = type.tokens) == null ? void 0 : _c.fontFamily) ? { token: type.tokens.fontFamily } : {}), { value: type.family }) : null;
+      }
+      case "fontSize": {
+        const type = appearance.typography;
+        return type ? __spreadProps(__spreadValues({}, ((_d = type.tokens) == null ? void 0 : _d.fontSize) ? { token: type.tokens.fontSize } : {}), { value: type.size }) : null;
+      }
+      case "fontWeight": {
+        const type = appearance.typography;
+        if (!type || type.weight === void 0) return null;
+        return __spreadProps(__spreadValues({}, ((_e = type.tokens) == null ? void 0 : _e.fontWeight) ? { token: type.tokens.fontWeight } : {}), { value: type.weight });
+      }
+      case "lineHeight": {
+        const type = appearance.typography;
+        return type ? __spreadProps(__spreadValues({}, ((_f = type.tokens) == null ? void 0 : _f.lineHeight) ? { token: type.tokens.lineHeight } : {}), { value: type.lineHeight }) : null;
+      }
+      case "letterSpacing": {
+        const type = appearance.typography;
+        return type ? __spreadProps(__spreadValues({}, ((_g = type.tokens) == null ? void 0 : _g.letterSpacing) ? { token: type.tokens.letterSpacing } : {}), { value: type.letterSpacing }) : null;
+      }
+      default:
+        return null;
+    }
+  }
+  function layoutHolds(property, node) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    const tokens = (_a = node.appearance) == null ? void 0 : _a.layoutTokens;
+    const named = (field, value2) => {
+      if (value2 === void 0) return null;
+      const token2 = tokens == null ? void 0 : tokens[field];
+      return token2 ? { token: token2, value: value2 } : { value: value2 };
+    };
+    const layout = node.layout;
+    switch (property) {
+      case "gap":
+        return layout && layout.kind === "flex" ? named("itemSpacing", layout.gap) : null;
+      case "paddingTop":
+        return named("paddingTop", (_b = layout == null ? void 0 : layout.padding) == null ? void 0 : _b.top);
+      case "paddingRight":
+        return named("paddingRight", (_c = layout == null ? void 0 : layout.padding) == null ? void 0 : _c.right);
+      case "paddingBottom":
+        return named("paddingBottom", (_d = layout == null ? void 0 : layout.padding) == null ? void 0 : _d.bottom);
+      case "paddingLeft":
+        return named("paddingLeft", (_e = layout == null ? void 0 : layout.padding) == null ? void 0 : _e.left);
+      case "direction":
+        return layout && layout.kind === "flex" && layout.direction ? { value: layout.direction } : null;
+      case "width": {
+        const size = (_f = node.sizing) == null ? void 0 : _f.width;
+        if (!size) return null;
+        return size.mode === "fixed" ? named("width", size.value) : { value: size.mode };
+      }
+      case "height": {
+        const size = (_g = node.sizing) == null ? void 0 : _g.height;
+        if (!size) return null;
+        return size.mode === "fixed" ? named("height", size.value) : { value: size.mode };
+      }
+      default:
+        return null;
+    }
+  }
+  function textHolds(property, node) {
+    var _a;
+    const text4 = node;
+    switch (property) {
+      case "text":
+        return typeof text4.characters === "string" ? { value: text4.characters } : null;
+      case "textAlign":
+        return typeof text4.characters === "string" ? { value: typeof text4.textAlign === "string" ? text4.textAlign : "left" } : null;
+      case "maxLines":
+        if (typeof text4.characters !== "string") return null;
+        if (!text4.truncate) return { value: "none" };
+        return { value: text4.truncate.maxLines === null ? "unbounded" : (_a = text4.truncate.maxLines) != null ? _a : "unbounded" };
+      case "noWrap":
+        return typeof text4.characters === "string" ? { value: text4.noWrap === true } : null;
+      default:
+        return null;
+    }
+  }
+  var LENGTH_TOLERANCE = 0.51;
+  function sameNumber(design, built) {
+    return Math.abs(design - built) <= LENGTH_TOLERANCE;
+  }
+  function sameColor3(a, b) {
+    const norm = (hex) => hex.trim().toUpperCase().replace(/^#/, "").replace(/FF$/, "");
+    return norm(a) === norm(b);
+  }
+  function agrees(design, built, unit, scale) {
+    if (design.token !== void 0 && String(built) === design.token) return true;
+    if (design.value === void 0) return false;
+    if (typeof design.value === "number" && typeof built === "number") {
+      return sameNumber(unit ? design.value / scale : design.value, built);
+    }
+    if (typeof design.value === "number") {
+      const parsed = Number(String(built).replace(/[a-z%]+$/i, ""));
+      if (Number.isFinite(parsed)) return sameNumber(unit ? design.value / scale : design.value, parsed);
+      return false;
+    }
+    const left = String(design.value);
+    const right = String(built);
+    if (/^#?[0-9a-f]{6,8}$/i.test(left) && /^#?[0-9a-f]{6,8}$/i.test(right)) return sameColor3(left, right);
+    return left.trim() === right.trim();
+  }
+  function index(node, into = /* @__PURE__ */ new Map()) {
+    into.set(node.id, node);
+    const children = node.children;
+    if (Array.isArray(children)) for (const child of children) index(child, into);
+    return into;
+  }
+  function judge(root, built, options = {}) {
+    var _a;
+    const scale = typeof options.scale === "number" && options.scale > 0 ? options.scale : 1;
+    const asked = options.only && options.only.length > 0 ? new Set(options.only) : null;
+    const byId = index(root);
+    const findings = [];
+    const counts = { matched: 0, dropped: 0, diverged: 0, missing: 0, unknown: 0 };
+    const wanted = /* @__PURE__ */ new Map();
+    let matchedLayers = 0;
+    const record2 = (finding) => {
+      counts[finding.verdict]++;
+      if (finding.verdict !== "matched") findings.push(finding);
+    };
+    for (const layer of built) {
+      const node = byId.get(layer.nodeId);
+      if (!node) {
+        findings.push({
+          nodeId: layer.nodeId,
+          property: "*",
+          verdict: "unknown",
+          note: "no layer with this id in the tree \u2014 an export-flattened subtree, or a stale id"
+        });
+        counts.unknown++;
+        continue;
+      }
+      matchedLayers++;
+      const properties = layer.properties && typeof layer.properties === "object" ? layer.properties : {};
+      for (const [property, claim] of Object.entries(properties)) {
+        if (asked && !asked.has(property)) continue;
+        const spec = COMPARABLE[property];
+        if (!spec) {
+          record2({
+            nodeId: layer.nodeId,
+            name: node.name,
+            property,
+            verdict: "unknown",
+            built: claim,
+            note: "not a property this channel describes \u2014 nothing to compare it against"
+          });
+          continue;
+        }
+        const held = spec.from === "appearance" ? appearanceHolds(property, node.appearance) : spec.from === "layout" ? layoutHolds(property, node) : textHolds(property, node);
+        if (held === null) {
+          record2({
+            nodeId: layer.nodeId,
+            name: node.name,
+            property,
+            verdict: "missing",
+            built: claim,
+            note: node.appearance === void 0 && spec.from === "appearance" ? "no appearance on this layer \u2014 call design.ir with appearance: true" : "the channel holds nothing for this property on this layer"
+          });
+          const layers = (_a = wanted.get(property)) != null ? _a : /* @__PURE__ */ new Set();
+          layers.add(layer.nodeId);
+          wanted.set(property, layers);
+          continue;
+        }
+        if (claim === null || claim === void 0 || claim === "") {
+          record2({
+            nodeId: layer.nodeId,
+            name: node.name,
+            property,
+            verdict: "dropped",
+            design: held,
+            note: "the design says this and the build emitted nothing"
+          });
+          continue;
+        }
+        record2(__spreadValues({
+          nodeId: layer.nodeId,
+          name: node.name,
+          property,
+          verdict: agrees(held, claim, spec.unit === true, scale) ? "matched" : "diverged",
+          design: held,
+          built: claim
+        }, spec.unit === true && scale !== 1 ? { note: `lengths compared at 1/${scale} \u2014 the artboard is ${scale}\xD7` } : {}));
+      }
+    }
+    return {
+      layers: { claimed: built.length, matched: matchedLayers, unmatched: built.length - matchedLayers },
+      findings,
+      counts,
+      wanted: [...wanted.entries()].map(([property, layers]) => ({ property, layers: layers.size })).sort((a, b) => b.layers - a.layers || a.property.localeCompare(b.property)),
+      scale
+    };
+  }
+
+  // src/agent/anchor.ts
+  var ANCHOR_POINTS = [
+    "center",
+    "top-left",
+    "top",
+    "top-right",
+    "left",
+    "right",
+    "bottom-left",
+    "bottom",
+    "bottom-right"
+  ];
+  function isAnchorPoint(value2) {
+    return typeof value2 === "string" && ANCHOR_POINTS.includes(value2);
+  }
+  var PINNABLE = /* @__PURE__ */ new Set(["FRAME", "COMPONENT", "COMPONENT_SET", "INSTANCE", "SECTION"]);
+  function pinnableId(id) {
+    return typeof id === "string" && !id.includes(";");
+  }
+  function round14(value2) {
+    return Math.round(value2 * 100) / 100;
+  }
+  function pointsOf(box2) {
+    const left = box2.x;
+    const right = box2.x + box2.width;
+    const top = box2.y;
+    const bottom = box2.y + box2.height;
+    const midX = box2.x + box2.width / 2;
+    const midY = box2.y + box2.height / 2;
+    const at = (x, y) => ({ x: round14(x), y: round14(y) });
+    return {
+      center: at(midX, midY),
+      "top-left": at(left, top),
+      top: at(midX, top),
+      "top-right": at(right, top),
+      left: at(left, midY),
+      right: at(right, midY),
+      "bottom-left": at(left, bottom),
+      bottom: at(midX, bottom),
+      "bottom-right": at(right, bottom)
+    };
+  }
   function boxOf(node) {
+    const box2 = node.absoluteBoundingBox;
+    if (!box2 || typeof box2.x !== "number" || typeof box2.y !== "number") return null;
+    if (typeof box2.width !== "number" || typeof box2.height !== "number") return null;
+    return { x: box2.x, y: box2.y, width: box2.width, height: box2.height };
+  }
+  function enclosingFrame(node) {
+    var _a;
+    let current = node;
+    let depth = 0;
+    while (current) {
+      if (current.type === "PAGE" || current.type === "DOCUMENT") return null;
+      if (PINNABLE.has(current.type) && pinnableId(current.id) && boxOf(current)) {
+        return { frame: current, depth };
+      }
+      current = (_a = current.parent) != null ? _a : null;
+      depth += 1;
+    }
+    return null;
+  }
+  function anchorOf(node) {
+    const absolute = boxOf(node);
+    if (!absolute) {
+      throw new Error(
+        `"${node.name}" (${node.type}) has no absoluteBoundingBox \u2014 it cannot be placed, so there is no point to pin to`
+      );
+    }
+    const enclosing = enclosingFrame(node);
+    const rotated = typeof node.rotation === "number" && Math.abs(round14(node.rotation)) > 0.01;
+    if (!enclosing) {
+      return __spreadValues({
+        node: { id: node.id, name: node.name, type: node.type },
+        frame: null,
+        absolute: roundBox(absolute),
+        offsets: pointsOf(absolute),
+        depth: 0
+      }, rotated ? { rotated: true } : {});
+    }
+    const frameBox = boxOf(enclosing.frame);
+    const inFrame = {
+      x: absolute.x - frameBox.x,
+      y: absolute.y - frameBox.y,
+      width: absolute.width,
+      height: absolute.height
+    };
+    return __spreadValues({
+      node: { id: node.id, name: node.name, type: node.type },
+      frame: {
+        id: enclosing.frame.id,
+        name: enclosing.frame.name,
+        type: enclosing.frame.type,
+        box: roundBox(frameBox)
+      },
+      absolute: roundBox(absolute),
+      inFrame: roundBox(inFrame),
+      offsets: pointsOf(inFrame),
+      depth: enclosing.depth
+    }, rotated ? { rotated: true } : {});
+  }
+  function roundBox(box2) {
+    return { x: round14(box2.x), y: round14(box2.y), width: round14(box2.width), height: round14(box2.height) };
+  }
+  function pinFor(anchor, point2 = "center") {
+    const offset = anchor.offsets[point2];
+    if (!anchor.frame) return { x: offset.x, y: offset.y };
+    return { node_id: anchor.frame.id, node_offset: { x: offset.x, y: offset.y } };
+  }
+
+  // src/agent/spec-ops.ts
+  function boxOf2(node) {
     var _a, _b, _c, _d;
     const absolute = node.absoluteBoundingBox;
     if (absolute) return { x: absolute.x, y: absolute.y, width: absolute.width, height: absolute.height };
     return { x: (_a = node.x) != null ? _a : 0, y: (_b = node.y) != null ? _b : 0, width: (_c = node.width) != null ? _c : 0, height: (_d = node.height) != null ? _d : 0 };
   }
   async function measureSubtree(root, options) {
-    const origin = boxOf(root);
+    const origin = boxOf2(root);
     const layers = [];
     let truncated = false;
     const visit = async (node, depth, path, label3) => {
@@ -27180,7 +28672,7 @@ ${scripts}`, "");
         return;
       }
       if (node.visible === false && !options.includeHidden) return;
-      const box = boxOf(node);
+      const box2 = boxOf2(node);
       let css;
       if (typeof node.getCSSAsync === "function") {
         try {
@@ -27196,17 +28688,17 @@ ${scripts}`, "");
         name: node.name,
         type: node.type,
         box: {
-          x: Math.round(box.x - origin.x),
-          y: Math.round(box.y - origin.y),
-          width: Math.round(box.width),
-          height: Math.round(box.height)
+          x: Math.round(box2.x - origin.x),
+          y: Math.round(box2.y - origin.y),
+          width: Math.round(box2.width),
+          height: Math.round(box2.height)
         }
       }, css && Object.keys(css).length > 0 ? { css } : {}));
       if (depth <= 0) return;
       const children = (_a = node.children) != null ? _a : [];
-      for (let index = 0; index < children.length; index += 1) {
-        const child = children[index];
-        await visit(child, depth - 1, path === "" ? String(index) : `${path}.${index}`, `${label3} / ${child.name}`);
+      for (let index2 = 0; index2 < children.length; index2 += 1) {
+        const child = children[index2];
+        await visit(child, depth - 1, path === "" ? String(index2) : `${path}.${index2}`, `${label3} / ${child.name}`);
         if (layers.length >= options.limit) {
           truncated = true;
           return;
@@ -27227,6 +28719,67 @@ ${scripts}`, "");
     if (node.type === "PAGE" || node.type === "DOCUMENT") throw new Error(`${ref} is a ${node.type}, not a layer`);
     return node;
   }
+  var ANCHOR_OP = {
+    name: "node.anchor",
+    summary: "Where a comment pin goes for a node: the frame to address it to, and the offset inside it.",
+    agent: "The aiming primitive, and the call to make BEFORE comments.post. Figma pins a comment with `{node_id, node_offset}` where the offset is measured from the top-left of a FRAME \u2014 and a node id out of design.ir is usually a deep layer whose own position is relative to its parent, which is not the frame. This walks up to the frame a pin has to be addressed to and returns the offset in that frame's space, plus all nine named points of the node's box (`center`, `top-right`, \u2026) so \"the corner of the badge\" is a word instead of arithmetic. `pin` is the exact `client_meta` to post. Addressing the frame rather than the canvas is what makes the comment MOVE WITH the screen when the designer drags it; an absolute point does not. `frame: null` means the node sits under no frame, and then the pin is absolute canvas coordinates. `rotated: true` warns that a corner anchor lands outside a rotated layer \u2014 `center` is still exact. You can usually skip this: comments.post takes a nodeId and calls it for you. Reach for it when you want to see the numbers first, or aim several pins at once.",
+    mutates: false,
+    params: {
+      nodeId: { type: "string", required: true, description: "The layer to aim at." },
+      anchor: {
+        type: "string",
+        default: "center",
+        enum: [...ANCHOR_POINTS],
+        description: "Which point of the node the pin sits on. `center` is what an annotation almost always wants."
+      }
+    },
+    async run(params) {
+      const node = await resolveAnchorable(params.nodeId);
+      const anchor = anchorOf(node);
+      const point2 = isAnchorPoint(params.anchor) ? params.anchor : "center";
+      return __spreadProps(__spreadValues({}, anchor), { anchor: point2, pin: pinFor(anchor, point2) });
+    }
+  };
+  async function resolveAnchorable(ref) {
+    if (typeof ref !== "string" || ref === "") throw new Error("nodeId must be a non-empty string");
+    const node = await figma.getNodeByIdAsync(ref);
+    if (!node) {
+      throw new Error(
+        `no node with id ${ref} \u2014 if it came from an earlier design.ir or node.find, the layer may have been restructured since; read the tree again`
+      );
+    }
+    if (node.type === "PAGE" || node.type === "DOCUMENT") {
+      throw new Error(`${ref} is a ${node.type} \u2014 a pin is placed on a layer, not on a page`);
+    }
+    let parent = node.parent;
+    while (parent && parent.type !== "PAGE") parent = parent.parent;
+    if (parent) await parent.loadAsync();
+    return node;
+  }
+  var HISTORY_MARK_OP = {
+    name: "history.mark",
+    summary: "Save a named version of the file \u2014 the only way to put intent into version history.",
+    agent: 'Call this AROUND a batch of changes, not after the fact: a named checkpoint before and after turns a diff across an anonymous span into "this is what that run did". It is the only write into history the API has \u2014 REST cannot create a version at all \u2014 and on a real file 1 checkpoint in 50 was named, so almost all of the history nobody can interpret. The title is required and must be non-empty; put the WHY in `description`, since that is the field a person reads when they are deciding whether to restore. Figma warns that changes made immediately before the call may not be included, so this waits briefly first rather than saving a version that is missing the work it claims to mark. Restoring a version is not possible through any API \u2014 that is a person in the Figma UI. One measured surprise: on a file with no changes since the last autosave, this RENAMES that checkpoint instead of adding one \u2014 the id it returns is the existing one. So marking before and after a run that changed nothing leaves a single version, not two, and the second title wins. Nothing in the API docs says so.',
+    mutates: true,
+    params: {
+      title: { type: "string", required: true, description: "The version name, as it appears in Figma's history panel." },
+      description: { type: "string", description: "Why this version exists \u2014 the field somebody reads before restoring." }
+    },
+    async run(params) {
+      var _a, _b;
+      const title = String((_a = params.title) != null ? _a : "").trim();
+      if (!title) throw new Error("title is required and must be non-empty \u2014 an unnamed version is what Figma already makes on its own");
+      const description = typeof params.description === "string" ? params.description : void 0;
+      await sleep(1e3);
+      const saved = await figma.saveVersionHistoryAsync(title, description);
+      return __spreadProps(__spreadValues({
+        version: (_b = saved == null ? void 0 : saved.id) != null ? _b : null,
+        title
+      }, description ? { description } : {}), {
+        note: "read it back with history.versions; compare against it with history.diff"
+      });
+    }
+  };
   var SPEC_OPS = [
     {
       name: "design.measure",
@@ -27251,12 +28804,72 @@ ${scripts}`, "");
           includeHidden: params.includeHidden
         });
       }
-    }
+    },
+    {
+      name: "design.audit",
+      summary: "Judges a build against the design: what it dropped, what diverged, and what the channel could not tell it.",
+      agent: "The assertion for a NON-web build, and the counterpart to design.measure (which compares CSS in a browser). After you generate a screen, report what you actually emitted \u2014 per layer, keyed by the Figma node id, in this channel's own property names (fill, radius, gap, paddingLeft, fontSize, lineHeight, width, text, \u2026) \u2014 and this compares it against the design. Three verdicts, because they are three different bugs: `dropped` means the design said it and you emitted nothing (your bug), `diverged` means you disagree on the value (usually a unit or a mode), and `missing` means YOU needed it and THIS CHANNEL could not answer \u2014 which is the channel's bug, and `wanted` collects those most-reached-for first, so report them. Naming the TOKEN counts as a match and is a better answer than the literal. Pass `platform` and lengths are compared at the artboard's own density, so a 2\xD7 frame does not report every number as wrong. Requires the tree from design.ir with `appearance: true` \u2014 without it every paint property comes back `missing`, which is true but not useful.",
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "The frame or component the build was generated from." },
+        built: {
+          type: "json",
+          required: true,
+          description: 'What you emitted: `[{ nodeId, properties: { fill: "#112233", radius: 8, gap: "spacing/md" } }]`. A property name this channel does not describe comes back as `unknown` rather than being quietly counted as a pass.'
+        },
+        platform: {
+          type: "string",
+          enum: ["web", "ios", "android"],
+          description: "Compare lengths in this platform's unit. A 750px artboard is 2\xD7 an iPhone, so every honest pt value is half the Figma number \u2014 without this the judge reports all of them as diverged."
+        },
+        only: {
+          type: "string[]",
+          description: "Judge just these properties. A build that emitted colour and no type asks about colour, instead of being told it dropped the whole type scale."
+        },
+        appearance: {
+          type: "boolean",
+          default: true,
+          description: "Read paint, strokes, radii, effects and type off the live layers before judging. On by default: this op is useless without it, and a report of nothing but `missing` is the shape of that uselessness."
+        }
+      },
+      async run(params) {
+        var _a;
+        const root = await resolveSceneNode(params.nodeId);
+        let parent = root.parent;
+        while (parent && parent.type !== "PAGE") parent = parent.parent;
+        if (parent) await parent.loadAsync();
+        const ir = await serializeNode(root);
+        if (!ir) throw new Error(`"${root.name}" (${root.type}) produced no exportable structure`);
+        if (params.appearance !== false) {
+          const sceneNodesById = await indexSceneNodes([root]);
+          await annotateAppearance(
+            [ir],
+            sceneNodesById,
+            variableNameResolver()
+          );
+        }
+        const built = Array.isArray(params.built) ? params.built : null;
+        if (!built) throw new Error('"built" must be an array of { nodeId, properties }');
+        const profile = isPlatform(params.platform) ? unitProfile(params.platform, root.width) : null;
+        const report2 = judge(ir, built, __spreadValues({
+          scale: (_a = profile == null ? void 0 : profile.scale) != null ? _a : 1
+        }, Array.isArray(params.only) ? { only: params.only } : {}));
+        return __spreadValues(__spreadProps(__spreadValues({
+          node: { id: root.id, name: root.name, type: root.type }
+        }, profile ? { units: profile } : {}), {
+          /* Every property this channel can be asked about, so a build that got a pile of
+           * `unknown` back can see the vocabulary instead of guessing at it. */
+          vocabulary: comparableProperties()
+        }), report2);
+      }
+    },
+    ANCHOR_OP,
+    HISTORY_MARK_OP
   ];
 
   // src/agent/transition-ops.ts
-  function orMixed(value) {
-    return value === figma.mixed ? MIXED : value;
+  function orMixed(value2) {
+    return value2 === figma.mixed ? MIXED : value2;
   }
   function isGradientPaint(paint) {
     return paint.type === "GRADIENT_LINEAR" || paint.type === "GRADIENT_RADIAL" || paint.type === "GRADIENT_ANGULAR" || paint.type === "GRADIENT_DIAMOND";
@@ -27376,9 +28989,9 @@ ${scripts}`, "");
     return new Promise((resolve2, reject) => {
       const timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms);
       work.then(
-        (value) => {
+        (value2) => {
           clearTimeout(timer);
-          resolve2(value);
+          resolve2(value2);
         },
         (error) => {
           clearTimeout(timer);
@@ -27550,6 +29163,179 @@ ${scripts}`, "");
     }
   ];
 
+  // src/agent/text-ops.ts
+  var ILLUSTRATION_NAMES = ["Img", "Img_hero", "Interface", "Calculator", "World", "Points"];
+  var ILLUSTRATION_PREFIX = "img/";
+  function isIllustration(name, extra) {
+    return name.startsWith(ILLUSTRATION_PREFIX) || ILLUSTRATION_NAMES.includes(name) || extra.includes(name);
+  }
+  var TEXT_OPS = [
+    {
+      name: "text.inventory",
+      summary: "Every TEXT node of a subtree, split into copy that must be translated and text drawn inside illustrations.",
+      agent: 'The op behind "a text node is a string, and a string belongs in the translation file". Each row carries the characters, the layer path and a role: `content` is copy a CMS field and a PO entry must exist for; `baked` is text inside an illustration (`img/*`, `Img`, `Interface`, `Calculator`) \u2014 it ships as pixels or as an SVG overlay and must NOT be duplicated into the copy deck. Compare `content` against the strings a build exports and the difference is the localization gap, computed from the design rather than from a copy of the design\'s conventions kept somewhere else. `illustrations` extends the name list; `includeHidden` adds layers the designer switched off.',
+      mutates: false,
+      params: {
+        nodeId: { type: "string", required: true, description: "Frame, section or page-level frame to inventory." },
+        illustrations: {
+          type: "string[]",
+          description: `Extra layer names to treat as illustrations, beside \`img/*\`, ${ILLUSTRATION_NAMES.join(", ")}.`
+        },
+        includeHidden: { type: "boolean", default: false, description: "Also report layers that are switched off." },
+        role: {
+          type: "string",
+          enum: ["content", "baked", "all"],
+          default: "all",
+          description: "Report only copy, only drawn text, or both."
+        },
+        limit: { type: "number", default: 500, min: 1, max: 5e3, description: "Maximum rows reported." }
+      },
+      async run(params) {
+        var _a, _b, _c;
+        const root = await figma.getNodeByIdAsync(String(params.nodeId));
+        if (!root) throw new Error(`no node with id ${String(params.nodeId)}`);
+        if (root.type === "DOCUMENT") throw new Error("give a frame or a page-level node, not the document");
+        const extra = (_a = params.illustrations) != null ? _a : [];
+        const includeHidden = params.includeHidden === true;
+        const wanted = String((_b = params.role) != null ? _b : "all");
+        const limit = params.limit;
+        const rows = [];
+        let scanned = 0;
+        let truncated = false;
+        const stack = [
+          { node: root, path: root.name, bakedIn: isIllustration(root.name, extra) ? root.name : null }
+        ];
+        while (stack.length > 0) {
+          const current = stack.pop();
+          const node = current.node;
+          scanned += 1;
+          const visible = node.visible !== false;
+          if (!visible && !includeHidden) continue;
+          if (node.type === "TEXT") {
+            const text4 = node;
+            const role = current.bakedIn ? "baked" : "content";
+            if (wanted === "all" || wanted === role) {
+              if (rows.length >= limit) {
+                truncated = true;
+              } else {
+                const style = text4.textStyleId ? await figma.getStyleByIdAsync(String(text4.textStyleId)) : null;
+                rows.push(__spreadProps(__spreadValues(__spreadValues({
+                  id: text4.id,
+                  name: text4.name,
+                  path: current.path,
+                  // Newlines escaped: a paragraph mark in the middle of a report reads as a broken row.
+                  characters: text4.characters.replace(/\n/g, "\\n"),
+                  length: text4.characters.length,
+                  role
+                }, current.bakedIn ? { bakedIn: current.bakedIn } : {}), style ? { style: style.name } : {}), {
+                  visible
+                }));
+              }
+            }
+          }
+          if ("children" in node) {
+            for (const child of node.children) {
+              stack.push({
+                node: child,
+                path: `${current.path}/${child.name}`,
+                // Once inside an illustration, always inside it: depth changes nothing.
+                bakedIn: (_c = current.bakedIn) != null ? _c : isIllustration(child.name, extra) ? child.name : null
+              });
+            }
+          }
+        }
+        const content = rows.filter((row) => row.role === "content");
+        return {
+          node: { id: root.id, name: root.name, type: root.type },
+          scanned,
+          truncated,
+          counts: {
+            total: rows.length,
+            content: content.length,
+            baked: rows.length - content.length,
+            distinct: new Set(content.map((row) => row.characters.trim())).size
+          },
+          texts: rows
+        };
+      }
+    }
+  ];
+
+  // src/agent/tokens-ops.ts
+  var PLATFORMS = ["web", "ios", "android"];
+  var TOKENS_OPS = [
+    {
+      name: "tokens.emit",
+      summary: "The file's variables as token files for a named platform \u2014 CSS, an iOS asset catalogue, Android resources, Swift and Kotlin.",
+      agent: "Ask for the platform you are building; the panel's own export settings are not consulted, so the answer is the same on every machine. `web` gives tokens.css / tokens.json / tokens.ts; `ios` gives Assets.xcassets/*.colorset and Tokens.swift; `android` gives values/colors.xml, values-night/colors.xml and Tokens.kt. Themes come from the collection's modes: the dark one becomes the `luminosity` appearance on iOS and the `-night` qualifier on Android, and a token that does not change between themes is emitted once instead of twice. `library: true` also imports every enabled library variable \u2014 a minute or more on a large file; leave it off when the file owns its tokens.",
+      mutates: false,
+      params: {
+        platform: {
+          type: "string",
+          default: "web",
+          enum: [...PLATFORMS, "all"],
+          description: "Which platform the files are for. `all` emits every set at once."
+        },
+        library: {
+          type: "boolean",
+          default: false,
+          description: "Import variables from enabled libraries too (slow: one round trip per variable)."
+        },
+        inlinePrimitives: {
+          type: "boolean",
+          default: true,
+          description: "Resolve semantic tokens down to their primitive values. On for native output, where a constant cannot hold a reference: an unresolved alias would land in Swift as the literal `{colors.blue.500}`."
+        },
+        themeAttribute: {
+          type: "string",
+          default: "data-theme",
+          description: "Web only: the attribute `tokens.css` switches themes on."
+        }
+      },
+      async run(params) {
+        var _a, _b, _c, _d;
+        const platform = String((_a = params.platform) != null ? _a : "web");
+        const wants = (target) => platform === "all" || platform === target;
+        const inline = params.inlinePrimitives !== false;
+        const snapshot = params.library === true ? await readAllVariables() : await readLocalVariables();
+        const artifacts = emitTokenArtifacts(snapshot, {
+          inlinePrimitives: inline,
+          flattenAliases: inline,
+          themeAttribute: String((_b = params.themeAttribute) != null ? _b : "data-theme")
+        });
+        const { emitted, themes, defaultTheme } = artifacts;
+        const files = {};
+        if (wants("web")) {
+          files["tokens.css"] = artifacts.css;
+          files["tokens.json"] = artifacts.json;
+          files["tokens.ts"] = toTokensTs(emitted, themes);
+        }
+        if (wants("ios")) {
+          Object.assign(files, toColorSets(emitted, themes, defaultTheme));
+          files["Tokens.swift"] = toTokensSwift(emitted, themes);
+        }
+        if (wants("android")) {
+          Object.assign(files, toAndroidColors(emitted, themes, defaultTheme));
+          files["Tokens.kt"] = toTokensKotlin(emitted, themes);
+        }
+        const manifest = Object.keys(files).map((target) => ({
+          file: target.replace(/\.colorset\/Contents\.json$/, ".colorset.json").replace(/\//g, "__"),
+          path: target
+        }));
+        return {
+          platform,
+          themes,
+          defaultTheme,
+          manifest,
+          files: manifest.map(
+            ({ file, path }) => textFile(file, path.endsWith(".json") ? "application/json" : "text/plain", files[path])
+          ),
+          counts: { files: manifest.length, variables: (_d = (_c = snapshot.variables) == null ? void 0 : _c.length) != null ? _d : 0 }
+        };
+      }
+    }
+  ];
+
   // src/agent/board.ts
   var CHROME = {
     light: { bg: "#FFFFFF", panel: "#F7F8F8", panelAlt: "#F2F4F5", ink: "#191B1C", inkMuted: "#797979", border: "#E4E7E9" },
@@ -27597,17 +29383,17 @@ ${scripts}`, "");
     const color = (_b = (_a = parseColor2(hex)) != null ? _a : parseColor2(fallback)) != null ? _b : { r: 0, g: 0, b: 0, a: 1 };
     return { type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a };
   }
-  function str(value, fallback = "") {
-    return typeof value === "string" ? value : value === void 0 || value === null ? fallback : String(value);
+  function str(value2, fallback = "") {
+    return typeof value2 === "string" ? value2 : value2 === void 0 || value2 === null ? fallback : String(value2);
   }
-  function num(value, fallback) {
-    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  function num(value2, fallback) {
+    return typeof value2 === "number" && Number.isFinite(value2) ? value2 : fallback;
   }
-  function list(value) {
-    return Array.isArray(value) ? value : [];
+  function list(value2) {
+    return Array.isArray(value2) ? value2 : [];
   }
-  function obj(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+  function obj(value2) {
+    return typeof value2 === "object" && value2 !== null && !Array.isArray(value2) ? value2 : {};
   }
   function frame2(name, direction, gap) {
     const node = figma.createFrame();
@@ -27790,10 +29576,10 @@ ${scripts}`, "");
           if (row.sub) label3.appendChild(paragraph(str(row.sub), 11, "regular", chrome.inkMuted, labelWidth));
           line.appendChild(label3);
           for (const side of ["old", "new"]) {
-            const value = row[side];
+            const value2 = row[side];
             const cell = frame2(side, "VERTICAL", 6);
             column(cell, 96);
-            const spec2 = typeof value === "object" && value !== null ? obj(value) : { color: value };
+            const spec2 = typeof value2 === "object" && value2 !== null ? obj(value2) : { color: value2 };
             const { node: rect } = await chip(spec2, ctx, 96, 40);
             cell.appendChild(rect);
             const caption = typeof spec2.caption === "string" ? spec2.caption : str((_b = spec2.color) != null ? _b : spec2.variable, "\u2014");
@@ -27815,19 +29601,19 @@ ${scripts}`, "");
         const headers = list(spec.headers).map((entry) => str(entry));
         const rows = list(spec.rows);
         const widths = list(spec.widths).map((entry) => num(entry, 160));
-        const columnWidth = (index) => {
+        const columnWidth = (index2) => {
           var _a2;
-          return (_a2 = widths[index]) != null ? _a2 : Math.floor((ctx.width - 128 - 16 * Math.max(0, headers.length - 1)) / Math.max(1, headers.length));
+          return (_a2 = widths[index2]) != null ? _a2 : Math.floor((ctx.width - 128 - 16 * Math.max(0, headers.length - 1)) / Math.max(1, headers.length));
         };
         const node = frame2(str(spec.title, "table"), "VERTICAL", 4);
         if (spec.title) node.appendChild(text2(str(spec.title), 16, "bold", chrome.ink));
         if (headers.length > 0) {
           const head = frame2("header", "HORIZONTAL", 16);
           pad(head, 8, 14);
-          headers.forEach((header2, index) => {
+          headers.forEach((header2, index2) => {
             const cell = text2(header2, 11, "medium", chrome.inkMuted);
             cell.textAutoResize = "HEIGHT";
-            cell.resize(columnWidth(index), cell.height);
+            cell.resize(columnWidth(index2), cell.height);
             head.appendChild(cell);
           });
           node.appendChild(head);
@@ -27839,8 +29625,8 @@ ${scripts}`, "");
           pad(line, 10, 14);
           line.cornerRadius = 10;
           if (rowIndex % 2 === 0) line.fills = [solid5(chrome.panel)];
-          cells.forEach((value, index) => {
-            const cell = paragraph(str(value), 12, index === 0 ? "medium" : "regular", index === 0 ? chrome.ink : chrome.inkMuted, columnWidth(index));
+          cells.forEach((value2, index2) => {
+            const cell = paragraph(str(value2), 12, index2 === 0 ? "medium" : "regular", index2 === 0 ? chrome.ink : chrome.inkMuted, columnWidth(index2));
             line.appendChild(cell);
           });
           node.appendChild(line);
@@ -27980,8 +29766,8 @@ ${scripts}`, "");
   }
 
   // src/agent/remove-ops.ts
-  function asIds(value, param) {
-    const list2 = Array.isArray(value) ? value : [];
+  function asIds(value2, param) {
+    const list2 = Array.isArray(value2) ? value2 : [];
     const ids = list2.filter((entry) => typeof entry === "string" && entry !== "");
     if (ids.length === 0) throw new Error(`"${param}" must be a non-empty array of node ids`);
     return ids;
@@ -27998,9 +29784,9 @@ ${scripts}`, "");
     }
   }
   var pageOf4 = (node) => {
-    let walk2 = node.parent;
-    while (walk2 && walk2.type !== "PAGE") walk2 = walk2.parent;
-    return walk2 ? walk2.name : null;
+    let walk3 = node.parent;
+    while (walk3 && walk3.type !== "PAGE") walk3 = walk3.parent;
+    return walk3 ? walk3.name : null;
   };
   var REMOVE_OPS = [
     {
@@ -28066,17 +29852,136 @@ ${scripts}`, "");
   ];
 
   // src/agent/write-ops.ts
-  function asArray(value, param) {
-    if (!Array.isArray(value)) throw new Error(`param "${param}" must be an array`);
-    return value;
+  function asArray(value2, param) {
+    if (!Array.isArray(value2)) throw new Error(`param "${param}" must be an array`);
+    return value2;
   }
-  function record(value, what) {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  function record(value2, what) {
+    if (typeof value2 !== "object" || value2 === null || Array.isArray(value2)) {
       throw new Error(`${what} must be an object`);
     }
-    return value;
+    return value2;
   }
   var RESOLVED_TYPES = ["COLOR", "FLOAT", "BOOLEAN", "STRING", "EASING", "TIMING"];
+  var VARIABLE_SCOPES = {
+    FLOAT: [
+      "ALL_SCOPES",
+      "TEXT_CONTENT",
+      "CORNER_RADIUS",
+      "WIDTH_HEIGHT",
+      "GAP",
+      "OPACITY",
+      "COLOR_OPACITY",
+      "STROKE_FLOAT",
+      "EFFECT_FLOAT",
+      "FONT_WEIGHT",
+      "FONT_SIZE",
+      "LINE_HEIGHT",
+      "LETTER_SPACING",
+      "PARAGRAPH_SPACING",
+      "PARAGRAPH_INDENT"
+    ],
+    STRING: ["ALL_SCOPES", "TEXT_CONTENT", "FONT_FAMILY", "FONT_STYLE"],
+    COLOR: ["ALL_SCOPES", "ALL_FILLS", "FRAME_FILL", "SHAPE_FILL", "TEXT_FILL", "STROKE_COLOR", "EFFECT_COLOR"]
+  };
+  function normaliseVariableScopes(raw, type, where = "scopes") {
+    if (!Array.isArray(raw)) throw new Error(`${where} must be an array`);
+    const allowed = VARIABLE_SCOPES[type];
+    if (!allowed) throw new Error(`${where}: ${type} variables do not support picker scopes`);
+    const scopes = raw.map((scope, index2) => {
+      if (typeof scope !== "string" || !allowed.includes(scope)) {
+        throw new Error(`${where}[${index2}] must be one of: ${allowed.join(", ")}`);
+      }
+      return scope;
+    });
+    if (new Set(scopes).size !== scopes.length) throw new Error(`${where} contains a duplicate scope`);
+    if (scopes.includes("ALL_SCOPES") && scopes.length > 1) {
+      throw new Error(`${where}: ALL_SCOPES cannot be combined with another scope`);
+    }
+    if (scopes.includes("ALL_FILLS") && scopes.some((scope) => scope === "FRAME_FILL" || scope === "SHAPE_FILL" || scope === "TEXT_FILL")) {
+      throw new Error(`${where}: ALL_FILLS cannot be combined with FRAME_FILL, SHAPE_FILL or TEXT_FILL`);
+    }
+    return scopes;
+  }
+  var CODE_SYNTAX_PLATFORMS = ["WEB", "ANDROID", "iOS"];
+  function planVariableMetadata(entry, type, where, allowEmpty = false) {
+    const plan = {};
+    if (entry.newName !== void 0) {
+      if (typeof entry.newName !== "string" || entry.newName.trim() === "") {
+        throw new Error(`${where}.newName must be a non-empty string`);
+      }
+      plan.newName = entry.newName.trim();
+    }
+    if (entry.description !== void 0) {
+      if (typeof entry.description !== "string") throw new Error(`${where}.description must be a string`);
+      plan.description = entry.description;
+    }
+    if (entry.scopes !== void 0) plan.scopes = normaliseVariableScopes(entry.scopes, type, `${where}.scopes`);
+    if (entry.hiddenFromPublishing !== void 0) {
+      if (typeof entry.hiddenFromPublishing !== "boolean") {
+        throw new Error(`${where}.hiddenFromPublishing must be a boolean`);
+      }
+      plan.hiddenFromPublishing = entry.hiddenFromPublishing;
+    }
+    if (entry.codeSyntax !== void 0) {
+      const raw = record(entry.codeSyntax, `${where}.codeSyntax`);
+      const syntax = {};
+      for (const [platform, value2] of Object.entries(raw)) {
+        if (!CODE_SYNTAX_PLATFORMS.includes(platform)) {
+          throw new Error(`${where}.codeSyntax.${platform} is unknown \u2014 use WEB, ANDROID or iOS`);
+        }
+        if (value2 !== null && typeof value2 !== "string") {
+          throw new Error(`${where}.codeSyntax.${platform} must be a string or null`);
+        }
+        syntax[platform] = value2;
+      }
+      plan.codeSyntax = syntax;
+    }
+    if (!allowEmpty && Object.keys(plan).length === 0) {
+      throw new Error(
+        `${where}: nothing to update \u2014 send newName, description, scopes, hiddenFromPublishing or codeSyntax`
+      );
+    }
+    return plan;
+  }
+  function variableMetadata(variable) {
+    return {
+      name: variable.name,
+      description: variable.description,
+      scopes: [...variable.scopes],
+      hiddenFromPublishing: variable.hiddenFromPublishing,
+      codeSyntax: __spreadValues({}, variable.codeSyntax)
+    };
+  }
+  function projectedVariableMetadata(before, plan) {
+    const after = __spreadProps(__spreadValues({}, before), {
+      codeSyntax: __spreadValues({}, before.codeSyntax)
+    });
+    if (plan.newName !== void 0) after.name = plan.newName;
+    if (plan.description !== void 0) after.description = plan.description;
+    if (plan.scopes !== void 0) after.scopes = [...plan.scopes];
+    if (plan.hiddenFromPublishing !== void 0) after.hiddenFromPublishing = plan.hiddenFromPublishing;
+    if (plan.codeSyntax) {
+      const syntax = after.codeSyntax;
+      for (const [platform, value2] of Object.entries(plan.codeSyntax)) {
+        if (value2 === null) delete syntax[platform];
+        else syntax[platform] = value2;
+      }
+    }
+    return after;
+  }
+  function applyVariableMetadata(variable, plan) {
+    if (plan.newName !== void 0) variable.name = plan.newName;
+    if (plan.description !== void 0) variable.description = plan.description;
+    if (plan.scopes !== void 0) variable.scopes = plan.scopes;
+    if (plan.hiddenFromPublishing !== void 0) variable.hiddenFromPublishing = plan.hiddenFromPublishing;
+    if (plan.codeSyntax) {
+      for (const [platform, value2] of Object.entries(plan.codeSyntax)) {
+        if (value2 === null) variable.removeVariableCodeSyntax(platform);
+        else variable.setVariableCodeSyntax(platform, value2);
+      }
+    }
+  }
   var SCALAR_FIELDS = {
     width: "FLOAT",
     height: "FLOAT",
@@ -28129,7 +30034,7 @@ ${scripts}`, "");
       const known = await figma.variables.getVariableByIdAsync(aliasId);
       return known ? known.name : aliasId;
     }
-    const channel = (value) => Math.round(value * 255).toString(16).padStart(2, "0");
+    const channel = (value2) => Math.round(value2 * 255).toString(16).padStart(2, "0");
     const hex = `#${channel(paint.color.r)}${channel(paint.color.g)}${channel(paint.color.b)}`;
     return paint.opacity !== void 0 && paint.opacity < 1 ? `${hex} ${Math.round(paint.opacity * 100)}%` : hex;
   }
@@ -28138,9 +30043,9 @@ ${scripts}`, "");
     if (typeof styleId === "string" && styleId !== "") {
       throw new Error(`${prop} come from a paint style \u2014 unlink it first, or the binding would break the style`);
     }
-    const paints = node[prop];
-    if (!Array.isArray(paints)) throw new Error(`${prop} are unreadable on this node`);
-    const next = paints.slice();
+    const paints2 = node[prop];
+    if (!Array.isArray(paints2)) throw new Error(`${prop} are unreadable on this node`);
+    const next = paints2.slice();
     const touched = [];
     const was = [];
     for (let i = 0; i < next.length; i++) {
@@ -28188,10 +30093,10 @@ ${scripts}`, "");
     return warnings;
   }
   function planDescribe(entry, where) {
-    const text4 = (value, key) => {
-      if (value === null) return "";
-      if (typeof value !== "string") throw new Error(`${where}.${key} must be a string (null or "" clears it)`);
-      return value;
+    const text4 = (value2, key) => {
+      if (value2 === null) return "";
+      if (typeof value2 !== "string") throw new Error(`${where}.${key} must be a string (null or "" clears it)`);
+      return value2;
     };
     const hasDescription = entry.description !== void 0;
     const hasMarkdown = entry.markdown !== void 0;
@@ -28204,9 +30109,9 @@ ${scripts}`, "");
       if (raw === null) links = [];
       else if (typeof raw === "string") links = raw === "" ? [] : [raw];
       else if (Array.isArray(raw)) {
-        links = raw.map((uri, index) => {
+        links = raw.map((uri, index2) => {
           if (typeof uri !== "string" || uri === "") {
-            throw new Error(`${where}.documentationLinks[${index}] must be a non-empty URL string`);
+            throw new Error(`${where}.documentationLinks[${index2}] must be a non-empty URL string`);
           }
           return uri;
         });
@@ -28239,9 +30144,9 @@ ${scripts}`, "");
     while (cursor.parent) {
       const parent = cursor.parent;
       const siblings = parent.children;
-      const index = Array.isArray(siblings) ? siblings.findIndex((one) => one.id === cursor.id) : -1;
-      if (index < 0) break;
-      path.unshift(index);
+      const index2 = Array.isArray(siblings) ? siblings.findIndex((one) => one.id === cursor.id) : -1;
+      if (index2 < 0) break;
+      path.unshift(index2);
       if (parent.type === "INSTANCE" && parent.id === outerId) {
         outer = parent;
         break;
@@ -28255,9 +30160,9 @@ ${scripts}`, "");
       } catch (e) {
         found = null;
       }
-      for (const index of path) {
+      for (const index2 of path) {
         const children = found == null ? void 0 : found.children;
-        found = Array.isArray(children) && index < children.length ? children[index] : null;
+        found = Array.isArray(children) && index2 < children.length ? children[index2] : null;
         if (!found) break;
       }
       if (found && found.type === node.type) return found;
@@ -28273,8 +30178,8 @@ ${scripts}`, "");
     var _a, _b, _c;
     if (!main) return void 0;
     if (job.prop !== void 0 && job.index !== void 0) {
-      const paints = main[job.prop];
-      const paint = Array.isArray(paints) ? paints[job.index] : void 0;
+      const paints2 = main[job.prop];
+      const paint = Array.isArray(paints2) ? paints2[job.index] : void 0;
       return (_b = (_a = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
     }
     const bound = main.boundVariables;
@@ -28284,13 +30189,13 @@ ${scripts}`, "");
     {
       name: "variables.set",
       summary: "Set variable values or aliases, in batch \u2014 the one op a recolor actually needs.",
-      agent: "Given a 40-character library key it aliases onto that library variable \u2014 how one file inherits another's tokens.",
+      agent: 'Opacity-scoped FLOAT variables are stored as percentages: use "40%" or 40 for 40% (0.4 renders as 0.4%). A composed COLOR uses { color, opacity }, where either side (or both) is { alias: \u2026 }; opacity literals are percentages. Given a 40-character library key, an alias points at that library variable.',
       mutates: true,
       params: {
         updates: {
           type: "json",
           required: true,
-          description: 'Array of { variable, mode?, value }. `variable` is an id or a name ("Colors/orange/500"). `mode` is a mode name, a mode id, or "*" for every mode; omitted means the collection default. `value` is "#RRGGBB" / "#RRGGBBAA" / "#RRGGBB 40%" / a number / a boolean / { "alias": \u2026 }. An alias takes a local name or id, or a *library* variable key (40 hex chars) \u2014 that is how one library inherits another\'s tokens.'
+          description: 'Array of { variable, mode?, value }. `variable` is an id or a name ("Colors/orange/500"). `mode` is a mode name, a mode id, or "*" for every mode; omitted means the collection default. `value` is "#RRGGBB" / "#RRGGBBAA" / "#RRGGBB 40%" / a number / a boolean / { "alias": \u2026 }, or a composed COLOR { "color": "#RRGGBB" | { "alias": \u2026 }, "opacity": "40%" | 40 | { "alias": \u2026 } }; at least one composed field must be an alias. For FLOAT variables scoped OPACITY or COLOR_OPACITY, a string such as "40%" is accepted and stored as 40. An alias takes a local name or id, or a *library* variable key (40 hex chars).'
         },
         dryRun: {
           type: "boolean",
@@ -28304,20 +30209,20 @@ ${scripts}`, "");
         const dryRun = params.dryRun === true;
         if (!dryRun) figma.commitUndo();
         const results = [];
-        for (const [index, raw] of updates.entries()) {
-          let label3 = `#${index}`;
+        for (const [index2, raw] of updates.entries()) {
+          let label3 = `#${index2}`;
           try {
-            const entry = record(raw, `updates[${index}]`);
+            const entry = record(raw, `updates[${index2}]`);
             label3 = String((_a = entry.variable) != null ? _a : label3);
             const variable = await resolveVariable(entry.variable);
             const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
             if (!collection) throw new Error(`"${variable.name}" has no readable collection`);
             if (variable.remote) throw new Error(`"${variable.name}" is a library variable \u2014 it can only change in its own file`);
-            const value = await coerceVariableValue(variable, entry.value);
+            const value2 = await coerceVariableValue(variable, entry.value);
             for (const mode of resolveModes(collection, entry.mode)) {
               const before = await describeValue(variable.valuesByMode[mode.modeId]);
-              if (!dryRun) variable.setValueForMode(mode.modeId, value);
-              const after = await describeValue(value);
+              if (!dryRun) variable.setValueForMode(mode.modeId, value2);
+              const after = await describeValue(value2);
               results.push({
                 variable: variable.id,
                 name: `${collection.name}/${variable.name}`,
@@ -28356,9 +30261,77 @@ ${scripts}`, "");
       }
     },
     {
+      name: "variables.update",
+      summary: "Edit variable metadata \u2014 name, description, picker scopes, publishing visibility and code syntax.",
+      agent: 'For opacity tokens use FLOAT plus scope OPACITY (layer opacity) or COLOR_OPACITY (a color\u2019s opacity channel). Scopes only control Figma picker visibility. Bind layer opacity with node.bind field "opacity"; the current Plugin API still exposes only "color" as a bindable paint field, so it cannot directly bind a FLOAT token to paint opacity.',
+      mutates: true,
+      params: {
+        updates: {
+          type: "json",
+          required: true,
+          description: "Array of { variable, newName?, description?, scopes?, hiddenFromPublishing?, codeSyntax? }. `variable` is a local id or name. `scopes` accepts the official VariableScope names, including OPACITY and COLOR_OPACITY. `codeSyntax` accepts WEB / ANDROID / iOS strings; null removes one."
+        },
+        dryRun: {
+          type: "boolean",
+          default: false,
+          description: "Validate and report before/after metadata without writing anything."
+        }
+      },
+      async run(params) {
+        var _a;
+        const updates = asArray(params.updates, "updates");
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const results = [];
+        for (const [index2, raw] of updates.entries()) {
+          let label3 = `#${index2}`;
+          try {
+            const entry = record(raw, `updates[${index2}]`);
+            label3 = String((_a = entry.variable) != null ? _a : label3);
+            const variable = await resolveVariable(entry.variable);
+            if (variable.remote) throw new Error(`"${variable.name}" is a library variable \u2014 edit it in its own file`);
+            const plan = planVariableMetadata(entry, variable.resolvedType, `updates[${index2}]`);
+            const before = variableMetadata(variable);
+            const after = projectedVariableMetadata(before, plan);
+            const changed2 = JSON.stringify(before) !== JSON.stringify(after);
+            if (!dryRun && changed2) applyVariableMetadata(variable, plan);
+            results.push({
+              variable: variable.id,
+              name: variable.name,
+              ok: true,
+              changed: changed2,
+              before,
+              after
+            });
+          } catch (err) {
+            results.push({
+              variable: label3,
+              name: label3,
+              ok: false,
+              changed: false,
+              error: String((err == null ? void 0 : err.message) || err)
+            });
+          }
+        }
+        const failed = results.filter((entry) => !entry.ok).length;
+        const changed = results.filter((entry) => entry.ok && entry.changed).length;
+        if (!dryRun && changed > 0) {
+          figma.notify(`Agent: ${changed} variable${changed === 1 ? "" : "s"} updated`);
+        }
+        return {
+          dryRun,
+          total: results.length,
+          changed,
+          unchanged: results.filter((entry) => entry.ok && !entry.changed).length,
+          failed,
+          results
+        };
+      }
+    },
+    {
       name: "variables.create",
       summary: "Create variables in a collection \u2014 the rungs a new palette adds that the old one lacked.",
-      agent: 'modes: ["Light","Dark"] makes the collection offer those modes first \u2014 a fresh collection is single-mode. Values may then key by mode name.',
+      agent: 'Create FLOAT variables with scopes: ["OPACITY"] for layer opacity or ["COLOR_OPACITY"] for a color\u2019s opacity channel. Opacity values are percentages: "40%" and 40 both mean 40%. `modes` creates the required modes first.',
       mutates: true,
       params: {
         collection: {
@@ -28369,7 +30342,7 @@ ${scripts}`, "");
         variables: {
           type: "json",
           required: true,
-          description: 'Array of { name, type?, values?, scopes?, description? }. `type` defaults to COLOR. `values` maps mode name (or id, or "*") to a value in the same forms `variables.set` takes.'
+          description: 'Array of { name, type?, values?, scopes?, description?, hiddenFromPublishing?, codeSyntax? }. `type` defaults to COLOR. `scopes` accepts OPACITY and COLOR_OPACITY for FLOAT variables. `values` maps mode name (or id, or "*") to a value in the same forms `variables.set` takes.'
         },
         createCollection: {
           type: "boolean",
@@ -28388,7 +30361,7 @@ ${scripts}`, "");
         dryRun: { type: "boolean", default: false, description: "Report without writing." }
       },
       async run(params) {
-        var _a, _b, _c, _d;
+        var _a, _b, _c, _d, _e;
         const requested = asArray(params.variables, "variables");
         const dryRun = params.dryRun === true;
         if (!dryRun) figma.commitUndo();
@@ -28421,42 +30394,62 @@ ${scripts}`, "");
         );
         const byName = new Map(existing.map((variable) => [variable.name, variable]));
         const results = [];
-        for (const [index, raw] of requested.entries()) {
+        for (const [index2, raw] of requested.entries()) {
           try {
-            const entry = record(raw, `variables[${index}]`);
+            const entry = record(raw, `variables[${index2}]`);
             const name = String((_a = entry.name) != null ? _a : "").trim();
-            if (!name) throw new Error(`variables[${index}] has no name`);
+            if (!name) throw new Error(`variables[${index2}] has no name`);
             const type = String((_b = entry.type) != null ? _b : "COLOR").toUpperCase();
             if (!RESOLVED_TYPES.includes(type)) {
               throw new Error(`"${name}" has unknown type ${type} \u2014 one of ${RESOLVED_TYPES.join(", ")}`);
             }
             const already = byName.get(name);
+            const metadata = planVariableMetadata(
+              {
+                description: entry.description,
+                scopes: entry.scopes,
+                hiddenFromPublishing: entry.hiddenFromPublishing,
+                codeSyntax: entry.codeSyntax
+              },
+              (_c = already == null ? void 0 : already.resolvedType) != null ? _c : type,
+              `variables[${index2}]`,
+              true
+            );
+            if (already && already.resolvedType !== type && entry.type !== void 0) {
+              throw new Error(`"${name}" already exists as ${already.resolvedType}, not ${type}`);
+            }
             if (already && params.updateExisting !== true) {
               results.push({ name, ok: true, created: false, skipped: "already exists", variable: already.id });
               continue;
             }
             const variable = already != null ? already : dryRun ? null : figma.variables.createVariable(name, collection, type);
             if (!dryRun && !variable) throw new Error(`could not create "${name}"`);
-            const values = entry.values === void 0 ? {} : record(entry.values, `variables[${index}].values`);
+            const values = entry.values === void 0 ? {} : record(entry.values, `variables[${index2}].values`);
             const written = {};
             for (const [modeRef, rawValue] of Object.entries(values)) {
               for (const mode of resolveModes(collection, modeRef)) {
                 if (variable) {
-                  const value = await coerceVariableValue(variable, rawValue);
-                  if (!dryRun) variable.setValueForMode(mode.modeId, value);
-                  written[mode.name] = await describeValue(value);
+                  const value2 = await coerceVariableValue(variable, rawValue, metadata.scopes);
+                  if (!dryRun) variable.setValueForMode(mode.modeId, value2);
+                  written[mode.name] = await describeValue(value2);
                 } else {
                   written[mode.name] = String(rawValue);
                 }
               }
             }
-            if (variable && !dryRun) {
-              if (typeof entry.description === "string") variable.description = entry.description;
-              if (Array.isArray(entry.scopes)) variable.scopes = entry.scopes;
-            }
-            results.push({ name, ok: true, created: !already, variable: (_c = variable == null ? void 0 : variable.id) != null ? _c : null, values: written });
+            const metadataBefore = variable ? variableMetadata(variable) : { name, description: "", scopes: [], hiddenFromPublishing: false, codeSyntax: {} };
+            const metadataAfter = projectedVariableMetadata(metadataBefore, metadata);
+            if (variable && !dryRun) applyVariableMetadata(variable, metadata);
+            results.push({
+              name,
+              ok: true,
+              created: !already,
+              variable: (_d = variable == null ? void 0 : variable.id) != null ? _d : null,
+              values: written,
+              metadata: metadataAfter
+            });
           } catch (err) {
-            results.push({ name: String((_d = raw == null ? void 0 : raw.name) != null ? _d : index), ok: false, error: String((err == null ? void 0 : err.message) || err) });
+            results.push({ name: String((_e = raw == null ? void 0 : raw.name) != null ? _e : index2), ok: false, error: String((err == null ? void 0 : err.message) || err) });
           }
         }
         return {
@@ -28502,13 +30495,13 @@ ${scripts}`, "");
     {
       name: "node.bind",
       summary: "Bind layer properties to variables \u2014 the op that turns a lint finding into a fix.",
-      agent: "variable takes an id, a local name or a library key; null unbinds \u2014 a row WITHOUT the key is an error, never a silent unbind. The report's before names what each write displaced.",
+      agent: 'field "opacity" binds a FLOAT token to the whole layer; null unbinds. `fill` / `stroke` bind COLOR tokens. Figma documents COLOR_OPACITY as a FLOAT picker scope, but its Plugin API still exposes only `color` as a bindable paint field, so paint opacity cannot be bound here until Figma adds that field. The report names what each successful write displaced.',
       mutates: true,
       params: {
         bindings: {
           type: "json",
           required: true,
-          description: 'Array of { node, field, variable, paintIndex? }. `node` is a layer id, as returned by `lint.colors` or `node.find`. `field` is "fill" / "stroke", a group name ("cornerRadius", "padding"), or a scalar field (width, height, topLeftRadius, itemSpacing, paddingLeft, strokeWeight, opacity, visible, characters, \u2026). `variable` is an id, a name ("Colors/orange/500") or a library key from `library.variables`; null unbinds. `paintIndex` narrows a fill/stroke binding to one paint \u2014 omitted binds every solid paint.'
+          description: 'Array of { node, field, variable, paintIndex? }. `node` is a layer id, as returned by `lint.colors` or `node.find`. `field` is "fill" / "stroke", a group name ("cornerRadius", "padding"), or a scalar field (width, height, topLeftRadius, itemSpacing, paddingLeft, strokeWeight, opacity, visible, characters, \u2026). Layer `opacity` takes a FLOAT variable scoped OPACITY. `variable` is an id, a name ("Colors/orange/500") or a library key from `library.variables`; null unbinds. `paintIndex` narrows a fill/stroke color binding to one solid paint; COLOR_OPACITY is not yet writable through the Plugin API.'
         },
         dryRun: {
           type: "boolean",
@@ -28522,19 +30515,19 @@ ${scripts}`, "");
         const dryRun = params.dryRun === true;
         if (!dryRun) figma.commitUndo();
         const results = [];
-        for (const [index, raw] of bindings.entries()) {
-          let nodeId = `#${index}`;
+        for (const [index2, raw] of bindings.entries()) {
+          let nodeId = `#${index2}`;
           let nodeName = nodeId;
           const field = (() => {
             var _a2;
             try {
-              return String((_a2 = record(raw, `bindings[${index}]`).field) != null ? _a2 : "");
+              return String((_a2 = record(raw, `bindings[${index2}]`).field) != null ? _a2 : "");
             } catch (e) {
               return "";
             }
           })();
           try {
-            const entry = record(raw, `bindings[${index}]`);
+            const entry = record(raw, `bindings[${index2}]`);
             nodeId = String((_a = entry.node) != null ? _a : "");
             if (!nodeId) throw new Error('missing "node"');
             nodeName = nodeId;
@@ -28662,7 +30655,7 @@ ${scripts}`, "");
           throw new Error(`no local paint style "${ref}"`);
         };
         const stopOf = (paint, percent) => {
-          const hits = paint.gradientStops.map((stop, index) => ({ index, at: Math.round(stop.position * 100) })).filter((candidate) => candidate.at === percent);
+          const hits = paint.gradientStops.map((stop, index2) => ({ index: index2, at: Math.round(stop.position * 100) })).filter((candidate) => candidate.at === percent);
           if (hits.length === 0) {
             throw new Error(
               `no stop at ${percent}% \u2014 this paint has ${paint.gradientStops.map((stop) => `p${Math.round(stop.position * 100)}`).join(", ")}`
@@ -28676,8 +30669,8 @@ ${scripts}`, "");
           return id ? (_b2 = (_a2 = await figma.variables.getVariableByIdAsync(id)) == null ? void 0 : _a2.name) != null ? _b2 : id : null;
         };
         const results = [];
-        for (const [index, raw] of rows.entries()) {
-          const label3 = `bindings[${index}]`;
+        for (const [index2, raw] of rows.entries()) {
+          const label3 = `bindings[${index2}]`;
           try {
             const entry = record(raw, label3);
             if (!Object.prototype.hasOwnProperty.call(entry, "variable")) {
@@ -28686,9 +30679,9 @@ ${scripts}`, "");
             const style = await findStyle(entry.style);
             const paintIndex = entry.paint === void 0 ? 0 : Number(entry.paint);
             if (!Number.isInteger(paintIndex)) throw new Error('"paint" must be a whole number');
-            const paints = style.paints.slice();
-            const target = paints[paintIndex];
-            if (!target) throw new Error(`this style has ${paints.length} paint(s), no index ${paintIndex}`);
+            const paints2 = style.paints.slice();
+            const target = paints2[paintIndex];
+            if (!target) throw new Error(`this style has ${paints2.length} paint(s), no index ${paintIndex}`);
             const variable = entry.variable === null ? null : await resolveVariableRef(entry.variable);
             if (variable && variable.resolvedType !== "COLOR") {
               throw new Error(`"${variable.name}" is ${variable.resolvedType}, not COLOR`);
@@ -28700,7 +30693,7 @@ ${scripts}`, "");
               before = await nameOf(
                 (_b = (_a = target.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id
               );
-              paints[paintIndex] = figma.variables.setBoundVariableForPaint(target, "color", variable);
+              paints2[paintIndex] = figma.variables.setBoundVariableForPaint(target, "color", variable);
             } else {
               const gradient = target;
               if (!Array.isArray(gradient.gradientStops)) throw new Error(`paint ${paintIndex} has no gradient stops`);
@@ -28710,7 +30703,7 @@ ${scripts}`, "");
               const stops = gradient.gradientStops.map(
                 (stop, at2) => at2 !== at ? stop : __spreadValues({ position: stop.position, color: stop.color }, alias ? { boundVariables: { color: alias } } : {})
               );
-              paints[paintIndex] = __spreadProps(__spreadValues({}, gradient), { gradientStops: stops });
+              paints2[paintIndex] = __spreadProps(__spreadValues({}, gradient), { gradientStops: stops });
             }
             if (dryRun) {
               results.push(__spreadProps(__spreadValues({
@@ -28724,7 +30717,7 @@ ${scripts}`, "");
               }));
               continue;
             }
-            style.paints = paints;
+            style.paints = paints2;
             const written = await figma.getStyleByIdAsync(style.id);
             const check = (_e = written == null ? void 0 : written.paints) == null ? void 0 : _e[paintIndex];
             const landed = (check == null ? void 0 : check.type) === "SOLID" ? (_h = (_g = (_f = check.boundVariables) == null ? void 0 : _f.color) == null ? void 0 : _g.id) != null ? _h : null : (_m = (_l = (_k = (_j = (_i = check == null ? void 0 : check.gradientStops) == null ? void 0 : _i[stopOf(check, Number(entry.stop))]) == null ? void 0 : _j.boundVariables) == null ? void 0 : _k.color) == null ? void 0 : _l.id) != null ? _m : null;
@@ -28787,8 +30780,8 @@ ${scripts}`, "");
           return style ? style.name : id;
         };
         const results = [];
-        for (const [index, raw] of rows.entries()) {
-          const label3 = `assignments[${index}]`;
+        for (const [index2, raw] of rows.entries()) {
+          const label3 = `assignments[${index2}]`;
           let nodeId = label3;
           try {
             const entry = record(raw, label3);
@@ -28975,15 +30968,15 @@ ${scripts}`, "");
         const wantOverrides = params.overrides === true;
         const pairs = [];
         const pairByFromId = /* @__PURE__ */ new Map();
-        for (const [index, raw] of rows.entries()) {
-          const entry = record(raw, `map[${index}]`);
+        for (const [index2, raw] of rows.entries()) {
+          const entry = record(raw, `map[${index2}]`);
           const from = await resolveVariableRef(entry.from);
           const to = await resolveVariableRef(entry.to);
           if (from.resolvedType !== to.resolvedType) {
-            throw new Error(`map[${index}]: "${from.name}" is ${from.resolvedType} but "${to.name}" is ${to.resolvedType}`);
+            throw new Error(`map[${index2}]: "${from.name}" is ${from.resolvedType} but "${to.name}" is ${to.resolvedType}`);
           }
-          if (from.id === to.id) throw new Error(`map[${index}]: "${from.name}" maps to itself`);
-          if (pairByFromId.has(from.id)) throw new Error(`map[${index}]: "${from.name}" appears twice as a source`);
+          if (from.id === to.id) throw new Error(`map[${index2}]: "${from.name}" maps to itself`);
+          if (pairByFromId.has(from.id)) throw new Error(`map[${index2}]: "${from.name}" appears twice as a source`);
           pairByFromId.set(from.id, pairs.length);
           pairs.push({ from, to, matched: 0, rebound: 0, failed: 0, overrides: 0, inherited: 0, errors: [] });
         }
@@ -29022,7 +31015,7 @@ ${scripts}`, "");
         const aliasTo2 = (to) => ({ type: "VARIABLE_ALIAS", id: to.id });
         const textJobs = [];
         const textFillJobs = [];
-        const styled = (value) => value !== void 0 && value !== "";
+        const styled = (value2) => value2 !== void 0 && value2 !== "";
         const writeErrors = [];
         const overrideJobs = [];
         const collectOverrides = (node) => {
@@ -29030,10 +31023,10 @@ ${scripts}`, "");
           const holder = node;
           const bound = holder.boundVariables;
           if (bound) {
-            for (const [field, value] of Object.entries(bound)) {
+            for (const [field, value2] of Object.entries(bound)) {
               if (field === "fills" || field === "strokes" || field === "effects" || field === "layoutGrids") continue;
-              if (Array.isArray(value)) continue;
-              const aliasId = (_a2 = value == null ? void 0 : value.id) != null ? _a2 : "";
+              if (Array.isArray(value2)) continue;
+              const aliasId = (_a2 = value2 == null ? void 0 : value2.id) != null ? _a2 : "";
               const at = pairByFromId.get(aliasId);
               if (at === void 0) continue;
               pairs[at].matched += 1;
@@ -29041,16 +31034,16 @@ ${scripts}`, "");
             }
           }
           for (const prop of ["fills", "strokes"]) {
-            const paints = holder[prop];
-            if (!Array.isArray(paints)) continue;
-            paints.forEach((paint, index) => {
+            const paints2 = holder[prop];
+            if (!Array.isArray(paints2)) continue;
+            paints2.forEach((paint, index2) => {
               var _a3, _b2, _c2;
               if (paint.type !== "SOLID") return;
               const aliasId = (_c2 = (_b2 = (_a3 = paint.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b2.id) != null ? _c2 : "";
               const at = pairByFromId.get(aliasId);
               if (at === void 0) return;
               pairs[at].matched += 1;
-              overrideJobs.push({ node, at, aliasId, field: `${prop}[${index}]`, prop, index });
+              overrideJobs.push({ node, at, aliasId, field: `${prop}[${index2}]`, prop, index: index2 });
             });
           }
         };
@@ -29063,11 +31056,11 @@ ${scripts}`, "");
           const holder = node;
           const bound = holder.boundVariables;
           if (bound) {
-            for (const [field, value] of Object.entries(bound)) {
+            for (const [field, value2] of Object.entries(bound)) {
               if (field === "fills" || field === "strokes") {
-                if (node.type === "TEXT" && Array.isArray(value)) {
+                if (node.type === "TEXT" && Array.isArray(value2)) {
                   let hits = 0;
-                  for (const entry of value) {
+                  for (const entry of value2) {
                     const at2 = pairByFromId.get((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
                     if (at2 !== void 0) {
                       pairs[at2].matched += 1;
@@ -29080,9 +31073,9 @@ ${scripts}`, "");
               }
               if (field === "layoutGrids") continue;
               if (field === "effects") continue;
-              if (Array.isArray(value)) {
+              if (Array.isArray(value2)) {
                 let hits = 0;
-                for (const entry of value) {
+                for (const entry of value2) {
                   const at2 = pairByFromId.get((_b2 = entry == null ? void 0 : entry.id) != null ? _b2 : "");
                   if (at2 !== void 0) {
                     pairs[at2].matched += 1;
@@ -29094,7 +31087,7 @@ ${scripts}`, "");
                 if (node.type === "TEXT") {
                   textJobs.push({ node, field });
                 } else {
-                  const at2 = pairByFromId.get((_d2 = (_c2 = value[0]) == null ? void 0 : _c2.id) != null ? _d2 : "");
+                  const at2 = pairByFromId.get((_d2 = (_c2 = value2[0]) == null ? void 0 : _c2.id) != null ? _d2 : "");
                   try {
                     ;
                     node.setBoundVariable(
@@ -29110,7 +31103,7 @@ ${scripts}`, "");
                 }
                 continue;
               }
-              const at = pairByFromId.get((_e2 = value == null ? void 0 : value.id) != null ? _e2 : "");
+              const at = pairByFromId.get((_e2 = value2 == null ? void 0 : value2.id) != null ? _e2 : "");
               if (at === void 0) continue;
               const pair2 = pairs[at];
               pair2.matched += 1;
@@ -29131,10 +31124,10 @@ ${scripts}`, "");
           }
           for (const prop of ["fills", "strokes"]) {
             if (styled(holder[prop === "fills" ? "fillStyleId" : "strokeStyleId"])) continue;
-            const paints = holder[prop];
-            if (!Array.isArray(paints)) continue;
+            const paints2 = holder[prop];
+            if (!Array.isArray(paints2)) continue;
             let next = null;
-            paints.forEach((paint, index) => {
+            paints2.forEach((paint, index2) => {
               var _a3, _b3, _c3;
               const paintAt = pairByFromId.get(
                 (_c3 = (_b3 = (_a3 = paint.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b3.id) != null ? _c3 : ""
@@ -29142,8 +31135,8 @@ ${scripts}`, "");
               if (paintAt !== void 0 && paint.type === "SOLID") {
                 pairs[paintAt].matched += 1;
                 if (!dryRun) {
-                  next = next != null ? next : paints.slice();
-                  next[index] = figma.variables.setBoundVariableForPaint(next[index], "color", pairs[paintAt].to);
+                  next = next != null ? next : paints2.slice();
+                  next[index2] = figma.variables.setBoundVariableForPaint(next[index2], "color", pairs[paintAt].to);
                   pairs[paintAt].rebound += 1;
                 }
               }
@@ -29165,8 +31158,8 @@ ${scripts}`, "");
                   pairs[stopAt].rebound += 1;
                 });
                 if (newStops) {
-                  next = next != null ? next : paints.slice();
-                  next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: newStops });
+                  next = next != null ? next : paints2.slice();
+                  next[index2] = __spreadProps(__spreadValues({}, paint), { gradientStops: newStops });
                 }
               }
             });
@@ -29183,7 +31176,7 @@ ${scripts}`, "");
           if (Array.isArray(holder.layoutGrids)) {
             const grids = holder.layoutGrids;
             let nextGrids = null;
-            grids.forEach((grid, index) => {
+            grids.forEach((grid, index2) => {
               var _a3;
               const gridBound = grid.boundVariables;
               if (!gridBound) return;
@@ -29194,8 +31187,8 @@ ${scripts}`, "");
                 if (dryRun) continue;
                 try {
                   nextGrids = nextGrids != null ? nextGrids : grids.slice();
-                  nextGrids[index] = figma.variables.setBoundVariableForLayoutGrid(
-                    nextGrids[index],
+                  nextGrids[index2] = figma.variables.setBoundVariableForLayoutGrid(
+                    nextGrids[index2],
                     gridField,
                     pairs[at].to
                   );
@@ -29220,7 +31213,7 @@ ${scripts}`, "");
           if (Array.isArray(holder.effects)) {
             const effects = holder.effects;
             let nextEffects = null;
-            effects.forEach((effect, index) => {
+            effects.forEach((effect, index2) => {
               var _a3;
               const effectBound = effect.boundVariables;
               if (!effectBound) return;
@@ -29231,8 +31224,8 @@ ${scripts}`, "");
                 if (dryRun) continue;
                 try {
                   nextEffects = nextEffects != null ? nextEffects : effects.slice();
-                  nextEffects[index] = figma.variables.setBoundVariableForEffect(
-                    nextEffects[index],
+                  nextEffects[index2] = figma.variables.setBoundVariableForEffect(
+                    nextEffects[index2],
                     effectField,
                     pairs[at].to
                   );
@@ -29290,9 +31283,9 @@ ${scripts}`, "");
           try {
             if (job.prop !== void 0 && job.index !== void 0) {
               const holder = job.node;
-              const paints = holder[job.prop];
-              if (!Array.isArray(paints)) throw new Error(`${job.prop} is not an array any more`);
-              const next = paints.slice();
+              const paints2 = holder[job.prop];
+              if (!Array.isArray(paints2)) throw new Error(`${job.prop} is not an array any more`);
+              const next = paints2.slice();
               next[job.index] = figma.variables.setBoundVariableForPaint(
                 next[job.index],
                 "color",
@@ -29389,14 +31382,14 @@ ${scripts}`, "");
             const segments = text4.getStyledTextSegments(["fills"]);
             for (const segment of segments) {
               let next = null;
-              segment.fills.forEach((paint, index) => {
+              segment.fills.forEach((paint, index2) => {
                 var _a2, _b2, _c2;
                 const at = pairByFromId.get(
                   (_c2 = (_b2 = (_a2 = paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id) != null ? _c2 : ""
                 );
                 if (at !== void 0 && paint.type === "SOLID") {
                   next = next != null ? next : segment.fills.slice();
-                  next[index] = figma.variables.setBoundVariableForPaint(next[index], "color", pairs[at].to);
+                  next[index2] = figma.variables.setBoundVariableForPaint(next[index2], "color", pairs[at].to);
                   pairs[at].rebound += 1;
                 }
               });
@@ -29413,9 +31406,9 @@ ${scripts}`, "");
           const paintStyles = await figma.getLocalPaintStylesAsync();
           stylesScanned = paintStyles.length;
           for (const style of paintStyles) {
-            const paints = style.paints;
+            const paints2 = style.paints;
             let next = null;
-            paints.forEach((paint, index) => {
+            paints2.forEach((paint, index2) => {
               var _a2, _b2, _c2;
               const paintAt = pairByFromId.get(
                 (_c2 = (_b2 = (_a2 = paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id) != null ? _c2 : ""
@@ -29423,8 +31416,8 @@ ${scripts}`, "");
               if (paintAt !== void 0 && paint.type === "SOLID") {
                 pairs[paintAt].matched += 1;
                 if (!dryRun) {
-                  next = next != null ? next : paints.slice();
-                  next[index] = figma.variables.setBoundVariableForPaint(next[index], "color", pairs[paintAt].to);
+                  next = next != null ? next : paints2.slice();
+                  next[index2] = figma.variables.setBoundVariableForPaint(next[index2], "color", pairs[paintAt].to);
                   pairs[paintAt].rebound += 1;
                 }
               }
@@ -29446,8 +31439,8 @@ ${scripts}`, "");
                   pairs[stopAt].rebound += 1;
                 });
                 if (newStops) {
-                  next = next != null ? next : paints.slice();
-                  next[index] = __spreadProps(__spreadValues({}, paint), { gradientStops: newStops });
+                  next = next != null ? next : paints2.slice();
+                  next[index2] = __spreadProps(__spreadValues({}, paint), { gradientStops: newStops });
                 }
               }
             });
@@ -29516,13 +31509,13 @@ ${scripts}`, "");
           return page;
         };
         const pageOf6 = (node) => {
-          let walk2 = node.parent;
-          while (walk2 && walk2.type !== "PAGE") walk2 = walk2.parent;
-          return walk2 != null ? walk2 : null;
+          let walk3 = node.parent;
+          while (walk3 && walk3.type !== "PAGE") walk3 = walk3.parent;
+          return walk3 != null ? walk3 : null;
         };
         const results = [];
-        for (const [index, raw] of rows.entries()) {
-          const entry = record(raw, `nodes[${index}]`);
+        for (const [index2, raw] of rows.entries()) {
+          const entry = record(raw, `nodes[${index2}]`);
           const id = typeof entry.node === "string" ? entry.node : "";
           try {
             if (id === "") throw new Error('"node" must be a node id');
@@ -29577,7 +31570,7 @@ ${scripts}`, "");
             const pinned = [];
             const modeWarnings = [];
             if (entry.modes !== void 0) {
-              const wanted = record(entry.modes, `nodes[${index}].modes`);
+              const wanted = record(entry.modes, `nodes[${index2}].modes`);
               for (const [collectionRef, modeRef] of Object.entries(wanted)) {
                 try {
                   const collection = await resolveCollection(collectionRef);
@@ -29720,10 +31713,10 @@ ${scripts}`, "");
           var _a2;
           if (typeof id === "string" && targets.has(id)) used.set(id, ((_a2 = used.get(id)) != null ? _a2 : 0) + 1);
         };
-        const scanPaints = (paints) => {
+        const scanPaints = (paints2) => {
           var _a2, _b2, _c, _d;
-          if (!Array.isArray(paints)) return;
-          for (const paint of paints) {
+          if (!Array.isArray(paints2)) return;
+          for (const paint of paints2) {
             note((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id);
             if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) for (const stop of paint.gradientStops) note((_d = (_c = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c.color) == null ? void 0 : _d.id);
           }
@@ -29735,10 +31728,10 @@ ${scripts}`, "");
             const holder = node;
             const bound = holder.boundVariables;
             if (bound) {
-              for (const [field, value] of Object.entries(bound)) {
+              for (const [field, value2] of Object.entries(bound)) {
                 if (field === "fills" || field === "strokes") continue;
-                if (Array.isArray(value)) value.forEach((entry) => note(entry == null ? void 0 : entry.id));
-                else note(value == null ? void 0 : value.id);
+                if (Array.isArray(value2)) value2.forEach((entry) => note(entry == null ? void 0 : entry.id));
+                else note(value2 == null ? void 0 : value2.id);
               }
             }
             scanPaints(holder.fills);
@@ -29748,8 +31741,8 @@ ${scripts}`, "");
         if (counting) {
           for (const style of await figma.getLocalPaintStylesAsync()) scanPaints(style.paints);
           for (const variable of await figma.variables.getLocalVariablesAsync()) {
-            for (const value of Object.values((_a = variable.valuesByMode) != null ? _a : {})) {
-              const alias = value;
+            for (const value2 of Object.values((_a = variable.valuesByMode) != null ? _a : {})) {
+              const alias = value2;
               if ((alias == null ? void 0 : alias.type) === "VARIABLE_ALIAS") note(alias.id);
             }
           }
@@ -29801,8 +31794,8 @@ ${scripts}`, "");
           const owned = /* @__PURE__ */ new Set();
           const segments = text4.getStyledTextSegments(["boundVariables", "fills"]);
           for (const segment of segments) {
-            for (const value of Object.values((_a = segment.boundVariables) != null ? _a : {})) {
-              const entries = Array.isArray(value) ? value : [value];
+            for (const value2 of Object.values((_a = segment.boundVariables) != null ? _a : {})) {
+              const entries = Array.isArray(value2) ? value2 : [value2];
               for (const entry of entries) {
                 const id = entry == null ? void 0 : entry.id;
                 if (id) owned.add(id);
@@ -29814,10 +31807,10 @@ ${scripts}`, "");
             }
           }
           let orphans = 0;
-          for (const value of Object.values(
+          for (const value2 of Object.values(
             (_e = text4.boundVariables) != null ? _e : {}
           )) {
-            const entries = Array.isArray(value) ? value : [value];
+            const entries = Array.isArray(value2) ? value2 : [value2];
             for (const entry of entries) {
               const id = entry == null ? void 0 : entry.id;
               if (id && !owned.has(id)) orphans += 1;
@@ -29898,12 +31891,12 @@ ${scripts}`, "");
           });
         };
         const results = [];
-        for (const [index, raw] of rows.entries()) {
-          const entry = record(raw, `components[${index}]`);
+        for (const [index2, raw] of rows.entries()) {
+          const entry = record(raw, `components[${index2}]`);
           const id = typeof entry.node === "string" ? entry.node : "";
           try {
             if (id === "") throw new Error('"node" must be a component or component-set id');
-            const plan = planDescribe(entry, `components[${index}]`);
+            const plan = planDescribe(entry, `components[${index2}]`);
             const found = await figma.getNodeByIdAsync(id);
             if (!found) throw new Error(`no node with id ${id}`);
             if (found.type !== "COMPONENT" && found.type !== "COMPONENT_SET") {
@@ -29979,7 +31972,7 @@ ${scripts}`, "");
   })();
 
   // src/agent/ui-commands.ts
-  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide"},{"name":"tokens","required":false,"type":"{ includeLibraries?: boolean; emitNative?: boolean }","note":"overrides for this one build \u2014 { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string","note":"the package itself, base64 \u2014 the bytes CONFIRM_EXPORT handed back"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportDeliveryOptions; ag\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on Altery Mobile DS","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)","cost":"one render each, and a large frame at 4x is megabytes \u2014 the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"},{"name":"withoutChildren","required":false,"type":"boolean","note":"PNG or JPG only \u2014 renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly."}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"the animation styles Figma offers, with the settings each one takes \u2014 what you have to know before applying one","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect and grid \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect or grid; omitted means all four"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the module document itself (see TASK-user-modules.md), object or JSON text"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id; without it a clash is refused"}],"replies":["MODULE_REJECTED","MODULE_INSTALLED","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the type the module declared for that field"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
+  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide"},{"name":"tokens","required":false,"type":"{ includeLibraries?: boolean; emitNative?: boolean }","note":"overrides for this one build \u2014 { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string","note":"the package itself, base64 \u2014 the bytes CONFIRM_EXPORT handed back"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"LIST_VARIABLE_COLLECTIONS","access":"read","classified":true,"summary":"local variable collections for the settings table, plus whether this file has only single-mode collections","params":[],"replies":["VARIABLE_COLLECTIONS"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportDeliveryOptions; ag\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on AllCrew Channel","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)","cost":"one render each, and a large frame at 4x is megabytes \u2014 the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"},{"name":"withoutChildren","required":false,"type":"boolean","note":"PNG or JPG only \u2014 renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly."},{"name":"contentsOnly","required":false,"type":"boolean","note":"PNG, JPG or SVG \u2014 false renders what overlaps the node from outside it too (Figma's \\"Ignore overlapping layers\\" switch, inverted); true is Figma's default"},{"name":"useAbsoluteBounds","required":false,"type":"boolean","note":"render the node's full bounds even where a parent clips or a mask crops it \u2014 the way to get a layer whose art spills outside its frame"},{"name":"colorProfile","required":false,"type":"string","note":"DOCUMENT (default), SRGB or DISPLAY_P3_V4 \u2014 the profile the raster is written in"},{"name":"svgIdAttribute","required":false,"type":"boolean","note":"SVG only \u2014 keep Figma's layer ids as \`id=\` attributes, so a build can address a part of the drawing"},{"name":"svgSimplifyStroke","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) collapses a stroke into an outlined path; false keeps it a stroked path"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"the animation styles Figma offers, with the settings each one takes \u2014 what you have to know before applying one","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect and grid \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect or grid; omitted means all four"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_SCHEMA","access":"read","classified":true,"summary":"the canonical user-module JSON Schema, starter file, runtime rules and limits","params":[],"replies":["MODULE_SCHEMA"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the complete declarative module object"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id"},{"name":"allowDowngrade","required":false,"type":"boolean","note":"true explicitly permits replacing a newer SemVer"}],"replies":["MODULE_INSTALLED","MODULE_REJECTED","MODULE_ERROR"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the declared type and numeric bounds"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
   var UI_COMMANDS = (() => {
     if (!INJECTED2.startsWith("[")) return [];
     try {
@@ -30007,19 +32000,19 @@ ${scripts}`, "");
     });
     const out = [];
     let collapsed = 0;
-    for (let index = 0; index < own.length; index++) {
-      const type = typeOf(own[index]);
-      let runEnd = index;
+    for (let index2 = 0; index2 < own.length; index2++) {
+      const type = typeOf(own[index2]);
+      let runEnd = index2;
       while (runEnd + 1 < own.length && type !== null && typeOf(own[runEnd + 1]) === type) runEnd++;
-      if (runEnd > index + 1) {
-        out.push(digestValue(own[index], 0, budget, state));
-        out.push({ type, repeated: runEnd - index - 1, note: "identical replies omitted" });
+      if (runEnd > index2 + 1) {
+        out.push(digestValue(own[index2], 0, budget, state));
+        out.push({ type, repeated: runEnd - index2 - 1, note: "identical replies omitted" });
         out.push(digestValue(own[runEnd], 0, budget, state));
-        collapsed += runEnd - index - 1;
-        index = runEnd;
+        collapsed += runEnd - index2 - 1;
+        index2 = runEnd;
         continue;
       }
-      out.push(digestValue(own[index], 0, budget, state));
+      out.push(digestValue(own[index2], 0, budget, state));
     }
     return { replies: out, collapsed, files: state.files, truncated: state.truncated };
   }
@@ -30028,38 +32021,38 @@ ${scripts}`, "");
     const type = reply.type;
     return typeof type === "string" ? type : null;
   }
-  function digestValue(value, depth, budget, state, key = "") {
-    if (value === null || value === void 0) return value != null ? value : null;
-    if (isFileEnvelope(value)) {
+  function digestValue(value2, depth, budget, state, key = "") {
+    if (value2 === null || value2 === void 0) return value2 != null ? value2 : null;
+    if (isFileEnvelope(value2)) {
       state.files++;
-      return value;
+      return value2;
     }
-    if (typeof value === "number" || typeof value === "boolean") return value;
-    if (typeof value === "string") return digestString(value, budget, state, key);
-    if (typeof value === "function" || typeof value === "symbol") return `[${typeof value}]`;
-    if (value instanceof Uint8Array) {
+    if (typeof value2 === "number" || typeof value2 === "boolean") return value2;
+    if (typeof value2 === "string") return digestString(value2, budget, state, key);
+    if (typeof value2 === "function" || typeof value2 === "symbol") return `[${typeof value2}]`;
+    if (value2 instanceof Uint8Array) {
       state.truncated = true;
-      return { bytes: value.length, note: "binary omitted" };
+      return { bytes: value2.length, note: "binary omitted" };
     }
-    if (Array.isArray(value)) {
+    if (Array.isArray(value2)) {
       if (depth >= MAX_DEPTH) {
-        const small = smallEnoughToShow(value);
+        const small = smallEnoughToShow(value2);
         if (small !== null) return small;
-        return oversized(value, { count: value.length }, "nested too deep to quote", budget, state, key);
+        return oversized(value2, { count: value2.length }, "nested too deep to quote", budget, state, key);
       }
-      if (value.length > MAX_ARRAY) {
+      if (value2.length > MAX_ARRAY) {
         return oversized(
-          value,
-          { count: value.length, sample: preview(value.slice(0, 3), budget) },
-          `showing 3 of ${value.length}`,
+          value2,
+          { count: value2.length, sample: preview(value2.slice(0, 3), budget) },
+          `showing 3 of ${value2.length}`,
           budget,
           state,
           key
         );
       }
-      return value.map((entry) => digestValue(entry, depth + 1, budget, state, key));
+      return value2.map((entry) => digestValue(entry, depth + 1, budget, state, key));
     }
-    const record2 = value;
+    const record2 = value2;
     const keys = Object.keys(record2);
     if (depth >= MAX_DEPTH) {
       const small = smallEnoughToShow(record2);
@@ -30082,8 +32075,8 @@ ${scripts}`, "");
     }
     return out;
   }
-  function oversized(value, shape, note, budget, state, key) {
-    const json = safeJson(value);
+  function oversized(value2, shape, note, budget, state, key) {
+    const json = safeJson(value2);
     if (json !== null && json.length >= MIN_SPILL_BYTES && state.files < budget.maxFiles && state.bytes + json.length <= budget.maxBytes) {
       const name = fileNameFor(`${key || "reply"}.json`, state.names);
       if (name) {
@@ -30096,20 +32089,20 @@ ${scripts}`, "");
     state.truncated = true;
     return __spreadProps(__spreadValues({}, shape), { note });
   }
-  function smallEnoughToShow(value) {
-    const json = safeJson(value);
-    return json !== null && json.length <= SHOW_ANYWAY_BYTES ? value : null;
+  function smallEnoughToShow(value2) {
+    const json = safeJson(value2);
+    return json !== null && json.length <= SHOW_ANYWAY_BYTES ? value2 : null;
   }
   var SHOW_ANYWAY_BYTES = 500;
   var MIN_SPILL_BYTES = 120;
-  function preview(value, budget) {
+  function preview(value2, budget) {
     const sealed = { files: 0, bytes: 0, truncated: false, names: /* @__PURE__ */ new Set() };
-    return value.map((entry) => digestValue(entry, 0, __spreadProps(__spreadValues({}, budget), { maxFiles: 0 }), sealed, ""));
+    return value2.map((entry) => digestValue(entry, 0, __spreadProps(__spreadValues({}, budget), { maxFiles: 0 }), sealed, ""));
   }
-  function safeJson(value) {
+  function safeJson(value2) {
     try {
       const json = JSON.stringify(
-        value,
+        value2,
         (_key, entry) => entry instanceof Uint8Array ? { bytes: entry.length, note: "binary omitted" } : entry
       );
       return typeof json === "string" ? json : null;
@@ -30117,19 +32110,19 @@ ${scripts}`, "");
       return null;
     }
   }
-  function digestString(value, budget, state, key) {
-    if (value.length <= budget.keep) return value;
-    if (state.files < budget.maxFiles && state.bytes + value.length <= budget.maxBytes) {
+  function digestString(value2, budget, state, key) {
+    if (value2.length <= budget.keep) return value2;
+    if (state.files < budget.maxFiles && state.bytes + value2.length <= budget.maxBytes) {
       const name = fileNameFor(key, state.names);
       if (name) {
         state.files++;
-        state.bytes += value.length;
+        state.bytes += value2.length;
         state.names.add(name);
-        return textFile(name, mimeFor(name), value);
+        return textFile(name, mimeFor(name), value2);
       }
     }
     state.truncated = true;
-    return { chars: value.length, head: value.slice(0, budget.keep), note: "truncated" };
+    return { chars: value2.length, head: value2.slice(0, budget.keep), note: "truncated" };
   }
   var MIME_BY_EXT = {
     css: "text/css",
@@ -30348,7 +32341,7 @@ ${scripts}`, "");
             default: DEFAULT_CALL_TIMEOUT_MS,
             min: 1e3,
             max: 6e5,
-            description: "How long to wait for the command before answering with what it said so far. The BRIDGE cuts the call at its own ceiling first (ALTERY_AGENT_CALL_TIMEOUT_MS, 180s by default), so a value above that one only takes effect when the bridge is started with a matching ceiling."
+            description: "How long to wait for the command before answering with what it said so far. The BRIDGE cuts the call at its own ceiling first (ALLCREW_CHANNEL_AGENT_CALL_TIMEOUT_MS, 180s by default), so a value above that one only takes effect when the bridge is started with a matching ceiling."
           }
         },
         async run(params) {
@@ -30407,9 +32400,1134 @@ ${scripts}`, "");
   }
   var PLUGIN_OPS = pluginOps();
 
+  // src/modules/contract.ts
+  var MODULE_FORMAT = "allcrew-channel.module/1";
+  var BLOCK_TYPES = ["heading", "text", "callout", "field", "value", "select", "toggle", "button", "table", "code", "list"];
+  var STATE_TYPES = ["string", "number", "boolean"];
+  var MODULE_ICON_TYPES = ["module", "palette", "terminal", "settings", "database", "document", "code", "play", "check", "warning"];
+  var MODULE_ID_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
+  var MODULE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+  var MODULE_SAFE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
+  var MODULE_REFERENCE_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*$/;
+  var MODULE_COMMAND_NAME_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$/;
+  var MODULE_LIMITS = {
+    stateFields: 64,
+    blocksPerScreen: 120,
+    commands: 64,
+    stepsPerPipeline: 64,
+    textLength: 4e3,
+    nameLength: 120,
+    tableRows: 200
+  };
+  function parseUserModule(raw, known) {
+    const problems = [];
+    const fail2 = (path, message) => problems.push({ path, message });
+    const value2 = typeof raw === "string" ? tryJson(raw, fail2) : raw;
+    if (!isRecord(value2)) {
+      if (problems.length === 0) fail2("", "not an object");
+      return { module: null, problems };
+    }
+    if (value2.module !== MODULE_FORMAT) {
+      fail2("module", `expected "${MODULE_FORMAT}", got ${JSON.stringify(value2.module)}`);
+      return { module: null, problems };
+    }
+    rejectUnknown(
+      value2,
+      ["$schema", "module", "id", "name", "summary", "version", "author", "state", "screens", "commands"],
+      "",
+      fail2
+    );
+    const id = text3(value2.id, "id", fail2, MODULE_LIMITS.nameLength);
+    const wellFormedId = id !== null && MODULE_ID_PATTERN.test(id) && !dangerousKey(id);
+    if (id !== null && !wellFormedId) {
+      fail2("id", "must be lowercase letters, digits, dots and dashes, starting with a letter or digit");
+    }
+    const name = text3(value2.name, "name", fail2, MODULE_LIMITS.nameLength);
+    const summary = text3(value2.summary, "summary", fail2, MODULE_LIMITS.textLength);
+    const version = text3(value2.version, "version", fail2, 40);
+    if (version !== null && !MODULE_VERSION_PATTERN.test(version)) fail2("version", "must be valid SemVer, such as 1.0.0 or 1.1.0-beta.1");
+    if (value2.author !== void 0) {
+      if (typeof value2.author !== "string") fail2("author", "must be a string");
+      else if (value2.author.length > MODULE_LIMITS.nameLength) fail2("author", `must be <= ${MODULE_LIMITS.nameLength} characters`);
+    }
+    const state = parseState(value2.state, fail2);
+    const commandsByName = new Map(known.map((command) => [command.name, command]));
+    const context = { state, known: commandsByName, fail: fail2 };
+    const screens = parseScreens(value2.screens, context);
+    const commands = parseCommands(value2.commands, wellFormedId ? id : null, context);
+    if (problems.length > 0 || id === null || name === null || summary === null || version === null || !screens) {
+      return { module: null, problems };
+    }
+    return {
+      module: __spreadProps(__spreadValues({
+        id,
+        name,
+        summary,
+        version
+      }, typeof value2.author === "string" ? { author: value2.author } : {}), {
+        state,
+        screens,
+        commands
+      }),
+      problems
+    };
+  }
+  function parseState(raw, fail2) {
+    const state = /* @__PURE__ */ Object.create(null);
+    if (raw === void 0) return state;
+    if (!isRecord(raw)) {
+      fail2("state", "must be an object of field declarations");
+      return state;
+    }
+    const entries = Object.entries(raw);
+    if (entries.length > MODULE_LIMITS.stateFields) {
+      fail2("state", `has ${entries.length} fields; limit is ${MODULE_LIMITS.stateFields}`);
+    }
+    for (const [key, entry] of entries.slice(0, MODULE_LIMITS.stateFields)) {
+      const path = `state.${key}`;
+      if (!MODULE_SAFE_NAME_PATTERN.test(key) || dangerousKey(key)) {
+        fail2(path, "field name must start with a letter and contain only letters, digits, dashes or underscores");
+        continue;
+      }
+      if (!isRecord(entry)) {
+        fail2(path, "must be { type, default }");
+        continue;
+      }
+      rejectUnknown(entry, ["type", "default", "label", "secret", "min", "max"], path, fail2);
+      const type = entry.type;
+      if (!STATE_TYPES.includes(type)) {
+        fail2(`${path}.type`, `must be one of: ${STATE_TYPES.join(", ")}`);
+        continue;
+      }
+      if (typeof entry.default !== type) {
+        fail2(`${path}.default`, `must be a ${type}, so a screen has something to show before anything runs`);
+        continue;
+      }
+      if (type === "number" && typeof entry.default === "number" && !Number.isFinite(entry.default)) {
+        fail2(`${path}.default`, "must be a finite number");
+        continue;
+      }
+      if (entry.label !== void 0 && typeof entry.label !== "string") fail2(`${path}.label`, "must be a string");
+      if (entry.secret !== void 0 && typeof entry.secret !== "boolean") fail2(`${path}.secret`, "must be a boolean");
+      if (entry.secret === true && type !== "string") fail2(`${path}.secret`, "is only valid for string fields");
+      if (entry.secret === true && entry.default !== "") {
+        fail2(`${path}.default`, "must be empty for a secret field; portable module files cannot contain credentials");
+      }
+      const min = entry.min;
+      const max = entry.max;
+      if ((min !== void 0 || max !== void 0) && type !== "number") fail2(path, "min/max are only valid for number fields");
+      if (min !== void 0 && (typeof min !== "number" || !Number.isFinite(min))) fail2(`${path}.min`, "must be a finite number");
+      if (max !== void 0 && (typeof max !== "number" || !Number.isFinite(max))) fail2(`${path}.max`, "must be a finite number");
+      if (typeof min === "number" && typeof max === "number" && min > max) fail2(path, "min must be <= max");
+      if (type === "number" && typeof entry.default === "number") {
+        if (typeof min === "number" && entry.default < min) fail2(`${path}.default`, `must be >= ${min}`);
+        if (typeof max === "number" && entry.default > max) fail2(`${path}.default`, `must be <= ${max}`);
+      }
+      state[key] = __spreadValues(__spreadValues(__spreadValues(__spreadValues({
+        type,
+        default: entry.default
+      }, typeof entry.label === "string" ? { label: entry.label } : {}), entry.secret === true ? { secret: true } : {}), typeof min === "number" ? { min } : {}), typeof max === "number" ? { max } : {});
+    }
+    return state;
+  }
+  function parseScreens(raw, context) {
+    if (!isRecord(raw)) {
+      context.fail("screens", "must be an object with at least a `main` screen");
+      return null;
+    }
+    rejectUnknown(raw, ["main", "settings"], "screens", context.fail);
+    const main = parseScreen(raw.main, "screens.main", context);
+    if (!main) return null;
+    const settings = raw.settings === void 0 ? void 0 : parseScreen(raw.settings, "screens.settings", context);
+    return __spreadValues({ main }, settings ? { settings } : {});
+  }
+  function parseScreen(raw, path, context) {
+    if (!isRecord(raw) || !Array.isArray(raw.blocks)) {
+      context.fail(path, "must be { blocks: [...] }");
+      return null;
+    }
+    rejectUnknown(raw, ["blocks"], path, context.fail);
+    if (raw.blocks.length > MODULE_LIMITS.blocksPerScreen) {
+      context.fail(`${path}.blocks`, `has ${raw.blocks.length} blocks; limit is ${MODULE_LIMITS.blocksPerScreen}`);
+    }
+    const blocks2 = [];
+    for (const [index2, entry] of raw.blocks.slice(0, MODULE_LIMITS.blocksPerScreen).entries()) {
+      const block3 = parseBlock(entry, `${path}.blocks[${index2}]`, context);
+      if (block3) blocks2.push(block3);
+    }
+    return { blocks: blocks2 };
+  }
+  function parseBlock(raw, path, context) {
+    if (!isRecord(raw)) {
+      context.fail(path, "must be an object");
+      return null;
+    }
+    const kind = raw.block;
+    if (typeof kind !== "string" || !BLOCK_TYPES.includes(kind)) {
+      context.fail(`${path}.block`, `unknown block ${JSON.stringify(kind)} \u2014 one of: ${BLOCK_TYPES.join(", ")}`);
+      return null;
+    }
+    const hasWhen = raw.when !== void 0;
+    const when = parseCondition(raw.when, `${path}.when`, new Set(Object.keys(context.state)), context);
+    if (hasWhen && !when) return null;
+    const conditional = when ? { when } : {};
+    for (const key of ["label", "hint", "placeholder", "language"]) {
+      if (raw[key] !== void 0 && typeof raw[key] !== "string") context.fail(`${path}.${key}`, "must be a string");
+    }
+    const bound = (expected) => {
+      const bind = raw.bind;
+      if (typeof bind !== "string" || !(bind in context.state)) {
+        context.fail(`${path}.bind`, `must name a declared state field${knownFields(context)}`);
+        return null;
+      }
+      const allowed = expected === void 0 ? void 0 : Array.isArray(expected) ? expected : [expected];
+      if (allowed && !allowed.includes(context.state[bind].type)) {
+        context.fail(`${path}.bind`, `must name ${allowed.join(" or ")} state, but "${bind}" is ${context.state[bind].type}`);
+        return null;
+      }
+      return bind;
+    };
+    const disabledWhen = () => {
+      const hasCondition = raw.disabledWhen !== void 0;
+      const condition2 = parseCondition(raw.disabledWhen, `${path}.disabledWhen`, new Set(Object.keys(context.state)), context);
+      return hasCondition && !condition2 ? null : condition2 ? { disabledWhen: condition2 } : {};
+    };
+    switch (kind) {
+      case "heading": {
+        rejectUnknown(raw, ["block", "text", "icon", "hint", "when"], path, context.fail);
+        const value2 = text3(raw.text, `${path}.text`, context.fail, MODULE_LIMITS.textLength);
+        const icon = raw.icon;
+        if (icon !== void 0 && (typeof icon !== "string" || !MODULE_ICON_TYPES.includes(icon))) {
+          context.fail(`${path}.icon`, `must be one of: ${MODULE_ICON_TYPES.join(", ")}`);
+          return null;
+        }
+        return value2 === null ? null : __spreadValues(__spreadValues(__spreadValues({
+          block: "heading",
+          text: value2
+        }, icon ? { icon } : {}), typeof raw.hint === "string" ? { hint: raw.hint } : {}), conditional);
+      }
+      case "text": {
+        rejectUnknown(raw, ["block", "text", "when"], path, context.fail);
+        const value2 = text3(raw.text, `${path}.text`, context.fail, MODULE_LIMITS.textLength);
+        return value2 === null ? null : __spreadValues({ block: "text", text: value2 }, conditional);
+      }
+      case "callout": {
+        rejectUnknown(raw, ["block", "text", "tone", "when"], path, context.fail);
+        const value2 = text3(raw.text, `${path}.text`, context.fail, MODULE_LIMITS.textLength);
+        const tone = raw.tone;
+        if (tone !== void 0 && tone !== "info" && tone !== "warn" && tone !== "error" && tone !== "success") {
+          context.fail(`${path}.tone`, 'must be "info", "warn", "error" or "success"');
+          return null;
+        }
+        return value2 === null ? null : __spreadValues(__spreadValues({ block: "callout", text: value2 }, tone ? { tone } : {}), conditional);
+      }
+      case "field": {
+        rejectUnknown(raw, ["block", "bind", "label", "placeholder", "multiline", "rows", "when", "disabledWhen"], path, context.fail);
+        const bind = bound(["string", "number"]);
+        const disabled = disabledWhen();
+        if (bind === null || disabled === null) return null;
+        if (raw.placeholder !== void 0 && typeof raw.placeholder !== "string") context.fail(`${path}.placeholder`, "must be a string");
+        if (raw.multiline !== void 0 && typeof raw.multiline !== "boolean") context.fail(`${path}.multiline`, "must be a boolean");
+        if (raw.rows !== void 0 && (!Number.isInteger(raw.rows) || Number(raw.rows) < 2 || Number(raw.rows) > 20)) {
+          context.fail(`${path}.rows`, "must be an integer from 2 to 20");
+        }
+        if (raw.multiline === true && context.state[bind].type !== "string") context.fail(`${path}.multiline`, "is only valid for string fields");
+        return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+          block: "field",
+          bind
+        }, optionalLabel(raw)), typeof raw.placeholder === "string" ? { placeholder: raw.placeholder } : {}), raw.multiline === true ? { multiline: true } : {}), Number.isInteger(raw.rows) ? { rows: Number(raw.rows) } : {}), conditional), disabled);
+      }
+      case "toggle": {
+        rejectUnknown(raw, ["block", "bind", "label", "when", "disabledWhen"], path, context.fail);
+        const bind = bound("boolean");
+        const disabled = disabledWhen();
+        return bind === null || disabled === null ? null : __spreadValues(__spreadValues(__spreadValues({ block: "toggle", bind }, optionalLabel(raw)), conditional), disabled);
+      }
+      case "value": {
+        rejectUnknown(raw, ["block", "bind", "label", "hint", "when"], path, context.fail);
+        const bind = bound();
+        if (bind !== null && context.state[bind].secret) {
+          context.fail(`${path}.bind`, "secret fields can only be edited; they cannot be displayed by a value block");
+          return null;
+        }
+        return bind === null ? null : __spreadValues(__spreadValues(__spreadValues({
+          block: "value",
+          bind
+        }, optionalLabel(raw)), typeof raw.hint === "string" ? { hint: raw.hint } : {}), conditional);
+      }
+      case "select": {
+        rejectUnknown(raw, ["block", "bind", "label", "options", "when", "disabledWhen"], path, context.fail);
+        const bind = bound("string");
+        const disabled = disabledWhen();
+        if (bind === null || disabled === null) return null;
+        if (!Array.isArray(raw.options) || raw.options.length === 0 || raw.options.length > 200) {
+          context.fail(`${path}.options`, "must be a non-empty array of at most 200 { value, label? } entries");
+          return null;
+        }
+        const options = [];
+        const values = /* @__PURE__ */ new Set();
+        for (const [index2, option] of raw.options.entries()) {
+          const at = `${path}.options[${index2}]`;
+          if (!isRecord(option) || typeof option.value !== "string") {
+            context.fail(at, "must be { value, label? } with a string value");
+            continue;
+          }
+          rejectUnknown(option, ["value", "label"], at, context.fail);
+          if (values.has(option.value)) context.fail(`${at}.value`, "must be unique within this select");
+          values.add(option.value);
+          options.push(__spreadValues({ value: option.value }, typeof option.label === "string" ? { label: option.label } : {}));
+        }
+        return __spreadValues(__spreadValues(__spreadValues({ block: "select", bind, options }, optionalLabel(raw)), conditional), disabled);
+      }
+      case "button": {
+        rejectUnknown(raw, ["block", "label", "look", "steps", "when", "disabledWhen"], path, context.fail);
+        const label3 = text3(raw.label, `${path}.label`, context.fail, MODULE_LIMITS.nameLength);
+        const look = raw.look;
+        if (look !== void 0 && look !== "primary" && look !== "secondary" && look !== "danger") {
+          context.fail(`${path}.look`, 'must be "primary", "secondary" or "danger"');
+          return null;
+        }
+        const steps = parseSteps2(raw.steps, `${path}.steps`, context);
+        const disabled = disabledWhen();
+        return label3 === null || steps === null || disabled === null ? null : __spreadValues(__spreadValues(__spreadProps(__spreadValues({
+          block: "button",
+          label: label3
+        }, look ? { look } : {}), {
+          steps
+        }), conditional), disabled);
+      }
+      case "table": {
+        rejectUnknown(raw, ["block", "from", "label", "columns", "limit", "when"], path, context.fail);
+        const from = text3(raw.from, `${path}.from`, context.fail, MODULE_LIMITS.nameLength);
+        const columns = parseStringArray(raw.columns, `${path}.columns`, context.fail, 32);
+        const limit = parseLimit(raw.limit, `${path}.limit`, context.fail);
+        return from === null ? null : __spreadValues(__spreadValues(__spreadValues(__spreadValues({ block: "table", from }, optionalLabel(raw)), columns ? { columns } : {}), limit ? { limit } : {}), conditional);
+      }
+      case "code": {
+        rejectUnknown(raw, ["block", "from", "text", "label", "language", "when"], path, context.fail);
+        if (typeof raw.from === "string" === (typeof raw.text === "string")) {
+          context.fail(path, "code must have exactly one of `from` or `text`");
+          return null;
+        }
+        return __spreadValues(__spreadValues(__spreadValues(__spreadValues({
+          block: "code"
+        }, typeof raw.from === "string" ? { from: raw.from } : { text: raw.text }), optionalLabel(raw)), typeof raw.language === "string" ? { language: raw.language } : {}), conditional);
+      }
+      case "list": {
+        rejectUnknown(raw, ["block", "from", "label", "limit", "when"], path, context.fail);
+        const from = text3(raw.from, `${path}.from`, context.fail, MODULE_LIMITS.nameLength);
+        const limit = parseLimit(raw.limit, `${path}.limit`, context.fail);
+        return from === null ? null : __spreadValues(__spreadValues(__spreadValues({ block: "list", from }, optionalLabel(raw)), limit ? { limit } : {}), conditional);
+      }
+      default:
+        context.fail(`${path}.block`, `no renderer for block "${kind}"`);
+        return null;
+    }
+  }
+  function parseCondition(raw, path, available, context) {
+    var _a;
+    if (raw === void 0) return null;
+    if (!isRecord(raw)) {
+      context.fail(path, "must be a condition object");
+      return null;
+    }
+    rejectUnknown(raw, ["from", "equals", "notEquals", "oneOf", "truthy", "exists"], path, context.fail);
+    if (typeof raw.from !== "string" || !isReachable(raw.from, available)) {
+      context.fail(`${path}.from`, "must read a declared state field or an earlier step result");
+      return null;
+    }
+    const operators = ["equals", "notEquals", "oneOf", "truthy", "exists"].filter((key) => raw[key] !== void 0);
+    if (operators.length !== 1) {
+      context.fail(path, "must declare exactly one of equals, notEquals, oneOf, truthy or exists");
+      return null;
+    }
+    const operator = operators[0];
+    const expectedType = (_a = context.state[raw.from]) == null ? void 0 : _a.type;
+    if (operator === "oneOf") {
+      if (!Array.isArray(raw.oneOf) || raw.oneOf.length === 0 || raw.oneOf.length > 100 || raw.oneOf.some((value3) => !isScalar(value3))) {
+        context.fail(`${path}.oneOf`, "must be a non-empty array of at most 100 strings, numbers or booleans");
+        return null;
+      }
+      if (expectedType && raw.oneOf.some((value3) => typeof value3 !== expectedType)) {
+        context.fail(`${path}.oneOf`, `values must be ${expectedType} to match "${raw.from}"`);
+        return null;
+      }
+      return { from: raw.from, oneOf: raw.oneOf };
+    }
+    if (operator === "truthy" || operator === "exists") {
+      const value3 = raw[operator];
+      if (typeof value3 !== "boolean") {
+        context.fail(`${path}.${operator}`, "must be a boolean");
+        return null;
+      }
+      return operator === "truthy" ? { from: raw.from, truthy: value3 } : { from: raw.from, exists: value3 };
+    }
+    const value2 = raw[operator];
+    if (!isScalar(value2)) {
+      context.fail(`${path}.${operator}`, "must be a string, number or boolean");
+      return null;
+    }
+    if (expectedType && typeof value2 !== expectedType) {
+      context.fail(`${path}.${operator}`, `must be ${expectedType} to match "${raw.from}"`);
+      return null;
+    }
+    return operator === "equals" ? { from: raw.from, equals: value2 } : { from: raw.from, notEquals: value2 };
+  }
+  function parseStringArray(raw, path, fail2, max) {
+    if (raw === void 0) return void 0;
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > max || raw.some((value2) => typeof value2 !== "string" || value2 === "")) {
+      fail2(path, `must be a non-empty array of at most ${max} non-empty strings`);
+      return void 0;
+    }
+    if (new Set(raw).size !== raw.length) fail2(path, "must not contain duplicate values");
+    return raw;
+  }
+  function parseLimit(raw, path, fail2) {
+    if (raw === void 0) return void 0;
+    if (!Number.isInteger(raw) || Number(raw) < 1 || Number(raw) > MODULE_LIMITS.tableRows) {
+      fail2(path, `must be an integer from 1 to ${MODULE_LIMITS.tableRows}`);
+      return void 0;
+    }
+    return Number(raw);
+  }
+  function parseSteps2(raw, path, context, availableNames = []) {
+    var _a;
+    if (!Array.isArray(raw) || raw.length === 0) {
+      context.fail(path, "must be a non-empty array of steps");
+      return null;
+    }
+    if (raw.length > MODULE_LIMITS.stepsPerPipeline) {
+      context.fail(path, `has ${raw.length} steps; limit is ${MODULE_LIMITS.stepsPerPipeline}`);
+      return null;
+    }
+    const steps = [];
+    const available = /* @__PURE__ */ new Set([...Object.keys(context.state), ...availableNames]);
+    let failed = false;
+    for (const [index2, entry] of raw.entries()) {
+      const at = `${path}[${index2}]`;
+      if (!isRecord(entry)) {
+        context.fail(at, "must be an object");
+        failed = true;
+        continue;
+      }
+      const hasWhen = entry.when !== void 0;
+      const when = parseCondition(entry.when, `${at}.when`, available, context);
+      if (hasWhen && !when) failed = true;
+      const conditional = when ? { when } : {};
+      if (typeof entry.call === "string") {
+        rejectUnknown(entry, ["call", "params", "as", "when"], at, context.fail);
+        const command = context.known.get(entry.call);
+        if (!command) {
+          context.fail(`${at}.call`, `no command "${entry.call}" in this build \u2014 the module needs a newer plugin, or a typo fixed`);
+          failed = true;
+          continue;
+        }
+        if (command.access === "deny") {
+          context.fail(`${at}.call`, `"${entry.call}" is never callable from outside the panel`);
+          failed = true;
+          continue;
+        }
+        if (entry.params !== void 0 && !isRecord(entry.params)) {
+          context.fail(`${at}.params`, "must be an object");
+          failed = true;
+          continue;
+        }
+        const params = (_a = entry.params) != null ? _a : {};
+        for (const [key, value2] of Object.entries(params)) {
+          if (dangerousKey(key)) {
+            context.fail(`${at}.params.${key}`, "unsafe object key");
+            failed = true;
+            continue;
+          }
+          if (!command.params.some((param) => param.name === key)) {
+            context.fail(`${at}.params.${key}`, `"${entry.call}" does not read ${key}`);
+            failed = true;
+          }
+          if (!checkReference(value2, `${at}.params.${key}`, available, context)) failed = true;
+        }
+        for (const param of command.params) {
+          if (param.required && !(param.name in params)) {
+            context.fail(`${at}.params.${param.name}`, `"${entry.call}" requires ${param.name}`);
+            failed = true;
+          }
+        }
+        if (entry.as !== void 0) {
+          if (typeof entry.as !== "string" || !MODULE_SAFE_NAME_PATTERN.test(entry.as) || dangerousKey(entry.as)) {
+            context.fail(`${at}.as`, "must start with a letter and contain only letters, digits, dashes or underscores");
+            failed = true;
+            continue;
+          }
+          if (available.has(entry.as)) {
+            context.fail(`${at}.as`, `"${entry.as}" is already a state field, parameter or earlier result`);
+            failed = true;
+            continue;
+          }
+          available.add(entry.as);
+        }
+        steps.push(__spreadValues(__spreadValues({ call: entry.call, params }, typeof entry.as === "string" ? { as: entry.as } : {}), conditional));
+        continue;
+      }
+      if (typeof entry.set === "string") {
+        rejectUnknown(entry, ["set", "from", "when"], at, context.fail);
+        if (!(entry.set in context.state)) {
+          context.fail(`${at}.set`, `must name a declared state field${knownFields(context)}`);
+          failed = true;
+          continue;
+        }
+        if (typeof entry.from !== "string" || !isReachable(entry.from, available)) {
+          context.fail(`${at}.from`, "must read a state field or an earlier step's `as` name");
+          failed = true;
+          continue;
+        }
+        steps.push(__spreadValues({ set: entry.set, from: entry.from }, conditional));
+        continue;
+      }
+      if (typeof entry.confirm === "string") {
+        rejectUnknown(entry, ["confirm", "when"], at, context.fail);
+        const confirm = text3(entry.confirm, `${at}.confirm`, context.fail, MODULE_LIMITS.textLength);
+        if (confirm !== null) steps.push(__spreadValues({ confirm }, conditional));
+        else failed = true;
+        continue;
+      }
+      context.fail(at, "must be one of { call }, { set, from } or { confirm }");
+      failed = true;
+    }
+    return failed ? null : steps;
+  }
+  function checkReference(value2, path, available, context) {
+    if (Array.isArray(value2)) {
+      return value2.every((entry, index2) => checkReference(entry, `${path}[${index2}]`, available, context));
+    }
+    if (!isRecord(value2)) return true;
+    if (typeof value2.from === "string") {
+      rejectUnknown(value2, ["from"], path, context.fail);
+      if (!isReachable(value2.from, available)) {
+        context.fail(`${path}.from`, `nothing named "${value2.from.split(".")[0]}" is available here`);
+        return false;
+      }
+      return true;
+    }
+    return Object.entries(value2).every(([key, entry]) => {
+      if (dangerousKey(key)) {
+        context.fail(`${path}.${key}`, "unsafe object key");
+        return false;
+      }
+      return checkReference(entry, `${path}.${key}`, available, context);
+    });
+  }
+  var isReachable = (reference2, available) => {
+    var _a;
+    const parts = reference2.split(".");
+    return MODULE_REFERENCE_PATTERN.test(reference2) && parts.every((part) => !dangerousKey(part)) && available.has((_a = parts[0]) != null ? _a : "");
+  };
+  function parseCommands(raw, id, context) {
+    if (raw === void 0) return [];
+    if (!Array.isArray(raw)) {
+      context.fail("commands", "must be an array");
+      return [];
+    }
+    if (raw.length > MODULE_LIMITS.commands) {
+      context.fail("commands", `has ${raw.length} commands; limit is ${MODULE_LIMITS.commands}`);
+    }
+    const commands = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const [index2, entry] of raw.slice(0, MODULE_LIMITS.commands).entries()) {
+      const at = `commands[${index2}]`;
+      if (!isRecord(entry)) {
+        context.fail(at, "must be an object");
+        continue;
+      }
+      rejectUnknown(entry, ["name", "summary", "params", "steps", "access"], at, context.fail);
+      if (entry.access !== void 0) {
+        context.fail(`${at}.access`, "not yours to declare \u2014 it is derived from the commands your steps call");
+      }
+      const name = text3(entry.name, `${at}.name`, context.fail, MODULE_LIMITS.nameLength);
+      if (name !== null) {
+        if (id !== null && !name.startsWith(`${id}.`)) {
+          context.fail(`${at}.name`, `must start with "${id}." so it cannot collide with a plugin command`);
+        }
+        if (!MODULE_COMMAND_NAME_PATTERN.test(name)) {
+          context.fail(`${at}.name`, "must be lowercase dotted/kebab names with no spaces");
+        }
+        if (/[A-Z]/.test(name)) context.fail(`${at}.name`, "must be lowercase \u2014 SCREAMING_CASE names belong to the plugin");
+        if (seen.has(name)) context.fail(`${at}.name`, `duplicated: "${name}"`);
+        seen.add(name);
+      }
+      const summary = text3(entry.summary, `${at}.summary`, context.fail, MODULE_LIMITS.textLength);
+      const params = parseParams(entry.params, `${at}.params`, context);
+      const steps = parseSteps2(entry.steps, `${at}.steps`, context, params.map((param) => param.name));
+      if (name === null || summary === null || steps === null) continue;
+      commands.push({
+        name,
+        summary,
+        params,
+        steps,
+        access: accessOf(steps, context.known),
+        confirms: steps.some((step2) => "confirm" in step2)
+      });
+    }
+    return commands;
+  }
+  function parseParams(raw, path, context) {
+    if (raw === void 0) return [];
+    if (!Array.isArray(raw) || raw.length > MODULE_LIMITS.stateFields) {
+      context.fail(path, `must be an array of at most ${MODULE_LIMITS.stateFields} parameter declarations`);
+      return [];
+    }
+    const params = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const [index2, entry] of raw.entries()) {
+      const at = `${path}[${index2}]`;
+      if (!isRecord(entry) || typeof entry.name !== "string") {
+        context.fail(at, "must be an object with a string name");
+        continue;
+      }
+      rejectUnknown(entry, ["name", "required", "type", "shape", "note", "nested"], at, context.fail);
+      if (!MODULE_SAFE_NAME_PATTERN.test(entry.name) || dangerousKey(entry.name)) {
+        context.fail(`${at}.name`, "must be a safe identifier");
+        continue;
+      }
+      if (seen.has(entry.name)) context.fail(`${at}.name`, `duplicated: "${entry.name}"`);
+      seen.add(entry.name);
+      if (entry.required !== void 0 && typeof entry.required !== "boolean") context.fail(`${at}.required`, "must be a boolean");
+      if (entry.nested !== void 0 && typeof entry.nested !== "boolean") context.fail(`${at}.nested`, "must be a boolean");
+      for (const key of ["type", "shape", "note"]) {
+        if (entry[key] !== void 0 && typeof entry[key] !== "string") context.fail(`${at}.${key}`, "must be a string");
+      }
+      params.push(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+        name: entry.name,
+        required: entry.required === true
+      }, typeof entry.type === "string" ? { type: entry.type } : {}), typeof entry.shape === "string" ? { shape: entry.shape } : {}), typeof entry.note === "string" ? { note: entry.note } : {}), entry.nested === true ? { nested: true } : {}));
+    }
+    return params;
+  }
+  function accessOf(steps, known) {
+    var _a;
+    for (const step2 of steps) {
+      if (!("call" in step2)) continue;
+      if (((_a = known.get(step2.call)) == null ? void 0 : _a.access) !== "read") return "write";
+    }
+    return "read";
+  }
+  function moduleCapabilities(module, known) {
+    var _a;
+    const byName = new Map(known.map((command) => [command.name, command]));
+    const uses = /* @__PURE__ */ new Map();
+    const count = (steps) => {
+      var _a2;
+      for (const step2 of steps) if ("call" in step2) uses.set(step2.call, ((_a2 = uses.get(step2.call)) != null ? _a2 : 0) + 1);
+    };
+    for (const command of module.commands) count(command.steps);
+    for (const screen of [module.screens.main, module.screens.settings]) {
+      for (const block3 of (_a = screen == null ? void 0 : screen.blocks) != null ? _a : []) if (block3.block === "button") count(block3.steps);
+    }
+    return [...uses.entries()].map(([command, times]) => {
+      var _a2;
+      const known2 = byName.get(command);
+      return __spreadValues({
+        command,
+        access: (_a2 = known2 == null ? void 0 : known2.access) != null ? _a2 : "write",
+        uses: times
+      }, (known2 == null ? void 0 : known2.cost) ? { cost: known2.cost } : {});
+    }).sort((a, b) => a.access === b.access ? a.command.localeCompare(b.command) : a.access === "write" ? -1 : 1);
+  }
+  function moduleStateValueError(field, value2) {
+    if (typeof value2 !== field.type) return `must be ${field.type}`;
+    if (field.type === "number" && typeof value2 === "number") {
+      if (!Number.isFinite(value2)) return "must be a finite number";
+      if (field.min !== void 0 && value2 < field.min) return `must be >= ${field.min}`;
+      if (field.max !== void 0 && value2 > field.max) return `must be <= ${field.max}`;
+    }
+    return null;
+  }
+  function conditionMatches(condition2, scope) {
+    if (!condition2) return true;
+    let value2 = scope;
+    for (const part of condition2.from.split(".")) {
+      if (dangerousKey(part) || !isRecord(value2) || !Object.prototype.hasOwnProperty.call(value2, part)) {
+        value2 = void 0;
+        break;
+      }
+      value2 = value2[part];
+    }
+    if ("equals" in condition2) return Object.is(value2, condition2.equals);
+    if ("notEquals" in condition2) return !Object.is(value2, condition2.notEquals);
+    if ("oneOf" in condition2) return condition2.oneOf.some((candidate) => Object.is(value2, candidate));
+    if ("truthy" in condition2) return Boolean(value2) === condition2.truthy;
+    return value2 !== void 0 === condition2.exists;
+  }
+  var isScalar = (value2) => typeof value2 === "string" || typeof value2 === "number" && Number.isFinite(value2) || typeof value2 === "boolean";
+  var UNSAFE_KEYS = {
+    ["__proto__"]: true,
+    ["constructor"]: true,
+    ["prototype"]: true
+  };
+  function dangerousKey(key) {
+    return UNSAFE_KEYS[key] === true;
+  }
+  function rejectUnknown(raw, allowed, path, fail2) {
+    for (const key of Object.keys(raw)) {
+      if (!allowed.includes(key) || dangerousKey(key)) {
+        fail2(path ? `${path}.${key}` : key, dangerousKey(key) ? "unsafe object key" : "unknown property");
+      }
+    }
+  }
+  function text3(value2, path, fail2, max = MODULE_LIMITS.textLength) {
+    if (typeof value2 !== "string" || value2.trim() === "") {
+      fail2(path, "must be a non-empty string");
+      return null;
+    }
+    if (value2.length > max) {
+      fail2(path, `must be at most ${max} characters`);
+      return null;
+    }
+    return value2;
+  }
+  function optionalLabel(raw) {
+    return typeof raw.label === "string" ? { label: raw.label } : {};
+  }
+  function knownFields(context) {
+    const fields = Object.keys(context.state);
+    return fields.length === 0 ? " (this module declares none)" : ` \u2014 declared: ${fields.join(", ")}`;
+  }
+  function tryJson(raw, fail2) {
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      fail2("", `not JSON: ${String(error.message)}`);
+      return null;
+    }
+  }
+
+  // src/modules/schema.ts
+  var MODULE_SCHEMA_ID = "https://allcrew.dev/schemas/channel-module-v1.json";
+  var condition = {
+    type: "object",
+    required: ["from"],
+    properties: {
+      from: { type: "string", pattern: MODULE_REFERENCE_PATTERN.source },
+      equals: { type: ["string", "number", "boolean"] },
+      notEquals: { type: ["string", "number", "boolean"] },
+      oneOf: { type: "array", minItems: 1, maxItems: 100, items: { type: ["string", "number", "boolean"] } },
+      truthy: { type: "boolean" },
+      exists: { type: "boolean" }
+    },
+    oneOf: [
+      { required: ["equals"] },
+      { required: ["notEquals"] },
+      { required: ["oneOf"] },
+      { required: ["truthy"] },
+      { required: ["exists"] }
+    ],
+    additionalProperties: false
+  };
+  var conditionProperties = {
+    when: { $ref: "#/$defs/condition" }
+  };
+  var interactiveProperties = __spreadProps(__spreadValues({}, conditionProperties), {
+    disabledWhen: { $ref: "#/$defs/condition" }
+  });
+  var step = {
+    oneOf: [
+      {
+        type: "object",
+        required: ["call"],
+        properties: __spreadValues({
+          call: { type: "string", minLength: 1 },
+          params: { type: "object" },
+          as: { type: "string", pattern: MODULE_SAFE_NAME_PATTERN.source }
+        }, conditionProperties),
+        additionalProperties: false
+      },
+      {
+        type: "object",
+        required: ["set", "from"],
+        properties: __spreadValues({
+          set: { type: "string" },
+          from: { type: "string" }
+        }, conditionProperties),
+        additionalProperties: false
+      },
+      {
+        type: "object",
+        required: ["confirm"],
+        properties: __spreadValues({
+          confirm: { type: "string", minLength: 1, maxLength: MODULE_LIMITS.textLength }
+        }, conditionProperties),
+        additionalProperties: false
+      }
+    ]
+  };
+  var blocks = [
+    {
+      type: "object",
+      required: ["block", "text"],
+      properties: __spreadValues({
+        block: { const: "heading" },
+        text: { type: "string", minLength: 1, maxLength: MODULE_LIMITS.textLength },
+        icon: { enum: MODULE_ICON_TYPES },
+        hint: { type: "string" }
+      }, conditionProperties),
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["block", "text"],
+      properties: __spreadValues({ block: { const: "text" }, text: { type: "string", minLength: 1, maxLength: MODULE_LIMITS.textLength } }, conditionProperties),
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["block", "text"],
+      properties: __spreadValues({
+        block: { const: "callout" },
+        text: { type: "string", minLength: 1, maxLength: MODULE_LIMITS.textLength },
+        tone: { enum: ["info", "warn", "error", "success"] }
+      }, conditionProperties),
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["block", "bind"],
+      properties: __spreadValues({
+        block: { const: "field" },
+        bind: { type: "string" },
+        label: { type: "string" },
+        placeholder: { type: "string" },
+        multiline: { type: "boolean" },
+        rows: { type: "integer", minimum: 2, maximum: 20 }
+      }, interactiveProperties),
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["block", "bind"],
+      properties: __spreadValues({ block: { const: "value" }, bind: { type: "string" }, label: { type: "string" }, hint: { type: "string" } }, conditionProperties),
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["block", "bind", "options"],
+      properties: __spreadValues({
+        block: { const: "select" },
+        bind: { type: "string" },
+        label: { type: "string" },
+        options: { type: "array", minItems: 1, maxItems: 200, items: { type: "object", required: ["value"], properties: { value: { type: "string" }, label: { type: "string" } }, additionalProperties: false } }
+      }, interactiveProperties),
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["block", "bind"],
+      properties: __spreadValues({ block: { const: "toggle" }, bind: { type: "string" }, label: { type: "string" } }, interactiveProperties),
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["block", "label", "steps"],
+      properties: __spreadValues({
+        block: { const: "button" },
+        label: { type: "string", minLength: 1, maxLength: MODULE_LIMITS.nameLength },
+        look: { enum: ["primary", "secondary", "danger"] },
+        steps: { type: "array", minItems: 1, maxItems: MODULE_LIMITS.stepsPerPipeline, items: { $ref: "#/$defs/step" } }
+      }, interactiveProperties),
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["block", "from"],
+      properties: __spreadValues({
+        block: { const: "table" },
+        from: { type: "string" },
+        label: { type: "string" },
+        columns: { type: "array", minItems: 1, maxItems: 32, uniqueItems: true, items: { type: "string", minLength: 1 } },
+        limit: { type: "integer", minimum: 1, maximum: MODULE_LIMITS.tableRows }
+      }, conditionProperties),
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["block"],
+      oneOf: [{ required: ["from"] }, { required: ["text"] }],
+      properties: __spreadValues({
+        block: { const: "code" },
+        from: { type: "string" },
+        text: { type: "string" },
+        label: { type: "string" },
+        language: { type: "string" }
+      }, conditionProperties),
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["block", "from"],
+      properties: __spreadValues({
+        block: { const: "list" },
+        from: { type: "string" },
+        label: { type: "string" },
+        limit: { type: "integer", minimum: 1, maximum: MODULE_LIMITS.tableRows }
+      }, conditionProperties),
+      additionalProperties: false
+    }
+  ];
+  var MODULE_JSON_SCHEMA = {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: MODULE_SCHEMA_ID,
+    title: "AllCrew Channel user module",
+    description: "A declarative, sandboxed plugin screen and command composition.",
+    type: "object",
+    required: ["module", "id", "name", "summary", "version", "screens"],
+    properties: {
+      $schema: { type: "string" },
+      module: { const: MODULE_FORMAT },
+      id: { type: "string", pattern: MODULE_ID_PATTERN.source, maxLength: MODULE_LIMITS.nameLength },
+      name: { type: "string", minLength: 1, maxLength: MODULE_LIMITS.nameLength },
+      summary: { type: "string", minLength: 1, maxLength: MODULE_LIMITS.textLength },
+      version: { type: "string", pattern: MODULE_VERSION_PATTERN.source },
+      author: { type: "string", maxLength: MODULE_LIMITS.nameLength },
+      state: {
+        type: "object",
+        maxProperties: MODULE_LIMITS.stateFields,
+        propertyNames: { pattern: MODULE_SAFE_NAME_PATTERN.source },
+        additionalProperties: { $ref: "#/$defs/stateField" }
+      },
+      screens: {
+        type: "object",
+        required: ["main"],
+        properties: { main: { $ref: "#/$defs/screen" }, settings: { $ref: "#/$defs/screen" } },
+        additionalProperties: false
+      },
+      commands: { type: "array", maxItems: MODULE_LIMITS.commands, items: { $ref: "#/$defs/command" } }
+    },
+    additionalProperties: false,
+    $defs: {
+      condition,
+      step,
+      stateField: {
+        oneOf: [
+          {
+            type: "object",
+            required: ["type", "default"],
+            properties: {
+              type: { const: "string" },
+              default: { type: "string" },
+              label: { type: "string" },
+              secret: { type: "boolean" }
+            },
+            allOf: [{
+              if: { properties: { secret: { const: true } }, required: ["secret"] },
+              then: { properties: { default: { const: "" } } }
+            }],
+            additionalProperties: false
+          },
+          {
+            type: "object",
+            required: ["type", "default"],
+            properties: {
+              type: { const: "number" },
+              default: { type: "number" },
+              label: { type: "string" },
+              min: { type: "number" },
+              max: { type: "number" }
+            },
+            additionalProperties: false
+          },
+          {
+            type: "object",
+            required: ["type", "default"],
+            properties: {
+              type: { const: "boolean" },
+              default: { type: "boolean" },
+              label: { type: "string" }
+            },
+            additionalProperties: false
+          }
+        ]
+      },
+      screen: {
+        type: "object",
+        required: ["blocks"],
+        properties: { blocks: { type: "array", maxItems: MODULE_LIMITS.blocksPerScreen, items: { oneOf: blocks } } },
+        additionalProperties: false
+      },
+      command: {
+        type: "object",
+        required: ["name", "summary", "steps"],
+        properties: {
+          name: { type: "string", pattern: MODULE_COMMAND_NAME_PATTERN.source, maxLength: MODULE_LIMITS.nameLength },
+          summary: { type: "string", minLength: 1, maxLength: MODULE_LIMITS.textLength },
+          params: {
+            type: "array",
+            maxItems: MODULE_LIMITS.stateFields,
+            items: {
+              type: "object",
+              required: ["name"],
+              properties: {
+                name: { type: "string", pattern: MODULE_SAFE_NAME_PATTERN.source },
+                required: { type: "boolean" },
+                type: { type: "string" },
+                shape: { type: "string" },
+                note: { type: "string" },
+                nested: { type: "boolean" }
+              },
+              additionalProperties: false
+            }
+          },
+          steps: { type: "array", minItems: 1, maxItems: MODULE_LIMITS.stepsPerPipeline, items: { $ref: "#/$defs/step" } }
+        },
+        additionalProperties: false
+      }
+    }
+  };
+  var MODULE_TEMPLATE = {
+    $schema: MODULE_SCHEMA_ID,
+    module: MODULE_FORMAT,
+    id: "my-team.notes",
+    name: "Team notes",
+    summary: "A small private panel for notes kept with this plugin installation.",
+    version: "1.0.0",
+    state: {
+      note: { type: "string", default: "", label: "Note" },
+      pinned: { type: "boolean", default: false, label: "Pinned" }
+    },
+    screens: {
+      main: {
+        blocks: [
+          { block: "heading", text: "Team notes", icon: "document", hint: "A safe, declarative module" },
+          { block: "text", text: "Module screens can collect state and compose commands already exposed by the plugin." },
+          { block: "field", bind: "note", label: "Note", placeholder: "Write a handoff\u2026", multiline: true, rows: 5 },
+          { block: "toggle", bind: "pinned", label: "Pin this note" },
+          { block: "callout", text: "Pinned for the next handoff.", tone: "success", when: { from: "pinned", equals: true } }
+        ]
+      }
+    },
+    commands: []
+  };
+  var MODULE_AUTHORING_GUIDE = {
+    format: MODULE_FORMAT,
+    schema: MODULE_SCHEMA_ID,
+    execution: "Modules are declarative. They can only call commands exposed by this plugin build.",
+    permissions: "Read/write access is derived from called commands and cannot be declared by a module.",
+    state: "Only declared scalar state persists. Step results stay in the current run view.",
+    upgrades: "Use SemVer. Compatible state migrates by name and type; removed or invalid fields are dropped.",
+    limits: MODULE_LIMITS
+  };
+  function moduleAgentPrompt() {
+    return [
+      "Create a custom screen for the AllCrew Channel Figma plugin using the AllCrew SDK module format.",
+      "",
+      "First ask me one concise question: what workflow should this screen automate? Then design the fields, controls and actions around my answer.",
+      "",
+      "Requirements:",
+      "- Call `modules.schema` first to fetch the canonical JSON Schema for this build.",
+      "- Return one valid module JSON document. Do not use arbitrary HTML, JavaScript, network calls or undeclared storage.",
+      "- Use only commands exposed by this AllCrew Channel build.",
+      "- Keep every capability explicit so the plugin can show its read/write review before installation.",
+      '- Validate the draft with `plugin.call` using `{ "command": "MODULE_INSPECT", "params": { "file": <module JSON> } }`.',
+      "- Do not call `modules.install` until I approve the capabilities returned by MODULE_INSPECT.",
+      "- When validation passes, give me the final JSON file and a short explanation of the screen flow.",
+      "",
+      `Schema: ${MODULE_SCHEMA_ID}`,
+      "",
+      "Starter module:",
+      JSON.stringify(MODULE_TEMPLATE, null, 2),
+      "",
+      "Authoring rules:",
+      JSON.stringify(MODULE_AUTHORING_GUIDE, null, 2)
+    ].join("\n");
+  }
+
+  // src/agent/module-ops.ts
+  var provider = null;
+  function setModuleAdminProvider(next) {
+    provider = next;
+  }
+  function installedModules() {
+    if (!provider) throw new Error("module registry is not ready");
+    return provider;
+  }
+  var MODULE_OPS = [
+    {
+      name: "modules.schema",
+      summary: "Get the canonical JSON Schema, a valid starter module, authoring rules and runtime limits.",
+      mutates: false,
+      params: {},
+      async run() {
+        return { schemaId: MODULE_SCHEMA_ID, schema: MODULE_JSON_SCHEMA, template: MODULE_TEMPLATE, guide: MODULE_AUTHORING_GUIDE, agentPrompt: moduleAgentPrompt() };
+      }
+    },
+    {
+      name: "modules.list",
+      summary: "List installed modules, versions, status, commands, problems and derived capabilities.",
+      mutates: false,
+      params: {},
+      async run() {
+        return installedModules().list();
+      }
+    },
+    {
+      name: "modules.inspect",
+      summary: "Inspect one installed module, including its declarative file and redacted current state.",
+      mutates: false,
+      params: { id: { type: "string", required: true, description: "Module id from modules.list." } },
+      async run(params) {
+        return installedModules().inspect(String(params.id));
+      }
+    },
+    {
+      name: "modules.export",
+      summary: "Export an installed module file, optionally with non-secret state for transfer or review.",
+      mutates: false,
+      params: {
+        id: { type: "string", required: true, description: "Module id from modules.list." },
+        includeState: { type: "boolean", default: false, description: "Include current non-secret state beside the file." }
+      },
+      async run(params) {
+        return installedModules().export(String(params.id), params.includeState === true);
+      }
+    },
+    {
+      name: "modules.install",
+      summary: "Validate and install or upgrade a declarative module file; compatible state is migrated.",
+      mutates: true,
+      agent: "Call modules.schema first, then send the complete module object. Review the returned derived capabilities; downgrades are refused unless allowDowngrade is explicit.",
+      params: {
+        file: { type: "json", required: true, description: "Complete module object matching modules.schema." },
+        allowDowngrade: { type: "boolean", default: false, description: "Explicitly permit replacing a newer installed version." }
+      },
+      async run(params) {
+        return installedModules().install(params.file, params.allowDowngrade === true);
+      }
+    },
+    {
+      name: "modules.configure",
+      summary: "Enable or disable a module and atomically update its declared state fields.",
+      mutates: true,
+      agent: "Pass only declared state fields with correctly typed values. Secret fields may be written but are never returned by inspect or export.",
+      params: {
+        id: { type: "string", required: true, description: "Module id from modules.list." },
+        enabled: { type: "boolean", description: "Enable or disable the module; omit to leave unchanged." },
+        state: { type: "json", description: "Partial object of declared state fields to update atomically." }
+      },
+      async run(params) {
+        return installedModules().configure(String(params.id), params.enabled, params.state);
+      }
+    },
+    {
+      name: "modules.remove",
+      summary: "Remove an installed module and all of its persisted state.",
+      mutates: true,
+      agent: "Removal is irreversible and deletes the module state. Export first when the file or non-secret state may be needed again.",
+      params: { id: { type: "string", required: true, description: "Exact module id to remove." } },
+      async run(params) {
+        return installedModules().remove(String(params.id));
+      }
+    }
+  ];
+
   // src/agent/ops.ts
-  function round23(value) {
-    return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) / 100 : void 0;
+  function round23(value2) {
+    return typeof value2 === "number" && Number.isFinite(value2) ? Math.round(value2 * 100) / 100 : void 0;
   }
   async function summarizeReactions(raw, resolveDestinationName) {
     var _a, _b, _c, _d;
@@ -30474,7 +33592,7 @@ ${scripts}`, "");
       round23(node.bottomRightRadius),
       round23(node.bottomLeftRadius)
     ];
-    if (perCorner.every((value) => value !== void 0) && new Set(perCorner).size > 1) {
+    if (perCorner.every((value2) => value2 !== void 0) && new Set(perCorner).size > 1) {
       corners.perCorner = perCorner;
     }
     const smoothing = round23(node.cornerSmoothing);
@@ -30498,14 +33616,14 @@ ${scripts}`, "");
       a: typeof entry.opacity === "number" ? entry.opacity : 1
     };
   }
-  function asColor(value) {
-    const entry = value;
+  function asColor(value2) {
+    const entry = value2;
     if (!entry || typeof entry.r !== "number" || typeof entry.g !== "number" || typeof entry.b !== "number") {
       return null;
     }
     return { r: entry.r, g: entry.g, b: entry.b, a: typeof entry.a === "number" ? entry.a : 1 };
   }
-  function sameColor3(a, b) {
+  function sameColor4(a, b) {
     return ["r", "g", "b", "a"].every((channel) => Math.abs(a[channel] - b[channel]) < 2e-3);
   }
   function renderedValue(node, field) {
@@ -30513,10 +33631,10 @@ ${scripts}`, "");
     if (field === "fontFamily" || field === "fontStyle") {
       const font = node.fontName;
       if (!font || font === figma.mixed || typeof font !== "object") return void 0;
-      const value = field === "fontFamily" ? font.family : font.style;
-      return typeof value === "string" ? value : void 0;
+      const value2 = field === "fontFamily" ? font.family : font.style;
+      return typeof value2 === "string" ? value2 : void 0;
     }
-    const raw = node[(_a = COMPARABLE[field]) != null ? _a : field];
+    const raw = node[(_a = COMPARABLE2[field]) != null ? _a : field];
     if (raw === void 0 || raw === null || raw === figma.mixed) return void 0;
     if (typeof raw === "string") return raw;
     if (typeof raw === "number") return round23(raw);
@@ -30528,12 +33646,12 @@ ${scripts}`, "");
     return void 0;
   }
   function differsOnlyByCase(a, b) {
-    const normalise2 = (value) => value.trim().replace(/\s+/g, " ").toLowerCase();
+    const normalise2 = (value2) => value2.trim().replace(/\s+/g, " ").toLowerCase();
     return a !== b && normalise2(a) === normalise2(b);
   }
   var PERCENT_BOUND = /* @__PURE__ */ new Set(["opacity"]);
-  function comparableTokenValue(field, value) {
-    return PERCENT_BOUND.has(field) ? value / 100 : value;
+  function comparableTokenValue(field, value2) {
+    return PERCENT_BOUND.has(field) ? value2 / 100 : value2;
   }
   async function publishStatusOf(node) {
     try {
@@ -30542,7 +33660,7 @@ ${scripts}`, "");
       return `unknown (${String((err == null ? void 0 : err.message) || err)})`;
     }
   }
-  var COMPARABLE = {
+  var COMPARABLE2 = {
     topLeftRadius: "topLeftRadius",
     topRightRadius: "topRightRadius",
     bottomRightRadius: "bottomRightRadius",
@@ -30571,14 +33689,14 @@ ${scripts}`, "");
     const out = {};
     for (const [field, entry] of Object.entries(bound)) {
       if (field in PAINT_FIELDS2) {
-        const paints = Array.isArray(node[field]) ? node[field] : [];
+        const paints2 = Array.isArray(node[field]) ? node[field] : [];
         const claimed = /* @__PURE__ */ new Set();
-        for (const [index, paint] of paints.entries()) {
+        for (const [index2, paint] of paints2.entries()) {
           const alias2 = (_a = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a.color;
           if (typeof (alias2 == null ? void 0 : alias2.id) !== "string") continue;
           const record3 = await describePaintBinding(alias2, paint);
           if (!record3) continue;
-          out[paints.length > 1 ? `${field}[${index}]` : field] = record3;
+          out[paints2.length > 1 ? `${field}[${index2}]` : field] = record3;
           claimed.add(alias2.id);
         }
         let spare = 0;
@@ -30656,142 +33774,10 @@ ${scripts}`, "");
       if (!tokenColor) return record2;
       record2.value = describeColor(tokenColor);
       record2.rendered = describeColor(rendered);
-      if (!sameColor3(tokenColor, rendered)) record2.mismatch = true;
+      if (!sameColor4(tokenColor, rendered)) record2.mismatch = true;
     } catch (e) {
     }
     return record2;
-  }
-  var paintChannel = (value) => Math.round(value * 255).toString(16).toUpperCase().padStart(2, "0");
-  var paintHex = (color) => `#${paintChannel(color.r)}${paintChannel(color.g)}${paintChannel(color.b)}`;
-  async function boundTokenName(holder) {
-    var _a, _b;
-    const id = (_b = (_a = holder == null ? void 0 : holder.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
-    if (!id) return null;
-    const variable = await figma.variables.getVariableByIdAsync(id);
-    return variable ? variable.name : id;
-  }
-  async function nameAliasesWithin(value) {
-    var _a;
-    if (Array.isArray(value)) {
-      const out2 = [];
-      for (const item of value) out2.push(await nameAliasesWithin(item));
-      return out2;
-    }
-    if (!value || typeof value !== "object") return value;
-    const record2 = value;
-    if (record2.type === "VARIABLE_ALIAS" && typeof record2.id === "string") {
-      let variable = null;
-      try {
-        variable = await figma.variables.getVariableByIdAsync(record2.id);
-      } catch (e) {
-      }
-      return __spreadValues({ token: (_a = variable == null ? void 0 : variable.name) != null ? _a : record2.id, id: record2.id }, (variable == null ? void 0 : variable.key) ? { key: variable.key } : {});
-    }
-    const out = {};
-    for (const [key, item] of Object.entries(record2)) out[key] = await nameAliasesWithin(item);
-    return out;
-  }
-  async function describeShader(shader, definitions) {
-    var _a;
-    const id = typeof (shader == null ? void 0 : shader.id) === "string" ? shader.id : "";
-    const known = definitions == null ? void 0 : definitions.get(id);
-    const declared = (_a = known == null ? void 0 : known.propertyDefinitions) != null ? _a : {};
-    const out = __spreadValues({
-      id,
-      named: known !== void 0
-    }, known ? { name: known.name, kind: known.type } : {});
-    const properties = shader == null ? void 0 : shader.properties;
-    if (properties && typeof properties === "object") {
-      const described = [];
-      for (const [defId, value] of Object.entries(properties)) {
-        const definition = declared[defId];
-        described.push(__spreadProps(__spreadValues({
-          id: defId
-        }, definition ? { name: definition.name, type: definition.type } : {}), {
-          value: await nameAliasesWithin(value)
-        }));
-      }
-      if (described.length > 0) out.properties = described;
-    }
-    return out;
-  }
-  function imagePlacement(scaleMode, transform, scalingFactor) {
-    if (scaleMode === "FILL") return { fit: "cover" };
-    if (scaleMode === "FIT") return { fit: "contain" };
-    if (scaleMode === "TILE") {
-      return __spreadValues({ fit: "tile" }, typeof scalingFactor === "number" ? { scalingFactor } : {});
-    }
-    if (scaleMode !== "CROP") return null;
-    const rows = transform;
-    if (!Array.isArray(rows) || rows.length < 2 || !Array.isArray(rows[0]) || !Array.isArray(rows[1])) return null;
-    const [[a, b, tx], [c, d, ty]] = rows;
-    if (b !== 0 || c !== 0 || !a || !d) return { fit: "matrix" };
-    const round13 = (value) => Math.round(value * 1e4) / 1e4;
-    return {
-      fit: "crop",
-      scale: { x: round13(1 / a), y: round13(1 / d) },
-      offset: { x: round13(-tx / a), y: round13(-ty / d) }
-    };
-  }
-  async function describePaint(paint, index, shaders) {
-    var _a, _b;
-    const out = { type: String((_a = paint == null ? void 0 : paint.type) != null ? _a : "UNKNOWN"), index };
-    if ((paint == null ? void 0 : paint.visible) === false) out.visible = false;
-    if (typeof (paint == null ? void 0 : paint.opacity) === "number" && paint.opacity < 1) out.opacity = paint.opacity;
-    if (typeof (paint == null ? void 0 : paint.blendMode) === "string" && paint.blendMode !== "NORMAL") out.blendMode = paint.blendMode;
-    if ((paint == null ? void 0 : paint.type) === "SOLID" && paint.color) {
-      out.color = paintHex(paint.color);
-      if (typeof paint.opacity === "number" && paint.opacity < 1) out.alpha = paint.opacity;
-      out.bound = await boundTokenName(paint);
-      return out;
-    }
-    if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
-      out.bound = null;
-      if (Array.isArray(paint.gradientTransform)) out.transform = paint.gradientTransform;
-      out.stops = [];
-      for (const stop of paint.gradientStops) {
-        const described = {
-          position: Math.round(stop.position * 100),
-          color: paintHex(stop.color),
-          bound: await boundTokenName(stop)
-        };
-        if (typeof ((_b = stop.color) == null ? void 0 : _b.a) === "number" && stop.color.a < 1) described.alpha = stop.color.a;
-        out.stops.push(described);
-      }
-      return out;
-    }
-    if ((paint == null ? void 0 : paint.type) === "IMAGE" || (paint == null ? void 0 : paint.type) === "VIDEO") {
-      if (paint.type === "IMAGE" && typeof paint.imageHash === "string") out.imageHash = paint.imageHash;
-      if (paint.type === "VIDEO" && typeof paint.videoHash === "string") out.videoHash = paint.videoHash;
-      if (typeof paint.scaleMode === "string") out.scaleMode = paint.scaleMode;
-      const transform = paint.type === "IMAGE" ? paint.imageTransform : paint.videoTransform;
-      if (Array.isArray(transform)) out.imageTransform = transform;
-      if (typeof paint.scalingFactor === "number") out.scalingFactor = paint.scalingFactor;
-      const placement = imagePlacement(paint.scaleMode, transform, paint.scalingFactor);
-      if (placement) out.placement = placement;
-      if (typeof paint.rotation === "number" && paint.rotation !== 0) out.rotation = paint.rotation;
-      if (paint.filters && typeof paint.filters === "object") {
-        const filters = {};
-        for (const [name, value] of Object.entries(paint.filters)) {
-          if (typeof value === "number" && value !== 0) filters[name] = value;
-        }
-        if (Object.keys(filters).length > 0) out.filters = filters;
-      }
-      out.bound = null;
-      return out;
-    }
-    if ((paint == null ? void 0 : paint.type) === "PATTERN") {
-      out.pattern = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({}, typeof paint.sourceNodeId === "string" ? { sourceNodeId: paint.sourceNodeId } : {}), typeof paint.tileType === "string" ? { tileType: paint.tileType } : {}), typeof paint.scalingFactor === "number" ? { scalingFactor: paint.scalingFactor } : {}), paint.spacing ? { spacing: { x: paint.spacing.x, y: paint.spacing.y } } : {}), typeof paint.horizontalAlignment === "string" ? { horizontalAlignment: paint.horizontalAlignment } : {}), typeof paint.verticalAlignment === "string" ? { verticalAlignment: paint.verticalAlignment } : {});
-      out.bound = null;
-      return out;
-    }
-    if ((paint == null ? void 0 : paint.type) === "SHADER") {
-      out.shader = await describeShader(paint, shaders);
-      out.bound = null;
-      return out;
-    }
-    out.bound = await boundTokenName(paint);
-    return out;
   }
   async function paintStyleName(node, field) {
     const id = node[field];
@@ -30811,18 +33797,18 @@ ${scripts}`, "");
     }
     return catalogue.map;
   }
-  var hasShader = (paints) => Array.isArray(paints) && paints.some((paint) => (paint == null ? void 0 : paint.type) === "SHADER");
+  var hasShader = (paints2) => Array.isArray(paints2) && paints2.some((paint) => (paint == null ? void 0 : paint.type) === "SHADER");
   async function describePaints2(node, catalogue = {}) {
     const out = {};
     const shaders = hasShader(node.fills) || hasShader(node.strokes) ? await shadersFor(catalogue) : void 0;
     if (Array.isArray(node.fills)) {
       out.fills = [];
-      for (const [index, paint] of node.fills.entries()) out.fills.push(await describePaint(paint, index, shaders));
+      for (const [index2, paint] of node.fills.entries()) out.fills.push(await describePaint(paint, index2, shaders));
       out.fillStyle = await paintStyleName(node, "fillStyleId");
     }
     if (Array.isArray(node.strokes)) {
       out.strokes = [];
-      for (const [index, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index, shaders));
+      for (const [index2, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index2, shaders));
       out.strokeStyle = await paintStyleName(node, "strokeStyleId");
     }
     return out.fills || out.strokes ? out : null;
@@ -30880,7 +33866,7 @@ ${scripts}`, "");
   async function describeNode(node, depth, options = {}) {
     var _a, _b, _c, _d;
     const {
-      paints = false,
+      paints: paints2 = false,
       effects = false,
       fullText = false,
       root = true,
@@ -30894,7 +33880,7 @@ ${scripts}`, "");
     if (bindings) summary.bindings = bindings;
     const modes = await describeVariableModes(node, collections, root);
     if (modes) summary.modes = modes;
-    if (paints) {
+    if (paints2) {
       const described = await describePaints2(node, catalogue);
       if (described) summary.paints = described;
     }
@@ -30948,7 +33934,7 @@ ${scripts}`, "");
       for (const child of node.children) {
         summary.children.push(
           await describeNode(child, depth - 1, {
-            paints,
+            paints: paints2,
             effects,
             fullText,
             root: false,
@@ -31317,7 +34303,7 @@ ${scripts}`, "");
         if (params.paints === true) {
           for (const style of paint) {
             const described = [];
-            for (const [index, one] of style.paints.entries()) described.push(await describePaint(one, index));
+            for (const [index2, one] of style.paints.entries()) described.push(await describePaint(one, index2));
             paintDetail2.set(style.id, described);
           }
         }
@@ -31495,16 +34481,16 @@ ${scripts}`, "");
             };
             const bound = holder.boundVariables;
             if (bound) {
-              for (const [field, value] of Object.entries(bound)) {
+              for (const [field, value2] of Object.entries(bound)) {
                 if (field === "fills" || field === "strokes") continue;
-                if (Array.isArray(value)) value.forEach((entry) => push(entry == null ? void 0 : entry.id));
-                else push(value == null ? void 0 : value.id);
+                if (Array.isArray(value2)) value2.forEach((entry) => push(entry == null ? void 0 : entry.id));
+                else push(value2 == null ? void 0 : value2.id);
               }
             }
             for (const prop of ["fills", "strokes"]) {
-              const paints = holder[prop];
-              if (!Array.isArray(paints)) continue;
-              for (const paint of paints) {
+              const paints2 = holder[prop];
+              if (!Array.isArray(paints2)) continue;
+              for (const paint of paints2) {
                 push((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id);
                 if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
                   for (const stop of paint.gradientStops) push((_d = (_c = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c.color) == null ? void 0 : _d.id);
@@ -31599,23 +34585,23 @@ ${scripts}`, "");
         };
         const scanBoundMap = (bound, site) => {
           if (!bound || typeof bound !== "object") return;
-          for (const [field, value] of Object.entries(bound)) {
+          for (const [field, value2] of Object.entries(bound)) {
             if (field === "fills" || field === "strokes") continue;
-            if (Array.isArray(value)) {
-              value.forEach((alias, index) => consider(alias == null ? void 0 : alias.id, () => site(`${field}[${index}]`)));
+            if (Array.isArray(value2)) {
+              value2.forEach((alias, index2) => consider(alias == null ? void 0 : alias.id, () => site(`${field}[${index2}]`)));
             } else {
-              consider(value == null ? void 0 : value.id, () => site(field));
+              consider(value2 == null ? void 0 : value2.id, () => site(field));
             }
           }
         };
-        const scanPaints = (paints, site) => {
-          if (!Array.isArray(paints)) return;
-          paints.forEach((paint, index) => {
+        const scanPaints = (paints2, site) => {
+          if (!Array.isArray(paints2)) return;
+          paints2.forEach((paint, index2) => {
             var _a2, _b2, _c2, _d;
-            consider((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id, () => site(`paint[${index}]`));
+            consider((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id, () => site(`paint[${index2}]`));
             if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
               for (const stop of paint.gradientStops) {
-                consider((_d = (_c2 = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c2.color) == null ? void 0 : _d.id, () => site(`paint[${index}] stop p${Math.round(stop.position * 100)}`));
+                consider((_d = (_c2 = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c2.color) == null ? void 0 : _d.id, () => site(`paint[${index2}] stop p${Math.round(stop.position * 100)}`));
               }
             }
           });
@@ -31641,7 +34627,7 @@ ${scripts}`, "");
                   if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
                     ;
                     mixedBound[prop].forEach(
-                      (entry, index) => consider(entry == null ? void 0 : entry.id, () => site(`${prop}[${index}] (segment)`))
+                      (entry, index2) => consider(entry == null ? void 0 : entry.id, () => site(`${prop}[${index2}] (segment)`))
                     );
                   }
                 }
@@ -31672,8 +34658,8 @@ ${scripts}`, "");
         }
         const snapshot = await readLocalVariables();
         for (const entry of snapshot.variables) {
-          for (const [modeId, value] of Object.entries((_a = entry.valuesByMode) != null ? _a : {})) {
-            const alias = value;
+          for (const [modeId, value2] of Object.entries((_a = entry.valuesByMode) != null ? _a : {})) {
+            const alias = value2;
             if ((alias == null ? void 0 : alias.type) === "VARIABLE_ALIAS" && alias.id) {
               consider(alias.id, () => ({ alias: entry.name, mode: modeId }));
             }
@@ -31777,7 +34763,7 @@ ${scripts}`, "");
           type: "string",
           default: "document",
           enum: ["page", "document"],
-          description: 'Where to walk. Unlike `lint.colors` this defaults to `document`, because a page-scoped usage count answers a question nobody asked: "unused on this page" reads as "unused" and is the one wrong conclusion that gets a token deleted. Beware the cost: a whole document can outrun the bridge call timeout \u2014 raise ALTERY_AGENT_CALL_TIMEOUT_MS, or pass pageId and sum the pages.'
+          description: 'Where to walk. Unlike `lint.colors` this defaults to `document`, because a page-scoped usage count answers a question nobody asked: "unused on this page" reads as "unused" and is the one wrong conclusion that gets a token deleted. Beware the cost: a whole document can outrun the bridge call timeout \u2014 raise ALLCREW_CHANNEL_AGENT_CALL_TIMEOUT_MS, or pass pageId and sum the pages.'
         },
         styles: {
           type: "boolean",
@@ -31827,36 +34813,36 @@ ${scripts}`, "");
           if (list2.length < params.limit) list2.push(what);
         };
         for (const entry of snapshot.variables) {
-          for (const value of Object.values((_a = entry.valuesByMode) != null ? _a : {})) {
-            const alias = value;
+          for (const value2 of Object.values((_a = entry.valuesByMode) != null ? _a : {})) {
+            const alias = value2;
             if ((alias == null ? void 0 : alias.type) === "VARIABLE_ALIAS" && alias.id) {
               note(alias.id, "aliases", { token: entry.name, collection: entry.collectionId });
             }
           }
         }
-        const scanPaints = (paints, where, label3) => {
-          if (!Array.isArray(paints)) return;
-          paints.forEach((paint, index) => {
+        const scanPaints = (paints2, where, label3) => {
+          if (!Array.isArray(paints2)) return;
+          paints2.forEach((paint, index2) => {
             var _a2, _b2;
             const direct = (_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id;
-            if (direct) note(direct, where, label3(`paint[${index}]`));
+            if (direct) note(direct, where, label3(`paint[${index2}]`));
             if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
               paint.gradientStops.forEach((stop) => {
                 var _a3, _b3;
                 const id = (_b3 = (_a3 = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b3.id;
-                if (id) note(id, where, label3(`paint[${index}] stop p${Math.round(stop.position * 100)}`));
+                if (id) note(id, where, label3(`paint[${index2}] stop p${Math.round(stop.position * 100)}`));
               });
             }
           });
         };
         const scanBoundMap = (bound, where, label3) => {
           if (!bound || typeof bound !== "object") return;
-          for (const [field, value] of Object.entries(bound)) {
+          for (const [field, value2] of Object.entries(bound)) {
             if (field === "fills" || field === "strokes") continue;
-            if (Array.isArray(value)) {
-              value.forEach((alias, index) => note(alias == null ? void 0 : alias.id, where, label3(`${field}[${index}]`)));
+            if (Array.isArray(value2)) {
+              value2.forEach((alias, index2) => note(alias == null ? void 0 : alias.id, where, label3(`${field}[${index2}]`)));
             } else {
-              note(value == null ? void 0 : value.id, where, label3(field));
+              note(value2 == null ? void 0 : value2.id, where, label3(field));
             }
           }
         };
@@ -31881,7 +34867,7 @@ ${scripts}`, "");
                   if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
                     ;
                     mixedBound[prop].forEach(
-                      (entry, index) => note(entry == null ? void 0 : entry.id, "layers", label3(`${prop}[${index}] (segment)`))
+                      (entry, index2) => note(entry == null ? void 0 : entry.id, "layers", label3(`${prop}[${index2}] (segment)`))
                     );
                   }
                 }
@@ -31989,18 +34975,18 @@ ${scripts}`, "");
           for (const mode of owner.modes) {
             try {
               const resolved = await resolveVariableValue(variable, mode.modeId);
-              const value = resolved.value;
-              if (!value || typeof value.r !== "number") continue;
-              const rgb = { r: value.r, g: value.g, b: value.b };
-              const alpha = typeof value.a === "number" ? value.a : 1;
+              const value2 = resolved.value;
+              if (!value2 || typeof value2.r !== "number") continue;
+              const rgb = { r: value2.r, g: value2.g, b: value2.b };
+              const alpha = typeof value2.a === "number" ? value2.a : 1;
               rungs.push({ token: entry.name, collection: owner.name, mode: mode.name, hex: formatHex(rgb), rgb, alpha });
             } catch (e) {
             }
           }
         }
         const distance = (a, b) => Math.sqrt(((a.r - b.r) * 255) ** 2 + ((a.g - b.g) * 255) ** 2 + ((a.b - b.b) * 255) ** 2);
-        const withAlpha2 = (value) => {
-          const raw = value.trim().replace(/^#/, "");
+        const withAlpha2 = (value2) => {
+          const raw = value2.trim().replace(/^#/, "");
           const rgb = parseHex(raw.length === 8 ? raw.slice(0, 6) : raw);
           if (!rgb) return null;
           const alpha = raw.length === 8 ? parseInt(raw.slice(6, 8), 16) / 255 : 1;
@@ -32345,9 +35331,9 @@ ${scripts}`, "");
           throw new Error(`no playbook "${params.id}" \u2014 guide.list names them: ${GUIDES.map((g) => g.id).join(", ")}`);
         }
         return __spreadProps(__spreadValues({}, guide), {
-          steps: guide.steps.map((step) => {
-            const op = OPS_BY_NAME.get(step.op);
-            return __spreadValues(__spreadValues({}, step), op ? __spreadValues({ summary: op.summary, mutates: op.mutates }, op.agent ? { agent: op.agent } : {}) : { missing: true });
+          steps: guide.steps.map((step2) => {
+            const op = OPS_BY_NAME.get(step2.op);
+            return __spreadValues(__spreadValues({}, step2), op ? __spreadValues({ summary: op.summary, mutates: op.mutates }, op.agent ? { agent: op.agent } : {}) : { missing: true });
           })
         });
       }
@@ -32356,11 +35342,16 @@ ${scripts}`, "");
   var ALL_OPS = [
     ...READ_OPS,
     ...CONTEXT_OPS,
+    ...EXPORT_OPS,
+    ...TEXT_OPS,
+    ...EXPORT_PLAN_OPS,
+    ...TOKENS_OPS,
     ...IR_OPS,
     ...SPEC_OPS,
     ...STATE_OPS,
     ...TRANSITION_OPS,
     ...WRITE_OPS,
+    ...MODULE_OPS,
     ...PLUGIN_OPS
   ];
   var OPS_BY_NAME = new Map(ALL_OPS.map((op) => [op.name, op]));
@@ -32380,7 +35371,7 @@ ${scripts}`, "");
     const permitted = authorize(op, gates, request.params);
     if (!permitted.ok) {
       report(request.op, false, Date.now() - started, permitted.error);
-      return { id: request.id, ok: false, error: permitted.error };
+      return { id: request.id, ok: false, error: permitted.error, code: permitted.code, retryable: permitted.retryable };
     }
     try {
       const params = validateParams(op.params, request.params);
@@ -32396,406 +35387,96 @@ ${scripts}`, "");
       const message = String((err == null ? void 0 : err.message) || err);
       report(request.op, false, Date.now() - started, message);
       const loading = takeLoading();
-      return __spreadValues({ id: request.id, ok: false, error: message }, loading ? { loading } : {});
+      const code = err instanceof ParamError ? "param_invalid" : "figma_threw";
+      return __spreadValues({
+        id: request.id,
+        ok: false,
+        error: message,
+        code,
+        retryable: isRetryable(code)
+      }, loading ? { loading } : {});
     }
   }
   function report(op, ok, ms, error) {
     postToUi({ type: "AGENT_ACTIVITY", op, ok, ms, error });
   }
 
-  // src/modules/contract.ts
-  var MODULE_FORMAT = "altery.module/1";
-  var BLOCK_TYPES = ["heading", "text", "callout", "field", "value", "select", "toggle", "button", "table"];
-  var STATE_TYPES = ["string", "number", "boolean"];
-  var ID_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
-  var VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
-  function parseUserModule(raw, known) {
-    const problems = [];
-    const fail2 = (path, message) => problems.push({ path, message });
-    const value = typeof raw === "string" ? tryJson(raw, fail2) : raw;
-    if (!isRecord5(value)) {
-      if (problems.length === 0) fail2("", "not an object");
-      return { module: null, problems };
-    }
-    if (value.module !== MODULE_FORMAT) {
-      fail2("module", `expected "${MODULE_FORMAT}", got ${JSON.stringify(value.module)}`);
-      return { module: null, problems };
-    }
-    const id = text3(value.id, "id", fail2);
-    const wellFormedId = id !== null && ID_PATTERN.test(id);
-    if (id !== null && !wellFormedId) {
-      fail2("id", "must be lowercase letters, digits, dots and dashes, starting with a letter or digit");
-    }
-    const name = text3(value.name, "name", fail2);
-    const summary = text3(value.summary, "summary", fail2);
-    const version = text3(value.version, "version", fail2);
-    if (version !== null && !VERSION_PATTERN.test(version)) fail2("version", "must look like 1.0.0");
-    if (value.author !== void 0 && typeof value.author !== "string") fail2("author", "must be a string");
-    const state = parseState(value.state, fail2);
-    const commandsByName = new Map(known.map((command) => [command.name, command]));
-    const context = { state, known: commandsByName, fail: fail2 };
-    const screens = parseScreens(value.screens, context);
-    const commands = parseCommands(value.commands, wellFormedId ? id : null, context);
-    if (problems.length > 0 || id === null || name === null || summary === null || version === null || !screens) {
-      return { module: null, problems };
-    }
-    return {
-      module: __spreadProps(__spreadValues({
-        id,
-        name,
-        summary,
-        version
-      }, typeof value.author === "string" ? { author: value.author } : {}), {
-        state,
-        screens,
-        commands
-      }),
-      problems
-    };
-  }
-  function parseState(raw, fail2) {
+  // src/modules/registry.ts
+  var MODULE_SIZE_LIMIT = 2e5;
+  var MODULE_STATE_SIZE_LIMIT = 32e3;
+  var MODULE_STORAGE_LIMIT = 1e6;
+  var MODULE_COUNT_LIMIT = 64;
+  function migrateModuleState(module, previous) {
     const state = {};
-    if (raw === void 0) return state;
-    if (!isRecord5(raw)) {
-      fail2("state", "must be an object of field declarations");
-      return state;
-    }
-    for (const [key, entry] of Object.entries(raw)) {
-      const path = `state.${key}`;
-      if (!isRecord5(entry)) {
-        fail2(path, "must be { type, default }");
-        continue;
-      }
-      const type = entry.type;
-      if (!STATE_TYPES.includes(type)) {
-        fail2(`${path}.type`, `must be one of: ${STATE_TYPES.join(", ")}`);
-        continue;
-      }
-      if (typeof entry.default !== type) {
-        fail2(`${path}.default`, `must be a ${type}, so a screen has something to show before anything runs`);
-        continue;
-      }
-      state[key] = __spreadValues({
-        type,
-        default: entry.default
-      }, typeof entry.label === "string" ? { label: entry.label } : {});
+    for (const [name, field] of Object.entries(module.state)) {
+      const value2 = previous == null ? void 0 : previous[name];
+      state[name] = moduleStateValueError(field, value2) === null ? value2 : field.default;
     }
     return state;
   }
-  function parseScreens(raw, context) {
-    if (!isRecord5(raw)) {
-      context.fail("screens", "must be an object with at least a `main` screen");
-      return null;
-    }
-    const main = parseScreen(raw.main, "screens.main", context);
-    if (!main) return null;
-    const settings = raw.settings === void 0 ? void 0 : parseScreen(raw.settings, "screens.settings", context);
-    return __spreadValues({ main }, settings ? { settings } : {});
+  function redactModuleState(module, current) {
+    const state = __spreadValues({}, current);
+    for (const [name, field] of Object.entries(module.state)) if (field.secret) delete state[name];
+    return state;
   }
-  function parseScreen(raw, path, context) {
-    if (!isRecord5(raw) || !Array.isArray(raw.blocks)) {
-      context.fail(path, "must be { blocks: [...] }");
-      return null;
-    }
-    const blocks = [];
-    for (const [index, entry] of raw.blocks.entries()) {
-      const block3 = parseBlock(entry, `${path}.blocks[${index}]`, context);
-      if (block3) blocks.push(block3);
-    }
-    return { blocks };
-  }
-  function parseBlock(raw, path, context) {
-    if (!isRecord5(raw)) {
-      context.fail(path, "must be an object");
-      return null;
-    }
-    const kind = raw.block;
-    if (typeof kind !== "string" || !BLOCK_TYPES.includes(kind)) {
-      context.fail(`${path}.block`, `unknown block ${JSON.stringify(kind)} \u2014 one of: ${BLOCK_TYPES.join(", ")}`);
-      return null;
-    }
-    const bound = () => {
-      const bind = raw.bind;
-      if (typeof bind !== "string" || !(bind in context.state)) {
-        context.fail(`${path}.bind`, `must name a declared state field${knownFields(context)}`);
-        return null;
-      }
-      return bind;
-    };
-    switch (kind) {
-      case "heading":
-      case "text": {
-        const value = text3(raw.text, `${path}.text`, context.fail);
-        return value === null ? null : { block: kind, text: value };
-      }
-      case "callout": {
-        const value = text3(raw.text, `${path}.text`, context.fail);
-        const tone = raw.tone;
-        if (tone !== void 0 && tone !== "info" && tone !== "warn") {
-          context.fail(`${path}.tone`, 'must be "info" or "warn"');
-          return null;
-        }
-        return value === null ? null : __spreadValues({ block: "callout", text: value }, tone ? { tone } : {});
-      }
-      case "field":
-      case "toggle": {
-        const bind = bound();
-        return bind === null ? null : __spreadValues({ block: kind, bind }, optionalLabel(raw));
-      }
-      case "value": {
-        const bind = bound();
-        if (bind === null) return null;
-        return __spreadValues(__spreadValues({
-          block: "value",
-          bind
-        }, optionalLabel(raw)), typeof raw.hint === "string" ? { hint: raw.hint } : {});
-      }
-      case "select": {
-        const bind = bound();
-        if (bind === null) return null;
-        if (!Array.isArray(raw.options) || raw.options.length === 0) {
-          context.fail(`${path}.options`, "must be a non-empty array of { value, label }");
-          return null;
-        }
-        const options = [];
-        for (const [index, option] of raw.options.entries()) {
-          if (!isRecord5(option) || typeof option.value !== "string") {
-            context.fail(`${path}.options[${index}]`, "must be { value, label? } with a string value");
-            continue;
-          }
-          options.push(__spreadValues({ value: option.value }, typeof option.label === "string" ? { label: option.label } : {}));
-        }
-        return __spreadValues({ block: "select", bind, options }, optionalLabel(raw));
-      }
-      case "button": {
-        const label3 = text3(raw.label, `${path}.label`, context.fail);
-        const steps = parseSteps2(raw.steps, `${path}.steps`, context);
-        return label3 === null || steps === null ? null : { block: "button", label: label3, steps };
-      }
-      case "table": {
-        const from = text3(raw.from, `${path}.from`, context.fail);
-        return from === null ? null : __spreadValues({ block: "table", from }, optionalLabel(raw));
-      }
-      default:
-        context.fail(`${path}.block`, `no renderer for block "${kind}"`);
-        return null;
-    }
-  }
-  function parseSteps2(raw, path, context) {
+  function moduleStorageProblems(stored) {
     var _a;
-    if (!Array.isArray(raw) || raw.length === 0) {
-      context.fail(path, "must be a non-empty array of steps");
-      return null;
-    }
-    const steps = [];
-    const available = new Set(Object.keys(context.state));
-    let failed = false;
-    for (const [index, entry] of raw.entries()) {
-      const at = `${path}[${index}]`;
-      if (!isRecord5(entry)) {
-        context.fail(at, "must be an object");
-        failed = true;
-        continue;
+    const problems = [];
+    const entries = Object.entries(stored);
+    if (entries.length > MODULE_COUNT_LIMIT) problems.push(`module count ${entries.length} exceeds limit ${MODULE_COUNT_LIMIT}`);
+    for (const [id, entry] of entries) {
+      let stateBytes = 0;
+      try {
+        stateBytes = JSON.stringify((_a = entry.state) != null ? _a : {}).length;
+      } catch (e) {
+        problems.push(`module "${id}" state is not serializable`);
       }
-      if (typeof entry.call === "string") {
-        const command = context.known.get(entry.call);
-        if (!command) {
-          context.fail(`${at}.call`, `no command "${entry.call}" in this build \u2014 the module needs a newer plugin, or a typo fixed`);
-          failed = true;
-          continue;
-        }
-        if (command.access === "deny") {
-          context.fail(`${at}.call`, `"${entry.call}" is never callable from outside the panel`);
-          failed = true;
-          continue;
-        }
-        if (entry.params !== void 0 && !isRecord5(entry.params)) {
-          context.fail(`${at}.params`, "must be an object");
-          failed = true;
-          continue;
-        }
-        const params = (_a = entry.params) != null ? _a : {};
-        for (const [key, value] of Object.entries(params)) {
-          if (!command.params.some((param) => param.name === key)) {
-            context.fail(`${at}.params.${key}`, `"${entry.call}" does not read ${key}`);
-            failed = true;
-          }
-          if (!checkReference(value, `${at}.params.${key}`, available, context)) failed = true;
-        }
-        for (const param of command.params) {
-          if (param.required && !(param.name in params)) {
-            context.fail(`${at}.params.${param.name}`, `"${entry.call}" requires ${param.name}`);
-            failed = true;
-          }
-        }
-        if (entry.as !== void 0) {
-          if (typeof entry.as !== "string" || entry.as === "") {
-            context.fail(`${at}.as`, "must be a name later steps can read");
-            failed = true;
-            continue;
-          }
-          available.add(entry.as);
-        }
-        steps.push(__spreadValues({ call: entry.call, params }, typeof entry.as === "string" ? { as: entry.as } : {}));
-        continue;
+      if (stateBytes > MODULE_STATE_SIZE_LIMIT) {
+        problems.push(`module "${id}" state is ${stateBytes} bytes; limit is ${MODULE_STATE_SIZE_LIMIT}`);
       }
-      if (typeof entry.set === "string") {
-        if (!(entry.set in context.state)) {
-          context.fail(`${at}.set`, `must name a declared state field${knownFields(context)}`);
-          failed = true;
-          continue;
-        }
-        if (typeof entry.from !== "string" || !isReachable(entry.from, available)) {
-          context.fail(`${at}.from`, "must read a state field or an earlier step's `as` name");
-          failed = true;
-          continue;
-        }
-        steps.push({ set: entry.set, from: entry.from });
-        continue;
-      }
-      if (typeof entry.confirm === "string") {
-        steps.push({ confirm: entry.confirm });
-        continue;
-      }
-      context.fail(at, "must be one of { call }, { set, from } or { confirm }");
-      failed = true;
     }
-    return failed ? null : steps;
-  }
-  function checkReference(value, path, available, context) {
-    if (Array.isArray(value)) {
-      return value.every((entry, index) => checkReference(entry, `${path}[${index}]`, available, context));
-    }
-    if (!isRecord5(value)) return true;
-    if (typeof value.from === "string") {
-      if (!isReachable(value.from, available)) {
-        context.fail(`${path}.from`, `nothing named "${value.from.split(".")[0]}" is available here`);
-        return false;
-      }
-      return true;
-    }
-    return Object.entries(value).every(([key, entry]) => checkReference(entry, `${path}.${key}`, available, context));
-  }
-  var isReachable = (reference2, available) => {
-    var _a;
-    return available.has((_a = reference2.split(".")[0]) != null ? _a : "");
-  };
-  function parseCommands(raw, id, context) {
-    if (raw === void 0) return [];
-    if (!Array.isArray(raw)) {
-      context.fail("commands", "must be an array");
-      return [];
-    }
-    const commands = [];
-    const seen = /* @__PURE__ */ new Set();
-    for (const [index, entry] of raw.entries()) {
-      const at = `commands[${index}]`;
-      if (!isRecord5(entry)) {
-        context.fail(at, "must be an object");
-        continue;
-      }
-      const name = text3(entry.name, `${at}.name`, context.fail);
-      if (name !== null) {
-        if (id !== null && !name.startsWith(`${id}.`)) {
-          context.fail(`${at}.name`, `must start with "${id}." so it cannot collide with a plugin command`);
-        }
-        if (/[A-Z]/.test(name)) context.fail(`${at}.name`, "must be lowercase \u2014 SCREAMING_CASE names belong to the plugin");
-        if (seen.has(name)) context.fail(`${at}.name`, `duplicated: "${name}"`);
-        seen.add(name);
-      }
-      if (entry.access !== void 0) {
-        context.fail(`${at}.access`, "not yours to declare \u2014 it is derived from the commands your steps call");
-      }
-      const summary = text3(entry.summary, `${at}.summary`, context.fail);
-      const params = parseParams(entry.params, `${at}.params`, context);
-      const steps = parseSteps2(entry.steps, `${at}.steps`, context);
-      if (name === null || summary === null || steps === null) continue;
-      commands.push({
-        name,
-        summary,
-        params,
-        steps,
-        access: accessOf(steps, context.known),
-        confirms: steps.some((step) => "confirm" in step)
-      });
-    }
-    return commands;
-  }
-  function parseParams(raw, path, context) {
-    if (raw === void 0) return [];
-    if (!Array.isArray(raw)) {
-      context.fail(path, "must be an array of { name, required?, type?, note? }");
-      return [];
-    }
-    const params = [];
-    for (const [index, entry] of raw.entries()) {
-      if (!isRecord5(entry) || typeof entry.name !== "string") {
-        context.fail(`${path}[${index}]`, "must be an object with a string name");
-        continue;
-      }
-      params.push(__spreadValues(__spreadValues({
-        name: entry.name,
-        required: entry.required === true
-      }, typeof entry.type === "string" ? { type: entry.type } : {}), typeof entry.note === "string" ? { note: entry.note } : {}));
-    }
-    return params;
-  }
-  function accessOf(steps, known) {
-    var _a;
-    for (const step of steps) {
-      if (!("call" in step)) continue;
-      if (((_a = known.get(step.call)) == null ? void 0 : _a.access) !== "read") return "write";
-    }
-    return "read";
-  }
-  function moduleCapabilities(module, known) {
-    var _a;
-    const byName = new Map(known.map((command) => [command.name, command]));
-    const uses = /* @__PURE__ */ new Map();
-    const count = (steps) => {
-      var _a2;
-      for (const step of steps) if ("call" in step) uses.set(step.call, ((_a2 = uses.get(step.call)) != null ? _a2 : 0) + 1);
-    };
-    for (const command of module.commands) count(command.steps);
-    for (const screen of [module.screens.main, module.screens.settings]) {
-      for (const block3 of (_a = screen == null ? void 0 : screen.blocks) != null ? _a : []) if (block3.block === "button") count(block3.steps);
-    }
-    return [...uses.entries()].map(([command, times]) => {
-      var _a2;
-      const known2 = byName.get(command);
-      return __spreadValues({
-        command,
-        access: (_a2 = known2 == null ? void 0 : known2.access) != null ? _a2 : "write",
-        uses: times
-      }, (known2 == null ? void 0 : known2.cost) ? { cost: known2.cost } : {});
-    }).sort((a, b) => a.access === b.access ? a.command.localeCompare(b.command) : a.access === "write" ? -1 : 1);
-  }
-  var isRecord5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-  function text3(value, path, fail2) {
-    if (typeof value !== "string" || value.trim() === "") {
-      fail2(path, "must be a non-empty string");
-      return null;
-    }
-    return value;
-  }
-  function optionalLabel(raw) {
-    return typeof raw.label === "string" ? { label: raw.label } : {};
-  }
-  function knownFields(context) {
-    const fields = Object.keys(context.state);
-    return fields.length === 0 ? " (this module declares none)" : ` \u2014 declared: ${fields.join(", ")}`;
-  }
-  function tryJson(raw, fail2) {
+    let totalBytes = 0;
     try {
-      return JSON.parse(raw);
-    } catch (error) {
-      fail2("", `not JSON: ${String(error.message)}`);
-      return null;
+      totalBytes = JSON.stringify(stored).length;
+    } catch (e) {
+      problems.push("module storage is not serializable");
     }
+    if (totalBytes > MODULE_STORAGE_LIMIT) problems.push(`module storage is ${totalBytes} bytes; limit is ${MODULE_STORAGE_LIMIT}`);
+    return problems;
   }
-
-  // src/modules/registry.ts
-  var MODULE_SIZE_LIMIT = 2e5;
+  function compareModuleVersions(left, right) {
+    var _a, _b;
+    const parse = (version) => {
+      const withoutBuild = version.split("+", 1)[0];
+      const dash = withoutBuild.indexOf("-");
+      const core = dash < 0 ? withoutBuild : withoutBuild.slice(0, dash);
+      const prerelease = dash < 0 ? "" : withoutBuild.slice(dash + 1);
+      return { core: core.split(".").map(Number), prerelease: prerelease === "" ? [] : prerelease.split(".") };
+    };
+    const a = parse(left);
+    const b = parse(right);
+    for (let index2 = 0; index2 < 3; index2 += 1) {
+      if (a.core[index2] !== b.core[index2]) return ((_a = a.core[index2]) != null ? _a : 0) > ((_b = b.core[index2]) != null ? _b : 0) ? 1 : -1;
+    }
+    if (a.prerelease.length === 0 || b.prerelease.length === 0) {
+      return a.prerelease.length === b.prerelease.length ? 0 : a.prerelease.length === 0 ? 1 : -1;
+    }
+    const length = Math.max(a.prerelease.length, b.prerelease.length);
+    for (let index2 = 0; index2 < length; index2 += 1) {
+      const av = a.prerelease[index2];
+      const bv = b.prerelease[index2];
+      if (av === bv) continue;
+      if (av === void 0) return -1;
+      if (bv === void 0) return 1;
+      const an = /^\d+$/.test(av) ? Number(av) : null;
+      const bn = /^\d+$/.test(bv) ? Number(bv) : null;
+      if (an !== null && bn !== null) return an > bn ? 1 : -1;
+      if (an !== null) return -1;
+      if (bn !== null) return 1;
+      return av > bv ? 1 : -1;
+    }
+    return 0;
+  }
   function registerModules(stored, known) {
     const modules2 = [];
     for (const [id, entry] of Object.entries(stored != null ? stored : {})) {
@@ -32834,7 +35515,7 @@ ${scripts}`, "");
             }
           ] : command.params,
           replies: []
-        }, costOf(command.steps.flatMap((step) => "call" in step ? [step.call] : []), entry.capabilities) ? { cost: costOf(command.steps.flatMap((step) => "call" in step ? [step.call] : []), entry.capabilities) } : {}));
+        }, costOf(command.steps.flatMap((step2) => "call" in step2 ? [step2.call] : []), entry.capabilities) ? { cost: costOf(command.steps.flatMap((step2) => "call" in step2 ? [step2.call] : []), entry.capabilities) } : {}));
       }
     }
     return defs;
@@ -32890,8 +35571,8 @@ ${scripts}`, "");
     return name.replace(/#.*$/, "");
   }
   function propName(name) {
-    const words = stripPropSuffix(name).replace(/[^A-Za-z0-9]+/g, " ").trim().split(" ");
-    const camel = words.map((word, index) => index === 0 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join("");
+    const words2 = stripPropSuffix(name).replace(/[^A-Za-z0-9]+/g, " ").trim().split(" ");
+    const camel = words2.map((word, index2) => index2 === 0 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join("");
     if (camel === "") return "value";
     return /^[A-Za-z_]/.test(camel) ? camel : `value${camel.charAt(0).toUpperCase()}${camel.slice(1)}`;
   }
@@ -32904,13 +35585,13 @@ ${scripts}`, "");
   function textsInside(node) {
     var _a;
     const found = [];
-    const walk2 = (one) => {
+    const walk3 = (one) => {
       var _a2;
       if (one.type === "text") found.push([one.name, one.characters]);
       if (one.type === "instance-ref") return;
-      for (const child of (_a2 = one.children) != null ? _a2 : []) walk2(child);
+      for (const child of (_a2 = one.children) != null ? _a2 : []) walk3(child);
     };
-    for (const child of (_a = node.children) != null ? _a : []) walk2(child);
+    for (const child of (_a = node.children) != null ? _a : []) walk3(child);
     const seen = /* @__PURE__ */ new Set();
     return found.filter(([layer]) => !seen.has(layer) && seen.add(layer));
   }
@@ -32997,22 +35678,22 @@ ${pad2})}`;
         }
         props.push(`${prop}=${JSON.stringify(text4)}`);
       }
-      for (const [raw, value] of Object.entries((_j = node.componentProperties) != null ? _j : {})) {
+      for (const [raw, value2] of Object.entries((_j = node.componentProperties) != null ? _j : {})) {
         const prop = propName(raw);
         const kind = declared == null ? void 0 : declared.get(prop);
-        if (declared && value.type !== "INSTANCE_SWAP") {
-          const wanted = value.type === "BOOLEAN" ? "boolean" : value.type === "VARIANT" ? "variant" : "text";
+        if (declared && value2.type !== "INSTANCE_SWAP") {
+          const wanted = value2.type === "BOOLEAN" ? "boolean" : value2.type === "VARIANT" ? "variant" : "text";
           if (kind !== wanted) {
             context.gaps.push(
-              `${node.name}: ${name} was set ${propName(raw)}=${String(value.value)} in Figma and declares ${kind ? `a ${kind} of that name` : "no such prop"} \u2014 the value was not passed`
+              `${node.name}: ${name} was set ${propName(raw)}=${String(value2.value)} in Figma and declares ${kind ? `a ${kind} of that name` : "no such prop"} \u2014 the value was not passed`
             );
             continue;
           }
         }
-        if (value.type === "BOOLEAN") props.push(value.value ? prop : `${prop}={false}`);
-        else if (value.type === "INSTANCE_SWAP") {
+        if (value2.type === "BOOLEAN") props.push(value2.value ? prop : `${prop}={false}`);
+        else if (value2.type === "INSTANCE_SWAP") {
           context.gaps.push(`${node.name}: the ${raw} slot holds a swapped component \u2014 pass it as a child`);
-        } else props.push(`${prop}="${String(value.value).replace(/"/g, "&quot;")}"`);
+        } else props.push(`${prop}="${String(value2.value).replace(/"/g, "&quot;")}"`);
       }
       const attributes = props.length > 0 ? ` ${props.join(" ")}` : "";
       return `${pad2}<${name} className={${className}}${attributes} />`;
@@ -33046,9 +35727,9 @@ ${pad2}</${tag}>`;
   // src/targets/react/variants.ts
   function variantKey(properties) {
     const parts = [];
-    for (const [name, value] of Object.entries(properties != null ? properties : {})) {
-      if (value.type !== "VARIANT") continue;
-      parts.push(`${name.replace(/#.*$/, "")}=${String(value.value)}`);
+    for (const [name, value2] of Object.entries(properties != null ? properties : {})) {
+      if (value2.type !== "VARIANT") continue;
+      parts.push(`${name.replace(/#.*$/, "")}=${String(value2.value)}`);
     }
     return parts.sort().join(",");
   }
@@ -33060,10 +35741,10 @@ ${pad2}</${tag}>`;
     const axes = /* @__PURE__ */ new Map();
     for (const name of names) {
       for (const part of name.split(",")) {
-        const [axis, value] = part.split("=").map((one) => one.trim());
-        if (!axis || value === void 0) continue;
+        const [axis, value2] = part.split("=").map((one) => one.trim());
+        if (!axis || value2 === void 0) continue;
         const seen = (_a = axes.get(axis)) != null ? _a : /* @__PURE__ */ new Set();
-        seen.add(value);
+        seen.add(value2);
         axes.set(axis, seen);
       }
     }
@@ -33075,7 +35756,7 @@ ${pad2}</${tag}>`;
   function pairOrExplain(left, right) {
     const pairs = /* @__PURE__ */ new Map();
     let why;
-    const walk2 = (a, b, path) => {
+    const walk3 = (a, b, path) => {
       var _a, _b;
       if (a.type !== b.type) {
         why = `${path || a.name} is a ${a.type} in one and a ${b.type} in the other`;
@@ -33089,12 +35770,12 @@ ${pad2}</${tag}>`;
         why = `${path || a.name} holds ${kidsA.length} layer(s) in one and ${kidsB.length} in the other` + (extra ? ` \u2014 ${kidsB.length > kidsA.length ? "the extra one is" : "the missing one is"} ${extra}` : "");
         return false;
       }
-      for (let index = 0; index < kidsA.length; index++) {
-        if (!walk2(kidsA[index], kidsB[index], `${path ? `${path} \u2192 ` : ""}${kidsA[index].name}`)) return false;
+      for (let index2 = 0; index2 < kidsA.length; index2++) {
+        if (!walk3(kidsA[index2], kidsB[index2], `${path ? `${path} \u2192 ` : ""}${kidsA[index2].name}`)) return false;
       }
       return true;
     };
-    return walk2(left, right, "") ? { pairs } : { pairs: null, why };
+    return walk3(left, right, "") ? { pairs } : { pairs: null, why };
   }
   function alignVariants(variants) {
     const membership = /* @__PURE__ */ new Map();
@@ -33122,7 +35803,7 @@ ${pad2}</${tag}>`;
         const existing = childrenOf(into);
         const taken = /* @__PURE__ */ new Set();
         for (const incoming of childrenOf(from)) {
-          let at = existing.findIndex((one, index) => !taken.has(index) && one.name === incoming.name && one.type === incoming.type);
+          let at = existing.findIndex((one, index2) => !taken.has(index2) && one.name === incoming.name && one.type === incoming.type);
           if (at === -1) {
             const added = clone(incoming);
             existing.push(added);
@@ -33200,14 +35881,14 @@ ${pad2}</${tag}>`;
   }
   function orderRules(union, variant2, map, scope) {
     const unionById = /* @__PURE__ */ new Map();
-    const index = (node) => {
+    const index2 = (node) => {
       var _a;
       unionById.set(node.id, node);
-      for (const child of (_a = node.children) != null ? _a : []) index(child);
+      for (const child of (_a = node.children) != null ? _a : []) index2(child);
     };
-    index(union);
+    index2(union);
     const rules = [];
-    const walk2 = (node) => {
+    const walk3 = (node) => {
       var _a, _b, _c;
       const children = (_a = node.children) != null ? _a : [];
       const here = unionById.get((_b = map.get(node.id)) != null ? _b : node.id);
@@ -33226,9 +35907,9 @@ ${pad2}</${tag}>`;
 }`);
         });
       }
-      for (const child of children) walk2(child);
+      for (const child of children) walk3(child);
     };
-    walk2(variant2);
+    walk3(variant2);
     return rules.join("\n\n");
   }
 
@@ -33246,7 +35927,7 @@ ${pad2}</${tag}>`;
     const figmaName = stripPropSuffix(prop.figmaName);
     if (prop.kind === "boolean") return `${name}: figma.boolean(${sq(figmaName)})`;
     if (prop.kind === "text") return `${name}: figma.string(${sq(figmaName)})`;
-    const entries = ((_a = prop.values) != null ? _a : []).map((value) => `${objectKey(value)}: ${sq(value)}`).join(", ");
+    const entries = ((_a = prop.values) != null ? _a : []).map((value2) => `${objectKey(value2)}: ${sq(value2)}`).join(", ");
     return `${name}: figma.enum(${sq(figmaName)}, { ${entries} })`;
   }
   function codeConnectFile(options) {
@@ -33475,14 +36156,14 @@ ${motion.css}`);
     const interactions = await emitInteractions(roots, sceneNodesById);
     if (interactions.css.trim() !== "") parts.push(interactions.css);
     for (const root of roots) {
-      for (const node of walk(root)) {
+      for (const node of walk2(root)) {
         const snapshot = motionByNodeId.get(node.id);
         if (!snapshot || snapshot.tracks.length === 0) continue;
         parts.push(emitNodeAnimationCss({ selector: `.${toClassName(node.id)}`, tracks: snapshot.tracks }));
       }
     }
     for (const root of roots) {
-      for (const node of walk(root)) {
+      for (const node of walk2(root)) {
         for (const interaction of (_a = node.interactions) != null ? _a : []) {
           if (sceneNodesById.has(interaction.destinationId)) continue;
           const state = interaction.trigger === "ON_HOVER" ? "hover" : interaction.trigger === "ON_PRESS" ? "pressed" : "click";
@@ -33493,7 +36174,7 @@ ${motion.css}`);
       }
     }
     for (const root of roots) {
-      for (const node of walk(root)) {
+      for (const node of walk2(root)) {
         if (!node.navigate) continue;
         const asked = node.navigate.transition;
         const animation = asked ? ` \u2014 ${asked.style}${asked.direction ? ` ${asked.direction}` : ""} over ${asked.durationMs}ms, ${asked.timingFunction}` : "";
@@ -33502,10 +36183,10 @@ ${motion.css}`);
     }
     return { css: parts.join("\n\n"), js: interactions.js, gaps };
   }
-  function* walk(node) {
+  function* walk2(node) {
     var _a;
     yield node;
-    for (const child of (_a = node.children) != null ? _a : []) yield* __yieldStar(walk(child));
+    for (const child of (_a = node.children) != null ? _a : []) yield* __yieldStar(walk2(child));
   }
   function collectComponents3(node, into) {
     var _a, _b, _c, _d, _e, _f;
@@ -33524,12 +36205,12 @@ ${motion.css}`);
       if (!held.body) held.body = node;
       const variant2 = variantKey(node.componentProperties);
       if (!held.variants.has(variant2)) held.variants.set(variant2, node);
-      for (const [raw, value] of Object.entries((_d = node.componentProperties) != null ? _d : {})) {
+      for (const [raw, value2] of Object.entries((_d = node.componentProperties) != null ? _d : {})) {
         const prop = propName(raw);
         const seen = (_e = held.values.get(prop)) != null ? _e : /* @__PURE__ */ new Set();
-        seen.add(String(value.value));
+        seen.add(String(value2.value));
         held.values.set(prop, seen);
-        held.types.set(prop, value.type);
+        held.types.set(prop, value2.type);
         held.rawNames.set(prop, stripPropSuffix(raw));
       }
       into.set(key, held);
@@ -33616,10 +36297,10 @@ ${fields.join("\n")}
     const variantProps2 = [...component.types.entries()].filter(([, type]) => type === "VARIANT").map(([prop]) => prop);
     const defaults = /* @__PURE__ */ new Map();
     for (const part of ((_b = [...component.variants.keys()][0]) != null ? _b : "").split(",")) {
-      const [axis, value] = part.split("=").map((one) => one.trim());
-      if (!axis || value === void 0) continue;
+      const [axis, value2] = part.split("=").map((one) => one.trim());
+      if (!axis || value2 === void 0) continue;
       const prop = propName(axis);
-      if (component.types.get(prop) === "VARIANT") defaults.set(prop, value);
+      if (component.types.get(prop) === "VARIANT") defaults.set(prop, value2);
     }
     const keyExpression = variantProps2.length > 0 ? `[${variantProps2.map((prop) => {
       var _a2;
@@ -33637,7 +36318,7 @@ export interface ${component.name}Props {${props}  className?: string
 }
 
 ${variantBlock}${hasBlock}
-export function ${component.name}({ ${[...component.values.keys(), ...context.props.keys()].filter((one, index, all) => all.indexOf(one) === index).map((one) => defaults.has(one) ? `${one} = ${JSON.stringify(defaults.get(one))}` : one).join(", ")}${component.values.size + context.props.size > 0 ? ", " : ""}className }: ${component.name}Props) {
+export function ${component.name}({ ${[...component.values.keys(), ...context.props.keys()].filter((one, index2, all) => all.indexOf(one) === index2).map((one) => defaults.has(one) ? `${one} = ${JSON.stringify(defaults.get(one))}` : one).join(", ")}${component.values.size + context.props.size > 0 ? ", " : ""}className }: ${component.name}Props) {
 ${Object.keys(context.copy).length > 0 ? "  const t = useCopy()\n" : ""}${keyExpression && (variantBlock || hasBlock) ? `  const key = ${keyExpression}
 ` : ""}${variantBlock ? "  const variant = VARIANTS[key]\n" : ""}  return (
 ${body}
@@ -33672,7 +36353,7 @@ ${markup}
 `;
   }
   function mockFile(name, context) {
-    const rows = [...context.props.entries()].map(([prop, value]) => `  ${prop}: ${value},`).join("\n");
+    const rows = [...context.props.entries()].map(([prop, value2]) => `  ${prop}: ${value2},`).join("\n");
     return `${header(name)}
 /**
  * What the screen showed in Figma. Replace the object, not the screen: every field here is a
@@ -33811,8 +36492,8 @@ createRoot(document.getElementById('root')!).render(
     var _a;
     const found = /* @__PURE__ */ new Map();
     for (const match of css.matchAll(/\.([A-Za-z0-9_-]+)--segment-(\d+)/g)) {
-      const [, base, index] = match;
-      found.set(base, Math.max((_a = found.get(base)) != null ? _a : 0, Number(index) + 1));
+      const [, base, index2] = match;
+      found.set(base, Math.max((_a = found.get(base)) != null ? _a : 0, Number(index2) + 1));
     }
     return found;
   }
@@ -33896,8 +36577,8 @@ createRoot(document.getElementById('root')!).render(
     if (spec.children !== void 0) {
       if (!Array.isArray(spec.children)) problems.push(`${where}.children must be an array`);
       else {
-        for (const [index, child] of spec.children.entries()) {
-          const childPlan = planCreate(child, `${where}.children[${index}]`, problems);
+        for (const [index2, child] of spec.children.entries()) {
+          const childPlan = planCreate(child, `${where}.children[${index2}]`, problems);
           if (childPlan) children.push(childPlan);
         }
       }
@@ -33917,16 +36598,16 @@ createRoot(document.getElementById('root')!).render(
         id: "(dry run)",
         name: (_a = nameFrom(plan)) != null ? _a : plan.kind,
         parent: { id: fallbackParent.id, name: fallbackParent.name },
-        applied: plan.steps.map((step) => ({ property: describeStep(step), after: "would be set" })),
+        applied: plan.steps.map((step2) => ({ property: describeStep(step2), after: "would be set" })),
         children: await Promise.all(plan.children.map((child) => createNode(child, fallbackParent, true))),
         failed: 0
       };
     }
     const node = await make(plan);
-    const later = plan.steps.filter((step) => dependsOnChildren(step) || dependsOnPlacement(step));
+    const later = plan.steps.filter((step2) => dependsOnChildren(step2) || dependsOnPlacement(step2));
     const report2 = await applyProps(
       node,
-      plan.steps.filter((step) => !dependsOnChildren(step) && !dependsOnPlacement(step)),
+      plan.steps.filter((step2) => !dependsOnChildren(step2) && !dependsOnPlacement(step2)),
       false
     );
     const children = [];
@@ -33997,10 +36678,10 @@ createRoot(document.getElementById('root')!).render(
     }
   }
   var nameFrom = (plan) => {
-    for (const step of plan.steps) if (step.step === "assign" && step.property === "name") return String(step.value);
+    for (const step2 of plan.steps) if (step2.step === "assign" && step2.property === "name") return String(step2.value);
     return null;
   };
-  var describeStep = (step) => step.step === "assign" || step.step === "paint" ? step.property : step.step;
+  var describeStep = (step2) => step2.step === "assign" || step2.step === "paint" ? step2.property : step2.step;
 
   // src/canvas/roundtrip.ts
   var KIND_OF = {
@@ -34045,10 +36726,10 @@ createRoot(document.getElementById('root')!).render(
     const dropped = [];
     const notValues = [];
     const candidate = {};
-    for (const [key, value] of Object.entries(props)) {
+    for (const [key, value2] of Object.entries(props)) {
       if (NOT_PROPERTIES.has(key) || NOT_SENT.has(key)) continue;
-      if ((key === "width" || key === "height") && value === 0) continue;
-      if (value === "mixed") {
+      if ((key === "width" || key === "height") && value2 === 0) continue;
+      if (value2 === "mixed") {
         notValues.push(key);
         continue;
       }
@@ -34056,7 +36737,7 @@ createRoot(document.getElementById('root')!).render(
         notValues.push(`${key} (summary)`);
         continue;
       }
-      candidate[key] = value;
+      candidate[key] = value2;
     }
     let plan = planProps(candidate);
     let guard = 0;
@@ -34163,11 +36844,11 @@ createRoot(document.getElementById('root')!).render(
       for (const frame3 of frames) {
         const one = frame3;
         if (typeof (one == null ? void 0 : one.timelinePosition) !== "number") continue;
-        const value = plainValue(one.value);
-        if (value === void 0) continue;
+        const value2 = plainValue(one.value);
+        if (value2 === void 0) continue;
         at.push(__spreadValues({
           time: one.timelinePosition,
-          value
+          value: value2
         }, ((_a = one.easing) == null ? void 0 : _a.type) && one.easing.type !== "CUSTOM_CUBIC_BEZIER" ? { easing: one.easing.type } : {}));
       }
       if (at.length === 0) continue;
@@ -34188,64 +36869,79 @@ createRoot(document.getElementById('root')!).render(
     return String((_b = (_a = reply.reason) != null ? _a : reply.message) != null ? _b : JSON.stringify(reply).slice(0, 200));
   };
   async function runModuleCommand(module, command, params, context) {
-    var _a;
-    const scope = {};
-    for (const [name, field] of Object.entries(module.state)) {
-      const kept2 = (_a = context.state) == null ? void 0 : _a[name];
-      scope[name] = typeof kept2 === field.type ? kept2 : field.default;
-    }
-    Object.assign(scope, params);
+    const scope = Object.assign(
+      /* @__PURE__ */ Object.create(null),
+      migrateModuleState(module, context.state)
+    );
     const report2 = { command: command.name, module: module.id, ok: true, steps: [], state: {}, view: {} };
-    for (const [index, step] of command.steps.entries()) {
-      if ("confirm" in step) {
+    for (const [name, value2] of Object.entries(params)) {
+      const field = module.state[name];
+      if (field) {
+        const error = moduleStateValueError(field, value2);
+        if (error) {
+          report2.ok = false;
+          report2.error = `parameter "${name}" ${error}`;
+          return finish(report2, module, scope);
+        }
+      }
+      scope[name] = value2;
+    }
+    for (const [index2, step2] of command.steps.entries()) {
+      if (!conditionMatches(step2.when, scope)) {
+        report2.steps.push({ step: index2, ok: true, skipped: true });
+        continue;
+      }
+      if ("confirm" in step2) {
         if (context.confirmed) {
-          report2.steps.push({ step: index, ok: true });
+          report2.steps.push({ step: index2, ok: true });
           continue;
         }
         report2.ok = false;
-        report2.needsConfirmation = step.confirm;
-        report2.steps.push({ step: index, ok: false, error: "stopped for confirmation" });
+        report2.needsConfirmation = step2.confirm;
+        report2.steps.push({ step: index2, ok: false, error: "stopped for confirmation" });
         return finish(report2, module, scope);
       }
-      if ("set" in step) {
-        const value = resolve(step.from, scope);
-        if (value === MISSING) {
-          return fail(report2, module, scope, index, void 0, `nothing to read at "${step.from}"`);
+      if ("set" in step2) {
+        const value2 = resolve(step2.from, scope);
+        if (value2 === MISSING) {
+          return fail(report2, module, scope, index2, void 0, `nothing to read at "${step2.from}"`);
         }
-        const declared = module.state[step.set];
-        if (declared && typeof value !== declared.type) {
+        const declared = module.state[step2.set];
+        const stateError = declared ? moduleStateValueError(declared, value2) : "is not declared";
+        if (stateError) {
+          const expectation = declared ? `is declared ${declared.type}${stateError === `must be ${declared.type}` ? "" : ` (${stateError})`}, but` : "is not declared, and";
           return fail(
             report2,
             module,
             scope,
-            index,
+            index2,
             void 0,
-            `"${step.set}" is declared ${declared.type}, but "${step.from}" holds ${describeValue2(value)}`
+            `"${step2.set}" ${expectation} "${step2.from}" holds ${describeValue2(value2)}`
           );
         }
-        scope[step.set] = value;
-        report2.steps.push({ step: index, ok: true });
+        scope[step2.set] = value2;
+        report2.steps.push({ step: index2, ok: true });
         continue;
       }
-      const resolved = resolveParams(step, scope);
+      const resolved = resolveParams(step2, scope);
       if ("error" in resolved) {
-        return fail(report2, module, scope, index, step.call, resolved.error);
+        return fail(report2, module, scope, index2, step2.call, resolved.error);
       }
       let replies;
       try {
-        replies = await context.record(() => context.call(__spreadProps(__spreadValues({}, resolved.params), { type: step.call })));
+        replies = await context.record(() => context.call(__spreadProps(__spreadValues({}, resolved.params), { type: step2.call })));
       } catch (error) {
-        return fail(report2, module, scope, index, step.call, String((error == null ? void 0 : error.message) || error));
+        return fail(report2, module, scope, index2, step2.call, String((error == null ? void 0 : error.message) || error));
       }
-      const failure = replies.find(isFailure);
-      if (failure) {
-        return fail(report2, module, scope, index, step.call, messageOf(failure));
+      const failure2 = replies.find(isFailure);
+      if (failure2) {
+        return fail(report2, module, scope, index2, step2.call, messageOf(failure2));
       }
-      if (step.as) {
-        scope[step.as] = replies.length > 0 ? replies[replies.length - 1] : null;
-        report2.view[step.as] = scope[step.as];
+      if (step2.as) {
+        scope[step2.as] = replies.length > 0 ? replies[replies.length - 1] : null;
+        report2.view[step2.as] = scope[step2.as];
       }
-      report2.steps.push({ step: index, call: step.call, ok: true });
+      report2.steps.push({ step: index2, call: step2.call, ok: true });
     }
     return finish(report2, module, scope);
   }
@@ -34253,25 +36949,25 @@ createRoot(document.getElementById('root')!).render(
     for (const name of Object.keys(module.state)) report2.state[name] = scope[name];
     return report2;
   }
-  function fail(report2, module, scope, step, call, error) {
+  function fail(report2, module, scope, step2, call, error) {
     report2.ok = false;
-    report2.error = `step ${step}${call ? ` (${call})` : ""}: ${error}`;
-    report2.steps.push(__spreadProps(__spreadValues({ step }, call ? { call } : {}), { ok: false, error }));
+    report2.error = `step ${step2}${call ? ` (${call})` : ""}: ${error}`;
+    report2.steps.push(__spreadProps(__spreadValues({ step: step2 }, call ? { call } : {}), { ok: false, error }));
     return finish(report2, module, scope);
   }
   var MISSING = /* @__PURE__ */ Symbol("missing");
-  function describeValue2(value) {
+  function describeValue2(value2) {
     var _a;
-    if (Array.isArray(value)) return `an array of ${value.length}`;
-    if (value === null) return "null";
-    if (typeof value === "object") return `an object with ${Object.keys(value).length} key(s)`;
-    return `${typeof value} ${(_a = JSON.stringify(value)) == null ? void 0 : _a.slice(0, 40)}`;
+    if (Array.isArray(value2)) return `an array of ${value2.length}`;
+    if (value2 === null) return "null";
+    if (typeof value2 === "object") return `an object with ${Object.keys(value2).length} key(s)`;
+    return `${typeof value2} ${(_a = JSON.stringify(value2)) == null ? void 0 : _a.slice(0, 40)}`;
   }
-  function resolveParams(step, scope) {
+  function resolveParams(step2, scope) {
     var _a;
     const params = {};
-    for (const [key, value] of Object.entries((_a = step.params) != null ? _a : {})) {
-      const resolved = resolveValue(value, scope);
+    for (const [key, value2] of Object.entries((_a = step2.params) != null ? _a : {})) {
+      const resolved = resolveValue(value2, scope);
       if (typeof resolved === "object" && resolved !== null && MISSING_PATH in resolved) {
         return { error: `nothing to read at "${resolved[MISSING_PATH]}" for ${key}` };
       }
@@ -34279,17 +36975,17 @@ createRoot(document.getElementById('root')!).render(
     }
     return { params };
   }
-  function resolveValue(value, scope) {
-    if (Array.isArray(value)) {
-      for (const [index, entry] of value.entries()) {
+  function resolveValue(value2, scope) {
+    if (Array.isArray(value2)) {
+      for (const [index2, entry] of value2.entries()) {
         const resolved = resolveValue(entry, scope);
         if (typeof resolved === "object" && resolved !== null && MISSING_PATH in resolved) return resolved;
-        value = Object.assign([...value], { [index]: resolved });
+        value2 = Object.assign([...value2], { [index2]: resolved });
       }
-      return value;
+      return value2;
     }
-    if (typeof value !== "object" || value === null) return value;
-    const record2 = value;
+    if (typeof value2 !== "object" || value2 === null) return value2;
+    const record2 = value2;
     if (typeof record2.from === "string") {
       const found = resolve(record2.from, scope);
       return found === MISSING ? { [MISSING_PATH]: record2.from } : found;
@@ -34306,9 +37002,7 @@ createRoot(document.getElementById('root')!).render(
   function resolve(path, scope) {
     let current = scope;
     for (const part of path.split(".")) {
-      if (typeof current !== "object" || current === null || !(part in current)) {
-        return MISSING;
-      }
+      if (part === "__proto__" || part === "constructor" || part === "prototype" || typeof current !== "object" || current === null || !Object.prototype.hasOwnProperty.call(current, part)) return MISSING;
       current = current[part];
     }
     return current;
@@ -34492,18 +37186,19 @@ createRoot(document.getElementById('root')!).render(
     return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children;
   }
   async function variableNamesForExport() {
-    const asCss = async (snapshot) => {
-      const stored = await figma.clientStorage.getAsync("exportOptions");
-      return emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored), readRenameMap())).css;
-    };
+    const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions"));
+    const asCss = (snapshot) => emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions, readRenameMap())).css;
     try {
-      const snapshot = await readAllVariables();
-      return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), css: await asCss(snapshot), gaps: [] };
+      const snapshot = await readAllVariables({ collectionMerges: exportOptions.themeMerges.groups });
+      return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), css: asCss(snapshot), gaps: [] };
     } catch (error) {
-      const local = await readLocalVariables();
+      const local = foldSplitThemeCollections(
+        await readLocalVariables(),
+        exportOptions.themeMerges.groups
+      );
       return {
         names: new Map(local.variables.map((one) => [one.id, one.name])),
-        css: await asCss(local),
+        css: asCss(local),
         gaps: [
           "the library variables could not be read (" + String((error == null ? void 0 : error.message) || error) + ") \u2014 anything bound to a library token is written as the literal value it resolves to"
         ]
@@ -34512,7 +37207,7 @@ createRoot(document.getElementById('root')!).render(
   }
   async function remoteComponents(roots) {
     const remote = /* @__PURE__ */ new Set();
-    const walk2 = async (node) => {
+    const walk3 = async (node) => {
       var _a;
       if (node.type === "INSTANCE") {
         const main = await node.getMainComponentAsync().catch(() => null);
@@ -34521,14 +37216,14 @@ createRoot(document.getElementById('root')!).render(
           remote.add(componentName2(owner.name));
         }
       }
-      if ("children" in node) for (const child of node.children) await walk2(child);
+      if ("children" in node) for (const child of node.children) await walk3(child);
     };
-    for (const root of roots) await walk2(root);
+    for (const root of roots) await walk3(root);
     return remote;
   }
   async function readableMasters(roots) {
     const found = /* @__PURE__ */ new Map();
-    const walk2 = async (node) => {
+    const walk3 = async (node) => {
       var _a, _b;
       if (node.type === "INSTANCE") {
         const main = await node.getMainComponentAsync().catch(() => null);
@@ -34543,9 +37238,9 @@ createRoot(document.getElementById('root')!).render(
           }
         }
       }
-      if ("children" in node) for (const child of node.children) await walk2(child);
+      if ("children" in node) for (const child of node.children) await walk3(child);
     };
-    for (const root of roots) await walk2(root);
+    for (const root of roots) await walk3(root);
     return [...found.values()];
   }
   var WHOLE_SET_UP_TO = 12;
@@ -34558,12 +37253,12 @@ createRoot(document.getElementById('root')!).render(
   }
   async function vectorsUnder(nodes) {
     const wanted = [];
-    const walk2 = (node) => {
+    const walk3 = (node) => {
       var _a;
       if (node.type === "vector" && !node.inlineSvg) wanted.push(node.id);
-      for (const child of (_a = node.children) != null ? _a : []) walk2(child);
+      for (const child of (_a = node.children) != null ? _a : []) walk3(child);
     };
-    for (const node of nodes) walk2(node);
+    for (const node of nodes) walk3(node);
     const exported = /* @__PURE__ */ new Map();
     for (const id of wanted) {
       const node = await figma.getNodeByIdAsync(id).catch(() => null);
@@ -34578,12 +37273,12 @@ createRoot(document.getElementById('root')!).render(
   }
   function motionUnder(roots) {
     const found = /* @__PURE__ */ new Map();
-    const walk2 = (node) => {
+    const walk3 = (node) => {
       const snapshot = readMotionData(node);
       if (snapshot && snapshot.tracks.length > 0) found.set(node.id, snapshot);
-      if ("children" in node) for (const child of node.children) walk2(child);
+      if ("children" in node) for (const child of node.children) walk3(child);
     };
-    for (const root of roots) walk2(root);
+    for (const root of roots) walk3(root);
     return found;
   }
   async function rootsForScope(scope) {
@@ -34619,13 +37314,13 @@ createRoot(document.getElementById('root')!).render(
     throw new Error(`${command}: ${what} \u2014 nothing to export`);
   }
   async function indexSceneNodes2(roots) {
-    const index = /* @__PURE__ */ new Map();
+    const index2 = /* @__PURE__ */ new Map();
     for (const root of roots) {
-      index.set(root.id, root);
+      index2.set(root.id, root);
       const descendants = await findAllWithCriteria(root, (node) => true);
-      for (const node of descendants) index.set(node.id, node);
+      for (const node of descendants) index2.set(node.id, node);
     }
-    return index;
+    return index2;
   }
   async function addReactionDestinationsToScene(pageRoots, sceneNodesById) {
     const missing = [...collectReactionDestinationIds(pageRoots)].filter((id) => !sceneNodesById.has(id));
@@ -34638,11 +37333,11 @@ createRoot(document.getElementById('root')!).render(
   }
   async function serializeReactionDestinations(pageRoots, sceneNodesById) {
     const inPages = /* @__PURE__ */ new Set();
-    const index = (node) => {
+    const index2 = (node) => {
       inPages.add(node.id);
-      if ("children" in node) for (const child of node.children) index(child);
+      if ("children" in node) for (const child of node.children) index2(child);
     };
-    for (const root of pageRoots) index(root);
+    for (const root of pageRoots) index2(root);
     const serialized = [];
     for (const id of collectReactionDestinationIds(pageRoots)) {
       if (inPages.has(id)) continue;
@@ -34748,7 +37443,7 @@ createRoot(document.getElementById('root')!).render(
     let probe = null;
     try {
       probe = figma.createText();
-      probe.name = "[altery] font probe";
+      probe.name = "[allcrew-channel] font probe";
       probe.visible = false;
       for (const [key, fontName] of fonts) {
         try {
@@ -34774,7 +37469,7 @@ createRoot(document.getElementById('root')!).render(
     }
     return facts;
   }
-  async function readGraph(includeLibraries = false) {
+  async function readGraph(includeLibraries = false, collectionMerges = []) {
     var _a, _b;
     const [collections, variables, textStyles, effectStyles] = await Promise.all([
       figma.variables.getLocalVariableCollectionsAsync(),
@@ -34790,7 +37485,7 @@ createRoot(document.getElementById('root')!).render(
       collections: collections.map((c) => {
         let generated = false;
         try {
-          generated = c.getPluginData("altery-typo-collection") === "1";
+          generated = c.getPluginData("allcrew-channel-typo-collection") === "1";
         } catch (e) {
         }
         return {
@@ -34855,7 +37550,7 @@ createRoot(document.getElementById('root')!).render(
           };
         })
       }))
-    });
+    }, collectionMerges);
     return __spreadValues({ graph }, libraryNote ? { libraryNote } : {});
   }
   async function libraryCollectionsNote() {
@@ -34971,7 +37666,7 @@ createRoot(document.getElementById('root')!).render(
     }
     return { docs, files };
   }
-  var TYPO_COLLECTION_PLUGIN_KEY = "altery-typo-collection";
+  var TYPO_COLLECTION_PLUGIN_KEY = "allcrew-channel-typo-collection";
   function createTypographyVariable(name, collection, type) {
     try {
       return figma.variables.createVariable(name, collection, type);
@@ -35090,9 +37785,12 @@ createRoot(document.getElementById('root')!).render(
       }
     });
   } else {
-    figma.showUI(__html__, { width: 420, height: 660, themeColors: true });
+    figma.showUI(__html__, { width: 426, height: 958, themeColors: true });
   }
-  var GATES_KEY = "agentGates";
+  var EXPORT_OPTIONS_KEY = "allcrewChannel.v1.exportOptions";
+  var USER_PRESETS_KEY = "allcrewChannel.v1.userPresets";
+  var PALETTE_SETTINGS_KEY = "allcrewChannel.v1.paletteSettings";
+  var GATES_KEY = "allcrewChannel.v1.agentGates";
   function gateKeys() {
     const key = figma.fileKey;
     return key ? [key, figma.root.name] : [figma.root.name];
@@ -35132,9 +37830,9 @@ createRoot(document.getElementById('root')!).render(
   }
   var isRelaunch = figma.command === "reexport";
   Promise.all([
-    figma.clientStorage.getAsync("exportOptions"),
-    figma.clientStorage.getAsync("userPresets"),
-    figma.clientStorage.getAsync("paletteSettings")
+    figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY),
+    figma.clientStorage.getAsync(USER_PRESETS_KEY),
+    figma.clientStorage.getAsync(PALETTE_SETTINGS_KEY)
   ]).then(async ([storedOptions, storedPresets, storedPalette]) => {
     await loadUserModules();
     const options = normalizeExportOptions(storedOptions);
@@ -35153,16 +37851,12 @@ createRoot(document.getElementById('root')!).render(
       settings: paletteSettings
     });
   });
-  function topLevelAncestorOf(node) {
-    let current = node;
-    while (current.parent && current.parent.type !== "PAGE") current = current.parent;
-    return current;
-  }
   function postSelectionToUi() {
     const selection = figma.currentPage.selection;
     if (selection.length === 0) return;
     const node = selection[0];
-    const top = topLevelAncestorOf(node);
+    const top = topLevelAncestorOrNull(node);
+    if (!top) return;
     postToUi({
       type: "SELECTION_CHANGED",
       nodeId: node.id,
@@ -35171,11 +37865,11 @@ createRoot(document.getElementById('root')!).render(
     });
   }
   figma.on("selectionchange", postSelectionToUi);
-  async function describeBindings2(value) {
+  async function describeBindings2(value2) {
     var _a;
-    if (typeof value !== "object" || value === null) return {};
+    if (typeof value2 !== "object" || value2 === null) return {};
     const bound = {};
-    for (const [field, alias] of Object.entries(value)) {
+    for (const [field, alias] of Object.entries(value2)) {
       if (["fills", "strokes", "effects", "componentProperties"].includes(field)) continue;
       const aliases = Array.isArray(alias) ? alias : [alias];
       for (const one of aliases) {
@@ -35253,16 +37947,16 @@ createRoot(document.getElementById('root')!).render(
   }
   function planMeasurements(msg) {
     const plan = { add: [], edit: [], remove: [], problems: [] };
-    const list2 = (value, where) => {
-      if (value === void 0) return [];
-      if (!Array.isArray(value)) {
+    const list2 = (value2, where) => {
+      if (value2 === void 0) return [];
+      if (!Array.isArray(value2)) {
         plan.problems.push(`${where} must be an array`);
         return [];
       }
-      return value;
+      return value2;
     };
-    const endpoint = (value, where) => {
-      const one = value;
+    const endpoint = (value2, where) => {
+      const one = value2;
       if (typeof (one == null ? void 0 : one.node) !== "string") {
         plan.problems.push(`${where} must be { node, side }`);
         return null;
@@ -35274,38 +37968,38 @@ createRoot(document.getElementById('root')!).render(
       }
       return { node: one.node, side };
     };
-    const offsetOf = (value, where) => {
-      if (value === void 0) return void 0;
-      const one = value;
+    const offsetOf = (value2, where) => {
+      if (value2 === void 0) return void 0;
+      const one = value2;
       if (typeof (one == null ? void 0 : one.inner) === "number") return { type: "INNER", relative: one.inner };
       if (typeof (one == null ? void 0 : one.outer) === "number") return { type: "OUTER", fixed: one.outer };
       plan.problems.push(`${where}.offset must be { inner: 0..1 } or { outer: <pixels> }`);
       return void 0;
     };
-    for (const [index, entry] of list2(msg.add, "add").entries()) {
+    for (const [index2, entry] of list2(msg.add, "add").entries()) {
       const one = entry;
-      const from = endpoint(one == null ? void 0 : one.from, `add[${index}].from`);
-      const to = endpoint(one == null ? void 0 : one.to, `add[${index}].to`);
-      const offset = offsetOf(one == null ? void 0 : one.offset, `add[${index}]`);
+      const from = endpoint(one == null ? void 0 : one.from, `add[${index2}].from`);
+      const to = endpoint(one == null ? void 0 : one.to, `add[${index2}].to`);
+      const offset = offsetOf(one == null ? void 0 : one.offset, `add[${index2}]`);
       if (from && to) {
         plan.add.push(__spreadValues(__spreadValues({ from, to }, offset ? { offset } : {}), typeof one.text === "string" ? { text: one.text } : {}));
       }
     }
-    for (const [index, entry] of list2(msg.edit, "edit").entries()) {
+    for (const [index2, entry] of list2(msg.edit, "edit").entries()) {
       const one = entry;
       if (typeof (one == null ? void 0 : one.id) !== "string") {
-        plan.problems.push(`edit[${index}].id must name a measurement`);
+        plan.problems.push(`edit[${index2}].id must name a measurement`);
         continue;
       }
-      const offset = offsetOf(one.offset, `edit[${index}]`);
+      const offset = offsetOf(one.offset, `edit[${index2}]`);
       if (offset === void 0 && typeof one.text !== "string") {
-        plan.problems.push(`edit[${index}] changes nothing \u2014 give a text or an offset`);
+        plan.problems.push(`edit[${index2}] changes nothing \u2014 give a text or an offset`);
         continue;
       }
       plan.edit.push(__spreadValues(__spreadValues({ id: one.id }, offset ? { offset } : {}), typeof one.text === "string" ? { text: one.text } : {}));
     }
-    for (const [index, entry] of list2(msg.remove, "remove").entries()) {
-      if (typeof entry !== "string" || entry.trim() === "") plan.problems.push(`remove[${index}] must be a measurement id`);
+    for (const [index2, entry] of list2(msg.remove, "remove").entries()) {
+      if (typeof entry !== "string" || entry.trim() === "") plan.problems.push(`remove[${index2}] must be a measurement id`);
       else plan.remove.push(entry.trim());
     }
     if (plan.add.length + plan.edit.length + plan.remove.length === 0 && plan.problems.length === 0) {
@@ -35385,25 +38079,25 @@ createRoot(document.getElementById('root')!).render(
   }
   function clippedBy(node) {
     const geometry = node;
-    const box = geometry.absoluteBoundingBox;
-    if (!box || box.height === 0) return null;
+    const box2 = geometry.absoluteBoundingBox;
+    if (!box2 || box2.height === 0) return null;
     const rendered = geometry.absoluteRenderBounds;
     const visible = rendered ? rendered.height : 0;
-    if (visible >= box.height * 0.98) return null;
+    if (visible >= box2.height * 0.98) return null;
     let parent = node.parent;
     while (parent) {
       if ("clipsContent" in parent && parent.clipsContent) {
-        return { by: `${parent.name} (${parent.id})`, visible, own: box.height };
+        return { by: `${parent.name} (${parent.id})`, visible, own: box2.height };
       }
       parent = parent.parent;
     }
-    return { by: "an ancestor", visible, own: box.height };
+    return { by: "an ancestor", visible, own: box2.height };
   }
   var CLONE_GAP = 64;
-  var plain = (value) => value === figma.mixed ? "mixed" : value;
-  function textMeasure(value) {
-    if (typeof value !== "object" || value === null || !("unit" in value)) return "mixed";
-    const { unit, value: amount } = value;
+  var plain2 = (value2) => value2 === figma.mixed ? "mixed" : value2;
+  function textMeasure(value2) {
+    if (typeof value2 !== "object" || value2 === null || !("unit" in value2)) return "mixed";
+    const { unit, value: amount } = value2;
     if (unit === "AUTO") return "auto";
     const size = Math.round((amount != null ? amount : 0) * 100) / 100;
     return unit === "PERCENT" ? `${size}%` : `${size}px`;
@@ -35417,23 +38111,23 @@ createRoot(document.getElementById('root')!).render(
     }, node.parent ? { parent: { id: node.parent.id, name: node.parent.name } } : {}), "children" in node ? { childCount: node.children.length } : {});
     if (!withProps) return base;
     const bag = node;
-    const round13 = (value) => typeof value === "number" ? Math.round(value * 100) / 100 : value;
+    const round15 = (value2) => typeof value2 === "number" ? Math.round(value2 * 100) / 100 : value2;
     const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
-      x: round13(bag.x),
-      y: round13(bag.y),
-      width: round13(bag.width),
-      height: round13(bag.height)
-    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round13(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints(bag.fills) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+      x: round15(bag.x),
+      y: round15(bag.y),
+      width: round15(bag.width),
+      height: round15(bag.height)
+    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round15(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints(bag.fills) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
       stroke: await describePaints(bag.strokes)
-    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round13(bag.strokeWeight) } : {}), bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), describeProfile(bag.variableWidthStrokeProperties) ? { strokeProfile: describeProfile(bag.variableWidthStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" && bag.cornerRadius > 0 ? { cornerRadius: round13(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 && !bag.timelines[0].id.startsWith("-1") ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
+    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round15(bag.strokeWeight) } : {}), bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), describeProfile(bag.variableWidthStrokeProperties) ? { strokeProfile: describeProfile(bag.variableWidthStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" && bag.cornerRadius > 0 ? { cornerRadius: round15(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 && !bag.timelines[0].id.startsWith("-1") ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
       props.layout = __spreadValues(__spreadValues({
         mode: bag.layoutMode,
-        gap: round13(bag.itemSpacing),
-        padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round13),
+        gap: round15(bag.itemSpacing),
+        padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round15),
         primaryAxis: bag.primaryAxisAlignItems,
         counterAxis: bag.counterAxisAlignItems
-      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round13(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? { rows: bag.gridRowCount, columns: bag.gridColumnCount, autoTracks: bag.gridAutoTracks } : {});
+      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round15(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? { rows: bag.gridRowCount, columns: bag.gridColumnCount, autoTracks: bag.gridAutoTracks } : {});
     }
     if (typeof bag.layoutSizingHorizontal === "string") {
       props.sizing = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical };
@@ -35508,14 +38202,14 @@ createRoot(document.getElementById('root')!).render(
     }
     if (node.type === "TEXT" || node.type === "TEXT_PATH") {
       props.text = node.characters;
-      props.fontSize = node.fontSize === figma.mixed ? "mixed" : round13(node.fontSize);
+      props.fontSize = node.fontSize === figma.mixed ? "mixed" : round15(node.fontSize);
       props.fontName = node.fontName === figma.mixed ? "mixed" : { family: node.fontName.family, style: node.fontName.style };
       props.textAlign = node.textAlignHorizontal;
       if (node.textAlignVertical !== "TOP") props.verticalAlign = node.textAlignVertical;
       const t = node;
       if (typeof t.textAutoResize === "string") props.autoResize = t.textAutoResize;
-      if (plain(t.textCase) !== "ORIGINAL") props.textCase = plain(t.textCase);
-      if (plain(t.textDecoration) !== "NONE") props.textDecoration = plain(t.textDecoration);
+      if (plain2(t.textCase) !== "ORIGINAL") props.textCase = plain2(t.textCase);
+      if (plain2(t.textDecoration) !== "NONE") props.textDecoration = plain2(t.textDecoration);
       const tracking = textMeasure(t.letterSpacing);
       if (tracking !== "0px" && tracking !== "0%") props.letterSpacing = tracking;
       const leading = textMeasure(t.lineHeight);
@@ -35530,7 +38224,7 @@ createRoot(document.getElementById('root')!).render(
       if (t.hyperlink) props.link = t.hyperlink === figma.mixed ? "mixed" : (_g = t.hyperlink.value) != null ? _g : "";
       if (t.hangingPunctuation) props.hangingPunctuation = true;
       if (t.hangingList) props.hangingList = true;
-      const trim = plain(t.leadingTrim);
+      const trim = plain2(t.leadingTrim);
       if (trim && trim !== "NONE") props.leadingTrim = trim;
       if (t.autoRename === true) props.autoRename = true;
       if (typeof t.textWrapStyle === "string" && t.textWrapStyle !== "AUTO") props.textWrap = t.textWrapStyle;
@@ -35539,7 +38233,7 @@ createRoot(document.getElementById('root')!).render(
     }
     return __spreadProps(__spreadValues({}, base), { props });
   }
-  var MODULES_KEY = "userModules";
+  var MODULES_KEY = "allcrewChannel.v1.userModules";
   var userModules = [];
   async function readStoredModules() {
     const stored = await figma.clientStorage.getAsync(MODULES_KEY);
@@ -35559,17 +38253,97 @@ createRoot(document.getElementById('root')!).render(
     return typeof version === "string" ? version : null;
   }
   function moduleStateOf(entry) {
-    var _a, _b, _c, _d;
-    const state = {};
-    for (const [name, field] of Object.entries((_b = (_a = entry.module) == null ? void 0 : _a.state) != null ? _b : {})) {
-      const kept2 = (_d = (_c = entry.stored) == null ? void 0 : _c.state) == null ? void 0 : _d[name];
-      state[name] = typeof kept2 === field.type ? kept2 : field.default;
-    }
-    return state;
+    var _a;
+    return entry.module ? migrateModuleState(entry.module, (_a = entry.stored) == null ? void 0 : _a.state) : {};
+  }
+  function redactedModuleState(entry) {
+    return entry.module ? redactModuleState(entry.module, moduleStateOf(entry)) : {};
+  }
+  function moduleSecretsSet(entry) {
+    var _a, _b;
+    const state = moduleStateOf(entry);
+    return Object.entries((_b = (_a = entry.module) == null ? void 0 : _a.state) != null ? _b : {}).filter(([name, field]) => field.secret && typeof state[name] === "string" && state[name] !== "").map(([name]) => name);
   }
   async function writeStoredModules(next) {
+    const problems = moduleStorageProblems(next);
+    if (problems.length > 0) throw new Error(problems.join("; "));
     await figma.clientStorage.setAsync(MODULES_KEY, next);
     userModules = registerModules(next, UI_COMMANDS);
+  }
+  var ModuleValidationError = class extends Error {
+    constructor(problems) {
+      super(problems.map((problem) => `${problem.path || "(root)"}: ${problem.message}`).join("\n"));
+      this.problems = problems;
+    }
+  };
+  async function installUserModule(file, options) {
+    var _a;
+    const storedFile = typeof file === "string" ? JSON.parse(file) : file;
+    const size = JSON.stringify(storedFile != null ? storedFile : null).length;
+    if (size > MODULE_SIZE_LIMIT) throw new Error(`the module is ${size} bytes; the limit is ${MODULE_SIZE_LIMIT}`);
+    const { module, problems } = parseUserModule(storedFile, UI_COMMANDS);
+    if (!module) throw new ModuleValidationError(problems);
+    const stored = await readStoredModules();
+    const existing = stored[module.id];
+    if (existing && !options.replace) throw new Error(`"${module.id}" is already installed \u2014 pass replace: true to overwrite it`);
+    if (!existing && Object.keys(stored).length >= MODULE_COUNT_LIMIT) {
+      throw new Error(`module count limit ${MODULE_COUNT_LIMIT} reached`);
+    }
+    const previousVersion = versionOf(existing);
+    if (previousVersion && compareModuleVersions(module.version, previousVersion) < 0 && !options.allowDowngrade) {
+      throw new Error(`refusing downgrade from ${previousVersion} to ${module.version} \u2014 pass allowDowngrade: true to make that explicit`);
+    }
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    await writeStoredModules(__spreadProps(__spreadValues({}, stored), {
+      [module.id]: __spreadValues(__spreadValues({
+        file: storedFile,
+        state: migrateModuleState(module, existing == null ? void 0 : existing.state),
+        installedAt: (_a = existing == null ? void 0 : existing.installedAt) != null ? _a : now
+      }, existing ? { updatedAt: now } : {}), (existing == null ? void 0 : existing.disabled) === true ? { disabled: true } : {})
+    }));
+    return { module, replaced: Boolean(existing), previousVersion };
+  }
+  async function configureUserModule(id, enabled, rawState) {
+    const entry = userModules.find((candidate) => candidate.id === id);
+    if (!(entry == null ? void 0 : entry.module)) throw new Error(`no usable module "${id}"`);
+    const stored = await readStoredModules();
+    const held = stored[id];
+    if (!held) throw new Error(`module "${id}" is not installed`);
+    const state = moduleStateOf(entry);
+    if (rawState !== void 0) {
+      if (typeof rawState !== "object" || rawState === null || Array.isArray(rawState)) throw new Error("state must be an object");
+      for (const [name, value2] of Object.entries(rawState)) {
+        const field = entry.module.state[name];
+        if (!field) throw new Error(`module "${id}" declares no field "${name}"`);
+        const error = moduleStateValueError(field, value2);
+        if (error) throw new Error(`"${name}" ${error}`);
+        state[name] = value2;
+      }
+    }
+    await writeStoredModules(__spreadProps(__spreadValues({}, stored), {
+      [id]: __spreadProps(__spreadValues(__spreadProps(__spreadValues({}, held), {
+        state
+      }), enabled === void 0 ? {} : { disabled: !enabled }), {
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      })
+    }));
+    const updated = userModules.find((candidate) => candidate.id === id);
+    return { module: describeModules([updated])[0], state: redactedModuleState(updated) };
+  }
+  async function setUserModuleEnabled(id, enabled) {
+    const stored = await readStoredModules();
+    const held = stored[id];
+    if (!held) throw new Error(`no module "${id}" is installed`);
+    await writeStoredModules(__spreadProps(__spreadValues({}, stored), {
+      [id]: __spreadProps(__spreadValues({}, held), { disabled: !enabled, updatedAt: (/* @__PURE__ */ new Date()).toISOString() })
+    }));
+    return userModules.find((candidate) => candidate.id === id);
+  }
+  async function removeUserModule(id) {
+    const stored = await readStoredModules();
+    if (!(id in stored)) throw new Error(`no module "${id}" is installed`);
+    const _a = stored, { [id]: _removed } = _a, rest = __objRest(_a, [__restKey(id)]);
+    await writeStoredModules(rest);
   }
   setModuleProvider({
     commands: () => moduleCommandDefs(userModules),
@@ -35603,7 +38377,70 @@ createRoot(document.getElementById('root')!).render(
         const entry = stored[found.entry.id];
         if (entry) await writeStoredModules(__spreadProps(__spreadValues({}, stored), { [found.entry.id]: __spreadProps(__spreadValues({}, entry), { state: report2.state }) }));
       }
-      return report2;
+      return __spreadProps(__spreadValues({}, report2), { state: redactModuleState(found.module, report2.state) });
+    }
+  });
+  setModuleAdminProvider({
+    list: () => describeModules(userModules),
+    inspect(id) {
+      var _a, _b;
+      const entry = userModules.find((candidate) => candidate.id === id);
+      if (!entry) throw new Error(`no module "${id}" is installed`);
+      return __spreadProps(__spreadValues({}, describeModules([entry])[0]), {
+        file: entry.stored.file,
+        state: redactedModuleState(entry),
+        secretFields: Object.entries((_b = (_a = entry.module) == null ? void 0 : _a.state) != null ? _b : {}).filter(([, field]) => field.secret).map(([name]) => name)
+      });
+    },
+    async install(file, allowDowngrade) {
+      const result = await installUserModule(file, { replace: true, allowDowngrade });
+      const capabilities = moduleCapabilities(result.module, UI_COMMANDS);
+      postToUi({
+        type: "MODULE_INSTALLED",
+        id: result.module.id,
+        replaced: result.replaced,
+        capabilities,
+        modules: describeModules(userModules)
+      });
+      figma.notify(`${result.replaced ? "Updated" : "Installed"} "${result.module.name}"`);
+      return __spreadProps(__spreadValues({
+        id: result.module.id,
+        version: result.module.version,
+        replaced: result.replaced
+      }, result.previousVersion ? { previousVersion: result.previousVersion } : {}), {
+        capabilities
+      });
+    },
+    async configure(id, enabled, state) {
+      let result;
+      if (state === void 0 && enabled !== void 0) {
+        const updated = await setUserModuleEnabled(id, enabled);
+        result = { module: describeModules([updated])[0], state: redactedModuleState(updated) };
+      } else {
+        result = await configureUserModule(id, enabled, state);
+      }
+      const entry = userModules.find((candidate) => candidate.id === id);
+      postToUi({ type: "MODULES", modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT });
+      postToUi({ type: "MODULE_STATE", id, state: result.state, secretsSet: entry ? moduleSecretsSet(entry) : [] });
+      return result;
+    },
+    async remove(id) {
+      await removeUserModule(id);
+      postToUi({ type: "MODULE_REMOVED", id, modules: describeModules(userModules) });
+      figma.notify(`Removed "${id}"`);
+      return { id, removed: true };
+    },
+    export(id, includeState) {
+      var _a, _b;
+      const entry = userModules.find((candidate) => candidate.id === id);
+      if (!entry) throw new Error(`no module "${id}" is installed`);
+      return __spreadProps(__spreadValues({
+        id,
+        file: entry.stored.file,
+        json: JSON.stringify(entry.stored.file, null, 2)
+      }, includeState ? { state: redactedModuleState(entry) } : {}), {
+        secretFieldsOmitted: Object.entries((_b = (_a = entry.module) == null ? void 0 : _a.state) != null ? _b : {}).filter(([, field]) => field.secret).map(([name]) => name)
+      });
     }
   });
   function refuse(command, reason) {
@@ -35622,36 +38459,36 @@ createRoot(document.getElementById('root')!).render(
   }
   function planDevLinks(msg) {
     const plan = { add: [], edit: [], remove: [], problems: [] };
-    const list2 = (value, where) => {
-      if (value === void 0) return [];
-      if (!Array.isArray(value)) {
+    const list2 = (value2, where) => {
+      if (value2 === void 0) return [];
+      if (!Array.isArray(value2)) {
         plan.problems.push(`${where} must be an array`);
         return [];
       }
-      return value;
+      return value2;
     };
-    for (const [index, entry] of list2(msg.add, "add").entries()) {
+    for (const [index2, entry] of list2(msg.add, "add").entries()) {
       const one = entry;
       const url = typeof one === "string" ? one : typeof (one == null ? void 0 : one.url) === "string" ? one.url : null;
-      if (!url || url.trim() === "") plan.problems.push(`add[${index}] must be a URL or { url, name? }`);
+      if (!url || url.trim() === "") plan.problems.push(`add[${index2}] must be a URL or { url, name? }`);
       else plan.add.push(__spreadValues({ url: url.trim() }, typeof (one == null ? void 0 : one.name) === "string" ? { name: one.name } : {}));
     }
-    for (const [index, entry] of list2(msg.edit, "edit").entries()) {
+    for (const [index2, entry] of list2(msg.edit, "edit").entries()) {
       const one = entry;
       if (typeof (one == null ? void 0 : one.url) !== "string" || one.url.trim() === "") {
-        plan.problems.push(`edit[${index}].url must name the link as it stands`);
+        plan.problems.push(`edit[${index2}].url must name the link as it stands`);
         continue;
       }
       if (typeof one.newUrl !== "string" && typeof one.name !== "string") {
-        plan.problems.push(`edit[${index}] changes nothing \u2014 give a newUrl or a name`);
+        plan.problems.push(`edit[${index2}] changes nothing \u2014 give a newUrl or a name`);
         continue;
       }
       plan.edit.push(__spreadValues(__spreadValues({
         url: one.url.trim()
       }, typeof one.newUrl === "string" ? { newUrl: one.newUrl.trim() } : {}), typeof one.name === "string" ? { name: one.name } : {}));
     }
-    for (const [index, entry] of list2(msg.remove, "remove").entries()) {
-      if (typeof entry !== "string" || entry.trim() === "") plan.problems.push(`remove[${index}] must be a URL`);
+    for (const [index2, entry] of list2(msg.remove, "remove").entries()) {
+      if (typeof entry !== "string" || entry.trim() === "") plan.problems.push(`remove[${index2}] must be a URL`);
       else plan.remove.push(entry.trim());
     }
     if (plan.add.length + plan.edit.length + plan.remove.length === 0 && plan.problems.length === 0) {
@@ -35660,17 +38497,20 @@ createRoot(document.getElementById('root')!).render(
     return plan;
   }
   async function handleUiMessage(msg) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _R, _S, _T, _U, _V, _W, _X, _Y, _Z, __;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
         try {
-          const stored = await figma.clientStorage.getAsync("exportOptions");
+          const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY);
           const saved = normalizeExportOptions(stored);
           const options = __spreadProps(__spreadValues({}, saved), {
             tokens: __spreadValues(__spreadValues(__spreadValues({}, saved.tokens), ((_a = msg.tokens) == null ? void 0 : _a.includeLibraries) === void 0 ? {} : { includeLibraries: msg.tokens.includeLibraries }), ((_b = msg.tokens) == null ? void 0 : _b.emitNative) === void 0 ? {} : { emitNative: msg.tokens.emitNative })
           });
-          const { graph, libraryNote } = await readGraph(options.tokens.includeLibraries);
+          const { graph, libraryNote } = await readGraph(
+            options.tokens.includeLibraries,
+            options.themeMerges.groups
+          );
           const docsOptions = __spreadValues(__spreadValues({}, options.docs), (_c = msg.docs) != null ? _c : {});
           const componentDocs = docsOptions.componentDocs ? await collectComponentDocs(docsOptions.componentPreviews, docsOptions.previewBudgetMb) : { docs: [], files: {} };
           const artifacts = buildDesignTokens(graph, options, void 0, componentDocs.docs, readRenameMap());
@@ -35744,12 +38584,12 @@ createRoot(document.getElementById('root')!).render(
           break;
         }
         const settings = applyPaletteFix(normalizePaletteSettings(msg.settings), fix);
-        await figma.clientStorage.setAsync("paletteSettings", settings);
+        await figma.clientStorage.setAsync(PALETTE_SETTINGS_KEY, settings);
         postToUi({ type: "PALETTE_FIXED", palette: generatePalette(settings), settings });
         break;
       }
       case "SAVE_PALETTE_SETTINGS": {
-        await figma.clientStorage.setAsync("paletteSettings", normalizePaletteSettings(msg.settings));
+        await figma.clientStorage.setAsync(PALETTE_SETTINGS_KEY, normalizePaletteSettings(msg.settings));
         break;
       }
       case "APPLY_PALETTE": {
@@ -35760,7 +38600,7 @@ createRoot(document.getElementById('root')!).render(
           }
           const options = __spreadValues(__spreadValues({}, DEFAULT_APPLY_OPTIONS), (_e = msg.applyOptions) != null ? _e : {});
           const report2 = await applyPalette(generatePalette(settings), options);
-          await figma.clientStorage.setAsync("paletteSettings", settings);
+          await figma.clientStorage.setAsync(PALETTE_SETTINGS_KEY, settings);
           const parts = [];
           if (options.variables) parts.push(`${report2.created} new \xB7 ${report2.updated} updated variables`);
           if (report2.themeRoles) parts.push(`${report2.themeRoles} theme roles`);
@@ -35992,17 +38832,27 @@ createRoot(document.getElementById('root')!).render(
         break;
       }
       /* ---- shared ---- */
+      case "LIST_VARIABLE_COLLECTIONS": {
+        const collections = await figma.variables.getLocalVariableCollectionsAsync();
+        const state = singleModeCollectionState(collections.map((collection) => ({
+          id: collection.id,
+          name: collection.name,
+          defaultModeId: collection.defaultModeId,
+          modes: collection.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name }))
+        })));
+        postToUi(__spreadValues({ type: "VARIABLE_COLLECTIONS" }, state));
+        break;
+      }
       case "READ_VARIABLES": {
         const data = await readAllVariables();
         postToUi({ type: "VARIABLES_SNAPSHOT", data });
         break;
       }
       case "EMIT_TOKENS": {
-        const [snapshot, stored] = await Promise.all([
-          readAllVariables(),
-          figma.clientStorage.getAsync("exportOptions")
-        ]);
-        const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(normalizeExportOptions(stored), readRenameMap())).css;
+        const stored = await figma.clientStorage.getAsync("exportOptions");
+        const options = normalizeExportOptions(stored);
+        const snapshot = await readAllVariables({ collectionMerges: options.themeMerges.groups });
+        const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(options, readRenameMap())).css;
         postToUi({ type: "TOKENS_CSS", css });
         break;
       }
@@ -36100,9 +38950,9 @@ createRoot(document.getElementById('root')!).render(
               const built = (await Promise.all(picked.map((one2) => serializeNode(one2)))).filter(
                 (node) => node !== null
               );
-              const index = await indexSceneNodes2(picked);
-              await annotateVectorLeaves(built, index);
-              const one = await emitLibrary(built, index, variableNamesById, {
+              const index2 = await indexSceneNodes2(picked);
+              await annotateVectorLeaves(built, index2);
+              const one = await emitLibrary(built, index2, variableNamesById, {
                 motionByNodeId: motionUnder(picked),
                 assetsByNodeId: await vectorsUnder(built),
                 componentNamesById: library.names
@@ -36128,9 +38978,9 @@ createRoot(document.getElementById('root')!).render(
               (node) => node !== null
             );
             if (built.length === 0) continue;
-            const index = await indexSceneNodes2(sets);
-            await annotateVectorLeaves(built, index);
-            const one = await emitLibrary(built, index, variableNamesById, {
+            const index2 = await indexSceneNodes2(sets);
+            await annotateVectorLeaves(built, index2);
+            const one = await emitLibrary(built, index2, variableNamesById, {
               motionByNodeId: motionUnder(sets),
               assetsByNodeId: await vectorsUnder(built),
               componentNamesById: library.names
@@ -36147,7 +38997,7 @@ createRoot(document.getElementById('root')!).render(
             const seen = /* @__PURE__ */ new Set();
             const layers = [];
             let frontier = [...roots, ...alongsideRoots];
-            for (let round13 = 0; round13 < 6 && frontier.length > 0; round13++) {
+            for (let round15 = 0; round15 < 6 && frontier.length > 0; round15++) {
               const found = (await readableMasters(frontier)).filter(
                 (one) => !seen.has(one.owner.id) && !(`src/components/${componentName2(one.owner.name)}.tsx` in library.files)
               );
@@ -36188,9 +39038,9 @@ createRoot(document.getElementById('root')!).render(
                   `${componentName2(master.owner.name)} has ${kids.length} variants and this design uses ${master.used.size} \u2014 only those were emitted; export that set on its own for the rest`
                 );
               }
-              const index = await indexSceneNodes2(indexed);
-              await annotateVectorLeaves(built, index);
-              const one = await emitLibrary(built, index, variableNamesById, {
+              const index2 = await indexSceneNodes2(indexed);
+              await annotateVectorLeaves(built, index2);
+              const one = await emitLibrary(built, index2, variableNamesById, {
                 motionByNodeId: motionUnder(indexed),
                 assetsByNodeId: await vectorsUnder(built),
                 libraryProps: library.props,
@@ -36261,7 +39111,7 @@ createRoot(document.getElementById('root')!).render(
         const previewOptions = normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions"));
         const tokensOn = previewOptions.modules.tokens;
         const previewThemeSets = previewOptions.targetOptions.framework === "bootstrap" && previewOptions.targetOptions.bootstrapFidelity === "theme" ? await collectThemableSets(sceneNodesById) : void 0;
-        const snapshot = tokensOn ? await readAllVariables() : await readLocalVariables();
+        const snapshot = tokensOn ? await readAllVariables({ collectionMerges: previewOptions.themeMerges.groups }) : await readLocalVariables();
         const previewBreakpointTokens = extractBreakpointTokens2(snapshot);
         const { baseHtml, pages, partials, css, interactionsCss, interactionsJs, themeCss, transitionsCss, transitionsJs, fileNodeIds } = await emitDjangoProject(
           pageRoots,
@@ -36312,26 +39162,26 @@ createRoot(document.getElementById('root')!).render(
       }
       case "SCAN": {
         const roots = await rootsForScope(msg.scope);
-        const index = await indexSceneNodes2(roots);
-        lastScanIndex = index;
+        const index2 = await indexSceneNodes2(roots);
+        lastScanIndex = index2;
         const frames = figma.currentPage.children.filter((node) => node.type === "FRAME").map((node) => ({ id: node.id, name: node.name }));
         const textNodes = [];
-        for (const node of index.values()) {
+        for (const node of index2.values()) {
           if (node.type !== "TEXT") continue;
           textNodes.push({ id: node.id, name: node.name, characters: node.characters });
           if (textNodes.length % 200 === 0) await yieldToHost();
         }
         const lintMaxDepth = typeof msg.lintMaxDepth === "number" ? msg.lintMaxDepth : normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions")).lint.maxNestingDepth;
         const lint = await lintScopeAsync(roots, { maxNestingDepth: lintMaxDepth });
-        await annotateUnfixableFindings(lint, index);
+        await annotateUnfixableFindings(lint, index2);
         const videoAssets = [];
-        for (const node of index.values()) {
+        for (const node of index2.values()) {
           const fills = "fills" in node ? node.fills : void 0;
           if (Array.isArray(fills) && fills.some((f) => f.type === "VIDEO" && f.visible !== false)) {
             videoAssets.push({ nodeId: node.id, name: node.name, assetSrc: `img/${videoFilename(node.id, node.name)}` });
           }
         }
-        postToUi({ type: "SCAN_RESULT", frames, textNodes, lint, nodeCount: index.size, videoAssets });
+        postToUi({ type: "SCAN_RESULT", frames, textNodes, lint, nodeCount: index2.size, videoAssets });
         postSelectionToUi();
         break;
       }
@@ -36450,21 +39300,21 @@ createRoot(document.getElementById('root')!).render(
         break;
       }
       case "SAVE_EXPORT_OPTIONS": {
-        const stored = await figma.clientStorage.getAsync("exportOptions");
-        await figma.clientStorage.setAsync("exportOptions", mergeExportOptions(stored, msg.options));
+        const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY);
+        await figma.clientStorage.setAsync(EXPORT_OPTIONS_KEY, mergeExportOptions(stored, msg.options));
         break;
       }
       case "SAVE_USER_PRESET": {
-        const stored = normalizeUserPresets(await figma.clientStorage.getAsync("userPresets"));
+        const stored = normalizeUserPresets(await figma.clientStorage.getAsync(USER_PRESETS_KEY));
         const updated = upsertUserPreset(stored, msg.label, msg.values);
-        await figma.clientStorage.setAsync("userPresets", updated);
+        await figma.clientStorage.setAsync(USER_PRESETS_KEY, updated);
         postToUi({ type: "USER_PRESETS", userPresets: updated });
         break;
       }
       case "DELETE_USER_PRESET": {
-        const stored = normalizeUserPresets(await figma.clientStorage.getAsync("userPresets"));
+        const stored = normalizeUserPresets(await figma.clientStorage.getAsync(USER_PRESETS_KEY));
         const updated = stored.filter((preset) => preset.id !== msg.id);
-        await figma.clientStorage.setAsync("userPresets", updated);
+        await figma.clientStorage.setAsync(USER_PRESETS_KEY, updated);
         postToUi({ type: "USER_PRESETS", userPresets: updated });
         break;
       }
@@ -36474,8 +39324,8 @@ createRoot(document.getElementById('root')!).render(
           const specs = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes];
           const problems = [];
           const plans = [];
-          for (const [index, spec] of specs.entries()) {
-            const plan = planCreate(spec, `nodes[${index}]`, problems);
+          for (const [index2, spec] of specs.entries()) {
+            const plan = planCreate(spec, `nodes[${index2}]`, problems);
             if (plan) plans.push(plan);
           }
           if (problems.length > 0) {
@@ -36519,19 +39369,19 @@ createRoot(document.getElementById('root')!).render(
           const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes];
           const problems = [];
           const planned = [];
-          for (const [index, row] of rows.entries()) {
+          for (const [index2, row] of rows.entries()) {
             if (typeof row !== "object" || row === null) {
-              problems.push(`nodes[${index}] must be { node, props }`);
+              problems.push(`nodes[${index2}] must be { node, props }`);
               continue;
             }
             const entry = row;
             if (typeof entry.node !== "string" || entry.node === "") {
-              problems.push(`nodes[${index}].node must be a node id`);
+              problems.push(`nodes[${index2}].node must be a node id`);
               continue;
             }
-            const plan = planProps(entry.props, `nodes[${index}].props`);
+            const plan = planProps(entry.props, `nodes[${index2}].props`);
             problems.push(...plan.problems);
-            if (plan.steps.length === 0) problems.push(`nodes[${index}].props sets nothing`);
+            if (plan.steps.length === 0) problems.push(`nodes[${index2}].props sets nothing`);
             planned.push({ id: entry.node, steps: plan.steps });
           }
           if (problems.length > 0) {
@@ -36611,7 +39461,7 @@ createRoot(document.getElementById('root')!).render(
             if (found.length >= limit) return;
             if (types && !types.includes(node.type)) return;
             if (wanted && !node.name.toLowerCase().includes(wanted)) return;
-            if (stamped && !stamped.every(([key, value]) => node.getPluginData(key) === value)) return;
+            if (stamped && !stamped.every(([key, value2]) => node.getPluginData(key) === value2)) return;
             found.push(node);
           });
           postToUi({
@@ -36649,17 +39499,17 @@ createRoot(document.getElementById('root')!).render(
           const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes];
           const problems = [];
           const planned = [];
-          for (const [index, row] of rows.entries()) {
+          for (const [index2, row] of rows.entries()) {
             if (typeof row !== "object" || row === null) {
-              problems.push(`nodes[${index}] must be { node, props? }`);
+              problems.push(`nodes[${index2}] must be { node, props? }`);
               continue;
             }
             const entry = row;
             if (typeof entry.node !== "string" || entry.node === "") {
-              problems.push(`nodes[${index}].node must be a node id`);
+              problems.push(`nodes[${index2}].node must be a node id`);
               continue;
             }
-            const plan = planProps(entry.props, `nodes[${index}].props`);
+            const plan = planProps(entry.props, `nodes[${index2}].props`);
             problems.push(...plan.problems);
             planned.push({ id: entry.node, steps: plan.steps });
           }
@@ -36687,11 +39537,11 @@ createRoot(document.getElementById('root')!).render(
               reports.push({ source: entry.id, name: source.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
               continue;
             }
-            const placedByCaller = entry.steps.some((step) => step.step === "reparent" && step.parent !== "");
+            const placedByCaller = entry.steps.some((step2) => step2.step === "reparent" && step2.parent !== "");
             const home = source.parent;
             if (!placedByCaller && home && "appendChild" in home) home.appendChild(copy);
             const movedByCaller = entry.steps.some(
-              (step) => step.step === "assign" && (step.property === "x" || step.property === "y")
+              (step2) => step2.step === "assign" && (step2.property === "x" || step2.property === "y")
             );
             const laidOut = copy.parent !== null && "layoutMode" in copy.parent && copy.parent.layoutMode !== "NONE";
             if (!placedByCaller && !movedByCaller && !laidOut) {
@@ -36941,14 +39791,14 @@ createRoot(document.getElementById('root')!).render(
             documentation = uris.map((uri) => ({ uri }));
           }
           const wanted = [];
-          for (const [index, row] of rows.entries()) {
+          for (const [index2, row] of rows.entries()) {
             if (typeof row === "string") {
               wanted.push({ id: row });
               continue;
             }
             const entry = row;
             if (typeof (entry == null ? void 0 : entry.node) !== "string") {
-              refuse("COMPONENT_MAKE", `nodes[${index}] must be an id or { node, name }`);
+              refuse("COMPONENT_MAKE", `nodes[${index2}] must be an id or { node, name }`);
               wanted.length = 0;
               break;
             }
@@ -37191,6 +40041,7 @@ createRoot(document.getElementById('root')!).render(
             break;
           }
           const constraint = typeof msg.width === "number" ? { type: "WIDTH", value: msg.width } : typeof msg.height === "number" ? { type: "HEIGHT", value: msg.height } : { type: "SCALE", value: scale };
+          const extras = __spreadValues(__spreadValues(__spreadValues({}, msg.contentsOnly === void 0 ? {} : { contentsOnly: msg.contentsOnly === true }), msg.useAbsoluteBounds === void 0 ? {} : { useAbsoluteBounds: msg.useAbsoluteBounds === true }), typeof msg.colorProfile === "string" ? { colorProfile: msg.colorProfile.toUpperCase() } : {});
           const files = [];
           const reports = [];
           const taken = /* @__PURE__ */ new Set();
@@ -37214,7 +40065,10 @@ createRoot(document.getElementById('root')!).render(
             }
             try {
               if (format === "SVG") {
-                const svg = await scene.exportAsync({ format: "SVG_STRING", svgOutlineText: msg.outlineText !== false });
+                const svg = await scene.exportAsync(__spreadValues(__spreadValues(__spreadProps(__spreadValues({}, extras), {
+                  format: "SVG_STRING",
+                  svgOutlineText: msg.outlineText !== false
+                }), msg.svgIdAttribute === void 0 ? {} : { svgIdAttribute: msg.svgIdAttribute === true }), msg.svgSimplifyStroke === void 0 ? {} : { svgSimplifyStroke: msg.svgSimplifyStroke === true }));
                 spent += svg.length;
                 if (spent > EXPORT_BUDGET) {
                   reports.push({ node: id, name: scene.name, ok: false, error: "the 12 MB budget for this call was already spent" });
@@ -37234,7 +40088,7 @@ createRoot(document.getElementById('root')!).render(
               } else if (format === "PDF") {
                 bytes = await scene.exportAsync({ format: "PDF" });
               } else {
-                bytes = withoutChildren ? await exportPlate(scene, { format, constraint }) : await scene.exportAsync({ format, constraint });
+                bytes = withoutChildren ? await exportPlate(scene, __spreadValues({ format, constraint }, extras)) : await scene.exportAsync(__spreadValues({ format, constraint }, extras));
               }
               spent += bytes.length;
               if (spent > EXPORT_BUDGET) {
@@ -37314,9 +40168,9 @@ createRoot(document.getElementById('root')!).render(
             };
             const visit = (node) => {
               for (const field of ["fills", "strokes"]) {
-                const paints = node[field];
-                if (!Array.isArray(paints)) continue;
-                for (const paint of paints) {
+                const paints2 = node[field];
+                if (!Array.isArray(paints2)) continue;
+                for (const paint of paints2) {
                   if ((paint == null ? void 0 : paint.type) !== "SHADER") continue;
                   note(paint.id, "fill", node, paint.properties);
                 }
@@ -37417,8 +40271,8 @@ createRoot(document.getElementById('root')!).render(
           style.name = name;
           if (typeof msg.description === "string") style.description = msg.description;
           if (kind === "paint") {
-            const paints = source ? (_B = source.fills) != null ? _B : [] : (await applyToScratch(msg.paints, "paints")).fills;
-            style.paints = paints;
+            const paints2 = source ? (_B = source.fills) != null ? _B : [] : (await applyToScratch(msg.paints, "paints")).fills;
+            style.paints = paints2;
           } else if (kind === "effect") {
             const effects = source ? (_C = source.effects) != null ? _C : [] : (await applyToScratch(msg.effects, "effects")).effects;
             style.effects = effects;
@@ -37543,15 +40397,15 @@ createRoot(document.getElementById('root')!).render(
           await page.loadAsync();
           const points = [];
           const problems = [];
-          for (const [index, row] of rows.entries()) {
+          for (const [index2, row] of rows.entries()) {
             const entry = row;
             if (typeof (entry == null ? void 0 : entry.node) !== "string" || typeof (entry == null ? void 0 : entry.name) !== "string" || entry.name.trim() === "") {
-              problems.push(`flows[${index}] must be { node: "<id>", name: "<flow name>" }`);
+              problems.push(`flows[${index2}] must be { node: "<id>", name: "<flow name>" }`);
               continue;
             }
             const node = await figma.getNodeByIdAsync(entry.node).catch(() => null);
             if (!node || node.type !== "FRAME" || ((_F = node.parent) == null ? void 0 : _F.type) !== "PAGE") {
-              problems.push(`flows[${index}]: ${entry.node} is not a top-level frame on this page`);
+              problems.push(`flows[${index2}]: ${entry.node} is not a top-level frame on this page`);
               continue;
             }
             points.push({ nodeId: entry.node, name: entry.name.trim() });
@@ -37894,6 +40748,19 @@ createRoot(document.getElementById('root')!).render(
         postToUi({ type: "MODULES", modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT });
         break;
       }
+      case "MODULE_SCHEMA": {
+        postToUi({
+          type: "MODULE_SCHEMA",
+          schemaId: MODULE_SCHEMA_ID,
+          schema: MODULE_JSON_SCHEMA,
+          template: MODULE_TEMPLATE,
+          guide: MODULE_AUTHORING_GUIDE,
+          schemaJson: JSON.stringify(MODULE_JSON_SCHEMA, null, 2),
+          templateJson: JSON.stringify(MODULE_TEMPLATE, null, 2),
+          agentPrompt: moduleAgentPrompt()
+        });
+        break;
+      }
       case "MODULE_INSPECT": {
         const { module: parsed, problems } = parseUserModule(msg.file, UI_COMMANDS);
         if (!parsed) {
@@ -37901,7 +40768,8 @@ createRoot(document.getElementById('root')!).render(
           break;
         }
         const stored = await readStoredModules();
-        postToUi(__spreadValues(__spreadProps(__spreadValues({
+        const installedVersion = versionOf(stored[parsed.id]);
+        postToUi(__spreadProps(__spreadValues(__spreadProps(__spreadValues({
           type: "MODULE_INSPECTED",
           id: parsed.id,
           name: parsed.name,
@@ -37919,70 +40787,54 @@ createRoot(document.getElementById('root')!).render(
           // rather than against what it says about itself.
           capabilities: moduleCapabilities(parsed, UI_COMMANDS),
           installed: parsed.id in stored
-        }), stored[parsed.id] ? { installedVersion: versionOf(stored[parsed.id]) } : {}));
+        }), installedVersion ? { installedVersion } : {}), {
+          downgrade: installedVersion ? compareModuleVersions(parsed.version, installedVersion) < 0 : false
+        }));
         break;
       }
       case "MODULE_INSTALL": {
         try {
-          const size = JSON.stringify((_O = msg.file) != null ? _O : null).length;
-          if (size > MODULE_SIZE_LIMIT) {
-            throw new Error(`the module is ${size} bytes; the limit is ${MODULE_SIZE_LIMIT}`);
-          }
-          const { module: parsed, problems } = parseUserModule(msg.file, UI_COMMANDS);
-          if (!parsed) {
-            postToUi({ type: "MODULE_REJECTED", problems });
-            figma.notify(`Module refused: ${problems.length} problem(s)`, { error: true });
-            break;
-          }
-          const stored = await readStoredModules();
-          const existing = stored[parsed.id];
-          if (existing && msg.replace !== true) {
-            refuse("MODULE_INSTALL", `"${parsed.id}" is already installed \u2014 pass replace: true to overwrite it`);
-            break;
-          }
-          await writeStoredModules(__spreadProps(__spreadValues({}, stored), {
-            [parsed.id]: __spreadProps(__spreadValues({
-              file: msg.file
-            }, (existing == null ? void 0 : existing.state) ? { state: existing.state } : {}), {
-              installedAt: (/* @__PURE__ */ new Date()).toISOString()
-            })
-          }));
-          figma.notify(`Installed "${parsed.name}"`);
+          const result = await installUserModule(msg.file, {
+            replace: msg.replace === true,
+            allowDowngrade: msg.allowDowngrade === true
+          });
+          figma.notify(`${result.replaced ? "Updated" : "Installed"} "${result.module.name}"`);
           postToUi({
             type: "MODULE_INSTALLED",
-            id: parsed.id,
-            replaced: Boolean(existing),
-            capabilities: moduleCapabilities(parsed, UI_COMMANDS),
+            id: result.module.id,
+            replaced: result.replaced,
+            capabilities: moduleCapabilities(result.module, UI_COMMANDS),
             modules: describeModules(userModules)
           });
         } catch (error) {
-          const message = String((error == null ? void 0 : error.message) || error);
-          figma.notify("Install failed: " + message, { error: true });
-          postToUi({ type: "MODULE_ERROR", message });
+          if (error instanceof ModuleValidationError) {
+            figma.notify(`Module refused: ${error.problems.length} problem(s)`, { error: true });
+            postToUi({ type: "MODULE_REJECTED", problems: error.problems });
+          } else {
+            const message = String((error == null ? void 0 : error.message) || error);
+            figma.notify("Install failed: " + message, { error: true });
+            postToUi({ type: "MODULE_ERROR", message });
+          }
         }
         break;
       }
       case "MODULE_REMOVE": {
-        const stored = await readStoredModules();
-        if (!(msg.id in stored)) {
-          refuse("MODULE_REMOVE", `no module "${msg.id}" is installed`);
-          break;
+        try {
+          await removeUserModule(msg.id);
+          figma.notify(`Removed "${msg.id}"`);
+          postToUi({ type: "MODULE_REMOVED", id: msg.id, modules: describeModules(userModules) });
+        } catch (error) {
+          refuse("MODULE_REMOVE", String((error == null ? void 0 : error.message) || error));
         }
-        const _Q = stored, { [_P = msg.id]: gone } = _Q, rest = __objRest(_Q, [__restKey(_P)]);
-        await writeStoredModules(rest);
-        figma.notify(`Removed "${msg.id}"`);
-        postToUi({ type: "MODULE_REMOVED", id: msg.id, modules: describeModules(userModules) });
         break;
       }
       case "MODULE_ENABLE": {
-        const stored = await readStoredModules();
-        const entry = stored[msg.id];
-        if (!entry) {
-          refuse("MODULE_ENABLE", `no module "${msg.id}" is installed`);
-          break;
+        try {
+          await setUserModuleEnabled(msg.id, msg.enabled);
+          postToUi({ type: "MODULES", modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT });
+        } catch (error) {
+          refuse("MODULE_ENABLE", String((error == null ? void 0 : error.message) || error));
         }
-        await writeStoredModules(__spreadProps(__spreadValues({}, stored), { [msg.id]: __spreadProps(__spreadValues({}, entry), { disabled: msg.enabled === false }) }));
-        postToUi({ type: "MODULES", modules: describeModules(userModules), limitBytes: MODULE_SIZE_LIMIT });
         break;
       }
       case "MODULE_VIEW": {
@@ -37999,36 +40851,27 @@ createRoot(document.getElementById('root')!).render(
           screens: __spreadValues({
             main: entry.module.screens.main.blocks
           }, entry.module.screens.settings ? { settings: entry.module.screens.settings.blocks } : {}),
-          // Declared defaults, overlaid with whatever it has kept — what a field should show.
-          state: moduleStateOf(entry)
+          fields: entry.module.state,
+          // Secrets are write-only outside the sandbox: the password field renders empty and
+          // MODULE_VIEW cannot be used through plugin.call to recover one.
+          state: redactedModuleState(entry),
+          secretsSet: moduleSecretsSet(entry)
         });
         break;
       }
       case "MODULE_STATE_SET": {
-        const entry = userModules.find((candidate) => candidate.id === msg.id);
-        const declared = (_R = entry == null ? void 0 : entry.module) == null ? void 0 : _R.state[msg.field];
-        if (!(entry == null ? void 0 : entry.module) || !declared) {
-          refuse("MODULE_STATE_SET", `module "${msg.id}" declares no field "${msg.field}"`);
-          break;
+        try {
+          const result = await configureUserModule(msg.id, void 0, { [msg.field]: msg.value });
+          const updated = userModules.find((candidate) => candidate.id === msg.id);
+          postToUi({ type: "MODULE_STATE", id: msg.id, state: result.state, secretsSet: updated ? moduleSecretsSet(updated) : [] });
+        } catch (error) {
+          refuse("MODULE_STATE_SET", String((error == null ? void 0 : error.message) || error));
         }
-        if (typeof msg.value !== declared.type) {
-          refuse("MODULE_STATE_SET", `"${msg.field}" is declared ${declared.type}, not ${typeof msg.value}`);
-          break;
-        }
-        const stored = await readStoredModules();
-        const held = stored[msg.id];
-        if (!held) {
-          refuse("MODULE_STATE_SET", `module "${msg.id}" is not installed`);
-          break;
-        }
-        const state = __spreadProps(__spreadValues({}, moduleStateOf(entry)), { [msg.field]: msg.value });
-        await writeStoredModules(__spreadProps(__spreadValues({}, stored), { [msg.id]: __spreadProps(__spreadValues({}, held), { state }) }));
-        postToUi({ type: "MODULE_STATE", id: msg.id, state });
         break;
       }
       case "MODULE_RUN": {
         const entry = userModules.find((candidate) => candidate.id === msg.id);
-        const screen = (_S = entry == null ? void 0 : entry.module) == null ? void 0 : _S.screens[msg.screen];
+        const screen = (_O = entry == null ? void 0 : entry.module) == null ? void 0 : _O.screens[msg.screen];
         const block3 = screen == null ? void 0 : screen.blocks[msg.block];
         if (!(entry == null ? void 0 : entry.module) || !block3) {
           refuse("MODULE_RUN", `no block ${msg.block} on the ${msg.screen} screen of "${msg.id}"`);
@@ -38038,10 +40881,15 @@ createRoot(document.getElementById('root')!).render(
           refuse("MODULE_RUN", `block ${msg.block} is a ${block3.block}, not a button`);
           break;
         }
+        const currentState = moduleStateOf(entry);
+        if (!conditionMatches(block3.when, currentState) || block3.disabledWhen && conditionMatches(block3.disabledWhen, currentState)) {
+          refuse("MODULE_RUN", `button "${block3.label}" is not currently available`);
+          break;
+        }
         try {
           const report2 = await runModuleCommand(
             entry.module,
-            { name: `${entry.id}#${msg.screen}[${msg.block}]`, summary: block3.label, params: [], steps: block3.steps, access: "write", confirms: block3.steps.some((step) => "confirm" in step) },
+            { name: `${entry.id}#${msg.screen}[${msg.block}]`, summary: block3.label, params: [], steps: block3.steps, access: "write", confirms: block3.steps.some((step2) => "confirm" in step2) },
             {},
             {
               call: (message) => handleUiMessage(message),
@@ -38055,7 +40903,7 @@ createRoot(document.getElementById('root')!).render(
                 return sink;
               },
               confirmed: msg.confirm === true,
-              state: moduleStateOf(entry)
+              state: currentState
             }
           );
           if (report2.ok) {
@@ -38063,7 +40911,13 @@ createRoot(document.getElementById('root')!).render(
             const held = stored[msg.id];
             if (held) await writeStoredModules(__spreadProps(__spreadValues({}, stored), { [msg.id]: __spreadProps(__spreadValues({}, held), { state: report2.state }) }));
           }
-          postToUi({ type: "MODULE_RUN_REPORT", id: msg.id, screen: msg.screen, block: msg.block, report: report2 });
+          postToUi({
+            type: "MODULE_RUN_REPORT",
+            id: msg.id,
+            screen: msg.screen,
+            block: msg.block,
+            report: __spreadProps(__spreadValues({}, report2), { state: redactModuleState(entry.module, report2.state) })
+          });
           if (report2.error) figma.notify(`${block3.label}: ${report2.error}`, { error: true });
         } catch (error) {
           const message = String((error == null ? void 0 : error.message) || error);
@@ -38073,9 +40927,8 @@ createRoot(document.getElementById('root')!).render(
         break;
       }
       case "MODULE_EXPORT": {
-        const stored = await readStoredModules();
-        const entry = stored[msg.id];
-        if (!entry) {
+        const registered = userModules.find((candidate) => candidate.id === msg.id);
+        if (!registered) {
           refuse("MODULE_EXPORT", `no module "${msg.id}" is installed`);
           break;
         }
@@ -38089,9 +40942,9 @@ createRoot(document.getElementById('root')!).render(
           // "nested too deep to quote" and cannot be installed anywhere. A long string does not
           // get summarised, it gets written to disk verbatim. Observed, not guessed: the first
           // export read back through the bridge would not re-validate.
-          file: entry.file,
-          json: JSON.stringify(entry.file, null, 1),
-          state: (_T = entry.state) != null ? _T : null
+          file: registered.stored.file,
+          json: JSON.stringify(registered.stored.file, null, 1),
+          state: redactedModuleState(registered)
         });
         break;
       }
@@ -38112,9 +40965,9 @@ createRoot(document.getElementById('root')!).render(
       case "IMPORT_TRANSLATIONS": {
         try {
           const roots = await rootsForScope(msg.scope);
-          const index = await indexSceneNodes2(roots);
+          const index2 = await indexSceneNodes2(roots);
           const textNodes = [];
-          for (const node of index.values()) if (node.type === "TEXT") textNodes.push(node);
+          for (const node of index2.values()) if (node.type === "TEXT") textNodes.push(node);
           const result = await importTranslations(msg.content, msg.format, textNodes);
           postToUi({
             type: "IMPORT_TRANSLATIONS_RESULT",
@@ -38144,7 +40997,7 @@ createRoot(document.getElementById('root')!).render(
           const [irNodes, sceneNodesById, snapshot] = await Promise.all([
             Promise.all(roots.map((root) => serializeNode(root))),
             indexSceneNodes2(roots),
-            modules2.tokens ? readAllVariables() : readLocalVariables()
+            modules2.tokens ? readAllVariables({ collectionMerges: exportOptions.themeMerges.groups }) : readLocalVariables()
           ]);
           const nodes = irNodes.filter((node) => node !== null);
           const pageRoots = nodes.filter((node) => node.type === "container");
@@ -38181,7 +41034,7 @@ createRoot(document.getElementById('root')!).render(
           const targetLanguages = modules2.i18n ? parseLanguages(exportOptions.i18n.languages, exportOptions.i18n.sourceLanguage) : [];
           let startPageId;
           try {
-            startPageId = (_U = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _U.nodeId;
+            startPageId = (_P = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _P.nodeId;
           } catch (e) {
           }
           const [project, assets] = await Promise.all([
@@ -38206,7 +41059,7 @@ createRoot(document.getElementById('root')!).render(
             pages: project.pageRoutes,
             projectName: "config",
             appName: "design",
-            languages: [exportOptions.i18n.sourceLanguage, ...targetLanguages].filter((code, index, all) => all.indexOf(code) === index).map((code) => ({ code, label: languageLabel(code) })),
+            languages: [exportOptions.i18n.sourceLanguage, ...targetLanguages].filter((code, index2, all) => all.indexOf(code) === index2).map((code) => ({ code, label: languageLabel(code) })),
             defaultLanguage: exportOptions.i18n.sourceLanguage,
             staticCssFile: cssFile
           }) : void 0;
@@ -38247,7 +41100,7 @@ createRoot(document.getElementById('root')!).render(
           if (!project && motionExport.animation.js) files["static/js/animations.js"] = motionExport.animation.js;
           let tauriPageHrefs;
           if (exportOptions.targetOptions.platform === "tauri" && project) {
-            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_V = pageRoots[0]) == null ? void 0 : _V.id;
+            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_Q = pageRoots[0]) == null ? void 0 : _Q.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -38280,9 +41133,9 @@ createRoot(document.getElementById('root')!).render(
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_W = sceneNodesById.get(nodeId)) != null ? _W : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (_R = sceneNodesById.get(nodeId)) != null ? _R : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_X = node.parent) == null ? void 0 : _X.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((_S = node.parent) == null ? void 0 : _S.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -38305,7 +41158,7 @@ createRoot(document.getElementById('root')!).render(
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((_Y = counts[finding.rule]) != null ? _Y : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_T = counts[finding.rule]) != null ? _T : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -38355,7 +41208,7 @@ createRoot(document.getElementById('root')!).render(
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (__ = (_Z = figma.currentUser) == null ? void 0 : _Z.name) != null ? __ : "unknown";
+            exportedBy = (_V = (_U = figma.currentUser) == null ? void 0 : _U.name) != null ? _V : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }

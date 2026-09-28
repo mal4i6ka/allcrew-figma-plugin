@@ -98,10 +98,10 @@ test('a link that goes nowhere and does nothing is refused', () => {
 })
 
 test('opening a link is an action too, in a new tab unless told otherwise', () => {
-  assert.deepEqual(only([{ url: 'https://altery.com' }]).actions, [
-    { kind: 'url', url: 'https://altery.com', newTab: true },
+  assert.deepEqual(only([{ url: 'https://allcrew.com' }]).actions, [
+    { kind: 'url', url: 'https://allcrew.com', newTab: true },
   ])
-  assert.equal((only([{ url: 'https://altery.com', newTab: false }]).actions[0] as { newTab: boolean }).newTab, false)
+  assert.equal((only([{ url: 'https://allcrew.com', newTab: false }]).actions[0] as { newTab: boolean }).newTab, false)
 })
 
 test('every way of getting an action wrong is named', () => {
@@ -249,13 +249,13 @@ test('a variable action reads with names when the caller offers a lookup', async
             variableId: 'VariableID:1',
             variableValue: { type: 'VARIABLE_ALIAS', resolvedType: 'BOOLEAN', value: { type: 'VARIABLE_ALIAS', id: 'VariableID:2' } },
           },
-          { type: 'URL', url: 'https://altery.com' },
+          { type: 'URL', url: 'https://allcrew.com' },
         ],
       },
     ],
     lookup
   )
-  assert.equal(line, 'click → set flags/agreed = true · click → set flags/agreed = var:theme/next · click → open https://altery.com')
+  assert.equal(line, 'click → set flags/agreed = true · click → set flags/agreed = var:theme/next · click → open https://allcrew.com')
 })
 
 test('without a lookup the id is printed rather than nothing', async () => {

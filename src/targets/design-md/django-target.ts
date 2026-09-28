@@ -241,7 +241,7 @@ function bootstrapSection(bootstrap: DjangoDesignMdBootstrap): string {
     bullet([
       'Bootstrap loads inside a CSS cascade layer, so un-layered project CSS wins over Bootstrap ' +
         'declarations regardless of specificity. Do not add `!important` to beat Bootstrap.',
-      'Change brand values through `bootstrap.map.json` + `tokens.json` (`altery-dj tokens`) or in ' +
+      'Change brand values through `bootstrap.map.json` + `tokens.json` (`allcrew-channel tokens`) or in ' +
         'Figma — never by editing `bootstrap-tokens.css`.',
     ])
   )
@@ -262,7 +262,7 @@ function i18nSection(input: DjangoDesignMdInput): string {
     'Generated text is already wrapped in `{% translate %}` / `{% blocktranslate %}`. **Every new ' +
       'user-visible string you write must be wrapped too.**',
     'Do not translate inside `figma.po` — merge it into the project catalog ' +
-      '(`altery-dj po merge`), then translate there. `figma.po` is regenerated on every export.',
+      '(`allcrew-channel po merge`), then translate there. `figma.po` is regenerated on every export.',
     'Translated text is usually longer than the Figma source: never rely on a fixed width or a ' +
       'single-line assumption for a translatable string.',
   ])
@@ -300,11 +300,11 @@ function motionSection(input: DjangoDesignMdInput): string {
 const WORKFLOW = bullet([
   'The design source of truth is Figma. To change a generated value, change it in Figma and re-export — ' +
     'do not patch the generated file.',
-  'Apply a fresh export over the project with `altery-dj apply export.zip`, or `altery-dj rebuild ' +
+  'Apply a fresh export over the project with `allcrew-channel apply export.zip`, or `allcrew-channel rebuild ' +
     'export.zip --diff` to merge it while preserving edits outside the `{# GENERATED #}` markers.',
-  'Rebuild derived stylesheets from `tokens.json` without a Figma round-trip: `altery-dj tokens ' +
+  'Rebuild derived stylesheets from `tokens.json` without a Figma round-trip: `allcrew-channel tokens ' +
     '--format all`.',
-  'Verify a project after an apply: `altery-dj check` (Django system check + a smoke render of every ' +
+  'Verify a project after an apply: `allcrew-channel check` (Django system check + a smoke render of every ' +
     'template + `msgfmt` over the locales).',
 ])
 
@@ -351,7 +351,7 @@ export function buildDjangoDesignMd(input: DjangoDesignMdInput): string {
   ]
 
   const agentPrompt = agentPromptSection({
-    role: 'an expert Django + frontend engineer working in a project generated from Figma by the Altery exporter',
+    role: 'an expert Django + frontend engineer working in a project generated from Figma by the AllCrew Channel exporter',
     steps: [
       'Locate the generated template that owns the UI you are changing (`templates/pages/…` or `templates/components/…`) and read its `{# GENERATED #}` markers before editing anything.',
       'Identify every visual requirement — surface, text, border, spacing, radius, type, motion — and map each to a token from the "Token → CSS property" table.',

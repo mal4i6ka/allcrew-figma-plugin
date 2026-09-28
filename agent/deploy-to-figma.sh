@@ -3,8 +3,8 @@
 # The pair is the unit: a code.js from one build beside a ui.html from another loads a UI
 # that calls into code that does not know it — both files intact, nothing to blame on the
 # mount. rsync's exit code is not evidence; md5 on both sides is.
-L="$HOME/altery-figma-ds"
-V=/Volumes/5D53821A-6951-404C-9E39-C111A9C3BBAD/altery-figma-ds
+L="$HOME/allcrew-channel"
+V=/Volumes/5D53821A-6951-404C-9E39-C111A9C3BBAD/allcrew-channel
 [[ -d "$V" ]] || { echo "том не смонтирован"; exit 1 }
 
 verify() {
@@ -18,7 +18,7 @@ verify() {
 # рантайм перечитал код в живой сессии; если сменился — нам просто повезло на ротацию.
 sids() {
   local s
-  s=$(curl -s -m 5 http://127.0.0.1:8788/status -H "x-altery-secret: $(cat ~/.altery/agent-secret 2>/dev/null)" 2>/dev/null \
+  s=$(curl -s -m 5 http://127.0.0.1:8788/status -H "x-allcrew-channel-secret: $(cat ~/.allcrew-channel/agent-secret 2>/dev/null)" 2>/dev/null \
       | grep -o '"session":"[^"]*"' | cut -d'"' -f4 | paste -sd' ' -)
   [[ -n "$s" ]] && print -r -- "$s" || print -r -- "(мост недоступен)"
 }

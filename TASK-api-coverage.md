@@ -246,7 +246,7 @@ BaseNodeMixin.getTopLevelFrame, InteractiveSlideElementNode, InteractiveSlideEle
 но копия вернулась другой. Судья того, что «отправляемо», — сам планировщик, а не второй список.
 
 ```bash
-node agent/altery-figma.mjs call plugin.call '{"command":"NODE_ROUNDTRIP","params":{"nodes":["<id>"],"depth":8}}'
+node agent/allcrew-channel.mjs call plugin.call '{"command":"NODE_ROUNDTRIP","params":{"nodes":["<id>"],"depth":8}}'
 ```
 
 Первый прогон по тайлу нашёл 69 расхождений. Все оказались одним классом — **чтение печатает

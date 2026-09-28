@@ -2,13 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   ALL_OPS,
-  imagePlacement,
   OPS_BY_NAME,
   READ_OPS,
   summarizeComponentProperties,
   summarizeNode,
   summarizeReactions,
 } from './ops.ts'
+import { imagePlacement } from './paints.ts'
 import { validateParams } from './protocol.ts'
 
 /* -------------------------------------------------------------- registry */

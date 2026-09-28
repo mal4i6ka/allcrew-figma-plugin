@@ -8,7 +8,7 @@
  *
  * So a reply is digested, not forwarded: scalars survive, and anything too big to quote — a
  * long string, a long array, a wide object — becomes a file on the agent's disk (the
- * `__alteryFile` envelope the bridge materialises, see `files.ts`) with its shape left inline.
+ * `__allcrewChannelFile` envelope the bridge materialises, see `files.ts`) with its shape left inline.
  * A burst of identical progress messages collapses to its first and last. Everything that
  * actually gets dropped says so in place, because a silent truncation reads as "that's all
  * there was" — and `truncated` is reserved for exactly that, so it does not fire when the data
@@ -159,7 +159,7 @@ function digestValue(value: unknown, depth: number, budget: DigestBudget, state:
  * — a reply whose entire purpose is the data, answered with the shape of the data. The caps
  * suit a chatty progress reply and ruin a dump.
  *
- * So the whole of it goes to a file — the same `__alteryFile` envelope a long string uses, so
+ * So the whole of it goes to a file — the same `__allcrewChannelFile` envelope a long string uses, so
  * the bridge writes it and hands back a path — and what stays inline is the shape: how many,
  * which keys, a three-entry taste. Nothing is lost, so this does not count as truncation; a
  * caller that only needed the shape never opens the file.

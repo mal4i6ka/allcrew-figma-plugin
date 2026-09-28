@@ -86,9 +86,9 @@ export interface RemapRevertReport {
 
 /* ------------------------------------------------------------------ storage */
 
-const SNAPSHOT_KEY = 'altery-remap-snapshot'
-const SNAPSHOT_COUNT_KEY = 'altery-remap-snapshot-chunks'
-const RENAME_KEY = 'altery-remap-renames'
+const SNAPSHOT_KEY = 'allcrew-channel-remap-snapshot'
+const SNAPSHOT_COUNT_KEY = 'allcrew-channel-remap-snapshot-chunks'
+const RENAME_KEY = 'allcrew-channel-remap-renames'
 
 /**
  * Figma caps a single plugin-data entry at 100 kB; a large file's snapshot does not fit in
@@ -809,7 +809,7 @@ export async function applyRemap(
       }
       const from = variable.name
       try {
-        variable.name = `__altery-remap-${index}`
+        variable.name = `__allcrew-channel-remap-${index}`
         staged.push({ variable, to: rename.to, from, legacy: rename.legacy })
       } catch (error) {
         report.failed++
@@ -1031,7 +1031,7 @@ export async function revertRemap(progress?: (label: string) => void): Promise<R
     const variable = await loader.variable(entry.v)
     if (!variable) continue
     try {
-      variable.name = `__altery-revert-${index}`
+      variable.name = `__allcrew-channel-revert-${index}`
       staged.push({ variable, to: entry.n })
     } catch (error) {
       warnings.push(`${entry.n}: ${String((error as Error).message)}`)

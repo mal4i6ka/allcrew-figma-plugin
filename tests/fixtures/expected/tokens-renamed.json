@@ -140,7 +140,7 @@
     }
   },
   "$extensions": {
-    "altery": {
+    "allcrewChannel": {
       "renames": {
         "color/brand": "color/primary",
         "color/accent": "color/secondary",

@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""Symlink-friendly launcher: `ln -s <repo>/cli/bin/allcrew-channel /usr/local/bin/allcrew-channel`.
+realpath() resolves the symlink back here, so the allcrew_channel package next to this script is
+importable without any installation. (`pipx install -e cli/` is the alternative.)"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from allcrew_channel.cli import main  # noqa: E402
+
+sys.exit(main())

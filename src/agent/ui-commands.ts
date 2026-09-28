@@ -382,7 +382,7 @@ function matchesOf(pattern: RegExp, text: string): string[] {
  * drift: there is no committed copy to forget. Under `node --test` the marker is still itself,
  * the registry is empty, and the parser is tested against the real source directly.
  */
-const INJECTED = '__ALTERY_UI_COMMANDS__'
+const INJECTED = '__ALLCREW_CHANNEL_UI_COMMANDS__'
 
 export const UI_COMMANDS: readonly UiCommandDef[] = (() => {
   // Tested by shape, not against the marker spelled a second time: the injection replaces one

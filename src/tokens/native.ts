@@ -21,7 +21,19 @@
  * believe they might.
  */
 
-import { cssValue, isLengthToken, leaves, valueForTheme, varName, type TokenTree, type TokenValue } from './engine.ts'
+import {
+  codeSyntaxOf,
+  cssValue,
+  isLengthKind,
+  isTextMetricKind,
+  leaves,
+  tokenKind,
+  valueForTheme,
+  varName,
+  type TokenKind,
+  type TokenTree,
+  type TokenValue,
+} from './engine.ts'
 
 /* -------------------------------------------------------------------- colour */
 
@@ -99,18 +111,56 @@ export function toArgbHex(color: Rgba): string {
 
 /* --------------------------------------------------------------------- names */
 
+/**
+ * The words inside a name the design system already committed to. `codeSyntax` is free text a
+ * designer typed, so it arrives in whatever shape their codebase uses: `Color.inkStrong`,
+ * `ink_strong`, `R.color.brand-500`, `--ink-strong`. Splitting on punctuation is not enough —
+ * running `inkStrong` through the CSS slugger lowercases it to `inkstrong` and the committed
+ * spelling is gone, which is the whole thing this is supposed to preserve.
+ */
+function words(name: string): string[] {
+  return name
+    // `URLColor` → `URL Color` before `inkStrong` → `ink Strong`, so an acronym stays whole.
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .split(/[^0-9A-Za-z]+/)
+    .filter((part) => part !== '')
+}
+
+/** The name a platform's own `codeSyntax` entry commits to, as words. `null` when the design
+ * system said nothing for this platform — the caller then falls back to the Figma path. */
+function committedWords(codeSyntax: Record<string, string> | undefined, key: 'ANDROID' | 'iOS'): string[] | null {
+  const name = codeSyntax?.[key]
+  if (typeof name !== 'string') return null
+  const parts = words(name)
+  return parts.length > 0 ? parts : null
+}
+
 /** `text/primary` → `textPrimary`. The CSS name is the shared spelling, so the two packages name
- * the same token the same way up to the language's own casing rule. */
-export function camelIdentifier(path: readonly string[]): string {
-  const kebab = varName(path as string[])
-  const camel = kebab.replace(/-+([0-9a-z])/gi, (_, chr: string) => chr.toUpperCase())
+ * the same token the same way up to the language's own casing rule — unless the design system has
+ * already committed to an iOS name in Figma's `codeSyntax`, in which case inventing a second
+ * spelling is the wrong answer. */
+export function camelIdentifier(path: readonly string[], codeSyntax?: Record<string, string>): string {
+  const committed = committedWords(codeSyntax, 'iOS')
+  const camel = committed
+    ? committed
+        .map((word, index) =>
+          index === 0 ? word.toLowerCase() : word[0].toUpperCase() + word.slice(1).toLowerCase()
+        )
+        .join('')
+    : varName(path as string[]).replace(/-+([0-9a-z])/gi, (_, chr: string) => chr.toUpperCase())
   // An identifier cannot begin with a digit in either language; a token named `2xl` is common.
   return /^[0-9]/.test(camel) ? `_${camel}` : camel
 }
 
-/** Android resource names take `[a-z0-9_]` only, and a leading digit is invalid there too. */
-export function resourceName(path: readonly string[]): string {
-  const snake = varName(path as string[]).replace(/-+/g, '_').toLowerCase().replace(/[^a-z0-9_]/g, '')
+/** Android resource names take `[a-z0-9_]` only, and a leading digit is invalid there too. The
+ * `ANDROID` half of `codeSyntax` wins for the same reason as above. */
+export function resourceName(path: readonly string[], codeSyntax?: Record<string, string>): string {
+  const committed = committedWords(codeSyntax, 'ANDROID')
+  const snake = (committed ? committed.join('-') : varName(path as string[]))
+    .replace(/-+/g, '_')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '')
   return /^[0-9]/.test(snake) ? `_${snake}` : snake
 }
 
@@ -125,11 +175,21 @@ export function darkThemeOf(ordered: readonly string[], defaultTheme: string): s
   return ordered.find((theme) => theme !== defaultTheme && /dark|night/i.test(theme)) ?? null
 }
 
+/** What every native emitter needs about one token beyond its value: the kind decides the unit,
+ * the `codeSyntax` decides the name. Both are resolved once here rather than re-derived per
+ * language. */
+interface GroupedEntry {
+  path: string[]
+  type: string
+  kind: TokenKind
+  codeSyntax?: Record<string, string>
+}
+
 interface Grouped {
   /** Tokens whose value is the same in every theme - emitted once. */
-  readonly shared: Array<{ path: string[]; type: string; value: TokenValue }>
+  readonly shared: Array<GroupedEntry & { value: TokenValue }>
   /** Tokens that differ, with one value per theme. */
-  readonly themed: Array<{ path: string[]; type: string; values: Record<string, TokenValue> }>
+  readonly themed: Array<GroupedEntry & { values: Record<string, TokenValue> }>
 }
 
 function group(tree: TokenTree, ordered: readonly string[]): Grouped {
@@ -139,15 +199,22 @@ function group(tree: TokenTree, ordered: readonly string[]): Grouped {
     const values: Record<string, TokenValue> = {}
     for (const theme of ordered) values[theme] = valueForTheme(leaf.token, theme)
     const distinct = new Set(ordered.map((theme) => JSON.stringify(values[theme])))
-    if (distinct.size <= 1) shared.push({ path: leaf.path, type: leaf.token.$type, value: values[ordered[0]] })
-    else themed.push({ path: leaf.path, type: leaf.token.$type, values })
+    const codeSyntax = codeSyntaxOf(leaf.token)
+    const entry: GroupedEntry = {
+      path: leaf.path,
+      type: leaf.token.$type,
+      kind: tokenKind(leaf.token, leaf.path),
+      ...(codeSyntax ? { codeSyntax } : {}),
+    }
+    if (distinct.size <= 1) shared.push({ ...entry, value: values[ordered[0]] })
+    else themed.push({ ...entry, values })
   }
   return { shared, themed }
 }
 
 /* ---------------------------------------------------------------- catalogues */
 
-const HEADER = 'Generated by Altery Design System Export - edit the Figma variables, not this file.'
+const HEADER = 'Generated by AllCrew Channel - edit the Figma variables, not this file.'
 
 /**
  * One `.colorset` per colour token, with the dark appearance folded in where the file has a dark
@@ -184,7 +251,7 @@ export function toColorSets(tree: TokenTree, ordered: readonly string[], default
     if (darkColor && !sameColor(light, darkColor)) colors.push(entry(darkColor, 'dark'))
     const name = varName(leaf.path)
     files[`Assets.xcassets/${name}.colorset/Contents.json`] = JSON.stringify(
-      { colors, info: { author: 'altery-figma', version: 1 } },
+      { colors, info: { author: 'allcrew-channel', version: 1 } },
       null,
       2
     )
@@ -212,7 +279,9 @@ export function toAndroidColors(tree: TokenTree, ordered: readonly string[], def
         const base = parseColor(valueForTheme(leaf.token, defaultTheme))
         if (base && sameColor(base, color)) continue
       }
-      out.push(`    <color name="${resourceName(leaf.path)}">${toArgbHex(color)}</color>`)
+      out.push(
+        `    <color name="${resourceName(leaf.path, codeSyntaxOf(leaf.token))}">${toArgbHex(color)}</color>`
+      )
     }
     return out
   }
@@ -229,36 +298,52 @@ export function toAndroidColors(tree: TokenTree, ordered: readonly string[], def
 
 /* ----------------------------------------------------------------- constants */
 
-function swiftValue(type: string, value: TokenValue, path: readonly string[]): string | null {
-  if (type === 'color') {
+function swiftValue(entry: GroupedEntry, value: TokenValue): string | null {
+  if (entry.type === 'color') {
     const color = parseColor(value)
     if (!color) return null
     return `Color(.sRGB, red: ${round(color.r / 255)}, green: ${round(color.g / 255)}, blue: ${round(color.b / 255)}, opacity: ${round(color.a)})`
   }
-  if (typeof value === 'number') return isLengthToken(value, path) ? `CGFloat(${round(value, 4)})` : `${round(value, 4)}`
+  // iOS measures everything in points, and `CGFloat` is the point in SwiftUI's API — a font size
+  // and a padding are the same type there, so the kind changes nothing but the comment. What it
+  // does change is the unitless cases: an opacity or a line-height RATIO must not be a CGFloat
+  // that a caller then passes to `.padding()`.
+  if (typeof value === 'number') {
+    return isLengthKind(entry.kind, value) ? `CGFloat(${round(value, 4)})` : `${round(value, 4)}`
+  }
   if (typeof value === 'boolean') return String(value)
   // A string token (a font family, a shadow) travels as the string it is - the CSS emitter's own
   // rendering, so the two packages agree on what a non-numeric token says.
-  return JSON.stringify(cssValue(value, path))
+  return JSON.stringify(cssValue(value, entry.path))
 }
 
-function kotlinValue(type: string, value: TokenValue, path: readonly string[]): string | null {
-  if (type === 'color') {
+function kotlinValue(entry: GroupedEntry, value: TokenValue): string | null {
+  if (entry.type === 'color') {
     const color = parseColor(value)
     if (!color) return null
     return `Color(0x${toArgbHex(color).slice(1)})`
   }
-  if (typeof value === 'number') return isLengthToken(value, path) ? `${round(value, 4)}.dp` : `${round(value, 4)}f`
+  if (typeof value === 'number') {
+    if (!isLengthKind(entry.kind, value)) return `${round(value, 4)}f`
+    // `sp` scales with the user's system font-size setting and `dp` does not. A text metric in
+    // `dp` is the single most common accessibility defect in a generated Android UI: raising the
+    // font size does nothing, and nothing in the build reports it.
+    return isTextMetricKind(entry.kind) ? `${round(value, 4)}.sp` : `${round(value, 4)}.dp`
+  }
   if (typeof value === 'boolean') return String(value)
-  return JSON.stringify(cssValue(value, path))
+  return JSON.stringify(cssValue(value, entry.path))
 }
 
+/** A rendered token, named by the language's rule and by whatever the design system committed to
+ * in Figma. `naming` picks the `codeSyntax` key the language answers to. */
 function block(
   indent: string,
-  entries: ReadonlyArray<{ path: string[]; rendered: string }>,
+  entries: ReadonlyArray<{ entry: GroupedEntry; rendered: string }>,
   declare: (name: string, rendered: string) => string
 ): string[] {
-  return entries.map((entry) => `${indent}${declare(camelIdentifier(entry.path), entry.rendered)}`)
+  return entries.map(
+    (row) => `${indent}${declare(camelIdentifier(row.entry.path, row.entry.codeSyntax), row.rendered)}`
+  )
 }
 
 /** Theme names as an identifier a nested type can take (`Dark Theme` → `DarkTheme`). */
@@ -278,23 +363,13 @@ function themeType(theme: string): string {
 export function toTokensSwift(tree: TokenTree, ordered: readonly string[]): string {
   const { shared, themed } = group(tree, ordered)
   const declare = (name: string, rendered: string) => `public static let ${name} = ${rendered}`
-  const sharedLines = block(
-    '    ',
-    shared.flatMap((entry) => {
-      const rendered = swiftValue(entry.type, entry.value, entry.path)
-      return rendered ? [{ path: entry.path, rendered }] : []
-    }),
-    declare
-  )
+  const render = (entry: GroupedEntry, value: TokenValue) => {
+    const rendered = swiftValue(entry, value)
+    return rendered ? [{ entry, rendered }] : []
+  }
+  const sharedLines = block('    ', shared.flatMap((entry) => render(entry, entry.value)), declare)
   const themeBlocks = ordered.map((theme) => {
-    const lines = block(
-      '        ',
-      themed.flatMap((entry) => {
-        const rendered = swiftValue(entry.type, entry.values[theme], entry.path)
-        return rendered ? [{ path: entry.path, rendered }] : []
-      }),
-      declare
-    )
+    const lines = block('        ', themed.flatMap((entry) => render(entry, entry.values[theme])), declare)
     return `    public enum ${themeType(theme)} {\n${lines.join('\n')}\n    }`
   })
   return (
@@ -305,31 +380,30 @@ export function toTokensSwift(tree: TokenTree, ordered: readonly string[]): stri
   )
 }
 
-/** `Tokens.kt` - the same shape in Compose's vocabulary: `Color(0xAARRGGBB)` and `Dp`. */
+/** `Tokens.kt` - the same shape in Compose's vocabulary: `Color(0xAARRGGBB)`, `Dp` for layout and
+ * `TextUnit` (`sp`) for anything the system font-size setting must be able to scale. */
 export function toTokensKotlin(tree: TokenTree, ordered: readonly string[]): string {
   const { shared, themed } = group(tree, ordered)
   const declare = (name: string, rendered: string) => `val ${name} = ${rendered}`
-  const sharedLines = block(
-    '    ',
-    shared.flatMap((entry) => {
-      const rendered = kotlinValue(entry.type, entry.value, entry.path)
-      return rendered ? [{ path: entry.path, rendered }] : []
-    }),
-    declare
-  )
-  const themeBlocks = ordered.map((theme) => {
-    const lines = block(
-      '        ',
-      themed.flatMap((entry) => {
-        const rendered = kotlinValue(entry.type, entry.values[theme], entry.path)
-        return rendered ? [{ path: entry.path, rendered }] : []
-      }),
-      declare
-    )
+  const render = (entry: GroupedEntry, value: TokenValue) => {
+    const rendered = kotlinValue(entry, value)
+    return rendered ? [{ entry, rendered }] : []
+  }
+  const sharedRows = shared.flatMap((entry) => render(entry, entry.value))
+  const themedRows = ordered.map((theme) => themed.flatMap((entry) => render(entry, entry.values[theme])))
+  const sharedLines = block('    ', sharedRows, declare)
+  const themeBlocks = ordered.map((theme, index) => {
+    const lines = block('        ', themedRows[index], declare)
     return `    object ${themeType(theme)} {\n${lines.join('\n')}\n    }`
   })
+  // Only the units actually used: an unused Compose import is a compiler warning on every build,
+  // and a file of constants is exactly where nobody goes to silence one.
+  const rendered = sharedRows.concat(...themedRows).map((row) => row.rendered)
+  const imports = ['import androidx.compose.ui.graphics.Color']
+  if (rendered.some((line) => /\.dp$/.test(line))) imports.push('import androidx.compose.ui.unit.dp')
+  if (rendered.some((line) => /\.sp$/.test(line))) imports.push('import androidx.compose.ui.unit.sp')
   return (
-    `// ${HEADER}\nimport androidx.compose.ui.graphics.Color\nimport androidx.compose.ui.unit.dp\n\nobject Tokens {\n` +
+    `// ${HEADER}\n${imports.join('\n')}\n\nobject Tokens {\n` +
     (sharedLines.length > 0 ? `    // The same in every theme.\n${sharedLines.join('\n')}\n\n` : '') +
     themeBlocks.join('\n\n') +
     `\n}\n`

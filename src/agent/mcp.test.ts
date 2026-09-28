@@ -62,12 +62,25 @@ test('a 409 ambiguity refusal becomes an error that carries the roster and the w
 })
 
 test('an unreachable bridge is an error the model can act on, not a crash', () => {
-  const result = toResult({ ok: false, error: 'cannot reach the Altery bridge' })
+  const result = toResult({ ok: false, error: 'cannot reach the AllCrew Channel bridge' })
   assert.equal(result.isError, true)
-  assert.match(result.content[0].text, /cannot reach the Altery bridge/)
+  assert.match(result.content[0].text, /cannot reach the AllCrew Channel bridge/)
 })
 
-test('the two meta tools are always present, needing no connected plugin', () => {
+test('the meta tools are always present, needing no connected plugin', () => {
   const names = META_TOOLS.map((t: { name: string }) => t.name)
-  assert.deepEqual(names, ['altery_status', 'altery_call'])
+  assert.deepEqual(names, ['allcrew_channel_status', 'allcrew_channel_call', 'allcrew_channel_batch'])
+})
+
+test('the batch tool asks for ordered calls and defaults to stopping on failure', () => {
+  const batch = META_TOOLS.find((t: { name: string }) => t.name === 'allcrew_channel_batch') as {
+    description: string
+    inputSchema: { required: string[]; properties: Record<string, { type?: string; items?: unknown }> }
+  }
+  assert.deepEqual(batch.inputSchema.required, ['calls'])
+  assert.equal(batch.inputSchema.properties.calls.type, 'array')
+  // The description has to say the two things a model cannot infer from the schema: that order
+  // is a guarantee, and that it stops at the first failure unless told otherwise.
+  assert.match(batch.description, /in order/i)
+  assert.match(batch.description, /first failure/i)
 })

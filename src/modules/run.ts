@@ -18,7 +18,8 @@
  *   comes back having said yes, and the report says exactly where it stopped.
  */
 
-import type { ModuleCommand, ModuleStep, UserModule } from './contract.ts'
+import { conditionMatches, moduleStateValueError, type ModuleCommand, type ModuleStep, type UserModule } from './contract.ts'
+import { migrateModuleState } from './registry.ts'
 
 export interface ModuleRunContext {
   /** Sends one message into the plugin's own handler and resolves when it has been served. */
@@ -41,6 +42,7 @@ export interface ModuleStepReport {
   step: number
   call?: string
   ok: boolean
+  skipped?: boolean
   error?: string
 }
 
@@ -80,19 +82,29 @@ export async function runModuleCommand(
   params: Record<string, unknown>,
   context: ModuleRunContext
 ): Promise<ModuleRunReport> {
-  // State first, then this call's params on top: a param named like a state field is that
-  // field for the length of the run, and nothing a step writes escapes into the next call
-  // unless the caller persists what the report hands back.
-  const scope: Record<string, unknown> = {}
-  for (const [name, field] of Object.entries(module.state)) {
-    const kept = context.state?.[name]
-    scope[name] = typeof kept === field.type ? kept : field.default
-  }
-  Object.assign(scope, params)
+  const scope = Object.assign(
+    Object.create(null) as Record<string, unknown>,
+    migrateModuleState(module, context.state),
+  )
 
   const report: ModuleRunReport = { command: command.name, module: module.id, ok: true, steps: [], state: {}, view: {} }
-
+  for (const [name, value] of Object.entries(params)) {
+    const field = module.state[name]
+    if (field) {
+      const error = moduleStateValueError(field, value)
+      if (error) {
+        report.ok = false
+        report.error = `parameter "${name}" ${error}`
+        return finish(report, module, scope)
+      }
+    }
+    scope[name] = value
+  }
   for (const [index, step] of command.steps.entries()) {
+    if (!conditionMatches(step.when, scope)) {
+      report.steps.push({ step: index, ok: true, skipped: true })
+      continue
+    }
     if ('confirm' in step) {
       if (context.confirmed) {
         // Recorded rather than passed over: "this run went through a confirmation" is part of
@@ -116,14 +128,18 @@ export async function runModuleCommand(
       // mistake — `plan.rows` is the rows, `plan.total` is how many — and storing it anyway
       // would put a 560-entry array in a field declared as a number, and then keep it.
       const declared = module.state[step.set]
-      if (declared && typeof value !== declared.type) {
+      const stateError = declared ? moduleStateValueError(declared, value) : 'is not declared'
+      if (stateError) {
+        const expectation = declared
+          ? `is declared ${declared.type}${stateError === `must be ${declared.type}` ? '' : ` (${stateError})`}, but`
+          : 'is not declared, and'
         return fail(
           report,
           module,
           scope,
           index,
           undefined,
-          `"${step.set}" is declared ${declared.type}, but "${step.from}" holds ${describeValue(value)}`
+          `"${step.set}" ${expectation} "${step.from}" holds ${describeValue(value)}`
         )
       }
       scope[step.set] = value
@@ -250,9 +266,11 @@ const MISSING_PATH = Symbol('missing-path')
 function resolve(path: string, scope: Record<string, unknown>): unknown | typeof MISSING {
   let current: unknown = scope
   for (const part of path.split('.')) {
-    if (typeof current !== 'object' || current === null || !(part in (current as Record<string, unknown>))) {
-      return MISSING
-    }
+    if (
+      part === '__proto__' || part === 'constructor' || part === 'prototype' ||
+      typeof current !== 'object' || current === null ||
+      !Object.prototype.hasOwnProperty.call(current, part)
+    ) return MISSING
     current = (current as Record<string, unknown>)[part]
   }
   return current

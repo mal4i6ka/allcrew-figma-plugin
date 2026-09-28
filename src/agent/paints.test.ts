@@ -1,10 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { describePaint, describeShader } from './paints.ts'
 
-/* `figma` is a sandbox global read at call time, and the registry in ops.ts is built at module
- * scope — so the stub goes in before the import. Async lookup only: `documentAccess:
- * "dynamic-page"` makes the sync form throw, and a mock offering it would pass a test the real
- * sandbox fails. */
+/* `figma` is a sandbox global these functions read at CALL time, so a module-scope stub is
+ * enough — this used to need `await import()` because the describer lived in `ops.ts`, whose op
+ * registry is built at module scope and touches the global on the way up. Async lookup only:
+ * `documentAccess: "dynamic-page"` makes the sync form throw, and a mock offering it would pass
+ * a test the real sandbox fails. */
 const VARIABLES: Record<string, { name: string }> = {
   'VariableID:1': { name: 'accent/primary' },
   'VariableID:2': { name: 'gradient/glow/p16' },
@@ -18,8 +20,6 @@ const VARIABLES: Record<string, { name: string }> = {
     getVariableCollectionByIdAsync: async () => null,
   },
 }
-
-const { describePaint, describeShader } = await import('./ops.ts')
 
 test('a solid paint reports its colour, and alpha only when it has one', async () => {
   assert.deepEqual(await describePaint({ type: 'SOLID', color: { r: 1, g: 0, b: 0 } }, 0), {

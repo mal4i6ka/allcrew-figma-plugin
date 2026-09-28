@@ -237,7 +237,7 @@ export function iosContents(files: ReadonlyArray<{ scale: number; file: string }
           ? { idiom: 'universal', filename: entry.file }
           : { idiom: 'universal', filename: entry.file, scale: `${entry.scale}x` }
       ),
-      info: { author: 'altery-figma', version: 1 },
+      info: { author: 'allcrew-channel', version: 1 },
       ...(vector ? { properties: { 'preserves-vector-representation': true } } : {}),
     },
     null,

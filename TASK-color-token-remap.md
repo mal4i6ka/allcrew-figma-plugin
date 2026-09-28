@@ -5,7 +5,7 @@
 > values, renames, `legacy/` parking, styles and canvas paints → contrast audit → Revert, plus
 > `mapping.json`/`.csv` export and an optional old→new board on canvas. Renamed keys keep
 > resolving: the emitter carries them as aliases and both engines write the identical block.
-> Phase 2 runs from either side — a drop zone in the panel or `altery-dj remap` over a
+> Phase 2 runs from either side — a drop zone in the panel or `allcrew-channel remap` over a
 > repository — off the same `mapping.json` and the same shared goldens. The new palette can
 > come from a paste, the generator, a canvas selection, or a published library.
 > 751 tests pass (`npm test`), plus 19 in `pytest tests/test_cli.py`; `npm run typecheck` and
@@ -71,7 +71,7 @@ These came out of a design session; treat them as fixed requirements, not sugges
 - **Post-Apply audit.** Informational report: contrast deltas for text/background pairs
   found during the walk, duplicates, orphans, skipped library tokens.
 - **Phase 2.** One rich mapping record, strategy chosen by flag. Two executors (TS in the
-  plugin, Python in `altery-dj`) kept in sync by golden tests, exactly as the token
+  plugin, Python in `allcrew-channel`) kept in sync by golden tests, exactly as the token
   emitters already are. Parser accepts anything CSS Color 4 parses; matching uses the same
   ΔE ≤ 2 snap as Figma; dry-run by default and `--write` only on a clean git worktree.
 
@@ -87,7 +87,7 @@ These came out of a design session; treat them as fixed requirements, not sugges
 | Variable snapshot incl. library + split themes | `src/variables.ts` |
 | Primitive definition | `src/tokens/engine.ts:756` — `!participatesInTheming && !isScaleToken` |
 | Shadow color already in the token package | `src/tokens/engine.ts:380` — `shadowEffectToCss` |
-| Repo-side token rewriting without Figma | `cli/altery_dj/tokens.py` |
+| Repo-side token rewriting without Figma | `cli/allcrew_channel/tokens.py` |
 
 Gradients appear nowhere in the codebase today — that part is greenfield.
 
@@ -185,7 +185,7 @@ answered by `REMAP_INVENTORY`, `REMAP_PLAN`, `REMAP_APPLIED`, `REMAP_REVERTED`,
 - `src/tokens/remap/rewrite.ts` — pure: given file text, extension and mapping, return the
   rewritten text plus a replacement list. Full CSS Color 4 parsing, alpha preserved,
   original notation preserved (a hex stays a hex, an `rgba()` stays an `rgba()`).
-- `cli/altery_dj/remap.py` — `altery-dj remap --map mapping.json [paths…]`. Dry-run prints
+- `cli/allcrew_channel/remap.py` — `allcrew-channel remap --map mapping.json [paths…]`. Dry-run prints
   file, line, before → after and writes nothing. `--write` refuses on a dirty worktree.
 - Golden fixtures shared by `node --test` and `pytest`, following the `tokens.ts`/
   `tokens.py` precedent.
@@ -301,7 +301,7 @@ family, no ladder comes out inverted, `blue/250`/`neutral/150`/`red/850` stay em
 
 ## The library reader was the thief (2026-08-20, evening)
 
-The operator reads the reference from **Library → "Altery Design System 3.0 · Colors"** — the
+The operator reads the reference from **Library → "AllCrew Channel 3.0 · Colors"** — the
 right channel. The reader skipped alias-valued tokens on the reasoning that they point at
 colors already in the list. That is only true for aliases *inside the collection being read*;
 a `neutral/0` aliasing into a base collection left the palette with no white at all, and

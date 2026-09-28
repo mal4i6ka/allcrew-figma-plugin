@@ -9,7 +9,7 @@ Without EXPORT_ZIP the whole module is skipped, so the default pytest run stays 
 
 What it verifies, on a disposable copy of tests/fixtures/django-reference:
     - the zip's templates/static/locale trees land under the app dir exactly like
-      `altery-dj apply` (cli/altery_dj/apply.py) lays them out (same KNOWN_ROOTS convention);
+      `allcrew-channel apply` (cli/allcrew_channel/apply.py) lays them out (same KNOWN_ROOTS convention);
     - `manage.py check` passes with the export applied (django-admin machinery);
     - EVERY exported page template renders through Django's template engine into a full
       document ({% extends base.html %}, {% include %} partials, {% static %}, {% translate %});
@@ -40,7 +40,7 @@ from _export_probe import assert_css_property
 TESTS_DIR = Path(__file__).parent
 DJANGO_REFERENCE_DIR = TESTS_DIR / 'fixtures' / 'django-reference'
 
-# Mirrors cli/altery_dj/apply.py's KNOWN_ROOTS: only these zip roots are laid out.
+# Mirrors cli/allcrew_channel/apply.py's KNOWN_ROOTS: only these zip roots are laid out.
 KNOWN_ROOTS = ('templates/', 'static/', 'locale/')
 
 EXPORT_ZIP = os.environ.get('EXPORT_ZIP')
@@ -75,7 +75,7 @@ def _all_html(project: dict) -> str:
 
 
 def _apply_zip(zip_path: Path, app_dir: Path) -> list[str]:
-    """Extracts the export zip's known roots under the app dir (altery-dj apply layout)."""
+    """Extracts the export zip's known roots under the app dir (allcrew-channel apply layout)."""
     written = []
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():

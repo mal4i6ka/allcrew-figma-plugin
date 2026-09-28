@@ -164,7 +164,7 @@ test('positions are 1-based and point at the value a human will look for', () =>
 const fixtures = fileURLToPath(new URL('../../../tests/fixtures/remap/', import.meta.url))
 const read = (relative: string): string => readFileSync(fixtures + relative, 'utf8')
 
-test('the rewrite matches the one altery-dj writes, byte for byte', () => {
+test('the rewrite matches the one allcrew-channel writes, byte for byte', () => {
   // tests/test_cli.py runs the CLI over the same inputs and asserts the same expected files.
   // A mapping that produced one result in the plugin and another in the repository would be
   // worse than no tool at all, so this is the lock that keeps the two engines honest.

@@ -6,7 +6,7 @@
  * a checkout. A build that is not scripted drifts by default, so this is the script - it always
  * rebuilds first, and it refuses to write an archive whose contents it cannot verify.
  *
- *   node package.mjs        # build, then write build/altery-figma-ds-plugin.zip
+ *   node package.mjs        # build, then write build/allcrew-channel-plugin.zip
  *
  * The layout is the one `manifest.json` promises: the manifest beside a `dist/` directory, with
  * the install notes next to them. Figma resolves `main`/`ui` relative to the manifest, so that
@@ -19,7 +19,7 @@ import { join } from 'node:path'
 
 const ROOT = process.cwd()
 const OUT_DIR = join(ROOT, 'build')
-const ARCHIVE = join(OUT_DIR, 'altery-figma-ds-plugin.zip')
+const ARCHIVE = join(OUT_DIR, 'allcrew-channel-plugin.zip')
 /** Everything the plugin needs at runtime, and nothing else: no sources, no tests, no node_modules. */
 const MEMBERS = ['manifest.json', 'dist/code.js', 'dist/ui.html', 'README.md']
 

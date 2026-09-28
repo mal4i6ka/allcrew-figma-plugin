@@ -77,7 +77,7 @@ export function extractProps(source: string): VocabularyEntry[] {
   return entries
 }
 
-const INJECTED = '__ALTERY_PROPS__'
+const INJECTED = '__ALLCREW_CHANNEL_PROPS__'
 
 /** Filled in at build time by `build.mjs`; empty in a test run, which is what the tests use. */
 export const PROPS_VOCABULARY: VocabularyEntry[] = (() => {

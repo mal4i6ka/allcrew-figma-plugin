@@ -234,6 +234,20 @@ export function isAlias(value: unknown): value is VariableAlias {
   return typeof value === 'object' && value !== null && (value as VariableAlias).type === 'VARIABLE_ALIAS'
 }
 
+function composedColorValue(value: unknown): VariableComposedColor | null {
+  if (typeof value !== 'object' || value === null) return null
+  const entry = value as Record<string, unknown>
+  const color = isAlias(entry.color) ? entry.color : parseColor(entry.color)
+  const opacity = isAlias(entry.opacity)
+    ? entry.opacity
+    : typeof entry.opacity === 'number'
+      ? entry.opacity
+      : null
+  if (!color || opacity === null) return null
+  if (isAlias(color)) return { color, opacity }
+  return isAlias(opacity) ? { color, opacity } : null
+}
+
 /** What a value looks like in a report: `#FB5B0A`, `→ Colors/orange/500`, `12`, `true`. */
 export async function describeValue(value: VariableValue | undefined): Promise<string> {
   if (value === undefined) return '(unset)'
@@ -243,6 +257,16 @@ export async function describeValue(value: VariableValue | undefined): Promise<s
     // A remote target is the point of an inheritance pass — the report has to say so, or a
     // designer cannot tell a repointed token from one that merely moved a rung.
     return target.remote ? `→ ${target.name} (library)` : `→ ${target.name}`
+  }
+  const composedColor = composedColorValue(value)
+  if (composedColor) {
+    const color = isAlias(composedColor.color)
+      ? await describeValue(composedColor.color)
+      : describeColor({ ...composedColor.color, a: 'a' in composedColor.color ? composedColor.color.a : 1 })
+    const opacity = isAlias(composedColor.opacity)
+      ? await describeValue(composedColor.opacity)
+      : `${composedColor.opacity}%`
+    return `${color} · opacity ${opacity}`
   }
   if (typeof value === 'object' && value !== null && 'r' in value) {
     const color = value as RGBA | RGB
@@ -270,7 +294,11 @@ export async function describeValue(value: VariableValue | undefined): Promise<s
  * points at another variable; anything else is read as the literal the variable's type expects,
  * so a `FLOAT` token can never be handed a colour by accident.
  */
-export async function coerceVariableValue(variable: Variable, raw: unknown): Promise<VariableValue> {
+export async function coerceVariableValue(
+  variable: Variable,
+  raw: unknown,
+  scopeOverride?: readonly string[]
+): Promise<VariableValue> {
   if (typeof raw === 'object' && raw !== null && 'alias' in (raw as Record<string, unknown>)) {
     const target = await resolveVariableRef((raw as Record<string, unknown>).alias)
     if (target.id === variable.id) throw new Error(`"${variable.name}" cannot alias itself`)
@@ -282,6 +310,45 @@ export async function coerceVariableValue(variable: Variable, raw: unknown): Pro
     return figma.variables.createVariableAlias(target)
   }
 
+  if (variable.resolvedType === 'COLOR' && typeof raw === 'object' && raw !== null && 'color' in raw) {
+    const input = raw as Record<string, unknown>
+    let color: RGB | RGBA | VariableAlias
+    if (typeof input.color === 'object' && input.color !== null && 'alias' in input.color) {
+      const target = await resolveVariableRef((input.color as Record<string, unknown>).alias)
+      if (target.id === variable.id) throw new Error(`"${variable.name}" cannot use itself as its composed color`)
+      if (target.resolvedType !== 'COLOR') {
+        throw new Error(`"${variable.name}" color needs a COLOR variable — "${target.name}" is ${target.resolvedType}`)
+      }
+      color = figma.variables.createVariableAlias(target)
+    } else {
+      const parsed = parseColor(input.color)
+      if (!parsed) throw new Error(`"${variable.name}" needs a base colour or COLOR alias in "color"`)
+      color = parsed
+    }
+
+    let opacity: number | VariableAlias
+    if (typeof input.opacity === 'object' && input.opacity !== null && 'alias' in input.opacity) {
+      const target = await resolveVariableRef((input.opacity as Record<string, unknown>).alias)
+      if (target.resolvedType !== 'FLOAT') {
+        throw new Error(`"${variable.name}" opacity needs a FLOAT variable — "${target.name}" is ${target.resolvedType}`)
+      }
+      opacity = figma.variables.createVariableAlias(target)
+    } else {
+      const percent =
+        typeof input.opacity === 'string' && input.opacity.trim().endsWith('%')
+          ? Number(input.opacity.trim().slice(0, -1))
+          : input.opacity
+      if (typeof percent !== 'number' || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+        throw new Error(`"${variable.name}" composed opacity must be between 0% and 100%`)
+      }
+      opacity = percent
+    }
+
+    if (isAlias(color)) return { color, opacity }
+    if (isAlias(opacity)) return { color, opacity }
+    throw new Error(`"${variable.name}" composed color needs a variable alias in "color" or "opacity"`)
+  }
+
   switch (variable.resolvedType) {
     case 'COLOR': {
       const color = parseColor(raw)
@@ -289,9 +356,22 @@ export async function coerceVariableValue(variable: Variable, raw: unknown): Pro
       return { r: color.r, g: color.g, b: color.b, a: color.a }
     }
     case 'FLOAT': {
-      const num = typeof raw === 'string' ? Number(raw) : raw
+      const opacityScoped = (scopeOverride ?? variable.scopes).some(
+        (scope) => scope === 'OPACITY' || scope === 'COLOR_OPACITY'
+      )
+      const percent =
+        typeof raw === 'string' && raw.trim().endsWith('%')
+          ? Number(raw.trim().slice(0, -1))
+          : null
+      if (percent !== null && !opacityScoped) {
+        throw new Error(`"${variable.name}" accepts a percent only when scoped OPACITY or COLOR_OPACITY`)
+      }
+      const num = percent ?? (typeof raw === 'string' ? Number(raw) : raw)
       if (typeof num !== 'number' || !Number.isFinite(num)) {
         throw new Error(`"${variable.name}" needs a number — got ${JSON.stringify(raw)}`)
+      }
+      if (opacityScoped && (num < 0 || num > 100)) {
+        throw new Error(`"${variable.name}" opacity must be between 0% and 100% — got ${num}%`)
       }
       return num
     }

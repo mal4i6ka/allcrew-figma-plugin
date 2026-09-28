@@ -56,11 +56,11 @@ test('a spring comes back as a spring, not as its name', () => {
 
 test('one reaction with two actions is two links, because that is how they are written', () => {
   const links = sendableLinks([
-    reaction({ type: 'ON_CLICK' }, { type: 'BACK' }, { type: 'URL', url: 'https://altery.com' }),
+    reaction({ type: 'ON_CLICK' }, { type: 'BACK' }, { type: 'URL', url: 'https://allcrew.com' }),
   ])
   assert.deepEqual(links, [
     { on: 'click', to: 'back' },
-    { on: 'click', url: 'https://altery.com' },
+    { on: 'click', url: 'https://allcrew.com' },
   ])
 })
 

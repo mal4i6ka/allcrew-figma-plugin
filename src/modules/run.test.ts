@@ -262,3 +262,40 @@ test('a kept value of the wrong type falls back to the default rather than being
   await runModuleCommand(MODULE, COMMAND, {}, { ...context, confirmed: true, state: { key: 42 } })
   assert.equal(sent[1].source, 'stored-key')
 })
+
+test('step conditions skip calls without leaving a report gap', async () => {
+  const conditional = JSON.parse(JSON.stringify(FILE))
+  conditional.state.enabled = { type: 'boolean', default: false }
+  conditional.commands[0].steps = [
+    { call: 'SCAN', when: { from: 'enabled', equals: true } },
+    { confirm: 'Only while disabled.', when: { from: 'enabled', equals: false } },
+  ]
+  const module = parseUserModule(conditional, KNOWN).module!
+  const off = harness(ANSWERS)
+  const report = await runModuleCommand(module, module.commands[0], {}, off.context)
+  assert.deepEqual(off.sent, [])
+  assert.equal(report.steps[0].skipped, true)
+  assert.equal(report.needsConfirmation, 'Only while disabled.')
+
+  const on = harness(ANSWERS)
+  const confirmed = await runModuleCommand(module, module.commands[0], { enabled: true }, { ...on.context, confirmed: true })
+  assert.deepEqual(on.sent.map((message) => message.type), ['SCAN'])
+  assert.equal(confirmed.steps[1].skipped, true)
+})
+
+test('numeric state bounds are enforced on kept values, params and step output', async () => {
+  const bounded = JSON.parse(JSON.stringify(FILE))
+  bounded.state.rows = { type: 'number', default: 2, min: 0, max: 10 }
+  const module = parseUserModule(bounded, KNOWN).module!
+  const fromStorage = harness(ANSWERS)
+  const stored = await runModuleCommand(module, module.commands[0], {}, { ...fromStorage.context, state: { rows: 99 } })
+  assert.equal(stored.state.rows, 2)
+
+  const badParam = await runModuleCommand(module, module.commands[0], { rows: 99 }, harness(ANSWERS).context)
+  assert.equal(badParam.ok, false)
+  assert.match(badParam.error!, /parameter "rows" must be <= 10/)
+
+  const output = await runModuleCommand(module, module.commands[0], {}, { ...harness(ANSWERS).context, confirmed: true })
+  assert.equal(output.ok, false)
+  assert.match(output.error!, /must be <= 10/)
+})

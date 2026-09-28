@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { loadAllPagesAsync, findAllWithCriteria, findAllByTypes, walkSceneNodes } from './tree.ts'
+import { loadAllPagesAsync, findAllWithCriteria, findAllByTypes, topLevelAncestorOrNull, walkSceneNodes } from './tree.ts'
 
 function setFigma(mock: any) {
   ;(globalThis as any).figma = mock
@@ -319,4 +319,25 @@ test('walkSceneNodes restores the skip flag even when the visitor throws', async
     })
   )
   assert.equal(figmaMock.skipInvisibleInstanceChildren, false)
+})
+
+test('topLevelAncestorOrNull returns the scene node directly under the page', () => {
+  const page = { id: 'page', type: 'PAGE', parent: null }
+  const frame = { id: 'frame', type: 'FRAME', parent: page }
+  const group = { id: 'group', type: 'GROUP', parent: frame }
+  const leaf = { id: 'leaf', type: 'RECTANGLE', parent: group }
+
+  assert.equal(topLevelAncestorOrNull(leaf as unknown as SceneNode), frame)
+})
+
+test('topLevelAncestorOrNull ignores a stale instance sublayer whose parent getter throws', () => {
+  const stale = {
+    id: 'I1:2;3:4',
+    type: 'FRAME',
+    get parent(): never {
+      throw new Error('in get_parent: node does not exist')
+    },
+  }
+
+  assert.equal(topLevelAncestorOrNull(stale as unknown as SceneNode), null)
 })

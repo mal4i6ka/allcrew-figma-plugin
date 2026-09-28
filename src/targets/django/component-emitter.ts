@@ -1046,7 +1046,7 @@ export function emitBaseHtml(
             ? [`  <style>@import url("{% static 'vendor/bootstrap/bootstrap.min.css' %}") layer(bootstrap);</style>`]
             : [
                 "  {# Bootstrap CSS is expected from the project (Settings → Bootstrap source: In project)." +
-                  ' Override this block to link it, or run `altery-dj bootstrap vendor`. #}',
+                  ' Override this block to link it, or run `allcrew-channel bootstrap vendor`. #}',
               ]),
         '  {% endblock %}',
         ...(framework.bootstrapTokensCssFile

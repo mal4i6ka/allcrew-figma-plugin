@@ -52,9 +52,32 @@ test('an op that decides its own write-ness is asked, and is asked with the raw 
   assert.equal(authorize(doorway, readOnly, undefined).ok, false)
 })
 
-test('authorize reports an unknown op rather than throwing', () => {
-  const verdict = authorize(undefined, { read: true, write: true })
-  assert.deepEqual(verdict, { ok: false, error: 'unknown op' })
+test('authorize reports an unknown op rather than throwing, and says it is not worth retrying', () => {
+  assert.deepEqual(authorize(undefined, { read: true, write: true }), {
+    ok: false,
+    error: 'unknown op',
+    code: 'unknown_op',
+    retryable: false,
+  })
+})
+
+test('a closed gate is a DIFFERENT refusal from a missing op, and says a retry can work', () => {
+  // This is the distinction the channel could not express: both used to be HTTP 400 with prose,
+  // so a caller had to regex English to tell "flip a switch and try again" from "this op will
+  // never exist". The two reads below are one human action apart and one code apart.
+  const read = authorize({ name: 'x', summary: '', mutates: false, params: {}, run: async () => null }, { read: false, write: false })
+  assert.deepEqual(read, {
+    ok: false,
+    error: 'reads are off — enable "Allow reads" in the plugin',
+    code: 'gate_closed',
+    retryable: true,
+  })
+
+  const write = authorize({ name: 'x', summary: '', mutates: true, params: {}, run: async () => null }, { read: true, write: false })
+  assert.equal(write.ok, false)
+  assert.equal(write.ok === false && write.code, 'gate_closed')
+  // The prose still names the exact switch. The code is beside it, never instead of it.
+  assert.match(write.ok === false ? write.error : '', /Allow changes/)
 })
 
 /* --------------------------------------------------------------- manifest */

@@ -1,4 +1,4 @@
-# Altery Design System Export
+# AllCrew Channel
 
 A self-contained Figma plugin that exports the current file's **local variables**
 as a design-token package — mode-aware CSS, JSON and TypeScript — ready to drop
@@ -13,9 +13,11 @@ Figma plan** (no Enterprise Variables REST access, no server, no network).
 
 1. In Figma desktop: **Menu → Plugins → Development → Import plugin from manifest…**
 2. Pick `manifest.json` from this folder.
-3. The plugin now shows under **Plugins → Development → Altery Design System Export**.
+3. The plugin now shows under **Plugins → Development → AllCrew Channel**.
 
-No build step — `code.js` and `ui.html` are ready to run as-is.
+Run `npm run build` first: `manifest.json` points at `dist/code.js` and `dist/ui.html`, which
+`build.mjs` bundles from `src/**/*.ts`. `npm run dev` rebuilds on change, and `npm run package`
+refuses to ship an archive whose `dist/` is older than any tracked source.
 
 ## Use
 
@@ -51,7 +53,8 @@ preferences (the choices persist per-user):
 |---------|---------|--------------|
 | **Inline primitives** | on | Resolves aliases that point at a *primitive* (raw, single-mode value) into the literal, and drops the primitive layer. Aliases **between semantic tokens** stay as `var(--…)`. |
 | **Flatten all aliases** | off | With Inline primitives on, also resolves the *semantic→semantic* `var(--…)` refs into literals, so **no** references remain in the output. Off keeps the readable, themeable semantic layer. |
-| **Theme attribute** | `data-theme-name` | The attribute the theme blocks key off (`[<attr>="Dark"]`). Set it to `data-theme` to match the Altery board, or anything else. |
+| **Theme attribute** | `data-theme-name` | The attribute the theme blocks key off (`[<attr>="Dark"]`). Set it to `data-theme` to match the AllCrew Channel board, or anything else. |
+| **Theme collections table** | empty | Maps any number of free-plan single-mode collections into exported multi-theme structures. Each row names the output structure, source collection and exported theme; repeat a structure name for Light, Dark, High contrast or additional brand themes. Conventional `theme` + `theme-dark` and `theme-light` + `theme-dark` layouts are detected automatically. |
 | **Per-theme `.module.css`** | on | Whether to emit the per-theme module files alongside `tokens.css`. |
 | **CSS Modules `:global()`** | on | Wrap module-file selectors in `:global(…)` (valid CSS Modules) or leave them plain. |
 | **iOS & Android tokens** | off | Also emit the asset catalogue, `res/values{,-night}/colors.xml`, `Tokens.swift` and `Tokens.kt`. Off by default because a palette becomes one colorset *directory* per colour, which is noise in a package a web project unzips. |
@@ -81,7 +84,7 @@ tokens that use it — no primitive variables in the output:
 ```
 
 Turn it **off** to keep the primitive layer and reference it via aliases instead
-(byte-identical to the Altery board, modulo the attribute name):
+(byte-identical to the AllCrew Channel board, modulo the attribute name):
 
 ```css
 :root,
@@ -245,7 +248,7 @@ does the git/npm/folder work.
   installed it from Figma has no checkout of this repo. It is injected at build time from
   `server/receiver.mjs`, so the copy they get can never be a different version.
 - **Receiver endpoint** — where to POST (configurable; nothing is pinned to one host).
-- **Shared secret** — sent as `x-altery-secret`; must match the receiver. *(This is the
+- **Shared secret** — sent as `x-allcrew-channel-secret`; must match the receiver. *(This is the
   only secret in the plugin — git/npm credentials never leave the receiver.)* **Pair** fills
   both fields from a receiver running on this machine; see *Secrets* below.
 - **Target** — `folder` / `git` (commit + push) / `pr` (branch + `gh pr`) / `npm` (publish),
@@ -257,14 +260,14 @@ does the git/npm/folder work.
 host; it executes the target using the host's own git / `gh` / `npm` auth:
 
 ```bash
-ALTERY_FOLDER_BASE=/abs/path/for/folder/target \
+ALLCREW_CHANNEL_FOLDER_BASE=/abs/path/for/folder/target \
 node receiver.mjs                 # listens on :8787 (override with PORT)
 ```
 
 ### Secrets
 
 Nothing is baked into the build and nothing is distributed. A receiver with no
-`ALTERY_SECRET` mints its own into `~/.altery/receiver-secret` (0600) and opens a
+`ALLCREW_CHANNEL_SECRET` mints its own into `~/.allcrew-channel/receiver-secret` (0600) and opens a
 five-minute pairing window; the plugin's **Pair** button collects it, and the first pair
 closes the window. Ten designers means ten different secrets, none of which anyone had to
 send anyone. Rotate by deleting the file and restarting.
@@ -273,7 +276,7 @@ Pairing is unauthenticated by design, bounded three ways: loopback only, five mi
 a start someone typed by hand, and closed by the first success. It grants nothing a local
 process could not get by reading the same file.
 
-For a shared or remote host, set `ALTERY_SECRET` yourself — the receiver uses it and opens
+For a shared or remote host, set `ALLCREW_CHANNEL_SECRET` yourself — the receiver uses it and opens
 **no** pairing window (`--pair` forces one), and you type the same value into the plugin.
 Never bake one secret into the plugin for everyone: it is a key to every teammate's host
 that cannot be rotated without a rebuild.
@@ -305,11 +308,11 @@ The receiver uses only Node.js built-ins — no `npm install`. The host needs:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ALTERY_SECRET` | no | minted | Set it to manage the secret by hand; suppresses pairing |
-| `ALTERY_SECRET_FILE` | no | `~/.altery/receiver-secret` | Where a minted secret is stored |
+| `ALLCREW_CHANNEL_SECRET` | no | minted | Set it to manage the secret by hand; suppresses pairing |
+| `ALLCREW_CHANNEL_SECRET_FILE` | no | `~/.allcrew-channel/receiver-secret` | Where a minted secret is stored |
 | `PORT` | no | `8787` | HTTP port |
-| `ALTERY_FOLDER_BASE` | for `folder` | — | Absolute base dir; `route.path` resolves under it |
-| `ALTERY_WORK_DIR` | no | `<tmp>/altery-tokens` | Scratch dir for git clones |
+| `ALLCREW_CHANNEL_FOLDER_BASE` | for `folder` | — | Absolute base dir; `route.path` resolves under it |
+| `ALLCREW_CHANNEL_WORK_DIR` | no | `<tmp>/allcrew-channel-tokens` | Scratch dir for git clones |
 
 ---
 
@@ -319,12 +322,12 @@ The simplest setup — run the receiver locally, expose it to other Figma sessio
 
 ```bash
 # .env (keep out of git)
-ALTERY_SECRET=some-random-string
-ALTERY_FOLDER_BASE=/Users/you/projects/design-tokens/src
+ALLCREW_CHANNEL_SECRET=some-random-string
+ALLCREW_CHANNEL_FOLDER_BASE=/Users/you/projects/design-tokens/src
 
 # run
-ALTERY_SECRET=some-random-string \
-ALTERY_FOLDER_BASE=/Users/you/projects/design-tokens/src \
+ALLCREW_CHANNEL_SECRET=some-random-string \
+ALLCREW_CHANNEL_FOLDER_BASE=/Users/you/projects/design-tokens/src \
 node server/receiver.mjs
 ```
 
@@ -342,11 +345,11 @@ npm install -g pm2
 cat > ecosystem.config.cjs <<'EOF'
 module.exports = {
   apps: [{
-    name: "altery-receiver",
+    name: "allcrew-channel-receiver",
     script: "server/receiver.mjs",
     env: {
-      ALTERY_SECRET: "your-secret-here",
-      ALTERY_FOLDER_BASE: "/srv/tokens",
+      ALLCREW_CHANNEL_SECRET: "your-secret-here",
+      ALLCREW_CHANNEL_FOLDER_BASE: "/srv/tokens",
       PORT: "8787"
     }
   }]
@@ -362,25 +365,25 @@ pm2 save && pm2 startup   # survive reboots
 ### Option 3: systemd service
 
 ```ini
-# /etc/systemd/system/altery-receiver.service
+# /etc/systemd/system/allcrew-channel-receiver.service
 [Unit]
-Description=Altery token receiver
+Description=AllCrew Channel receiver
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/node /opt/altery/server/receiver.mjs
+ExecStart=/usr/bin/node /opt/allcrew-channel/server/receiver.mjs
 Restart=on-failure
 Environment=PORT=8787
-Environment=ALTERY_SECRET=your-secret-here
-Environment=ALTERY_FOLDER_BASE=/srv/tokens
-WorkingDirectory=/opt/altery
+Environment=ALLCREW_CHANNEL_SECRET=your-secret-here
+Environment=ALLCREW_CHANNEL_FOLDER_BASE=/srv/tokens
+WorkingDirectory=/opt/allcrew-channel
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
-systemctl enable --now altery-receiver
+systemctl enable --now allcrew-channel-receiver
 ```
 
 ---
@@ -397,13 +400,13 @@ CMD ["node", "receiver.mjs"]
 ```
 
 ```bash
-docker build -t altery-receiver .
+docker build -t allcrew-channel-receiver .
 docker run -d \
   -p 8787:8787 \
-  -e ALTERY_SECRET=your-secret \
-  -e ALTERY_FOLDER_BASE=/tokens \
+  -e ALLCREW_CHANNEL_SECRET=your-secret \
+  -e ALLCREW_CHANNEL_FOLDER_BASE=/tokens \
   -v /host/tokens:/tokens \
-  altery-receiver
+  allcrew-channel-receiver
 ```
 
 ---
@@ -436,7 +439,7 @@ jobs:
       - run: npx style-dictionary build   # or whatever your pipeline is
       - run: |
           git config user.name "tokens-bot"
-          git config user.email "tokens@altery.local"
+          git config user.email "tokens@allcrew-channel.local"
           git add -A && git diff --cached --quiet || git commit -m "chore: rebuild tokens"
           git push
 ```
@@ -459,7 +462,7 @@ The receiver inherits credentials from the host environment — never from the p
 
 ```bash
 curl http://localhost:8787
-# {"ok":true,"service":"altery-tokens-receiver"}
+# {"ok":true,"service":"allcrew-channel-tokens-receiver"}
 ```
 
 ---
@@ -468,10 +471,10 @@ curl http://localhost:8787
 
 | Symptom | Likely cause |
 |---------|-------------|
-| `401 bad or missing secret` | Secret in plugin doesn't match `ALTERY_SECRET` |
+| `401 bad or missing secret` | Secret in plugin doesn't match `ALLCREW_CHANNEL_SECRET` |
 | `git push` fails | Host's git auth not set up for that remote |
 | `gh pr create` fails | `gh auth login` not done on the receiver host |
-| `folder target needs ALTERY_FOLDER_BASE` | Env var not set |
+| `folder target needs ALLCREW_CHANNEL_FOLDER_BASE` | Env var not set |
 | No changes committed | Tokens were already up-to-date (not an error) |
 
 ## Notes
@@ -479,8 +482,14 @@ curl http://localhost:8787
 - **Themes = the modes of your semantic (alias-bearing) collection.** A raw
   primitives collection with a single placeholder mode (e.g. `Mode 1`) is *not*
   treated as a theme; its values fold into every theme block.
-- **Offline / private:** `manifest.json` declares no network access. Fonts
-  (Museo Sans, Geist Mono) are embedded in `ui.html`.
+- **Token extraction is offline.** Reading variables, building the package and writing every
+  artifact happen entirely in-editor; fonts (Museo Sans, Geist Mono) are embedded in `ui.html`.
+  `manifest.json` does declare `networkAccess.allowedDomains: ["*"]`, and it has to: two
+  optional features dial out and neither host can be known ahead of time — the delivery step
+  POSTs the package to a receiver the user configures, and the agent listener talks to a loopback
+  bridge on a port the designer chooses. `allowedDomains` takes whole URLs and a port cannot be
+  wildcarded, so a narrower list would be wrong for half of any team. Nothing in the extraction
+  path uses it.
 - **Editors & plan:** runs in both **Figma Design** and **Dev Mode**
   (`editorType: ["figma", "dev"]`, `capabilities: ["inspect"]`). It reads variables
   through the in-editor Plugin API, so **no Enterprise / Variables REST API is
@@ -488,13 +497,13 @@ curl http://localhost:8787
   by Figma to a **Dev or Full seat** (no manifest setting bypasses that); anyone with
   a normal editor seat can still run it in **Design mode** with no extra cost.
 - **Selector:** defaults to `[data-theme-name="…"]` (per spec) but is configurable
-  in **Export settings** — set it to `data-theme` to match the Altery board.
+  in **Export settings** — set it to `data-theme` to match the AllCrew Channel board.
 - **`tokens.json` is always the full, un-inlined tree** regardless of the Inline
   primitives setting, so it stays lossless for diffing / re-import.
 
 ## Maintenance
 
-The transform in `code.js` is a dependency-free port of the Altery board's
+The transform in `code.js` is a dependency-free port of the AllCrew Channel board's
 `src/lib/figma.ts` (`variablesToW3CMultiMode`) + `src/lib/design-system/tokens-transform.ts`.
 With **Inline primitives off** and the **theme attribute** set to `data-theme`, the
 output is byte-identical to the board. The export options layer on top of that core

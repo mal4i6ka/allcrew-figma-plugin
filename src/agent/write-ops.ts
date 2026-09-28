@@ -56,6 +56,163 @@ function record(value: unknown, what: string): Record<string, unknown> {
 /** EASING and TIMING joined the four in 2026: a curve and a duration, held as tokens. */
 const RESOLVED_TYPES = ['COLOR', 'FLOAT', 'BOOLEAN', 'STRING', 'EASING', 'TIMING'] as const
 
+/** Picker scopes accepted by the currently installed Figma Plugin API. */
+export type SupportedVariableScope = VariableScope
+
+const VARIABLE_SCOPES: Readonly<Record<'FLOAT' | 'STRING' | 'COLOR', readonly SupportedVariableScope[]>> = {
+  FLOAT: [
+    'ALL_SCOPES',
+    'TEXT_CONTENT',
+    'CORNER_RADIUS',
+    'WIDTH_HEIGHT',
+    'GAP',
+    'OPACITY',
+    'COLOR_OPACITY',
+    'STROKE_FLOAT',
+    'EFFECT_FLOAT',
+    'FONT_WEIGHT',
+    'FONT_SIZE',
+    'LINE_HEIGHT',
+    'LETTER_SPACING',
+    'PARAGRAPH_SPACING',
+    'PARAGRAPH_INDENT',
+  ],
+  STRING: ['ALL_SCOPES', 'TEXT_CONTENT', 'FONT_FAMILY', 'FONT_STYLE'],
+  COLOR: ['ALL_SCOPES', 'ALL_FILLS', 'FRAME_FILL', 'SHAPE_FILL', 'TEXT_FILL', 'STROKE_COLOR', 'EFFECT_COLOR'],
+}
+
+/** Validate exactly what Figma's picker accepts. Scopes affect picker visibility, not whether
+ * the Plugin API may bind a variable. */
+export function normaliseVariableScopes(
+  raw: unknown,
+  type: VariableResolvedDataType,
+  where = 'scopes'
+): SupportedVariableScope[] {
+  if (!Array.isArray(raw)) throw new Error(`${where} must be an array`)
+  const allowed = VARIABLE_SCOPES[type as keyof typeof VARIABLE_SCOPES]
+  if (!allowed) throw new Error(`${where}: ${type} variables do not support picker scopes`)
+  const scopes = raw.map((scope, index) => {
+    if (typeof scope !== 'string' || !allowed.includes(scope as SupportedVariableScope)) {
+      throw new Error(`${where}[${index}] must be one of: ${allowed.join(', ')}`)
+    }
+    return scope as SupportedVariableScope
+  })
+  if (new Set(scopes).size !== scopes.length) throw new Error(`${where} contains a duplicate scope`)
+  if (scopes.includes('ALL_SCOPES') && scopes.length > 1) {
+    throw new Error(`${where}: ALL_SCOPES cannot be combined with another scope`)
+  }
+  if (
+    scopes.includes('ALL_FILLS') &&
+    scopes.some((scope) => scope === 'FRAME_FILL' || scope === 'SHAPE_FILL' || scope === 'TEXT_FILL')
+  ) {
+    throw new Error(`${where}: ALL_FILLS cannot be combined with FRAME_FILL, SHAPE_FILL or TEXT_FILL`)
+  }
+  return scopes
+}
+
+const CODE_SYNTAX_PLATFORMS = ['WEB', 'ANDROID', 'iOS'] as const
+type CodeSyntaxPlatformName = (typeof CODE_SYNTAX_PLATFORMS)[number]
+
+export interface VariableMetadataPlan {
+  newName?: string
+  description?: string
+  scopes?: SupportedVariableScope[]
+  hiddenFromPublishing?: boolean
+  codeSyntax?: Partial<Record<CodeSyntaxPlatformName, string | null>>
+}
+
+/** Every writable piece of Variable metadata, validated before the first assignment. */
+export function planVariableMetadata(
+  entry: Record<string, unknown>,
+  type: VariableResolvedDataType,
+  where: string,
+  allowEmpty = false
+): VariableMetadataPlan {
+  const plan: VariableMetadataPlan = {}
+  if (entry.newName !== undefined) {
+    if (typeof entry.newName !== 'string' || entry.newName.trim() === '') {
+      throw new Error(`${where}.newName must be a non-empty string`)
+    }
+    plan.newName = entry.newName.trim()
+  }
+  if (entry.description !== undefined) {
+    if (typeof entry.description !== 'string') throw new Error(`${where}.description must be a string`)
+    plan.description = entry.description
+  }
+  if (entry.scopes !== undefined) plan.scopes = normaliseVariableScopes(entry.scopes, type, `${where}.scopes`)
+  if (entry.hiddenFromPublishing !== undefined) {
+    if (typeof entry.hiddenFromPublishing !== 'boolean') {
+      throw new Error(`${where}.hiddenFromPublishing must be a boolean`)
+    }
+    plan.hiddenFromPublishing = entry.hiddenFromPublishing
+  }
+  if (entry.codeSyntax !== undefined) {
+    const raw = record(entry.codeSyntax, `${where}.codeSyntax`)
+    const syntax: Partial<Record<CodeSyntaxPlatformName, string | null>> = {}
+    for (const [platform, value] of Object.entries(raw)) {
+      if (!CODE_SYNTAX_PLATFORMS.includes(platform as CodeSyntaxPlatformName)) {
+        throw new Error(`${where}.codeSyntax.${platform} is unknown — use WEB, ANDROID or iOS`)
+      }
+      if (value !== null && typeof value !== 'string') {
+        throw new Error(`${where}.codeSyntax.${platform} must be a string or null`)
+      }
+      syntax[platform as CodeSyntaxPlatformName] = value as string | null
+    }
+    plan.codeSyntax = syntax
+  }
+  if (!allowEmpty && Object.keys(plan).length === 0) {
+    throw new Error(
+      `${where}: nothing to update — send newName, description, scopes, hiddenFromPublishing or codeSyntax`
+    )
+  }
+  return plan
+}
+
+function variableMetadata(variable: Variable): Record<string, unknown> {
+  return {
+    name: variable.name,
+    description: variable.description,
+    scopes: [...variable.scopes],
+    hiddenFromPublishing: variable.hiddenFromPublishing,
+    codeSyntax: { ...variable.codeSyntax },
+  }
+}
+
+function projectedVariableMetadata(
+  before: Record<string, unknown>,
+  plan: VariableMetadataPlan
+): Record<string, unknown> {
+  const after: Record<string, unknown> = {
+    ...before,
+    codeSyntax: { ...(before.codeSyntax as Record<string, string>) },
+  }
+  if (plan.newName !== undefined) after.name = plan.newName
+  if (plan.description !== undefined) after.description = plan.description
+  if (plan.scopes !== undefined) after.scopes = [...plan.scopes]
+  if (plan.hiddenFromPublishing !== undefined) after.hiddenFromPublishing = plan.hiddenFromPublishing
+  if (plan.codeSyntax) {
+    const syntax = after.codeSyntax as Record<string, string>
+    for (const [platform, value] of Object.entries(plan.codeSyntax)) {
+      if (value === null) delete syntax[platform]
+      else syntax[platform] = value
+    }
+  }
+  return after
+}
+
+function applyVariableMetadata(variable: Variable, plan: VariableMetadataPlan): void {
+  if (plan.newName !== undefined) variable.name = plan.newName
+  if (plan.description !== undefined) variable.description = plan.description
+  if (plan.scopes !== undefined) variable.scopes = plan.scopes as unknown as VariableScope[]
+  if (plan.hiddenFromPublishing !== undefined) variable.hiddenFromPublishing = plan.hiddenFromPublishing
+  if (plan.codeSyntax) {
+    for (const [platform, value] of Object.entries(plan.codeSyntax)) {
+      if (value === null) variable.removeVariableCodeSyntax(platform as CodeSyntaxPlatform)
+      else variable.setVariableCodeSyntax(platform as CodeSyntaxPlatform, value)
+    }
+  }
+}
+
 /* ---------------------------------------------------------------- bindings */
 
 /** Scalar fields `setBoundVariable` accepts, and the variable type each one takes. Kept as a
@@ -432,7 +589,9 @@ export const WRITE_OPS: readonly OpDef[] = [
     name: 'variables.set',
     summary: 'Set variable values or aliases, in batch — the one op a recolor actually needs.',
     agent:
-      "Given a 40-character library key it aliases onto that library variable — how one file inherits another's tokens.",
+      'Opacity-scoped FLOAT variables are stored as percentages: use "40%" or 40 for 40% (0.4 renders as 0.4%). ' +
+      'A composed COLOR uses { color, opacity }, where either side (or both) is { alias: … }; opacity literals are percentages. ' +
+      'Given a 40-character library key, an alias points at that library variable.',
     mutates: true,
     params: {
       updates: {
@@ -441,9 +600,11 @@ export const WRITE_OPS: readonly OpDef[] = [
         description:
           'Array of { variable, mode?, value }. `variable` is an id or a name ("Colors/orange/500"). ' +
           '`mode` is a mode name, a mode id, or "*" for every mode; omitted means the collection default. ' +
-          '`value` is "#RRGGBB" / "#RRGGBBAA" / "#RRGGBB 40%" / a number / a boolean / { "alias": … }. ' +
-          'An alias takes a local name or id, or a *library* variable key (40 hex chars) — that is how ' +
-          'one library inherits another\'s tokens.',
+          '`value` is "#RRGGBB" / "#RRGGBBAA" / "#RRGGBB 40%" / a number / a boolean / { "alias": … }, ' +
+          'or a composed COLOR { "color": "#RRGGBB" | { "alias": … }, ' +
+          '"opacity": "40%" | 40 | { "alias": … } }; at least one composed field must be an alias. ' +
+          'For FLOAT variables scoped OPACITY or COLOR_OPACITY, a string such as "40%" is accepted and stored as 40. ' +
+          'An alias takes a local name or id, or a *library* variable key (40 hex chars).',
       },
       dryRun: {
         type: 'boolean',
@@ -512,10 +673,88 @@ export const WRITE_OPS: readonly OpDef[] = [
   },
 
   {
+    name: 'variables.update',
+    summary: 'Edit variable metadata — name, description, picker scopes, publishing visibility and code syntax.',
+    agent:
+      'For opacity tokens use FLOAT plus scope OPACITY (layer opacity) or COLOR_OPACITY (a color’s opacity channel). ' +
+      'Scopes only control Figma picker visibility. Bind layer opacity with node.bind field "opacity"; the current ' +
+      'Plugin API still exposes only "color" as a bindable paint field, so it cannot directly bind a FLOAT token to ' +
+      'paint opacity.',
+    mutates: true,
+    params: {
+      updates: {
+        type: 'json',
+        required: true,
+        description:
+          'Array of { variable, newName?, description?, scopes?, hiddenFromPublishing?, codeSyntax? }. ' +
+          '`variable` is a local id or name. `scopes` accepts the official VariableScope names, including ' +
+          'OPACITY and COLOR_OPACITY. `codeSyntax` accepts WEB / ANDROID / iOS strings; null removes one.',
+      },
+      dryRun: {
+        type: 'boolean',
+        default: false,
+        description: 'Validate and report before/after metadata without writing anything.',
+      },
+    },
+    async run(params) {
+      const updates = asArray(params.updates, 'updates')
+      const dryRun = params.dryRun === true
+      if (!dryRun) figma.commitUndo()
+
+      const results: Array<Record<string, unknown>> = []
+      for (const [index, raw] of updates.entries()) {
+        let label = `#${index}`
+        try {
+          const entry = record(raw, `updates[${index}]`)
+          label = String(entry.variable ?? label)
+          const variable = await resolveVariable(entry.variable)
+          if (variable.remote) throw new Error(`"${variable.name}" is a library variable — edit it in its own file`)
+          const plan = planVariableMetadata(entry, variable.resolvedType, `updates[${index}]`)
+          const before = variableMetadata(variable)
+          const after = projectedVariableMetadata(before, plan)
+          const changed = JSON.stringify(before) !== JSON.stringify(after)
+          if (!dryRun && changed) applyVariableMetadata(variable, plan)
+          results.push({
+            variable: variable.id,
+            name: variable.name,
+            ok: true,
+            changed,
+            before,
+            after,
+          })
+        } catch (err) {
+          results.push({
+            variable: label,
+            name: label,
+            ok: false,
+            changed: false,
+            error: String((err as Error)?.message || err),
+          })
+        }
+      }
+
+      const failed = results.filter((entry) => !entry.ok).length
+      const changed = results.filter((entry) => entry.ok && entry.changed).length
+      if (!dryRun && changed > 0) {
+        figma.notify(`Agent: ${changed} variable${changed === 1 ? '' : 's'} updated`)
+      }
+      return {
+        dryRun,
+        total: results.length,
+        changed,
+        unchanged: results.filter((entry) => entry.ok && !entry.changed).length,
+        failed,
+        results,
+      }
+    },
+  },
+
+  {
     name: 'variables.create',
     summary: 'Create variables in a collection — the rungs a new palette adds that the old one lacked.',
     agent:
-      'modes: ["Light","Dark"] makes the collection offer those modes first — a fresh collection is single-mode. Values may then key by mode name.',
+      'Create FLOAT variables with scopes: ["OPACITY"] for layer opacity or ["COLOR_OPACITY"] for a color’s ' +
+      'opacity channel. Opacity values are percentages: "40%" and 40 both mean 40%. `modes` creates the required modes first.',
     mutates: true,
     params: {
       collection: {
@@ -527,7 +766,8 @@ export const WRITE_OPS: readonly OpDef[] = [
         type: 'json',
         required: true,
         description:
-          'Array of { name, type?, values?, scopes?, description? }. `type` defaults to COLOR. ' +
+          'Array of { name, type?, values?, scopes?, description?, hiddenFromPublishing?, codeSyntax? }. ' +
+          '`type` defaults to COLOR. `scopes` accepts OPACITY and COLOR_OPACITY for FLOAT variables. ' +
           '`values` maps mode name (or id, or "*") to a value in the same forms `variables.set` takes.',
       },
       createCollection: {
@@ -605,6 +845,20 @@ export const WRITE_OPS: readonly OpDef[] = [
           }
 
           const already = byName.get(name)
+          const metadata = planVariableMetadata(
+            {
+              description: entry.description,
+              scopes: entry.scopes,
+              hiddenFromPublishing: entry.hiddenFromPublishing,
+              codeSyntax: entry.codeSyntax,
+            },
+            already?.resolvedType ?? type,
+            `variables[${index}]`,
+            true
+          )
+          if (already && already.resolvedType !== type && entry.type !== undefined) {
+            throw new Error(`"${name}" already exists as ${already.resolvedType}, not ${type}`)
+          }
           if (already && params.updateExisting !== true) {
             results.push({ name, ok: true, created: false, skipped: 'already exists', variable: already.id })
             continue
@@ -620,7 +874,7 @@ export const WRITE_OPS: readonly OpDef[] = [
           for (const [modeRef, rawValue] of Object.entries(values)) {
             for (const mode of resolveModes(collection, modeRef)) {
               if (variable) {
-                const value = await coerceVariableValue(variable, rawValue)
+                const value = await coerceVariableValue(variable, rawValue, metadata.scopes)
                 if (!dryRun) variable.setValueForMode(mode.modeId, value)
                 written[mode.name] = await describeValue(value)
               } else {
@@ -628,11 +882,19 @@ export const WRITE_OPS: readonly OpDef[] = [
               }
             }
           }
-          if (variable && !dryRun) {
-            if (typeof entry.description === 'string') variable.description = entry.description
-            if (Array.isArray(entry.scopes)) variable.scopes = entry.scopes as VariableScope[]
-          }
-          results.push({ name, ok: true, created: !already, variable: variable?.id ?? null, values: written })
+          const metadataBefore = variable
+            ? variableMetadata(variable)
+            : { name, description: '', scopes: [], hiddenFromPublishing: false, codeSyntax: {} }
+          const metadataAfter = projectedVariableMetadata(metadataBefore, metadata)
+          if (variable && !dryRun) applyVariableMetadata(variable, metadata)
+          results.push({
+            name,
+            ok: true,
+            created: !already,
+            variable: variable?.id ?? null,
+            values: written,
+            metadata: metadataAfter,
+          })
         } catch (err) {
           results.push({ name: String((raw as any)?.name ?? index), ok: false, error: String((err as Error)?.message || err) })
         }
@@ -688,7 +950,10 @@ export const WRITE_OPS: readonly OpDef[] = [
     name: 'node.bind',
     summary: 'Bind layer properties to variables — the op that turns a lint finding into a fix.',
     agent:
-      "variable takes an id, a local name or a library key; null unbinds — a row WITHOUT the key is an error, never a silent unbind. The report's before names what each write displaced.",
+      'field "opacity" binds a FLOAT token to the whole layer; null unbinds. `fill` / `stroke` bind COLOR tokens. ' +
+      'Figma documents COLOR_OPACITY as a FLOAT picker scope, but its Plugin API still exposes only `color` as a ' +
+      'bindable paint field, so paint opacity cannot be bound here until Figma adds that field. The report names ' +
+      'what each successful write displaced.',
     mutates: true,
     params: {
       bindings: {
@@ -698,9 +963,9 @@ export const WRITE_OPS: readonly OpDef[] = [
           'Array of { node, field, variable, paintIndex? }. `node` is a layer id, as returned by ' +
           '`lint.colors` or `node.find`. `field` is "fill" / "stroke", a group name ("cornerRadius", ' +
           '"padding"), or a scalar field (width, height, topLeftRadius, itemSpacing, paddingLeft, ' +
-          'strokeWeight, opacity, visible, characters, …). `variable` is an id, a name ' +
-          '("Colors/orange/500") or a library key from `library.variables`; null unbinds. ' +
-          '`paintIndex` narrows a fill/stroke binding to one paint — omitted binds every solid paint.',
+          'strokeWeight, opacity, visible, characters, …). Layer `opacity` takes a FLOAT variable scoped OPACITY. ' +
+          '`variable` is an id, a name ("Colors/orange/500") or a library key from `library.variables`; null unbinds. ' +
+          '`paintIndex` narrows a fill/stroke color binding to one solid paint; COLOR_OPACITY is not yet writable through the Plugin API.',
       },
       dryRun: {
         type: 'boolean',
@@ -2175,7 +2440,7 @@ export const WRITE_OPS: readonly OpDef[] = [
        * runtime — "Plugin runtime aborted", the leak counter in the console, and from the outside
        * a plugin that keeps reconnecting with a new session id. `force` already means "delete
        * without asking what points at it", so counting first was work whose answer was thrown
-       * away. Measured on Altery Mobile DS: the counting call killed the plugin every time, a
+       * away. Measured on AllCrew Channel: the counting call killed the plugin every time, a
        * single attempt was enough, and there was nothing to report when it did. */
       const counting = params.force !== true
       if (counting) await loadAllPagesAsync()

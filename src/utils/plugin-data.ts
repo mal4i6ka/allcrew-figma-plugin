@@ -5,8 +5,8 @@
 
 /** Exported because the Django emitters read the same blob off a plain `getSharedPluginData`
  * shape rather than a `BaseNode` — the template emitter only ever sees the narrow node source
- * interface, and a second hardcoded `'altery'` there is how the two sides drift apart. */
-export const PLUGIN_DATA_NAMESPACE = 'altery'
+ * interface, and a second hardcoded `'allcrewChannel'` there is how the two sides drift apart. */
+export const PLUGIN_DATA_NAMESPACE = 'allcrewChannel'
 const MAX_PLUGIN_DATA_BYTES = 100_000
 
 export enum PluginDataKey {

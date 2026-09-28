@@ -1,6 +1,6 @@
 /**
  * Shared settings/options — persisted across plugin sessions via figma.clientStorage.
- * Ported from altery-figma-django src/export/options.ts, extended with `target` field.
+ * Ported from allcrew-channel-django src/export/options.ts, extended with `target` field.
  */
 
 /**
@@ -9,6 +9,8 @@
  * the same picker (and the same persisted field) so the plugin reopens on whichever page was
  * last used.
  */
+import { isRecord } from './utils/type-guards.ts'
+
 export type TargetId = 'design-tokens' | 'django' | 'ds-tools' | 'agent'
 
 export interface ExportModulesOptions {
@@ -32,7 +34,7 @@ export interface ExportTargetOptions {
   /** Ship the Django project itself (`manage.py`, settings/urls/views, the page registry and the
    * `navMap` context processor) alongside the templates, so the zip runs as an application instead
    * of waiting for someone to hand-write a URLconf. Off when the package is laid onto a project
-   * that already has its own — `altery-dj apply` merges templates and static either way. */
+   * that already has its own — `allcrew-channel apply` merges templates and static either way. */
   djangoScaffold: boolean
 }
 
@@ -88,7 +90,7 @@ export interface ExportDeliveryOptions {
 export interface ExportAgentOptions {
   /** Bridge base URL, e.g. `http://127.0.0.1:8788`. Empty = listener unavailable. */
   endpoint: string
-  /** Shared secret, must match the bridge's `ALTERY_AGENT_SECRET`. */
+  /** Shared secret, must match the bridge's `ALLCREW_CHANNEL_AGENT_SECRET`. */
   secret: string
   /** Answer read-only ops (`document.info`, `page.frames`, `node.get`, ...). Remembered per
    * file: re-granting the same permission on every open teaches the reflex to click through
@@ -118,6 +120,22 @@ export interface ExportDocsOptions {
   previewBudgetMb: number
 }
 
+export interface ThemeMergeModeOptions {
+  collection: string
+  name: string
+}
+
+export interface ThemeMergeGroupOptions {
+  name: string
+  modes: ThemeMergeModeOptions[]
+}
+
+/** Per-file interpretation of single-mode collections. Not package-forming: choosing a preset
+ * must not forget how this Figma file stores its themes. */
+export interface ExportThemeMergesOptions {
+  groups: ThemeMergeGroupOptions[]
+}
+
 export interface ExportOptions {
   target: TargetId
   scopeMode: 'page' | 'selection' | 'frame'
@@ -129,11 +147,12 @@ export interface ExportOptions {
   agent: ExportAgentOptions
   lint: ExportLintOptions
   docs: ExportDocsOptions
+  themeMerges: ExportThemeMergesOptions
 }
 
 export type PackageFormingOptions = Omit<
   ExportOptions,
-  'scopeMode' | 'delivery' | 'agent' | 'lint' | 'docs'
+  'scopeMode' | 'delivery' | 'agent' | 'lint' | 'docs' | 'themeMerges'
 >
 
 export type ExportPresetId = 'django-bootstrap' | 'design-tokens' | 'bootstrap-tokens' | 'tauri-app'
@@ -236,6 +255,7 @@ export const DEFAULT_LINT: ExportLintOptions = { maxNestingDepth: 8 }
 /** Descriptions are cheap to read, so they are on; previews cost an export per component, so the
  * team opts in. */
 export const DEFAULT_DOCS: ExportDocsOptions = { componentDocs: true, componentPreviews: false, previewBudgetMb: 8 }
+export const DEFAULT_THEME_MERGES: ExportThemeMergesOptions = { groups: [] }
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
   scopeMode: 'page',
@@ -243,11 +263,9 @@ export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
   agent: { ...DEFAULT_AGENT },
   lint: { ...DEFAULT_LINT },
   docs: { ...DEFAULT_DOCS },
+  themeMerges: { groups: [] },
   ...clonePackage(DJANGO_BOOTSTRAP_VALUES),
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
+  target: 'agent',
 }
 
 function isScopeMode(value: unknown): value is ExportOptions['scopeMode'] {
@@ -313,6 +331,41 @@ function normalizeTokens(raw: unknown): ExportTokensOptions {
     includeLibraries: typeof raw.includeLibraries === 'boolean' ? raw.includeLibraries : defaults.includeLibraries,
     collectionRoles: typeof raw.collectionRoles === 'string' ? raw.collectionRoles.trim() : defaults.collectionRoles,
   }
+}
+
+function normalizeThemeMerges(raw: unknown, legacyTokens: unknown): ExportThemeMergesOptions {
+  const groups: ThemeMergeGroupOptions[] = []
+  if (isRecord(raw) && Array.isArray(raw.groups)) {
+    for (const entry of raw.groups) {
+      if (!isRecord(entry) || typeof entry.name !== 'string' || !Array.isArray(entry.modes)) continue
+      const name = entry.name.trim()
+      const modes: ThemeMergeModeOptions[] = []
+      for (const mode of entry.modes) {
+        if (!isRecord(mode) || typeof mode.collection !== 'string' || typeof mode.name !== 'string') continue
+        const collection = mode.collection.trim()
+        const modeName = mode.name.trim()
+        if (collection && modeName) modes.push({ collection, name: modeName })
+      }
+      if (name && modes.length > 0) groups.push({ name, modes })
+    }
+  }
+  if (groups.length > 0) return { groups }
+
+  // Migration from the one-line pair field shipped before the table editor.
+  if (isRecord(legacyTokens) && typeof legacyTokens.collectionMerges === 'string') {
+    for (const row of legacyTokens.collectionMerges.split(/[;\n]+/)) {
+      const match = /^\s*(.+?)\s*=\s*(.+?)\s*\+\s*(.+?)\s*$/.exec(row)
+      if (!match) continue
+      groups.push({
+        name: match[1].trim(),
+        modes: [
+          { collection: match[2].trim(), name: 'Light' },
+          { collection: match[3].trim(), name: 'Dark' },
+        ],
+      })
+    }
+  }
+  return { groups }
 }
 
 function normalizeI18n(raw: unknown): ExportI18nOptions {
@@ -399,6 +452,7 @@ export function normalizeExportOptions(raw: unknown): ExportOptions {
     modules: normalizeModules(candidate.modules),
     targetOptions: normalizeTargetOptions(candidate.targetOptions),
     tokens: normalizeTokens(candidate.tokens),
+    themeMerges: normalizeThemeMerges(candidate.themeMerges, candidate.tokens),
     i18n: normalizeI18n(candidate.i18n),
     delivery: normalizeDelivery(candidate.delivery),
     agent: normalizeAgent(candidate.agent),
@@ -451,6 +505,7 @@ export function applyPreset(
     agent: { ...options.agent },
     lint: { ...options.lint },
     docs: { ...options.docs },
+    themeMerges: { groups: options.themeMerges.groups.map((group) => ({ name: group.name, modes: group.modes.map((mode) => ({ ...mode })) })) },
   }
 }
 

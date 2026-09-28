@@ -47,7 +47,7 @@ test('applyTranslations matches by nodeId first, loads fonts, and writes the tra
 test('applyTranslations falls back to pluginData context when there is no nodeId match', async () => {
   setFigma([])
   const node = makeTextNode({ id: 'text:2', characters: 'Place order' })
-  node.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ context: 'checkout.submit' }))
+  node.setSharedPluginData('allcrewChannel', 'i18nKey', JSON.stringify({ context: 'checkout.submit' }))
   const index = buildNodeIndex([node])
   const entries: TranslationEntry[] = [{ msgctxt: 'checkout.submit', msgid: '', msgstr: 'Оформить заказ' }]
 
@@ -76,13 +76,13 @@ test('applyTranslations backs up the pre-translation text into pluginData exactl
   const first: TranslationEntry[] = [{ nodeId: 'text:1', msgctxt: '', msgid: '', msgstr: 'Оформить заказ' }]
 
   await applyTranslations(first, index)
-  assert.equal(node.getSharedPluginData('altery', 'i18nOriginal'), JSON.stringify('Place order'))
+  assert.equal(node.getSharedPluginData('allcrewChannel', 'i18nOriginal'), JSON.stringify('Place order'))
 
   const second: TranslationEntry[] = [{ nodeId: 'text:1', msgctxt: '', msgid: '', msgstr: 'Commander' }]
   await applyTranslations(second, index)
 
   // Backup stays pinned to the very first original, not the intermediate translation.
-  assert.equal(node.getSharedPluginData('altery', 'i18nOriginal'), JSON.stringify('Place order'))
+  assert.equal(node.getSharedPluginData('allcrewChannel', 'i18nOriginal'), JSON.stringify('Place order'))
 })
 
 test('applyTranslations skips nodes with a missing font and reports why', async () => {

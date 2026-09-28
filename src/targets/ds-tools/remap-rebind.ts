@@ -75,8 +75,8 @@ export interface RebindReport {
 
 /* ------------------------------------------------------------------ storage */
 
-const SNAPSHOT_KEY = 'altery-rebind-snapshot'
-const SNAPSHOT_COUNT_KEY = 'altery-rebind-snapshot-chunks'
+const SNAPSHOT_KEY = 'allcrew-channel-rebind-snapshot'
+const SNAPSHOT_COUNT_KEY = 'allcrew-channel-rebind-snapshot-chunks'
 const CHUNK_BYTES = 80_000
 const MAX_CHUNKS = 12
 export const REBIND_BUDGET_BYTES = CHUNK_BYTES * MAX_CHUNKS

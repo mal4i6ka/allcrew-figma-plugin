@@ -6,7 +6,7 @@
  *    bootstrap.css). Color overrides get the `-rgb` companion Bootstrap's `*-opacity`
  *    utilities require. Dark mode rides Bootstrap's native `[data-bs-theme="dark"]`.
  *  - `bootstrap.map.json` — the resolved token→variable mapping, editable by hand;
- *    `altery-dj tokens` (phase 5) rebuilds bootstrap-tokens.css from it + tokens.json
+ *    `allcrew-channel tokens` (phase 5) rebuilds bootstrap-tokens.css from it + tokens.json
  *    without a Figma re-export.
  *  - `static/scss/_tokens.scss` — the same overrides as `$variables` for projects that
  *    compile Bootstrap from SCSS (optional, Settings → _tokens.scss).
@@ -178,7 +178,7 @@ export function emitBootstrapArtifacts(
     matched.length === 0
       ? ''
       : `/* Bootstrap variable overrides generated from design tokens — link AFTER bootstrap.css.\n` +
-        `   Mapping: bootstrap.map.json (edit + \`altery-dj tokens\` to rebuild without Figma). */\n` +
+        `   Mapping: bootstrap.map.json (edit + \`allcrew-channel tokens\` to rebuild without Figma). */\n` +
         blocks.join('\n\n') +
         '\n'
 
@@ -187,7 +187,7 @@ export function emitBootstrapArtifacts(
       {
         $comment:
           'Bootstrap variable → design-token mapping (paths are dotted keys into tokens.json). ' +
-          'Edit and run `altery-dj tokens` to rebuild bootstrap-tokens.css / _tokens.scss without a Figma re-export.',
+          'Edit and run `allcrew-channel tokens` to rebuild bootstrap-tokens.css / _tokens.scss without a Figma re-export.',
         map: Object.fromEntries(matched.map((match) => [match.bsVar, match.leaf.path.join('.')])),
         unmatched,
       },

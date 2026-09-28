@@ -63,7 +63,7 @@ test('extractStrings dedupes by (msgctxt, text) and aggregates references', asyn
 test('extractStrings keeps distinct msgctxt entries separate even for identical text', async () => {
   setFigma()
   const withCtx = makeTextNode({ id: 'text:1', characters: 'Cancel' })
-  withCtx.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ context: 'modal' }))
+  withCtx.setSharedPluginData('allcrewChannel', 'i18nKey', JSON.stringify({ context: 'modal' }))
   const withoutCtx = makeTextNode({ id: 'text:2', characters: 'Cancel' })
   const root = makePage('Page 1', [withCtx, withoutCtx])
 
@@ -184,7 +184,7 @@ test('extractStrings reaches a bound STRING variable through resolveKey, using i
 test('extractStrings applies a manual placeholder annotation as a gettext %(name)s token', async () => {
   setFigma()
   const node = makeTextNode({ characters: 'Hello, Anna!' })
-  node.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ placeholders: [{ start: 7, end: 11, name: 'username' }] }))
+  node.setSharedPluginData('allcrewChannel', 'i18nKey', JSON.stringify({ placeholders: [{ start: 7, end: 11, name: 'username' }] }))
   const root = makePage('Page 1', [node])
 
   const [entry] = await extractStrings(root)
@@ -195,7 +195,7 @@ test('extractStrings applies a manual placeholder annotation as a gettext %(name
 test('extractStrings carries a manual plural annotation into msgid/msgidPlural', async () => {
   setFigma()
   const node = makeTextNode({ characters: '%(count)d item' })
-  node.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ plural: { one: '%(count)d item', other: '%(count)d items' } }))
+  node.setSharedPluginData('allcrewChannel', 'i18nKey', JSON.stringify({ plural: { one: '%(count)d item', other: '%(count)d items' } }))
   const root = makePage('Page 1', [node])
 
   const [entry] = await extractStrings(root)

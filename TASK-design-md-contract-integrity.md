@@ -13,9 +13,9 @@ report the gap", while the package itself names tokens that don't exist, ships
 no usable spacing/radius layer, and presents icon search-tags as mandatory
 behaviour contracts. A compliant agent deadlocks; a sloppy one invents values.
 
-Observed on the `altery-agentic-dev` export (198 variables, 1634 components,
+Observed on the `allcrew-channel` export (198 variables, 1634 components,
 17 "contracts"). Screen/frame structure export is a separate task
-(`TASK-allcrew-full-frame-export.md`); this task is about the integrity of the
+(`TASK-allcrew-channel-full-frame-export.md`); this task is about the integrity of the
 design-tokens target itself.
 
 ## Findings → required fixes
@@ -141,7 +141,7 @@ Re-export of the same Figma file yields a package where:
 6. Icon entries live in `ICONS.md`; all COMPONENTS.md index links resolve to a
    unique anchor.
 7. Existing tests pass; new fixtures cover findings 1, 3, 4, 5 (the
-   `altery-library` fixture already reproduces the observed export shape).
+   `allcrew-channel-library` fixture already reproduces the observed export shape).
 
 ## Resolution (2026-08-10)
 

@@ -6,7 +6,7 @@ import { inlinePrimitivesTree } from '../../../tokens/engine.ts'
 
 const alias = (id: string) => ({ type: 'VARIABLE_ALIAS', id })
 
-/** Altery-brand-style scheme (capitalized groups, palette + semantic split across two
+/** AllCrew Channel-style scheme (capitalized groups, palette + semantic split across two
  * collections, Light/Dark modes) — the adapter must match it without renames. */
 function brandGraph(): TokenGraph {
   return {

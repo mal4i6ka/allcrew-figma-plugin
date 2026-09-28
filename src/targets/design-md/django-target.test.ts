@@ -15,7 +15,7 @@ const TREE: TokenTree = {
 
 function input(overrides: Partial<DjangoDesignMdInput> = {}): DjangoDesignMdInput {
   return {
-    fileName: 'Altery DS',
+    fileName: 'AllCrew Channel',
     scope: { mode: 'page' },
     modules: { tokens: true, templates: true, i18n: true, animation: false },
     package: {

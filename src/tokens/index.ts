@@ -1,6 +1,6 @@
 /**
  * Token orchestrator — bridges VariableSnapshot → token engine.
- * Ported from altery-figma-django src/tokens/index.ts, adapted for the ds engine.
+ * Ported from allcrew-channel-django src/tokens/index.ts, adapted for the ds engine.
  */
 
 import type { VariableSnapshot } from '../variables'

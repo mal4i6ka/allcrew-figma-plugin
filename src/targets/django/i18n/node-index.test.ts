@@ -26,7 +26,7 @@ test('buildNodeIndex always keys a node by its raw nodeId', () => {
 
 test('buildNodeIndex keys a node by its pluginData i18nKey context when set', () => {
   const node = makeTextNode({ id: 'text:1' })
-  node.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ context: 'checkout.submit' }))
+  node.setSharedPluginData('allcrewChannel', 'i18nKey', JSON.stringify({ context: 'checkout.submit' }))
 
   const index = buildNodeIndex([node])
 
@@ -44,7 +44,7 @@ test('buildNodeIndex keys a node without a context by its normalized text alone'
 
 test('buildNodeIndex separates same-text nodes that carry different contexts', () => {
   const withCtx = makeTextNode({ id: 'text:1', characters: 'Cancel' })
-  withCtx.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ context: 'modal' }))
+  withCtx.setSharedPluginData('allcrewChannel', 'i18nKey', JSON.stringify({ context: 'modal' }))
   const withoutCtx = makeTextNode({ id: 'text:2', characters: 'Cancel' })
 
   const index = buildNodeIndex([withCtx, withoutCtx])

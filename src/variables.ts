@@ -1,9 +1,9 @@
 /**
  * Variable reading — reads local + team-library variables into a snapshot
- * the token engine can consume. Ported from altery-figma-django src/variables.ts.
+ * the token engine can consume. Ported from allcrew-channel-django src/variables.ts.
  */
 
-import { foldSplitThemeCollections } from './tokens/split-theme.ts'
+import { foldSplitThemeCollections, type CollectionMerge } from './tokens/split-theme.ts'
 
 export interface CollectionEntry {
   id: string
@@ -23,6 +23,8 @@ export interface VariableEntry {
   /** What the designer wrote about this token. Empty for most, and the difference between a
    * token an agent can use correctly and one it can only copy when it is not. */
   description?: string
+  /** Omitted when false. True means the token is intentionally excluded from library publishing. */
+  hiddenFromPublishing?: true
   /** Per-platform names the design system has already committed to — `WEB`, `ANDROID`, `iOS`.
    * A generator that reads this stops inventing its own. */
   codeSyntax?: Variable['codeSyntax']
@@ -52,6 +54,7 @@ function toVariableEntry(variable: Variable): VariableEntry {
     resolvedType: variable.resolvedType,
     valuesByMode: variable.valuesByMode,
     ...(variable.description ? { description: variable.description } : {}),
+    ...(variable.hiddenFromPublishing ? { hiddenFromPublishing: true as const } : {}),
     ...(variable.codeSyntax && Object.keys(variable.codeSyntax).length > 0
       ? { codeSyntax: variable.codeSyntax }
       : {}),
@@ -87,6 +90,8 @@ export interface LibraryReadOptions {
   /** Skip this many variables of the (flattened, ordered) sweep - the `nextOffset` of the call
    * before. */
   readonly offset?: number
+  /** Explicit single-mode collections grouped into exported theme structures. */
+  readonly collectionMerges?: readonly CollectionMerge[]
 }
 
 export interface LibraryReadProgress {
@@ -180,7 +185,7 @@ export async function readAllVariables(options: LibraryReadOptions = {}): Promis
   const [local, library] = await Promise.all([readLocalVariables(), readLibraryVariables(options)])
   // Folded at the single point every consumer reads through, so a theme split across two
   // collections (Figma's free plan caps a collection at one mode) is invisible downstream.
-  const merged = foldSplitThemeCollections(mergeSnapshots(local, library))
+  const merged = foldSplitThemeCollections(mergeSnapshots(local, library), options.collectionMerges)
   return {
     ...merged,
     ...(library.nextOffset === undefined ? {} : { nextOffset: library.nextOffset }),
@@ -193,8 +198,14 @@ export interface ResolvedVariableValue {
   resolvedType: VariableResolvedDataType
 }
 
-function isVariableAlias(value: VariableValue | undefined): value is VariableAlias {
+function isVariableAlias(value: unknown): value is VariableAlias {
   return typeof value === 'object' && value !== null && 'type' in value && value.type === 'VARIABLE_ALIAS'
+}
+
+function isVariableComposedColor(value: unknown): value is VariableComposedColor {
+  if (typeof value !== 'object' || value === null || !('color' in value) || !('opacity' in value)) return false
+  const composed = value as { color: unknown; opacity: unknown }
+  return isVariableAlias(composed.color) || isVariableAlias(composed.opacity)
 }
 
 export async function resolveVariableValue(
@@ -221,6 +232,42 @@ export async function resolveVariableValue(
     const target = await figma.variables.getVariableByIdAsync(value.id)
     if (!target) throw new Error(`Broken alias: ${value.id}`)
     return resolveVariableValue(target, modeId, visited)
+  }
+
+  if (isVariableComposedColor(value)) {
+    let color: RGB | RGBA
+    if (isVariableAlias(value.color)) {
+      const target = await figma.variables.getVariableByIdAsync(value.color.id)
+      if (!target) throw new Error(`Broken composed color alias: ${value.color.id}`)
+      const resolved = await resolveVariableValue(target, modeId, new Set(visited))
+      if (typeof resolved.value !== 'object' || resolved.value === null || !('r' in resolved.value)) {
+        throw new Error(`Composed color alias "${target.name}" did not resolve to a color`)
+      }
+      color = resolved.value as RGB | RGBA
+    } else {
+      color = value.color
+    }
+
+    let opacity: number
+    if (isVariableAlias(value.opacity)) {
+      const target = await figma.variables.getVariableByIdAsync(value.opacity.id)
+      if (!target) throw new Error(`Broken composed opacity alias: ${value.opacity.id}`)
+      const resolved = await resolveVariableValue(target, modeId, new Set(visited))
+      if (typeof resolved.value !== 'number') {
+        throw new Error(`Composed opacity alias "${target.name}" did not resolve to a number`)
+      }
+      opacity = resolved.value
+    } else {
+      opacity = value.opacity
+    }
+    if (!Number.isFinite(opacity) || opacity < 0 || opacity > 100) {
+      throw new Error(`Composed opacity must be between 0% and 100% — got ${opacity}%`)
+    }
+    const baseAlpha = 'a' in color ? color.a : 1
+    return {
+      value: { r: color.r, g: color.g, b: color.b, a: baseAlpha * (opacity / 100) },
+      resolvedType: 'COLOR',
+    }
   }
 
   return { value, resolvedType: variable.resolvedType }

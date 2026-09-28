@@ -49,8 +49,8 @@ export interface PaletteApplyReport {
   warnings: PaletteWarning[]
 }
 
-const SECTION_PLUGIN_KEY = 'altery-palette-section'
-const SWATCH_COMPONENT_PLUGIN_KEY = 'altery-palette-swatch'
+const SECTION_PLUGIN_KEY = 'allcrew-channel-palette-section'
+const SWATCH_COMPONENT_PLUGIN_KEY = 'allcrew-channel-palette-swatch'
 
 /* ------------------------------------------------------------------ variables */
 

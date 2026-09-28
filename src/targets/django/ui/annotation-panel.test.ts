@@ -29,14 +29,14 @@ test('loadAnnotationForm returns an empty form for a node with no annotation', (
 
 test('loadAnnotationForm surfaces a stored context', () => {
   const node = makeNode()
-  node.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ context: 'checkout.submit' }))
+  node.setSharedPluginData('allcrewChannel', 'i18nKey', JSON.stringify({ context: 'checkout.submit' }))
   assert.deepEqual(loadAnnotationForm(node), emptyForm({ context: 'checkout.submit' }))
 })
 
 test('loadAnnotationForm surfaces stored plural forms with the toggle enabled', () => {
   const node = makeNode()
   node.setSharedPluginData(
-    'altery',
+    'allcrewChannel',
     'i18nKey',
     JSON.stringify({ plural: { one: '%(count)d item', other: '%(count)d items' } })
   )
@@ -49,7 +49,7 @@ test('loadAnnotationForm surfaces stored plural forms with the toggle enabled', 
 test('loadAnnotationForm surfaces stored placeholder ranges', () => {
   const node = makeNode('Hello, Anna!')
   node.setSharedPluginData(
-    'altery',
+    'allcrewChannel',
     'i18nKey',
     JSON.stringify({ placeholders: [{ start: 7, end: 11, name: 'username' }] })
   )

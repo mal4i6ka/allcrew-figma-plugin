@@ -314,7 +314,7 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
           max: 600_000,
           description:
             'How long to wait for the command before answering with what it said so far. The BRIDGE cuts the ' +
-            'call at its own ceiling first (ALTERY_AGENT_CALL_TIMEOUT_MS, 180s by default), so a value above ' +
+            'call at its own ceiling first (ALLCREW_CHANNEL_AGENT_CALL_TIMEOUT_MS, 180s by default), so a value above ' +
             'that one only takes effect when the bridge is started with a matching ceiling.',
         },
       },

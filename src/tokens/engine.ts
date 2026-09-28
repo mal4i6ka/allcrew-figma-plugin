@@ -1,5 +1,5 @@
 /**
- * Canonical token engine — a TypeScript port of altery-figma-ds code.js pure functions.
+ * Canonical token engine — a TypeScript port of allcrew-channel code.js pure functions.
  * Dependency-free, figma-global-free, Node-testable.
  *
  * Feeds from a VariableSnapshot (src/variables.ts) and emits:
@@ -13,6 +13,7 @@
  * Also includes text style extraction (typography scale) and breakpoint token extraction.
  */
 
+import { isRecord } from '../utils/type-guards.ts'
 import { toNativeFiles } from './native.ts'
 
 /* ------------------------------------------------------------------ types */
@@ -33,8 +34,12 @@ export interface TokenGraphVariable {
   valuesByMode: { [modeId: string]: unknown }
   /** Figma variable scopes (`FRAME_FILL`, `TEXT_FILL`, `CORNER_RADIUS`, …). The designer's own
    * statement of where the token may be applied — authoritative for DESIGN.md's "apply to"
-   * column, which otherwise has to guess from the name. Absent on older snapshots. */
+   * column, which otherwise has to guess from the name, and for `tokenKind`, which otherwise has
+   * to guess the unit from it. Absent on older snapshots. */
   scopes?: readonly string[]
+  /** Per-platform names the design system already committed to, straight off Figma's
+   * `Variable.codeSyntax`. A generator that reads this stops inventing its own spelling. */
+  codeSyntax?: { WEB?: string; ANDROID?: string; iOS?: string }
 }
 
 export interface TokenGraph {
@@ -85,7 +90,12 @@ export interface W3CToken {
   $value: TokenValue
   $extensions: {
     modes: Record<string, TokenValue>
-    figma?: { collection: string; defaultMode: string; scopes?: readonly string[] }
+    figma?: {
+      collection: string
+      defaultMode: string
+      scopes?: readonly string[]
+      codeSyntax?: { WEB?: string; ANDROID?: string; iOS?: string }
+    }
   }
 }
 
@@ -125,10 +135,6 @@ export interface TokenPackage {
 }
 
 /* ------------------------------------------------------------------ helpers */
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
 
 function slugSegments(name: string): string[] {
   return String(name)
@@ -481,6 +487,17 @@ export function variablesToW3CMultiMode(graph: TokenGraph): TokenTree {
         ? (variable.scopes as readonly string[]).filter((scope) => scope !== 'ALL_SCOPES')
         : []
       if (scopes.length > 0) $extensions.figma.scopes = scopes
+      // The names the team already committed to in Figma. Carried verbatim; each emitter decides
+      // which platform key it answers to and how to make an identifier of it.
+      const codeSyntax = isRecord(variable.codeSyntax) ? variable.codeSyntax : undefined
+      if (codeSyntax) {
+        const kept: { WEB?: string; ANDROID?: string; iOS?: string } = {}
+        for (const key of ['WEB', 'ANDROID', 'iOS'] as const) {
+          const name = (codeSyntax as Record<string, unknown>)[key]
+          if (typeof name === 'string' && name.trim() !== '') kept[key] = name.trim()
+        }
+        if (Object.keys(kept).length > 0) $extensions.figma.codeSyntax = kept
+      }
     }
     setToken(out, path, { $type: explicitType, $value: defaultValue, $extensions })
   }
@@ -534,12 +551,11 @@ function aliasTarget(value: TokenValue): string[] | null {
   return match[1].split('.').map((p) => p.trim()).filter(Boolean)
 }
 
-// `scale` was in this list and should not have been. In this system `scale/16` is sixteen
-// PIXELS — the CSS emitter says so itself, writing `calc(var(--scale-16, 16px) * 1.36)` — and a
-// unitless `16` made that calc invalid, so every radius derived from the scale silently squared
-// off. A multiplier is what `ratio` and `aspect` are for.
-const UNITLESS_TOKEN = /(^|[-_])(opacity|z-?index|font-?weight|weight|line-?height|lineheight|flex|order|aspect|ratio|count|columns?)([-_]|$)/i
-const LINE_HEIGHT_TOKEN = /(^|[-_])line-?height([-_]|$)/i
+// `scale` is deliberately NOT a unitless family. In this system `scale/16` is sixteen PIXELS —
+// the CSS emitter says so itself, writing `calc(var(--scale-16, 16px) * 1.36)` — and a unitless
+// `16` made that calc invalid, so every radius derived from the scale silently squared off. A
+// multiplier is what `ratio` and `aspect` are for. (`cli/allcrew_channel/tokens.py` still carried
+// `scale` here long after this side dropped it; the golden fixtures now pin both.)
 const LINE_HEIGHT_RATIO_MAX = 4
 
 /** Figma stores floats — a 9.9px text size arrives as `9.899999618530273`. Two decimals is
@@ -549,15 +565,128 @@ function roundEmitted(value: number): number {
 }
 
 /**
- * Whether a number token means pixels. The same question the CSS emitter answers by appending
- * `px` or not - exported because the native emitters have to answer it too (Compose wants `.dp`
- * on a length and a bare number on a line-height ratio), and two copies of this heuristic would
- * drift the first time someone adds a token family to it.
+ * What a token MEANS, as opposed to what type it stores. `number` is the whole problem: Figma
+ * calls a corner radius, a gap, a font size and an opacity all `FLOAT`, and each one renders
+ * differently in every language the package emits — `px` vs nothing in CSS, `.dp` vs `.sp` vs a
+ * bare float in Compose. A boolean "is this a length" answered CSS and left Android emitting text
+ * sizes in `dp`, which is the classic scaling bug: a user who raises the system font size sees
+ * nothing change.
+ */
+export type TokenKind =
+  | 'color'
+  | 'spacing'
+  | 'radius'
+  | 'borderWidth'
+  | 'fontSize'
+  | 'lineHeight'
+  | 'letterSpacing'
+  | 'fontWeight'
+  | 'fontFamily'
+  | 'opacity'
+  | 'duration'
+  | 'length'
+  | 'number'
+  | 'string'
+  | 'boolean'
+
+/**
+ * Figma's own scopes, which are the designer's statement of where a token may be applied and
+ * therefore the only non-guessing answer to what it measures. Preferred over the name: a token
+ * called `scale/16` scoped to `CORNER_RADIUS` is a radius whatever its name says.
+ */
+const KIND_BY_SCOPE: Readonly<Record<string, TokenKind>> = {
+  CORNER_RADIUS: 'radius',
+  GAP: 'spacing',
+  WIDTH_HEIGHT: 'spacing',
+  PARAGRAPH_SPACING: 'spacing',
+  PARAGRAPH_INDENT: 'spacing',
+  STROKE_FLOAT: 'borderWidth',
+  EFFECT_FLOAT: 'length',
+  FONT_SIZE: 'fontSize',
+  LINE_HEIGHT: 'lineHeight',
+  LETTER_SPACING: 'letterSpacing',
+  FONT_WEIGHT: 'fontWeight',
+  FONT_FAMILY: 'fontFamily',
+  FONT_STYLE: 'fontFamily',
+  OPACITY: 'opacity',
+  TEXT_CONTENT: 'string',
+}
+
+/** Name fallbacks, in priority order, for a file whose variables carry no scopes. Each pattern
+ * reproduces a branch the old `UNITLESS_TOKEN`/`LINE_HEIGHT_TOKEN` pair already had, so a token
+ * that used to render unitless still does. */
+const KIND_BY_NAME: ReadonlyArray<readonly [RegExp, TokenKind]> = [
+  [/(^|[-_])line-?height([-_]|$)/i, 'lineHeight'],
+  [/(^|[-_])opacity([-_]|$)/i, 'opacity'],
+  [/(^|[-_])(font-?weight|weight)([-_]|$)/i, 'fontWeight'],
+  [/(^|[-_])(z-?index|flex|order|aspect|ratio|count|columns?)([-_]|$)/i, 'number'],
+  [/(^|[-_])(font-?size|text-?size)([-_]|$)/i, 'fontSize'],
+  [/(^|[-_])(letter-?spacing|tracking)([-_]|$)/i, 'letterSpacing'],
+  [/(^|[-_])(radius|radii|rounded)([-_]|$)/i, 'radius'],
+  [/(^|[-_])(duration|delay)([-_]|$)/i, 'duration'],
+  [/(^|[-_])(font-?family|typeface)([-_]|$)/i, 'fontFamily'],
+]
+
+/** Text metrics: the kinds Android sizes in `sp` so the system font-size setting reaches them. */
+const TEXT_METRIC_KINDS: ReadonlySet<TokenKind> = new Set<TokenKind>([
+  'fontSize',
+  'lineHeight',
+  'letterSpacing',
+])
+
+export function isTextMetricKind(kind: TokenKind): boolean {
+  return TEXT_METRIC_KINDS.has(kind)
+}
+
+/** `$type` and `scopes` first, the name only when neither has an answer. `path` alone is what the
+ * CSS emitter has, which is why the name half has to stand on its own. */
+export function tokenKind(
+  token: Pick<W3CToken, '$type' | '$extensions'> | undefined,
+  path: readonly string[] = []
+): TokenKind {
+  if (token) {
+    if (token.$type === 'color') return 'color'
+    if (token.$type === 'boolean') return 'boolean'
+    const figma = token.$extensions?.figma
+    const scopes = figma && Array.isArray(figma.scopes) ? figma.scopes : []
+    for (const scope of scopes) {
+      const kind = KIND_BY_SCOPE[scope]
+      if (kind) return kind
+    }
+    if (token.$type === 'string' && scopes.length === 0) {
+      // A string token with no scope to speak for it: the name is the only witness, and a family
+      // is the only string kind a generator treats specially.
+      for (const [pattern, kind] of KIND_BY_NAME) {
+        if (kind === 'fontFamily' && path.some((seg) => pattern.test(seg))) return 'fontFamily'
+      }
+      return 'string'
+    }
+  }
+  for (const [pattern, kind] of KIND_BY_NAME) {
+    if (path.some((seg) => pattern.test(seg))) return kind
+  }
+  return 'length'
+}
+
+/**
+ * Whether a numeric token of this kind carries a unit — CSS `px`, Swift `CGFloat`, Compose
+ * `.dp`/`.sp` — rather than being a bare number.
+ *
+ * `lineHeight` is the one kind whose answer depends on the value: Figma stores a 150% leading as
+ * `1.5` and a 24px leading as `24`, with nothing but the magnitude to tell them apart.
+ */
+export function isLengthKind(kind: TokenKind, value: number): boolean {
+  if (roundEmitted(value) === 0) return false
+  if (kind === 'lineHeight') return Math.abs(roundEmitted(value)) >= LINE_HEIGHT_RATIO_MAX
+  return kind !== 'opacity' && kind !== 'fontWeight' && kind !== 'number' && kind !== 'duration'
+}
+
+/**
+ * Whether a number token means pixels. Kept as the CSS-shaped question — it has only a path to go
+ * on — and now answered through `tokenKind` so the heuristic exists once.
  */
 export function isLengthToken(value: number, path?: readonly string[]): boolean {
-  if (roundEmitted(value) === 0) return false
-  if (path && path.some((seg) => LINE_HEIGHT_TOKEN.test(seg))) return Math.abs(roundEmitted(value)) >= LINE_HEIGHT_RATIO_MAX
-  return !(path ? path.some((seg) => UNITLESS_TOKEN.test(seg)) : false)
+  return isLengthKind(tokenKind(undefined, path ?? []), value)
 }
 
 export function cssValue(value: TokenValue, path?: readonly string[]): string {
@@ -566,11 +695,12 @@ export function cssValue(value: TokenValue, path?: readonly string[]): string {
   if (typeof value === 'number') {
     const rounded = roundEmitted(value)
     if (rounded === 0) return '0'
-    if (path && path.some((seg) => LINE_HEIGHT_TOKEN.test(seg))) {
-      return Math.abs(rounded) < LINE_HEIGHT_RATIO_MAX ? String(rounded) : `${rounded}px`
-    }
-    const unitless = path ? path.some((seg) => UNITLESS_TOKEN.test(seg)) : false
-    return unitless ? String(rounded) : `${rounded}px`
+    // A duration is the one numeric kind whose CSS unit is not `px`. Emitting `200px` for
+    // `motion/duration/fast` made every `transition-duration` referencing it invalid — the
+    // Python port had this right and this side did not, which is what the parity goldens exist
+    // to catch.
+    if (tokenKind(undefined, path ?? []) === 'duration') return `${rounded}ms`
+    return isLengthToken(value, path) ? `${rounded}px` : String(rounded)
   }
   if (typeof value === 'boolean') return String(value)
   if (typeof value === 'string') return value
@@ -590,6 +720,17 @@ export function collectionOf(token: W3CToken): string | undefined {
   const figma = token.$extensions?.figma
   if (isRecord(figma) && typeof figma.collection === 'string') return figma.collection
   return undefined
+}
+
+/** The per-platform names Figma already holds for this token, if any. */
+export function codeSyntaxOf(token: W3CToken): Record<string, string> | undefined {
+  const figma = token.$extensions?.figma
+  if (!isRecord(figma) || !isRecord(figma.codeSyntax)) return undefined
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(figma.codeSyntax)) {
+    if (typeof value === 'string' && value.trim() !== '') out[key] = value.trim()
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 export function collectionDefaultModeOf(token: W3CToken): string | undefined {
@@ -639,7 +780,7 @@ export function themeSlug(theme: string): string {
 
 /* ------------------------------------------------------------------ typography scale */
 
-const SCALE_TOKEN_KEY = 'altery-typo-scale'
+const SCALE_TOKEN_KEY = 'allcrew-channel-typo-scale'
 
 export function isScaleToken(token: W3CToken): boolean {
   const figma = token.$extensions?.figma
@@ -896,7 +1037,7 @@ export interface AliasPair {
 }
 
 /** The `$extensions` key the rename map travels under, inside `tokens.json`. */
-export const RENAMES_EXTENSION = 'altery'
+export const RENAMES_EXTENSION = 'allcrewChannel'
 
 const segmentsOf = (name: string): string[] => name.split('/').filter((segment) => segment.trim() !== '')
 
@@ -1241,7 +1382,7 @@ export function buildReadme(summary: TokenSummary, options: NormalizedOptions, t
       }. Concatenated (or merged by your bundler), they reproduce \`tokens.css\`.\n\n\`\`\`ts\n// build-time: pick one theme, the bundler inlines it\nimport "./${varName([defaultTheme])}.module.css";\n\`\`\`\n\nFor **runtime** switching keep every theme present (use \`tokens.css\`, or import\nall \`*.module.css\`) and toggle \`${attr}\` on an ancestor.`
     : ''
 
-  return `# Altery Design Tokens\n\nGenerated by the **Altery Design System Export** Figma plugin from **${summary.fileName}**.\n\n- ${summary.totalVariables} variables across ${summary.collections.length} collection(s)${
+  return `# AllCrew Channel Design Tokens\n\nGenerated by the **AllCrew Channel** Figma plugin from **${summary.fileName}**.\n\n- ${summary.totalVariables} variables across ${summary.collections.length} collection(s)${
     summary.textStyleCount ? `\n- ${summary.textStyleCount} text styles → \`typography/…\` tokens` : ''
   }\n- Themes (modes): ${themeList || '`default`'}\n- Settings: ${settingsLine}\n\n## Files\n\n| File | What it is |\n|------|------------|\n| \`tokens.css\` | CSS custom properties. One self-contained block per theme. The merged single file. |${moduleRow}\n| \`tokens.json\` | Canonical W3C token tree (every mode under \`$extensions.modes\`, source collection under \`$extensions.figma\`). For diffing / re-import. |\n| \`tokens.ts\` | Typed \`tokens\` object (values are \`var(--…)\` refs) + \`themes\` / \`Theme\`. |\n\n${inlineNote}${typoNote}\n\n## Collections\n\n${collLines}\n\n## Using the tokens\n\nImport the stylesheet once:\n\n\`\`\`css\n@import "./tokens.css";\n\`\`\`\n\nThe default theme (\`${defaultTheme}\`) is applied on \`:root\`, so it works with no attribute set.${switchExample}\n\nEach \`[${attr}="…"]\` block re-declares **every** variable for that theme, so toggling\nthe attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleSection}\n`
 }

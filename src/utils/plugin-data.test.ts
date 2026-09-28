@@ -20,18 +20,18 @@ test('getPluginData returns null when nothing is stored', () => {
   assert.equal(getPluginData(node, PluginDataKey.I18N_KEY), null)
 })
 
-test('setPluginData/getPluginData round-trip JSON values under the altery namespace', () => {
+test('setPluginData/getPluginData round-trip JSON values under the allcrewChannel namespace', () => {
   const { node, store } = makeNode()
 
   setPluginData(node, PluginDataKey.I18N_KEY, { context: 'hero.title' })
 
-  assert.equal(store.get(`altery:${PluginDataKey.I18N_KEY}`), JSON.stringify({ context: 'hero.title' }))
+  assert.equal(store.get(`allcrewChannel:${PluginDataKey.I18N_KEY}`), JSON.stringify({ context: 'hero.title' }))
   assert.deepEqual(getPluginData(node, PluginDataKey.I18N_KEY), { context: 'hero.title' })
 })
 
 test('getPluginData returns null for corrupted JSON instead of throwing', () => {
   const { node, store } = makeNode()
-  store.set(`altery:${PluginDataKey.I18N_KEY}`, '{not valid json')
+  store.set(`allcrewChannel:${PluginDataKey.I18N_KEY}`, '{not valid json')
 
   assert.equal(getPluginData(node, PluginDataKey.I18N_KEY), null)
 })
@@ -49,6 +49,6 @@ test('clearPluginData wipes the stored value', () => {
 
   clearPluginData(node, PluginDataKey.I18N_KEY)
 
-  assert.equal(store.get(`altery:${PluginDataKey.I18N_KEY}`), '')
+  assert.equal(store.get(`allcrewChannel:${PluginDataKey.I18N_KEY}`), '')
   assert.equal(getPluginData(node, PluginDataKey.I18N_KEY), null)
 })

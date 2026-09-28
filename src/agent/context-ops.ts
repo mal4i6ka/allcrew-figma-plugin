@@ -35,7 +35,8 @@ import { findAllWithCriteria, yieldToHost } from '../utils/tree.ts'
 import { exportPlate } from '../canvas/plate.ts'
 import { readLocalVariables } from '../variables.ts'
 import { binaryFile, slugify, textFile } from './files.ts'
-import { describePaint, describeShader, shadersFor, type PaintSummary, type ShaderSummary } from './ops.ts'
+import { shadersFor } from './ops.ts'
+import { describePaint, describeShader, type PaintSummary, type ShaderSummary } from './paints.ts'
 import type { OpDef } from './protocol.ts'
 import {
   collectContextAssets,

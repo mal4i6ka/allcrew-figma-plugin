@@ -15,7 +15,7 @@ import { toHex } from '../../tokens/remap/color-literal.ts'
 import type { RemapEntry, RemapPlan } from '../../tokens/remap/plan.ts'
 import { yieldToHost } from '../../utils/tree.ts'
 
-const SECTION_KEY = 'altery-remap-board'
+const SECTION_KEY = 'allcrew-channel-remap-board'
 const SECTION_NAME = 'Color remap'
 
 const SWATCH_WIDTH = 96

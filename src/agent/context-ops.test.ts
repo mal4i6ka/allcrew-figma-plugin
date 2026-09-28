@@ -126,14 +126,14 @@ test('image.plate renders the node with every descendant hidden and names the fi
     node: { id: string }
     format: string
     bytes: number
-    file: { __alteryFile: { name: string; mime: string } }
+    file: { __allcrewChannelFile: { name: string; mime: string } }
   }
 
   assert.equal(result.node.id, card.id)
   assert.equal(result.format, 'JPG')
   assert.equal(result.bytes, 4)
-  assert.equal(result.file.__alteryFile.name, 'topic-card.jpg')
-  assert.equal(result.file.__alteryFile.mime, 'image/jpeg')
+  assert.equal(result.file.__allcrewChannelFile.name, 'topic-card.jpg')
+  assert.equal(result.file.__allcrewChannelFile.mime, 'image/jpeg')
   assert.equal(exportCalls.length, 1)
   assert.deepEqual(exportCalls[0].settings, { format: 'JPG', constraint: { type: 'SCALE', value: 2 } })
   // Every descendant of the clone was hidden before the render — the same guarantee plate.ts's

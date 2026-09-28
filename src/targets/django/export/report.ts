@@ -180,7 +180,7 @@ export function collectFlattenedPages(
 }
 
 /** A Figma file name turned into a URL path segment the way Figma's own share links do: spaces
- * become dashes, case is kept (real links read e.g. `.../design/AbC123/Altery-Mobile-DS?...`),
+ * become dashes, case is kept (real links read e.g. `.../design/AbC123/AllCrew-Channel?...`),
  * anything else URL-unsafe is dropped rather than escaped. Never empty, so a nameless file still
  * produces a followable link. */
 function figmaFileSlug(name: string): string {

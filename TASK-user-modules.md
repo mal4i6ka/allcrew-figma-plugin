@@ -1,12 +1,11 @@
 # Task: user modules (a panel anyone can design, in the canonical look)
 
-> **All four stages landed (2026-08-28).** A module file installs after showing what it may
-> run, appears in the picker under Modules, draws its screens with this panel's own components,
-> exposes its commands to an agent beside the native ones, and can be switched off, saved back
-> out as a file or removed. 49 plugin commands; the module half is five of them plus three that
-> serve the screens.
->
-> Not yet: expressions (v2) and code (v3, the `sandbox.eval` gate). See the open questions.
+> **The production contract is complete (2026-09-19).** Modules now have a published Draft
+> 2020-12 JSON Schema and starter file, strict unknown-key diagnostics, bounded typed state,
+> conditional screens and steps, version-aware upgrades, storage budgets, inline permission
+> review, direct `modules.*` agent operations, redacted secrets, and an end-to-end browser/agent
+> authoring path. Modules remain declarative by design: no arbitrary HTML, JavaScript, network
+> access, loops, or undeclared persistence.
 
 ## Problem
 
@@ -52,14 +51,14 @@ These came out of the session that produced the agent channel; treat them as fix
 
 ```jsonc
 {
-  "module": "altery.module/1",       // format and version, refused if unknown
+  "module": "allcrew-channel.module/1",       // format and version, refused if unknown
   "id": "acme.contrast-audit",       // [a-z0-9][a-z0-9.-]*, namespaces storage and commands
   "name": "Contrast audit",          // the picker entry
   "summary": "Audit text/background pairs against the library.",
   "version": "1.0.0",
   "author": "Acme",                  // free text — a label, never an identity claim
 
-  "state": {                         // every value a screen can read or write
+  "state": {                         // keys: [A-Za-z][A-Za-z0-9_-]*; dots delimit references
     "libraryKey": { "type": "string", "default": "", "label": "Library collection" },
     "onlyText":   { "type": "boolean", "default": true }
   },
@@ -81,8 +80,12 @@ These came out of the session that produced the agent channel; treat them as fix
 ```
 
 **Blocks** (v1): `heading`, `text`, `callout`, `field`, `value`, `select`, `toggle`, `button`,
-`table`. A block that reads or writes a value carries `bind`, naming a declared state field;
-`value` shows one without offering to edit it; a `button` carries `steps`.
+`table`, `list`, and `code`. A block that reads or writes a value carries `bind`, naming a
+declared state field; `value` shows one without offering to edit it; a `button` carries `steps`.
+Blocks may carry a typed `when` condition; interactive blocks may also carry `disabledWhen`.
+`field` renders strings, bounded numbers, multiline values, and secret strings using the
+panel's own controls. `table`, `list`, and `code` render transient step results without
+persisting those potentially large values.
 
 **Layout is the panel's, not the author's.** A screen splits into sections at each `heading`,
 and every section renders in one fixed order — prose, then the controls you set, then the values
@@ -102,11 +105,24 @@ module's name, next to every other target's options.
   means the call is refused unless it carried `confirm: true`.
 
 **References.** A param value is a literal unless it is `{ "from": "<path>" }`, where the path
-starts with a state field or an earlier step's `as` name. Deliberately not a template language:
-`{{…}}` invites expressions, and an expression is code by another name.
+starts with a state field, a declared module-command parameter, or an earlier step's `as` name.
+Deliberately not a template language: `{{…}}` invites expressions, and an expression is code
+by another name.
 
 **Derived, not declared:** `access` (write if any step calls a write), the capability list, and
 the cost note (the union of the costs of the commands it calls).
+
+**State and upgrades.** State is limited to declared string, finite number, and boolean fields.
+Number bounds are enforced on UI writes, agent writes, stored values, and pipeline output.
+`secret: true` is valid only for strings: the panel receives only whether the value is set,
+shows an empty password field with explicit replace/clear actions, and agent inspection,
+screen reads, run reports and exports omit the value. Upgrades follow SemVer, preserve values
+that still match the new declaration, add new defaults, and drop removed or incompatible
+fields. Downgrades require an explicit flag.
+
+**Conditions.** `when` and `disabledWhen` name a reachable value with exactly one of `equals`,
+`notEquals`, `oneOf`, `truthy`, or `exists`. Steps use the same language. It is intentionally
+not an expression engine: there is no evaluation, interpolation, I/O, or loop.
 
 ## Staging
 
@@ -116,6 +132,8 @@ the cost note (the union of the costs of the commands it calls).
 | 2 | Storage, import/export, merge into `plugin.commands` / `plugin.call` | **done** |
 | 3 | Screen rendering with the plugin's own components | **done** |
 | 4 | Picker section, install consent, enable/disable/remove | **done** |
+| 5 | JSON Schema, conditions, versioned migrations, storage/security limits | **done** |
+| 6 | Direct agent authoring/import ops and live permission review | **done** |
 
 Stage 2 before stage 3 on purpose, and it paid twice: the contract was exercised through the
 listener before any interface was drawn against it, and both times the first real run found
@@ -130,20 +148,19 @@ a declared state type that nothing enforced on write.
 | Dispatch and per-command gating | `src/agent/plugin-ops.ts` — `plugin.call`, `mutatesWhen` |
 | A declarative block vocabulary to grow from | `src/agent/board.ts` — `renderBoard` |
 | Reply digesting, files instead of payloads | `src/agent/reply-digest.ts` |
-| Per-entry problem reporting | the write ops' reports, `cli/altery_dj` |
+| Per-entry problem reporting | the write ops' reports, `cli/allcrew_channel` |
 
-## Open questions
+## Deliberate boundaries
 
-- **Storage budget.** `figma.clientStorage` is the obvious home, namespaced by module id. Its
-  real per-key and total limits need measuring before a module can be told what it may keep.
-- **Updates.** A module file carries a `version`; nothing yet decides what happens when a newer
-  one is imported over an older one that has stored state.
-- **Sharing.** Import/export is a file. Whether the plugin should also fetch a module from a URL
-  is a network question the manifest's `allowedDomains` makes plugin-wide, so the answer is
-  probably no.
-- **v2 expressions.** Enablement (`disabled when the field is empty`) is the first thing a real
-  module will want that v1 cannot express. A tiny pure language, evaluated by the plugin, with
-  no I/O and no loops — worth designing only once v1 has users.
-- **v3 code** is `sandbox.eval`, already decided separately: a third gate, off by default, with
-  a `figma` Proxy and a mutation journal. User modules and that decision are the same door from
-  two sides.
+- **Storage is bounded.** A module file is capped at 200 KB, persisted scalar state at 32 KB,
+  the complete module store at 1 MB, and one installation at 64 modules. The limits are part of
+  the authoring response rather than implementation trivia.
+- **Sharing stays file-based.** `modules.export` and the panel's Save action produce a portable
+  JSON document. Installing from a URL would expand the plugin-wide network allowlist and create
+  an update authority; modules therefore do not fetch themselves.
+- **Conditions are not expressions.** The pure comparison language covers visibility,
+  enablement, and conditional steps without opening an evaluator. More operators should be
+  added only as data, with matching schema and parser support.
+- **Arbitrary code is not a module feature.** `sandbox.eval` would need a separate, explicit
+  trust model and mutation journal. A declarative module never acquires that authority merely
+  by being installed.

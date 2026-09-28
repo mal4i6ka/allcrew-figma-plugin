@@ -42,7 +42,7 @@ test('resolveKey defaults to the normalized node text with no msgctxt', async ()
 
 test('resolveKey uses a manual pluginData context as msgctxt', async () => {
   const node = makeTextNode({ characters: 'Cancel' })
-  node.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ context: 'modal' }))
+  node.setSharedPluginData('allcrewChannel', 'i18nKey', JSON.stringify({ context: 'modal' }))
 
   const key = await resolveKey(node)
   assert.deepEqual(key, { msgid: 'Cancel', msgctxt: 'modal', source: 'manual' })
@@ -51,7 +51,7 @@ test('resolveKey uses a manual pluginData context as msgctxt', async () => {
 test('resolveKey applies manual placeholder annotations to the msgid', async () => {
   const node = makeTextNode({ characters: 'Hello, Anna!' })
   node.setSharedPluginData(
-    'altery',
+    'allcrewChannel',
     'i18nKey',
     JSON.stringify({ placeholders: [{ start: 7, end: 11, name: 'username' }] })
   )
@@ -64,7 +64,7 @@ test('resolveKey applies manual placeholder annotations to the msgid', async () 
 test('resolveKey turns a manual plural annotation into msgid/msgidPlural, ignoring node text', async () => {
   const node = makeTextNode({ characters: '3 items' })
   node.setSharedPluginData(
-    'altery',
+    'allcrewChannel',
     'i18nKey',
     JSON.stringify({ context: 'cart', plural: { one: '%(count)d item', other: '%(count)d items' } })
   )
@@ -83,7 +83,7 @@ test('resolveKey treats a bound STRING variable as the ready-made key, taking pr
     characters: 'stale cached text',
     boundVariables: { characters: { type: 'VARIABLE_ALIAS', id: 'VariableID:1' } },
   })
-  node.setSharedPluginData('altery', 'i18nKey', JSON.stringify({ context: 'ignored' }))
+  node.setSharedPluginData('allcrewChannel', 'i18nKey', JSON.stringify({ context: 'ignored' }))
 
   ;(globalThis as any).figma = {
     variables: {

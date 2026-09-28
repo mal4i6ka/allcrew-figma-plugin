@@ -168,8 +168,8 @@ test('nearest by color is the fallback for anything that belongs to no ramp', ()
 
 /* ------------------------------------------------------------------ untrustworthy steps */
 
-/** Altery's own library: `10` is the brand colour and `50…900` are tints of it. */
-const ALTERY_RED = [
+/** AllCrew Channel's own library: `10` is the brand colour and `50…900` are tints of it. */
+const ALLCREW_CHANNEL_RED = [
   [10, '#D63A36'],
   [50, '#FFF0F0'],
   [100, '#FFCFC6'],
@@ -182,9 +182,9 @@ const ALTERY_RED = [
   [800, '#661513'],
 ] as const
 
-const alteryRed = (): InferredSpectrum =>
+const allcrewChannelRed = (): InferredSpectrum =>
   only(
-    ALTERY_RED.map(([step, hex], index) => ({
+    ALLCREW_CHANNEL_RED.map(([step, hex], index) => ({
       ref: `alx/${index}`,
       name: `colors/red/${step}`,
       rgba: rgba(hex),
@@ -221,12 +221,12 @@ const conventionalRed = (): InferredSpectrum =>
 test('a step that breaks its own ladder is not trusted as a number', () => {
   // `10` sits far outside the run 50…800 descends through, so in that scale the number means
   // something else — the brand colour rather than the lightest tint.
-  assert.deepEqual([...ladderOutliers(alteryRed())], [10])
+  assert.deepEqual([...ladderOutliers(allcrewChannelRed())], [10])
   assert.deepEqual([...ladderOutliers(conventionalRed())], [], 'a monotone ladder has none')
 })
 
 test('an old light tint does not become a saturated fill just because the numbers agree', () => {
-  const matches = matchStops(conventionalRed(), alteryRed())
+  const matches = matchStops(conventionalRed(), allcrewChannelRed())
   const ten = matches.find((match) => match.from.step === 10)!
 
   assert.notEqual(ten.via, 'step', 'the number was declined, not the colour')
@@ -241,7 +241,7 @@ test('an old light tint does not become a saturated fill just because the number
 test('the untrusted stop is still reachable as a colour', () => {
   // Declining `10` as a *number* must not remove #D63A36 from the palette: something in the
   // old ramp is that dark, and it should land there.
-  const matches = matchStops(conventionalRed(), alteryRed())
+  const matches = matchStops(conventionalRed(), allcrewChannelRed())
   assert.ok(matches.some((match) => match.to.name === 'colors/red/10' || match.to.rgba.r < 0.9))
 })
 

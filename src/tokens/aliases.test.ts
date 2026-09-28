@@ -87,7 +87,7 @@ test('the module files carry the aliases once, in the default theme’s scope', 
 
 test('tokens.json carries the map beside the tree, where neither engine reads it as a token', () => {
   const json = JSON.parse(toTokensJson(tree(), { 'colors/Blue/500': 'colors/Violet/500' }))
-  assert.deepEqual(json.$extensions.altery.renames, { 'colors/Blue/500': 'colors/Violet/500' })
+  assert.deepEqual(json.$extensions.allcrewChannel.renames, { 'colors/Blue/500': 'colors/Violet/500' })
   assert.deepEqual(leaves(json as TokenTree).map((entry) => entry.path.join('/')).sort(), [
     'colors/Violet/500',
     'colors/Violet/600',
@@ -111,7 +111,7 @@ test('the alias block matches the one the Python CLI writes, byte for byte', () 
   // compared here: the two emitters also differ on theme-attribute casing, which predates
   // this feature and is locked by its own golden.
   const raw = JSON.parse(fixture('tokens-renamed.json'))
-  const renames = raw.$extensions.altery.renames
+  const renames = raw.$extensions.allcrewChannel.renames
   delete raw.$extensions
 
   const source = raw as TokenTree

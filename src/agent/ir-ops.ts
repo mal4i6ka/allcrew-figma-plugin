@@ -40,6 +40,9 @@ import {
 import { imageAlpha, type ImageAlpha } from './image-dimensions.ts'
 import { binaryFile, slugify, textFile } from './files.ts'
 import type { OpDef } from './protocol.ts'
+import { annotateAppearance, type AppearanceSource } from './appearance.ts'
+import { variableNameResolver } from './bound-tokens.ts'
+import { isPlatform, unitProfile, type Platform } from './platform.ts'
 
 /* ------------------------------------------------------------------ shapes */
 
@@ -310,20 +313,29 @@ async function sourceImageAlpha(node: SceneNode, cache: Map<string, ImageAlpha>)
 export const IR_OPS: readonly OpDef[] = [
   {
     name: 'design.ir',
-    summary: 'A screen as a framework-neutral tree: stacks, sizing, type, paints by token name, text, interactions.',
+    summary: 'A screen as a framework-neutral tree: stacks, sizing, type, text, interactions — and paint by token on request.',
     agent:
       'Reach for this when the target is not a web page — a mobile screen, a desktop view, any stack with its own ' +
       'component model. It is the same tree the plugin\'s own exporters compile, handed over before any of them turns ' +
       'it into a language: no HTML, no JSX, no assumption about a framework. Layout is flexbox vocabulary ' +
       '(row/column, gap, padding, justify/align, fixed/hug/fill), which maps one-to-one onto React Native, ' +
-      'SwiftUI stacks and Compose rows. Colours and spacing carry the TOKEN that produced them where one exists — ' +
-      'build from those, not from hex. The tree arrives as a JSON file (they are big); `stats`, `tokens`, ' +
+      'SwiftUI stacks and Compose rows. The tree arrives as a JSON file (they are big); `stats`, `tokens`, ' +
       '`components` and `assets` come back inline so you can decide what to open. Pictures are only POINTED at ' +
       'here — call assets.export for the files. `type` is the table of distinct text styles with the token behind ' +
       'each value: the tree carries what the text SAYS, this says how it is set, and a mobile build needs both. ' +
       '`screen` is the phone-shaped half — what sits in the system bands top and bottom, what the designer pinned ' +
       'while the rest scrolls, how many children are placed by coordinates rather than by a stack. Figma has no ' +
       'safe-area concept, so those bands are reported as the layers that are actually there, never as an inset. ' +
+      'The tree carries NO COLOUR unless you ask: `appearance: true` puts fills, strokes, radii, effects, opacity ' +
+      'and rotation on every node, each value as `{ token, value }` so you build from the token and fall back to ' +
+      'the literal. It is off by default because the web emitter reads paint off the live node instead, and ' +
+      'carrying it doubles the tree — but a build that runs after this window has closed cannot read the node, so ' +
+      'a SwiftUI or Compose target wants it on. `platform` adds `units`: what one Figma pixel is in that ' +
+      'platform\'s unit, the reference density DERIVED from the frame width (a 750px artboard is 2× an iPhone, and ' +
+      'every length in the tree is twice what you should emit), and the unit text is sized in — `sp` on Android, ' +
+      'which is not the same as `dp` and is the difference between a screen that respects the system font size and ' +
+      'one that ignores it. `painted` reports how many nodes got an appearance and how many this pass could not ' +
+      'reach, so a node without one is never ambiguous. ' +
       'Motion is not in the tree: motion.context and transition.context answer that, and flow.map has the ' +
       'navigation graph.',
     mutates: false,
@@ -359,6 +371,18 @@ export const IR_OPS: readonly OpDef[] = [
         default: true,
         description: 'System bands, pinned layers, scrolling and how much of the screen is absolutely positioned.',
       },
+      appearance: {
+        type: 'boolean',
+        default: false,
+        description:
+          'Also carry how each layer is PAINTED — fills, strokes, radii, effects, opacity, rotation — with the token behind each value. Off by default: a web target reads this from CSS, and it roughly doubles the tree.',
+      },
+      platform: {
+        type: 'string',
+        enum: ['web', 'ios', 'android'],
+        description:
+          'The platform that will build this. Adds a `units` profile: what one Figma pixel is in that platform\'s unit, the reference density derived from the frame width, the unit text is sized in, and the asset densities to request.',
+      },
     },
     async run(params) {
       const root = await resolveSceneNode(params.nodeId)
@@ -380,6 +404,22 @@ export const IR_OPS: readonly OpDef[] = [
       await annotateVectorLeaves(irNodes, assetSourceNodes)
       await annotateVideoFills(irNodes, assetSourceNodes)
 
+      /* Appearance last of the tree passes and before the tree is serialized: it annotates the
+       * same nodes the two passes above may have flattened, and a flattened leaf has no single
+       * layer behind it to read paint from. `unmatched` is reported rather than swallowed — an
+       * agent that asked for paint and got a node without it has to be able to tell a layer with
+       * nothing to say from a layer this pass could not reach. */
+      const painted =
+        params.appearance === true
+          ? await annotateAppearance(
+              irNodes,
+              sceneNodesById as unknown as ReadonlyMap<string, AppearanceSource>,
+              variableNameResolver()
+            )
+          : null
+
+      const platform: Platform | null = isPlatform(params.platform) ? params.platform : null
+
       const assets = params.assets === false ? [] : await collectContextAssets(irNodes, sceneNodesById)
       const slug = slugify(root.name)
       const tree = JSON.stringify(ir, null, 2)
@@ -398,6 +438,8 @@ export const IR_OPS: readonly OpDef[] = [
         ...(params.assets === false ? {} : { assets }),
         ...(params.type === false ? {} : { type: await typographyOf(sceneNodesById.values(), tokens.names) }),
         ...(params.screen === false ? {} : { screen: screenSummary(ir, { width: root.width, height: root.height }) }),
+        ...(platform ? { units: unitProfile(platform, root.width) } : {}),
+        ...(painted ? { painted } : {}),
         bytes: tree.length,
         ...(params.inline === true
           ? { ir }
@@ -442,14 +484,14 @@ export const IR_OPS: readonly OpDef[] = [
       },
       scales: {
         type: 'json',
-        default: [1, 2, 3],
-        description: 'Raster densities, e.g. [1,2,3] for mobile or [1,2] for web. Ignored for SVG/PDF.',
+        description:
+          'Raster densities, e.g. [1,2,3] for mobile or [1,2] for web. Ignored for SVG/PDF. Defaulted from `platform` when one is given, else [1,2,3]. The default lives in `run` rather than here precisely so a platform profile can supply it — a spec default is applied before the op sees the call and would always win.',
       },
       naming: {
         type: 'string',
-        default: 'plain',
         enum: ['plain', 'web', 'ios', 'android'],
-        description: 'Which platform’s file layout the manifest should advise.',
+        description:
+          'Which platform’s file layout the manifest should advise. Defaulted from `platform` when one is given, else `plain`.',
       },
       limit: {
         type: 'number',
@@ -511,6 +553,12 @@ export const IR_OPS: readonly OpDef[] = [
           'photo reused across several assets is only read once. Never set for SVG/PDF, which have no bitmap ' +
           'source to answer from.',
       },
+      platform: {
+        type: 'string',
+        enum: ['web', 'ios', 'android'],
+        description:
+          'Set `naming` and `scales` from the platform profile instead of by hand — the same profile design.ir reports under `units`, so the two calls cannot disagree about where a file goes or which densities exist. An explicit `naming` or `scales` still wins.',
+      },
     },
     async run(params) {
       const root = await resolveSceneNode(params.nodeId)
@@ -519,8 +567,13 @@ export const IR_OPS: readonly OpDef[] = [
       if (parent) await (parent as PageNode).loadAsync()
 
       const format = String(params.format ?? 'PNG').toUpperCase() as 'PNG' | 'JPG' | 'SVG' | 'PDF'
-      const naming = String(params.naming ?? 'plain') as AssetNaming
-      const scales = requestedScales(params.scales, format)
+      /* One platform, one answer. Asking for `platform: "android"` and then having to remember
+       * that Android wants five density buckets and `drawable-<bucket>` paths is how a manifest
+       * and a tree end up disagreeing about the same screen. An explicit param still wins: the
+       * profile is a default, not a policy. */
+      const profile = isPlatform(params.platform) ? unitProfile(params.platform, root.width) : null
+      const naming = String(params.naming ?? profile?.assetNaming ?? 'plain') as AssetNaming
+      const scales = requestedScales(params.scales ?? profile?.assetScales ?? [1, 2, 3], format)
       const limit = Number(params.limit ?? 24)
 
       /** What to export: the node itself, or every picture its subtree points at. */

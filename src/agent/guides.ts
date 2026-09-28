@@ -80,7 +80,7 @@ export const GUIDES: readonly Guide[] = [
       'You can name the token behind at least one colour on the screen.',
     ],
     notes: [
-      'Open the plugin in Figma and this answers from the live document. With it closed, name the file (`fileKey`, or the `ALTERY_FIGMA_FILE_KEY` default) and the bridge answers the read-only half over Figma’s REST API instead — every such answer is marked `source: "rest"`, and `GET /ops` lists what REST can still do.',
+      'Open the plugin in Figma and this answers from the live document. With it closed, name the file (`fileKey`, or the `ALLCREW_CHANNEL_FIGMA_FILE_KEY` default) and the bridge answers the read-only half over Figma’s REST API instead — every such answer is marked `source: "rest"`, and `GET /ops` lists what REST can still do.',
       'Reads are gated: "Allow reads" in the plugin panel. Writes never ride along with it.',
     ],
   },
@@ -95,6 +95,21 @@ export const GUIDES: readonly Guide[] = [
         op: 'design.ir',
         why: 'The whole screen as a tree: stacks, sizing, typography, paints with their token names, text, interactions.',
         params: { nodeId: '1:16' },
+      },
+      {
+        op: 'text.inventory',
+        why:
+          'Every string the screen says, split into copy and text drawn inside an illustration. The copy is what ' +
+          'needs a field and a translation entry; the drawn text must NOT be duplicated there — it ships in the picture.',
+        params: { nodeId: '1:16', role: 'content' },
+      },
+      {
+        op: 'export.plan',
+        why:
+          'Before exporting anything: which slot is a vector over a plate, which is one flat render, and at which ' +
+          'density it still fits through the channel. Skipping this is how an export is refused whole, or a crisp ' +
+          'widget arrives baked into a photo.',
+        params: { nodeId: '1:16', scale: 2 },
       },
       {
         op: 'assets.export',
@@ -133,10 +148,28 @@ export const GUIDES: readonly Guide[] = [
         why: 'Mobile screens are frames on a page; this names them and their sizes.',
       },
       {
+        op: 'tokens.emit',
+        why:
+          'The design system in the form the platform compiles — an asset catalogue and Tokens.swift for iOS, ' +
+          'values/ + values-night/ and Tokens.kt for Android. Ask before you write the first screen: a colour ' +
+          'hard-coded now is a colour that will not follow the theme later, and tokens.css cannot help a native build.',
+        params: { platform: 'ios' },
+      },
+      {
         op: 'design.ir',
-        why: 'One call per screen. Auto-layout comes back as stacks with gap/padding/alignment, which is the model RN, SwiftUI and Compose all express, `type` is the table of text styles it is set in, and `screen` names what sits in the system bands, what is pinned and how much is placed by coordinates.',
+        why:
+          'One call per screen, and for a native target ALWAYS with `appearance: true` and `platform`. Auto-layout ' +
+          'comes back as stacks with gap/padding/alignment, which is the model RN, SwiftUI and Compose all express. ' +
+          '`appearance` is the half that is off by default and that you cannot do without: the tree carries no colour, ' +
+          'stroke, radius, shadow or opacity unless you ask, because the web emitter reads those off the live node on ' +
+          'its way out — and your build runs after this window has closed. Every value arrives as `{ token, value }`: ' +
+          'build from the token, fall back to the literal. `platform` adds `units` — what one Figma pixel is in your ' +
+          'unit, the reference density derived from the frame width (a 750px artboard is 2× an iPhone, and every length ' +
+          'in the tree is then twice what you should emit), and the unit TEXT is sized in, which on Android is `sp` and ' +
+          'not `dp`. `type` is the table of text styles the screen is set in, and `screen` names what sits in the ' +
+          'system bands, what is pinned, and how much is placed by coordinates.',
         each: 'screen',
-        params: { nodeId: '1:16' },
+        params: { nodeId: '1:16', appearance: true, platform: 'ios' },
       },
       {
         op: 'component.api',
@@ -145,10 +178,18 @@ export const GUIDES: readonly Guide[] = [
         params: { nodeId: '819:95512' },
       },
       {
+        op: 'export.plan',
+        why:
+          'One call per illustration slot before exporting it: whether the designer marked its children for export ' +
+          '(then it is a plate plus vectors, not one flat picture) and which density still fits through the channel.',
+        each: 'illustration slot',
+        params: { nodeId: '1:16', scale: 3 },
+      },
+      {
         op: 'assets.export',
-        why: 'Icons and images at the densities the platform asks for, with a manifest that already names where each file goes.',
+        why: 'Icons and images at the densities the platform asks for, with a manifest that already names where each file goes. Pass the same `platform` you gave design.ir and the naming and densities come from one profile, so the manifest and the tree cannot disagree.',
         each: 'screen',
-        params: { nodeId: '1:16', select: 'assets', naming: 'ios', scales: [1, 2, 3] },
+        params: { nodeId: '1:16', select: 'assets', platform: 'ios' },
       },
       {
         op: 'flow.map',
@@ -159,15 +200,30 @@ export const GUIDES: readonly Guide[] = [
         why: 'Smart Animate between variants — what actually moves between two states, and which mechanism reproduces it.',
         params: { nodeId: '1:16' },
       },
+      {
+        op: 'design.audit',
+        why:
+          'The last step, and the one that makes the rest checkable. Report what you actually emitted per layer and ' +
+          'this names the differences: `dropped` is a value the design had and you did not use, `diverged` is a value ' +
+          'you disagree on (usually a unit), and `missing` is a property YOU needed and the CHANNEL could not answer — ' +
+          'those collect in `wanted`, and reporting them is how the channel learns what to carry next. Pass the same ' +
+          '`platform` so lengths are judged at the artboard\'s own density.',
+        each: 'screen',
+        params: { nodeId: '1:16', platform: 'ios', built: [{ nodeId: '1:17', properties: { fill: '#112233' } }] },
+      },
     ],
     checks: [
       'Every tap target in your build corresponds to a reaction reported by flow.map, and every destination exists.',
       'Assets land at every density the manifest lists — a missing @3x is a blurry icon on the newest phone.',
+      'design.audit reports no `dropped` and no `diverged` for the screen. A `missing` is not your bug — report it.',
+      'Every colour, radius and spacing in your build came from a token where design.ir gave one. A literal where a token exists is a value that will not follow a theme.',
     ],
     notes: [
       'Figma has no safe-area concept: a status bar drawn in the frame is a layer like any other, and it is your call whether to build it or to inset for the real one.',
       'Vector assets export as SVG; converting them to Android vector drawables or SF Symbols is the build’s job, not the plugin’s. With `naming: "ios"` each imageset also comes with the Contents.json that makes it one - a vector goes in single-scale, with `preserves-vector-representation`.',
       'Animate from a transition’s `curve`, not from the CSS `timingFunction` beside it: a spring arrives there as eighty sampled points, and `curve` carries the damping ratio, stiffness and solved settle time instead.',
+      'Read `units.scale` before you emit a single number. It is 1 for a logical artboard and 2 or 3 for one drawn at density, and nothing else in the answer will tell you — a build that ignores it is correct in proportion and twice the size.',
+      'On Android a font size, a line height and a letter spacing go in `sp`; everything else goes in `dp`. `units.textUnit` says so. A text metric in `dp` ignores the system font-size setting, which is the most common accessibility defect in a generated Android UI.',
     ],
   },
 
@@ -259,6 +315,14 @@ export const GUIDES: readonly Guide[] = [
         op: 'design.measure',
         why: 'Figma’s own CSS and boxes per layer, addressed by a path that survives re-reading.',
         params: { nodeId: '1:16' },
+      },
+      {
+        op: 'design.audit',
+        why:
+          'The same question for a build that has no browser to measure: report what you emitted and it names what you ' +
+          'dropped, what diverged, and what this channel could not tell you. `design.measure` is the web half; this is ' +
+          'the one a SwiftUI or Compose build can answer.',
+        params: { nodeId: '1:16', built: [{ nodeId: '1:17', properties: { fill: '#112233' } }] },
       },
       {
         op: 'frames.compare',

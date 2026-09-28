@@ -178,7 +178,7 @@ test('regen download ships every static asset base.html {% static %}-links (no 4
   assert.ok(staticRefs.length >= 4, 'base.html should link several static assets in this config')
 
   for (const ref of staticRefs) {
-    // vendored Bootstrap ships via `altery-dj bootstrap vendor`, and the project stylesheet travels
+    // vendored Bootstrap ships via `allcrew-channel bootstrap vendor`, and the project stylesheet travels
     // separately as the plan's `css`; every OTHER {% static %} link must be in the regen download.
     if (ref.startsWith('vendor/') || ref === cssFile) continue
     assert.ok(`static/${ref}` in regenFiles, `base.html links {% static '${ref}' %} but the regen zip would not ship static/${ref}`)

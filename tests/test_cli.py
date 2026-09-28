@@ -1,11 +1,11 @@
-"""E2E for the altery-dj CLI (REFORM phase 5, docs/REFORM.md §6).
+"""E2E for the allcrew-channel CLI (REFORM phase 5, docs/REFORM.md §6).
 
 Covers the DoD: `apply` lays an export.zip out under a Django app, `check` gates it via
 manage.py, and `tokens` reproduces the plugin's TypeScript emitters BYTE-FOR-BYTE — the
 same goldens under tests/fixtures/expected/ lock both engines (src/tokens/engine.test.ts
 on the TS side, this file on the Python side), so parity drift fails one of the suites.
 
-The CLI is exercised the way users run it (`python -m altery_dj …` subprocess), not by
+The CLI is exercised the way users run it (`python -m allcrew_channel …` subprocess), not by
 importing internals.
 """
 
@@ -35,7 +35,7 @@ HAS_MSGMERGE = shutil.which('msgmerge') is not None
 def run_cli(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ, PYTHONPATH=str(CLI_DIR))
     return subprocess.run(
-        [sys.executable, '-m', 'altery_dj', *args],
+        [sys.executable, '-m', 'allcrew_channel', *args],
         capture_output=True,
         text=True,
         env=env,
@@ -501,7 +501,7 @@ def _free_port() -> int:
 
 
 def test_receive_applies_a_delivered_zip_and_rejects_a_bad_secret(tmp_path: Path) -> None:
-    """REFORM phase 8: the plugin's Delivery POST lands applied, like `altery-dj apply`."""
+    """REFORM phase 8: the plugin's Delivery POST lands applied, like `allcrew-channel apply`."""
     import urllib.error
     import urllib.request
 
@@ -512,7 +512,7 @@ def test_receive_applies_a_delivered_zip_and_rejects_a_bad_secret(tmp_path: Path
 
     env = dict(os.environ, PYTHONPATH=str(CLI_DIR))
     server = subprocess.Popen(
-        [sys.executable, '-m', 'altery_dj', 'receive', '--app', str(app_dir), '--host', '127.0.0.1',
+        [sys.executable, '-m', 'allcrew_channel', 'receive', '--app', str(app_dir), '--host', '127.0.0.1',
          '--port', str(port), '--secret', 's3cret', '--once'],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -524,7 +524,7 @@ def test_receive_applies_a_delivered_zip_and_rejects_a_bad_secret(tmp_path: Path
         body = zip_path.read_bytes()
 
         bad = urllib.request.Request(f'http://127.0.0.1:{port}/', data=body, method='POST',
-                                     headers={'Content-Type': 'application/zip', 'X-Altery-Secret': 'wrong'})
+                                     headers={'Content-Type': 'application/zip', 'X-AllCrew-Channel-Secret': 'wrong'})
         try:
             urllib.request.urlopen(bad, timeout=10)
             raise AssertionError('a bad secret must be rejected')
@@ -532,7 +532,7 @@ def test_receive_applies_a_delivered_zip_and_rejects_a_bad_secret(tmp_path: Path
             assert error.code == 403
 
         good = urllib.request.Request(f'http://127.0.0.1:{port}/', data=body, method='POST',
-                                      headers={'Content-Type': 'application/zip', 'X-Altery-Secret': 's3cret'})
+                                      headers={'Content-Type': 'application/zip', 'X-AllCrew-Channel-Secret': 's3cret'})
         with urllib.request.urlopen(good, timeout=10) as response:
             payload = json.loads(response.read())
         assert payload['written'] > 0

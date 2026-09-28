@@ -145,7 +145,7 @@ test('the capability list is computed from the file, not read out of it', () => 
 /* ------------------------------------------------------------------ refusals */
 
 test('an unknown format is refused before anything else is read', () => {
-  const { module, problems } = parseUserModule({ module: 'altery.module/9', id: 'x' }, KNOWN)
+  const { module, problems } = parseUserModule({ module: 'allcrew-channel.module/9', id: 'x' }, KNOWN)
   assert.equal(module, null)
   assert.deepEqual(problems.map((problem) => problem.path), ['module'])
 })
@@ -290,4 +290,91 @@ test('there is no spacer block — spacing is the layout\'s business', () => {
   assert.match(problems[0].message, /unknown block "spacer"/)
   // And the message lists what it could have been instead.
   assert.match(problems[0].message, /heading, text, callout, field, value, select, toggle, button, table/)
+})
+
+test('unsafe prototype keys are rejected in state, params and result names', () => {
+  const unsafeState = clone(MODULE)
+  unsafeState.state = JSON.parse('{"__proto__":{"type":"string","default":""}}')
+  assert.ok(parseUserModule(unsafeState, KNOWN).problems.some((problem) =>
+    problem.path === 'state.__proto__' && /field name/.test(problem.message)
+  ))
+
+  const unsafeParams = clone(MODULE)
+  unsafeParams.commands[0].steps = [
+    { call: 'REMAP_SCAN', params: JSON.parse('{"__proto__":"x"}') },
+  ] as never
+  assert.ok(parseUserModule(unsafeParams, KNOWN).problems.some((problem) =>
+    problem.path.endsWith('.params.__proto__') && /unsafe object key/.test(problem.message)
+  ))
+
+  const unsafeResult = clone(MODULE)
+  unsafeResult.commands[0].steps = [{ call: 'REMAP_SCAN', as: '__proto__' }] as never
+  assert.ok(parseUserModule(unsafeResult, KNOWN).problems.some((problem) =>
+    problem.path.endsWith('.as')
+  ))
+})
+
+test('unknown properties are diagnostics rather than ignored typos', () => {
+  const misspelled = clone(MODULE) as Record<string, unknown>
+  misspelled.summery = 'typo'
+  const problems = parseUserModule(misspelled, KNOWN).problems
+  assert.deepEqual(problems.find((problem) => problem.path === 'summery'), {
+    path: 'summery',
+    message: 'unknown property',
+  })
+})
+
+test('conditions are typed against state and survive parsing', () => {
+  const conditional = clone(MODULE)
+  conditional.screens.main.blocks.push({
+    block: 'callout',
+    text: 'Ready',
+    when: { from: 'rows', oneOf: [1, 2, 3] },
+  } as never)
+  const parsed = parseUserModule(conditional, KNOWN)
+  assert.deepEqual(parsed.problems, [])
+  assert.deepEqual(parsed.module!.screens.main.blocks.at(-1), {
+    block: 'callout',
+    text: 'Ready',
+    when: { from: 'rows', oneOf: [1, 2, 3] },
+  })
+
+  ;(conditional.screens.main.blocks.at(-1) as { when: { oneOf: unknown[] } }).when.oneOf = ['one']
+  assert.ok(parseUserModule(conditional, KNOWN).problems.some((problem) => /values must be number/.test(problem.message)))
+})
+
+test('secret fields cannot be rendered as plain values', () => {
+  const secret = clone(MODULE)
+  ;(secret.state.libraryKey as Record<string, unknown>).secret = true
+  secret.screens.main.blocks.push({ block: 'value', bind: 'libraryKey' } as never)
+  const { module, problems } = parseUserModule(secret, KNOWN)
+  assert.equal(module, null)
+  assert.ok(problems.some((problem) => /secret fields can only be edited/.test(problem.message)))
+  const embedded = clone(MODULE)
+  embedded.state.libraryKey = { type: 'string', default: 'do-not-ship', secret: true } as never
+  assert.ok(parseUserModule(embedded, KNOWN).problems.some((problem) =>
+    problem.path === 'state.libraryKey.default' && /portable module files cannot contain credentials/.test(problem.message)
+  ))
+})
+
+test('module command parameters are reachable without duplicate state fields', () => {
+  const parameterized = clone(MODULE)
+  parameterized.commands[0].params = [{ name: 'requestKey', required: true, type: 'string' }] as never
+  parameterized.commands[0].steps = [
+    { call: 'REMAP_PREVIEW', params: { source: { from: 'requestKey' } } },
+  ] as never
+  assert.deepEqual(parseUserModule(parameterized, KNOWN).problems, [])
+
+  parameterized.commands[0].steps = [{ call: 'REMAP_SCAN', as: 'requestKey' }] as never
+  assert.ok(parseUserModule(parameterized, KNOWN).problems.some((problem) =>
+    problem.path.endsWith('.as') && /already a state field, parameter or earlier result/.test(problem.message)
+  ))
+})
+
+test('state keys cannot contain dots because dots delimit reference paths', () => {
+  const dotted = clone(MODULE)
+  ;(dotted.state as Record<string, unknown>)['api.key'] = { type: 'string', default: '' }
+  const { module, problems } = parseUserModule(dotted, KNOWN)
+  assert.equal(module, null)
+  assert.ok(problems.some((problem) => problem.path === 'state.api.key' && /digits, dashes or underscores/.test(problem.message)))
 })

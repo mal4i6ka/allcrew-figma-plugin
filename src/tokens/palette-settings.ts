@@ -6,6 +6,8 @@
  * the same contract `normalizeExportOptions` follows in src/settings.ts.
  */
 
+import { isRecord } from '../utils/type-guards.ts'
+
 import {
   DEFAULT_NEUTRAL_STEPS,
   DEFAULT_PALETTE_SETTINGS,
@@ -15,9 +17,6 @@ import {
   type PaletteSettings,
   type SpectrumSpec,
 } from './palette.ts'
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
 
 const number = (value: unknown, fallback: number, min: number, max: number): number => {
   const parsed = typeof value === 'string' ? Number(value) : value

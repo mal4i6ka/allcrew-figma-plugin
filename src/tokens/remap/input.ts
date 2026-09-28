@@ -12,6 +12,8 @@
  * Pure module: no Figma APIs, so it runs under `node --test`.
  */
 
+import { isRecord } from '../../utils/type-guards.ts'
+
 import { toHex, findColorLiterals, type Rgba } from './color-literal.ts'
 import { parseTokenName } from './token-name.ts'
 
@@ -39,9 +41,6 @@ export interface PaletteInput {
 
 const NAME_KEYS = ['name', 'token', 'key', 'id', 'label', 'title']
 const VALUE_KEYS = ['$value', 'value', 'hex', 'color', 'colour', 'rgb', 'fill']
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
 
 function swatchFrom(text: string, name: string): ParsedSwatch | null {
   const literals = findColorLiterals(text)

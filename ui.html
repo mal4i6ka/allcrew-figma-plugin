@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Altery Design System Export</title>
+<title>AllCrew Channel</title>
 <style>
   @font-face {
     font-family: "Museo Sans";
@@ -21,28 +21,36 @@
   }
 
   :root {
-    --bg: #0c0d10;
-    --bg-2: #101216;
-    --surface: #16181d;
-    --surface-2: #1b1e25;
-    --border: rgba(255, 255, 255, 0.08);
-    --border-2: rgba(255, 255, 255, 0.14);
-    --text: #f3f4f6;
-    --muted: #9a9fa8;
-    --faint: #6c727c;
+    --bg: #000000;
+    --bg-2: #000000;
+    --surface: #080808;
+    --surface-raised: #101010;
+    --surface-2: #2d2d2d;
+    --surface-hover: #424242;
+    --border: #424242;
+    --border-2: #616161;
+    --border-subtle: #101010;
+    --border-strong: var(--border-2);
+    --text: #f6f6f6;
+    --muted: #9c9c9c;
+    --faint: #616161;
+    --text-muted: #424242;
     --accent: #fb5b0a;
-    --accent-hi: #ff6a0d;
-    --accent-press: #d94e07;
-    --accent-tint: rgba(251, 91, 10, 0.13);
-    --accent-ring: rgba(251, 91, 10, 0.45);
-    --ok: #46c08a;
-    --err: #ff7a6e;
-    --warn: #e2b93d;
-    --r-sm: 8px;
-    --r-md: 11px;
-    --r-lg: 14px;
+    --accent-hover: #ff895b;
+    --accent-hi: #ffac8b;
+    --accent-press: #952c00;
+    --accent-tint: #2b1103;
+    --accent-ring: rgba(251, 91, 10, 0.65);
+    --ok: #8fc048;
+    --err: #ff9f8c;
+    --warn: #ffbc03;
+    --danger: var(--err);
+    --r-sm: 4px;
+    --r-md: 6px;
+    --r-lg: 8px;
     --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
-    --brand: "Museo Sans", "Geist Mono", system-ui, sans-serif;
+    --brand: "Museo Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    --ease-state: cubic-bezier(.42, 0, .58, 1);
   }
 
   * { box-sizing: border-box; }
@@ -50,7 +58,7 @@
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: var(--mono);
+    font-family: var(--brand);
     font-size: 12px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
@@ -61,34 +69,31 @@
   }
 
   /* faint brand graphic behind the header */
-  .bg-deco {
-    position: fixed;
-    top: -70px;
-    right: -120px;
-    width: 460px;
-    pointer-events: none;
-    opacity: 0.08;
-    filter: saturate(1.1);
-    z-index: 0;
-  }
+  .bg-deco { display: none; }
   .bg-deco svg { width: 100%; height: auto; display: block; }
 
   header, main, footer { position: relative; z-index: 1; }
 
   header {
-    padding: 18px 18px 12px;
+    padding: 12px 16px;
     border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, rgba(251,91,10,0.05), transparent 80%);
+    background: var(--surface);
   }
-  .brand-logo { height: 26px; width: auto; display: block; color: var(--accent); }
-  .tagline {
-    margin-top: 9px;
-    font-family: var(--brand);
-    font-size: 12px;
-    letter-spacing: 0.04em;
-    color: var(--muted);
-    text-transform: uppercase;
+  .brand-link {
+    display: block;
+    width: 132px;
+    height: 24px;
+    flex: none;
+    border-radius: 2px;
   }
+  .brand-link .brand-logo { pointer-events: none; }
+  .brand-logo {
+    display: block;
+    width: 132px;
+    height: 24px;
+    flex: none;
+  }
+  .tagline { margin-top: 2px; font-size: 10px; color: var(--faint); }
 
   /* settings entry (header) — ds pattern: brand left, pill controls top-right */
   .header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -97,7 +102,7 @@
     appearance: none; cursor: pointer; flex: none;
     display: inline-flex; align-items: center; gap: 7px;
     background: var(--surface); border: 1px solid var(--border); color: var(--muted);
-    border-radius: 999px; padding: 7px 12px; font-family: var(--mono); font-size: 11px;
+    border-radius: var(--r-sm); padding: 7px 10px; font-family: var(--brand); font-size: 11px;
     transition: background .16s, color .16s, border-color .16s;
   }
   .settings-entry:hover { color: var(--text); border-color: var(--border-2); background: var(--surface-2); }
@@ -105,7 +110,7 @@
   .target-select {
     flex: none; cursor: pointer; appearance: none;
     background: var(--surface); border: 1px solid var(--border); color: var(--muted);
-    border-radius: 999px; padding: 7px 24px 7px 12px; font-family: var(--mono); font-size: 11px;
+    border-radius: var(--r-sm); padding: 7px 24px 7px 10px; font-family: var(--brand); font-size: 11px;
     background-image: linear-gradient(45deg, transparent 50%, var(--faint) 50%), linear-gradient(135deg, var(--faint) 50%, transparent 50%);
     background-position: calc(100% - 15px) 55%, calc(100% - 11px) 55%;
     background-size: 4px 4px; background-repeat: no-repeat;
@@ -114,17 +119,17 @@
   .target-select:hover { color: var(--text); border-color: var(--border-2); }
   .target-select:focus { outline: none; border-color: var(--accent); }
 
-  main { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
+  main { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--r-lg);
-    padding: 13px 14px;
+    border-radius: var(--r-md);
+    padding: 14px;
   }
-  .label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); margin: 0 0 9px; display: flex; align-items: center; gap: 6px; }
+  .label { font-family: var(--brand); font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text); margin: 0 0 10px; display: flex; align-items: center; gap: 7px; }
   .label svg { color: var(--accent); flex: none; }
-  .label .count { margin-left: auto; letter-spacing: 0; text-transform: none; color: var(--faint); }
+  .label .count { margin-left: auto; color: var(--faint); font-size: 10px; font-weight: 400; }
 
   /* segmented scope control */
   .seg {
@@ -330,7 +335,7 @@
   :focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
   .hidden { display: none !important; }
 
-  /* REFORM phase 2: Settings sub-page (view router, altery-figma-ds pattern). The two .view
+  /* REFORM phase 2: Settings sub-page (view router, allcrew-channel pattern). The two .view
      wrappers inside <main> swap via .hidden; the header pill swaps Settings ↔ Back. */
   .view { display: flex; flex-direction: column; gap: 12px; }
   .set-ctl { flex: none; width: 132px; }
@@ -409,31 +414,78 @@
   .pal-seg .seg:hover { color: var(--text); }
   .pal-seg .seg.active { background: var(--accent-tint); color: var(--accent-hi); box-shadow: inset 0 0 0 1px rgba(251,91,10,0.3); }
   .pal-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .pal-field { display: flex; flex-direction: column; gap: 5px; color: var(--faint); font-size: 10px; letter-spacing: .03em; text-transform: uppercase; }
+  .pal-field { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 11px; line-height: 16.5px; letter-spacing: 0; text-transform: none; }
   .pal-field.pal-wide { grid-column: span 2; }
   .pal-field input, .pal-field select { background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 7px 9px; font-family: var(--mono); font-size: 11px; text-transform: none; letter-spacing: 0; }
   .pal-field input:focus, .pal-field select:focus { outline: none; border-color: var(--accent); }
   .pal-field input[type=range] { padding: 0; height: 26px; accent-color: var(--accent); border: 0; background: transparent; }
+  .pal-range-value {
+    align-self: flex-end;
+    min-height: 17px;
+    margin-top: -4px;
+    color: var(--muted);
+    font-family: var(--brand);
+    font-size: 11px;
+    line-height: 16.5px;
+  }
   /* Sits directly under the spectra list, pulled tight to it so it reads as the list's tail. */
   .pal-add { appearance: none; width: 100%; margin-top: -6px; background: var(--bg-2); border: 1px dashed var(--border-2); color: var(--muted); cursor: pointer; border-radius: var(--r-sm); padding: 9px 10px; font-family: var(--mono); font-size: 11px; transition: color .16s, border-color .16s, background .16s; }
   .pal-add:hover { color: var(--accent-hi); border-color: rgba(251,91,10,0.45); background: var(--accent-tint); }
   #pal-spectra { display: flex; flex-direction: column; gap: 7px; }
-  .pal-spec { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; display: flex; flex-direction: column; gap: 7px; }
-  .pal-spec-top { display: flex; align-items: center; gap: 7px; }
-  .pal-spec input[type=color] { appearance: none; width: 30px; height: 30px; flex: none; padding: 0; border: 1px solid var(--border-2); border-radius: 7px; background: transparent; cursor: pointer; }
+  .pal-spec { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; display: flex; flex-direction: column; gap: 7px; }
+  .pal-spec-top { display: grid; grid-template-columns: 30px minmax(0, 1fr) minmax(0, 1fr) 35px 30px; align-items: center; gap: 7px; }
+  .pal-spec input[type=color] { appearance: none; width: 30px; height: 30px; padding: 0; border: 1px solid var(--border-2); border-radius: 7px; background: transparent; cursor: pointer; }
   .pal-spec input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
   .pal-spec input[type=color]::-webkit-color-swatch { border: 0; border-radius: 5px; }
-  .pal-spec input[type=text], .pal-spec select { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 7px; font-family: var(--mono); font-size: 11px; min-width: 0; }
-  .pal-spec input:focus, .pal-spec select:focus { outline: none; border-color: var(--accent); }
-  .pal-spec .pal-label { flex: 1; min-width: 0; }
-  .pal-spec .pal-hex { width: 78px; flex: none; text-transform: uppercase; }
-  .pal-spec .pal-prefix { width: 44px; flex: none; text-align: center; text-transform: uppercase; }
-  .pal-spec-bot { display: grid; grid-template-columns: repeat(3, 1fr) auto; gap: 6px; align-items: center; }
-  .pal-pick { display: flex; flex-direction: column; gap: 3px; color: var(--faint); font-size: 9.5px; letter-spacing: .04em; text-transform: uppercase; }
-  .pal-neutral { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10.5px; white-space: nowrap; cursor: pointer; }
-  .pal-neutral input { accent-color: var(--accent); }
-  .pal-del { appearance: none; background: transparent; border: 1px solid var(--border); color: var(--faint); cursor: pointer; width: 26px; height: 26px; flex: none; border-radius: 6px; font-size: 14px; line-height: 1; }
-  .pal-del:hover { color: var(--accent-hi); border-color: rgba(251,91,10,0.4); }
+  .pal-spec input[type=text], .pal-spec select { min-width: 0; }
+  .pal-spec .pal-label,
+  .pal-spec .pal-hex,
+  .pal-spec .pal-prefix { width: auto; min-width: 0; text-transform: none; }
+  .pal-spec .pal-hex { text-transform: uppercase; }
+  .pal-spec .pal-prefix { text-align: center; text-transform: uppercase; }
+  .pal-spec-bot { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) 61px; gap: 6px; align-items: stretch; }
+  .pal-pick { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 10px; line-height: 13.25px; letter-spacing: 0; text-transform: none; }
+  .pal-neutral { display: flex; align-items: center; align-self: stretch; gap: 5px; padding-top: 17px; color: var(--muted); font-size: 11px; line-height: 16px; white-space: nowrap; cursor: pointer; }
+  .pal-neutral input[type=checkbox],
+  .pal-opts input[type=checkbox] {
+    appearance: none;
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    flex: none;
+    border: 0;
+    border-radius: 2px;
+    background: #424242;
+    cursor: pointer;
+  }
+  .pal-neutral input[type=checkbox]:checked,
+  .pal-opts input[type=checkbox]:checked {
+    background-color: var(--accent);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='9' viewBox='0 0 9 9'%3E%3Cpath d='M1.5 4.5 3.5 6.5 7.5 2.5' fill='none' stroke='%23fff' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+  .pal-neutral input[type=checkbox]:focus-visible,
+  .pal-opts input[type=checkbox]:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+  .pal-del {
+    appearance: none;
+    width: 30px;
+    height: 31px;
+    padding: 8px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: radial-gradient(50% 100% at 50% 100%, #424242 0%, #2d2d2d 80.77%);
+    color: var(--text);
+    cursor: pointer;
+    font-family: var(--brand);
+    font-size: 18px;
+    line-height: 14px;
+  }
+  .pal-del:hover { background: radial-gradient(50% 100% at 50% 100%, #424242 0%, #424242 100%); color: var(--text); }
+  .pal-del:active { background: #2d2d2d; }
+  #view-ds-tools .label { gap: 0; }
+  #view-ds-tools .label > svg { margin-right: 10px; }
+  #view-ds-tools .label > .info-tip { margin-left: 6px; }
   .pal-preview { display: flex; flex-direction: column; gap: 12px; }
   .pal-ramp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
   .pal-ramp-head b { color: var(--text); font-weight: 500; font-size: 11.5px; }
@@ -543,25 +595,100 @@
   #view-design-tokens .code .c-val { color: #d7dbe2; }
 
   /* ── Agent Listener ───────────────────────────────────────────────────────── */
+  #view-agent { gap: 20px; }
   #view-agent .card + .card { margin-top: 0; }
-  #view-agent .agent-state { display: flex; align-items: center; gap: 8px; margin: 0 0 11px; font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.45; }
+  #view-agent .agent-status-card { min-height: 159px; }
+  #view-agent .agent-bridge-card { min-height: 288px; }
+  #view-agent .agent-skill-card { min-height: 380px; }
+  #view-agent .agent-card-header { display: flex; align-items: center; gap: 12px; }
+  #view-agent .agent-card-header .label { flex: 1; min-width: 0; }
+  #view-agent .agent-mirror-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: none;
+    color: var(--muted);
+    font-family: var(--brand);
+    font-size: 10.5px;
+    line-height: 18px;
+    text-decoration: none;
+    transition: color .16s;
+  }
+  #view-agent .agent-mirror-link:hover { color: var(--accent-hi); }
+  #view-agent .agent-mirror-link svg { flex: none; }
+  html.browser-mirror #view-agent .agent-mirror-link { display: none; }
+  #view-agent .agent-state {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 27px;
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 16.5px;
+    color: var(--muted);
+  }
   #view-agent .agent-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 3px rgba(255,255,255,0.05); transition: background .2s, box-shadow .2s; }
-  #view-agent .agent-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(70,192,138,0.18); }
-  #view-agent .agent-dot.err { background: var(--err); box-shadow: 0 0 0 3px rgba(255,122,110,0.18); }
-  #view-agent .agent-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(226,185,61,0.18); }
-  #view-agent .btn.ghost { width: 100%; margin-bottom: 9px; }
-  #view-agent .btn.ghost:disabled { opacity: .42; cursor: not-allowed; }
-  #view-agent .agent-hint + .agent-hint { margin-top: 7px; }
-  #view-agent .agent-hint { font-size: 10.5px; color: var(--faint); line-height: 1.55; margin: 10px 0 0; }
-  #view-agent .agent-rule { border: 0; border-top: 1px solid var(--border); margin: 14px 0 4px; }
+  #view-agent .agent-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(143,192,72,0.16); }
+  #view-agent .agent-dot.err { background: var(--err); box-shadow: 0 0 0 3px rgba(255,159,140,0.16); }
+  #view-agent .agent-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(255,188,3,0.16); }
+  #view-agent .btn.ghost { width: 100%; margin: 0; }
+  #view-agent .btn.ghost:disabled { opacity: .4; cursor: not-allowed; }
+  #view-agent .agent-hint,
+  #view-agent .agent-hint + .agent-hint {
+    margin: 0;
+    font-family: var(--brand);
+    font-size: 11px;
+    line-height: 16.5px;
+    color: var(--muted);
+  }
+  #view-agent .agent-rule { border: 0; border-top: 1px solid var(--border); margin: 0; }
   #view-agent .agent-hint code { font-family: var(--mono); background: var(--bg-2); padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
-  /* Code block and its copy button share one framed box; the button floats over the corner so
-     a long command keeps the full width. */
-  #view-agent .agent-cmd { position: relative; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-sm); }
-  #view-agent .agent-cmd + .agent-cmd { margin-top: 8px; }
-  #view-agent .agent-cmd .code { white-space: pre-wrap; word-break: break-word; padding: 11px 42px 11px 12px; max-height: none; }
-  #view-agent .agent-cmd .code.agent-skill { white-space: pre; word-break: normal; max-height: 260px; font-size: 10.5px; line-height: 1.6; }
-  #view-agent .agent-cmd .icon-btn { position: absolute; top: 7px; right: 7px; }
+  #view-agent .agent-cmd {
+    position: relative;
+    align-self: stretch;
+    overflow: hidden;
+    background: var(--bg-2);
+    border: .5px solid var(--border);
+    border-radius: var(--r-md);
+  }
+  #view-agent .agent-command-line { min-height: 41px; }
+  #view-agent .agent-mcp-config { min-height: 68px; }
+  #view-agent .agent-skill-content { height: 336px; min-height: 336px; }
+  #view-agent .agent-cmd + .agent-cmd { margin-top: 0; }
+  #view-agent .agent-cmd .code {
+    min-height: 100%;
+    margin: 0;
+    padding: 6px 44px 6px 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    line-height: 16.5px;
+    color: var(--text);
+  }
+  #view-agent .agent-cmd .code.agent-skill {
+    height: 100%;
+    max-height: none;
+    white-space: pre;
+    word-break: normal;
+    overflow: auto;
+    font-size: 11px;
+    line-height: 16.5px;
+  }
+  #view-agent .agent-cmd .icon-btn { position: absolute; top: 6px; right: 8px; width: 28px; height: 28px; }
+  #view-agent .agent-separator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 25px;
+    min-height: 25px;
+    color: var(--muted);
+    font-family: var(--brand);
+    font-size: 11px;
+    line-height: 17px;
+  }
+  #view-agent .agent-separator span { flex: 1; height: 1px; background: var(--border); }
+  #view-agent .agent-separator i { font-style: normal; }
 
   /* Download-a-script rows: the plugin ships through Figma, so the helper scripts it needs
      are handed over from here rather than assumed to exist on disk. */
@@ -594,6 +721,47 @@
   .set-field input, .set-field select { width: 100%; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 8px 10px; font-family: var(--mono); font-size: 11px; transition: border-color .16s, background .16s; }
   .set-field input:focus, .set-field select:focus { outline: none; border-color: var(--accent); background: var(--surface); }
   .set-field input::placeholder { color: var(--faint); }
+  .theme-merge-editor { padding: 10px 2px 4px; border-top: 1px solid rgba(255,255,255,0.045); }
+  .theme-merge-intro { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 9px; }
+  .theme-merge-intro .ic { color: var(--muted); flex: none; margin-top: 2px; }
+  .theme-merge-intro .set-text { flex: 1; }
+  .theme-merge-table { display: flex; flex-direction: column; gap: 5px; }
+  .theme-merge-head,
+  .theme-merge-row {
+    display: grid;
+    grid-template-columns: minmax(90px, .9fr) minmax(120px, 1.25fr) minmax(80px, .8fr) 28px;
+    gap: 6px;
+    align-items: center;
+  }
+  .theme-merge-head { padding: 0 1px; color: var(--faint); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+  .theme-merge-row input,
+  .theme-merge-row select {
+    min-width: 0;
+    width: 100%;
+    padding: 6px 7px;
+    border: .5px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--brand);
+    font-size: 11px;
+  }
+  .theme-merge-row input:focus,
+  .theme-merge-row select:focus { outline: none; border-color: var(--accent); }
+  .theme-merge-remove {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--faint);
+    cursor: pointer;
+  }
+  .theme-merge-remove:hover { color: var(--err); background: rgba(255,122,110,.08); }
+  .theme-merge-actions { display: flex; align-items: center; gap: 9px; margin-top: 7px; }
+  .theme-merge-actions .btn { min-height: 28px; padding: 6px 10px; font-size: 10.5px; }
+  .theme-merge-empty { color: var(--faint); font-size: 10.5px; margin: 2px 0 0; }
   .preset-row { display: flex; gap: 8px; align-items: stretch; padding: 11px 2px 6px; }
   #set-preset { flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 8px 10px; font-family: var(--mono); font-size: 11px; }
   #set-preset:focus { outline: none; border-color: var(--accent); }
@@ -617,39 +785,715 @@
   #view-settings .file-pick svg { color: var(--accent); flex: none; }
   #view-settings .file-pick input[type=file] { display: none; }
 
+
+  /* Figma node 469:9120 — authoritative component system for every plugin view. */
+  html, body { width: 100%; height: 100%; background: var(--bg); }
+  body {
+    position: relative;
+    isolation: isolate;
+    font-family: var(--brand);
+    color: var(--text);
+    background: var(--bg);
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    z-index: 0;
+    inset: 74px 0 119px;
+    pointer-events: none;
+    background-image: radial-gradient(circle, rgba(255,255,255,.28) 1px, transparent 1.15px);
+    background-size: 6px 6px;
+    opacity: .35;
+    -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 64%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 0%, #000 64%, transparent 100%);
+  }
+  body::after {
+    content: "";
+    position: fixed;
+    z-index: 0;
+    inset: 74px 0 119px;
+    pointer-events: none;
+    background: linear-gradient(180deg, transparent 45.67%, rgba(0,0,0,.85) 87.02%);
+  }
+  header, main, footer { position: relative; z-index: 1; width: 100%; }
+  header {
+    flex: 0 0 74px;
+    height: 74px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-raised);
+  }
+  .header-row { height: 32px; align-items: flex-start; }
+  .header-actions { height: 32px; align-items: stretch; gap: 7px; margin-top: 0; }
+  .brand-logo { width: 132px; height: 24px; margin-top: 0; }
+  .tagline {
+    margin-top: 0;
+    padding-top: 2px;
+    font-family: var(--brand);
+    font-size: 10px;
+    line-height: 15px;
+    letter-spacing: 0;
+    color: var(--muted);
+  }
+  .target-select {
+    width: 147px;
+    height: 32px;
+    padding: 3px 28px 3px 6px;
+    border: .5px solid var(--border);
+    border-radius: var(--r-md);
+    background-color: var(--surface);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23424242' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-position: calc(100% - 10px) 50%;
+    background-size: 10px 6px;
+    background-repeat: no-repeat;
+    color: var(--text);
+    font-family: var(--brand);
+    font-size: 11px;
+    line-height: 16.5px;
+    box-shadow: 0 -2px 1px #424242 inset, 0 2px 4px #424242 inset;
+  }
+  .target-select:hover { color: var(--text); border-color: var(--border-2); background-color: var(--surface); }
+  .target-select:focus { border-color: var(--accent); box-shadow: 0 -2px 1px var(--accent-press) inset, 0 2px 4px var(--accent-press) inset; }
+  .settings-entry {
+    height: 32px;
+    min-width: 89px;
+    padding: 8px 12px 8px 8px;
+    justify-content: center;
+    gap: 8px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: radial-gradient(50% 100% at 50% 100%, #424242 0%, #2d2d2d 80.77%);
+    color: var(--text);
+    font-family: var(--brand);
+    font-size: 12px;
+    line-height: 14px;
+    transition: background .3s var(--ease-state), opacity .3s var(--ease-state);
+  }
+  .settings-entry:hover {
+    background: radial-gradient(50% 100% at 50% 100%, #424242 0%, #424242 100%);
+    color: var(--text);
+  }
+  .settings-entry:active {
+    background: radial-gradient(50% 100% at 50% 100%, #2d2d2d 0%, #2d2d2d 100%);
+  }
+  .settings-entry svg { color: var(--accent); }
+
+  main {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 16px;
+    gap: 20px;
+    background: transparent;
+  }
+  .view { width: 394px; flex: none; gap: 20px; }
+  #mod-blocks { gap: 20px; }
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--r-md);
+    background: radial-gradient(50% 100% at 50% 100%, #1c1c1c 25.48%, #121212 80%) !important;
+  }
+  .label {
+    min-height: 18px;
+    margin: 0;
+    font-family: var(--brand);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 18px;
+    color: var(--text);
+  }
+  .label svg,
+  .gen-row .ic,
+  .set-section .ic { color: var(--accent); }
+  #scope-panel .seg { margin-top: 4px; }
+  .scope-frame-row,
+  .scan-row,
+  .regen-actions { margin-top: 0; }
+  #regeneration-panel { gap: 17px; }
+  #regeneration-panel > .file-pick,
+  #regeneration-panel > .regen-actions { margin-top: 0; }
+  #diff-preview:empty { display: none; }
+  #lint-report-body,
+  #i18n-panel-wrapper > .inline-input-action { margin-top: 2px; }
+  #lint-report-body { padding-top: 8px; }
+
+  .seg,
+  .pal-seg {
+    gap: 2px;
+    padding: 4px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-lg);
+    background: var(--bg);
+  }
+  .seg span,
+  .pal-seg .seg {
+    min-height: 33px;
+    padding: 8px 4px;
+    border-radius: var(--r-md);
+    color: var(--text);
+    font-family: var(--brand);
+    font-size: 11px;
+    line-height: 16.5px;
+    transition: background .3s var(--ease-state), color .3s var(--ease-state);
+  }
+  .seg input:hover + span,
+  .pal-seg .seg:hover { color: var(--accent-hi); }
+  .seg input:checked + span,
+  .pal-seg .seg.active {
+    background: var(--accent-tint);
+    color: var(--accent-hi);
+    box-shadow: none;
+  }
+  .seg input:active + span,
+  .pal-seg .seg:active { background: #401904; }
+
+  .input,
+  .set-input,
+  .set-row select.set-ctl,
+  .set-field input,
+  .set-field select,
+  .i18n-field input[type=text],
+  .i18n-placeholder-row input,
+  #set-preset,
+  .pal-field input:not([type=range]),
+  .pal-field select,
+  .pal-spec input[type=text],
+  .pal-spec select,
+  .rmp-paste,
+  .rmp-filter input,
+  .rmp-depth {
+    padding: 6px 4px 6px 6px;
+    border: .5px solid var(--border);
+    border-radius: var(--r-md);
+    background-color: var(--surface);
+    color: var(--text);
+    font-family: var(--brand);
+    font-size: 12px;
+    line-height: 14px;
+    box-shadow: 0 -2px 1px #424242 inset, 0 2px 4px #424242 inset;
+    transition: border-color .3s var(--ease-state), box-shadow .3s var(--ease-state);
+  }
+  .input:not(textarea),
+  .set-input:not(textarea),
+  .set-row select.set-ctl,
+  .set-field input,
+  .set-field select,
+  .i18n-field input[type=text],
+  .i18n-placeholder-row input,
+  #set-preset,
+  .pal-field input:not([type=range]),
+  .pal-field select,
+  .pal-spec input[type=text],
+  .pal-spec select,
+  .rmp-filter input,
+  .rmp-depth { height: 32px; min-height: 32px; }
+  select.input,
+  .set-row select.set-ctl,
+  .set-field select,
+  #set-preset,
+  .pal-field select,
+  .pal-spec select,
+  .rmp-depth {
+    appearance: none;
+    padding: 3px 28px 3px 6px;
+    font-size: 11px;
+    line-height: 16.5px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23424242' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-position: calc(100% - 10px) 50%;
+    background-size: 10px 6px;
+    background-repeat: no-repeat;
+  }
+  .input::placeholder,
+  .set-input::placeholder,
+  .set-field input::placeholder,
+  .preset-save input::placeholder,
+  .i18n-field input::placeholder,
+  .i18n-placeholder-row input::placeholder,
+  .pal-field input::placeholder,
+  .pal-spec input::placeholder,
+  .rmp-paste::placeholder,
+  .rmp-filter input::placeholder { color: var(--text-muted); opacity: 1; }
+  .input:hover,
+  .set-input:hover,
+  .set-field input:hover,
+  .set-field select:hover,
+  .i18n-field input:hover,
+  .i18n-placeholder-row input:hover,
+  #set-preset:hover,
+  .pal-field input:not([type=range]):hover,
+  .pal-field select:hover,
+  .pal-spec input[type=text]:hover,
+  .pal-spec select:hover,
+  .rmp-filter input:hover,
+  .rmp-depth:hover { border-color: var(--border-2); }
+  .input:focus,
+  .set-input:focus,
+  .set-field input:focus,
+  .set-field select:focus,
+  .i18n-field input:focus,
+  .i18n-placeholder-row input:focus,
+  #set-preset:focus,
+  .pal-field input:not([type=range]):focus,
+  .pal-field select:focus,
+  .pal-spec input[type=text]:focus,
+  .pal-spec select:focus,
+  .rmp-paste:focus,
+  .rmp-filter input:focus,
+  .rmp-depth:focus {
+    outline: none;
+    border-color: var(--accent);
+    border-width: 1px;
+    box-shadow: 0 -2px 1px var(--accent-press) inset, 0 2px 4px var(--accent-press) inset;
+  }
+  select.input:focus,
+  .set-row select.set-ctl:focus,
+  .set-field select:focus,
+  #set-preset:focus,
+  .pal-field select:focus,
+  .pal-spec select:focus,
+  .rmp-depth:focus { border-width: .5px; }
+  .rmp-filter input { padding-right: 24px; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { appearance: none; margin: 0; }
+  .pal-field input[type=range] {
+    appearance: none;
+    width: 100%;
+    height: 16px;
+    min-height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    cursor: pointer;
+  }
+  .pal-field input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
+  .pal-field input[type=range]::-webkit-slider-runnable-track {
+    height: 10px;
+    border: 1px solid #7f7f7f;
+    border-radius: 18px;
+    background:
+      linear-gradient(
+        to right,
+        var(--accent) 0,
+        var(--accent) var(--range-progress, 50%),
+        #424242 var(--range-progress, 50%),
+        #424242 100%
+      );
+  }
+  .pal-field input[type=range]::-webkit-slider-thumb {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    margin-top: -4px;
+    border: 0;
+    border-radius: 50%;
+    background: #fff;
+  }
+  .pal-field input[type=range]::-moz-range-track {
+    height: 8px;
+    border: 1px solid #7f7f7f;
+    border-radius: 18px;
+    background: #424242;
+  }
+  .pal-field input[type=range]::-moz-range-progress {
+    height: 8px;
+    border-radius: 18px 0 0 18px;
+    background: var(--accent);
+  }
+  .pal-field input[type=range]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border: 0;
+    border-radius: 50%;
+    background: #fff;
+  }
+  .inline-input-action,
+  .preset-save {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 32px;
+    min-height: 32px;
+    padding: 6px 4px 6px 6px;
+    border: .5px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: 0 -2px 1px #424242 inset, 0 2px 4px #424242 inset;
+  }
+  .inline-input-action:focus-within,
+  .preset-save:focus-within {
+    border-width: 1px;
+    border-color: var(--accent);
+    box-shadow: 0 -2px 1px var(--accent-press) inset, 0 2px 4px var(--accent-press) inset;
+  }
+  .inline-input-action .input,
+  .preset-save input {
+    flex: 1;
+    min-width: 0;
+    color: var(--text);
+    font-family: var(--brand);
+    font-size: 12px;
+    line-height: 14px;
+    height: 19px;
+    min-height: 19px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .inline-input-action .input:focus,
+  .preset-save input:focus { border: 0; box-shadow: none; }
+  .inline-input-action .btn,
+  .preset-save .btn {
+    flex: none;
+    width: auto;
+    height: 19px;
+    min-height: 19px;
+    padding: 2px 8px;
+    margin: 0;
+    border-radius: var(--r-sm);
+    font-size: 12px;
+  }
+  #i18n-save-btn { margin: 0; }
+
+  .btn {
+    min-height: 39px;
+    padding: 12px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: radial-gradient(50% 100% at 50% 100%, #424242 0%, #2d2d2d 80.77%);
+    color: var(--text);
+    font-family: var(--brand);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 14px;
+    transition: background .3s var(--ease-state), opacity .3s var(--ease-state), border-color .3s var(--ease-state);
+  }
+  .btn:hover:not(:disabled) {
+    background: radial-gradient(50% 100% at 50% 100%, #424242 0%, #424242 100%);
+    color: var(--text);
+  }
+  .btn:active:not(:disabled) {
+    transform: none;
+    background: radial-gradient(50% 100% at 50% 100%, #2d2d2d 0%, #2d2d2d 100%);
+  }
+  .btn.primary {
+    border: .5px solid var(--border);
+    background: var(--accent);
+    color: var(--text);
+    font-weight: 600;
+  }
+  .btn.primary:hover:not(:disabled) { background: var(--accent-hover); color: var(--text); }
+  .btn.primary:active:not(:disabled) { background: var(--accent-press); }
+  .btn.ghost {
+    width: auto;
+    padding: 12px;
+    border: 0;
+    background: radial-gradient(50% 100% at 50% 100%, #424242 0%, #2d2d2d 80.77%);
+    color: var(--text);
+  }
+  .btn.ghost:hover:not(:disabled) {
+    border: 0;
+    background: radial-gradient(50% 100% at 50% 100%, #424242 0%, #424242 100%);
+    color: var(--text);
+  }
+  .btn.ghost:active:not(:disabled) {
+    background: radial-gradient(50% 100% at 50% 100%, #2d2d2d 0%, #2d2d2d 100%);
+  }
+  .btn:disabled,
+  .btn.primary:disabled,
+  .btn.ghost:disabled,
+  .btn.deliver:disabled {
+    opacity: .4;
+    cursor: not-allowed;
+    color: var(--text);
+  }
+  .scan-row .btn,
+  #export-btn { width: 100%; }
+  .regen-actions { gap: 6px; }
+  .regen-actions .btn { flex: 1; }
+  #view-ds-tools .pal-add { padding: 12px 8px; }
+  .inline-input-action .btn,
+  .preset-save .btn {
+    height: 19px;
+    min-height: 19px;
+    padding: 2px 8px;
+    border-radius: var(--r-sm);
+    font-size: 12px;
+  }
+
+  .file-pick,
+  #view-settings .file-pick,
+  .rmp-drop {
+    min-height: 43px;
+    padding: 12px;
+    border: 1px dashed var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    color: var(--muted);
+    font-family: var(--brand);
+    font-size: 11px;
+  }
+  .file-pick:hover,
+  #view-settings .file-pick:hover,
+  .rmp-drop:hover,
+  .rmp-drop.over {
+    border-color: var(--border-2);
+    background: #121212;
+    color: var(--text);
+  }
+  .rmp-drop {
+    width: 100%;
+    height: 52px;
+    min-height: 52px;
+    padding: 0 6px;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px dashed var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: none;
+  }
+  .rmp-drop b {
+    display: inline;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font-family: var(--brand);
+    font-size: 12px;
+    font-style: italic;
+    font-weight: 400;
+    line-height: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rmp-drop > i { display: none; }
+  .rmp-drop > .info-tip { margin: 0; }
+  .rmp-drop:hover,
+  .rmp-drop.over {
+    border-color: var(--accent);
+    background: var(--surface);
+    color: var(--text);
+  }
+
+  .switch .track { background: #2d2d2d; border-color: var(--border); }
+  .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+  .switch input:focus-visible + .track { outline-color: var(--accent); }
+  .set-section { color: var(--text); border-color: var(--border); }
+  .set-row + .set-row,
+  .mod-row + .mod-row { border-color: var(--border); }
+  .set-text i,
+  .gen-text i,
+  .agent-hint,
+  .set-hint,
+  .dl-note,
+  .rmp-drop i,
+  .lint-empty { color: var(--muted); }
+  .icon-btn {
+    border-color: var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    color: var(--muted);
+  }
+  .icon-btn:hover { border-color: var(--border-2); background: #121212; color: var(--text); }
+
+  footer {
+    flex: 0 0 119px;
+    height: 119px;
+    padding: 12px 18px 14px;
+    gap: 9px;
+    border-top: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--surface-raised) 0%, var(--bg) 100%);
+  }
+  .pipeline { min-height: 15px; }
+  .pipeline .stage { color: var(--muted); }
+  .pipeline .tick { background: var(--text-muted); }
+  .foot-row { min-height: 20px; padding: 0 10px; }
+  #status,
+  #export-progress-label { color: var(--muted); }
+  body.ds-tools-mode::before,
+  body.ds-tools-mode::after { inset: 74px 0 71px; }
+  footer.ds-tools-footer { flex: 0 0 71px; height: 71px; }
+  footer.ds-tools-footer .foot-row { min-height: 17px; height: 17px; padding: 0; }
+  footer.ds-tools-footer #status,
+  footer.ds-tools-footer #export-progress-label { font-size: 11px; line-height: 16.5px; }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border: 0; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-2); }
+
+  .info-tip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 9px;
+    line-height: 1;
+    cursor: help;
+  }
+  .info-tip:hover,
+  .info-tip:focus-visible { border-color: var(--accent); color: var(--accent-hi); }
+  /* The bubble is one fixed-position node shared by every tip and positioned in JS (placeTip),
+     so the plugin window edge clips nothing: it is clamped horizontally and flipped above the
+     trigger when there is no room below. */
+  .tip-pop {
+    position: fixed;
+    z-index: 60;
+    top: 0;
+    left: 0;
+    width: min(280px, calc(100vw - 16px));
+    padding: 9px 10px;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-sm);
+    background: #151515;
+    color: var(--text);
+    font-family: var(--brand);
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.45;
+    letter-spacing: 0;
+    text-align: left;
+    text-transform: none;
+    white-space: normal;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, .42);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity .14s ease-out;
+  }
+  .tip-pop.show { opacity: 1; visibility: visible; }
+  .set-text > .info-tip { margin: 0 0 0 6px; }
+  .set-text { flex-direction: row; align-items: center; flex-wrap: wrap; }
+  .set-text > b { min-width: 0; }
+  #view-ds-tools .gen-text:has(> .info-tip) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #view-ds-tools .gen-text:has(> .info-tip) > b { display: inline; }
+  .module-empty {
+    margin: 0 0 12px;
+    padding: 18px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    color: var(--faint);
+    text-align: center;
+  }
+
+  #view-sdk-builder {
+    min-height: 100%;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    margin: 0 auto;
+  }
+  .sdk-builder-empty {
+    width: min(420px, 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  .sdk-builder-icon { display: block; color: var(--accent); }
+  .sdk-builder-copy {
+    max-width: 48ch;
+    margin: 0;
+    color: var(--muted);
+    font-family: var(--brand);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  #sdk-copy-prompt { width: auto; min-width: 190px; padding-inline: 18px; }
+  #sdk-copy-note { min-height: 16px; margin: -6px 0 0; color: var(--faint); font-size: 10.5px; }
+  #sdk-copy-note.ok { color: var(--ok); }
+  #sdk-copy-note.err { color: var(--err); }
+  .module-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .module-intro-copy { min-width: 0; }
+  .module-intro-copy .label { margin-bottom: 3px; }
+  .module-tools { display: flex; flex: none; gap: 6px; }
+  .module-tools .btn { padding: 6px 8px; font-size: 10px; }
+  .module-json { margin-top: 10px; min-height: 118px; resize: vertical; font-family: var(--mono); font-size: 10.5px; line-height: 1.55; }
+  .module-json-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .module-json-actions .btn { flex: 1; }
+  .module-review { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
+  .module-review-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .module-review-title { margin: 0; color: var(--text); font-size: 12px; font-weight: 550; }
+  .module-review-meta { margin: 3px 0 0; color: var(--faint); font-size: 10px; }
+  .module-badges { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+  .module-badge { padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 9.5px; }
+  .module-badge.write { border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); color: var(--danger); }
+  .module-cap-list { border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
+  .module-cap { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 9px; }
+  .module-cap + .module-cap { border-top: 1px solid var(--border); }
+  .module-cap code { overflow: hidden; color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+  .module-cap small { color: var(--faint); font-size: 9px; }
+  .module-permission { color: var(--faint); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+  .module-permission.write { color: var(--danger); }
+  .module-problems { margin: 8px 0 0; padding: 0; list-style: none; }
+  .module-problems li { padding: 5px 0; color: var(--danger); font-size: 10px; border-bottom: 1px solid var(--border); }
+  .module-callout { margin: 8px 0; padding: 8px 10px; border-left: 2px solid var(--border-strong); background: var(--bg-2); color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+  .module-callout.warn, .module-callout.error { border-left-color: var(--danger); color: var(--danger); }
+  .module-callout.success { border-left-color: var(--ok); }
+  .module-code { max-height: 260px; overflow: auto; margin: 8px 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-2); color: var(--text); font: 10px/1.55 var(--mono); white-space: pre; }
+  .module-list { margin: 6px 0 8px; padding-left: 18px; color: var(--muted); font-size: 10.5px; line-height: 1.55; }
+  .module-confirm { margin-top: 10px; padding: 10px; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); border-radius: var(--r-sm); }
+  .module-confirm p { margin: 0 0 8px; color: var(--text); font-size: 10.5px; line-height: 1.45; }
+  .module-heading-icon { display: inline-block; min-width: 16px; margin-right: 5px; color: var(--accent); font-family: var(--mono); font-size: 10px; text-align: center; }
+  .btn.module-danger { border: 1px solid var(--danger); background: transparent; color: var(--danger); }
+  .btn.module-danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+  textarea.set-input { width: 100%; min-height: 72px; resize: vertical; box-sizing: border-box; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
-  <div class="bg-deco" aria-hidden="true">
-    <svg viewBox="0 0 1744 797" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M1711.95 796.472L1743.96 712.091C1422.55 600.159 1305.01 478.188 1288.62 471.14C1341.85 453.173 1421.29 403.258 1445.24 340.161C1487.34 229.196 1419.16 116.205 1317.73 77.7181C1215.58 38.956 1084.51 58.9165 1034.43 190.914C1011.58 251.111 1036.53 350.489 1075.06 390.104C1056.67 383.956 513.296 276.868 88.0019 6.67721e-05L3.29914e-05 152.542C442.062 328.93 1090.54 482.65 1165.27 479.517C1224.31 522.665 1364.67 690.222 1711.95 796.472ZM1194.05 388.381C1131.51 334.781 1110.1 271.069 1127.16 226.102C1150 165.906 1213.3 147.611 1281.4 173.453C1341.54 196.27 1370.22 256.105 1351.78 304.697C1334.44 350.389 1279.4 388.412 1194.05 388.381Z" fill="url(#alteryDeco)"/>
-      <defs>
-        <linearGradient id="alteryDeco" x1="979.736" y1="559.05" x2="752.236" y2="27.0503" gradientUnits="userSpaceOnUse">
-          <stop stop-color="#FAF5F1"/>
-          <stop offset="1" stop-color="#FF6A0D"/>
-        </linearGradient>
-      </defs>
-    </svg>
-  </div>
 
   <header>
    <div class="header-row">
-    <svg class="brand-logo" viewBox="0 0 252 112" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Altery">
-      <path d="M251.528 74.6777C251.528 91.6439 239.852 101.404 224.618 101.404C217.777 101.404 210.389 99.4881 204.916 95.0186L211.757 85.3496C214.95 88.2685 220.332 90.2754 225.44 90.2754C235.656 90.2753 239.669 82.3396 239.669 71.1201C236.112 77.7788 229.362 81.7929 222.977 81.793C209.751 81.793 203.183 72.2149 203.183 61.1777V32.1709H215.041V61.1777C215.041 66.1946 218.051 70.2998 222.703 70.2998C228.724 70.2995 239.669 63.0928 239.669 32.0801H251.528V74.6777ZM96.891 32.1729H110.755V42.2061H96.891V66.835C96.8911 68.7501 97.8936 70.0272 98.8968 70.4834C101.725 71.8516 104.918 70.1184 107.016 68.4766L113.127 77.2334C111.029 78.7841 108.748 80.2431 106.285 81.1553C102.819 82.4323 98.4408 82.8889 93.6976 80.791C88.7721 78.6018 85.0327 73.4023 85.0326 66.835V42.2061H77.8265V32.1729H85.0326V17.6689H96.891V32.1729ZM23.096 30.6592C29.1052 30.2774 34.1127 32.5286 38.5755 36.4043C38.5012 40.011 38.5287 43.633 37.9662 47.2129C37.7359 48.6786 37.5701 50.0459 37.2113 51.4961C36.0724 49.6089 35.0062 48.0631 33.4203 46.5029C30.8964 44.0488 27.8581 42.2853 24.2777 42.3027C16.0769 42.343 12.0503 49.7583 12.1976 57.1914C12.2725 60.9683 13.4971 64.4058 16.224 67.1201C18.2538 69.1407 20.9669 70.3215 23.8363 70.2969C28.9949 70.1891 33.0433 66.9661 35.9837 63.0225C39.0759 58.8755 41.0505 54.7083 41.7464 49.5498C41.9045 48.3764 42.1233 47.2087 42.2425 46.0195C42.7026 41.4262 42.687 36.7891 42.6126 32.1787H53.973C53.967 35.3128 53.818 38.445 53.5257 41.5654C53.0802 46.5615 52.191 51.5088 50.8705 56.3477C52.9546 64.2638 53.9973 72.4185 53.973 80.6045H42.1136C42.1218 78.1395 42.1419 75.3987 42.0208 72.9482C41.7518 73.27 41.4774 73.5872 41.1986 73.9004C37.0022 78.6103 31.3769 81.6584 25.0316 82.0225C19.0243 82.3974 13.119 80.3386 8.64584 76.3115C3.59501 71.7123 0.560743 65.3079 0.201507 58.4863C-0.185724 51.3229 2.08699 43.3498 6.95444 37.9834C11.2935 33.1997 16.7372 30.9976 23.096 30.6592ZM138.982 30.9893C153.394 30.9893 161.968 43.5771 161.968 55.9824V60.6338H127.489C128.948 66.5628 133.327 70.3027 139.347 70.3027C144.546 70.3027 148.195 67.8403 150.475 65.0127L159.78 72.127C154.945 78.056 147.647 81.4316 139.255 81.4316C124.387 81.4315 114.901 70.4855 114.901 55.9824C114.901 42.3001 123.749 30.9893 138.982 30.9893ZM199.834 44.3926C189.892 44.3926 181.318 53.0577 181.318 76.6826V80.5137H169.459V32.3516H181.318V42.75C184.966 35.8178 191.625 31.4395 199.834 31.4395V44.3926ZM73.5882 80.5107H61.7308V10.2744H73.5882V80.5107ZM138.618 42.1172C133.236 42.1172 128.948 44.945 127.671 50.874H149.107C147.556 45.1277 143.361 42.1174 138.618 42.1172Z" fill="currentColor"/>
+    <a class="brand-link" href="https://allcrew.app" target="_blank" rel="noopener noreferrer" aria-label="Open AllCrew website">
+    <svg class="brand-logo" width="132" height="24" viewBox="0 0 132 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+      <path d="M36.4779 23.9998C36.23 23.9998 36.0384 23.9209 35.9032 23.7632C35.768 23.6054 35.7229 23.4026 35.768 23.1547L40.5341 0.845061C40.5792 0.597177 40.6919 0.394363 40.8722 0.236619C41.075 0.0788732 41.3003 0 41.5482 0H45.5369C45.7622 0 45.9425 0.0788732 46.0777 0.236619C46.2129 0.394363 46.258 0.597177 46.2129 0.845061L41.4806 23.1547C41.4355 23.4026 41.3116 23.6054 41.1088 23.7632C40.906 23.9209 40.6919 23.9998 40.4665 23.9998H36.4779Z" fill="#FF0000"/>
+      <path d="M26.7708 23.9998C26.523 23.9998 26.3314 23.9209 26.1962 23.7632C26.061 23.6054 26.0159 23.4026 26.061 23.1547L30.8271 0.845061C30.8722 0.597177 30.9849 0.394363 31.1652 0.236619C31.368 0.0788732 31.5933 0 31.8412 0H35.8299C36.0552 0 36.2355 0.0788732 36.3707 0.236619C36.5059 0.394363 36.551 0.597177 36.5059 0.845061L31.7736 23.1547C31.7285 23.4026 31.6046 23.6054 31.4018 23.7632C31.199 23.9209 30.9849 23.9998 30.7595 23.9998H26.7708Z" fill="#F09800"/>
+      <path d="M0.651465 24C0.381045 24 0.189498 23.8873 0.0768237 23.662C-0.0358511 23.4366 -0.0245836 23.2113 0.110626 22.9859L12.6513 1.28473C12.7865 1.03684 12.9781 0.822761 13.226 0.642481C13.4738 0.439665 13.7893 0.338257 14.1724 0.338257H19.378C19.7611 0.338257 20.0315 0.439665 20.1893 0.642481C20.3695 0.822761 20.4709 1.03684 20.4935 1.28473L23.8061 22.9859C23.8737 23.3014 23.8174 23.5493 23.6371 23.7296C23.4568 23.9099 23.254 24 23.0287 24H18.9386C18.6005 24 18.3527 23.9211 18.1949 23.7634C18.0597 23.6056 17.9696 23.4254 17.9245 23.2225L17.3499 19.8423H8.32461L6.29647 23.2902C6.18379 23.4479 6.02605 23.6056 5.82323 23.7634C5.64295 23.9211 5.3838 24 5.04578 24H0.651465ZM10.7246 14.9747H17.0118L15.7611 6.05088L10.7246 14.9747Z" fill="white"/>
+      <path d="M111.145 23.6669C110.811 23.6669 110.567 23.5891 110.411 23.4336C110.256 23.278 110.134 23.078 110.045 22.8336L105.245 7.40022C105.2 7.28911 105.178 7.178 105.178 7.06689C105.178 6.86689 105.256 6.70022 105.411 6.56689C105.567 6.41133 105.745 6.33356 105.945 6.33356H109.378C109.667 6.33356 109.889 6.41133 110.045 6.56689C110.222 6.72245 110.334 6.878 110.378 7.03356L113.178 16.5669L116.178 7.06689C116.222 6.91134 116.322 6.75578 116.478 6.60022C116.656 6.42245 116.9 6.33356 117.211 6.33356H119.411C119.722 6.33356 119.956 6.42245 120.111 6.60022C120.289 6.75578 120.4 6.91134 120.445 7.06689L123.445 16.5669L126.245 7.03356C126.289 6.878 126.389 6.72245 126.545 6.56689C126.722 6.41133 126.956 6.33356 127.245 6.33356H130.678C130.878 6.33356 131.045 6.41133 131.178 6.56689C131.333 6.70022 131.411 6.86689 131.411 7.06689C131.411 7.178 131.4 7.28911 131.378 7.40022L126.578 22.8336C126.511 23.078 126.389 23.278 126.211 23.4336C126.056 23.5891 125.811 23.6669 125.478 23.6669H122.478C122.167 23.6669 121.922 23.5891 121.745 23.4336C121.567 23.278 121.445 23.078 121.378 22.8336L118.311 13.7002L115.245 22.8336C115.178 23.078 115.056 23.278 114.878 23.4336C114.7 23.5891 114.456 23.6669 114.145 23.6669H111.145Z" fill="white"/>
+      <path d="M95.0401 24C92.4179 24 90.329 23.2889 88.7734 21.8667C87.2179 20.4444 86.4068 18.3333 86.3401 15.5333C86.3401 15.3778 86.3401 15.1778 86.3401 14.9333C86.3401 14.6889 86.3401 14.5 86.3401 14.3667C86.4068 12.6111 86.7956 11.1111 87.5068 9.86667C88.2401 8.6 89.2401 7.64445 90.5067 7C91.7956 6.33333 93.2956 6 95.0067 6C96.9623 6 98.5734 6.38889 99.8401 7.16667C101.129 7.94444 102.096 9 102.74 10.3333C103.384 11.6667 103.707 13.1889 103.707 14.9V15.7C103.707 15.9444 103.618 16.1444 103.44 16.3C103.284 16.4556 103.096 16.5333 102.873 16.5333H92.2067C92.2067 16.5556 92.2067 16.5889 92.2067 16.6333C92.2067 16.6778 92.2067 16.7222 92.2067 16.7667C92.229 17.4111 92.3401 18 92.5401 18.5333C92.7401 19.0667 93.0512 19.4889 93.4734 19.8C93.8956 20.1111 94.4067 20.2667 95.0067 20.2667C95.4512 20.2667 95.8178 20.2 96.1067 20.0667C96.4178 19.9111 96.6734 19.7444 96.8734 19.5667C97.0734 19.3667 97.229 19.2 97.3401 19.0667C97.5401 18.8444 97.6956 18.7111 97.8067 18.6667C97.9401 18.6 98.1401 18.5667 98.4067 18.5667H102.54C102.762 18.5667 102.94 18.6333 103.073 18.7667C103.229 18.8778 103.296 19.0444 103.273 19.2667C103.251 19.6444 103.062 20.1 102.707 20.6333C102.351 21.1667 101.829 21.7 101.14 22.2333C100.473 22.7444 99.6289 23.1667 98.6067 23.5C97.5845 23.8333 96.3956 24 95.0401 24ZM92.2067 13.2333H97.8401V13.1667C97.8401 12.4556 97.729 11.8333 97.5067 11.3C97.3067 10.7667 96.9845 10.3556 96.5401 10.0667C96.1178 9.77778 95.6067 9.63333 95.0067 9.63333C94.4067 9.63333 93.8956 9.77778 93.4734 10.0667C93.0734 10.3556 92.7623 10.7667 92.5401 11.3C92.3179 11.8333 92.2067 12.4556 92.2067 13.1667V13.2333Z" fill="white"/>
+      <path d="M72.8663 23.6669C72.6218 23.6669 72.4218 23.5891 72.2663 23.4336C72.1107 23.278 72.033 23.078 72.033 22.8336V7.16689C72.033 6.94467 72.1107 6.75578 72.2663 6.60022C72.4218 6.42245 72.6218 6.33356 72.8663 6.33356H76.6996C76.9441 6.33356 77.1441 6.42245 77.2996 6.60022C77.4552 6.75578 77.5329 6.94467 77.5329 7.16689V8.50023C78.1329 7.81134 78.8441 7.278 79.6663 6.90022C80.5107 6.52245 81.4552 6.33356 82.4996 6.33356H83.9663C84.1885 6.33356 84.3774 6.41133 84.5329 6.56689C84.7107 6.72245 84.7996 6.92245 84.7996 7.16689V10.6002C84.7996 10.8224 84.7107 11.0224 84.5329 11.2002C84.3774 11.3558 84.1885 11.4336 83.9663 11.4336H80.7329C79.8218 11.4336 79.1107 11.6891 78.5996 12.2002C78.1107 12.6891 77.8663 13.3891 77.8663 14.3002V22.8336C77.8663 23.078 77.7774 23.278 77.5996 23.4336C77.4441 23.5891 77.2441 23.6669 76.9996 23.6669H72.8663Z" fill="white"/>
+      <path d="M58.563 24C56.4519 24 54.6408 23.6556 53.1297 22.9667C51.6408 22.2778 50.4742 21.2667 49.6297 19.9333C48.8075 18.6 48.352 16.9444 48.2631 14.9667C48.2408 14.0556 48.2297 13.0778 48.2297 12.0333C48.2297 10.9889 48.2408 9.98889 48.2631 9.03333C48.352 7.1 48.8186 5.46667 49.6631 4.13333C50.5075 2.77778 51.6853 1.75556 53.1964 1.06667C54.7075 0.355555 56.4964 0 58.563 0C60.0297 0 61.3853 0.188888 62.6297 0.566666C63.8741 0.922221 64.963 1.45556 65.8964 2.16667C66.8297 2.85556 67.5519 3.7 68.063 4.7C68.5963 5.67778 68.8741 6.78889 68.8963 8.03333C68.9186 8.23333 68.8519 8.4 68.6963 8.53333C68.563 8.66667 68.3963 8.73333 68.1963 8.73333H63.6964C63.4075 8.73333 63.1853 8.67778 63.0297 8.56667C62.8741 8.43333 62.7408 8.2 62.6297 7.86667C62.3186 6.68889 61.8075 5.88889 61.0964 5.46667C60.4075 5.02222 59.5519 4.8 58.5297 4.8C57.3075 4.8 56.3408 5.14444 55.6297 5.83333C54.9186 6.5 54.5297 7.62222 54.4631 9.2C54.3964 11.0222 54.3964 12.8889 54.4631 14.8C54.5297 16.3778 54.9186 17.5111 55.6297 18.2C56.3408 18.8667 57.3075 19.2 58.5297 19.2C59.5519 19.2 60.4186 18.9778 61.1297 18.5333C61.8408 18.0889 62.3408 17.2889 62.6297 16.1333C62.7186 15.8 62.8408 15.5778 62.9964 15.4667C63.1741 15.3333 63.4075 15.2667 63.6964 15.2667H68.1963C68.3963 15.2667 68.563 15.3333 68.6963 15.4667C68.8519 15.6 68.9186 15.7667 68.8963 15.9667C68.8741 17.2111 68.5963 18.3333 68.063 19.3333C67.5519 20.3111 66.8297 21.1556 65.8964 21.8667C64.963 22.5556 63.8741 23.0889 62.6297 23.4667C61.3853 23.8222 60.0297 24 58.563 24Z" fill="white"/>
     </svg>
+    </a>
     <div class="header-actions">
     <!-- REFORM phase 2: Settings is a sub-page, not a tab — the pill swaps to Back while open.
          The target picker hides on the settings page (its views live under the main dash). -->
     <!-- Grouped, not mixed: which half a target belongs to decides who to talk to when it
          misbehaves. The Modules group is added by renderModulePicker() when there are any. -->
     <select id="target-select" class="target-select" aria-label="Export target">
-      <optgroup label="Native" id="target-native">
+      <optgroup label="Workspace" id="target-native">
+        <option value="agent">Agent Listener</option>
+        <option value="modules">User Modules</option>
         <option value="django">Django × Bootstrap</option>
         <option value="tauri">Tauri</option>
         <option value="design-tokens">Design Tokens</option>
         <option value="ds-tools">DS Tools</option>
-        <option value="agent">Agent Listener</option>
+      </optgroup>
+      <optgroup label="AllCrew SDK" id="target-sdk">
+        <option value="sdk-builder">Build a screen</option>
       </optgroup>
     </select>
     <button id="open-settings" class="settings-entry" type="button" aria-label="Export settings">
@@ -662,7 +1506,7 @@
     </button>
     </div>
    </div>
-   <div class="tagline">Design System Export<span id="crumb"></span></div>
+   <div class="tagline">Figma workspace<span id="crumb"></span></div>
   </header>
 
   <main>
@@ -704,11 +1548,13 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 5h9M8.5 5v3M11 19l4.5-11L20 19M12.5 15.5h6M6 12c2.5 2 6 3.5 9 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Translation notes
       </p>
-      <select id="i18n-text-node-select" class="input" aria-label="Text node to annotate">
-        <option value="">Select a text node&hellip;</option>
-      </select>
+      <div class="inline-input-action">
+        <select id="i18n-text-node-select" class="input" aria-label="Text node to annotate">
+          <option value="">Select a text node&hellip;</option>
+        </select>
+        <button id="i18n-save-btn" class="btn ghost" disabled>Save</button>
+      </div>
       <div id="i18n-panel-container"></div>
-      <button id="i18n-save-btn" class="btn ghost" disabled>Save annotation</button>
     </section>
 
     <!-- T3.3 regeneration-without-overwrite: pick the previously-exported project (optional) so
@@ -741,12 +1587,7 @@
       <p class="label">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M3 8a2 2 0 012-2h9a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8zm13 3l5-3v8l-5-3" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
         Videos in this design
-      </p>
-      <p style="font-size:10px;color:var(--faint);margin:0 0 6px;line-height:1.5">
-        Figma API can't export video bytes. Get each source in Figma:
-        <b>Dev&nbsp;Mode (Shift+D) &rarr; select the video layer &rarr; Assets &rarr; Download</b>,
-        then attach it here to ship it inside the zip. Skipped videos fall back to their poster
-        (paths listed in export-report.json).
+        <button class="info-tip" type="button" aria-label="Video export help" data-tip="Figma cannot export video bytes. Download each source from Dev Mode, then attach it here. Skipped videos use their poster image and remain listed in export-report.json.">i</button>
       </p>
       <div id="video-attach-list"></div>
       <p id="video-attach-status" style="font-size:10.5px;color:var(--faint);margin:8px 0 0"></p>
@@ -836,8 +1677,16 @@
         <div class="pal-fields" id="pal-knobs">
           <label class="pal-field">Lightest L<input id="pal-lmax" type="number" min="0.5" max="1" step="0.005" /></label>
           <label class="pal-field">Darkest L<input id="pal-lmin" type="number" min="0" max="0.5" step="0.005" /></label>
-          <label class="pal-field" title="1 = perceptually even steps. Higher holds the light half open and drops faster into the dark half, the way conventional scales are built.">Ladder curve<input id="pal-curve" type="range" min="0.6" max="2.5" step="0.05" /></label>
-          <label class="pal-field" title="0 = flat chroma across the ramp. Higher pulls saturation out of the near-white and near-black ends, where it reads as dirty.">Chroma curve<input id="pal-chroma" type="range" min="0" max="1" step="0.05" /></label>
+          <label class="pal-field pal-range-field" title="1 = perceptually even steps. Higher holds the light half open and drops faster into the dark half, the way conventional scales are built.">
+            Ladder curve
+            <input id="pal-curve" type="range" min="0.6" max="2.5" step="0.05" />
+            <output class="pal-range-value" id="pal-curve-value" for="pal-curve"></output>
+          </label>
+          <label class="pal-field pal-range-field" title="0 = flat chroma across the ramp. Higher pulls saturation out of the near-white and near-black ends, where it reads as dirty.">
+            Chroma curve
+            <input id="pal-chroma" type="range" min="0" max="1" step="0.05" />
+            <output class="pal-range-value" id="pal-chroma-value" for="pal-chroma"></output>
+          </label>
           <label class="pal-field">Hue torsion
             <select id="pal-torsion">
               <option value="auto">Auto (per hue family)</option>
@@ -854,7 +1703,10 @@
         <div id="pal-spectra"></div>
         <!-- Below the list, not beside the heading: adding a row grows the list downwards, so
              the button stays under the cursor for the next click instead of running away. -->
-        <button class="pal-add" id="pal-add" type="button">+ Add harmonious color</button>
+        <button class="btn ghost pal-add" id="pal-add" type="button">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          Add harmonious color
+        </button>
 
         <p class="label">Preview</p>
         <div id="pal-preview" class="pal-preview"></div>
@@ -946,10 +1798,7 @@
           <button class="btn ghost" id="rmp-board" type="button" disabled>Draw Color remap board</button>
         </div>
 
-        <p class="label">Rebind to reference library</p>
-        <p class="pal-hint">Moves what things point at: semantic aliases, node and style bindings land on the
-          library's own tokens. Needs the palette read from a library. Preview first — it counts every pointer
-          that would move and writes nothing.</p>
+        <p class="label">Rebind to reference library <button class="info-tip" type="button" aria-label="Rebind help" data-tip="Moves semantic aliases, node bindings, and style bindings onto the reference library tokens. Read the palette from a library first, then preview to count every pointer before writing.">i</button></p>
         <label class="pal-field pal-wide" style="margin-top:2px">Layers to rebind
           <select id="rmp-rebind-scope">
             <option value="document">Whole document — variables, styles and canvas</option>
@@ -972,7 +1821,7 @@
         <div class="rmp-drop" id="rmp-drop">
           <input type="file" id="rmp-files" multiple hidden />
           <b>Drop CSS, SCSS, JSON, SVG&hellip;</b>
-          <i>The same rewrite <code>altery-dj remap</code> runs in the repository &mdash; values change, keys never do. Files come back as downloads; nothing leaves this machine.</i>
+          <i>The same rewrite <code>allcrew-channel remap</code> runs in the repository &mdash; values change, keys never do. Files come back as downloads; nothing leaves this machine.</i>
         </div>
         <div class="pal-opts">
           <label><input type="checkbox" id="rmp-f-byname" /> <span>Also rewrite by <b>token name</b>, whatever value the declaration holds</span></label>
@@ -982,10 +1831,70 @@
       </section>
     </div>
 
-    <!-- Agent Listener: the console for the inbound CLI channel. The main view is the two
-         things a person actually does — flip the channel on, and hand their agent the skill
-         that teaches it to use the channel. Bridge URL, secret and the read/write gates live
-         under Settings (data-needs-target="agent"). -->
+    <div id="view-sdk-builder" class="view hidden">
+      <div class="sdk-builder-empty">
+        <svg class="sdk-builder-icon" width="44" height="44" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <rect x="5" y="7" width="15" height="15" rx="3" stroke="currentColor" stroke-width="2"/>
+          <rect x="28" y="26" width="15" height="15" rx="3" stroke="currentColor" stroke-width="2"/>
+          <path d="M20 14.5h8a7 7 0 0 1 7 7V26M15 22v5a7 7 0 0 0 7 7h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="m35.5 5 1.2 3.3L40 9.5l-3.3 1.2-1.2 3.3-1.2-3.3L31 9.5l3.3-1.2L35.5 5Z" fill="currentColor"/>
+        </svg>
+        <p class="sdk-builder-copy">Turn a workflow into a native AllCrew screen without editing this plugin. Copy the SDK brief, paste it into your agent, and describe the controls and Figma actions your screen needs.</p>
+        <button class="btn primary" id="sdk-copy-prompt" type="button">Copy prompt for my agent</button>
+        <p id="sdk-copy-note" role="status"></p>
+      </div>
+    </div>
+
+    <!-- User modules are empty in a fresh AllCrew Channel install. A validated JSON document adds one. -->
+    <div id="view-modules" class="view hidden">
+      <section class="card">
+        <div class="module-intro">
+          <div class="module-intro-copy">
+            <p class="label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><path d="M17.5 14v7M14 17.5h7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+              User modules
+            </p>
+            <p class="sec-hint">Declarative screens over this plugin&rsquo;s reviewed commands. No HTML, scripts, network access, or undeclared storage.</p>
+          </div>
+          <div class="module-tools">
+            <button class="btn ghost" id="mods-template" type="button">Starter</button>
+            <button class="btn ghost" id="mods-schema" type="button">Schema</button>
+          </div>
+        </div>
+        <div id="mods-list"></div>
+        <div class="rmp-drop" id="mods-drop">
+          <input type="file" id="mods-file" accept=".json,application/json" hidden />
+          <b>Drop a module JSON file, or click to choose</b>
+          <i>Validated locally. Nothing is stored until you review its real capabilities below.</i>
+        </div>
+        <textarea class="input module-json" id="mods-json" spellcheck="false" aria-label="Module JSON" placeholder="{ &quot;module&quot;: &quot;allcrew-channel.module/1&quot;, ... }"></textarea>
+        <div class="module-json-actions">
+          <button class="btn primary" id="mods-json-install" type="button">Validate module</button>
+        </div>
+        <ul class="module-problems hidden" id="mods-problems"></ul>
+        <div class="module-review hidden" id="mods-review">
+          <div class="module-review-head">
+            <div>
+              <p class="module-review-title" id="mods-review-title"></p>
+              <p class="module-review-meta" id="mods-review-meta"></p>
+            </div>
+            <span class="module-badge" id="mods-review-version"></span>
+          </div>
+          <p class="sec-hint" id="mods-review-summary"></p>
+          <div class="module-badges" id="mods-review-badges"></div>
+          <div class="module-cap-list" id="mods-review-caps"></div>
+          <label class="set-row hidden" id="mods-downgrade-row">
+            <span class="set-text"><b>Allow version downgrade</b><i>State is migrated, but the older module may not understand newer behavior.</i></span>
+            <span class="switch"><input id="mods-downgrade" type="checkbox" /><span class="track"></span></span>
+          </label>
+          <div class="module-json-actions">
+            <button class="btn ghost" id="mods-review-cancel" type="button">Cancel</button>
+            <button class="btn primary" id="mods-review-install" type="button">Connect module</button>
+          </div>
+        </div>
+        <p class="sec-hint hidden" id="mods-note" role="status"></p>
+      </section>
+    </div>
     <!-- A user module's screens. Everything inside is built by renderModuleScreen() from the
          module's declared blocks, using this panel's own classes — a module ships a description
          of a screen, never markup, so it cannot draw something that does not belong here. -->
@@ -999,11 +1908,17 @@
     </div>
 
     <div id="view-agent" class="view hidden">
-      <section class="card">
-        <p class="label">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="4" y="8" width="16" height="12" rx="3" stroke="currentColor" stroke-width="2"/><path d="M12 4v4M9 14h.01M15 14h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="3" r="1.5" fill="currentColor"/></svg>
-          Channel
-        </p>
+      <section class="card agent-status-card">
+        <div class="agent-card-header">
+          <p class="label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="4" y="8" width="16" height="12" rx="3" stroke="currentColor" stroke-width="2"/><path d="M12 4v4M9 14h.01M15 14h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="3" r="1.5" fill="currentColor"/></svg>
+            AllCrew Channel
+          </p>
+          <a class="agent-mirror-link hidden" id="agent-mirror-link" target="_blank" rel="noopener noreferrer" aria-label="Open web mirror in browser">
+            <span>Web mirror</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 5h10v10M19 5 8 16M16 19H5V8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+        </div>
         <div class="agent-state">
           <span class="agent-dot" id="agent-dot"></span>
           <span id="agent-state-text">off</span>
@@ -1012,56 +1927,49 @@
         <p class="agent-hint" id="agent-note">While this is off, nothing outside Figma can read this file.</p>
       </section>
 
-      <section class="card">
+      <section class="card agent-bridge-card">
         <p class="label">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 17l6-5-6-5M12 19h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           1 &middot; Run the bridge
+          <button class="info-tip" type="button" aria-label="Bridge setup help" data-tip="Download the bundled Node 18+ bridge, run the command, then pair in Settings. It creates a local secret and can keep the agent skill current. The listener requires the Figma desktop app. No Figma API token is needed for plugin operations.">i</button>
         </p>
         <button class="btn ghost" id="agent-dl-bridge" type="button">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
           Download bridge.mjs
         </button>
-        <div class="agent-cmd">
+        <div class="agent-cmd agent-command-line">
           <pre class="code" id="agent-bridge-cmd" tabindex="0"></pre>
           <button class="icon-btn" id="agent-copy-cmd" type="button" title="Copy" aria-label="Copy the bridge command">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           </button>
         </div>
-        <p class="agent-hint">One Node script, nothing to install &mdash; it ships inside this plugin, so it always matches. Needs Node 18+. The command above assumes your Downloads folder.</p>
-        <p class="agent-hint"><b>--install-skill</b> keeps the &ldquo;teach the agent&rdquo; document fresh on disk by itself: <code>~/.claude/skills/altery-figma-listener/SKILL.md</code> for Claude Code, and an agent-neutral copy at <code>~/.altery/SKILL.md</code> for anything else &mdash; point any other CLI&rsquo;s standing-instructions mechanism at that file, or at <code>GET /skill</code>. Own paths: <code>--install-skill=path,path</code>. Drop the flag and the bridge writes nothing.</p>
-        <p class="agent-hint">It mints its own secret into <code>~/.altery/agent-secret</code> and opens a five-minute pairing window &mdash; press <b>Pair with bridge</b> above. <b>Everyone does this once on their own machine:</b> no secret travels with the plugin, so there is nothing to hand out and nothing to rotate for the team.</p>
-        <p class="agent-hint"><b>Desktop app only.</b> Figma in a browser blocks calls to your own machine, so the channel cannot reach the bridge there. After a plugin update, restart the bridge &mdash; this screen says so itself if the two fall out of step.</p>
-        <p class="agent-hint"><b>No Figma API token anywhere.</b> The channel goes through this plugin, so nobody needs a personal access token &mdash; which matters because an org admin can forbid creating one. Comments, version history and the audit log are the exception: they exist only in Figma's REST API, are out of reach from here, and do need a token.</p>
-        <hr class="agent-rule" />
-        <p class="agent-hint"><b>Prefer an MCP client?</b> Optional &mdash; skip it if your agent already uses the skill above. This second script lets an MCP client (Claude Desktop, Cursor, Codex) drive the open file with no <code>curl</code> and no skill to paste: it is a front for the same bridge, so keep the bridge running too.</p>
+        <div class="agent-separator" aria-hidden="true"><span></span><i>or</i><span></span></div>
         <button class="btn ghost" id="agent-dl-mcp" type="button">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
           Download mcp.mjs
         </button>
-        <p class="agent-hint">Save it, then add this to your MCP client's config (the path is wherever you saved it):</p>
-        <div class="agent-cmd">
-          <pre class="code" id="agent-mcp-cfg" tabindex="0">{ "mcpServers": { "altery-figma": {
+        <div class="agent-cmd agent-mcp-config">
+          <pre class="code" id="agent-mcp-cfg" tabindex="0">{ "mcpServers": { "allcrew-channel": {
     "command": "node",
     "args": ["~/Downloads/mcp.mjs"] } } }</pre>
           <button class="icon-btn" id="agent-copy-mcp" type="button" title="Copy" aria-label="Copy the MCP config">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           </button>
         </div>
-        <p class="agent-hint">It reuses the secret the bridge minted, so there is nothing else to configure. The file surfaces every op as its own tool, and re-lists itself when you open, close or re-gate a file.</p>
       </section>
 
-      <section class="card">
+      <section class="card agent-skill-card">
         <p class="label">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5zM8 8h7M8 11.5h5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          2 &middot; Teach the agent &mdash; paste once
+          2 &middot; Teach the agent
+          <button class="info-tip" type="button" aria-label="Agent skill help" data-tip="Copy this generated skill into the project your agent works in. It reflects the live operation list and can also be refreshed from GET /skill.">i</button>
         </p>
-        <div class="agent-cmd">
+        <div class="agent-cmd agent-skill-content">
           <pre class="code agent-skill" id="agent-skill" tabindex="0"></pre>
           <button class="icon-btn" id="agent-copy-skill" type="button" title="Copy" aria-label="Copy the skill">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           </button>
         </div>
-        <p class="agent-hint">Save as <code>.claude/skills/altery-figma-listener/SKILL.md</code> in the project your agent works in &mdash; Claude Code picks it up from then on, no re-explaining. Any other CLI: paste it wherever that tool reads standing instructions. It regenerates from the live op list &mdash; and if you start the bridge with <code>--install-skill</code>, it keeps <code>~/.claude/skills/altery-figma-listener/SKILL.md</code> current by itself, so this paste happens zero times instead of once. Agents can also refresh their copy from <code>GET /skill</code>.</p>
       </section>
     </div>
 
@@ -1206,6 +2114,20 @@
           <span class="set-text"><b>Theme attribute</b><i>Empty = auto &middot; selector that switches themes</i></span>
           <input id="set-theme-attr" class="set-input" type="text" placeholder="auto" spellcheck="false" aria-label="Theme attribute" />
         </div>
+        <div class="theme-merge-editor hidden" id="theme-merge-editor">
+          <div class="theme-merge-intro">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 6h6v6H4zM14 12h6v6h-6zM10 9h4M12 9v6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="set-text"><b>Theme collections</b><i>Free-plan workaround: combine single-mode collections into one exported structure. Repeat the structure name for more themes; the first row is the default theme.</i></span>
+          </div>
+          <div class="theme-merge-table">
+            <div class="theme-merge-head"><span>Structure</span><span>Collection</span><span>Theme</span><span></span></div>
+            <div id="theme-merge-rows"></div>
+          </div>
+          <div class="theme-merge-actions">
+            <button class="btn ghost" id="theme-merge-add" type="button">Add theme row</button>
+            <p class="theme-merge-empty" id="theme-merge-empty">No collection merges configured.</p>
+          </div>
+        </div>
         <div class="set-row">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
           <span class="set-text"><b>Collection roles</b><i><code>Mesure: spacing</code> &middot; classify a whole collection when its variables are unscoped</i></span>
@@ -1310,10 +2232,10 @@
         </div>
         <div class="set-field">
           <label>Receiver endpoint <code>POST</code></label>
-          <input id="set-dlv-endpoint" type="text" spellcheck="false" autocomplete="off" placeholder="https://host.ts.net/altery-tokens" aria-label="Delivery endpoint" />
+          <input id="set-dlv-endpoint" type="text" spellcheck="false" autocomplete="off" placeholder="https://host.ts.net/allcrew-channel-tokens" aria-label="Delivery endpoint" />
         </div>
         <div class="set-field">
-          <label>Shared secret <code>x-altery-secret</code></label>
+          <label>Shared secret <code>x-allcrew-channel-secret</code></label>
           <input id="set-dlv-secret" type="password" spellcheck="false" autocomplete="off" placeholder="(must match the receiver)" aria-label="Delivery secret" />
         </div>
         <label class="set-row" data-needs-endpoint for="set-dlv-on-export">
@@ -1334,24 +2256,10 @@
         </div>
         <div id="mod-settings-blocks"></div>
 
-        <!-- Modules a person installed, as opposed to the targets that shipped with the plugin.
-             Everything here is derived from the file: what it may run comes out of its steps, not
-             out of anything it claims about itself. -->
-        <div class="set-section">
-          <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><path d="M17.5 14v7M14 17.5h7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-          <span>Modules</span>
-        </div>
-        <div id="mods-list"></div>
-        <div class="rmp-drop" id="mods-drop">
-          <input type="file" id="mods-file" accept=".json,application/json" hidden />
-          <b>Drop a module file, or click to choose</b>
-          <i>Nothing is installed until you have seen what it may run. A module is a form and a few steps over commands this plugin already has &mdash; it cannot reach anything the panel could not.</i>
-        </div>
-        <p class="sec-hint hidden" id="mods-note"></p>
 
         <div class="set-section" data-needs-target="agent">
           <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="4" y="8" width="16" height="12" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 4v4M9 14h.01M15 14h.01" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="3" r="1.4" fill="currentColor"/></svg>
-          <span>Agent listener</span>
+          <span>AllCrew Channel listener</span>
           <span class="sec-hint">local bridge &middot; off until you allow it</span>
         </div>
         <div class="set-field" data-needs-target="agent">
@@ -1359,8 +2267,8 @@
           <input id="set-agent-endpoint" type="text" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:8788" aria-label="Agent bridge URL" />
         </div>
         <div class="set-field" data-needs-target="agent">
-          <label>Shared secret <code>x-altery-secret</code></label>
-          <input id="set-agent-secret" type="password" spellcheck="false" autocomplete="off" placeholder="(must match ALTERY_AGENT_SECRET)" aria-label="Agent bridge secret" />
+          <label>Shared secret <code>x-allcrew-channel-secret</code></label>
+          <input id="set-agent-secret" type="password" spellcheck="false" autocomplete="off" placeholder="(must match ALLCREW_CHANNEL_AGENT_SECRET)" aria-label="Agent bridge secret" />
         </div>
         <label class="set-row" data-needs-target="agent" data-needs-agent-endpoint for="set-agent-read">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.6" stroke="currentColor" stroke-width="1.6"/></svg>
@@ -1424,7 +2332,263 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
   <script>
 
+      // ── Live browser client ─────────────────────────────────────────────────────────
+      // In Figma, parent.postMessage crosses into the plugin sandbox. At /ui the same page
+      // runs in an ordinary browser, so that one seam is replaced with the local bridge while
+      // every component, handler and render function stays shared.
+      var BROWSER_MIRROR = !!window.__ALLCREW_BROWSER_MIRROR__
+      var NATIVE_WINDOW_POST_MESSAGE = window.postMessage.bind(window)
+      var MIRROR_VIEWER_ID = (function () {
+        if (!BROWSER_MIRROR) return ''
+        var saved = sessionStorage.getItem('allcrewMirrorViewer')
+        if (saved) return saved
+        var minted = 'viewer-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)
+        sessionStorage.setItem('allcrewMirrorViewer', minted)
+        return minted
+      })()
+      var MIRROR_CURSOR = 0
+      var MIRROR_GENERATION = ''
+      var MIRROR_REMOTE_ACTIVE_UNTIL = 0
+      var MIRROR_PLUGIN = {
+        clientId: 'panel-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10),
+        config: null,
+        started: false,
+        polling: false,
+        snapshot: {},
+      }
+      function mirrorRenderLink(url) {
+        var link = document.getElementById('agent-mirror-link')
+        if (!link) return
+        if (BROWSER_MIRROR || !url) {
+          link.removeAttribute('href')
+          link.classList.add('hidden')
+          return
+        }
+        link.href = url
+        link.classList.remove('hidden')
+      }
+
+      function mirrorStatus(text, cls) {
+        var status = document.getElementById('status')
+        if (!status) return
+        status.textContent = text
+        status.className = cls || ''
+      }
+
+      function mirrorBrowserFetch(path, init) {
+        var config = window.__ALLCREW_BROWSER_MIRROR__
+        var options = init || {}
+        var headers = options.headers || {}
+        headers['Content-Type'] = 'application/json'
+        headers['x-allcrew-channel-secret'] = config.secret
+        options.headers = headers
+        return fetch(config.base.replace(/\/+$/, '') + path, options)
+      }
+
+      function mirrorBrowserCommand(message) {
+        var config = window.__ALLCREW_BROWSER_MIRROR__
+        return mirrorBrowserFetch('/mirror/command', {
+          method: 'POST',
+          body: JSON.stringify({
+            target: config.target,
+            viewerId: MIRROR_VIEWER_ID,
+            message: message,
+          }),
+        })
+          .then(function (response) {
+            if (response.ok) return response.json()
+            return response.json().then(function (body) {
+              throw new Error(body.error || 'HTTP ' + response.status)
+            })
+          })
+          .catch(function (error) {
+            mirrorStatus('Browser mirror: ' + error.message, 'err')
+          })
+      }
+
+      function mirrorDispatch(message) {
+        window.dispatchEvent(new MessageEvent('message', {
+          data: { pluginMessage: message },
+          origin: location.origin,
+        }))
+      }
+
+      function mirrorBrowserPoll() {
+        if (!BROWSER_MIRROR) return
+        var config = window.__ALLCREW_BROWSER_MIRROR__
+        mirrorBrowserFetch(
+          '/mirror/events?target=' + encodeURIComponent(config.target) +
+            '&viewerId=' + encodeURIComponent(MIRROR_VIEWER_ID) +
+            '&cursor=' + MIRROR_CURSOR +
+            '&generation=' + encodeURIComponent(MIRROR_GENERATION),
+          { method: 'GET' }
+        )
+          .then(function (response) {
+            if (!response.ok) {
+              return response.json().then(function (body) {
+                throw new Error(body.error || 'HTTP ' + response.status)
+              })
+            }
+            return response.json()
+          })
+          .then(function (body) {
+            if (body.generation && body.generation !== MIRROR_GENERATION) {
+              MIRROR_GENERATION = body.generation
+              MIRROR_CURSOR = 0
+            }
+            var events = body.events || []
+            for (var i = 0; i < events.length; i++) {
+              MIRROR_CURSOR = Math.max(MIRROR_CURSOR, events[i].seq || 0)
+              mirrorDispatch(events[i].message)
+            }
+            setTimeout(mirrorBrowserPoll, events.length ? 0 : 80)
+          })
+          .catch(function (error) {
+            mirrorStatus('Browser mirror disconnected: ' + error.message, 'err')
+            setTimeout(mirrorBrowserPoll, 1500)
+          })
+      }
+
+      function mirrorPluginFetch(path, init) {
+        var config = MIRROR_PLUGIN.config
+        if (!config) return Promise.reject(new Error('mirror is not configured'))
+        var options = init || {}
+        var headers = options.headers || {}
+        headers['Content-Type'] = 'application/json'
+        headers['x-allcrew-channel-secret'] = config.secret
+        options.headers = headers
+        return fetch(config.endpoint.replace(/\/+$/, '') + path, options)
+      }
+
+      function mirrorSnapshot() {
+        return Object.keys(MIRROR_PLUGIN.snapshot).map(function (type) {
+          return MIRROR_PLUGIN.snapshot[type]
+        })
+      }
+
+      function mirrorPluginHello() {
+        if (BROWSER_MIRROR || !MIRROR_PLUGIN.config) return
+        var config = MIRROR_PLUGIN.config
+        if (!config.endpoint || !config.secret || !config.file || !config.read || !config.write) {
+          if (MIRROR_PLUGIN.started) {
+            mirrorPluginFetch('/mirror/plugin/bye', {
+              method: 'POST',
+              body: JSON.stringify({ clientId: MIRROR_PLUGIN.clientId }),
+            }).catch(function () {})
+          }
+          MIRROR_PLUGIN.started = false
+          MIRROR_PLUGIN.polling = false
+          mirrorRenderLink('')
+          return
+        }
+        mirrorPluginFetch('/mirror/plugin/hello', {
+          method: 'POST',
+          body: JSON.stringify({
+            clientId: MIRROR_PLUGIN.clientId,
+            file: config.file,
+            gates: { read: true, write: true },
+            source: document.documentElement.outerHTML,
+            snapshot: mirrorSnapshot(),
+          }),
+        })
+          .then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status)
+            return response.json()
+          })
+          .then(function (hello) {
+            MIRROR_PLUGIN.started = true
+            mirrorRenderLink(hello.url || '')
+            if (!MIRROR_PLUGIN.polling) {
+              MIRROR_PLUGIN.polling = true
+              mirrorPluginPoll()
+            }
+            if (hello.url) agentStatus('Live browser UI · ' + AGENT.ops.length + ' ops', 'ok')
+          })
+          .catch(function () {
+            mirrorRenderLink('')
+            MIRROR_PLUGIN.started = false
+            setTimeout(mirrorPluginHello, 1500)
+          })
+      }
+
+      function mirrorPluginPoll() {
+        if (BROWSER_MIRROR || !MIRROR_PLUGIN.started) {
+          MIRROR_PLUGIN.polling = false
+          return
+        }
+        mirrorPluginFetch(
+          '/mirror/plugin/poll?clientId=' + encodeURIComponent(MIRROR_PLUGIN.clientId),
+          { method: 'GET' }
+        )
+          .then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status)
+            return response.json()
+          })
+          .then(function (body) {
+            var commands = body.commands || []
+            for (var i = 0; i < commands.length; i++) {
+              MIRROR_REMOTE_ACTIVE_UNTIL = Date.now() + 10 * 60 * 1000
+              parent.postMessage({ pluginMessage: commands[i].message }, '*')
+            }
+            mirrorPluginPoll()
+          })
+          .catch(function () {
+            MIRROR_PLUGIN.started = false
+            MIRROR_PLUGIN.polling = false
+            setTimeout(mirrorPluginHello, 1500)
+          })
+      }
+
+      function mirrorPluginEvent(message) {
+        if (BROWSER_MIRROR) return
+        MIRROR_PLUGIN.snapshot[message.type || ('event-' + Date.now())] = message
+        if (message.type === 'EXPORT_OPTIONS' && message.options && message.options.agent) {
+          MIRROR_PLUGIN.config = {
+            endpoint: message.options.agent.endpoint || '',
+            secret: message.options.agent.secret || '',
+            read: message.options.agent.read === true,
+            write: message.options.agent.write === true,
+            file: '',
+          }
+          mirrorPluginHello()
+        } else if (message.type === 'AGENT_GATES' && MIRROR_PLUGIN.config) {
+          if (typeof message.file === 'string' && message.file) MIRROR_PLUGIN.config.file = message.file
+          MIRROR_PLUGIN.config.read = message.read === true
+          MIRROR_PLUGIN.config.write = message.write === true
+          mirrorPluginHello()
+        }
+        if (!MIRROR_PLUGIN.started) return
+        mirrorPluginFetch('/mirror/plugin/event', {
+          method: 'POST',
+          body: JSON.stringify({ clientId: MIRROR_PLUGIN.clientId, message: message }),
+        }).catch(function () {})
+      }
+
+      function mirrorOwnsSideEffects() {
+        return BROWSER_MIRROR || Date.now() > MIRROR_REMOTE_ACTIVE_UNTIL
+      }
+
+      if (BROWSER_MIRROR) {
+        document.documentElement.classList.add('browser-mirror')
+        window.postMessage = function (payload, targetOrigin, transfer) {
+          if (payload && payload.pluginMessage) {
+            mirrorBrowserCommand(payload.pluginMessage)
+            return
+          }
+          return NATIVE_WINDOW_POST_MESSAGE(payload, targetOrigin, transfer)
+        }
+        window.addEventListener('load', function () {
+          mirrorStatus('Connected to live Figma UI', 'ok')
+          mirrorBrowserPoll()
+        })
+      }
+      // ── end Live browser client ─────────────────────────────────────────────────────
+
       function buildAndDownload(files) {
+        if (!mirrorOwnsSideEffects()) {
+          setExportProgress(100, 'ready in live browser')
+          return Promise.resolve()
+        }
         var zip = new JSZip()
         Object.keys(files).forEach(function (path) {
           zip.file(path, files[path])
@@ -1447,7 +2611,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           })
       }
 
-      // REFORM phase 8: POST the built zip to the configured receiver (`altery-dj receive`).
+      // REFORM phase 8: POST the built zip to the configured receiver (`allcrew-channel receive`).
       // Runs after the download so a dead endpoint can never cost the user the export itself.
       function deliverZip(blob) {
         var delivery = OPTIONS && OPTIONS.delivery
@@ -1456,7 +2620,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (el) { el.textContent = 'Delivering to ' + delivery.endpoint + '…'; el.className = '' }
         return fetch(delivery.endpoint, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/zip', 'X-Altery-Secret': delivery.secret || '' },
+          headers: { 'Content-Type': 'application/zip', 'X-AllCrew-Channel-Secret': delivery.secret || '' },
           body: blob,
         })
           .then(function (response) {
@@ -1651,9 +2815,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // pipeline: the persisted TargetId stays 'django' and `targetOptions.platform` decides
       // the emitted package shape. These two map OPTIONS ↔ the picker's display value.
       function targetDisplayValue() {
-        if (!OPTIONS) return 'django'
+        if (PAGE_TARGET) return PAGE_TARGET
+        if (!OPTIONS) return 'agent'
         if (OPTIONS.target === 'django' && OPTIONS.targetOptions && OPTIONS.targetOptions.platform === 'tauri') return 'tauri'
-        return OPTIONS.target || 'django'
+        return OPTIONS.target || 'agent'
       }
       function syncTargetSelect() {
         var el = document.getElementById('target-select')
@@ -1702,6 +2867,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       var OPTIONS = null
       var PRESETS = []
       var USER_PRESETS = []
+      var THEME_COLLECTION_CANDIDATES = []
+      var THEME_COLLECTIONS_LOADING = false
 
       function allPresets() {
         return PRESETS.concat(USER_PRESETS)
@@ -1714,22 +2881,37 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // VIEW tracks the current page so a target change re-applies visibility for THAT page
       // instead of unconditionally revealing the dashboards (the old settings-page nav bug).
       var VIEW = 'main'
+      var PAGE_TARGET = null
       /** Which user module the picker is pointed at, or null for a native target. */
       var MODULE_TARGET = null
 
       function show(view) {
         VIEW = view
         var settings = view === 'settings'
-        var target = MODULE_TARGET ? 'module:' + MODULE_TARGET : (OPTIONS && OPTIONS.target) || 'django'
+        var target = PAGE_TARGET || (MODULE_TARGET ? 'module:' + MODULE_TARGET : (OPTIONS && OPTIONS.target) || 'agent')
         document.getElementById('view-main').classList.toggle('hidden', settings || target !== 'django')
         document.getElementById('view-design-tokens').classList.toggle('hidden', settings || target !== 'design-tokens')
         document.getElementById('view-ds-tools').classList.toggle('hidden', settings || target !== 'ds-tools')
         document.getElementById('view-agent').classList.toggle('hidden', settings || target !== 'agent')
+        document.getElementById('view-sdk-builder').classList.toggle('hidden', settings || target !== 'sdk-builder')
+        document.getElementById('view-modules').classList.toggle('hidden', settings || target !== 'modules')
         // A module's own target id is `module:<id>` — the picker's value carries which one.
         document.getElementById('view-module').classList.toggle('hidden', settings || target.slice(0, 7) !== 'module:')
         document.getElementById('view-settings').classList.toggle('hidden', !settings)
-        // Hidden for Settings, and for a module: the footer is the export pipeline's own.
-        document.querySelector('footer').classList.toggle('hidden', settings || Boolean(MODULE_TARGET))
+        if (settings && !THEME_COLLECTIONS_LOADING) {
+          THEME_COLLECTIONS_LOADING = true
+          parent.postMessage({ pluginMessage: { type: 'LIST_VARIABLE_COLLECTIONS' } }, '*')
+        }
+        // DS Tools has the compact status-only footer from its own mockup; export targets keep
+        // the 119px action footer.
+        var footer = document.querySelector('footer')
+        var compactDsFooter = !settings && target === 'ds-tools'
+        footer.classList.toggle('ds-tools-footer', compactDsFooter)
+        document.body.classList.toggle('ds-tools-mode', compactDsFooter)
+        footer.classList.toggle(
+          'hidden',
+          settings || target === 'agent' || target === 'modules' || target === 'sdk-builder' || Boolean(MODULE_TARGET)
+        )
         // A module's options live in Settings, under its own heading — and only while the
         // picker is pointed at it.
         var modSettings = document.getElementById('mod-settings-head')
@@ -1754,6 +2936,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         // other it is not persisted as one: `OPTIONS.target` keeps the last *native* choice, so
         // uninstalling a module cannot leave the panel pointed at a view that no longer exists.
         if (picked.slice(0, 7) === 'module:') {
+          PAGE_TARGET = null
           MODULE_TARGET = picked.slice(7)
           // Another target's chrome has no business here: the Django export footer was still
           // sitting under a module's screen, one click away from running an export nobody asked
@@ -1768,7 +2951,36 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           requestModuleScreen(MODULE_TARGET)
           return
         }
+        if (picked === 'sdk-builder') {
+          MODULE_TARGET = null
+          PAGE_TARGET = 'sdk-builder'
+          document.getElementById('export-btn').classList.add('hidden')
+          document.getElementById('pipeline').classList.add('hidden')
+          document.getElementById('dt-foot').classList.add('hidden')
+          Array.prototype.forEach.call(document.querySelectorAll('[data-needs-target]'), function (el) {
+            el.classList.add('hidden')
+          })
+          if (!MOD_AGENT_PROMPT && !MOD_SCHEMA_ACTION) {
+            MOD_SCHEMA_ACTION = 'sdk-prefetch'
+            parent.postMessage({ pluginMessage: { type: 'MODULE_SCHEMA' } }, '*')
+          }
+          show(VIEW)
+          return
+        }
+        if (picked === 'modules') {
+          MODULE_TARGET = null
+          PAGE_TARGET = 'modules'
+          document.getElementById('export-btn').classList.add('hidden')
+          document.getElementById('pipeline').classList.add('hidden')
+          document.getElementById('dt-foot').classList.add('hidden')
+          Array.prototype.forEach.call(document.querySelectorAll('[data-needs-target]'), function (el) {
+            el.classList.add('hidden')
+          })
+          show(VIEW)
+          return
+        }
         MODULE_TARGET = null
+        PAGE_TARGET = null
         var target = picked === 'tauri' ? 'django' : picked
         OPTIONS.target = target
         if (picked === 'tauri') OPTIONS.targetOptions.platform = 'tauri'
@@ -1848,11 +3060,112 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         document.getElementById('preset-delete').classList.toggle('hidden', !isUserPreset(select.value))
       }
 
-      // Echo-protection (altery-figma-ds pattern): never write into the control being edited.
+      // Echo-protection (allcrew-channel pattern): never write into the control being edited.
       function setControl(id, prop, value) {
         var el = document.getElementById(id)
         if (el === document.activeElement) return
         el[prop] = value
+      }
+
+      function themeMergeGroups() {
+        if (!OPTIONS.themeMerges) OPTIONS.themeMerges = { groups: [] }
+        if (!Array.isArray(OPTIONS.themeMerges.groups)) OPTIONS.themeMerges.groups = []
+        return OPTIONS.themeMerges.groups
+      }
+
+      function persistThemeMergeTable() {
+        var groups = []
+        var byName = {}
+        Array.prototype.forEach.call(document.querySelectorAll('#theme-merge-rows .theme-merge-row'), function (row, rowIndex) {
+          var structure = row.querySelector('[data-field="structure"]').value.trim()
+          var collection = row.querySelector('[data-field="collection"]').value.trim()
+          var theme = row.querySelector('[data-field="theme"]').value.trim()
+          var key = structure ? structure.toLowerCase() : '__incomplete_' + rowIndex
+          if (!byName[key]) {
+            byName[key] = { name: structure, modes: [] }
+            groups.push(byName[key])
+          }
+          byName[key].modes.push({ collection: collection, name: theme })
+        })
+        OPTIONS.themeMerges = { groups: groups }
+        afterSettingsChange()
+      }
+
+      function renderThemeMergeTable() {
+        var host = document.getElementById('theme-merge-rows')
+        if (!host || !OPTIONS) return
+        host.innerHTML = ''
+        var groups = themeMergeGroups()
+        groups.forEach(function (group, groupIndex) {
+          ;(group.modes || []).forEach(function (mode, modeIndex) {
+            var row = document.createElement('div')
+            row.className = 'theme-merge-row'
+            row.dataset.group = groupIndex
+            row.dataset.mode = modeIndex
+
+            var structure = document.createElement('input')
+            structure.type = 'text'
+            structure.value = group.name || ''
+            structure.placeholder = 'Theme'
+            structure.dataset.field = 'structure'
+            structure.setAttribute('aria-label', 'Exported theme structure')
+
+            var collection = document.createElement('select')
+            collection.dataset.field = 'collection'
+            collection.setAttribute('aria-label', 'Source variable collection')
+            var placeholder = document.createElement('option')
+            placeholder.value = ''
+            placeholder.textContent = 'Choose collection'
+            collection.appendChild(placeholder)
+            var candidates = THEME_COLLECTION_CANDIDATES.slice()
+            if (mode.collection && !candidates.some(function (candidate) { return candidate.name === mode.collection })) {
+              candidates.push({ name: mode.collection, mode: mode.name || 'Mode 1' })
+            }
+            candidates.forEach(function (candidate) {
+              var option = document.createElement('option')
+              option.value = candidate.name
+              option.textContent = candidate.name
+              collection.appendChild(option)
+            })
+            collection.value = mode.collection || ''
+
+            var theme = document.createElement('input')
+            theme.type = 'text'
+            theme.value = mode.name || ''
+            theme.placeholder = 'Light'
+            theme.dataset.field = 'theme'
+            theme.setAttribute('aria-label', 'Exported theme name')
+
+            var remove = document.createElement('button')
+            remove.type = 'button'
+            remove.className = 'theme-merge-remove'
+            remove.setAttribute('aria-label', 'Remove theme row')
+            remove.textContent = '×'
+            remove.addEventListener('click', function () {
+              var current = themeMergeGroups()
+              current[groupIndex].modes.splice(modeIndex, 1)
+              if (current[groupIndex].modes.length === 0) current.splice(groupIndex, 1)
+              renderThemeMergeTable()
+              afterSettingsChange()
+            })
+
+            structure.addEventListener('change', persistThemeMergeTable)
+            collection.addEventListener('change', function () {
+              if (!theme.value || /^Theme \d+$/.test(theme.value)) {
+                var picked = THEME_COLLECTION_CANDIDATES.find(function (candidate) { return candidate.name === collection.value })
+                if (picked && picked.mode && !/^(Mode 1|Mode|Value|Default)$/i.test(picked.mode)) theme.value = picked.mode
+              }
+              persistThemeMergeTable()
+            })
+            theme.addEventListener('change', persistThemeMergeTable)
+            row.appendChild(structure)
+            row.appendChild(collection)
+            row.appendChild(theme)
+            row.appendChild(remove)
+            host.appendChild(row)
+          })
+        })
+        document.getElementById('theme-merge-empty').classList.toggle('hidden', host.children.length > 0)
       }
 
       function syncSettingsControls() {
@@ -1870,6 +3183,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('set-inline', 'checked', OPTIONS.tokens.inlinePrimitives)
         setControl('set-flatten', 'checked', OPTIONS.tokens.flattenAliases)
         setControl('set-theme-attr', 'value', OPTIONS.tokens.themeAttribute)
+        renderThemeMergeTable()
         setControl('set-collection-roles', 'value', OPTIONS.tokens.collectionRoles || '')
         setControl('set-emit-json', 'checked', OPTIONS.tokens.emitJson)
         setControl('set-emit-scss', 'checked', OPTIONS.tokens.emitScss)
@@ -1983,7 +3297,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
 
       // Each Settings control writes straight into OPTIONS. Text inputs debounce 350 ms
-      // (altery-figma-ds pattern) so we don't persist every keystroke.
+      // (allcrew-channel pattern) so we don't persist every keystroke.
       function bindSetting(id, apply) {
         var el = document.getElementById(id)
         var isText = el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'password')
@@ -2022,6 +3336,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       bindSetting('set-typo-scale-only', function (el) { OPTIONS.tokens.typoScaleOnly = el.checked })
       bindSetting('set-typo-shorthand', function (el) { OPTIONS.tokens.typoShorthand = el.checked })
       bindSetting('set-typo-tshirt', function (el) { OPTIONS.tokens.typoNaming = el.checked ? 'tshirt' : 'value' })
+      document.getElementById('theme-merge-add').addEventListener('click', function () {
+        var groups = themeMergeGroups()
+        var group = groups[groups.length - 1]
+        if (!group) {
+          group = { name: 'Theme', modes: [] }
+          groups.push(group)
+        }
+        group.modes.push({ collection: '', name: '' })
+        renderThemeMergeTable()
+      })
       bindSetting('set-lint-depth', function (el) {
         var depth = parseInt(el.value, 10)
         OPTIONS.lint = { maxNestingDepth: isFinite(depth) ? Math.min(32, Math.max(1, depth)) : 8 }
@@ -2761,6 +4085,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return out
       }
       function dtDownload(name, content, mime) {
+        if (!mirrorOwnsSideEffects()) return
         var blob = new Blob([content], { type: (mime || 'text/plain') + ';charset=utf-8' })
         var url = URL.createObjectURL(blob)
         var a = document.createElement('a')
@@ -2852,9 +4177,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function dtApplyResult(msg) {
         DT_SUMMARY = msg.summary
         DT_FILES = msg.files || {}
+        // Collection choices are loaded independently when Settings opens.
         var has = Object.keys(DT_FILES).length > 0
         document.getElementById('dt-zip').disabled = !has
         if (has) { dtRenderSummary(); dtRenderTabs(); dtRenderPreview() }
+        renderThemeMergeTable()
         dtRefreshGenCard()
         dtRefreshBpCard()
       }
@@ -3026,6 +4353,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           setHex(value)
         })
         label.addEventListener('input', function () {
+
           spec.label = this.value
           palChanged()
         })
@@ -3070,6 +4398,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         PAL.spectra.forEach(function (spec, i) { host.appendChild(palBuildRow(spec, i)) })
       }
 
+      function palSyncRangeVisual(input) {
+        if (!input) return
+        var min = parseFloat(input.min || '0')
+        var max = parseFloat(input.max || '100')
+        var value = parseFloat(input.value || String(min))
+        var progress = max === min ? 0 : Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100))
+        input.style.setProperty('--range-progress', progress + '%')
+        var output = document.getElementById(input.id + '-value')
+        if (output) {
+          output.value = input.value
+          var step = String(input.step || '')
+          var decimals = step.indexOf('.') >= 0 ? step.split('.')[1].length : 0
+          output.textContent = Number.isFinite(value) ? value.toFixed(decimals) : input.value
+        }
+      }
+
       function palSyncControls() {
         if (!PAL) return
         setControl('pal-steps', 'value', PAL.steps.join(', '))
@@ -3078,6 +4422,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('pal-lmin', 'value', PAL.lightnessMin)
         setControl('pal-curve', 'value', PAL.lightnessCurve)
         setControl('pal-chroma', 'value', PAL.chromaCurve)
+        palSyncRangeVisual(document.getElementById('pal-curve'))
+        palSyncRangeVisual(document.getElementById('pal-chroma'))
         setControl('pal-torsion', 'value', String(PAL.hueTorsion))
         Array.prototype.forEach.call(document.querySelectorAll('.pal-seg .seg'), function (button) {
           button.classList.toggle('active', button.getAttribute('data-formula') === PAL.formula)
@@ -3199,6 +4545,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         document.getElementById(id).addEventListener('input', function () {
           if (!PAL) return
           apply(this)
+          if (this.type === 'range') palSyncRangeVisual(this)
           palChanged()
         })
       }
@@ -3296,7 +4643,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (this.disabled) return
         var list = Object.keys(DT_FILES).map(function (n) { return { name: n, content: DT_FILES[n] } })
         var zip = zipStore(list)
-        dtDownload('altery-design-tokens.zip', zip, 'application/zip')
+        dtDownload('allcrew-channel-design-tokens.zip', zip, 'application/zip')
         var delivery = OPTIONS && OPTIONS.delivery
         if (delivery && delivery.endpoint) {
           var b64 = btoa(String.fromCharCode.apply(null, zip))
@@ -3356,7 +4703,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // Replaced at build time with the real agent/bridge.mjs (see build.mjs). It stays a
       // placeholder in the source tree so ui.html remains readable; an unbuilt ui.html simply
       // disables the download rather than handing someone an empty file.
-      var AGENT_BRIDGE_SOURCE = '__ALTERY_BRIDGE_SOURCE__'
+      var AGENT_BRIDGE_SOURCE = '__ALLCREW_CHANNEL_BRIDGE_SOURCE__'
 
       /* The bridge fingerprints its own file the same way; a mismatch means the running bridge
        * is not the one this plugin was built against. That is the single likeliest cause of
@@ -3372,14 +4719,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
 
       var AGENT_BRIDGE_FINGERPRINT = agentFingerprint(AGENT_BRIDGE_SOURCE)
-      var AGENT_BRIDGE_EMBEDDED = AGENT_BRIDGE_SOURCE.indexOf('altery-agent-bridge') !== -1
+      var AGENT_BRIDGE_EMBEDDED = AGENT_BRIDGE_SOURCE.indexOf('allcrew-channel-bridge') !== -1
       // The MCP front for the same bridge — an MCP client (Claude Desktop, Cursor) spawns it and
       // talks the one wire format they all speak, so no SKILL.md and no curl. Shipped the same
       // way as the bridge: inlined at build time, handed over as a download.
-      var AGENT_MCP_SOURCE = '__ALTERY_MCP_SOURCE__'
-      var AGENT_MCP_EMBEDDED = AGENT_MCP_SOURCE.indexOf('altery-agent-mcp') !== -1
-      var DELIVERY_RECEIVER_SOURCE = '__ALTERY_RECEIVER_SOURCE__'
-      var DELIVERY_RECEIVER_EMBEDDED = DELIVERY_RECEIVER_SOURCE.indexOf('altery-tokens-receiver') !== -1
+      var AGENT_MCP_SOURCE = '__ALLCREW_CHANNEL_MCP_SOURCE__'
+      var AGENT_MCP_EMBEDDED = AGENT_MCP_SOURCE.indexOf('allcrew-channel-mcp') !== -1
+      var DELIVERY_RECEIVER_SOURCE = '__ALLCREW_CHANNEL_RECEIVER_SOURCE__'
+      var DELIVERY_RECEIVER_EMBEDDED = DELIVERY_RECEIVER_SOURCE.indexOf('allcrew-channel-tokens-receiver') !== -1
 
       function agentOptions() {
         if (!OPTIONS) return null
@@ -3402,12 +4749,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var options = init || {}
         var headers = options.headers || {}
         headers['Content-Type'] = 'application/json'
-        headers['x-altery-secret'] = cfg.secret || ''
+        headers['x-allcrew-channel-secret'] = cfg.secret || ''
         options.headers = headers
         return fetch((cfg.endpoint || '').replace(/\/+$/, '') + path, options)
       }
 
       function agentApply() {
+        if (BROWSER_MIRROR) return
         var cfg = agentOptions()
         if (!cfg) return
         AGENT.generation++
@@ -3437,6 +4785,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
        * header the bridge requires.
        */
       function agentDisconnect(unloading) {
+        if (BROWSER_MIRROR) return
         var cfg = agentOptions()
         if (!cfg || !cfg.endpoint || !AGENT.session) return
         try {
@@ -3458,7 +4807,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       window.addEventListener('beforeunload', function () { agentDisconnect(true) })
 
       // The sandbox answers AGENT_SET_GATES with its op manifest; that manifest is exactly what
-      // the bridge serves to `altery-figma ops`, so registering it IS the handshake.
+      // the bridge serves to `allcrew-channel ops`, so registering it IS the handshake.
       function agentHandshake(msg) {
         AGENT.ops = msg.ops || []
         AGENT.commands = msg.commands || []
@@ -3468,6 +4817,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         // told the wrong thing would mislabel the file in every roster an agent reads.
         AGENT.hello = msg
         agentRenderView()
+        if (BROWSER_MIRROR) {
+          agentStatus('Live browser UI · ' + AGENT.ops.length + ' ops', 'ok')
+          return
+        }
         if (!msg.read && !msg.write) return
         var generation = AGENT.generation
         agentFetch('/plugin/hello', {
@@ -3504,13 +4857,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               // connect over it would be worse than saying what is wrong. But every surprising
               // result from here on has one likely cause, and this is where to name it.
               agentStatus(
-                'bridge is out of date — restart it with "Download bridge.mjs" from this screen, ' +
-                  'or from agent/bridge.mjs in a checkout. Connected as "' + AGENT.handle + '" anyway.',
+                'AllCrew Channel · bridge out of date — restart it with "Download bridge.mjs" from this screen, ' +
+                  'or from agent/bridge.mjs in a checkout.',
                 'warn'
               )
             } else {
               agentStatus(
-                'listening as "' + AGENT.handle + '" · ' + AGENT.ops.length + ' ops · ' +
+                'AllCrew Channel · listening · ' + AGENT.ops.length + ' ops · ' +
                   (msg.write ? 'read + write' : 'read only'),
                 'ok'
               )
@@ -3602,7 +4955,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // always has curl, and never has this repo's path.
       function agentSkillText() {
         var base = agentBase()
-        var auth = ' -H "x-altery-secret: $(cat ~/.altery/agent-secret)"'
+        var auth = ' -H "x-allcrew-channel-secret: $(cat ~/.allcrew-channel/agent-secret)"'
         var rows = (AGENT.ops || []).map(function (op) {
           var params = Object.keys(op.params || {}).map(function (name) {
             return op.params[name].required ? name + '!' : name
@@ -3650,8 +5003,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         return [
           '---',
-          'name: altery-figma-listener',
-          'description: Read and change the Figma file the designer has open right now — pages, frames, components, styles, variables, prototype flows, and the tokens every layer is bound to — through the Altery plugin. Use whenever a task names a screen, frame or component, asks what is selected, needs real design values instead of guesses, or asks for a change to the design system itself.',
+          'name: allcrew-channel-listener',
+          'description: Read and change the Figma file the designer has open right now — pages, frames, components, styles, variables, prototype flows, and the tokens every layer is bound to — through the AllCrew Channel plugin. Use whenever a task names a screen, frame or component, asks what is selected, needs real design values instead of guesses, or asks for a change to the design system itself.',
           '---',
           '',
           '# Figma — the file that is open right now',
@@ -3678,7 +5031,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           '',
           'This document itself is served at `GET /skill` — after a plugin update, refresh your',
           'copy from there instead of asking anyone to re-paste it. A bridge started with',
-          '`--install-skill` also keeps `~/.altery/SKILL.md` current — an agent-neutral copy any',
+          '`--install-skill` also keeps `~/.allcrew-channel/SKILL.md` current — an agent-neutral copy any',
           'tool can be pointed at.',
           '',
           '## Several files open at once',
@@ -3803,11 +5156,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           'only in the REST API, which does need a token (and the audit log needs an Enterprise',
           'admin one). The repo CLI covers those three, and only those three:',
           '',
-          '    altery-figma comments -k <file URL>     threads, replies grouped, resolved flagged',
-          '    altery-figma versions -k <file URL>     named versions separated from autosaves',
-          '    altery-figma activity --since 2026-08-01',
+          '    allcrew-channel comments -k <file URL>     threads, replies grouped, resolved flagged',
+          '    allcrew-channel versions -k <file URL>     named versions separated from autosaves',
+          '    allcrew-channel activity --since 2026-08-01',
           '',
-          'They read `$FIGMA_TOKEN`, else `~/.altery/figma-token`. If neither exists, the command',
+          'They read `$FIGMA_TOKEN`, else `~/.allcrew-channel/figma-token`. If neither exists, the command',
           'says so and stops. **Do not treat that as a step to walk the designer through** — ask',
           'first whether they can create a token at all, because an Organization admin is allowed',
           'to switch that off and then the page offers them nothing. Never substitute a guess',
@@ -3838,7 +5191,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           '  and a plan token of the REST API category has those endpoints switched off. It takes',
           '  a plan access token of the **Figma CLI** category (figma.com/developers/tokens →',
           '  Figma CLI tab; an organization admin creates it, 2FA required). Same file as above:',
-          '  `$FIGMA_TOKEN`, else `~/.altery/figma-token`.',
+          '  `$FIGMA_TOKEN`, else `~/.allcrew-channel/figma-token`.',
           '',
           "The plugin's React export writes these mapping files itself, one per generated",
           'component, so an exported repository arrives already connected.',
@@ -4022,13 +5375,75 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       agentBindCopy('agent-copy-mcp', function () { return document.getElementById('agent-mcp-cfg').textContent })
       agentBindCopy('agent-copy-skill', function () { return agentSkillText() })
 
+      /**
+       * The size past which the bridge will not accept a result body.
+       *
+       * `readBody` there destroys the socket at 4 MiB, this POST's rejection used to be
+       * swallowed, and the `pending` entry on the bridge stayed untouched — so the agent waited
+       * out the full 180-second ceiling and was told "no answer from <handle>". That is a lie
+       * about an op that RAN, SUCCEEDED and, if it was a write, COMMITTED. Measuring here and
+       * refusing with a reason is the difference between a caller that narrows its request and
+       * one that retries a write it cannot tell already landed.
+       *
+       * A little under the cap on purpose: the JSON envelope around the result counts too.
+       */
+      var AGENT_RESULT_CAP = 3 * 1024 * 1024
+
+      function agentDeliverResult(payload, fallbackFor) {
+        return agentFetch('/plugin/result', { method: 'POST', body: payload })
+          .catch(function (err) {
+            if (!fallbackFor) return
+            // One retry, carrying only the refusal. If even this cannot be delivered the poll
+            // loop reports the outage and the caller's timeout is then the honest answer.
+            return agentFetch('/plugin/result', {
+              method: 'POST',
+              body: JSON.stringify({
+                session: AGENT.session,
+                id: fallbackFor,
+                ok: false,
+                code: 'payload_too_large',
+                error:
+                  'the op ran and succeeded, but its answer could not be delivered: ' +
+                  ((err && err.message) || 'the bridge refused the body') +
+                  '. Narrow the request — most ops take a budget, a limit/offset page or a smaller subtree.'
+              })
+            }).catch(function () { /* nothing left to say it with */ })
+          })
+      }
+
       function agentHandleMessage(msg) {
+        if (BROWSER_MIRROR && msg.type === 'AGENT_RESPONSE') {
+          agentStatus(msg.op ? msg.op + (msg.ok ? ' — ok' : ' — ' + msg.error) : 'Agent response', msg.ok ? 'ok' : 'err')
+          return
+        }
         if (msg.type === 'AGENT_GATES') { agentHandshake(msg); return }
         if (msg.type === 'AGENT_RESPONSE') {
-          agentFetch('/plugin/result', {
-            method: 'POST',
-            body: JSON.stringify({ session: AGENT.session, id: msg.id, ok: msg.ok, result: msg.result, error: msg.error })
-          }).catch(function () { /* caller times out; the poll loop reports the outage */ })
+          var payload = JSON.stringify({
+            session: AGENT.session,
+            id: msg.id,
+            ok: msg.ok,
+            result: msg.result,
+            error: msg.error,
+            code: msg.code,
+            retryable: msg.retryable
+          })
+          if (msg.ok && payload.length > AGENT_RESULT_CAP) {
+            // Refused before it is sent: a body the bridge will destroy the socket over cannot
+            // report its own size, and the number is the one thing the caller needs.
+            agentDeliverResult(JSON.stringify({
+              session: AGENT.session,
+              id: msg.id,
+              ok: false,
+              code: 'payload_too_large',
+              error:
+                'the op ran and succeeded, but its answer is ' + Math.round(payload.length / 1024) +
+                ' KB — past the ' + Math.round(AGENT_RESULT_CAP / 1024) + ' KB the sandbox→bridge hop ' +
+                'carries. Narrow the request: most ops take a budget, a limit/offset page or a smaller subtree.'
+            }), null)
+            agentStatus(msg.op ? msg.op + ' — answer too large' : 'answer too large', 'err')
+            return
+          }
+          agentDeliverResult(payload, msg.id)
           return
         }
         if (msg.type === 'AGENT_ACTIVITY') {
@@ -4052,7 +5467,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
        * value; a button posts MODULE_RUN with its own index and the sandbox looks up what that
        * means. The panel never sends steps — it names which button was pressed.
        */
-      var MOD = { id: null, screens: {}, state: {}, view: {}, running: false, lastRun: null }
+      var MOD = { id: null, screens: {}, fields: {}, state: {}, secretsSet: [], view: {}, running: false, lastRun: null }
 
       function modEl(id) { return document.getElementById(id) }
 
@@ -4067,12 +5482,101 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return node
       }
 
-      /** `<b>label</b><i>hint</i>` — the shape every settings row in this panel uses. */
+      function makeInfoTip(text) {
+        var tip = modText('span', 'info-tip', 'i')
+        tip.tabIndex = 0
+        tip.setAttribute('role', 'button')
+        tip.setAttribute('aria-label', text)
+        tip.setAttribute('data-tip', text)
+        tip.addEventListener('click', function (event) {
+          event.preventDefault()
+          event.stopPropagation()
+        })
+        return tip
+      }
+
+      // One fixed-position bubble, positioned so the plugin window edge never clips a tip:
+      // it is measured, clamped inside the viewport horizontally, and flipped above the
+      // trigger when there is no room below.
+      var tipPop = null
+      var tipHost = null
+      function ensureTipPop() {
+        if (!tipPop) {
+          tipPop = document.createElement('div')
+          tipPop.className = 'tip-pop'
+          tipPop.setAttribute('role', 'tooltip')
+          document.body.appendChild(tipPop)
+        }
+        return tipPop
+      }
+      function placeTip(host) {
+        var text = host.getAttribute('data-tip')
+        if (!text) return
+        var pop = ensureTipPop()
+        tipHost = host
+        pop.textContent = text
+        pop.style.left = '0px'
+        pop.style.top = '0px'
+        pop.classList.add('show')
+        var margin = 8
+        var gap = 7
+        var vw = document.documentElement.clientWidth
+        var vh = document.documentElement.clientHeight
+        var anchor = host.getBoundingClientRect()
+        var box = pop.getBoundingClientRect()
+        var w = box.width
+        var h = box.height
+        // Horizontal: align to the trigger's left, then pull back inside the window.
+        var left = Math.min(anchor.left, vw - margin - w)
+        if (left < margin) left = margin
+        // Vertical: below by default; above when below would clip and there is room up top.
+        var top = anchor.bottom + gap
+        var above = anchor.top - gap - h
+        if (top + h > vh - margin && above >= margin) top = above
+        pop.style.left = Math.round(left) + 'px'
+        pop.style.top = Math.round(top) + 'px'
+      }
+      function hideTip(host) {
+        if (host && host !== tipHost) return
+        tipHost = null
+        if (tipPop) tipPop.classList.remove('show')
+      }
+      function tipHostFrom(target) {
+        return target && target.closest ? target.closest('.info-tip[data-tip]') : null
+      }
+      document.addEventListener('pointerover', function (event) {
+        var host = tipHostFrom(event.target)
+        if (host) placeTip(host)
+      })
+      document.addEventListener('pointerout', function (event) {
+        var host = tipHostFrom(event.target)
+        if (host && !(event.relatedTarget && host.contains(event.relatedTarget))) hideTip(host)
+      })
+      document.addEventListener('focusin', function (event) {
+        var host = tipHostFrom(event.target)
+        if (host) placeTip(host)
+      })
+      document.addEventListener('focusout', function (event) {
+        var host = tipHostFrom(event.target)
+        if (host) hideTip(host)
+      })
+      // A tip pinned to viewport coordinates would drift once the panel scrolls, so retire it.
+      window.addEventListener('scroll', function () { hideTip() }, true)
+
+      function installInfoTips() {
+        var selector = '.set-text > i, .gen-text > i:not([id]), .dl-note, .rmp-drop > i, .set-body-page > .set-hint'
+        Array.prototype.forEach.call(document.querySelectorAll(selector), function (node) {
+          var text = (node.textContent || '').trim()
+          if (text && node.parentNode) node.parentNode.replaceChild(makeInfoTip(text), node)
+        })
+      }
+
+      /** Compact label plus progressive help. */
       function modRowLabel(label, hint) {
         var span = document.createElement('span')
         span.className = 'set-text'
         span.appendChild(modText('b', null, label))
-        if (hint) span.appendChild(modText('i', null, hint))
+        if (hint) span.appendChild(makeInfoTip(hint))
         return span
       }
 
@@ -4094,6 +5598,35 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var line = modEl('mod-result-text')
         line.textContent = text
         line.style.color = isError ? 'var(--danger, #C4321A)' : ''
+      }
+      function renderModuleConfirmation(text, screen, block) {
+        var host = modEl('mod-result-detail')
+        var box = document.createElement('div')
+        box.className = 'module-confirm'
+        box.appendChild(modText('p', null, text))
+        var actions = document.createElement('div')
+        actions.className = 'module-json-actions'
+        var cancel = modText('button', 'btn ghost', 'Cancel')
+        cancel.type = 'button'
+        cancel.addEventListener('click', function () {
+          box.remove()
+          modShowResult('Cancelled — nothing ran past the confirmation.')
+        })
+        var proceed = modText('button', 'btn module-danger', 'Continue')
+        proceed.type = 'button'
+        proceed.addEventListener('click', function () {
+          MOD.running = true
+          box.remove()
+          modShowResult('Running…')
+          renderModuleScreen()
+          parent.postMessage({ pluginMessage: {
+            type: 'MODULE_RUN', id: MOD.id, screen: screen, block: block, confirm: true
+          } }, '*')
+        })
+        actions.appendChild(cancel)
+        actions.appendChild(proceed)
+        box.appendChild(actions)
+        host.appendChild(box)
       }
 
       /**
@@ -4157,29 +5690,70 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return parts.length > 0 ? parts.join(' · ') : String(reply.type || 'answered')
       }
 
+      function modScopeValue(path) {
+        var parts = String(path || '').split('.')
+        var current = Object.prototype.hasOwnProperty.call(MOD.view || {}, parts[0]) ? MOD.view : MOD.state
+        for (var i = 0; i < parts.length; i++) {
+          if (!current || typeof current !== 'object' || !Object.prototype.hasOwnProperty.call(current, parts[i])) return undefined
+          current = current[parts[i]]
+        }
+        return current
+      }
+
+      function modConditionMatches(condition) {
+        if (!condition) return true
+        var value = modScopeValue(condition.from)
+        if (Object.prototype.hasOwnProperty.call(condition, 'equals')) return value === condition.equals
+        if (Object.prototype.hasOwnProperty.call(condition, 'notEquals')) return value !== condition.notEquals
+        if (Object.prototype.hasOwnProperty.call(condition, 'oneOf')) return condition.oneOf.indexOf(value) >= 0
+        if (Object.prototype.hasOwnProperty.call(condition, 'truthy')) return Boolean(value) === condition.truthy
+        return (value !== undefined) === condition.exists
+      }
+
       function modBlockNode(block, index, screen) {
+        if (!modConditionMatches(block.when)) return null
+        var disabled = Boolean(block.disabledWhen && modConditionMatches(block.disabledWhen))
         switch (block.block) {
           case 'heading':
             return modText('p', 'label', block.text)
           case 'text':
             return modText('p', 'sec-hint', block.text)
-          case 'callout': {
-            var callout = modText('p', 'sec-hint', block.text)
-            // The module picks a tone, never a colour: the palette stays this panel's.
-            if (block.tone === 'warn') callout.style.color = 'var(--warn, #8A6100)'
-            return callout
-          }
+          case 'callout':
+            return modText('p', 'module-callout ' + (block.tone || 'info'), block.text)
           case 'field': {
             var row = document.createElement('div')
-            row.className = 'set-row'
-            row.appendChild(modRowLabel(block.label || block.bind, null))
-            var input = document.createElement('input')
+            row.className = block.multiline ? 'set-field' : 'set-row'
+            var field = (MOD.fields || {})[block.bind] || { type: 'string' }
+            var fieldLabel = block.label || field.label || block.bind
+            var secretIsSet = field.secret && (MOD.secretsSet || []).indexOf(block.bind) >= 0
+            if (block.multiline) {
+              row.appendChild(modText('label', null, fieldLabel))
+            } else {
+              row.appendChild(modRowLabel(fieldLabel, field.secret ? 'Write-only outside the sandbox and omitted from exports.' : null))
+            }
+            var input = document.createElement(block.multiline ? 'textarea' : 'input')
             input.className = 'set-input'
-            input.type = 'text'
-            input.value = MOD.state[block.bind] == null ? '' : String(MOD.state[block.bind])
-            if (block.placeholder) input.placeholder = block.placeholder
-            input.addEventListener('change', function () { modStateSet(block.bind, input.value) })
+            if (!block.multiline) input.type = field.secret ? 'password' : field.type === 'number' ? 'number' : 'text'
+            if (field.min !== undefined) input.min = field.min
+            if (field.max !== undefined) input.max = field.max
+            if (block.rows) input.rows = block.rows
+            input.value = field.secret ? '' : MOD.state[block.bind] == null ? '' : String(MOD.state[block.bind])
+            input.disabled = disabled
+            input.placeholder = secretIsSet ? '•••••• (set — type to replace)' : (block.placeholder || '')
+            input.addEventListener('change', function () {
+              if (field.secret && input.value === '') return
+              var value = field.type === 'number' ? Number(input.value) : input.value
+              if (field.type === 'number' && !Number.isFinite(value)) return
+              modStateSet(block.bind, value)
+            })
             row.appendChild(input)
+            if (secretIsSet) {
+              var clear = modText('button', 'btn ghost', 'Clear')
+              clear.type = 'button'
+              clear.disabled = disabled
+              clear.addEventListener('click', function () { modStateSet(block.bind, '') })
+              row.appendChild(clear)
+            }
             return row
           }
           case 'select': {
@@ -4188,6 +5762,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             srow.appendChild(modRowLabel(block.label || block.bind, null))
             var select = document.createElement('select')
             select.className = 'set-ctl'
+            select.disabled = disabled
             ;(block.options || []).forEach(function (option) {
               var el = document.createElement('option')
               el.value = option.value
@@ -4208,6 +5783,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             var box = document.createElement('input')
             box.type = 'checkbox'
             box.checked = MOD.state[block.bind] === true
+            box.disabled = disabled
             box.addEventListener('change', function () { modStateSet(block.bind, box.checked) })
             wrap.appendChild(box)
             wrap.appendChild(modText('span', 'track', ''))
@@ -4223,40 +5799,58 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             return vrow
           }
           case 'button': {
-            // Bare: the section's layout decides which row it lands in.
             var button = document.createElement('button')
-            button.className = 'btn primary'
+            button.className = 'btn ' + (block.look === 'secondary' ? 'ghost' : block.look === 'danger' ? 'module-danger' : 'primary')
             button.type = 'button'
             button.textContent = MOD.running ? 'Working…' : block.label
-            button.disabled = MOD.running
+            button.disabled = MOD.running || disabled
             button.addEventListener('click', function () { modRun(screen, index) })
             return button
           }
           case 'table': {
-            var rows = MOD.view[block.from]
+            var rows = modScopeValue(block.from)
             if (!Array.isArray(rows)) rows = (rows && Array.isArray(rows.rows)) ? rows.rows : null
             if (!rows) return modText('p', 'sec-hint', (block.label || block.from) + ' — nothing yet')
-            return modTable(block.label || block.from, rows)
+            return modTable(block.label || block.from, rows, block.columns, block.limit)
+          }
+          case 'code': {
+            var codeValue = block.from ? modScopeValue(block.from) : block.text
+            var code = typeof codeValue === 'string' ? codeValue : JSON.stringify(codeValue, null, 2)
+            var codeWrap = document.createElement('div')
+            if (block.label) codeWrap.appendChild(modText('p', 'label', block.label))
+            codeWrap.appendChild(modText('pre', 'module-code', code == null ? 'Nothing yet' : code))
+            return codeWrap
+          }
+          case 'list': {
+            var value = modScopeValue(block.from)
+            var items = Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : null
+            if (!items) return modText('p', 'sec-hint', (block.label || block.from) + ' — nothing yet')
+            var listWrap = document.createElement('div')
+            if (block.label) listWrap.appendChild(modText('p', 'label', block.label + ' · ' + items.length))
+            var list = document.createElement('ul')
+            list.className = 'module-list'
+            items.slice(0, block.limit || 40).forEach(function (item) {
+              list.appendChild(modText('li', null, typeof item === 'object' ? JSON.stringify(item) : item))
+            })
+            listWrap.appendChild(list)
+            return listWrap
           }
           default:
-            // Unreachable through the contract, which refuses unknown blocks at install — and
-            // said so rather than dropping them. Kept as a visible fallback anyway: a screen
-            // with a hole in it should say where.
             return modText('p', 'sec-hint', 'unsupported block: ' + String(block.block))
         }
       }
 
-      /** Rows are drawn from whatever keys the first few actually have — a module's table is a
-       * view of a command's reply, and this panel does not get to assume its columns. */
-      function modTable(label, rows) {
-        var shown = rows.slice(0, 40)
-        var columns = []
-        shown.forEach(function (row) {
-          if (!row || typeof row !== 'object') return
-          Object.keys(row).forEach(function (key) {
-            if (columns.indexOf(key) < 0 && columns.length < 6 && typeof row[key] !== 'object') columns.push(key)
+      function modTable(label, rows, requestedColumns, limit) {
+        var shown = rows.slice(0, limit || 40)
+        var columns = Array.isArray(requestedColumns) ? requestedColumns.slice(0, 6) : []
+        if (columns.length === 0) {
+          shown.forEach(function (row) {
+            if (!row || typeof row !== 'object') return
+            Object.keys(row).forEach(function (key) {
+              if (columns.indexOf(key) < 0 && columns.length < 6 && typeof row[key] !== 'object') columns.push(key)
+            })
           })
-        })
+        }
 
         var wrap = document.createElement('div')
         wrap.appendChild(modText('p', 'label', label + ' · ' + rows.length))
@@ -4276,9 +5870,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         })
         scroller.appendChild(table)
         wrap.appendChild(scroller)
-        if (rows.length > shown.length) {
-          wrap.appendChild(modText('p', 'sec-hint', 'showing ' + shown.length + ' of ' + rows.length))
-        }
+        if (rows.length > shown.length) wrap.appendChild(modText('p', 'sec-hint', 'showing ' + shown.length + ' of ' + rows.length))
         return wrap
       }
 
@@ -4310,7 +5902,21 @@ https://github.com/nodeca/pako/blob/main/LICENSE
        * To put a button in the middle of a screen, start a new section: that is what a heading
        * is for.
        */
-      var MOD_ORDER = { text: 0, callout: 0, field: 1, select: 1, toggle: 1, value: 2, table: 3, button: 4 }
+      var MOD_ORDER = { text: 0, callout: 0, field: 1, select: 1, toggle: 1, value: 2, list: 3, table: 3, code: 3, button: 4 }
+      var MOD_ICON_MARKS = {
+        module: '◇', palette: '◌', terminal: '>_', settings: '⌘', database: '▤',
+        document: '≡', code: '<>', play: '▷', check: '✓', warning: '!',
+      }
+
+      function modHeadingNode(heading, title) {
+        var node = document.createElement('p')
+        node.className = 'label'
+        if (heading && heading.icon) node.appendChild(modText('span', 'module-heading-icon', MOD_ICON_MARKS[heading.icon] || '◇'))
+        node.appendChild(document.createTextNode(title))
+        if (heading && heading.hint) node.appendChild(makeInfoTip(heading.hint))
+        return node
+      }
+
 
       function renderBlocksInto(host, blocks, screen, summary, fallbackTitle) {
         host.innerHTML = ''
@@ -4318,11 +5924,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
         // Split at headings. Everything before the first one is a section without a title.
         var sections = []
-        var current = { title: null, blocks: [] }
+        var current = { heading: null, blocks: [] }
         blocks.forEach(function (block, index) {
+          if (!modConditionMatches(block.when)) return
           if (block.block === 'heading') {
-            if (current.blocks.length > 0 || current.title) sections.push(current)
-            current = { title: block.text, blocks: [] }
+            if (current.blocks.length > 0 || current.heading) sections.push(current)
+            current = { heading: block, blocks: [] }
             return
           }
           current.blocks.push({ block: block, index: index })
@@ -4330,14 +5937,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         sections.push(current)
 
         sections.forEach(function (section, position) {
-          if (section.blocks.length === 0 && !section.title) return
+          if (section.blocks.length === 0 && !section.heading) return
           var card = document.createElement('section')
           card.className = 'card'
-          // Every card in this panel is titled, and an untitled one reads unmoored next to its
-          // neighbours — so a leading section with no heading of its own borrows the module's
-          // name, with the summary as its hint underneath.
-          var title = section.title || (position === 0 ? fallbackTitle : null)
-          if (title) card.appendChild(modText('p', 'label', title))
+          var title = section.heading ? section.heading.text : (position === 0 ? fallbackTitle : null)
+          if (title) card.appendChild(modHeadingNode(section.heading, title))
           if (position === 0 && summary) card.appendChild(modText('p', 'sec-hint', summary))
 
           var ordered = section.blocks.slice().sort(function (a, b) {
@@ -4373,6 +5977,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             // Both screens arrive together: `main` goes to the dashboard, `settings` to the
             // Settings sub-page, and neither depends on the other having been asked for.
             screens: msg.screens || {},
+            fields: msg.fields || {},
+            secretsSet: msg.secretsSet || [],
             name: msg.name,
             summary: msg.summary,
             state: msg.state || {},
@@ -4388,6 +5994,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         if (msg.type === 'MODULE_STATE' && msg.id === MOD.id) {
           MOD.state = msg.state || {}
+          MOD.secretsSet = msg.secretsSet || []
           renderModuleScreen()
           return
         }
@@ -4399,21 +6006,15 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           MOD.view = report.view || MOD.view
           MOD.lastRun = report
           if (report.needsConfirmation) {
-            // The sandbox stopped and asked; the same call goes back with the answer, so the
-            // decision is the human's and the steps are still the module's.
-            if (window.confirm(report.needsConfirmation)) {
-              MOD.running = true
-              parent.postMessage({ pluginMessage: {
-                type: 'MODULE_RUN', id: MOD.id, screen: msg.screen, block: msg.block, confirm: true
-              } }, '*')
-              modShowResult('Running…')
-              return
-            }
-            modShowResult('Cancelled — nothing ran past the confirmation.')
-          } else if (report.ok) {
-            // The headline is what it did, not how many steps it took to do it.
-            var calls = (report.steps || []).filter(function (step) { return step.call })
-            modShowResult(calls.map(function (step) { return step.call }).join(' → '))
+            modShowResult('Confirmation required')
+            renderRunDetail(report, before)
+            renderModuleConfirmation(report.needsConfirmation, msg.screen, msg.block)
+            renderModuleScreen()
+            return
+          }
+          if (report.ok) {
+            var calls = (report.steps || []).filter(function (step) { return step.call && !step.skipped })
+            modShowResult(calls.length > 0 ? calls.map(function (step) { return step.call }).join(' → ') : 'Done')
           } else {
             modShowResult(report.error || 'The run stopped.', true)
           }
@@ -4436,30 +6037,24 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         if (msg.type === 'MODULE_INSPECTED') {
           if (!MOD_PENDING) return
-          if (!modConsent(msg)) {
-            MOD_PENDING = null
-            modsNote('Not installed.')
-            return
-          }
-          parent.postMessage({ pluginMessage: {
-            type: 'MODULE_INSTALL', file: MOD_PENDING, replace: msg.installed === true
-          } }, '*')
-          MOD_PENDING = null
+          renderModuleReview(msg)
           return
         }
         if (msg.type === 'MODULE_INSTALLED') {
           MODULES = msg.modules || MODULES
+          MOD_PENDING = null
+          MOD_REVIEW = null
+          modEl('mods-review').classList.add('hidden')
           renderModulePicker()
           renderModuleList()
-          modsNote((msg.replaced ? 'Replaced ' : 'Installed ') + msg.id + '.')
+          modsNote((msg.replaced ? 'Updated ' : 'Connected ') + msg.id + '.')
           return
         }
         if (msg.type === 'MODULE_REJECTED') {
-          MOD_PENDING = null
-          var problems = (msg.problems || []).slice(0, 3).map(function (problem) {
-            return problem.path + ' — ' + problem.message
-          })
-          modsNote('Refused: ' + problems.join(' · '), true)
+          MOD_REVIEW = null
+          modEl('mods-review').classList.add('hidden')
+          renderModuleProblems(msg.problems || [])
+          modsNote('The module has ' + (msg.problems || []).length + ' problem(s). Fix them and validate again.', true)
           return
         }
         if (msg.type === 'MODULE_REMOVED') {
@@ -4471,6 +6066,24 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         if (msg.type === 'MODULE_FILE') {
           modSaveFile(msg.id, msg.file)
+          return
+        }
+        if (msg.type === 'MODULE_SCHEMA') {
+          MOD_SCHEMA = msg.schema
+          MOD_TEMPLATE = msg.template
+          MOD_AGENT_PROMPT = msg.agentPrompt || ''
+          if (MOD_SCHEMA_ACTION === 'template') {
+            modEl('mods-json').value = JSON.stringify(MOD_TEMPLATE, null, 2)
+            modsNote('Starter loaded. Change its id, name and screen, then validate it.')
+          } else if (MOD_SCHEMA_ACTION === 'schema') {
+            modDownloadJson('allcrew-channel.module.schema.json', MOD_SCHEMA)
+          } else if (MOD_SCHEMA_ACTION === 'sdk-prompt') {
+            sdkSetNote(
+              MOD_AGENT_PROMPT ? 'SDK brief loaded. Click again to copy it.' : 'This build has no SDK brief.',
+              MOD_AGENT_PROMPT ? '' : 'err'
+            )
+          }
+          MOD_SCHEMA_ACTION = null
           return
         }
         if (msg.type === 'MODULE_ERROR') {
@@ -4489,6 +6102,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
       function renderModulePicker() {
         var select = modEl('target-select')
+        var wanted = MODULE_TARGET ? 'module:' + MODULE_TARGET : select.value
         var group = document.getElementById('target-modules')
         if (group) group.parentNode.removeChild(group)
         var usable = MODULES.filter(function (entry) { return entry.active && entry.name })
@@ -4502,7 +6116,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           option.textContent = entry.name
           group.appendChild(option)
         })
-        select.appendChild(group)
+        select.insertBefore(group, document.getElementById('target-sdk'))
+        if (Array.prototype.some.call(select.options, function (option) { return option.value === wanted })) select.value = wanted
       }
 
       /* ---- installing, listing, removing ---- */
@@ -4518,7 +6133,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var host = modEl('mods-list')
         host.innerHTML = ''
         if (MODULES.length === 0) {
-          host.appendChild(modText('p', 'sec-hint', 'None installed.'))
+          host.appendChild(modText('p', 'module-empty', 'No user modules connected'))
           return
         }
 
@@ -4592,23 +6207,95 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         line.style.color = isError ? 'var(--danger, #C4321A)' : ''
       }
 
-      /** Consent is asked against the derived capability list, never against the file's own
-       * description of itself — and it is asked before anything is stored. */
-      function modConsent(info) {
-        var lines = ['Install "' + info.name + '" v' + info.version + '?', '']
-        if (info.summary) lines.push(info.summary, '')
-        if (info.installed) {
-          lines.push('Replaces the installed v' + (info.installedVersion || '?') + '. What it has stored is kept.', '')
-        }
-        lines.push('It will be able to run:')
-        ;(info.capabilities || []).forEach(function (cap) {
-          lines.push('  ' + (cap.access === 'write' ? '· writes: ' : '· reads:  ') + cap.command)
+      function renderModuleProblems(problems) {
+        var host = modEl('mods-problems')
+        host.innerHTML = ''
+        ;(problems || []).forEach(function (problem) {
+          host.appendChild(modText('li', null, (problem.path || 'Root') + ' — ' + problem.message))
         })
-        var writes = (info.capabilities || []).filter(function (cap) { return cap.access === 'write' })
-        if (writes.length > 0) lines.push('', 'It can change this document.')
-        lines.push('', 'Author: ' + (info.author || 'not stated') + ' — a label, not a verified identity.')
-        return window.confirm(lines.join('\n'))
+        host.classList.toggle('hidden', !problems || problems.length === 0)
       }
+
+      /** Inline consent against derived capabilities; the file cannot declare this list itself. */
+      function renderModuleReview(info) {
+        MOD_REVIEW = info
+        renderModuleProblems([])
+        modEl('mods-review-title').textContent = info.name
+        modEl('mods-review-meta').textContent =
+          info.id + ' · by ' + (info.author || 'unstated author') + ' (not a verified identity)'
+        modEl('mods-review-version').textContent = 'v' + info.version
+        modEl('mods-review-summary').textContent = info.summary || ''
+
+        var badges = modEl('mods-review-badges')
+        badges.innerHTML = ''
+        var writes = (info.capabilities || []).some(function (cap) { return cap.access === 'write' })
+        var badgeValues = [
+          { text: writes ? 'Can change the document' : 'Reads only', write: writes },
+          { text: (info.commands || []).length + ' agent command(s)' },
+          { text: (info.screens || []).join(' + ') + ' screen(s)' },
+        ]
+        badgeValues.forEach(function (value) {
+          badges.appendChild(modText('span', 'module-badge' + (value.write ? ' write' : ''), value.text))
+        })
+
+        var caps = modEl('mods-review-caps')
+        caps.innerHTML = ''
+        if ((info.capabilities || []).length === 0) {
+          caps.appendChild(modText('p', 'sec-hint', 'No plugin commands. This module only stores and displays its declared state.'))
+        } else {
+          info.capabilities.forEach(function (cap) {
+            var row = document.createElement('div')
+            row.className = 'module-cap'
+            row.appendChild(modText('span', 'module-permission' + (cap.access === 'write' ? ' write' : ''), cap.access))
+            row.appendChild(modText('code', null, cap.command))
+            row.appendChild(modText('small', null, cap.uses + ' use' + (cap.uses === 1 ? '' : 's')))
+            caps.appendChild(row)
+          })
+        }
+
+        var downgrade = info.downgrade === true
+        modEl('mods-downgrade-row').classList.toggle('hidden', !downgrade)
+        modEl('mods-downgrade').checked = false
+        modEl('mods-review-install').disabled = downgrade
+        modEl('mods-review-install').textContent = info.installed ? 'Update module' : 'Connect module'
+        modEl('mods-review').classList.remove('hidden')
+        modsNote(info.installed
+          ? 'Review the update from v' + info.installedVersion + ' to v' + info.version + '. Compatible state is kept.'
+          : 'Review every capability before connecting this module.')
+      }
+      var MOD_AGENT_PROMPT = ''
+
+
+      function sdkSetNote(text, cls) {
+        var note = document.getElementById('sdk-copy-note')
+        note.textContent = text || ''
+        note.className = cls || ''
+      }
+
+      function sdkCopyPrompt() {
+        if (!MOD_AGENT_PROMPT) {
+          MOD_SCHEMA_ACTION = 'sdk-prompt'
+          sdkSetNote('Loading the SDK contract…', '')
+          parent.postMessage({ pluginMessage: { type: 'MODULE_SCHEMA' } }, '*')
+          return
+        }
+        var text = MOD_AGENT_PROMPT
+        if (dtCopyText(text)) {
+          sdkSetNote('Copied. Paste it into your agent and describe the screen you need.', 'ok')
+          return
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            sdkSetNote('Copied. Paste it into your agent and describe the screen you need.', 'ok')
+          }, function () {
+            sdkSetNote('Copy failed. Try again from the Figma desktop app.', 'err')
+          })
+        } else {
+          sdkSetNote('Copy failed. Try again from the Figma desktop app.', 'err')
+        }
+      }
+
+      document.getElementById('sdk-copy-prompt').addEventListener('click', sdkCopyPrompt)
 
       modEl('mods-drop').addEventListener('click', function () { modEl('mods-file').click() })
       modEl('mods-drop').addEventListener('dragover', function (event) {
@@ -4625,42 +6312,92 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         modReadFile(this.files && this.files[0])
         this.value = ''
       })
+      modEl('mods-json-install').addEventListener('click', function () {
+        modInspectText(modEl('mods-json').value, 'pasted JSON')
+      })
+      modEl('mods-template').addEventListener('click', function () {
+        if (MOD_TEMPLATE) {
+          modEl('mods-json').value = JSON.stringify(MOD_TEMPLATE, null, 2)
+          modsNote('Starter loaded. Change its id, name and screen, then validate it.')
+          return
+        }
+        MOD_SCHEMA_ACTION = 'template'
+        parent.postMessage({ pluginMessage: { type: 'MODULE_SCHEMA' } }, '*')
+      })
+      modEl('mods-schema').addEventListener('click', function () {
+        if (MOD_SCHEMA) return modDownloadJson('allcrew-channel.module.schema.json', MOD_SCHEMA)
+        MOD_SCHEMA_ACTION = 'schema'
+        parent.postMessage({ pluginMessage: { type: 'MODULE_SCHEMA' } }, '*')
+      })
+      modEl('mods-review-cancel').addEventListener('click', function () {
+        MOD_PENDING = null
+        MOD_REVIEW = null
+        modEl('mods-review').classList.add('hidden')
+        modsNote('Review cancelled. Nothing was installed.')
+      })
+      modEl('mods-downgrade').addEventListener('change', function () {
+        modEl('mods-review-install').disabled = !this.checked
+      })
+      modEl('mods-review-install').addEventListener('click', function () {
+        if (!MOD_PENDING || !MOD_REVIEW) return
+        parent.postMessage({ pluginMessage: {
+          type: 'MODULE_INSTALL',
+          file: MOD_PENDING,
+          replace: MOD_REVIEW.installed === true,
+          allowDowngrade: modEl('mods-downgrade').checked,
+        } }, '*')
+        modsNote('Connecting ' + MOD_REVIEW.id + '…')
+      })
 
       var MOD_PENDING = null
+      var MOD_REVIEW = null
+      var MOD_SCHEMA = null
+      var MOD_TEMPLATE = null
+      var MOD_SCHEMA_ACTION = null
+
+      function modInspectText(text, label) {
+        var parsed
+        try {
+          parsed = JSON.parse(String(text))
+        } catch (error) {
+          renderModuleProblems([{ path: 'JSON', message: error.message }])
+          modsNote('That input is not valid JSON.', true)
+          return
+        }
+        MOD_PENDING = parsed
+        MOD_REVIEW = null
+        modEl('mods-review').classList.add('hidden')
+        renderModuleProblems([])
+        modsNote('Validating ' + label + '…')
+        parent.postMessage({ pluginMessage: { type: 'MODULE_INSPECT', file: parsed } }, '*')
+      }
 
       function modReadFile(file) {
         if (!file) return
         var reader = new FileReader()
-        reader.onload = function () {
-          var parsed
-          try {
-            parsed = JSON.parse(String(reader.result))
-          } catch (error) {
-            modsNote('That file is not JSON: ' + error.message, true)
-            return
-          }
-          // Inspected first: the sandbox validates and answers what it *would* be allowed to do,
-          // storing nothing. Consent then happens against that answer.
-          MOD_PENDING = parsed
-          modsNote('Checking ' + file.name + '…')
-          parent.postMessage({ pluginMessage: { type: 'MODULE_INSPECT', file: parsed } }, '*')
-        }
+        reader.onload = function () { modInspectText(reader.result, file.name) }
         reader.readAsText(file)
       }
 
-      function modSaveFile(id, file) {
-        var blob = new Blob([JSON.stringify(file, null, 1)], { type: 'application/json' })
+      function modDownloadJson(filename, file) {
+        var blob = new Blob([JSON.stringify(file, null, 2) + '\n'], { type: 'application/json' })
         var url = URL.createObjectURL(blob)
         var link = document.createElement('a')
         link.href = url
-        link.download = id + '.module.json'
+        link.download = filename
         document.body.appendChild(link)
         link.click()
         link.remove()
         URL.revokeObjectURL(url)
       }
 
+      function modSaveFile(id, file) {
+        modDownloadJson(id + '.module.json', file)
+      }
+
       parent.postMessage({ pluginMessage: { type: 'MODULES_LIST' } }, '*')
+      parent.postMessage({ pluginMessage: { type: 'MODULE_SCHEMA' } }, '*')
+      installInfoTips()
       // ── end User modules ─────────────────────────────────────────────────────────────
       // ── Remap ────────────────────────────────────────────────────────────────────────
       // The plan is rebuilt on the plugin side for every preview, so the UI keeps only what a
@@ -5123,7 +6860,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       rmpEl('rmp-csv').addEventListener('click', function () { rmpExport('csv') })
 
       // Both executors run the same code: this one hands the file to the sandbox, which owns
-      // the rewriter, and `altery-dj remap` runs the Python port of it over a repository.
+      // the rewriter, and `allcrew-channel remap` runs the Python port of it over a repository.
       var RMP_FILE_BUDGET = 2 * 1024 * 1024
 
       function rmpSendFiles(fileList) {
@@ -5137,7 +6874,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var budget = 0
         for (var i = 0; i < files.length; i++) budget += files[i].size
         if (budget > RMP_FILE_BUDGET) {
-          rmpText('rmp-result', 'That is more than 2 MB of files — run altery-dj remap over the repository instead.')
+          rmpText('rmp-result', 'That is more than 2 MB of files — run allcrew-channel remap over the repository instead.')
           return
         }
 
@@ -5235,6 +6972,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       onmessage = function (event) {
         var msg = event.data.pluginMessage
         if (!msg) return
+        mirrorPluginEvent(msg)
         if (msg.type === 'AGENT_GATES' || msg.type === 'AGENT_RESPONSE' || msg.type === 'AGENT_ACTIVITY') {
           agentHandleMessage(msg)
           return
@@ -5357,6 +7095,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           USER_PRESETS = msg.userPresets || []
           renderPresetOptions()
           applyExportOptions(msg.options)
+        } else if (msg.type === 'VARIABLE_COLLECTIONS') {
+          THEME_COLLECTIONS_LOADING = false
+          THEME_COLLECTION_CANDIDATES = (msg.collections || []).slice().sort(function (a, b) {
+            return a.name.localeCompare(b.name)
+          })
+          document.getElementById('theme-merge-editor').classList.toggle('hidden', !msg.singleModeOnly)
+          renderThemeMergeTable()
         } else if (msg.type === 'USER_PRESETS') {
           USER_PRESETS = msg.userPresets || []
           renderPresetOptions()
@@ -5538,7 +7283,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             r.components + ' components, ' + r.variants + ' variants' +
               (r.slots ? ', ' + r.slots + ' slots' : '') + ' — ' +
               (r.bound > 0 ? r.bound + ' bound to tokens' : 'using Bootstrap defaults (no matching tokens)') +
-              '. See the "Altery Bootstrap Kit" page.',
+              '. See the "AllCrew Channel Bootstrap Kit" page.',
             'ok'
           )
         } else if (msg.type === 'KIT_ERROR') {

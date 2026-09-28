@@ -1,7 +1,7 @@
-# Altery Token Receiver
+# AllCrew Channel Receiver
 
 Dependency-free Node.js HTTP server that receives a design-token package from the
-Altery Figma plugin and executes the requested delivery action — commit to git, open
+AllCrew Channel plugin and executes the requested delivery action — commit to git, open
 a PR, publish to npm, or write to a local folder.
 
 The plugin POSTs `{ files, target, route, options, meta }`; this script verifies the
@@ -18,7 +18,7 @@ Download receiver.mjs**, then
 
 ```bash
 node receiver.mjs
-# → listening on :8787, secret minted into ~/.altery/receiver-secret, pairing open 5 min
+# → listening on :8787, secret minted into ~/.allcrew-channel/receiver-secret, pairing open 5 min
 ```
 
 Press **Pair** in the plugin's Delivery settings and it fills in the endpoint and secret.
@@ -27,14 +27,14 @@ Health check (also reports whether the pairing window is open):
 
 ```bash
 curl http://localhost:8787
-# {"ok":true,"service":"altery-tokens-receiver","pairing":true}
+# {"ok":true,"service":"allcrew-channel-tokens-receiver","pairing":true}
 ```
 
 ---
 
 ## Secrets
 
-Each host mints its own on first run — 0600 under a 0700 `~/.altery/`. Nothing is baked
+Each host mints its own on first run — 0600 under a 0700 `~/.allcrew-channel/`. Nothing is baked
 into the plugin build and nothing is distributed, so ten designers end up with ten
 different secrets. Rotate one by deleting the file and restarting.
 
@@ -43,7 +43,7 @@ unauthenticated, bounded three ways: loopback only, five minutes from a hand-typ
 and closed by the first success. It grants nothing a local process could not get by reading
 the secret file directly.
 
-**Remote or shared hosts:** set `ALTERY_SECRET` yourself. The receiver uses it and opens no
+**Remote or shared hosts:** set `ALLCREW_CHANNEL_SECRET` yourself. The receiver uses it and opens no
 pairing window at all — pass `--pair` if you want one — and you type the same value into the
 plugin's Shared secret field. Never ship one secret to everyone: it cannot be rotated
 without a rebuild, and it is a key to every host running it.
@@ -54,11 +54,11 @@ without a rebuild, and it is a key to every host running it.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ALTERY_SECRET` | no | minted | Set it to manage the secret by hand; suppresses pairing |
-| `ALTERY_SECRET_FILE` | no | `~/.altery/receiver-secret` | Where a minted secret is stored |
+| `ALLCREW_CHANNEL_SECRET` | no | minted | Set it to manage the secret by hand; suppresses pairing |
+| `ALLCREW_CHANNEL_SECRET_FILE` | no | `~/.allcrew-channel/receiver-secret` | Where a minted secret is stored |
 | `PORT` | no | `8787` | HTTP port |
-| `ALTERY_FOLDER_BASE` | for `folder` target | — | Absolute base dir; `route.path` resolves under it |
-| `ALTERY_WORK_DIR` | no | `<tmp>/altery-tokens` | Scratch dir for git clones |
+| `ALLCREW_CHANNEL_FOLDER_BASE` | for `folder` target | — | Absolute base dir; `route.path` resolves under it |
+| `ALLCREW_CHANNEL_WORK_DIR` | no | `<tmp>/allcrew-channel-tokens` | Scratch dir for git clones |
 
 ---
 
@@ -66,7 +66,7 @@ without a rebuild, and it is a key to every host running it.
 
 | Target | What it does | Host requirements |
 |--------|-------------|-------------------|
-| `folder` | Writes files under `ALTERY_FOLDER_BASE/route.path` | Node only |
+| `folder` | Writes files under `ALLCREW_CHANNEL_FOLDER_BASE/route.path` | Node only |
 | `git` | Clones repo, commits, pushes to `route.branch` | `git` + SSH key / credential helper |
 | `pr` | Same as `git` but pushes a new branch and opens a PR | `git` + `gh` CLI (`gh auth login`) |
 | `npm` | Writes files, bumps patch version, runs `npm publish` | `npm login` or `~/.npmrc` token |
@@ -78,8 +78,8 @@ without a rebuild, and it is a key to every host running it.
 ### Developer machine (Tailscale)
 
 ```bash
-ALTERY_SECRET=your-secret \
-ALTERY_FOLDER_BASE=/path/to/tokens \
+ALLCREW_CHANNEL_SECRET=your-secret \
+ALLCREW_CHANNEL_FOLDER_BASE=/path/to/tokens \
 node receiver.mjs
 ```
 
@@ -99,11 +99,11 @@ npm install -g pm2
 cat > ecosystem.config.cjs <<'EOF'
 module.exports = {
   apps: [{
-    name: "altery-receiver",
+    name: "allcrew-channel-receiver",
     script: "receiver.mjs",
     env: {
-      ALTERY_SECRET: "your-secret-here",
-      ALTERY_FOLDER_BASE: "/srv/tokens",
+      ALLCREW_CHANNEL_SECRET: "your-secret-here",
+      ALLCREW_CHANNEL_FOLDER_BASE: "/srv/tokens",
       PORT: "8787"
     }
   }]
@@ -119,25 +119,25 @@ pm2 save && pm2 startup
 ### systemd
 
 ```ini
-# /etc/systemd/system/altery-receiver.service
+# /etc/systemd/system/allcrew-channel-receiver.service
 [Unit]
-Description=Altery token receiver
+Description=AllCrew Channel receiver
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/node /opt/altery/receiver.mjs
+ExecStart=/usr/bin/node /opt/allcrew-channel/receiver.mjs
 Restart=on-failure
 Environment=PORT=8787
-Environment=ALTERY_SECRET=your-secret-here
-Environment=ALTERY_FOLDER_BASE=/srv/tokens
-WorkingDirectory=/opt/altery
+Environment=ALLCREW_CHANNEL_SECRET=your-secret-here
+Environment=ALLCREW_CHANNEL_FOLDER_BASE=/srv/tokens
+WorkingDirectory=/opt/allcrew-channel
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
-systemctl enable --now altery-receiver
+systemctl enable --now allcrew-channel-receiver
 ```
 
 ---
@@ -154,13 +154,13 @@ CMD ["node", "receiver.mjs"]
 ```
 
 ```bash
-docker build -t altery-receiver .
+docker build -t allcrew-channel-receiver .
 docker run -d \
   -p 8787:8787 \
-  -e ALTERY_SECRET=your-secret \
-  -e ALTERY_FOLDER_BASE=/tokens \
+  -e ALLCREW_CHANNEL_SECRET=your-secret \
+  -e ALLCREW_CHANNEL_FOLDER_BASE=/tokens \
   -v /host/tokens:/tokens \
-  altery-receiver
+  allcrew-channel-receiver
 ```
 
 ---
@@ -191,7 +191,7 @@ jobs:
       - run: npx style-dictionary build
       - run: |
           git config user.name "tokens-bot"
-          git config user.email "tokens@altery.local"
+          git config user.email "tokens@allcrew-channel.local"
           git add -A && git diff --cached --quiet || git commit -m "chore: rebuild tokens"
           git push
 ```
@@ -212,9 +212,9 @@ jobs:
 
 | Symptom | Likely cause |
 |---------|-------------|
-| `401 bad or missing secret` | The plugin paired with a different receiver, or `ALTERY_SECRET` was set after pairing — re-pair, or align the two |
+| `401 bad or missing secret` | The plugin paired with a different receiver, or `ALLCREW_CHANNEL_SECRET` was set after pairing — re-pair, or align the two |
 | `pairing window is closed` | More than five minutes since the receiver started — restart it, or run `node receiver.mjs --pair` |
 | `git push` fails | Host git auth not configured for that remote |
 | `gh pr create` fails | `gh auth login` not done on the receiver host |
-| `folder target needs ALTERY_FOLDER_BASE` | Env var not set |
+| `folder target needs ALLCREW_CHANNEL_FOLDER_BASE` | Env var not set |
 | No changes committed | Tokens already up-to-date — not an error |

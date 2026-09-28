@@ -18,6 +18,37 @@ test('the preview budget is clamped to something a repository can hold', () => {
   assert.equal(normalizeExportOptions({ docs: { previewBudgetMb: 'lots' } }).docs.previewBudgetMb, 8)
 })
 
+test('the old pair field migrates into editable theme rows', () => {
+  const options = normalizeExportOptions({
+    tokens: { collectionMerges: '  Theme = Semantic light + Semantic dark  ' },
+  })
+  assert.deepEqual(options.themeMerges, {
+    groups: [{
+      name: 'Theme',
+      modes: [
+        { collection: 'Semantic light', name: 'Light' },
+        { collection: 'Semantic dark', name: 'Dark' },
+      ],
+    }],
+  })
+})
+
+test('choosing a preset preserves file-specific theme rows', () => {
+  const options = normalizeExportOptions({
+    themeMerges: {
+      groups: [{
+        name: 'Theme',
+        modes: [
+          { collection: 'theme-light', name: 'Light' },
+          { collection: 'theme-dark', name: 'Dark' },
+          { collection: 'theme-contrast', name: 'High contrast' },
+        ],
+      }],
+    },
+  })
+  assert.deepEqual(applyPreset(options, 'design-tokens').themeMerges, options.themeMerges)
+})
+
 test('choosing a preset does not reset the documentation settings', () => {
   // Like `lint` and `delivery`: a team's docs policy is theirs, not part of a package preset.
   const options = normalizeExportOptions({

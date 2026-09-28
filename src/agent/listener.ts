@@ -7,7 +7,15 @@
  * anything running in the iframe.
  */
 
-import { authorize, toManifest, validateParams, type AgentGates, type OpManifestEntry } from './protocol.ts'
+import {
+  authorize,
+  ParamError,
+  toManifest,
+  validateParams,
+  type AgentGates,
+  type OpManifestEntry,
+} from './protocol.ts'
+import { isRetryable, type AgentErrorCode } from './errors.ts'
 import { ALL_OPS, OPS_BY_NAME } from './ops.ts'
 import { postToUi } from './ui-post.ts'
 import { takeLoading } from './loading.ts'
@@ -23,6 +31,12 @@ export interface AgentResponse {
   ok: boolean
   result?: unknown
   error?: string
+  /** Which KIND of refusal this is, so a caller's retry policy is a lookup rather than a regex
+   * over English. Absent on success. See `errors.ts` for what each one means. */
+  code?: AgentErrorCode
+  /** Whether issuing the same call again could plausibly work. Derived from `code`; carried
+   * because it is the question every caller actually asks. Absent on success. */
+  retryable?: boolean
   /** Pages this call had to wait for Figma to load, and how long each took. Absent when
    * nothing was cold - see `loading.ts` for why a wait needs saying out loud. */
   loading?: Array<{ page: string; ms: number }>
@@ -58,7 +72,7 @@ export async function handleAgentRequest(request: AgentRequest): Promise<AgentRe
   const permitted = authorize(op, gates, request.params)
   if (!permitted.ok) {
     report(request.op, false, Date.now() - started, permitted.error)
-    return { id: request.id, ok: false, error: permitted.error }
+    return { id: request.id, ok: false, error: permitted.error, code: permitted.code, retryable: permitted.retryable }
   }
 
   try {
@@ -81,7 +95,19 @@ export async function handleAgentRequest(request: AgentRequest): Promise<AgentRe
     const message = String((err as Error)?.message || err)
     report(request.op, false, Date.now() - started, message)
     const loading = takeLoading()
-    return { id: request.id, ok: false, error: message, ...(loading ? { loading } : {}) }
+    /* `ParamError` is the caller's mistake and never worth retrying as-is; anything else came
+     * out of the op or out of Figma, which is a different decision for whoever asked. Both used
+     * to arrive as the same flat string, so a client could not tell "you typed the param wrong"
+     * from "the page was still loading". */
+    const code: AgentErrorCode = err instanceof ParamError ? 'param_invalid' : 'figma_threw'
+    return {
+      id: request.id,
+      ok: false,
+      error: message,
+      code,
+      retryable: isRetryable(code),
+      ...(loading ? { loading } : {}),
+    }
   }
 }
 

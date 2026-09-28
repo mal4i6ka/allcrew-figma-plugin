@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Altery token receiver — the "dumb executor" half of the delivery pipeline.
+ * AllCrew Channel receiver — the "dumb executor" half of the delivery pipeline.
  * The Figma plugin (Delivery settings) POSTs the generated package here; this script
  * runs the actual git / PR / npm / folder action. It is intentionally portable:
  * no dependencies, just Node built-ins + the host's own git/gh/npm CLIs.
@@ -11,17 +11,17 @@
  *     node receiver.mjs
  *
  * Nobody types a secret for the common case. On a host with none configured this mints one
- * into ~/.altery/receiver-secret (0600) and opens a five-minute pairing window; the plugin's
+ * into ~/.allcrew-channel/receiver-secret (0600) and opens a five-minute pairing window; the plugin's
  * "Pair" button in Delivery settings collects it. Every machine therefore has a different
  * secret and none of them was ever distributed. For a shared or remote host, set
- * ALTERY_SECRET yourself — that suppresses pairing entirely (loopback-only in any case).
+ * ALLCREW_CHANNEL_SECRET yourself — that suppresses pairing entirely (loopback-only in any case).
  *
  * Environment:
- *   ALTERY_SECRET       manage the secret by hand; suppresses pairing (--pair forces a window)
- *   ALTERY_SECRET_FILE  where a minted secret lives (default ~/.altery/receiver-secret)
+ *   ALLCREW_CHANNEL_SECRET       manage the secret by hand; suppresses pairing (--pair forces a window)
+ *   ALLCREW_CHANNEL_SECRET_FILE  where a minted secret lives (default ~/.allcrew-channel/receiver-secret)
  *   PORT                (default 8787)
- *   ALTERY_FOLDER_BASE  base dir for the "folder" target; route.path is resolved under it.
- *   ALTERY_WORK_DIR     scratch dir for git/pr/npm clones (default <tmp>/altery-tokens).
+ *   ALLCREW_CHANNEL_FOLDER_BASE  base dir for the "folder" target; route.path is resolved under it.
+ *   ALLCREW_CHANNEL_WORK_DIR     scratch dir for git/pr/npm clones (default <tmp>/allcrew-channel-tokens).
  *
  * Credentials stay HERE, never in the plugin:
  *   git/pr  → the host's git auth (SSH key or credential helper); PRs use the `gh` CLI.
@@ -35,15 +35,15 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 const PORT = parseInt(process.env.PORT || "8787", 10);
-const FOLDER_BASE = process.env.ALTERY_FOLDER_BASE || "";
-const WORK_DIR = process.env.ALTERY_WORK_DIR || path.join(os.tmpdir(), "altery-tokens");
+const FOLDER_BASE = process.env.ALLCREW_CHANNEL_FOLDER_BASE || "";
+const WORK_DIR = process.env.ALLCREW_CHANNEL_WORK_DIR || path.join(os.tmpdir(), "allcrew-channel-tokens");
 const SECRET_FILE =
-  process.env.ALTERY_SECRET_FILE || path.join(os.homedir(), ".altery", "receiver-secret");
+  process.env.ALLCREW_CHANNEL_SECRET_FILE || path.join(os.homedir(), ".allcrew-channel", "receiver-secret");
 
 /** env → file → mint. Minting writes 0600 under a 0700 directory: the secret ends up exactly
  * as private as the account running the receiver, which is the whole trust boundary. */
 function resolveSecret() {
-  if (process.env.ALTERY_SECRET) return { secret: process.env.ALTERY_SECRET, source: "env" };
+  if (process.env.ALLCREW_CHANNEL_SECRET) return { secret: process.env.ALLCREW_CHANNEL_SECRET, source: "env" };
   try {
     const stored = fs.readFileSync(SECRET_FILE, "utf8").trim();
     if (stored) return { secret: stored, source: "file" };
@@ -122,14 +122,14 @@ function commitInto(dir, branch, route, files, fresh) {
   writeFiles(path.join(dir, sanitizeRel(route.path || "")), files);
   git(dir, ["add", "-A"]);
   if (!git(dir, ["status", "--porcelain"])) return false;
-  git(dir, ["-c", "user.name=Altery Tokens", "-c", "user.email=tokens@altery.local",
+  git(dir, ["-c", "user.name=AllCrew Channel Tokens", "-c", "user.email=tokens@allcrew-channel.local",
     "commit", "-m", "chore(tokens): sync design tokens from Figma"]);
   return true;
 }
 
 const TARGETS = {
   folder(route, files) {
-    if (!FOLDER_BASE) throw new Error("folder target needs ALTERY_FOLDER_BASE set on the receiver");
+    if (!FOLDER_BASE) throw new Error("folder target needs ALLCREW_CHANNEL_FOLDER_BASE set on the receiver");
     const dest = path.join(FOLDER_BASE, sanitizeRel(route.path || ""));
     const w = writeFiles(dest, files);
     return "wrote " + w.length + " file(s) to " + dest;
@@ -145,7 +145,7 @@ const TARGETS = {
   pr(route, files) {
     if (!route.repo) throw new Error("pr target needs route.repo");
     const base = route.branch || "main";
-    const head = "altery/tokens-" + Date.now();
+    const head = "allcrew-channel/tokens-" + Date.now();
     const dir = ensureRepo(route.repo);
     if (!commitInto(dir, base, route, files, head)) return "no changes vs " + base;
     git(dir, ["push", "origin", head]);
@@ -173,14 +173,14 @@ const TARGETS = {
 
 const server = http.createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-altery-secret");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-allcrew-channel-secret");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
-  if (req.method === "GET") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true, service: "altery-tokens-receiver", pairing: pairingOpen() })); return; }
+  if (req.method === "GET") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true, service: "allcrew-channel-tokens-receiver", pairing: pairingOpen() })); return; }
   if (req.method !== "POST") { res.writeHead(405); res.end(); return; }
 
   // Ahead of the secret gate on purpose: this is how a plugin gets the secret at all. Matched
-  // by suffix, so a configured endpoint like https://host/altery-tokens pairs at .../pair and
+  // by suffix, so a configured endpoint like https://host/allcrew-channel-tokens pairs at .../pair and
   // a reverse-proxy prefix does not break it.
   const routePath = (req.url || "/").split("?")[0].replace(/\/+$/, "");
   if (routePath.endsWith("/pair")) {
@@ -200,7 +200,7 @@ const server = http.createServer((req, res) => {
     const reply = (code, obj) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
     try {
       if (tooBig) return reply(413, { error: "payload too large" });
-      if (!safeEqual(req.headers["x-altery-secret"], SECRET)) return reply(401, { error: "bad or missing secret" });
+      if (!safeEqual(req.headers["x-allcrew-channel-secret"], SECRET)) return reply(401, { error: "bad or missing secret" });
       const msg = JSON.parse(body);
       const fn = TARGETS[msg.target || "folder"];
       if (!fn) return reply(400, { error: "unknown target: " + msg.target });
@@ -217,9 +217,9 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log("altery-tokens-receiver listening on :" + PORT + "  (targets: folder, git, pr, npm)");
+  console.log("AllCrew Channel receiver listening on :" + PORT + "  (targets: folder, git, pr, npm)");
   console.log("  secret:      " + (SECRET_SOURCE === "env"
-    ? "ALTERY_SECRET (yours to manage)"
+    ? "ALLCREW_CHANNEL_SECRET (yours to manage)"
     : SECRET_FILE + " (" + (SECRET_SOURCE === "minted" ? "just created" : "existing") + ")"));
   console.log("  pairing:     " + (pairingOpen()
     ? "OPEN for " + PAIR_WINDOW_MS / 60000 + " min — press Pair in the plugin's Delivery settings"

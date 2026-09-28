@@ -12,7 +12,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-process.env.ALTERY_AGENT_SECRET = process.env.ALTERY_AGENT_SECRET || 'test-secret'
+process.env.ALLCREW_CHANNEL_AGENT_SECRET = process.env.ALLCREW_CHANNEL_AGENT_SECRET || 'test-secret'
 
 const { fileKeyOf, wantsRest, restNodeSummary, restWalk, REST_OPS, REST_REFUSALS } = await import('./bridge.mjs')
 

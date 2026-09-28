@@ -25,11 +25,21 @@ import {
   type DesignerExportSetting,
   type ImageFillFormat,
 } from './assets.ts'
+// Type-only, and deliberately pointing "up" into the agent layer: the appearance annotation is
+// the agent channel's concern, not this emitter's, and `import type` is erased at build time so
+// the dependency exists for a reader and a typechecker only.
+import type { IrAppearance } from '../../agent/appearance.ts'
 
 export type IrNodeType = 'container' | 'text' | 'image' | 'vector' | 'instance-ref'
 
 /** CSS `justify-content` values reachable from Figma's `primaryAxisAlignItems`. */
-export type IrJustifyContent = 'flex-start' | 'center' | 'flex-end' | 'space-between'
+export type IrJustifyContent =
+  | 'flex-start'
+  | 'center'
+  | 'flex-end'
+  | 'space-between'
+  | 'space-evenly'
+  | 'space-around'
 
 /** CSS `align-items` values reachable from Figma's `counterAxisAlignItems`. */
 export type IrAlignItems = 'flex-start' | 'center' | 'flex-end' | 'baseline'
@@ -241,6 +251,18 @@ interface IrNodeBase {
    * `@figma/plugin-typings`) — the CSS emitter maps this to `position: fixed`/`sticky` within a
    * scrolling frame. Absent means the node scrolls normally with its container. */
   readonly scrollBehavior?: 'fixed' | 'sticky'
+  /**
+   * How the layer is PAINTED — fills, strokes, radii, effects, opacity, rotation, and the token
+   * behind each — filled only by the agent channel's appearance pass (`src/agent/appearance.ts`).
+   *
+   * `serializeNode` never sets it and no emitter in `src/targets` reads it. That is deliberate:
+   * the CSS emitter reads all of this off the LIVE node at emit time (`css-emitter.ts`
+   * `getCSSAsync`), which a web target can afford because it runs inside the document. A SwiftUI
+   * or Compose generator runs after the plugin window has closed and cannot, so `design.ir`
+   * closes the tree for it on request. Carrying it unconditionally would put megabytes of paint
+   * on the one path that has no use for it.
+   */
+  appearance?: IrAppearance
 }
 
 /** M8: a shared style's `name` (`figma.getStyleByIdAsync(id).name`), keyed by which style slot it
@@ -680,11 +702,13 @@ async function readStyleRefs(node: unknown): Promise<{ styleRefs?: IrStyleRefs }
 /** Frame/Component/Instance: the node types that can carry their own `layoutMode`. */
 type AutoLayoutContainer = FrameNode | ComponentNode | InstanceNode
 
-const JUSTIFY_CONTENT: Record<'MIN' | 'MAX' | 'CENTER' | 'SPACE_BETWEEN', IrJustifyContent> = {
+const JUSTIFY_CONTENT: Record<AutoLayoutMixin['primaryAxisAlignItems'], IrJustifyContent> = {
   MIN: 'flex-start',
   MAX: 'flex-end',
   CENTER: 'center',
   SPACE_BETWEEN: 'space-between',
+  SPACE_EVENLY: 'space-evenly',
+  SPACE_AROUND: 'space-around',
 }
 
 const ALIGN_ITEMS: Record<'MIN' | 'MAX' | 'CENTER' | 'BASELINE', IrAlignItems> = {
