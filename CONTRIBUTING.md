@@ -2,7 +2,7 @@
 
 ## Development setup
 
-Requirements: Node.js 18 or newer, npm, Figma Desktop, and the `zip` command for release packaging.
+Requirements: Node.js 22 or newer for building and testing, npm, Figma Desktop, and the `zip` command for release packaging. The packaged bridge itself supports Node.js 18 or newer.
 
 ```bash
 npm ci
