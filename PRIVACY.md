@@ -1,6 +1,6 @@
 # Privacy and data handling
 
-AllCrew Channel is a locally installed Figma development plugin. The project does not operate a hosted AllCrew service and does not collect telemetry.
+AllCrew Figma Workspace is a locally installed Figma development plugin. The project does not operate a hosted AllCrew service and does not collect telemetry.
 
 ## Data processed inside Figma
 

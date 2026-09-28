@@ -15,9 +15,9 @@ const ROOT = process.cwd()
 const OUT_DIR = join(ROOT, 'build')
 const STAGING = join(OUT_DIR, 'staging')
 const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
-const VERSIONED_NAME = `allcrew-channel-plugin-v${version}.zip`
+const VERSIONED_NAME = `allcrew-figma-workspace-v${version}.zip`
 const VERSIONED_ARCHIVE = join(OUT_DIR, VERSIONED_NAME)
-const LATEST_ARCHIVE = join(OUT_DIR, 'allcrew-channel-plugin.zip')
+const LATEST_ARCHIVE = join(OUT_DIR, 'allcrew-figma-workspace.zip')
 const CHECKSUMS = join(OUT_DIR, 'SHA256SUMS')
 
 /** Runtime files plus the local tools users otherwise download from the plugin UI. */
@@ -70,7 +70,7 @@ for (const entry of ENTRIES) {
 
 mkdirSync(OUT_DIR, { recursive: true })
 for (const file of readdirSync(OUT_DIR)) {
-  if (/^allcrew-channel-plugin-v.*\.zip$/.test(file)) rmSync(join(OUT_DIR, file), { force: true })
+  if (/^allcrew-figma-workspace-v.*\.zip$/.test(file)) rmSync(join(OUT_DIR, file), { force: true })
 }
 rmSync(LATEST_ARCHIVE, { force: true })
 execFileSync('zip', ['-X', '-q', '-r', VERSIONED_ARCHIVE, ...ENTRIES.map((entry) => entry.target)], { cwd: STAGING })

@@ -209,7 +209,7 @@ test('collectFlattenedPages says nothing about an export with no pages', () => {
 test('buildFigmaFileReference builds a design URL per template with : replaced by - in the node id', () => {
   const reference = buildFigmaFileReference({
     key: 'AbC123',
-    name: 'AllCrew Channel',
+    name: 'AllCrew Figma Workspace',
     fileNodeIds: {
       'pages/home--1-2.html': '1:2',
       'components/button--I4357-109443-823-99714.html': 'I4357:109443;823:99714',
@@ -218,11 +218,11 @@ test('buildFigmaFileReference builds a design URL per template with : replaced b
   })
 
   assert.equal(reference.key, 'AbC123')
-  assert.equal(reference.name, 'AllCrew Channel')
+  assert.equal(reference.name, 'AllCrew Figma Workspace')
   assert.deepEqual(reference.pageUrls, {
-    'pages/home--1-2.html': 'https://www.figma.com/design/AbC123/AllCrew-Channel?node-id=1-2',
+    'pages/home--1-2.html': 'https://www.figma.com/design/AbC123/AllCrew-Figma-Workspace?node-id=1-2',
     'components/button--I4357-109443-823-99714.html':
-      'https://www.figma.com/design/AbC123/AllCrew-Channel?node-id=I4357-109443-823-99714',
+      'https://www.figma.com/design/AbC123/AllCrew-Figma-Workspace?node-id=I4357-109443-823-99714',
   })
   assert.ok(!('base.html' in reference.pageUrls), 'the synthetic base.html marker has no real Figma node to link to')
 })
@@ -230,9 +230,9 @@ test('buildFigmaFileReference builds a design URL per template with : replaced b
 test('buildFigmaFileReference degrades to name-only with no URLs when the file key is withheld', () => {
   const reference = buildFigmaFileReference({
     key: null,
-    name: 'AllCrew Channel',
+    name: 'AllCrew Figma Workspace',
     fileNodeIds: { 'pages/home--1-2.html': '1:2' },
   })
 
-  assert.deepEqual(reference, { key: null, name: 'AllCrew Channel', pageUrls: {} })
+  assert.deepEqual(reference, { key: null, name: 'AllCrew Figma Workspace', pageUrls: {} })
 })

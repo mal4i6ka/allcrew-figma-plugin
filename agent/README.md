@@ -1,7 +1,7 @@
 # Agent listener
 
 Lets a CLI agent — Claude Code, Codex, a shell script, `curl` — ask questions about the Figma
-file the designer currently has open, through the AllCrew Channel plugin's own Plugin API access.
+file the designer currently has open, through the AllCrew Figma Workspace plugin's own Plugin API access.
 
 It is MCP-shaped without being MCP: there is no server to register, no client library, and
 nothing to keep in sync but the op names. If a tool can run a shell command, it can drive

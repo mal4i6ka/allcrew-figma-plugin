@@ -1,7 +1,7 @@
-# AllCrew Channel Receiver
+# AllCrew Figma Workspace Receiver
 
 Dependency-free Node.js HTTP server that receives a design-token package from the
-AllCrew Channel plugin and executes the requested delivery action — commit to git, open
+AllCrew Figma Workspace plugin and executes the requested delivery action — commit to git, open
 a PR, publish to npm, or write to a local folder.
 
 The plugin POSTs `{ files, target, route, options, meta }`; this script verifies the
@@ -121,7 +121,7 @@ pm2 save && pm2 startup
 ```ini
 # /etc/systemd/system/allcrew-channel-receiver.service
 [Unit]
-Description=AllCrew Channel receiver
+Description=AllCrew Figma Workspace receiver
 After=network.target
 
 [Service]

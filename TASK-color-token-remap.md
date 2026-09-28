@@ -301,7 +301,7 @@ family, no ladder comes out inverted, `blue/250`/`neutral/150`/`red/850` stay em
 
 ## The library reader was the thief (2026-08-20, evening)
 
-The operator reads the reference from **Library → "AllCrew Channel 3.0 · Colors"** — the
+The operator reads the reference from **Library → "AllCrew Figma Workspace 3.0 · Colors"** — the
 right channel. The reader skipped alias-valued tokens on the reasoning that they point at
 colors already in the list. That is only true for aliases *inside the collection being read*;
 a `neutral/0` aliasing into a base collection left the palette with no white at all, and

@@ -30,8 +30,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create "$GITHUB_REF_NAME"
-          build/allcrew-channel-plugin-v*.zip
+          build/allcrew-figma-workspace-v*.zip
           build/SHA256SUMS
           --verify-tag
           --generate-notes
-          --title "AllCrew Channel $GITHUB_REF_NAME"
+          --title "AllCrew Figma Workspace $GITHUB_REF_NAME"

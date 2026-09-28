@@ -2440,7 +2440,7 @@ export const WRITE_OPS: readonly OpDef[] = [
        * runtime — "Plugin runtime aborted", the leak counter in the console, and from the outside
        * a plugin that keeps reconnecting with a new session id. `force` already means "delete
        * without asking what points at it", so counting first was work whose answer was thrown
-       * away. Measured on AllCrew Channel: the counting call killed the plugin every time, a
+       * away. Measured on AllCrew Figma Workspace: the counting call killed the plugin every time, a
        * single attempt was enough, and there was nothing to report when it did. */
       const counting = params.force !== true
       if (counting) await loadAllPagesAsync()

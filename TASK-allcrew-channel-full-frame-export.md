@@ -1,10 +1,10 @@
-# Task: export enough Figma structure for 1:1 AllCrew Channel implementation
+# Task: export enough Figma structure for 1:1 AllCrew Figma Workspace implementation
 
 ## Problem
 
 The current generated package is useful for tokens and isolated component
 documentation, but it does not let an implementation agent reconstruct the
-AllCrew Channel desktop frame at Figma node `1:16` without guessing. In the current
+AllCrew Figma Workspace desktop frame at Figma node `1:16` without guessing. In the current
 environment the Figma API also rejects design-context access, so the export
 must be a complete offline authority rather than a partial convenience dump.
 
@@ -29,7 +29,7 @@ must be a complete offline authority rather than a partial convenience dump.
 - Incremental provenance: Figma file key/version, root node, plugin version,
   timestamp, per-artifact digest and a clear stale/missing marker.
 - Target-brand metadata: generated shipping names/assets must support
-  **AllCrew Channel** even when legacy `allcrew-channel-*` package paths remain for compatibility.
+  **AllCrew Figma Workspace** even when legacy `allcrew-channel-*` package paths remain for compatibility.
 
 ## Acceptance
 

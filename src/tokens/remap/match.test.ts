@@ -168,7 +168,7 @@ test('nearest by color is the fallback for anything that belongs to no ramp', ()
 
 /* ------------------------------------------------------------------ untrustworthy steps */
 
-/** AllCrew Channel's own library: `10` is the brand colour and `50…900` are tints of it. */
+/** AllCrew Figma Workspace's own library: `10` is the brand colour and `50…900` are tints of it. */
 const ALLCREW_CHANNEL_RED = [
   [10, '#D63A36'],
   [50, '#FFF0F0'],

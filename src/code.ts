@@ -1,5 +1,5 @@
 /**
- * AllCrew Channel — unified plugin sandbox (main thread).
+ * AllCrew Figma Workspace — unified plugin sandbox (main thread).
  *
  * Reads the file's LOCAL variables + collections + text styles via the Figma Plugin API
  * and builds either a design-token package or a Django project, depending on the
@@ -1420,7 +1420,7 @@ const PALETTE_SETTINGS_KEY = 'allcrewChannel.v1.paletteSettings'
 /**
  * Agent gates persist only when Figma exposes a stable `fileKey` (private organization plugins).
  * Development plugins imported from GitHub receive no key, so their consent is deliberately
- * session-only. A file name is not an identity: two unrelated files named \"Untitled\" must never
+ * session-only. A file name is not an identity: two unrelated files named "Untitled" must never
  * inherit each other's read or write grant.
  */
 const GATES_KEY = 'allcrewChannel.v1.agentGates'
@@ -3744,7 +3744,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param source: local, library or all (default all)
       // @agent param scope: page (default) or document — the page is what a caller building a flow is working on, and loading every page is the expensive half
       // @agent param usage: false skips the instance census — quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents
-      // @agent cost: the current page is quick; scope "document" loads every page first and can take a minute or more on a large file — the older components.list op times out at 180s doing that on AllCrew Channel
+      // @agent cost: the current page is quick; scope "document" loads every page first and can take a minute or more on a large file — the older components.list op times out at 180s doing that on AllCrew Figma Workspace
 
       // @agent param limit: how many components come back — 100 by default, 500 at most; the reply says when it had more
       try {

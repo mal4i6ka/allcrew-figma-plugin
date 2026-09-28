@@ -1,7 +1,7 @@
 [project]
 name = "allcrew-channel"
 version = "0.2.0"
-description = "Terminal companion for the AllCrew Channel plugin: apply packages, merge PO catalogs, rebuild token files, vendor Bootstrap, run checks."
+description = "Terminal companion for the AllCrew Figma Workspace plugin: apply packages, merge PO catalogs, rebuild token files, vendor Bootstrap, run checks."
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 

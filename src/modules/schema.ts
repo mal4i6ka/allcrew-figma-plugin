@@ -158,7 +158,7 @@ const blocks = [
 export const MODULE_JSON_SCHEMA = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
   $id: MODULE_SCHEMA_ID,
-  title: 'AllCrew Channel user module',
+  title: 'AllCrew Figma Workspace user module',
   description: 'A declarative, sandboxed plugin screen and command composition.',
   type: 'object',
   required: ['module', 'id', 'name', 'summary', 'version', 'screens'],
@@ -281,14 +281,14 @@ export const MODULE_AUTHORING_GUIDE = {
  * build, while the agent fetches the full schema through the live bridge. */
 export function moduleAgentPrompt(): string {
   return [
-    'Create a custom screen for the AllCrew Channel Figma plugin using the AllCrew SDK module format.',
+    'Create a custom screen for the AllCrew Figma Workspace plugin using the AllCrew SDK module format.',
     '',
     'First ask me one concise question: what workflow should this screen automate? Then design the fields, controls and actions around my answer.',
     '',
     'Requirements:',
     '- Call `modules.schema` first to fetch the canonical JSON Schema for this build.',
     '- Return one valid module JSON document. Do not use arbitrary HTML, JavaScript, network calls or undeclared storage.',
-    '- Use only commands exposed by this AllCrew Channel build.',
+    '- Use only commands exposed by this AllCrew Figma Workspace build.',
     '- Keep every capability explicit so the plugin can show its read/write review before installation.',
     '- Validate the draft with `plugin.call` using `{ \"command\": \"MODULE_INSPECT\", \"params\": { \"file\": <module JSON> } }`.',
     '- Do not call `modules.install` until I approve the capabilities returned by MODULE_INSPECT.',

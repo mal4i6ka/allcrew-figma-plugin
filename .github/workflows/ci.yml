@@ -23,8 +23,8 @@ jobs:
       - run: npm run package
       - uses: actions/upload-artifact@v4
         with:
-          name: allcrew-channel-plugin
+          name: allcrew-figma-workspace
           path: |
-            build/allcrew-channel-plugin-v*.zip
+            build/allcrew-figma-workspace-v*.zip
             build/SHA256SUMS
           if-no-files-found: error

@@ -1,4 +1,4 @@
-# AllCrew Channel — установка плагина
+# AllCrew Figma Workspace — установка плагина
 
 Готовый к запуску Figma-плагин. Собран заранее — билд не нужен, достаточно
 импортировать манифест.
@@ -48,7 +48,7 @@ CHANGELOG.md        — изменения по версиям
    (если пункта «Development» нет — включи Developer mode в настройках
    аккаунта Figma).
 4. Выбери файл `manifest.json` из распакованной папки.
-5. Плагин появится в **Plugins → Development → AllCrew Channel**.
+5. Плагин появится в **Plugins → Development → AllCrew Figma Workspace**.
 6. Открой Figma-файл с нужными переменными/коллекциями и запусти плагин —
    он сразу сканирует документ и показывает сводку. Настройки экспорта —
    через шестерёнку в шапке плагина.
@@ -101,12 +101,12 @@ API для установки dev-плагина у Figma нет. Агент г�
 
 1. Распаковать архив:
    ```bash
-   unzip allcrew-channel-plugin-v1.1.0.zip -d ~/figma-plugins/allcrew-channel
+   unzip allcrew-figma-workspace-v1.1.1.zip -d ~/figma-plugins/allcrew-figma-workspace
    ```
 2. Проверить целостность пакета перед тем, как просить человека его
    импортировать:
    ```bash
-   cd ~/figma-plugins/allcrew-channel-design-system-export
+   cd ~/figma-plugins/allcrew-figma-workspace
    test -f manifest.json && test -f dist/code.js && test -f dist/ui.html && echo OK
    python3 -c "import json; m=json.load(open('manifest.json')); \
      assert m['main']=='dist/code.js' and m['ui']=='dist/ui.html'; print('manifest OK')"

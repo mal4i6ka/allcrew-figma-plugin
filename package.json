@@ -1,8 +1,8 @@
 {
-  "name": "allcrew-channel-plugin",
-  "version": "1.1.0",
+  "name": "allcrew-figma-workspace-plugin",
+  "version": "1.1.1",
   "private": true,
-  "description": "Local-first Figma development plugin for design tokens, code export, and agent-driven workflows.",
+  "description": "AllCrew Figma Workspace: local-first design tokens, code export, MCP, and agent-driven Figma workflows.",
   "license": "MIT",
   "repository": {
     "type": "git",

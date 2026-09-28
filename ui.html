@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>AllCrew Channel</title>
+<title>AllCrew Figma Workspace</title>
 <style>
   @font-face {
     font-family: "Museo Sans";
@@ -1845,7 +1845,7 @@
       </div>
     </div>
 
-    <!-- User modules are empty in a fresh AllCrew Channel install. A validated JSON document adds one. -->
+    <!-- User modules are empty in a fresh AllCrew Figma Workspace install. A validated JSON document adds one. -->
     <div id="view-modules" class="view hidden">
       <section class="card">
         <div class="module-intro">
@@ -1912,7 +1912,7 @@
         <div class="agent-card-header">
           <p class="label">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="4" y="8" width="16" height="12" rx="3" stroke="currentColor" stroke-width="2"/><path d="M12 4v4M9 14h.01M15 14h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="3" r="1.5" fill="currentColor"/></svg>
-            AllCrew Channel
+            AllCrew Figma Workspace
           </p>
           <a class="agent-mirror-link hidden" id="agent-mirror-link" target="_blank" rel="noopener noreferrer" aria-label="Open web mirror in browser">
             <span>Web mirror</span>
@@ -2259,7 +2259,7 @@
 
         <div class="set-section" data-needs-target="agent">
           <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="4" y="8" width="16" height="12" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 4v4M9 14h.01M15 14h.01" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="3" r="1.4" fill="currentColor"/></svg>
-          <span>AllCrew Channel listener</span>
+          <span>AllCrew Figma Workspace listener</span>
           <span class="sec-hint">local bridge &middot; off until you allow it</span>
         </div>
         <div class="set-field" data-needs-target="agent">
@@ -4857,13 +4857,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               // connect over it would be worse than saying what is wrong. But every surprising
               // result from here on has one likely cause, and this is where to name it.
               agentStatus(
-                'AllCrew Channel · bridge out of date — restart it with "Download bridge.mjs" from this screen, ' +
+                'AllCrew Figma Workspace · bridge out of date — restart it with "Download bridge.mjs" from this screen, ' +
                   'or from agent/bridge.mjs in a checkout.',
                 'warn'
               )
             } else {
               agentStatus(
-                'AllCrew Channel · listening · ' + AGENT.ops.length + ' ops · ' +
+                'AllCrew Figma Workspace · listening · ' + AGENT.ops.length + ' ops · ' +
                   (msg.write ? 'read + write' : 'read only'),
                 'ok'
               )
@@ -5004,7 +5004,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return [
           '---',
           'name: allcrew-channel-listener',
-          'description: Read and change the Figma file the designer has open right now — pages, frames, components, styles, variables, prototype flows, and the tokens every layer is bound to — through the AllCrew Channel plugin. Use whenever a task names a screen, frame or component, asks what is selected, needs real design values instead of guesses, or asks for a change to the design system itself.',
+          'description: Read and change the Figma file the designer has open right now — pages, frames, components, styles, variables, prototype flows, and the tokens every layer is bound to — through the AllCrew Figma Workspace plugin. Use whenever a task names a screen, frame or component, asks what is selected, needs real design values instead of guesses, or asks for a change to the design system itself.',
           '---',
           '',
           '# Figma — the file that is open right now',
@@ -7283,7 +7283,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             r.components + ' components, ' + r.variants + ' variants' +
               (r.slots ? ', ' + r.slots + ' slots' : '') + ' — ' +
               (r.bound > 0 ? r.bound + ' bound to tokens' : 'using Bootstrap defaults (no matching tokens)') +
-              '. See the "AllCrew Channel Bootstrap Kit" page.',
+              '. See the "AllCrew Figma Workspace Bootstrap Kit" page.',
             'ok'
           )
         } else if (msg.type === 'KIT_ERROR') {

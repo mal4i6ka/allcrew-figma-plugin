@@ -1,6 +1,14 @@
 # Changelog
 
-All notable changes to AllCrew Channel are documented here.
+All notable changes to AllCrew Figma Workspace are documented here.
+
+## 1.1.1 — 2026-09-28
+
+### Changed
+
+- Renamed the public product from **AllCrew Channel** to **AllCrew Figma Workspace**.
+- Renamed GitHub Release archives to `allcrew-figma-workspace-v<version>.zip`.
+- Kept established `allcrew-channel` CLI commands, environment variables, secret paths, wire headers, and module format identifiers for compatibility.
 
 ## 1.1.0 — 2026-09-28
 

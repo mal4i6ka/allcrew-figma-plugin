@@ -8,13 +8,12 @@ the user: Delivery can send an exported package to a configured receiver, and Ag
 connects to a user-run loopback bridge for Claude Code, Codex, Cursor, MCP clients, or `curl`.
 
 <p align="center">
-  <img src="docs/screenshots/agent-listener.png" alt="AllCrew Figma Workspace Agent Listener" width="360">
   <img src="docs/screenshots/sdk-builder.png" alt="AllCrew SDK screen builder" width="360">
 </p>
 
 ## Install from a GitHub Release
 
-1. Download `allcrew-channel-plugin-v<version>.zip` and `SHA256SUMS` from the
+1. Download `allcrew-figma-workspace-v<version>.zip` and `SHA256SUMS` from the
    [latest release](https://github.com/mal4i6ka/allcrew-figma-plugin/releases/latest).
 2. Verify the archive:
    ```bash

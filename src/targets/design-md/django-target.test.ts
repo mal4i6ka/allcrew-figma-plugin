@@ -15,7 +15,7 @@ const TREE: TokenTree = {
 
 function input(overrides: Partial<DjangoDesignMdInput> = {}): DjangoDesignMdInput {
   return {
-    fileName: 'AllCrew Channel',
+    fileName: 'AllCrew Figma Workspace',
     scope: { mode: 'page' },
     modules: { tokens: true, templates: true, i18n: true, animation: false },
     package: {

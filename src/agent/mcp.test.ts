@@ -62,9 +62,9 @@ test('a 409 ambiguity refusal becomes an error that carries the roster and the w
 })
 
 test('an unreachable bridge is an error the model can act on, not a crash', () => {
-  const result = toResult({ ok: false, error: 'cannot reach the AllCrew Channel bridge' })
+  const result = toResult({ ok: false, error: 'cannot reach the AllCrew Figma Workspace bridge' })
   assert.equal(result.isError, true)
-  assert.match(result.content[0].text, /cannot reach the AllCrew Channel bridge/)
+  assert.match(result.content[0].text, /cannot reach the AllCrew Figma Workspace bridge/)
 })
 
 test('the meta tools are always present, needing no connected plugin', () => {

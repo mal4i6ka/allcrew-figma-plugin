@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * allcrew-channel-mcp — an MCP (Model Context Protocol) front for the AllCrew Channel bridge.
+ * allcrew-channel-mcp — an MCP (Model Context Protocol) front for the AllCrew Figma Workspace bridge.
  *
  * The bridge already gives a CLI something conventional to talk to (POST /call over loopback).
  * This process gives an *MCP client* — Claude Desktop, Claude Code, Cursor, Codex — the same
@@ -84,7 +84,7 @@ async function bridge(method, route, body) {
     return {
       ok: false,
       error:
-        `cannot reach the AllCrew Channel bridge at ${BASE} — is it running?  node ~/Downloads/bridge.mjs\n` +
+        `cannot reach the AllCrew Figma Workspace bridge at ${BASE} — is it running?  node ~/Downloads/bridge.mjs\n` +
         `(${err.message})`,
     }
   }
@@ -195,13 +195,13 @@ const META_TOOLS = [
   {
     name: 'allcrew_channel_status',
     description:
-      'List the Figma files currently connected through the AllCrew Channel bridge and what each one allows (read / write). Call this first: the other tools act on one of these files.',
+      'List the Figma files currently connected through the AllCrew Figma Workspace bridge and what each one allows (read / write). Call this first: the other tools act on one of these files.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'allcrew_channel_call',
     description:
-      'Run any AllCrew Channel op by name against a connected Figma file — the universal doorway. Prefer the named tool for an op when one is listed; use this for ops not surfaced as their own tool (e.g. plugin.call, which runs a panel command). Discover ops from allcrew_channel_status → the per-op tools, or by calling plugin.commands through this.',
+      'Run any AllCrew Figma Workspace op by name against a connected Figma file — the universal doorway. Prefer the named tool for an op when one is listed; use this for ops not surfaced as their own tool (e.g. plugin.call, which runs a panel command). Discover ops from allcrew_channel_status → the per-op tools, or by calling plugin.commands through this.',
     inputSchema: {
       type: 'object',
       properties: {

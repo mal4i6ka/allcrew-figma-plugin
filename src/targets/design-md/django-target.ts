@@ -351,7 +351,7 @@ export function buildDjangoDesignMd(input: DjangoDesignMdInput): string {
   ]
 
   const agentPrompt = agentPromptSection({
-    role: 'an expert Django + frontend engineer working in a project generated from Figma by the AllCrew Channel exporter',
+    role: 'an expert Django + frontend engineer working in a project generated from Figma by the AllCrew Figma Workspace exporter',
     steps: [
       'Locate the generated template that owns the UI you are changing (`templates/pages/…` or `templates/components/…`) and read its `{# GENERATED #}` markers before editing anything.',
       'Identify every visual requirement — surface, text, border, spacing, radius, type, motion — and map each to a token from the "Token → CSS property" table.',

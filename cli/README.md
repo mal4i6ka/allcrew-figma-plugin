@@ -1,4 +1,4 @@
-# allcrew-channel — терминальный компаньон плагина AllCrew Channel
+# allcrew-channel — терминальный компаньон плагина AllCrew Figma Workspace
 
 Python ≥ 3.11, без зависимостей (stdlib-only). Команды над пакетом, который выгружает
 Figma-плагин (REFORM фаза 5, [docs/REFORM.md](../docs/REFORM.md) §6): от распаковки экспорта

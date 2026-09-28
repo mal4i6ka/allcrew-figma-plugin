@@ -4,7 +4,7 @@ import { auditGuardrails, buildTokenAudit } from './audit.ts'
 import type { TokenGraph } from '../../tokens/engine.ts'
 
 const GRAPH: TokenGraph = {
-  fileName: 'AllCrew Channel',
+  fileName: 'AllCrew Figma Workspace',
   collections: [
     { id: 'c1', name: 'Colors', defaultModeId: 'm1', modes: [{ modeId: 'm1', name: 'Light' }, { modeId: 'm2', name: 'Dark' }] },
     { id: 'c2', name: 'Scales', defaultModeId: 'm3', modes: [{ modeId: 'm3', name: 'Value' }] },

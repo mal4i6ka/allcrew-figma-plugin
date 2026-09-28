@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * AllCrew Channel bridge — the local relay between a CLI agent and the running Figma plugins.
+ * AllCrew Figma Workspace bridge — the local relay between a CLI agent and the running Figma plugins.
  *
  * Figma plugins cannot be reached from outside: the sandbox has no listening socket, and
  * there is no headless mode. So each plugin dials *out* — its UI long-polls this process —
@@ -280,7 +280,7 @@ function resolveTarget(target) {
   if (online.length === 0) {
     return {
       error:
-        'no plugin connected — open the AllCrew Channel plugin in Figma and turn on Settings → Agent listener → Allow reads',
+        'no plugin connected — open the AllCrew Figma Workspace plugin in Figma and turn on Settings → Agent listener → Allow reads',
     }
   }
 
@@ -2207,7 +2207,7 @@ async function runComments(op, body) {
         code: 503,
         body: fail(
           'no_plugin',
-          `"${op}" writes into the file, so it needs the designer present: open the AllCrew Channel plugin and switch ` +
+          `"${op}" writes into the file, so it needs the designer present: open the AllCrew Figma Workspace plugin and switch ` +
             '"Allow changes" on. Reading comments needs no plugin.'
         ),
       }
@@ -3106,7 +3106,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(503)
       res.end(
         '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="2">' +
-          '<title>AllCrew Channel mirror</title><style>body{margin:0;padding:32px;background:#000;color:#f6f6f6;' +
+          '<title>AllCrew Figma Workspace mirror</title><style>body{margin:0;padding:32px;background:#000;color:#f6f6f6;' +
           'font:13px system-ui}code{color:#ffac8b}</style><h1>Waiting for Figma…</h1>' +
           '<p>Open the plugin, pair it with this bridge, then enable <code>Allow reads</code> and ' +
           '<code>Allow changes</code>.</p>'
@@ -3124,7 +3124,7 @@ const server = http.createServer(async (req, res) => {
         .join('')
       res.writeHead(200)
       res.end(
-        '<!doctype html><meta charset="utf-8"><title>AllCrew Channel mirrors</title>' +
+        '<!doctype html><meta charset="utf-8"><title>AllCrew Figma Workspace mirrors</title>' +
           '<style>body{margin:0;padding:32px;background:#000;color:#f6f6f6;font:13px system-ui}' +
           'a{color:#ff895b}li{margin:10px 0}</style><h1>Choose a Figma file</h1><ul>' + links + '</ul>'
       )
@@ -3208,7 +3208,7 @@ setInterval(() => {
 const RUN_AS_MAIN = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false
 
 if (RUN_AS_MAIN) server.listen(PORT, HOST, () => {
-  console.log(`AllCrew Channel listening on http://${HOST}:${PORT}`)
+  console.log(`AllCrew Figma Workspace listening on http://${HOST}:${PORT}`)
   const where =
     SECRET_SOURCE === 'env'
       ? 'ALLCREW_CHANNEL_AGENT_SECRET (yours to manage)'

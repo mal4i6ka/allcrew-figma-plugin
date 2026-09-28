@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * AllCrew Channel receiver — the "dumb executor" half of the delivery pipeline.
+ * AllCrew Figma Workspace receiver — the "dumb executor" half of the delivery pipeline.
  * The Figma plugin (Delivery settings) POSTs the generated package here; this script
  * runs the actual git / PR / npm / folder action. It is intentionally portable:
  * no dependencies, just Node built-ins + the host's own git/gh/npm CLIs.
@@ -122,7 +122,7 @@ function commitInto(dir, branch, route, files, fresh) {
   writeFiles(path.join(dir, sanitizeRel(route.path || "")), files);
   git(dir, ["add", "-A"]);
   if (!git(dir, ["status", "--porcelain"])) return false;
-  git(dir, ["-c", "user.name=AllCrew Channel Tokens", "-c", "user.email=tokens@allcrew-channel.local",
+  git(dir, ["-c", "user.name=AllCrew Figma Workspace Tokens", "-c", "user.email=tokens@allcrew-channel.local",
     "commit", "-m", "chore(tokens): sync design tokens from Figma"]);
   return true;
 }
@@ -217,7 +217,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log("AllCrew Channel receiver listening on :" + PORT + "  (targets: folder, git, pr, npm)");
+  console.log("AllCrew Figma Workspace receiver listening on :" + PORT + "  (targets: folder, git, pr, npm)");
   console.log("  secret:      " + (SECRET_SOURCE === "env"
     ? "ALLCREW_CHANNEL_SECRET (yours to manage)"
     : SECRET_FILE + " (" + (SECRET_SOURCE === "minted" ? "just created" : "existing") + ")"));

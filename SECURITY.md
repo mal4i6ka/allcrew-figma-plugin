@@ -12,7 +12,7 @@ Include the affected version, reproduction steps, impact, and whether the issue 
 
 ## Local trust model
 
-AllCrew Channel is installed as a Figma development plugin and can read the open file through the Figma Plugin API. Optional features can move derived data outside Figma:
+AllCrew Figma Workspace is installed as a Figma development plugin and can read the open file through the Figma Plugin API. Optional features can move derived data outside Figma:
 
 - **Agent Listener** connects to a user-run bridge on `127.0.0.1` by default. Read and write access are separate switches. For development-plugin installs, grants last only for the current plugin session because Figma does not expose a stable file key.
 - **Delivery** sends the generated package only to the endpoint configured by the user.

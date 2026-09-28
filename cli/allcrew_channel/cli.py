@@ -62,7 +62,7 @@ def _add_app_argument(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="allcrew-channel",
-        description="Terminal companion for the AllCrew Channel plugin.",
+        description="Terminal companion for the AllCrew Figma Workspace plugin.",
         epilog="Run `allcrew-channel help <command>` for worked examples.",
     )
     parser.add_argument("--version", action="version", version=f"allcrew-channel {__version__}")

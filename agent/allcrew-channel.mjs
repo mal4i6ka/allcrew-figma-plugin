@@ -61,7 +61,7 @@ const SECRET = resolveSecret()
 
 const TOKEN_FILE = process.env.FIGMA_TOKEN_FILE || path.join(os.homedir(), '.allcrew-channel', 'figma-token')
 
-const USAGE = `allcrew-channel — drive the open Figma file through the AllCrew Channel plugin
+const USAGE = `allcrew-channel — drive the open Figma file through the AllCrew Figma Workspace plugin
 
   allcrew-channel status                   which files are connected, and what each allows
   allcrew-channel ops [-f <file>] [--json] list the ops a connected file is offering
@@ -241,7 +241,7 @@ function gateLabel(gates) {
 async function cmdStatus() {
   const { body } = await request('GET', '/status')
   if (!body.online) {
-    die('no file connected\n  Open the AllCrew Channel plugin in Figma → Settings → Agent listener → Allow reads.')
+    die('no file connected\n  Open the AllCrew Figma Workspace plugin in Figma → Settings → Agent listener → Allow reads.')
   }
   const width = Math.max(...body.files.map((entry) => entry.handle.length))
   process.stderr.write(`${body.count} file${body.count === 1 ? '' : 's'} connected\n`)
