@@ -1,15 +1,41 @@
 # AllCrew Figma Workspace
 
-AllCrew Figma Workspace is a local-first Figma development plugin for design tokens, code generation,
-project export, design-system maintenance, and agent-driven work against the file open in Figma.
+**A local-first Figma development plugin and MCP workspace for Claude Code, Codex, Cursor, design tokens, project export, and controlled agent writes.**
 
-Core extraction and generation run inside Figma. Optional features connect to services chosen by
-the user: Delivery can send an exported package to a configured receiver, and Agent Listener
-connects to a user-run loopback bridge for Claude Code, Codex, Cursor, MCP clients, or `curl`.
+[![Release](https://img.shields.io/github/v/release/mal4i6ka/allcrew-figma-plugin?display_name=tag)](https://github.com/mal4i6ka/allcrew-figma-plugin/releases/latest)
+[![CI](https://github.com/mal4i6ka/allcrew-figma-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/mal4i6ka/allcrew-figma-plugin/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-f2c94c.svg)](LICENSE)
+
+[**Download the latest release**](https://github.com/mal4i6ka/allcrew-figma-plugin/releases/latest) · [Install](#install-from-a-github-release) · [Security model](SECURITY.md) · [Report an issue](https://github.com/mal4i6ka/allcrew-figma-plugin/issues/new/choose)
 
 <p align="center">
-  <img src="docs/screenshots/sdk-builder.png" alt="AllCrew SDK screen builder" width="360">
+  <a href="docs/demo/allcrew-figma-workspace-demo.mp4"><img src="docs/demo/allcrew-figma-workspace-demo.gif" alt="AllCrew Figma Workspace demo" width="720"></a>
 </p>
+
+## Why
+
+Design handoff is more than pixels. Agents need the variables behind values, component behavior, prototype edges, assets, and the live state of the file a designer has open. AllCrew exposes that context through a user-run loopback bridge, then keeps reads and writes behind separate switches visible in Figma.
+
+It also exports usable deliverables: mode-aware tokens, React, Django, Tauri, native color resources, documentation, and declarative custom plugin screens.
+
+Core extraction and generation run inside Figma. Optional Delivery and Agent Listener connections go only to endpoints the user configures; AllCrew operates no hosted relay and collects no telemetry.
+
+## AllCrew vs. the official Figma MCP server
+
+The tools overlap, but they optimize for different workflows. Figma recommends its remote MCP server for broad official access. AllCrew is a development-plugin workspace for explicit, open-file automation and repository artifacts.
+
+| Capability | Official Figma MCP | AllCrew Figma Workspace |
+|---|---|---|
+| Structured components, variables, layout context | Yes | Yes |
+| Generate code from selected frames | Yes | Yes, plus packaged project exports |
+| Write native Figma content | Remote MCP beta | Open plugin session with **Allow writes** |
+| Open-file, observable operation log | Not the primary model | Yes |
+| Design-token / Django / React / Tauri packages | Not its focus | Yes |
+| Custom declarative plugin screens | No | Yes, through AllCrew SDK modules |
+| Hosted service required | Remote is preferred; desktop also exists | No AllCrew service; loopback bridge |
+| Distribution | Official remote/desktop MCP | GitHub development-plugin release |
+
+Official capability references: [Figma MCP guide](https://help.figma.com/hc/en-us/articles/32132100833559) and [Codex setup](https://help.figma.com/hc/en-us/articles/39888629089175-Codex-and-Figma-Set-up-the-MCP-server).
 
 ## Install from a GitHub Release
 
