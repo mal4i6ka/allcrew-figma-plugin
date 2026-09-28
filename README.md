@@ -1,6 +1,6 @@
-# AllCrew Channel
+# AllCrew Figma Workspace
 
-AllCrew Channel is a local-first Figma development plugin for design tokens, code generation,
+AllCrew Figma Workspace is a local-first Figma development plugin for design tokens, code generation,
 project export, design-system maintenance, and agent-driven work against the file open in Figma.
 
 Core extraction and generation run inside Figma. Optional features connect to services chosen by
@@ -8,7 +8,7 @@ the user: Delivery can send an exported package to a configured receiver, and Ag
 connects to a user-run loopback bridge for Claude Code, Codex, Cursor, MCP clients, or `curl`.
 
 <p align="center">
-  <img src="docs/screenshots/agent-listener.png" alt="AllCrew Channel Agent Listener" width="360">
+  <img src="docs/screenshots/agent-listener.png" alt="AllCrew Figma Workspace Agent Listener" width="360">
   <img src="docs/screenshots/sdk-builder.png" alt="AllCrew SDK screen builder" width="360">
 </p>
 
@@ -23,7 +23,7 @@ connects to a user-run loopback bridge for Claude Code, Codex, Cursor, MCP clien
 3. Unzip it without flattening the directory structure.
 4. In Figma Desktop, open **Menu → Plugins → Development → Import plugin from manifest…**.
 5. Select `manifest.json` in the extracted folder.
-6. Run **AllCrew Channel** from **Plugins → Development**.
+6. Run **AllCrew Figma Workspace** from **Plugins → Development**.
 
 Figma's browser app cannot import development plugins. Updating means downloading the new
 release, replacing the extracted directory, and restarting the plugin.
@@ -90,7 +90,7 @@ preferences (the choices persist per-user):
 |---------|---------|--------------|
 | **Inline primitives** | on | Resolves aliases that point at a *primitive* (raw, single-mode value) into the literal, and drops the primitive layer. Aliases **between semantic tokens** stay as `var(--…)`. |
 | **Flatten all aliases** | off | With Inline primitives on, also resolves the *semantic→semantic* `var(--…)` refs into literals, so **no** references remain in the output. Off keeps the readable, themeable semantic layer. |
-| **Theme attribute** | `data-theme-name` | The attribute the theme blocks key off (`[<attr>="Dark"]`). Set it to `data-theme` to match the AllCrew Channel board, or anything else. |
+| **Theme attribute** | `data-theme-name` | The attribute the theme blocks key off (`[<attr>="Dark"]`). Set it to `data-theme` to match the AllCrew Figma Workspace board, or anything else. |
 | **Theme collections table** | empty | Maps any number of free-plan single-mode collections into exported multi-theme structures. Each row names the output structure, source collection and exported theme; repeat a structure name for Light, Dark, High contrast or additional brand themes. Conventional `theme` + `theme-dark` and `theme-light` + `theme-dark` layouts are detected automatically. |
 | **Per-theme `.module.css`** | on | Whether to emit the per-theme module files alongside `tokens.css`. |
 | **CSS Modules `:global()`** | on | Wrap module-file selectors in `:global(…)` (valid CSS Modules) or leave them plain. |
@@ -121,7 +121,7 @@ tokens that use it — no primitive variables in the output:
 ```
 
 Turn it **off** to keep the primitive layer and reference it via aliases instead
-(byte-identical to the AllCrew Channel board, modulo the attribute name):
+(byte-identical to the AllCrew Figma Workspace board, modulo the attribute name):
 
 ```css
 :root,
@@ -404,7 +404,7 @@ pm2 save && pm2 startup   # survive reboots
 ```ini
 # /etc/systemd/system/allcrew-channel-receiver.service
 [Unit]
-Description=AllCrew Channel receiver
+Description=AllCrew Figma Workspace receiver
 After=network.target
 
 [Service]
@@ -534,7 +534,7 @@ curl http://localhost:8787
   by Figma to a **Dev or Full seat** (no manifest setting bypasses that); anyone with
   a normal editor seat can still run it in **Design mode** with no extra cost.
 - **Selector:** defaults to `[data-theme-name="…"]` (per spec) but is configurable
-  in **Export settings** — set it to `data-theme` to match the AllCrew Channel board.
+  in **Export settings** — set it to `data-theme` to match the AllCrew Figma Workspace board.
 - **`tokens.json` is always the full, un-inlined tree** regardless of the Inline
   primitives setting, so it stays lossless for diffing / re-import.
 
@@ -565,7 +565,7 @@ Data handling: [PRIVACY.md](PRIVACY.md).
 
 ## Maintenance
 
-The transform in `code.js` is a dependency-free port of the AllCrew Channel board's
+The transform in `code.js` is a dependency-free port of the AllCrew Figma Workspace board's
 `src/lib/figma.ts` (`variablesToW3CMultiMode`) + `src/lib/design-system/tokens-transform.ts`.
 With **Inline primitives off** and the **theme attribute** set to `data-theme`, the
 output is byte-identical to the board. The export options layer on top of that core
