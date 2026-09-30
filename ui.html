@@ -308,7 +308,7 @@
   .diff-add { color: var(--ok); }
   .diff-remove { color: var(--err); }
   .diff-same { color: var(--faint); }
-  footer.handle-only { flex: 0 0 18px; height: 18px; min-height: 18px; padding: 0; gap: 0; }
+  footer.handle-only { flex: 0 0 24px; height: 24px; min-height: 24px; padding: 0; gap: 0; }
   footer.handle-only > :not(#ui-resize) { display: none !important; }
 
   /* footer: export + pipeline */
@@ -890,7 +890,7 @@
     gap: 20px;
     background: transparent;
   }
-  .view { width: 394px; flex: none; gap: 20px; }
+  .view { width: 100%; max-width: 100%; min-width: 0; flex: 1 1 auto; gap: 20px; }
   #mod-blocks { gap: 20px; }
   .card {
     display: flex;
@@ -1326,6 +1326,8 @@
   #export-progress-label { color: var(--muted); }
   body.ds-tools-mode::before,
   body.ds-tools-mode::after { inset: 74px 0 71px; }
+  body.handle-only-footer::before,
+  body.handle-only-footer::after { inset: 74px 0 24px; }
   footer.ds-tools-footer { flex: 0 0 71px; height: 71px; }
   footer.ds-tools-footer .foot-row { min-height: 17px; height: 17px; padding: 0; }
   footer.ds-tools-footer #status,
@@ -1482,26 +1484,83 @@
   body[data-ui="wide"] #view-agent .agent-hint,
   body[data-ui="wide"] .hint,
   body[data-ui="wide"] .card > p { max-width: 82ch; }
+  .header-actions { min-width: 0; }
+  .target-select { max-width: 100%; min-width: 0; }
+  .card,
+  .gen,
+  .mod-table-wrap,
+  .module-cap-list,
+  .update-panel { min-width: 0; max-width: 100%; }
+  .regen-actions,
+  .module-intro,
+  .module-review-head,
+  .module-json-actions,
+  .theme-merge-actions,
+  .update-banner,
+  .update-actions { flex-wrap: wrap; }
+  .mod-table-wrap,
+  .rmp-table { max-width: 100%; }
+  .mod-table { min-width: max-content; }
+
+  body[data-ui="narrow"] .header-row { gap: 8px; }
+  body[data-ui="narrow"] .brand-link,
+  body[data-ui="narrow"] .brand-logo { width: 104px; }
+  body[data-ui="narrow"] .header-actions { flex: 1 1 auto; justify-content: flex-end; }
+  body[data-ui="narrow"] .target-select { width: auto; flex: 1 1 108px; }
+  body[data-ui="narrow"] .settings-entry { width: 32px; min-width: 32px; padding: 8px; }
+  body[data-ui="narrow"] .settings-entry span { display: none; }
+  body[data-ui="narrow"] main { padding: 12px; }
+  body[data-ui="narrow"] .set-row { gap: 8px; }
+  body[data-ui="narrow"] .set-input,
+  body[data-ui="narrow"] .set-row select.set-ctl { width: min(130px, 42vw); max-width: 100%; }
+  body[data-ui="narrow"] .set-section { flex-wrap: wrap; }
+  body[data-ui="narrow"] .set-section .sec-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body[data-ui="narrow"] .theme-merge-head { display: none; }
+  body[data-ui="narrow"] .theme-merge-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px; }
+  body[data-ui="narrow"] .theme-merge-row > :nth-child(1) { grid-column: 1 / -1; }
+  body[data-ui="narrow"] .pal-spec-top { grid-template-columns: 30px minmax(0, 1fr) 35px 30px; }
+  body[data-ui="narrow"] .pal-spec-top > :nth-child(1) { grid-column: 1; grid-row: 1; }
+  body[data-ui="narrow"] .pal-spec-top > :nth-child(2) { grid-column: 2; grid-row: 1; }
+  body[data-ui="narrow"] .pal-spec-top > :nth-child(3) { grid-column: 1 / -1; grid-row: 2; }
+  body[data-ui="narrow"] .pal-spec-top > :nth-child(4) { grid-column: 3; grid-row: 1; }
+  body[data-ui="narrow"] .pal-spec-top > :nth-child(5) { grid-column: 4; grid-row: 1; }
+  body[data-ui="narrow"] .pal-spec-bot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  body[data-ui="narrow"] .pal-neutral { grid-column: 1 / -1; padding-top: 4px; }
+  body[data-ui="narrow"] .module-intro-copy,
+  body[data-ui="narrow"] .module-review-head > div { flex: 1 1 180px; }
+  body[data-ui="narrow"] .module-tools,
+  body[data-ui="narrow"] .module-json-actions,
+  body[data-ui="narrow"] .update-banner-actions,
+  body[data-ui="narrow"] .update-actions { width: 100%; }
+  body[data-ui="narrow"] .module-tools .btn,
+  body[data-ui="narrow"] .module-json-actions .btn,
+  body[data-ui="narrow"] .update-banner-actions .btn,
+  body[data-ui="narrow"] .update-actions .btn { flex: 1 1 auto; min-width: 0; }
+  body[data-ui="narrow"] .update-panel { grid-template-columns: minmax(0, 1fr); }
+  body[data-ui="narrow"] .module-cap { grid-template-columns: 40px minmax(0, 1fr) auto; }
+  body[data-ui="narrow"] #view-design-tokens .stats,
+  body[data-ui="narrow"] #view-design-tokens .coll { flex-wrap: wrap; }
+  body[data-ui="narrow"] .pipeline { overflow-x: auto; scrollbar-width: none; }
+  body[data-ui="narrow"] .pipeline::-webkit-scrollbar { display: none; }
   #ui-resize {
     position: absolute;
     right: 0;
     bottom: 0;
     z-index: 1000;
-    width: 18px;
-    height: 18px;
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
     border: 0;
     padding: 0;
-    background:
-      linear-gradient(135deg, transparent 0 44%, var(--border-2) 45% 51%, transparent 52%),
-      linear-gradient(135deg, transparent 0 65%, var(--border-2) 66% 72%, transparent 73%);
+    background: transparent;
+    color: var(--border-2);
     cursor: nwse-resize;
     touch-action: none;
   }
-  body.ui-resizing #ui-resize {
-    background:
-      linear-gradient(135deg, transparent 0 44%, var(--accent) 45% 51%, transparent 52%),
-      linear-gradient(135deg, transparent 0 65%, var(--accent) 66% 72%, transparent 73%);
-  }
+  #ui-resize:hover { color: var(--muted); }
+  #ui-resize svg { display: block; pointer-events: none; }
+  body.ui-resizing #ui-resize { color: var(--accent); }
   html.browser-mirror #ui-resize { display: none; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
@@ -2385,7 +2444,11 @@
       <span id="status"></span>
       <span id="export-progress-label"></span>
     </div>
-    <button id="ui-resize" type="button" aria-label="Resize plugin panel" title="Drag to resize · double-click to fit height"></button>
+    <button id="ui-resize" type="button" aria-label="Resize plugin panel" title="Drag to resize · double-click to fit height">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M4.5 13.5 13.5 4.5M9 13.5 13.5 9" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+      </svg>
+    </button>
   </footer>
 
   <!-- JSZip (v3.10.1, https://stuk.github.io/jszip/), inlined so the export flow works
@@ -3046,12 +3109,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         // the 119px action footer.
         var footer = document.querySelector('footer')
         var compactDsFooter = !settings && target === 'ds-tools'
-        footer.classList.toggle('ds-tools-footer', compactDsFooter)
-        document.body.classList.toggle('ds-tools-mode', compactDsFooter)
-        footer.classList.toggle(
-          'handle-only',
+        var handleOnlyFooter =
           settings || target === 'agent' || target === 'modules' || target === 'sdk-builder' || Boolean(MODULE_TARGET)
-        )
+        footer.classList.toggle('ds-tools-footer', compactDsFooter)
+        footer.classList.toggle('handle-only', handleOnlyFooter)
+        document.body.classList.toggle('ds-tools-mode', compactDsFooter)
+        document.body.classList.toggle('handle-only-footer', handleOnlyFooter)
         // A module's options live in Settings, under its own heading — and only while the
         // picker is pointed at it.
         var modSettings = document.getElementById('mod-settings-head')

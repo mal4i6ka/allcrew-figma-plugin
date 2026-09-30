@@ -2,6 +2,16 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.5.0 — 2026-09-30
+
+### Changed
+
+- Made every native plugin view consume the available width instead of keeping a fixed 394 px column.
+- Added narrow-mode rules for the header, settings controls, theme mappings, palette editors, module tools, update actions and footer pipeline.
+- Reworked table and action containers to wrap or scroll without pushing the panel beyond its viewport.
+- Matched the footer resize handle to the referenced Figma component: a 24 px footer control with two restrained diagonal strokes.
+- Matched decorative background insets to the 24 px compact footer on Settings, Agent Listener and module screens.
+
 ## 1.4.0 — 2026-09-30
 
 ### Added
