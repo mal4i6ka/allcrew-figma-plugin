@@ -2,6 +2,21 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.6.0 — 2026-09-30
+
+### Changed
+
+- Added automatic semantic grid switching: stacked below 720 px and split layouts from 720 px.
+- Grouped Django and Tauri setup and review cards into independent vertical lanes, eliminating the empty grid rows and foreign-looking two-column regeneration card caused by mismatched content heights.
+- Added auto-fit module grids so declarative screens gain columns only when their declared blocks have enough room.
+- Capped the internal workspace at 1200 px so cards stop scaling linearly with very large plugin windows.
+- Stabilized the Agent skill pane at 48% of viewport height with a 520 px ceiling, and capped lone DS generator cards at 560 px in split layouts.
+- Reduced the outer Figma panel ceiling to 1240×1200, matching the 1200 px workspace plus shell padding so the window itself cannot be stretched into a large empty frame.
+- Replaced Agent Listener row spanning with independent vertical lanes, eliminating empty grid rows when card heights differ.
+- Switched drag sizing to consecutive screen-space deltas with unrounded accumulators, falling back to event movement only when a captured screen coordinate is stationary.
+- Coalesced live resize requests to animation frames while retaining a single final persistence write.
+- Added a real-Chromium layout matrix covering every plugin screen across stack, breakpoint, wide and maximum viewports, including CI-safe sandbox flags and surfaced browser errors.
+
 ## 1.5.0 — 2026-09-30
 
 ### Changed

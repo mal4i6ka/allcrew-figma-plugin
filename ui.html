@@ -601,6 +601,7 @@
 
   /* ── Agent Listener ───────────────────────────────────────────────────────── */
   #view-agent { gap: 20px; }
+  #view-agent .agent-setup-lane { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
   #view-agent .card + .card { margin-top: 0; }
   #view-agent .agent-status-card { min-height: 159px; }
   #view-agent .agent-bridge-card { min-height: 288px; }
@@ -659,7 +660,7 @@
   }
   #view-agent .agent-command-line { min-height: 41px; }
   #view-agent .agent-mcp-config { min-height: 68px; }
-  #view-agent .agent-skill-content { height: clamp(180px, calc(var(--ui-h) - 400px), 700px); min-height: 0; }
+  #view-agent .agent-skill-content { height: clamp(180px, calc(var(--ui-h) - 400px), 520px); min-height: 0; }
   #view-agent .agent-cmd + .agent-cmd { margin-top: 0; }
   #view-agent .agent-cmd .code {
     min-height: 100%;
@@ -890,7 +891,7 @@
     gap: 20px;
     background: transparent;
   }
-  .view { width: 100%; max-width: 100%; min-width: 0; flex: 1 1 auto; gap: 20px; }
+  .view { width: 100%; max-width: 1200px; min-width: 0; margin-inline: auto; flex: 1 1 auto; gap: 20px; }
   #mod-blocks { gap: 20px; }
   .card {
     display: flex;
@@ -1542,6 +1543,48 @@
   body[data-ui="narrow"] #view-design-tokens .coll { flex-wrap: wrap; }
   body[data-ui="narrow"] .pipeline { overflow-x: auto; scrollbar-width: none; }
   body[data-ui="narrow"] .pipeline::-webkit-scrollbar { display: none; }
+  #view-main .export-lane { display: contents; }
+  #view-main #scope-panel { order: 1; }
+  #view-main #lint-report { order: 2; }
+  #view-main #i18n-panel-wrapper { order: 3; }
+  #view-main #regeneration-panel { order: 4; }
+  #view-main #video-attach-panel { order: 5; }
+  @media (min-width: 720px) {
+    #view-main,
+    #view-design-tokens,
+    #view-ds-tools,
+    #view-agent {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: start;
+      gap: 16px;
+    }
+    #view-main .export-lane {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 16px;
+    }
+    #view-main #video-attach-panel,
+    #view-ds-tools #pal-card,
+    #view-ds-tools #rmp-card { grid-column: 1 / -1; }
+    #view-design-tokens > .summary,
+    #view-design-tokens > .preview { min-height: 100%; }
+    #view-agent .agent-setup-lane { grid-column: 1; min-width: 0; }
+    #view-agent .agent-skill-card { grid-column: 2; align-self: start; }
+    #view-agent .agent-skill-content { height: clamp(260px, 48vh, 520px); }
+    #view-ds-tools > #dt-genTypoCard,
+    #view-ds-tools > #dt-genBpCard { width: min(100%, 560px); justify-self: start; }
+    #view-ds-tools:has(#dt-genTypoCard.hidden) > #dt-genBpCard:not(.hidden),
+    #view-ds-tools:has(#dt-genBpCard.hidden) > #dt-genTypoCard:not(.hidden) { grid-column: 1 / -1; }
+    #view-module #mod-blocks {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+      align-items: start;
+      gap: 16px;
+    }
+    #view-module #mod-result { grid-column: 1 / -1; }
+  }
   #ui-resize {
     position: absolute;
     right: 0;
@@ -1623,6 +1666,7 @@
 
   <main>
     <div id="view-main" class="view">
+    <div class="export-lane export-setup-lane">
     <!-- T6.1: scope selector (страница/фрейм/выделение) -->
     <section class="card" id="scope-panel">
       <p class="label">
@@ -1644,7 +1688,28 @@
         </button>
       </div>
     </section>
+    <section class="card" id="regeneration-panel">
+      <p class="label">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 0113.7-5.7L20 8M20 8V3m0 5h-5M20 12a8 8 0 01-13.7 5.7L4 16m0 0v5m0-5h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Regenerate safely
+      </p>
+      <label class="file-pick">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+        <span id="existing-files-label">Previous export folder (optional, for diff)</span>
+        <input type="file" id="existing-files-input" webkitdirectory multiple />
+      </label>
+      <div class="regen-actions">
+        <button id="generate-btn" class="btn ghost">Preview changes</button>
+        <button id="download-btn" class="btn ghost" disabled>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M4 19h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Download
+        </button>
+      </div>
+      <div id="diff-preview"></div>
+    </section>
+    </div>
 
+    <div class="export-lane export-review-lane">
     <!-- T6.1: design-linter report (T7.1 rules, first pass) for the current scope -->
     <section class="card" id="lint-report">
       <p class="label">
@@ -1668,28 +1733,10 @@
       </div>
       <div id="i18n-panel-container"></div>
     </section>
+    </div>
 
     <!-- T3.3 regeneration-without-overwrite: pick the previously-exported project (optional) so
          the plugin can merge fresh output against it and show a diff before anything is written. -->
-    <section class="card" id="regeneration-panel">
-      <p class="label">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 0113.7-5.7L20 8M20 8V3m0 5h-5M20 12a8 8 0 01-13.7 5.7L4 16m0 0v5m0-5h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        Regenerate safely
-      </p>
-      <label class="file-pick">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-        <span id="existing-files-label">Previous export folder (optional, for diff)</span>
-        <input type="file" id="existing-files-input" webkitdirectory multiple />
-      </label>
-      <div class="regen-actions">
-        <button id="generate-btn" class="btn ghost">Preview changes</button>
-        <button id="download-btn" class="btn ghost" disabled>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M4 19h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Download
-        </button>
-      </div>
-      <div id="diff-preview"></div>
-    </section>
 
     <!-- Approach A (Framify pattern): the Figma API cannot export video bytes ("Cannot export
          node as video"), so when the export declares manualAssets this panel lets the user attach
@@ -2020,6 +2067,7 @@
     </div>
 
     <div id="view-agent" class="view hidden">
+      <div class="agent-setup-lane">
       <section class="card agent-status-card">
         <div class="agent-card-header">
           <p class="label">
@@ -2069,6 +2117,7 @@
           </button>
         </div>
       </section>
+      </div>
 
       <section class="card agent-skill-card">
         <p class="label">
@@ -2730,15 +2779,31 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         document.body.setAttribute('data-ui', width >= 560 ? 'wide' : 'narrow')
       }
 
+      var UI_RESIZE_BOUNDS = { minWidth: 340, maxWidth: 1240, minHeight: 320, maxHeight: 1200 }
+
+      function clampUiAccumulator(width, height) {
+        return {
+          width: Math.min(UI_RESIZE_BOUNDS.maxWidth, Math.max(UI_RESIZE_BOUNDS.minWidth, width)),
+          height: Math.min(UI_RESIZE_BOUNDS.maxHeight, Math.max(UI_RESIZE_BOUNDS.minHeight, height)),
+        }
+      }
+
+      function clampUiRequest(width, height) {
+        var size = clampUiAccumulator(width, height)
+        return { width: Math.round(size.width), height: Math.round(size.height) }
+      }
+
       function requestUiSize(width, height, persist) {
+        var size = clampUiRequest(width, height)
         parent.postMessage({
           pluginMessage: {
             type: 'UI_RESIZE',
-            width: Math.round(width),
-            height: Math.round(height),
+            width: size.width,
+            height: size.height,
             persist: persist !== false,
           },
         }, '*')
+        return size
       }
 
       function uiAutofitHeight() {
@@ -2751,25 +2816,59 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
 
       var uiResizeHandle = document.getElementById('ui-resize')
-      var uiResizePointer = null
-      var uiResizeLast = { width: window.innerWidth, height: window.innerHeight }
+      var uiResizeDrag = null
+      var uiResizeFrame = 0
+      var uiResizeQueued = null
+
+      function queueUiResize(size) {
+        uiResizeQueued = size
+        if (uiResizeFrame) return
+        uiResizeFrame = requestAnimationFrame(function () {
+          uiResizeFrame = 0
+          if (!uiResizeQueued) return
+          requestUiSize(uiResizeQueued.width, uiResizeQueued.height, false)
+          uiResizeQueued = null
+        })
+      }
+
       uiResizeHandle.addEventListener('pointerdown', function (event) {
         if (BROWSER_MIRROR || event.button !== 0) return
-        uiResizePointer = event.pointerId
-        uiResizeLast = { width: window.innerWidth, height: window.innerHeight }
+        uiResizeDrag = {
+          pointerId: event.pointerId,
+          cursorX: event.screenX,
+          cursorY: event.screenY,
+          width: window.innerWidth,
+          height: window.innerHeight,
+          last: clampUiRequest(window.innerWidth, window.innerHeight),
+        }
         uiResizeHandle.setPointerCapture(event.pointerId)
         document.body.classList.add('ui-resizing')
         event.preventDefault()
       })
       uiResizeHandle.addEventListener('pointermove', function (event) {
-        if (uiResizePointer !== event.pointerId) return
-        uiResizeLast = { width: event.clientX + 6, height: event.clientY + 6 }
-        requestUiSize(uiResizeLast.width, uiResizeLast.height, false)
+        var drag = uiResizeDrag
+        if (!drag || drag.pointerId !== event.pointerId) return
+        var deltaX = event.screenX - drag.cursorX
+        var deltaY = event.screenY - drag.cursorY
+        if (deltaX === 0 && event.movementX) deltaX = event.movementX
+        if (deltaY === 0 && event.movementY) deltaY = event.movementY
+        drag.cursorX = event.screenX
+        drag.cursorY = event.screenY
+
+        var accumulated = clampUiAccumulator(drag.width + deltaX, drag.height + deltaY)
+        drag.width = accumulated.width
+        drag.height = accumulated.height
+        drag.last = { width: Math.round(accumulated.width), height: Math.round(accumulated.height) }
+        queueUiResize(drag.last)
       })
       function finishUiResize(event) {
-        if (uiResizePointer !== event.pointerId) return
-        requestUiSize(uiResizeLast.width, uiResizeLast.height, true)
-        uiResizePointer = null
+        var drag = uiResizeDrag
+        if (!drag || drag.pointerId !== event.pointerId) return
+        if (uiResizeFrame) cancelAnimationFrame(uiResizeFrame)
+        uiResizeFrame = 0
+        uiResizeQueued = null
+        requestUiSize(drag.last.width, drag.last.height, true)
+        uiResizeDrag = null
         document.body.classList.remove('ui-resizing')
         if (uiResizeHandle.hasPointerCapture(event.pointerId)) uiResizeHandle.releasePointerCapture(event.pointerId)
       }
@@ -7311,6 +7410,18 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         if (msg.type.slice(0, 7) === 'MODULE_' || msg.type === 'MODULES') {
           modHandleMessage(msg)
+          return
+        }
+        if (msg.type === 'UI_SIZE') {
+          if (msg.bounds) {
+            UI_RESIZE_BOUNDS = {
+              minWidth: Number(msg.bounds.minWidth) || UI_RESIZE_BOUNDS.minWidth,
+              maxWidth: Number(msg.bounds.maxWidth) || UI_RESIZE_BOUNDS.maxWidth,
+              minHeight: Number(msg.bounds.minHeight) || UI_RESIZE_BOUNDS.minHeight,
+              maxHeight: Number(msg.bounds.maxHeight) || UI_RESIZE_BOUNDS.maxHeight,
+            }
+          }
+          uiSyncSize()
           return
         }
         if (msg.type === 'FILES_READY') {

@@ -76,14 +76,23 @@ creates the release archive and refuses to package stale bundles.
 
 ### Resizable panel
 
-Drag the bottom-right corner to resize the plugin between 340×320 and 1400×1600 pixels.
+Drag the bottom-right corner to resize the plugin between 340×320 and 1240×1200 pixels.
 Double-click the handle to fit the current page's height without changing its width. The size is
 stored per machine in `figma.clientStorage` and restored on the next run. Every native view
 consumes the available width; at narrow sizes the header, settings controls, palette editor,
 module actions, tables and footer collapse or scroll without clipping. At 560 pixels wide the
-palette layout gains a third column, while long prose remains capped at 82 characters. Long code,
-skill, table and diff regions grow with the actual window height. The live browser mirror follows
-its browser window and hides the Figma-only resize handle.
+palette editor gains a third field column. At 720 pixels the export, token, DS Tools and Agent
+Listener screens switch to semantic split grids. Django and Tauri keep setup and review work in
+independent vertical lanes, so a tall linter cannot push a wide regeneration card below an empty
+grid row. Dense palette, remap and video workflows retain wider spans, while declarative module
+blocks use an auto-fit grid. Heterogeneous screens avoid row-spanning cards, so tall skill/code
+content cannot create a hole beneath a shorter sibling.
+The internal workspace stops growing at 1200 pixels, Agent skill content is capped at 520 pixels,
+and lone DS generator cards stop at 560 pixels in split layouts. Resize drag accumulates consecutive screen-space
+deltas in floating-point dimensions, clamps that accumulator without overshoot, and rounds only
+the size sent to Figma. Reversing direction therefore moves the edge immediately on mouse and
+trackpad input. Live requests are coalesced per frame and only the final size is persisted.
+The live browser mirror follows its browser window and hides the Figma-only resize handle.
 
 ## Agent Listener quick start
 

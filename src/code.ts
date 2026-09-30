@@ -1380,7 +1380,7 @@ async function generateTypographyVariables(options: unknown): Promise<Typography
  * A codegen plugin has no UI — showing one here would open the export panel over Dev Mode's own.
  */
 const UI_SIZE = { width: 420, height: 660 } as const
-const UI_BOUNDS = { minWidth: 340, maxWidth: 1400, minHeight: 320, maxHeight: 1600 } as const
+const UI_BOUNDS = { minWidth: 340, maxWidth: 1240, minHeight: 320, maxHeight: 1200 } as const
 
 function clampUiSize(raw: unknown): { width: number; height: number } {
   const value = raw && typeof raw === 'object' ? raw as { width?: unknown; height?: unknown } : {}
@@ -1478,7 +1478,7 @@ Promise.all([
   if (figma.mode !== 'codegen') {
     const uiSize = clampUiSize(storedUiSize)
     figma.ui.resize(uiSize.width, uiSize.height)
-    postToUi({ type: 'UI_SIZE', ...uiSize })
+    postToUi({ type: 'UI_SIZE', ...uiSize, bounds: UI_BOUNDS })
   }
   // The panel size is visible immediately; module discovery may take longer and must not delay it.
   await loadUserModules()
@@ -3560,13 +3560,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'UI_RESIZE': {
       // @agent read: resize the plugin panel chrome; the Figma document is untouched
-      // @agent param width: requested panel width in pixels, clamped to 340…1400
-      // @agent param height: requested panel height in pixels, clamped to 320…1600
+      // @agent param width: requested panel width in pixels, clamped to 340…1240
+      // @agent param height: requested panel height in pixels, clamped to 320…1200
       // @agent param persist: save the clamped size for the next run; false is for live drag frames
       const uiSize = clampUiSize({ width: msg.width, height: msg.height })
       figma.ui.resize(uiSize.width, uiSize.height)
       if (msg.persist !== false) await figma.clientStorage.setAsync(UI_SIZE_KEY, uiSize)
-      postToUi({ type: 'UI_SIZE', ...uiSize })
+      postToUi({ type: 'UI_SIZE', ...uiSize, bounds: UI_BOUNDS })
       break
     }
     case 'SAVE_USER_PRESET': {
