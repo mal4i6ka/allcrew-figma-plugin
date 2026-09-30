@@ -74,6 +74,15 @@ creates the release archive and refuses to package stale bundles.
 4. **Download package (.zip)** — or grab any single file. **Rescan** after you
    edit variables.
 
+### Resizable panel
+
+Drag the bottom-right corner to resize the plugin between 340×320 and 1400×1600 pixels.
+Double-click the handle to fit the current page's height without changing its width. The size is
+stored per machine in `figma.clientStorage` and restored on the next run. At 560 pixels wide the
+layout switches to its wider form; long code, skill, table and diff regions grow with the actual
+window height instead of keeping fixed scroll boxes. The live browser mirror follows its browser
+window and hides the Figma-only resize handle.
+
 ## Agent Listener quick start
 
 The release archive includes the exact bridge and MCP front built with the plugin:

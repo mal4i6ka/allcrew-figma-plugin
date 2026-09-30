@@ -51,6 +51,8 @@
     --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
     --brand: "Museo Sans", -apple-system, BlinkMacSystemFont, sans-serif;
     --ease-state: cubic-bezier(.42, 0, .58, 1);
+    --ui-w: 420px;
+    --ui-h: 660px;
   }
 
   * { box-sizing: border-box; }
@@ -299,12 +301,15 @@
   #diff-preview summary:hover { color: var(--text); }
   #diff-preview details[open] summary { border-bottom: 1px solid var(--border); color: var(--text); }
   #diff-preview pre {
-    margin: 0; padding: 9px 11px; overflow: auto; max-height: 180px;
+    margin: 0; padding: 9px 11px; overflow: auto;
+    max-height: clamp(120px, calc(var(--ui-h) - 480px), 620px);
     font-family: var(--mono); font-size: 10.5px; line-height: 1.6; tab-size: 2;
   }
   .diff-add { color: var(--ok); }
   .diff-remove { color: var(--err); }
   .diff-same { color: var(--faint); }
+  footer.handle-only { flex: 0 0 18px; height: 18px; min-height: 18px; padding: 0; gap: 0; }
+  footer.handle-only > :not(#ui-resize) { display: none !important; }
 
   /* footer: export + pipeline */
   footer { padding: 12px 18px 14px; border-top: 1px solid var(--border); background: var(--bg-2); display: flex; flex-direction: column; gap: 9px; }
@@ -514,7 +519,7 @@
   .rmp-stats b { color: var(--text); font-family: var(--mono); font-weight: 500; }
   /* Taller than the panel strictly needs: a filter above the list is only worth its row if
      the list it filters did not shrink by the same amount. */
-  .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: 520px; overflow-y: auto; overflow-x: hidden; }
+  .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: clamp(300px, calc(var(--ui-h) - 140px), 960px); overflow-y: auto; overflow-x: hidden; }
   /* A module's table. Borrowing .rmp-table was wrong: that is a flex column of div rows, and
      applied to a real <table> it collapses every cell against its neighbour. Same visual
      language — mono, faint uppercase head, thin separators — scoped to its own name, and it
@@ -523,7 +528,7 @@
      a module's cards live one level down inside this container — which is why they arrived
      glued to each other. */
   #mod-blocks { display: flex; flex-direction: column; gap: 12px; }
-  .mod-table-wrap { max-height: 320px; overflow: auto; }
+  .mod-table-wrap { max-height: clamp(220px, calc(var(--ui-h) - 340px), 760px); overflow: auto; }
   .mod-table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 10.5px; }
   .mod-table th { position: sticky; top: 0; background: var(--surface); color: var(--faint); font-size: 9px; font-weight: 500;
                   letter-spacing: .05em; text-transform: uppercase; text-align: left; padding: 0 8px 4px; white-space: nowrap; }
@@ -588,7 +593,7 @@
   #view-design-tokens .icon-btn:hover, #view-agent .icon-btn:hover { color: var(--text); border-color: var(--border-2); }
   #view-design-tokens .icon-btn.copied, #view-agent .icon-btn.copied { color: var(--ok); border-color: rgba(70,192,138,0.4); }
   #view-design-tokens .icon-btn.copy-failed, #view-agent .icon-btn.copy-failed { color: var(--err); border-color: rgba(255,122,110,0.45); }
-  #view-design-tokens .code, #view-agent .code { margin: 0; padding: 12px 14px; overflow: auto; max-height: 230px; font-family: var(--mono); font-size: 11px; line-height: 1.65; color: var(--text); white-space: pre; tab-size: 2; }
+  #view-design-tokens .code, #view-agent .code { margin: 0; padding: 12px 14px; overflow: auto; max-height: clamp(170px, calc(var(--ui-h) - 430px), 670px); font-family: var(--mono); font-size: 11px; line-height: 1.65; color: var(--text); white-space: pre; tab-size: 2; }
   #view-design-tokens .code .c-com { color: var(--faint); }
   #view-design-tokens .code .c-sel { color: var(--accent-hi); }
   #view-design-tokens .code .c-var { color: #9ecbff; }
@@ -654,7 +659,7 @@
   }
   #view-agent .agent-command-line { min-height: 41px; }
   #view-agent .agent-mcp-config { min-height: 68px; }
-  #view-agent .agent-skill-content { height: 336px; min-height: 336px; }
+  #view-agent .agent-skill-content { height: clamp(180px, calc(var(--ui-h) - 400px), 700px); min-height: 0; }
   #view-agent .agent-cmd + .agent-cmd { margin-top: 0; }
   #view-agent .agent-cmd .code {
     min-height: 100%;
@@ -1452,7 +1457,7 @@
   .module-callout { margin: 8px 0; padding: 8px 10px; border-left: 2px solid var(--border-strong); background: var(--bg-2); color: var(--muted); font-size: 10.5px; line-height: 1.45; }
   .module-callout.warn, .module-callout.error { border-left-color: var(--danger); color: var(--danger); }
   .module-callout.success { border-left-color: var(--ok); }
-  .module-code { max-height: 260px; overflow: auto; margin: 8px 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-2); color: var(--text); font: 10px/1.55 var(--mono); white-space: pre; }
+  .module-code { max-height: clamp(180px, calc(var(--ui-h) - 400px), 700px); overflow: auto; margin: 8px 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-2); color: var(--text); font: 10px/1.55 var(--mono); white-space: pre; }
   .module-list { margin: 6px 0 8px; padding-left: 18px; color: var(--muted); font-size: 10.5px; line-height: 1.55; }
   .module-confirm { margin-top: 10px; padding: 10px; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); border-radius: var(--r-sm); }
   .module-confirm p { margin: 0 0 8px; color: var(--text); font-size: 10.5px; line-height: 1.45; }
@@ -1472,6 +1477,32 @@
   .update-status.ok { color: var(--ok); }
   .update-status.err { color: var(--danger); }
   .update-actions { display: flex; gap: 6px; }
+  body[data-ui="wide"] .pal-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  body[data-ui="wide"] .pal-field.pal-wide { grid-column: span 3; }
+  body[data-ui="wide"] #view-agent .agent-hint,
+  body[data-ui="wide"] .hint,
+  body[data-ui="wide"] .card > p { max-width: 82ch; }
+  #ui-resize {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    z-index: 1000;
+    width: 18px;
+    height: 18px;
+    border: 0;
+    padding: 0;
+    background:
+      linear-gradient(135deg, transparent 0 44%, var(--border-2) 45% 51%, transparent 52%),
+      linear-gradient(135deg, transparent 0 65%, var(--border-2) 66% 72%, transparent 73%);
+    cursor: nwse-resize;
+    touch-action: none;
+  }
+  body.ui-resizing #ui-resize {
+    background:
+      linear-gradient(135deg, transparent 0 44%, var(--accent) 45% 51%, transparent 52%),
+      linear-gradient(135deg, transparent 0 65%, var(--accent) 66% 72%, transparent 73%);
+  }
+  html.browser-mirror #ui-resize { display: none; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -2354,6 +2385,7 @@
       <span id="status"></span>
       <span id="export-progress-label"></span>
     </div>
+    <button id="ui-resize" type="button" aria-label="Resize plugin panel" title="Drag to resize · double-click to fit height"></button>
   </footer>
 
   <!-- JSZip (v3.10.1, https://stuk.github.io/jszip/), inlined so the export flow works
@@ -2626,6 +2658,67 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         })
       }
       // ── end Live browser client ─────────────────────────────────────────────────────
+
+      function uiSyncSize() {
+        var width = Math.round(window.innerWidth)
+        var height = Math.round(window.innerHeight)
+        document.documentElement.style.setProperty('--ui-w', width + 'px')
+        document.documentElement.style.setProperty('--ui-h', height + 'px')
+        document.body.setAttribute('data-ui', width >= 560 ? 'wide' : 'narrow')
+      }
+
+      function requestUiSize(width, height, persist) {
+        parent.postMessage({
+          pluginMessage: {
+            type: 'UI_RESIZE',
+            width: Math.round(width),
+            height: Math.round(height),
+            persist: persist !== false,
+          },
+        }, '*')
+      }
+
+      function uiAutofitHeight() {
+        var active = document.querySelector('.view:not(.hidden)')
+        if (!active) return
+        var header = document.querySelector('header')
+        var footer = document.querySelector('footer')
+        var chrome = (header ? header.offsetHeight : 0) + (footer ? footer.offsetHeight : 0) + 32
+        requestUiSize(window.innerWidth, active.scrollHeight + chrome, true)
+      }
+
+      var uiResizeHandle = document.getElementById('ui-resize')
+      var uiResizePointer = null
+      var uiResizeLast = { width: window.innerWidth, height: window.innerHeight }
+      uiResizeHandle.addEventListener('pointerdown', function (event) {
+        if (BROWSER_MIRROR || event.button !== 0) return
+        uiResizePointer = event.pointerId
+        uiResizeLast = { width: window.innerWidth, height: window.innerHeight }
+        uiResizeHandle.setPointerCapture(event.pointerId)
+        document.body.classList.add('ui-resizing')
+        event.preventDefault()
+      })
+      uiResizeHandle.addEventListener('pointermove', function (event) {
+        if (uiResizePointer !== event.pointerId) return
+        uiResizeLast = { width: event.clientX + 6, height: event.clientY + 6 }
+        requestUiSize(uiResizeLast.width, uiResizeLast.height, false)
+      })
+      function finishUiResize(event) {
+        if (uiResizePointer !== event.pointerId) return
+        requestUiSize(uiResizeLast.width, uiResizeLast.height, true)
+        uiResizePointer = null
+        document.body.classList.remove('ui-resizing')
+        if (uiResizeHandle.hasPointerCapture(event.pointerId)) uiResizeHandle.releasePointerCapture(event.pointerId)
+      }
+      uiResizeHandle.addEventListener('pointerup', finishUiResize)
+      uiResizeHandle.addEventListener('pointercancel', finishUiResize)
+      uiResizeHandle.addEventListener('dblclick', function (event) {
+        if (BROWSER_MIRROR) return
+        event.preventDefault()
+        uiAutofitHeight()
+      })
+      window.addEventListener('resize', uiSyncSize)
+      uiSyncSize()
 
       function buildAndDownload(files) {
         if (!mirrorOwnsSideEffects()) {
@@ -2956,7 +3049,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         footer.classList.toggle('ds-tools-footer', compactDsFooter)
         document.body.classList.toggle('ds-tools-mode', compactDsFooter)
         footer.classList.toggle(
-          'hidden',
+          'handle-only',
           settings || target === 'agent' || target === 'modules' || target === 'sdk-builder' || Boolean(MODULE_TARGET)
         )
         // A module's options live in Settings, under its own heading — and only while the

@@ -2,6 +2,17 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.4.0 — 2026-09-30
+
+### Added
+
+- Added a draggable bottom-right panel resize handle with double-click height fitting.
+- Added globally persisted, clamped plugin dimensions from 340×320 through 1400×1600.
+- Added responsive narrow/wide layouts and viewport-driven heights for code, skill, table and diff regions.
+- Added the read-only `UI_RESIZE` panel command; the live browser mirror follows its browser window and hides the Figma-only handle.
+- Live drag frames resize without writing storage; the final clamped size is persisted once on pointer release or height autofit.
+- Stored dimensions are applied before user-module discovery, avoiding a delayed startup jump.
+
 ## 1.3.0 — 2026-09-30
 
 ### Added

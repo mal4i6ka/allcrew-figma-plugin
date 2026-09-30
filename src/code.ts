@@ -188,6 +188,7 @@ type PluginMessage =
   | { type: 'SAVE_EXPORT_OPTIONS'; options: Partial<ExportOptions> }
   | { type: 'SAVE_UPDATE_PREFERENCES'; preferences: unknown }
   | { type: 'OPEN_EXTERNAL'; url: string }
+  | { type: 'UI_RESIZE'; width: number; height: number; persist?: boolean }
   | { type: 'LIST_VARIABLE_COLLECTIONS' }
   | { type: 'SYNC_BREAKPOINT_FRAMES' }
   | { type: 'SAVE_USER_PRESET'; label: string; values: unknown }
@@ -1378,6 +1379,19 @@ async function generateTypographyVariables(options: unknown): Promise<Typography
  *
  * A codegen plugin has no UI — showing one here would open the export panel over Dev Mode's own.
  */
+const UI_SIZE = { width: 420, height: 660 } as const
+const UI_BOUNDS = { minWidth: 340, maxWidth: 1400, minHeight: 320, maxHeight: 1600 } as const
+
+function clampUiSize(raw: unknown): { width: number; height: number } {
+  const value = raw && typeof raw === 'object' ? raw as { width?: unknown; height?: unknown } : {}
+  const width = typeof value.width === 'number' && Number.isFinite(value.width) ? value.width : UI_SIZE.width
+  const height = typeof value.height === 'number' && Number.isFinite(value.height) ? value.height : UI_SIZE.height
+  return {
+    width: Math.round(Math.min(UI_BOUNDS.maxWidth, Math.max(UI_BOUNDS.minWidth, width))),
+    height: Math.round(Math.min(UI_BOUNDS.maxHeight, Math.max(UI_BOUNDS.minHeight, height))),
+  }
+}
+
 if (figma.mode === 'codegen') {
   figma.codegen.on('generate', async ({ node }) => {
     try {
@@ -1413,13 +1427,14 @@ if (figma.mode === 'codegen') {
     }
   })
 } else {
-  figma.showUI(__html__, { width: 426, height: 958, themeColors: true })
+  figma.showUI(__html__, { ...UI_SIZE, themeColors: true })
 }
 
 const EXPORT_OPTIONS_KEY = 'allcrewChannel.v1.exportOptions'
 const USER_PRESETS_KEY = 'allcrewChannel.v1.userPresets'
 const PALETTE_SETTINGS_KEY = 'allcrewChannel.v1.paletteSettings'
 const UPDATE_PREFERENCES_KEY = 'allcrewChannel.v1.updatePreferences'
+const UI_SIZE_KEY = 'allcrewChannel.v1.uiSize'
 
 /**
  * Agent gates persist only when Figma exposes a stable `fileKey` (private organization plugins).
@@ -1458,9 +1473,14 @@ Promise.all([
   figma.clientStorage.getAsync(USER_PRESETS_KEY),
   figma.clientStorage.getAsync(PALETTE_SETTINGS_KEY),
   figma.clientStorage.getAsync(UPDATE_PREFERENCES_KEY),
-]).then(async ([storedOptions, storedPresets, storedPalette, storedUpdates]) => {
-  // Before anything answers: a module command has to be callable from the first request, and
-  // the channel's command list is assembled per call from whatever this holds.
+  figma.clientStorage.getAsync(UI_SIZE_KEY),
+]).then(async ([storedOptions, storedPresets, storedPalette, storedUpdates, storedUiSize]) => {
+  if (figma.mode !== 'codegen') {
+    const uiSize = clampUiSize(storedUiSize)
+    figma.ui.resize(uiSize.width, uiSize.height)
+    postToUi({ type: 'UI_SIZE', ...uiSize })
+  }
+  // The panel size is visible immediately; module discovery may take longer and must not delay it.
   await loadUserModules()
   // The bridge URL and secret are setup and worth persisting; so is the answer a designer has
   // already given about this file. Re-asking on every open does not strengthen consent — it
@@ -3536,6 +3556,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         break
       }
       figma.openExternal(msg.url)
+      break
+    }
+    case 'UI_RESIZE': {
+      // @agent read: resize the plugin panel chrome; the Figma document is untouched
+      // @agent param width: requested panel width in pixels, clamped to 340…1400
+      // @agent param height: requested panel height in pixels, clamped to 320…1600
+      // @agent param persist: save the clamped size for the next run; false is for live drag frames
+      const uiSize = clampUiSize({ width: msg.width, height: msg.height })
+      figma.ui.resize(uiSize.width, uiSize.height)
+      if (msg.persist !== false) await figma.clientStorage.setAsync(UI_SIZE_KEY, uiSize)
+      postToUi({ type: 'UI_SIZE', ...uiSize })
       break
     }
     case 'SAVE_USER_PRESET': {
