@@ -101,7 +101,7 @@ API для установки dev-плагина у Figma нет. Агент г�
 
 1. Распаковать архив:
    ```bash
-   unzip allcrew-figma-workspace-v1.1.1.zip -d ~/figma-plugins/allcrew-figma-workspace
+   unzip allcrew-figma-workspace-v*.zip -d ~/figma-plugins/allcrew-figma-workspace
    ```
 2. Проверить целостность пакета перед тем, как просить человека его
    импортировать:

@@ -2,6 +2,12 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.2.1 — 2026-09-30
+
+### Fixed
+
+- Replaced the stale version-specific archive name in the packaged installation guide with `allcrew-figma-workspace-v*.zip`, so future releases cannot ship instructions naming an older archive.
+
 ## 1.2.0 — 2026-09-30
 
 ### Added
