@@ -7,7 +7,7 @@ It is MCP-shaped without being MCP: there is no server to register, no client li
 nothing to keep in sync but the op names. If a tool can run a shell command, it can drive
 Figma.
 
-**Reads and writes, gated separately.** Most ops only look; twenty-three of them change the
+**Reads and writes, gated separately.** Most ops only look; twenty-five of them change the
 document or plugin-managed module storage and sit behind their own switch, which reads never imply.
 
 ---
@@ -367,10 +367,12 @@ allcrew-channel ops --json       # the same, machine-readable
 | `selection.get` | what the designer has selected right now |
 | `components.list` | local components and sets, with property/variant definitions, descriptions and documentation links |
 | `component.api` | one component as an API: axes with options and defaults, the variant that isolates each option, what it changes (with the token behind each value), and which layer every boolean/text/swap property drives |
+| `component.instances` | document-wide inventory of every component copy: page, containing frame, nested status and jump link, plus local components with zero copies |
+| `component.orphans` | orphan instances grouped by dead master, separating deleted local masters from missing masters and ranking groups by affected copies |
 | `styles.list` | local text, paint, effect and grid styles |
 | `variables.get` | collections, modes and values, with each token's description, scopes and per-platform `codeSyntax` |
 | `flow.map` | prototype graph of a page: starting points and every reaction edge, each carrying the navigation kind and its transition (duration, easing, curve) |
-| `node.focus` | selects a node and scrolls the designer to it — "this one, look", and a link when the plugin is Organization-private |
+| `node.focus` | selects one node or a same-page batch and scrolls the designer to it; cross-page nodes return grouped under `elsewhere` with one-line jump links |
 | `node.screenshot` | renders a node to PNG — how an agent checks what it actually drew |
 | `image.fills` | the uploaded files behind a subtree's image fills, on a time budget it always answers within |
 | `export.settings` | the export marks a designer set on a subtree — format, constraint, suffix and the svg flags, with each marked node's box in pixels and as a share of the root. The only read that reports them: `node.get` and `design.ir` both drop `exportSettings`, so before this op the marks were reachable only over REST |
@@ -410,7 +412,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `modules.inspect` | one installed module&rsquo;s declarative file and current state, with secret fields redacted |
 | `modules.export` | a transferable module file, optionally with non-secret state |
 
-Twenty-three **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
+Twenty-five **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
 table is checked against the registry by a test — an op that ships without a row here fails the
 build rather than going quietly undocumented, which is how the count used to read "five".)
 
@@ -430,6 +432,8 @@ build rather than going quietly undocumented, which is how the count used to rea
 | `instance.detach` | detaches instances from their main components. Bindings survive — plan a rebind after |
 | `text.normalize` | rewrites the invisible end-of-text run so orphan variable references die — surgery, verified per node |
 | `component.describe` | writes component descriptions and their documentation links — the field `COMPONENTS.md` is built from |
+| `component.restore` | clones one orphan into a replacement master, reassigns its whole dead-master group and reports overrides as kept, restored or lost |
+| `instance.swap` | swaps or rebuilds instances to a component id, library key or exact set variant; `auto` falls back only when native swap fails and reports the reason plus any new node id |
 | `board.render` | draws a documentation board: headings, callouts, swatch grids, before/after rows. `replace: true` makes re-rendering idempotent |
 | `image.plate` | renders a node with its children hidden — the photo without the badge baked over it. Sits behind the write gate because it clones: the clone is created, hidden, exported and deleted inside the one call, and the document is back to itself when it returns |
 | `shader.define` | imports a shader by id so its settings get names — the one thing a read cannot do for itself |

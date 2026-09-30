@@ -26424,32 +26424,60 @@ ${scripts}`, "");
     },
     {
       name: "node.focus",
-      summary: 'Select a node and scroll the designer to it \u2014 how an agent says "this one, look".',
-      agent: "Selects the node and scrolls the designer to it \u2014 use it instead of describing where something is.",
+      summary: "Select one or many nodes and reveal their page; cross-page nodes return as grouped jump links.",
+      agent: "Pass nodes[] for a whole review list. Figma can select only one page at a time, so the first node chooses the visible page; every node on another page is returned under elsewhere with a one-line jump link.",
       mutates: false,
       params: {
-        nodeId: { type: "string", required: true, description: "Node to reveal." },
-        select: { type: "boolean", default: true, description: "Also select it, not just scroll to it." }
+        nodeId: { type: "string", description: "One node to reveal (legacy shorthand for nodes: [nodeId])." },
+        nodes: { type: "string[]", description: "Node ids to select together where they share a page." },
+        select: { type: "boolean", default: true, description: "Also select visible-page nodes, not just scroll to them." }
       },
       async run(params) {
-        const node = await resolveSceneNode(params.nodeId);
-        let page = node.parent;
-        while (page && page.type !== "PAGE") page = page.parent;
-        if (!page) throw new Error(`"${node.name}" is not on a page \u2014 nothing to scroll to`);
-        await page.loadAsync();
-        await figma.setCurrentPageAsync(page);
-        if (params.select !== false) figma.currentPage.selection = [node];
-        figma.viewport.scrollAndZoomIntoView([node]);
-        const anchor = `?node-id=${node.id.replace(":", "-")}`;
-        const fileKey = figma.fileKey;
+        var _a;
+        const ids = [
+          ...Array.isArray(params.nodes) ? params.nodes.filter((id) => typeof id === "string" && id !== "") : [],
+          ...typeof params.nodeId === "string" && params.nodeId !== "" ? [params.nodeId] : []
+        ];
+        const unique = [...new Set(ids)];
+        if (unique.length === 0) throw new Error("send nodeId or a non-empty nodes[]");
+        const resolved = await Promise.all(unique.map((id) => resolveSceneNode(id)));
+        const rows = resolved.map((node) => {
+          let page = node.parent;
+          while (page && page.type !== "PAGE") page = page.parent;
+          if (!page) throw new Error(`"${node.name}" is not on a page \u2014 nothing to scroll to`);
+          const anchor = `?node-id=${node.id.replace(":", "-")}`;
+          const fileKey = figma.fileKey;
+          return {
+            node,
+            page,
+            result: {
+              node: { id: node.id, name: node.name, type: node.type },
+              page: { id: page.id, name: page.name },
+              url: fileKey ? `https://www.figma.com/design/${fileKey}/${anchor}` : null,
+              deepLinkSuffix: anchor
+            }
+          };
+        });
+        const visiblePage = rows[0].page;
+        await visiblePage.loadAsync();
+        await figma.setCurrentPageAsync(visiblePage);
+        const visible = rows.filter((row) => row.page.id === visiblePage.id);
+        if (params.select !== false) figma.currentPage.selection = visible.map((row) => row.node);
+        figma.viewport.scrollAndZoomIntoView(visible.map((row) => row.node));
+        const elsewhere = /* @__PURE__ */ new Map();
+        for (const row of rows.filter((candidate) => candidate.page.id !== visiblePage.id)) {
+          const group2 = (_a = elsewhere.get(row.page.id)) != null ? _a : {
+            page: { id: row.page.id, name: row.page.name },
+            nodes: []
+          };
+          group2.nodes.push(row.result);
+          elsewhere.set(row.page.id, group2);
+        }
         return {
-          node: { id: node.id, name: node.name, type: node.type },
-          page: { id: page.id, name: page.name },
-          selected: params.select !== false,
-          /** A link worth sending, when this plugin is private to an Organization. */
-          url: fileKey ? `https://www.figma.com/design/${fileKey}/${anchor}` : null,
-          /** Paste the file's own URL in front of this when there is no `url` above. */
-          deepLinkSuffix: anchor
+          page: { id: visiblePage.id, name: visiblePage.name },
+          selected: params.select === false ? [] : visible.map((row) => row.result.node),
+          elsewhere: [...elsewhere.values()],
+          nodes: rows.map((row) => row.result)
         };
       }
     },
@@ -31508,7 +31536,7 @@ ${scripts}`, "");
           page.name = ref;
           return page;
         };
-        const pageOf6 = (node) => {
+        const pageOf7 = (node) => {
           let walk3 = node.parent;
           while (walk3 && walk3.type !== "PAGE") walk3 = walk3.parent;
           return walk3 != null ? walk3 : null;
@@ -31523,7 +31551,7 @@ ${scripts}`, "");
             if (!source) throw new Error(`no node with id ${id}`);
             if (source.type === "PAGE" || source.type === "DOCUMENT") throw new Error(`${source.type} cannot be copied`);
             const scene = source;
-            const home = pageOf6(scene);
+            const home = pageOf7(scene);
             if (home) await home.loadAsync();
             const wantAs = typeof entry.as === "string" ? entry.as : null;
             if (wantAs !== null && wantAs !== "instance" && wantAs !== "clone") {
@@ -33525,6 +33553,504 @@ ${scripts}`, "");
     }
   ];
 
+  // src/agent/component-ops.ts
+  var OVERRIDE_FIELDS = [
+    "characters",
+    "fills",
+    "strokes",
+    "fillStyleId",
+    "strokeStyleId",
+    "textStyleId",
+    "effectStyleId",
+    "effects",
+    "visible",
+    "opacity",
+    "blendMode",
+    "locked",
+    "constraints",
+    "width",
+    "height",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "x",
+    "y",
+    "rotation",
+    "cornerRadius",
+    "cornerSmoothing",
+    "topLeftRadius",
+    "topRightRadius",
+    "bottomLeftRadius",
+    "bottomRightRadius",
+    "strokeWeight",
+    "strokeAlign",
+    "dashPattern",
+    "layoutMode",
+    "layoutWrap",
+    "paddingLeft",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "itemSpacing",
+    "counterAxisSpacing",
+    "layoutAlign",
+    "layoutGrow",
+    "layoutPositioning",
+    "primaryAxisSizingMode",
+    "counterAxisSizingMode",
+    "primaryAxisAlignItems",
+    "counterAxisAlignItems",
+    "clipsContent",
+    "exportSettings",
+    "reactions"
+  ];
+  function nodeRef(node) {
+    return { id: node.id, name: "name" in node ? String(node.name) : "", type: node.type };
+  }
+  function pageOf5(node) {
+    let cursor = node;
+    while (cursor && cursor.type !== "PAGE") cursor = cursor.parent;
+    return (cursor == null ? void 0 : cursor.type) === "PAGE" ? cursor : null;
+  }
+  function containingFrame(node) {
+    let cursor = node.parent;
+    while (cursor && cursor.type !== "PAGE") {
+      if (cursor.type === "FRAME" || cursor.type === "SECTION" || cursor.type === "COMPONENT" || cursor.type === "COMPONENT_SET") return cursor;
+      cursor = cursor.parent;
+    }
+    return null;
+  }
+  function deepLink(node) {
+    const suffix = `?node-id=${node.id.replace(":", "-")}`;
+    return figma.fileKey ? `https://www.figma.com/design/${figma.fileKey}/${suffix}` : suffix;
+  }
+  function hasChildren4(node) {
+    return "children" in node;
+  }
+  function childAtPath(root, path) {
+    let cursor = root;
+    for (const index2 of path) {
+      if (!hasChildren4(cursor) || !cursor.children[index2]) return null;
+      cursor = cursor.children[index2];
+    }
+    return "x" in cursor ? cursor : null;
+  }
+  function pathIndex(root) {
+    const found = /* @__PURE__ */ new Map();
+    const stack = [{ node: root, path: [] }];
+    while (stack.length) {
+      const current = stack.pop();
+      if ("x" in current.node) found.set(current.node.id, { node: current.node, path: current.path });
+      if (!hasChildren4(current.node)) continue;
+      for (let index2 = current.node.children.length - 1; index2 >= 0; index2--) {
+        stack.push({ node: current.node.children[index2], path: [...current.path, index2] });
+      }
+    }
+    return found;
+  }
+  function cloneValue(value2) {
+    if (value2 === figma.mixed) return void 0;
+    if (value2 === null || typeof value2 !== "object") return value2;
+    try {
+      return JSON.parse(JSON.stringify(value2));
+    } catch (e) {
+      return void 0;
+    }
+  }
+  function snapshotOverrides(instance) {
+    var _a;
+    const indexed = pathIndex(instance);
+    const snapshots = [];
+    for (const override of (_a = instance.overrides) != null ? _a : []) {
+      const hit = indexed.get(override.id);
+      if (!hit) continue;
+      const raw = hit.node;
+      const fields = {};
+      const unsupported = [];
+      for (const field of override.overriddenFields) {
+        if (!OVERRIDE_FIELDS.includes(field)) {
+          unsupported.push(field);
+          continue;
+        }
+        try {
+          const value2 = cloneValue(raw[field]);
+          if (value2 === void 0) unsupported.push(field);
+          else fields[field] = value2;
+        } catch (e) {
+          unsupported.push(field);
+        }
+      }
+      snapshots.push({ path: hit.path, name: hit.node.name, type: hit.node.type, fields, unsupported });
+    }
+    return snapshots;
+  }
+  function propertyValues(instance) {
+    var _a;
+    const values = {};
+    for (const [key, entry] of Object.entries((_a = instance.componentProperties) != null ? _a : {})) {
+      if (entry.type === "SLOT" || entry.value === void 0) continue;
+      if (typeof entry.value === "string" || typeof entry.value === "boolean") values[key] = entry.value;
+    }
+    return values;
+  }
+  async function setNodeField(node, field, value2) {
+    const target = node;
+    if (field === "reactions" && "setReactionsAsync" in node) {
+      await node.setReactionsAsync(value2);
+      return;
+    }
+    if (field === "characters" && node.type === "TEXT") {
+      const fonts = node.getRangeAllFontNames(0, node.characters.length);
+      for (const font of fonts) await figma.loadFontAsync(font);
+    }
+    if ((field === "width" || field === "height") && "resize" in node) {
+      const width = field === "width" ? Number(value2) : node.width;
+      const height = field === "height" ? Number(value2) : node.height;
+      node.resize(width, height);
+      return;
+    }
+    target[field] = value2;
+  }
+  async function restoreOverrides(instance, snapshots) {
+    var _a;
+    const kept2 = [];
+    const restored = [];
+    const lost = [];
+    const unsupported = [];
+    const indexed = [...pathIndex(instance).values()].map((entry) => entry.node);
+    for (const snapshot of snapshots) {
+      const positional = childAtPath(instance, snapshot.path);
+      const target = (positional == null ? void 0 : positional.type) === snapshot.type ? positional : (_a = indexed.find((node) => node.type === snapshot.type && node.name === snapshot.name)) != null ? _a : null;
+      for (const field of snapshot.unsupported) unsupported.push({ layer: snapshot.name, field });
+      for (const [field, value2] of Object.entries(snapshot.fields)) {
+        if (!target) {
+          lost.push({ layer: snapshot.name, field, reason: "no matching layer after swap" });
+          continue;
+        }
+        const current = cloneValue(target[field]);
+        if (JSON.stringify(current) === JSON.stringify(value2)) {
+          kept2.push({ layer: target.name, field });
+          continue;
+        }
+        try {
+          await setNodeField(target, field, value2);
+          const after = cloneValue(target[field]);
+          if (JSON.stringify(after) === JSON.stringify(value2)) restored.push({ layer: target.name, field });
+          else lost.push({ layer: target.name, field, reason: "field read back differently" });
+        } catch (error) {
+          lost.push({ layer: target.name, field, reason: String((error == null ? void 0 : error.message) || error) });
+        }
+      }
+    }
+    return { kept: kept2, restored, lost, unsupported };
+  }
+  async function componentTarget(raw) {
+    var _a, _b;
+    if (typeof raw === "string" && raw) return componentFor(raw);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error('"to" must be an id/key string or { set, variant }');
+    const target = raw;
+    if (typeof target.set !== "string" || !target.set) throw new Error('"to.set" must be a component-set id or key');
+    const base = await componentFor(target.set);
+    const set = ((_a = base.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? base.parent : null;
+    if (!set) throw new Error(`"${base.name}" is not in a component set`);
+    if (target.variant === void 0) return (_b = set.defaultVariant) != null ? _b : base;
+    if (!target.variant || typeof target.variant !== "object" || Array.isArray(target.variant)) {
+      throw new Error('"to.variant" must be an object of variant property names to values');
+    }
+    const wanted = target.variant;
+    const variants = set.children.filter((candidate) => candidate.type === "COMPONENT");
+    const match = variants.find((candidate) => {
+      var _a2;
+      const values = (_a2 = candidate.variantProperties) != null ? _a2 : {};
+      return Object.entries(wanted).every(([name, value2]) => values[name] === value2);
+    });
+    if (!match) throw new Error(`no variant in "${set.name}" matches ${JSON.stringify(wanted)}`);
+    return match;
+  }
+  function pluginData(node) {
+    const values = {};
+    for (const key of node.getPluginDataKeys()) values[key] = node.getPluginData(key);
+    return values;
+  }
+  function applyPluginData(node, values) {
+    for (const [key, value2] of Object.entries(values)) node.setPluginData(key, value2);
+  }
+  async function rebuildInstance(instance, target) {
+    const parent = instance.parent;
+    if (!parent || !("insertChild" in parent)) throw new Error("instance parent cannot accept a replacement");
+    const index2 = parent.children.indexOf(instance);
+    const before = {
+      x: instance.x,
+      y: instance.y,
+      rotation: instance.rotation,
+      visible: instance.visible,
+      locked: instance.locked,
+      opacity: instance.opacity,
+      blendMode: instance.blendMode,
+      constraints: cloneValue(instance.constraints),
+      layoutAlign: instance.layoutAlign,
+      layoutGrow: instance.layoutGrow,
+      layoutPositioning: instance.layoutPositioning,
+      layoutSizingHorizontal: instance.layoutSizingHorizontal,
+      layoutSizingVertical: instance.layoutSizingVertical,
+      minWidth: instance.minWidth,
+      maxWidth: instance.maxWidth,
+      minHeight: instance.minHeight,
+      maxHeight: instance.maxHeight,
+      pluginData: pluginData(instance),
+      reactions: cloneValue(instance.reactions),
+      width: instance.width,
+      height: instance.height
+    };
+    const replacement = target.createInstance();
+    parent.insertChild(index2, replacement);
+    try {
+      const autoLayoutParent = "layoutMode" in parent && parent.layoutMode !== "NONE";
+      replacement.layoutSizingHorizontal = "FIXED";
+      replacement.layoutSizingVertical = "FIXED";
+      replacement.resize(before.width, before.height);
+      replacement.layoutPositioning = before.layoutPositioning;
+      if (!autoLayoutParent || before.layoutPositioning === "ABSOLUTE") {
+        replacement.x = before.x;
+        replacement.y = before.y;
+        replacement.constraints = before.constraints;
+      }
+      replacement.rotation = before.rotation;
+      replacement.visible = before.visible;
+      replacement.locked = before.locked;
+      replacement.opacity = before.opacity;
+      replacement.blendMode = before.blendMode;
+      replacement.layoutAlign = before.layoutAlign;
+      replacement.layoutGrow = before.layoutGrow;
+      replacement.minWidth = before.minWidth;
+      replacement.maxWidth = before.maxWidth;
+      replacement.minHeight = before.minHeight;
+      replacement.maxHeight = before.maxHeight;
+      replacement.layoutSizingHorizontal = before.layoutSizingHorizontal;
+      replacement.layoutSizingVertical = before.layoutSizingVertical;
+      applyPluginData(replacement, before.pluginData);
+      if (before.reactions) await replacement.setReactionsAsync(before.reactions);
+    } catch (error) {
+      replacement.remove();
+      throw error;
+    }
+    instance.remove();
+    return { instance: replacement };
+  }
+  async function orphanGroups() {
+    var _a, _b;
+    await loadAllPagesAsync();
+    const instances = await findAllByTypes(figma.root, ["INSTANCE"]);
+    const groups = /* @__PURE__ */ new Map();
+    for (const instance of instances) {
+      let main = null;
+      try {
+        main = await instance.getMainComponentAsync();
+      } catch (e) {
+        main = null;
+      }
+      if (main && !main.removed) continue;
+      const status = (main == null ? void 0 : main.removed) ? "deleted" : "missing";
+      const name = (main == null ? void 0 : main.name) || instance.name;
+      const key = `${status}:${(_a = main == null ? void 0 : main.id) != null ? _a : name}`;
+      const group2 = (_b = groups.get(key)) != null ? _b : { status, name, restoreFrom: [], instances: [] };
+      group2.instances.push(instance);
+      group2.restoreFrom.push(nodeRef(instance));
+      groups.set(key, group2);
+    }
+    return [...groups.entries()].map(([group2, value2]) => __spreadValues({ group: group2 }, value2)).sort((a, b) => b.instances.length - a.instances.length || a.name.localeCompare(b.name));
+  }
+  var COMPONENT_READ_OPS = [
+    {
+      name: "component.instances",
+      summary: "Document-wide component inventory: every copy, its page/frame, nesting and jump link, plus unused locals.",
+      agent: "Use this before component cleanup or migration. Counts are complete across loaded pages; unused means a local component has no instances in this file.",
+      mutates: false,
+      params: {
+        limit: { type: "number", default: 500, min: 1, max: 5e3, description: "Maximum instance rows returned; counts remain complete." }
+      },
+      async run(params) {
+        var _a, _b;
+        await loadAllPagesAsync();
+        const [instances, components] = await Promise.all([
+          findAllByTypes(figma.root, ["INSTANCE"]),
+          findAllByTypes(figma.root, ["COMPONENT"])
+        ]);
+        const byComponent = /* @__PURE__ */ new Map();
+        for (const component of components) {
+          byComponent.set(component.id, { component: __spreadProps(__spreadValues({}, nodeRef(component)), { key: component.key }), copies: [] });
+        }
+        const unresolved = [];
+        for (const instance of instances) {
+          let main = null;
+          try {
+            main = await instance.getMainComponentAsync();
+          } catch (e) {
+            main = null;
+          }
+          const page = pageOf5(instance);
+          const frame3 = containingFrame(instance);
+          const nested = ((_a = instance.parent) == null ? void 0 : _a.type) === "INSTANCE" || (() => {
+            let parent = instance.parent;
+            while (parent && parent.type !== "PAGE") {
+              if (parent.type === "INSTANCE") return true;
+              parent = parent.parent;
+            }
+            return false;
+          })();
+          const row = __spreadProps(__spreadValues({}, nodeRef(instance)), {
+            page: page ? nodeRef(page) : null,
+            frame: frame3 ? nodeRef(frame3) : null,
+            nested,
+            link: deepLink(instance)
+          });
+          if (!main || main.removed) unresolved.push(row);
+          else {
+            const entry = (_b = byComponent.get(main.id)) != null ? _b : { component: __spreadProps(__spreadValues({}, nodeRef(main)), { key: main.key }), copies: [] };
+            entry.copies.push(row);
+            byComponent.set(main.id, entry);
+          }
+        }
+        const all = [...byComponent.values()].sort((a, b) => b.copies.length - a.copies.length || a.component.name.localeCompare(b.component.name));
+        const limit = params.limit;
+        let remaining = limit;
+        const inventory = all.map((entry) => {
+          const copies = entry.copies.slice(0, Math.max(0, remaining));
+          remaining -= copies.length;
+          return { component: entry.component, count: entry.copies.length, unused: entry.copies.length === 0, copies };
+        });
+        return { components: inventory.length, instances: instances.length, unused: inventory.filter((row) => row.unused).length, unresolved: unresolved.length, truncated: instances.length > limit, inventory, orphanInstances: unresolved.slice(0, Math.max(0, remaining)) };
+      }
+    },
+    {
+      name: "component.orphans",
+      summary: "Orphan instances grouped by dead master: deleted locals versus missing masters, ranked by impact.",
+      agent: "Each group includes restoreFrom candidates. Start component.restore with the cleanest representative from the largest group.",
+      mutates: false,
+      params: {},
+      async run() {
+        const groups = await orphanGroups();
+        return { groups: groups.length, instances: groups.reduce((sum, group2) => sum + group2.instances.length, 0), orphans: groups.map((_a) => {
+          var _b = _a, { instances } = _b, group2 = __objRest(_b, ["instances"]);
+          return __spreadProps(__spreadValues({}, group2), { count: instances.length });
+        }) };
+      }
+    }
+  ];
+  var COMPONENT_WRITE_OPS = [
+    {
+      name: "component.restore",
+      summary: "Rebuild one dead master from an orphan and reassign every orphan in that group with override recovery.",
+      agent: "Pass restoreFrom from component.orphans. The source is cloned before detach; every matching orphan is swapped and the report names kept, restored and lost overrides.",
+      mutates: true,
+      params: {
+        restoreFrom: { type: "string", required: true, description: "Orphan instance id to clone into the new master." },
+        dryRun: { type: "boolean", default: false, description: "Report the group and source without changing the document." }
+      },
+      async run(params) {
+        const source = await figma.getNodeByIdAsync(params.restoreFrom);
+        if (!source || source.type !== "INSTANCE") throw new Error("restoreFrom must identify an INSTANCE");
+        const groups = await orphanGroups();
+        const group2 = groups.find((candidate) => candidate.instances.some((instance) => instance.id === source.id));
+        if (!group2) throw new Error(`instance ${source.id} is not orphaned`);
+        if (params.dryRun === true) return { dryRun: true, group: group2.group, name: group2.name, count: group2.instances.length, restoreFrom: nodeRef(source) };
+        figma.commitUndo();
+        const clone2 = source.clone();
+        const detached = clone2.detachInstance();
+        const master = figma.createComponentFromNode(detached);
+        master.name = group2.name;
+        const page = pageOf5(source);
+        if (page) page.appendChild(master);
+        master.x = source.x + source.width + 80;
+        master.y = source.y;
+        const results = [];
+        for (const orphan of group2.instances) {
+          const snapshots = snapshotOverrides(orphan);
+          const properties = propertyValues(orphan);
+          try {
+            orphan.swapComponent(master);
+            try {
+              orphan.setProperties(properties);
+            } catch (e) {
+            }
+            const overrides = await restoreOverrides(orphan, snapshots);
+            results.push(__spreadValues({ node: orphan.id, ok: overrides.lost.length === 0 }, overrides));
+          } catch (error) {
+            results.push({ node: orphan.id, ok: false, kept: [], restored: [], lost: [{ layer: orphan.name, field: "master", reason: String((error == null ? void 0 : error.message) || error) }] });
+          }
+        }
+        return { dryRun: false, group: group2.group, master: __spreadProps(__spreadValues({}, nodeRef(master)), { link: deepLink(master) }), total: results.length, restored: results.filter((row) => row.ok).length, results };
+      }
+    },
+    {
+      name: "instance.swap",
+      summary: "Swap or rebuild instances to an id, library key, or set variant, preserving and reporting overrides.",
+      agent: "strategy:auto tries native swap first and rebuilds only when Figma refuses; swap never silently falls back. The per-field report separates kept, restored, lost and unsupported overrides, and rebuild returns a newId.",
+      mutates: true,
+      params: {
+        nodes: { type: "string[]", required: true, description: "Instance node ids." },
+        to: { type: "string", description: "Component id or 40-character library key." },
+        set: { type: "string", description: "Component-set id or key when selecting a variant." },
+        variant: { type: "json", description: "With set: an object of exact variant property names to values." },
+        strategy: { type: "string", enum: ["auto", "swap", "rebuild"], default: "auto", description: "Native swap, structural rebuild, or swap with rebuild fallback." },
+        dryRun: { type: "boolean", default: false, description: "Resolve targets and report without changing nodes." }
+      },
+      async run(params) {
+        var _a;
+        const ids = Array.isArray(params.nodes) ? params.nodes.filter((id) => typeof id === "string" && id !== "") : [];
+        if (!ids.length) throw new Error('"nodes" must be a non-empty array of instance ids');
+        const target = await componentTarget(
+          typeof params.to === "string" && params.to !== "" ? params.to : __spreadValues({ set: params.set }, params.variant === void 0 ? {} : { variant: params.variant })
+        );
+        const strategy = params.strategy;
+        const dryRun = params.dryRun === true;
+        if (!dryRun) figma.commitUndo();
+        const results = [];
+        for (const id of ids) {
+          const found = await figma.getNodeByIdAsync(id);
+          if (!found || found.type !== "INSTANCE") {
+            results.push({ node: id, ok: false, error: `${(_a = found == null ? void 0 : found.type) != null ? _a : "nothing"} \u2014 need an INSTANCE` });
+            continue;
+          }
+          const before = await found.getMainComponentAsync().catch(() => null);
+          if (dryRun) {
+            results.push({ node: id, ok: true, strategy, before: before ? nodeRef(before) : null, to: nodeRef(target) });
+            continue;
+          }
+          const snapshots = snapshotOverrides(found);
+          const properties = propertyValues(found);
+          let instance = found;
+          let used = strategy === "rebuild" ? "rebuild" : "swap";
+          let fellBackBecause;
+          try {
+            if (strategy === "rebuild") {
+              instance = (await rebuildInstance(found, target)).instance;
+            } else {
+              try {
+                found.swapComponent(target);
+              } catch (error) {
+                if (strategy === "swap") throw error;
+                fellBackBecause = String((error == null ? void 0 : error.message) || error);
+                instance = (await rebuildInstance(found, target)).instance;
+                used = "rebuild";
+              }
+            }
+            try {
+              instance.setProperties(properties);
+            } catch (e) {
+            }
+            const overrides = await restoreOverrides(instance, snapshots);
+            results.push(__spreadValues({ node: id, newId: instance.id === id ? void 0 : instance.id, ok: overrides.lost.length === 0, strategy: used, fellBackBecause, before: before ? nodeRef(before) : null, after: nodeRef(target) }, overrides));
+          } catch (error) {
+            results.push({ node: id, ok: false, strategy: used, fellBackBecause, error: String((error == null ? void 0 : error.message) || error) });
+          }
+        }
+        return { dryRun, target: nodeRef(target), total: results.length, succeeded: results.filter((row) => row.ok).length, failed: results.filter((row) => !row.ok).length, results };
+      }
+    }
+  ];
+
   // src/agent/ops.ts
   function round23(value2) {
     return typeof value2 === "number" && Number.isFinite(value2) ? Math.round(value2 * 100) / 100 : void 0;
@@ -35341,6 +35867,7 @@ ${scripts}`, "");
   ];
   var ALL_OPS = [
     ...READ_OPS,
+    ...COMPONENT_READ_OPS,
     ...CONTEXT_OPS,
     ...EXPORT_OPS,
     ...TEXT_OPS,
@@ -35350,6 +35877,7 @@ ${scripts}`, "");
     ...SPEC_OPS,
     ...STATE_OPS,
     ...TRANSITION_OPS,
+    ...COMPONENT_WRITE_OPS,
     ...WRITE_OPS,
     ...MODULE_OPS,
     ...PLUGIN_OPS
@@ -37317,7 +37845,7 @@ createRoot(document.getElementById('root')!).render(
         if (found) return [found];
         const node = await figma.getNodeByIdAsync(scope.frameId);
         if (node && "visible" in node) {
-          const page = pageOf5(node);
+          const page = pageOf6(node);
           if (page) await page.loadAsync();
           return [node];
         }
@@ -37327,7 +37855,7 @@ createRoot(document.getElementById('root')!).render(
         return figma.currentPage.children;
     }
   }
-  function pageOf5(node) {
+  function pageOf6(node) {
     let parent = node.parent;
     while (parent && parent.type !== "PAGE") parent = parent.parent;
     return parent != null ? parent : null;
@@ -37636,7 +38164,7 @@ createRoot(document.getElementById('root')!).render(
       targets = figma.root.findAllWithCriteria({ types: ["COMPONENT_SET", "COMPONENT"] }).filter(isDocumentableComponent);
     }
     const pageNameById = /* @__PURE__ */ new Map();
-    const pageOf6 = (node) => {
+    const pageOf7 = (node) => {
       let current = node;
       while (current && current.type !== "PAGE") current = current.parent;
       if (!current) return void 0;
@@ -37657,7 +38185,7 @@ createRoot(document.getElementById('root')!).render(
       const doc = {
         id: node.id,
         name: node.name,
-        page: pageOf6(node),
+        page: pageOf7(node),
         description,
         links,
         properties: componentPropertiesOf(node),

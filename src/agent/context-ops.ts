@@ -393,39 +393,66 @@ export const CONTEXT_OPS: readonly OpDef[] = [
 
   {
     name: 'node.focus',
-    summary: 'Select a node and scroll the designer to it — how an agent says "this one, look".',
+    summary: 'Select one or many nodes and reveal their page; cross-page nodes return as grouped jump links.',
     agent:
-      'Selects the node and scrolls the designer to it — use it instead of describing where something is.',
+      'Pass nodes[] for a whole review list. Figma can select only one page at a time, so the first node chooses the visible page; every node on another page is returned under elsewhere with a one-line jump link.',
     mutates: false,
     params: {
-      nodeId: { type: 'string', required: true, description: 'Node to reveal.' },
-      select: { type: 'boolean', default: true, description: 'Also select it, not just scroll to it.' },
+      nodeId: { type: 'string', description: 'One node to reveal (legacy shorthand for nodes: [nodeId]).' },
+      nodes: { type: 'string[]', description: 'Node ids to select together where they share a page.' },
+      select: { type: 'boolean', default: true, description: 'Also select visible-page nodes, not just scroll to them.' },
     },
     async run(params) {
-      const node = await resolveSceneNode(params.nodeId)
-      let page: BaseNode | null = node.parent
-      while (page && page.type !== 'PAGE') page = page.parent
-      if (!page) throw new Error(`"${node.name}" is not on a page — nothing to scroll to`)
+      const ids = [
+        ...(Array.isArray(params.nodes)
+          ? (params.nodes as unknown[]).filter((id): id is string => typeof id === 'string' && id !== '')
+          : []),
+        ...(typeof params.nodeId === 'string' && params.nodeId !== '' ? [params.nodeId] : []),
+      ]
+      const unique = [...new Set(ids)]
+      if (unique.length === 0) throw new Error('send nodeId or a non-empty nodes[]')
 
-      // Moving the viewport works on every plan and touches no part of the document, which is
-      // why this sits with the reads. The link is the better answer when it can be built — but
-      // `figma.fileKey` is given only to private plugins on Organization plans, so outside one
-      // there is nothing to build it from and the suffix is all an agent can hand over.
-      await (page as PageNode).loadAsync()
-      await figma.setCurrentPageAsync(page as PageNode)
-      if (params.select !== false) figma.currentPage.selection = [node]
-      figma.viewport.scrollAndZoomIntoView([node])
+      const resolved = await Promise.all(unique.map((id) => resolveSceneNode(id)))
+      const rows = resolved.map((node) => {
+        let page: BaseNode | null = node.parent
+        while (page && page.type !== 'PAGE') page = page.parent
+        if (!page) throw new Error(`"${node.name}" is not on a page — nothing to scroll to`)
+        const anchor = `?node-id=${node.id.replace(':', '-')}`
+        const fileKey = figma.fileKey
+        return {
+          node,
+          page: page as PageNode,
+          result: {
+            node: { id: node.id, name: node.name, type: node.type },
+            page: { id: page.id, name: (page as PageNode).name },
+            url: fileKey ? `https://www.figma.com/design/${fileKey}/${anchor}` : null,
+            deepLinkSuffix: anchor,
+          },
+        }
+      })
 
-      const anchor = `?node-id=${node.id.replace(':', '-')}`
-      const fileKey = figma.fileKey
+      const visiblePage = rows[0].page
+      await visiblePage.loadAsync()
+      await figma.setCurrentPageAsync(visiblePage)
+      const visible = rows.filter((row) => row.page.id === visiblePage.id)
+      if (params.select !== false) figma.currentPage.selection = visible.map((row) => row.node)
+      figma.viewport.scrollAndZoomIntoView(visible.map((row) => row.node))
+
+      const elsewhere = new Map<string, { page: { id: string; name: string }; nodes: unknown[] }>()
+      for (const row of rows.filter((candidate) => candidate.page.id !== visiblePage.id)) {
+        const group = elsewhere.get(row.page.id) ?? {
+          page: { id: row.page.id, name: row.page.name },
+          nodes: [],
+        }
+        group.nodes.push(row.result)
+        elsewhere.set(row.page.id, group)
+      }
+
       return {
-        node: { id: node.id, name: node.name, type: node.type },
-        page: { id: page.id, name: (page as PageNode).name },
-        selected: params.select !== false,
-        /** A link worth sending, when this plugin is private to an Organization. */
-        url: fileKey ? `https://www.figma.com/design/${fileKey}/${anchor}` : null,
-        /** Paste the file's own URL in front of this when there is no `url` above. */
-        deepLinkSuffix: anchor,
+        page: { id: visiblePage.id, name: visiblePage.name },
+        selected: params.select === false ? [] : visible.map((row) => row.result.node),
+        elsewhere: [...elsewhere.values()],
+        nodes: rows.map((row) => row.result),
       }
     },
   },

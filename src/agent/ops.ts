@@ -46,6 +46,7 @@ import { TOKENS_OPS } from './tokens-ops.ts'
 import { WRITE_OPS } from './write-ops.ts'
 import { PLUGIN_OPS } from './plugin-ops.ts'
 import { MODULE_OPS } from './module-ops.ts'
+import { COMPONENT_READ_OPS, COMPONENT_WRITE_OPS } from './component-ops.ts'
 
 /* ------------------------------------------------------------- serializers */
 
@@ -2623,6 +2624,7 @@ export const READ_OPS: readonly OpDef[] = [
 // it needs per call rather than per op.
 export const ALL_OPS: readonly OpDef[] = [
   ...READ_OPS,
+  ...COMPONENT_READ_OPS,
   ...CONTEXT_OPS,
   ...EXPORT_OPS,
   ...TEXT_OPS,
@@ -2632,6 +2634,7 @@ export const ALL_OPS: readonly OpDef[] = [
   ...SPEC_OPS,
   ...STATE_OPS,
   ...TRANSITION_OPS,
+  ...COMPONENT_WRITE_OPS,
   ...WRITE_OPS,
   ...MODULE_OPS,
   ...PLUGIN_OPS,
