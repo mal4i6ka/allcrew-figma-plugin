@@ -3521,6 +3521,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'SAVE_UPDATE_PREFERENCES': {
       // @agent deny: update discovery is the designer's outbound-network preference
+      // @agent param preferences: normalized update-discovery preference and cached release metadata
       await figma.clientStorage.setAsync(
         UPDATE_PREFERENCES_KEY,
         normalizeUpdatePreferences(msg.preferences)
@@ -3529,6 +3530,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'OPEN_EXTERNAL': {
       // @agent deny: only visible UI controls may open a browser link for the designer
+      // @agent param url: the validated https://github.com release or archive URL to open
       if (!/^https:\/\/github\.com\//i.test(msg.url)) {
         postToUi({ type: 'UPDATE_LINK_ERROR', message: 'only https://github.com links may be opened' })
         break
