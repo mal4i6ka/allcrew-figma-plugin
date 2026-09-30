@@ -14,12 +14,13 @@ Data leaves Figma only through features the user configures and activates:
 - **Delivery** sends a generated package to the receiver endpoint entered by the user.
 - **Agent Listener** sends operation results to the user-run local bridge. The bridge listens on loopback by default.
 - **REST fallback** contacts Figma using a token configured on the user's machine when no plugin is connected.
+- **Update discovery** contacts the public GitHub Releases API only when the user presses **Check now** or explicitly enables automatic discovery. Automatic discovery is off by default and runs at most once every 24 hours.
 
 The repository owner does not receive these transfers. Retention and deletion at a configured receiver are controlled by the user who operates that receiver.
 
 ## Local credentials and settings
 
-Plugin settings are stored with `figma.clientStorage`. Pairing secrets and Figma tokens are stored on the user's machine under `~/.allcrew-channel/` unless the user overrides those paths. Secrets are not included in release archives or generated design packages.
+Plugin settings, including the update-discovery preference and last successful check, are stored with `figma.clientStorage`. Pairing secrets and Figma tokens are stored on the user's machine under `~/.allcrew-channel/` unless the user overrides those paths. Secrets are not included in release archives or generated design packages.
 
 Development-plugin installs do not have a stable Figma file key. Agent read/write grants therefore last only for the current plugin session and are not restored by file name.
 

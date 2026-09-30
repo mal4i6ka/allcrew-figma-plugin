@@ -2,6 +2,20 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.3.0 — 2026-09-30
+
+### Added
+
+- Added manual GitHub Release checks under **Settings → Updates**.
+- Added opt-in automatic update discovery, disabled by default and limited to one successful check every 24 hours.
+- Added an update-available header banner with release details and direct archive download actions.
+
+### Privacy and reliability
+
+- Update preferences and discovery metadata now use their own `figma.clientStorage` key, separate from export options and presets.
+- Release and download links open through `figma.openExternal()` after the sandbox validates an HTTPS GitHub URL.
+- The installed version is injected from `package.json` during every build, preventing UI/version drift.
+
 ## 1.2.1 — 2026-09-30
 
 ### Fixed

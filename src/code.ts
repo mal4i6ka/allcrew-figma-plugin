@@ -46,6 +46,7 @@ import {
   mergeExportOptions,
   normalizeExportOptions,
   normalizeUserPresets,
+  normalizeUpdatePreferences,
   upsertUserPreset,
   parseLanguages,
   type ExportOptions,
@@ -185,6 +186,8 @@ type PluginMessage =
   | { type: 'IMPORT_TRANSLATIONS'; content: string; format: ImportFormat; scope: ExportScope }
   | { type: 'CONFIRM_EXPORT'; scope: ExportScope; modules: ExportModules; cssFile: string; existingFiles?: Record<string, string> }
   | { type: 'SAVE_EXPORT_OPTIONS'; options: Partial<ExportOptions> }
+  | { type: 'SAVE_UPDATE_PREFERENCES'; preferences: unknown }
+  | { type: 'OPEN_EXTERNAL'; url: string }
   | { type: 'LIST_VARIABLE_COLLECTIONS' }
   | { type: 'SYNC_BREAKPOINT_FRAMES' }
   | { type: 'SAVE_USER_PRESET'; label: string; values: unknown }
@@ -1416,6 +1419,7 @@ if (figma.mode === 'codegen') {
 const EXPORT_OPTIONS_KEY = 'allcrewChannel.v1.exportOptions'
 const USER_PRESETS_KEY = 'allcrewChannel.v1.userPresets'
 const PALETTE_SETTINGS_KEY = 'allcrewChannel.v1.paletteSettings'
+const UPDATE_PREFERENCES_KEY = 'allcrewChannel.v1.updatePreferences'
 
 /**
  * Agent gates persist only when Figma exposes a stable `fileKey` (private organization plugins).
@@ -1453,7 +1457,8 @@ Promise.all([
   figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY),
   figma.clientStorage.getAsync(USER_PRESETS_KEY),
   figma.clientStorage.getAsync(PALETTE_SETTINGS_KEY),
-]).then(async ([storedOptions, storedPresets, storedPalette]) => {
+  figma.clientStorage.getAsync(UPDATE_PREFERENCES_KEY),
+]).then(async ([storedOptions, storedPresets, storedPalette, storedUpdates]) => {
   // Before anything answers: a module command has to be callable from the first request, and
   // the channel's command list is assembled per call from whatever this holds.
   await loadUserModules()
@@ -1471,6 +1476,7 @@ Promise.all([
     presets: EXPORT_PRESETS,
     userPresets: normalizeUserPresets(storedPresets),
   })
+  postToUi({ type: 'UPDATE_PREFERENCES', preferences: normalizeUpdatePreferences(storedUpdates) })
   const paletteSettings = normalizePaletteSettings(storedPalette)
   postToUi({
     type: 'PALETTE_PREVIEW',
@@ -3511,6 +3517,23 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param options: the export settings to store, in part or whole — target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs
       const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)
       await figma.clientStorage.setAsync(EXPORT_OPTIONS_KEY, mergeExportOptions(stored, msg.options))
+      break
+    }
+    case 'SAVE_UPDATE_PREFERENCES': {
+      // @agent deny: update discovery is the designer's outbound-network preference
+      await figma.clientStorage.setAsync(
+        UPDATE_PREFERENCES_KEY,
+        normalizeUpdatePreferences(msg.preferences)
+      )
+      break
+    }
+    case 'OPEN_EXTERNAL': {
+      // @agent deny: only visible UI controls may open a browser link for the designer
+      if (!/^https:\/\/github\.com\//i.test(msg.url)) {
+        postToUi({ type: 'UPDATE_LINK_ERROR', message: 'only https://github.com links may be opened' })
+        break
+      }
+      figma.openExternal(msg.url)
       break
     }
     case 'SAVE_USER_PRESET': {

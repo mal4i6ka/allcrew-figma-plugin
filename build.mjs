@@ -5,6 +5,8 @@ import { extractUiCommands } from "./src/agent/ui-commands.ts";
 import { extractProps } from "./src/agent/props-vocabulary.ts";
 
 const watch = process.argv.includes("--watch");
+const PLUGIN_VERSION = JSON.parse(readFileSync("package.json", "utf8")).version;
+const PLUGIN_VERSION_MARKER = "'__ALLCREW_PLUGIN_VERSION__'";
 
 const commonOptions = {
   bundle: true,
@@ -38,6 +40,11 @@ function copyUi() {
     const embedded = JSON.stringify(readFileSync(file, "utf8")).replace(/<\/script/gi, "<\\/script");
     ui = ui.replace(marker, embedded);
   }
+  const versionMarkers = ui.split(PLUGIN_VERSION_MARKER).length - 1;
+  if (versionMarkers !== 1) {
+    throw new Error(`ui.html contains ${PLUGIN_VERSION_MARKER} ${versionMarkers} time(s), expected exactly 1`);
+  }
+  ui = ui.replace(PLUGIN_VERSION_MARKER, JSON.stringify(PLUGIN_VERSION));
   writeFileSync("dist/ui.html", ui);
 }
 

@@ -1460,6 +1460,18 @@
   .btn.module-danger { border: 1px solid var(--danger); background: transparent; color: var(--danger); }
   .btn.module-danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
   textarea.set-input { width: 100%; min-height: 72px; resize: vertical; box-sizing: border-box; }
+  .update-banner { display: flex; align-items: center; gap: 9px; margin-top: 9px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border)); border-radius: var(--r-sm); background: color-mix(in srgb, var(--accent) 8%, var(--bg-2)); }
+  .update-banner-copy { min-width: 0; flex: 1; }
+  .update-banner-copy b { display: block; color: var(--text); font-size: 11px; line-height: 1.25; }
+  .update-banner-copy span { display: block; margin-top: 2px; color: var(--muted); font-size: 9.5px; line-height: 1.35; }
+  .update-banner-actions { display: flex; gap: 5px; flex: none; }
+  .update-banner-actions .btn { padding: 5px 8px; font-size: 9.5px; }
+  .update-panel { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .update-version { color: var(--text); font: 11px/1.4 var(--mono); }
+  .update-status { color: var(--muted); font-size: 10px; line-height: 1.4; }
+  .update-status.ok { color: var(--ok); }
+  .update-status.err { color: var(--danger); }
+  .update-actions { display: flex; gap: 6px; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -1507,6 +1519,16 @@
     </div>
    </div>
    <div class="tagline">Figma workspace<span id="crumb"></span></div>
+   <div id="update-banner" class="update-banner hidden" role="status">
+     <div class="update-banner-copy">
+       <b id="update-banner-title">Update available</b>
+       <span id="update-banner-detail"></span>
+     </div>
+     <div class="update-banner-actions">
+       <button class="btn ghost" id="update-banner-view" type="button">View</button>
+       <button class="btn" id="update-banner-download" type="button">Download</button>
+     </div>
+   </div>
   </header>
 
   <main>
@@ -2248,6 +2270,27 @@
           <span class="deliver-status" id="deliver-status">endpoint not set</span>
         </div>
 
+        <div class="set-section">
+          <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14M20 8a8 8 0 0 0-15.5-2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Updates</span>
+          <span class="sec-hint">GitHub Releases</span>
+        </div>
+        <div class="update-panel">
+          <div>
+            <div class="update-version">Installed <span id="update-current-version"></span></div>
+            <div id="update-status" class="update-status">Discovery is off.</div>
+          </div>
+          <div class="update-actions">
+            <button class="btn ghost" id="update-check" type="button">Check now</button>
+            <button class="btn hidden" id="update-download" type="button">Download</button>
+          </div>
+        </div>
+        <label class="set-row" for="set-update-automatic">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 5v6h-6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="set-text"><b>Automatic update discovery</b><i>Check GitHub at most once every 24 hours &middot; off by default</i></span>
+          <span class="switch"><input type="checkbox" id="set-update-automatic" /><span class="track"></span></span>
+        </label>
+
         <!-- A module's own settings screen, when the picker is pointed at one: the same place
              every other target keeps its options, rather than a second switcher in the body. -->
         <div class="set-section hidden" id="mod-settings-head">
@@ -2857,6 +2900,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           animation: document.getElementById('module-animation').checked,
         }
       }
+      var PLUGIN_VERSION = "1.3.0"
+      var UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000
+      var UPDATE_API = 'https://api.github.com/repos/mal4i6ka/allcrew-figma-plugin/releases/latest'
+      var UPDATE_PREFS = { automatic: false, lastCheckedAt: 0, latestVersion: '', releaseUrl: '', downloadUrl: '' }
 
       // ── REFORM phase 2: Settings sub-page ────────────────────────────────────────────────
       // OPTIONS mirrors src/settings.ts's ExportOptions shape — note `target` is a bare TargetId
@@ -3067,6 +3114,116 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         el[prop] = value
       }
 
+      function updateOptions() {
+        return UPDATE_PREFS
+      }
+
+      function persistUpdatePreferences() {
+        parent.postMessage(
+          { pluginMessage: { type: 'SAVE_UPDATE_PREFERENCES', preferences: UPDATE_PREFS } },
+          '*'
+        )
+      }
+
+      function versionParts(version) {
+        return String(version || '').replace(/^v/, '').split('.').map(function (part) {
+          var number = parseInt(part, 10)
+          return isFinite(number) ? number : 0
+        })
+      }
+
+      function versionIsNewer(candidate, installed) {
+        var left = versionParts(candidate)
+        var right = versionParts(installed)
+        for (var i = 0; i < Math.max(left.length, right.length); i++) {
+          var a = left[i] || 0
+          var b = right[i] || 0
+          if (a !== b) return a > b
+        }
+        return false
+      }
+
+      function openUpdateUrl(url) {
+        if (!url) return
+        parent.postMessage({ pluginMessage: { type: 'OPEN_EXTERNAL', url: url } }, '*')
+      }
+
+      function renderUpdateState() {
+        var updates = updateOptions()
+        var available = versionIsNewer(updates.latestVersion, PLUGIN_VERSION)
+        document.getElementById('update-current-version').textContent = PLUGIN_VERSION
+        setControl('set-update-automatic', 'checked', updates.automatic)
+
+        var status = document.getElementById('update-status')
+        var download = document.getElementById('update-download')
+        if (available) {
+          status.textContent = 'Version ' + updates.latestVersion + ' is available.'
+          status.className = 'update-status ok'
+          download.classList.remove('hidden')
+        } else if (updates.lastCheckedAt) {
+          status.textContent = 'Up to date. Last checked ' + new Date(updates.lastCheckedAt).toLocaleString() + '.'
+          status.className = 'update-status ok'
+          download.classList.add('hidden')
+        } else {
+          status.textContent = updates.automatic ? 'Automatic discovery is ready.' : 'Discovery is off.'
+          status.className = 'update-status'
+          download.classList.add('hidden')
+        }
+
+        var banner = document.getElementById('update-banner')
+        banner.classList.toggle('hidden', !available)
+        if (available) {
+          document.getElementById('update-banner-title').textContent = 'AllCrew ' + updates.latestVersion + ' is available'
+          document.getElementById('update-banner-detail').textContent =
+            'Installed ' + PLUGIN_VERSION + '. Download the release, replace the plugin folder, then reopen it.'
+        }
+      }
+
+      function checkForUpdates(manual) {
+        var button = document.getElementById('update-check')
+        var status = document.getElementById('update-status')
+        button.disabled = true
+        button.textContent = 'Checking…'
+        status.textContent = 'Checking GitHub Releases…'
+        status.className = 'update-status'
+
+        fetch(UPDATE_API, { headers: { Accept: 'application/vnd.github+json' } })
+          .then(function (response) {
+            if (!response.ok) throw new Error('GitHub returned ' + response.status)
+            return response.json()
+          })
+          .then(function (release) {
+            var updates = updateOptions()
+            var assets = Array.isArray(release.assets) ? release.assets : []
+            var archive = assets.find(function (asset) {
+              return /^allcrew-figma-workspace-v.*\.zip$/.test(asset.name || '')
+            })
+            updates.latestVersion = String(release.tag_name || '').replace(/^v/, '')
+            updates.releaseUrl = release.html_url || ''
+            updates.downloadUrl = archive ? archive.browser_download_url : updates.releaseUrl
+            updates.lastCheckedAt = Date.now()
+            persistUpdatePreferences()
+            renderUpdateState()
+          })
+          .catch(function (error) {
+            status.textContent = 'Could not check for updates: ' + String(error && error.message ? error.message : error)
+            status.className = 'update-status err'
+            if (!manual) document.getElementById('update-banner').classList.add('hidden')
+          })
+          .then(function () {
+            button.disabled = false
+            button.textContent = 'Check now'
+          })
+      }
+
+      function updateApply() {
+        renderUpdateState()
+        var updates = updateOptions()
+        if (updates.automatic && Date.now() - updates.lastCheckedAt >= UPDATE_INTERVAL_MS) {
+          checkForUpdates(false)
+        }
+      }
+
       function themeMergeGroups() {
         if (!OPTIONS.themeMerges) OPTIONS.themeMerges = { groups: [] }
         if (!Array.isArray(OPTIONS.themeMerges.groups)) OPTIONS.themeMerges.groups = []
@@ -3211,6 +3368,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('set-agent-secret', 'value', agentOpt.secret)
         setControl('set-agent-read', 'checked', agentOpt.read)
         setControl('set-agent-write', 'checked', agentOpt.write)
+        setControl('set-update-automatic', 'checked', updateOptions().automatic)
         syncDependentRows()
         updatePresetIndicator()
       }
@@ -3383,6 +3541,24 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         agentApply()
       })
       bindSetting('set-agent-write', function (el) { agentOptions().write = el.checked; agentApply() })
+      document.getElementById('set-update-automatic').addEventListener('change', function () {
+        updateOptions().automatic = this.checked
+        persistUpdatePreferences()
+        if (this.checked) checkForUpdates(false)
+        else renderUpdateState()
+      })
+      document.getElementById('update-check').addEventListener('click', function () { checkForUpdates(true) })
+      document.getElementById('update-download').addEventListener('click', function () {
+        var updates = updateOptions()
+        openUpdateUrl(updates.downloadUrl || updates.releaseUrl)
+      })
+      document.getElementById('update-banner-view').addEventListener('click', function () {
+        openUpdateUrl(updateOptions().releaseUrl)
+      })
+      document.getElementById('update-banner-download').addEventListener('click', function () {
+        var updates = updateOptions()
+        openUpdateUrl(updates.downloadUrl || updates.releaseUrl)
+      })
 
       // REFORM backlog → wired: import a translated PO/JSON catalog back onto the canvas.
       // Uses the CURRENT export scope (the main view's radios stay in the DOM under Settings).
@@ -7095,6 +7271,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           USER_PRESETS = msg.userPresets || []
           renderPresetOptions()
           applyExportOptions(msg.options)
+        } else if (msg.type === 'UPDATE_PREFERENCES') {
+          UPDATE_PREFS = msg.preferences || UPDATE_PREFS
+          updateApply()
+        } else if (msg.type === 'UPDATE_LINK_ERROR') {
+          var updateStatus = document.getElementById('update-status')
+          updateStatus.textContent = 'Could not open update link: ' + msg.message
+          updateStatus.className = 'update-status err'
         } else if (msg.type === 'VARIABLE_COLLECTIONS') {
           THEME_COLLECTIONS_LOADING = false
           THEME_COLLECTION_CANDIDATES = (msg.collections || []).slice().sort(function (a, b) {

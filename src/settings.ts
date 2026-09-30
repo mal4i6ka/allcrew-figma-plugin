@@ -101,6 +101,16 @@ export interface ExportAgentOptions {
   write: boolean
 }
 
+export interface UpdatePreferences {
+  /** Automatic GitHub release discovery. Off by default: enabling it creates an outbound request. */
+  automatic: boolean
+  /** Successful check time, used to limit automatic discovery to once per 24 hours. */
+  lastCheckedAt: number
+  latestVersion: string
+  releaseUrl: string
+  downloadUrl: string
+}
+
 /** Linter knobs. Like `delivery`, NOT package-forming: a team's depth policy shouldn't flip the
  * preset selector to "Custom" or be overwritten by choosing a preset. */
 export interface ExportLintOptions {
@@ -256,6 +266,13 @@ export const DEFAULT_LINT: ExportLintOptions = { maxNestingDepth: 8 }
  * team opts in. */
 export const DEFAULT_DOCS: ExportDocsOptions = { componentDocs: true, componentPreviews: false, previewBudgetMb: 8 }
 export const DEFAULT_THEME_MERGES: ExportThemeMergesOptions = { groups: [] }
+export const DEFAULT_UPDATES: UpdatePreferences = {
+  automatic: false,
+  lastCheckedAt: 0,
+  latestVersion: '',
+  releaseUrl: '',
+  downloadUrl: '',
+}
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
   scopeMode: 'page',
@@ -441,6 +458,20 @@ function normalizeLint(raw: unknown): ExportLintOptions {
       typeof depth === 'number' && Number.isFinite(depth)
         ? Math.min(32, Math.max(1, Math.round(depth)))
         : DEFAULT_LINT.maxNestingDepth,
+  }
+}
+
+export function normalizeUpdatePreferences(raw: unknown): UpdatePreferences {
+  if (!isRecord(raw)) return { ...DEFAULT_UPDATES }
+  return {
+    automatic: raw.automatic === true,
+    lastCheckedAt:
+      typeof raw.lastCheckedAt === 'number' && Number.isFinite(raw.lastCheckedAt) && raw.lastCheckedAt > 0
+        ? Math.round(raw.lastCheckedAt)
+        : 0,
+    latestVersion: typeof raw.latestVersion === 'string' ? raw.latestVersion : '',
+    releaseUrl: typeof raw.releaseUrl === 'string' ? raw.releaseUrl : '',
+    downloadUrl: typeof raw.downloadUrl === 'string' ? raw.downloadUrl : '',
   }
 }
 
