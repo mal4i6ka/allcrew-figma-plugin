@@ -57,3 +57,21 @@ test('choosing a preset does not reset the documentation settings', () => {
   const applied = applyPreset(options, 'design-tokens')
   assert.deepEqual(applied.docs, { componentDocs: false, componentPreviews: true, previewBudgetMb: 32 })
 })
+
+test('browser UI mirroring is explicit, normalized and preserved across presets', () => {
+  const defaults = normalizeExportOptions({})
+  assert.equal(defaults.agent.uiMirror, false)
+  assert.equal(normalizeExportOptions({ agent: { uiMirror: 'yes' } }).agent.uiMirror, false)
+
+  const enabled = normalizeExportOptions({
+    agent: {
+      endpoint: 'http://127.0.0.1:8788',
+      secret: 'paired',
+      read: false,
+      write: false,
+      uiMirror: true,
+    },
+  })
+  assert.equal(enabled.agent.uiMirror, true)
+  assert.equal(applyPreset(enabled, 'design-tokens').agent.uiMirror, true)
+})

@@ -102,8 +102,10 @@ The release archive includes the exact bridge and MCP front built with the plugi
 node tools/bridge.mjs
 ```
 
-Open **Agent Listener** in the plugin, pair during the five-minute window, then enable **Allow
-reads**. Enable **Allow writes** only while an intended automation is running. For an MCP client:
+Open **Agent Listener** in the plugin and pair during the five-minute window. **Allow reads** and
+**Allow writes** control external agents only. Independently, **Browser UI mirror** publishes the
+live panel through the loopback bridge; the browser icon in the header opens the exact connected
+file in Chrome. For an MCP client:
 
 ```bash
 node tools/mcp.mjs --install claude
@@ -142,6 +144,7 @@ preferences (the choices persist per-user):
 | **iOS & Android tokens** | off | Also emit the asset catalogue, `res/values{,-night}/colors.xml`, `Tokens.swift` and `Tokens.kt`. Off by default because a palette becomes one colorset *directory* per colour, which is noise in a package a web project unzips. |
 | **Include library variables** | off | Read the variables of every enabled **library**, not just the local ones. It is a network read per token — 44 s on a file with 213 of them — and the only way to export a theme this file *consumes* rather than owns. Left off, the export's summary names the library collections it skipped, so a package with no theme in it says so instead of looking complete. |
 | **Automatic update discovery** | off | Checks the latest GitHub Release at most once every 24 hours. A manual **Check now** action is always available. When a newer version exists, the plugin shows a quiet header banner with release and direct-download actions. |
+| **Browser UI mirror** | off | Publishes the exact live plugin panel through the paired loopback bridge, independently from Agent Listener read/write permissions. While enabled, the header browser icon opens the connected file in Chrome. |
 
 ### tokens.css shape
 

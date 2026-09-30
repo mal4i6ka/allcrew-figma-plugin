@@ -99,6 +99,9 @@ export interface ExportAgentOptions {
   /** Answer mutating ops (`variables.set`, `node.bind`, `board.render`, ...). Remembered per
    * file like `read`, and never implied by it — reads off still forces writes off. */
   write: boolean
+  /** Publish this plugin panel through the paired loopback bridge. This is an explicit local-UI
+   * preference, independent from the read/write permissions granted to external agents. */
+  uiMirror: boolean
 }
 
 export interface UpdatePreferences {
@@ -260,6 +263,7 @@ const DEFAULT_AGENT: ExportAgentOptions = {
   secret: '',
   read: false,
   write: false,
+  uiMirror: false,
 }
 export const DEFAULT_LINT: ExportLintOptions = { maxNestingDepth: 8 }
 /** Descriptions are cheap to read, so they are on; previews cost an export per component, so the
@@ -434,6 +438,7 @@ function normalizeAgent(raw: unknown): ExportAgentOptions {
     secret: typeof raw.secret === 'string' ? raw.secret : DEFAULT_AGENT.secret,
     read: raw.read === true,
     write: raw.write === true,
+    uiMirror: raw.uiMirror === true,
   }
 }
 

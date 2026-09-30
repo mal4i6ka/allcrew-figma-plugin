@@ -2441,7 +2441,6 @@ function describeMirror(plugin) {
     handle: plugin.handle,
     file: plugin.file,
     online: mirrorIsOnline(plugin),
-    gates: plugin.gates,
     viewers: plugin.viewers.size,
     queued: plugin.commands.length,
     lastSeen: new Date(plugin.lastSeen).toISOString(),
@@ -2748,7 +2747,6 @@ const ROUTES = {
         handle: mintMirrorHandle(file),
         file,
         source: '',
-        gates: { read: false, write: false },
         lastSeen: Date.now(),
         commands: [],
         poller: null,
@@ -2761,7 +2759,6 @@ const ROUTES = {
       mirrorPlugins.set(clientId, plugin)
     }
     plugin.file = file
-    plugin.gates = { read: body.gates?.read === true, write: body.gates?.write === true }
     plugin.lastSeen = Date.now()
     if (typeof body.source === 'string' && body.source.includes('<html')) plugin.source = body.source
     if (Array.isArray(body.snapshot)) {
@@ -2769,10 +2766,7 @@ const ROUTES = {
         if (message && typeof message === 'object') appendMirrorEvent(plugin, message)
       }
     }
-    console.log(
-      new Date().toISOString(),
-      `~ browser mirror "${plugin.file}" (${plugin.handle}) · read=${plugin.gates.read} write=${plugin.gates.write}`
-    )
+    console.log(new Date().toISOString(), `~ browser mirror "${plugin.file}" (${plugin.handle})`)
     return {
       code: 200,
       body: {
@@ -2839,15 +2833,6 @@ const ROUTES = {
       }
     }
     const plugin = found.plugin
-    if (!plugin.gates.read || !plugin.gates.write) {
-      return {
-        code: 403,
-        body: fail(
-          'gate_closed',
-          'browser control needs both Allow reads and Allow changes enabled in the Figma plugin'
-        ),
-      }
-    }
     const viewerId = typeof body.viewerId === 'string' && body.viewerId ? body.viewerId : ''
     if (!viewerId) return { code: 400, body: fail('bad_request', 'missing browser viewerId') }
     if (!claimMirrorController(plugin, viewerId)) {
@@ -3108,8 +3093,7 @@ const server = http.createServer(async (req, res) => {
         '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="2">' +
           '<title>AllCrew Figma Workspace mirror</title><style>body{margin:0;padding:32px;background:#000;color:#f6f6f6;' +
           'font:13px system-ui}code{color:#ffac8b}</style><h1>Waiting for Figma…</h1>' +
-          '<p>Open the plugin, pair it with this bridge, then enable <code>Allow reads</code> and ' +
-          '<code>Allow changes</code>.</p>'
+          '<p>Open the plugin, pair it with this bridge, then enable <code>Browser UI mirror</code>.</p>'
       )
       return
     }

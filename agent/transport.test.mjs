@@ -201,7 +201,7 @@ test('the live browser client serves the real UI and round-trips commands and sa
   const hello = await api('POST', '/mirror/plugin/hello', {
     clientId,
     file: 'Live Design',
-    gates: { read: true, write: true },
+    // Deliberately no external-agent gates: the explicit mirror opt-in is its own authority.
     source: '<html><head></head><body><main id="real-ui">real plugin UI</main></body></html>',
     snapshot: [{ type: 'EXPORT_OPTIONS', options: { target: 'django' } }],
   })
@@ -260,7 +260,6 @@ test('the live browser client serves the real UI and round-trips commands and sa
   const rehello = await api('POST', '/mirror/plugin/hello', {
     clientId,
     file: 'Live Design',
-    gates: { read: true, write: true },
     source: '<html><head></head><body>reconnected</body></html>',
     snapshot: [{ type: 'RECONNECTED' }],
   })

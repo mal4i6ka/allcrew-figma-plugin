@@ -100,7 +100,9 @@ node agent/allcrew-channel.mjs call document.info
 
 ## Live browser UI
 
-With the paired plugin open, enable both **Allow reads** and **Allow changes**, then open:
+With the paired plugin open, turn on **Browser UI mirror**. This opt-in is independent from
+**Allow reads** and **Allow changes**, which gate external agents only. The browser icon that
+appears in the plugin header opens the exact connected file. The direct bridge URL remains available:
 
 ```text
 http://127.0.0.1:8788/ui
@@ -118,7 +120,8 @@ browser executes once in the sandbox. Download side effects stay with the browse
 the Figma iframe does not save a duplicate ZIP.
 
 Several connected files produce a chooser at `/ui`; a direct URL is
-`/ui?target=<handle>`. Closing the plugin or either permission switch disconnects the mirror.
+`/ui?target=<handle>`. Turning off **Browser UI mirror** or closing the plugin disconnects the
+mirror; changing the external-agent permission switches does not.
 
 ---
 

@@ -46,7 +46,7 @@ const options = {
   },
   i18n: { wrapTranslate: true, sourceLanguage: 'en', languages: '' },
   delivery: { endpoint: '', secret: '', onExport: false },
-  agent: { endpoint: '', secret: '', read: false, write: false },
+  agent: { endpoint: '', secret: '', read: false, write: false, uiMirror: false },
   lint: { maxNestingDepth: 8 },
   docs: { componentDocs: true, componentPreviews: false, previewBudgetMb: 8 },
   themeMerges: { groups: [] },
@@ -226,6 +226,17 @@ function injectedUi(width: number, height: number): string {
 +          switchTarget(TARGETS[i])
 +          results.push(inspect(TARGETS[i]))
 +        }
++        var mirrorErrors = []
++        var mirrorOptions = JSON.parse(JSON.stringify(TEST_OPTIONS))
++        mirrorOptions.agent.uiMirror = true
++        onmessage({ data: { pluginMessage: { type: 'EXPORT_OPTIONS', options: mirrorOptions, presets: [], userPresets: [] } } })
++        var mirrorLink = document.getElementById('ui-mirror-link')
++        fail(mirrorErrors, visible(mirrorLink), 'enabled UI mirror did not reveal the header link')
++        fail(mirrorErrors, rectOf(document.querySelector('.header-actions')).right <= innerWidth + 1, 'mirror link overflows the header')
++        mirrorOptions.agent.uiMirror = false
++        onmessage({ data: { pluginMessage: { type: 'EXPORT_OPTIONS', options: mirrorOptions, presets: [], userPresets: [] } } })
++        fail(mirrorErrors, !visible(mirrorLink), 'disabled UI mirror left the header link visible')
++        results.push({ target: 'mirror-setting', errors: mirrorErrors, viewWidth: 0, footerHeight: 0 })
 +        document.documentElement.classList.add('browser-mirror')
 +        if (visible(document.getElementById('ui-resize'))) results.push({ target: 'browser-mirror', errors: ['resize handle visible in browser mirror'], viewWidth: 0, footerHeight: 0 })
 +      } catch (error) {

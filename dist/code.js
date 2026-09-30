@@ -1837,7 +1837,8 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     endpoint: "http://127.0.0.1:8788",
     secret: "",
     read: false,
-    write: false
+    write: false,
+    uiMirror: false
   };
   var DEFAULT_LINT = { maxNestingDepth: 8 };
   var DEFAULT_DOCS = { componentDocs: true, componentPreviews: false, previewBudgetMb: 8 };
@@ -1976,7 +1977,8 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       endpoint: typeof raw.endpoint === "string" ? raw.endpoint.trim() : DEFAULT_AGENT.endpoint,
       secret: typeof raw.secret === "string" ? raw.secret : DEFAULT_AGENT.secret,
       read: raw.read === true,
-      write: raw.write === true
+      write: raw.write === true,
+      uiMirror: raw.uiMirror === true
     };
   }
   function normalizeDocs(raw) {

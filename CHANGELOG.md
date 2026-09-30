@@ -2,6 +2,12 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## Unreleased
+
+### Added
+
+- Added an opt-in Browser UI mirror setting, independent from agent read/write permissions. When enabled, the header shows a browser icon that opens the live plugin panel served by the paired loopback bridge.
+
 ## 1.6.0 — 2026-09-30
 
 ### Changed
