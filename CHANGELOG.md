@@ -2,7 +2,7 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
-## Unreleased
+## 1.7.0 — 2026-09-30
 
 ### Added
 
