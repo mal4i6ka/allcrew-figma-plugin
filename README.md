@@ -96,7 +96,8 @@ The live browser mirror follows its browser window and hides the Figma-only resi
 
 ## Agent Listener quick start
 
-The release archive includes the exact bridge and MCP front built with the plugin:
+The release archive includes the exact bridge and MCP front built with the plugin. The downloaded
+bridge is one self-contained ESM file, including every local module it needs:
 
 ```bash
 node tools/bridge.mjs
@@ -105,7 +106,12 @@ node tools/bridge.mjs
 Open **Agent Listener** in the plugin and pair during the five-minute window. **Allow reads** and
 **Allow writes** control external agents only. Independently, **Browser UI mirror** publishes the
 live panel through the loopback bridge; the browser icon in the header opens the exact connected
-file in Chrome. For an MCP client:
+file in Chrome.
+
+Agent calls use one authenticated loopback WebSocket per open Figma file and fall back to HTTP
+polling when a previous bridge does not advertise socket support. The bridge also reads Figma
+Desktop's local tab list to resolve file keys without asking for URLs; `history.recent` summarizes
+version checkpoints across files opened on this machine. For an MCP client:
 
 ```bash
 node tools/mcp.mjs --install claude

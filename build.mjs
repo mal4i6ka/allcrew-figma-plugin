@@ -1,6 +1,7 @@
 import * as esbuild from "esbuild";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { embeddedScript } from "./agent/embed-script.mjs";
 import { extractUiCommands } from "./src/agent/ui-commands.ts";
 import { extractProps } from "./src/agent/props-vocabulary.ts";
 
@@ -25,20 +26,31 @@ const commonOptions = {
  * stays readable and diffable on its own.
  */
 const EMBEDS = [
-  { marker: "'__ALLCREW_CHANNEL_BRIDGE_SOURCE__'", file: "agent/bridge.mjs" },
-  { marker: "'__ALLCREW_CHANNEL_MCP_SOURCE__'", file: "agent/mcp.mjs" },
-  { marker: "'__ALLCREW_CHANNEL_RECEIVER_SOURCE__'", file: "server/receiver.mjs" },
+  {
+    marker: "'__ALLCREW_CHANNEL_BRIDGE_SOURCE__'",
+    fingerprintMarker: "'__ALLCREW_CHANNEL_BRIDGE_FINGERPRINT__'",
+    file: "agent/bridge.mjs",
+    bundle: true,
+  },
+  { marker: "'__ALLCREW_CHANNEL_MCP_SOURCE__'", file: "agent/mcp.mjs", bundle: false },
+  { marker: "'__ALLCREW_CHANNEL_RECEIVER_SOURCE__'", file: "server/receiver.mjs", bundle: false },
 ];
 
-function copyUi() {
+
+async function copyUi() {
   let ui = readFileSync("ui.html", "utf8");
-  for (const { marker, file } of EMBEDS) {
-    if (!ui.includes(marker)) {
-      // Loud, because the alternative is shipping a download button that writes an empty file.
-      throw new Error(`ui.html no longer contains ${marker} — the ${file} download would ship empty`);
+  for (const entry of EMBEDS) {
+    if (!ui.includes(entry.marker)) {
+      throw new Error(`ui.html no longer contains ${entry.marker} — the ${entry.file} download would ship empty`);
     }
-    const embedded = JSON.stringify(readFileSync(file, "utf8")).replace(/<\/script/gi, "<\\/script");
-    ui = ui.replace(marker, embedded);
+    const output = await embeddedScript(entry);
+    const embedded = JSON.stringify(output.source).replace(/<\/script/gi, "<\\/script");
+    ui = ui.replace(entry.marker, embedded);
+    if (entry.fingerprintMarker) {
+      const count = ui.split(entry.fingerprintMarker).length - 1;
+      if (count !== 1) throw new Error(`ui.html contains ${entry.fingerprintMarker} ${count} time(s), expected exactly 1`);
+      ui = ui.replace(entry.fingerprintMarker, JSON.stringify(output.fingerprint));
+    }
   }
   const versionMarkers = ui.split(PLUGIN_VERSION_MARKER).length - 1;
   if (versionMarkers !== 1) {
@@ -170,8 +182,8 @@ const mainCtx = await esbuild.context({
     {
       name: "copy-ui-html",
       setup(build) {
-        build.onEnd((result) => {
-          if (result.errors.length === 0) copyUi();
+        build.onEnd(async (result) => {
+          if (result.errors.length === 0) await copyUi();
         });
       },
     },

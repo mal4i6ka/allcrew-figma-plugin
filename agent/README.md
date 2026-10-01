@@ -7,7 +7,7 @@ It is MCP-shaped without being MCP: there is no server to register, no client li
 nothing to keep in sync but the op names. If a tool can run a shell command, it can drive
 Figma.
 
-**Reads and writes, gated separately.** Most ops only look; twenty-five of them change the
+**Reads and writes, gated separately.** Most ops only look; twenty-eight of them change the
 document or plugin-managed module storage and sit behind their own switch, which reads never imply.
 
 ---
@@ -21,9 +21,9 @@ is no headless mode — a plugin only exists while a person has it open. So the 
 ```
    agent (Claude Code, curl, …)                plugin (UI iframe → sandbox)
        │  POST /call {op, params}                  │
-       ▼                                           │  GET /plugin/poll   (parked ~25s)
+       ▼                                           │  WebSocket /plugin/ws
    bridge.mjs ─────── hands the request over ──────┤
-       │                                           │  POST /plugin/result
+       │                                           │  result on the same socket
        ◄────────────── answers the waiting call ───┘
 ```
 
@@ -31,9 +31,9 @@ Two consequences worth knowing before you build on this:
 
 - **The plugin must be open.** Close it and the channel is dead. An agent cannot open a Figma
   file by itself.
-- **The transport lives in the UI iframe,** not the sandbox — the sandbox has `fetch` but no
-  socket, and keeping the poll out of it also keeps the main thread free. The iframe only
-  relays; the sandbox decides what may run.
+- **The transport lives in the UI iframe,** not the sandbox. A WebSocket avoids Chromium's
+  six-HTTP-connection pool across all open Figma files; an older bridge falls back to long
+  polling. The iframe only relays; the sandbox decides what may run.
 
 ---
 
@@ -43,10 +43,10 @@ Pick **Agent Listener** in the plugin's header picker. That screen is the whole 
 button that opens and closes the channel, the bridge command, and the skill to hand your
 agent.
 
-**1. Get the bridge and run it.** Press **Download bridge.mjs** on that screen — a designer
-who installed the plugin from Figma has no checkout of this repo, so the plugin carries the
-script itself (injected at build time from `agent/bridge.mjs`, so it can never be a different
-version). From a checkout, `node agent/bridge.mjs` is the same file.
+**1. Get the bridge and run it.** Press **Download bridge.mjs** on that screen. The build bundles
+the bridge and all of its local modules into one self-contained ESM file, then embeds that exact
+file into the plugin. From a checkout, `node agent/bridge.mjs` runs the same logical source set;
+both forms carry the same source-set fingerprint.
 
 ```bash
 node ~/Downloads/bridge.mjs
@@ -136,7 +136,7 @@ calls them like any other server, with no `SKILL.md` to paste and no `curl`.
 ```
    MCP client (Claude Desktop, Cursor, …)            plugin (open in Figma)
       │  stdio: initialize, tools/list, tools/call      │
-      ▼                                                 │  GET /plugin/poll
+      ▼                                                 │  WebSocket /plugin/ws
     mcp.mjs ── POST /call {op, params, target} ──▶ bridge.mjs ──┤
       ◄──────────────── the op's answer ────────────────────┘
 ```
@@ -388,6 +388,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `variables.usage` | how many things actually use each token — layers, styles and gradient stops, counted, so a token nobody binds is visible before you delete it |
 | `variables.match` | which token is this colour: exactly, or nearest, and whether the answer is ambiguous — the read behind turning a hex into a binding |
 | `variables.external` | which variables this file binds to that it does not own — the library dependency a file has without saying so |
+| `variables.audit` | mode-column defects: missing values, mixed aliases/literals, unresolved aliases, and literals in collections declared alias-only |
 | `instances.external` | which foreign components are instantiated here, and how many external bindings each brings with it |
 | `design.context` | reference HTML + CSS + PNG for a node, plus the tokens it binds, the hover/press CSS it computed, and — with `pair` — the other breakpoint's frame merged into `@media` |
 | `design.ir` | a screen as a framework-neutral tree: stacks, sizing, paints by token name, text, interactions — plus the table of type styles it is set in and what its system bands, pinned layers and scrolling are, for targets that are not web pages |
@@ -396,6 +397,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `design.audit` | the same assertion for a build with no browser to measure: report what you emitted per layer and it names what you `dropped`, what `diverged`, and what this channel could not tell you (`missing`, collected in `wanted`) |
 | `node.anchor` | where a comment pin goes for a node: the frame to address it to, the offset inside it, and all nine named points of its box — the aiming primitive behind `comments.post` |
 | `comments.list` | comment threads on the file, replies grouped, each pin resolved to its node and offset. REST, not the plugin: the Plugin API has no comment surface at all |
+| `history.recent` | version activity since local midnight (or a supplied time) across files Figma Desktop opened on this machine, four files at a time |
 | `history.versions` | version checkpoints — who, when, and whether anybody named it. `autosave` separates Figma saving on its own from a person doing something; `named` is the only place intent is recorded |
 | `history.diff` | what moved between two versions of a node: added, removed, changed, and which properties — the "what" version history itself never says |
 | `history.blame` | which checkpoint changed a node, and who made it. Bisects the version list, so it costs log2(N) renders instead of N |
@@ -415,7 +417,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `modules.inspect` | one installed module&rsquo;s declarative file and current state, with secret fields redacted |
 | `modules.export` | a transferable module file, optionally with non-secret state |
 
-Twenty-five **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
+Twenty-eight **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
 table is checked against the registry by a test — an op that ships without a row here fails the
 build rather than going quietly undocumented, which is how the count used to read "five".)
 
@@ -424,6 +426,9 @@ build rather than going quietly undocumented, which is how the count used to rea
 | `variables.set` | sets variable values or aliases in batch; opacity-scoped FLOAT values accept `"40%"`, and composed COLOR values accept `{ color, opacity }` with an alias on either or both channels |
 | `variables.update` | edits a variable's name, description, picker scopes (including `OPACITY` / `COLOR_OPACITY`), publishing visibility and per-platform code syntax |
 | `variables.create` | creates variables in a collection, including opacity-scoped FLOAT variables, creating the collection and its modes when absent |
+| `collections.update` | atomically renames, hides, edits modes or removes local variable collections, with force guards and dry-run loss counts |
+| `variables.extend` | creates an Enterprise extended collection and sets or clears inherited variable overrides |
+| `pages.update` | atomically renames, removes and reorders pages; non-empty and last-page removal are guarded |
 | `variables.rebind` | repoints every binding of one variable onto another, document-wide — the migration, with a dry run that says what it would move and what it would leave |
 | `variables.remove` | deletes variables nothing references. Refuses while a binding or an alias still points at one; the guard IS a full document walk |
 | `node.bind` | binds layer properties to variables; field `opacity` writes layer opacity. Figma's current Plugin API cannot yet bind a FLOAT token directly to paint opacity |
@@ -881,9 +886,18 @@ on a real file: **50 checkpoints over 12 days, one of them named**, and 16 autho
 itself, which is autosave rather than a person. So the list is a record of contact, not of intent.
 
 ```bash
+allcrew-channel call history.recent  '{"since":"2026-10-01T00:00:00Z"}'
 allcrew-channel call history.versions '{"fileKey":"…","limit":30}'
 allcrew-channel call history.blame    '{"fileKey":"…","nodeId":"4658:161435","property":"fills"}'
 ```
+
+### `history.recent` — all files touched today
+
+The bridge reads Figma Desktop's local `settings.json`, including open tabs and
+`sharedTabHistory`, and checks version history four files at a time. The default window begins at
+local midnight. It reports touched, quiet and unavailable files separately, plus checkpoint counts
+per author. Only files opened on this machine are discoverable, and Figma checkpoints are periodic
+rather than one per action.
 
 ### `history.versions` — the cheap, honest half
 

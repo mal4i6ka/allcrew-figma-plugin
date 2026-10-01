@@ -326,7 +326,13 @@ async function cmdCall(argv) {
     process.stdout.write(JSON.stringify(body.results, null, 2) + '\n')
     return
   }
-  process.stderr.write(`${op} — answered by ${body.handle} (${body.file})\n`)
+  const restKey = body.fileKey || body.result?.fileKey || params.fileKey
+  const answeredBy = body.handle
+    ? `${body.handle} (${body.file})`
+    : body.source === 'rest' && restKey
+      ? `Figma REST (${restKey})`
+      : 'the bridge'
+  process.stderr.write(`${op} — answered by ${answeredBy}\n`)
   process.stdout.write(JSON.stringify(body.result, null, 2) + '\n')
 }
 

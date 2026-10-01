@@ -1435,6 +1435,15 @@ const USER_PRESETS_KEY = 'allcrewChannel.v1.userPresets'
 const PALETTE_SETTINGS_KEY = 'allcrewChannel.v1.paletteSettings'
 const UPDATE_PREFERENCES_KEY = 'allcrewChannel.v1.updatePreferences'
 const UI_SIZE_KEY = 'allcrewChannel.v1.uiSize'
+let uiSizePersistTimer = 0
+
+function persistUiSizeLater(size: { width: number; height: number }): void {
+  clearTimeout(uiSizePersistTimer)
+  uiSizePersistTimer = setTimeout(() => {
+    uiSizePersistTimer = 0
+    void figma.clientStorage.setAsync(UI_SIZE_KEY, size)
+  }, 400)
+}
 
 /**
  * Agent gates persist only when Figma exposes a stable `fileKey` (private organization plugins).
@@ -3517,6 +3526,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         ops: agentManifest(),
         commands: UI_COMMANDS,
         file: figma.root.name,
+        pages: figma.root.children.map((page) => ({ id: page.id, name: page.name })),
         fileKey: figma.fileKey ?? null,
       })
       break
@@ -3562,10 +3572,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent read: resize the plugin panel chrome; the Figma document is untouched
       // @agent param width: requested panel width in pixels, clamped to 340…1240
       // @agent param height: requested panel height in pixels, clamped to 320…1200
-      // @agent param persist: save the clamped size for the next run; false is for live drag frames
+      // @agent param persist: schedule the clamped size for storage; false is for live drag frames
       const uiSize = clampUiSize({ width: msg.width, height: msg.height })
       figma.ui.resize(uiSize.width, uiSize.height)
-      if (msg.persist !== false) await figma.clientStorage.setAsync(UI_SIZE_KEY, uiSize)
+      if (msg.persist !== false) persistUiSizeLater(uiSize)
       postToUi({ type: 'UI_SIZE', ...uiSize, bounds: UI_BOUNDS })
       break
     }

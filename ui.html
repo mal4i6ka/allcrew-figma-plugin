@@ -2549,6 +2549,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         config: null,
         started: false,
         polling: false,
+        watched: false,
         snapshot: {},
         url: '',
       }
@@ -2682,6 +2683,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           uiMirror: options.uiMirror === true,
           file: previous.file || '',
         }
+        MIRROR_PLUGIN.watched = false
         MIRROR_PLUGIN.url = ''
         mirrorRenderLink('')
         mirrorPluginHello()
@@ -2718,6 +2720,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           })
           .then(function (hello) {
             MIRROR_PLUGIN.started = true
+            MIRROR_PLUGIN.watched = hello.watched === true
             MIRROR_PLUGIN.url = hello.url || ''
             mirrorRenderLink(MIRROR_PLUGIN.url)
             if (!MIRROR_PLUGIN.polling) {
@@ -2740,7 +2743,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           return
         }
         mirrorPluginFetch(
-          '/mirror/plugin/poll?clientId=' + encodeURIComponent(MIRROR_PLUGIN.clientId),
+          '/mirror/plugin/poll?clientId=' + encodeURIComponent(MIRROR_PLUGIN.clientId) + '&idle=1',
           { method: 'GET' }
         )
           .then(function (response) {
@@ -2748,12 +2751,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             return response.json()
           })
           .then(function (body) {
+            var wasWatched = MIRROR_PLUGIN.watched
+            MIRROR_PLUGIN.watched = body.watched === true
+            if (!wasWatched && MIRROR_PLUGIN.watched) {
+              MIRROR_PLUGIN.polling = false
+              mirrorPluginHello()
+              return
+            }
             var commands = body.commands || []
             for (var i = 0; i < commands.length; i++) {
               MIRROR_REMOTE_ACTIVE_UNTIL = Date.now() + 10 * 60 * 1000
               parent.postMessage({ pluginMessage: commands[i].message }, '*')
             }
-            mirrorPluginPoll()
+            if (MIRROR_PLUGIN.watched) mirrorPluginPoll()
+            else setTimeout(mirrorPluginPoll, 3000)
           })
           .catch(function () {
             MIRROR_PLUGIN.started = false
@@ -2773,7 +2784,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           if (typeof message.file === 'string' && message.file) MIRROR_PLUGIN.config.file = message.file
           if (!MIRROR_PLUGIN.started && MIRROR_PLUGIN.config.file) mirrorPluginHello()
         }
-        if (!MIRROR_PLUGIN.started) return
+        if (!MIRROR_PLUGIN.started || !MIRROR_PLUGIN.watched) return
         mirrorPluginFetch('/mirror/plugin/event', {
           method: 'POST',
           body: JSON.stringify({ clientId: MIRROR_PLUGIN.clientId, message: message }),
@@ -5136,12 +5147,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // ── end Design Tokens ────────────────────────────────────────────────────────────
       // ── Agent listener ───────────────────────────────────────────────────────────────
       // Figma gives a plugin no way to be reached from outside: the sandbox has no listening
-      // socket and there is no headless mode. So the transport is inverted — this iframe
-      // long-polls the local bridge (bridge.mjs, downloadable from this screen) and relays each
-      // request to the sandbox, which is the only place that decides whether it may actually run.
+      // socket and there is no headless mode. So the transport is inverted: this iframe opens
+      // an authenticated loopback WebSocket to bridge.mjs and relays each request to the sandbox,
+      // which remains the only place that decides whether it may run. Older bridges fall back
+      // to HTTP polling.
       //
-      // `generation` retires loops: every settings change bumps it, and any poll or handshake
-      // still in flight from an older generation drops its result on the floor.
+      // `generation` retires transports: every settings change bumps it, and any socket, poll or
+      // handshake still in flight from an older generation drops its result on the floor.
       // `clientId` is minted once per plugin window and repeated on every hello, so the bridge can
       // tell "this window again" from "a second file" — a window says hello more than once, and
       // without it each reconnect would file a phantom duplicate in the roster.
@@ -5155,6 +5167,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         session: null,
         handle: null,
         hello: null,
+        socket: null,
+        socketPath: '',
+        socketRetry: 5000,
+        socketTimer: 0,
         // It only has to be unique among the windows one bridge sees at once, and it is a
         // handle rather than a credential — so a timestamp and a random tail are the right
         // amount of machinery. `crypto.randomUUID` is not available to reach for: the plugin
@@ -5167,20 +5183,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // disables the download rather than handing someone an empty file.
       var AGENT_BRIDGE_SOURCE = '__ALLCREW_CHANNEL_BRIDGE_SOURCE__'
 
-      /* The bridge fingerprints its own file the same way; a mismatch means the running bridge
-       * is not the one this plugin was built against. That is the single likeliest cause of
-       * "the code is right and it still behaves oddly", and it is invisible unless something
-       * says so out loud. FNV-1a — this detects change, it defends against nobody. */
-      function agentFingerprint(source) {
-        var hash = 0x811c9dc5
-        for (var i = 0; i < source.length; i++) {
-          hash ^= source.charCodeAt(i)
-          hash = Math.imul(hash, 0x01000193) >>> 0
-        }
-        return ('0000000' + hash.toString(16)).slice(-8)
-      }
-
-      var AGENT_BRIDGE_FINGERPRINT = agentFingerprint(AGENT_BRIDGE_SOURCE)
+      /* Logical source-set fingerprint, computed before bundling. The downloaded one-file bridge
+       * and a repository checkout therefore agree even though their emitted bytes differ. */
+      var AGENT_BRIDGE_FINGERPRINT = '__ALLCREW_CHANNEL_BRIDGE_FINGERPRINT__'
       var AGENT_BRIDGE_EMBEDDED = AGENT_BRIDGE_SOURCE.indexOf('allcrew-channel-bridge') !== -1
       // The MCP front for the same bridge — an MCP client (Claude Desktop, Cursor) spawns it and
       // talks the one wire format they all speak, so no SKILL.md and no curl. Shipped the same
@@ -5216,10 +5221,73 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return fetch((cfg.endpoint || '').replace(/\/+$/, '') + path, options)
       }
 
+      function agentCloseSocket() {
+        clearTimeout(AGENT.socketTimer)
+        AGENT.socketTimer = 0
+        if (AGENT.socket) {
+          try { AGENT.socket.close(1000, 'settings changed') } catch (error) {}
+          AGENT.socket = null
+        }
+      }
+
+      function agentHandleRequests(requests) {
+        for (var i = 0; i < requests.length; i++) {
+          parent.postMessage({ pluginMessage: {
+            type: 'AGENT_REQUEST', id: requests[i].id, op: requests[i].op, params: requests[i].params
+          } }, '*')
+        }
+      }
+
+      function agentScheduleSocket(generation) {
+        if (generation !== AGENT.generation || !AGENT.socketPath) return
+        clearTimeout(AGENT.socketTimer)
+        var delay = AGENT.socketRetry
+        AGENT.socketRetry = Math.min(60000, delay * 2)
+        AGENT.socketTimer = setTimeout(function () { agentOpenSocket(generation) }, delay)
+      }
+
+      function agentOpenSocket(generation) {
+        if (generation !== AGENT.generation || !AGENT.socketPath || typeof WebSocket === 'undefined') {
+          agentPoll(generation)
+          return
+        }
+        var cfg = agentOptions() || {}
+        var base = String(cfg.endpoint || '').replace(/^http/i, 'ws').replace(/\/+$/, '')
+        var url = base + AGENT.socketPath + '?session=' + encodeURIComponent(AGENT.session || '') +
+          '&secret=' + encodeURIComponent(cfg.secret || '')
+        var socket
+        try { socket = new WebSocket(url) }
+        catch (error) { agentPoll(generation); agentScheduleSocket(generation); return }
+        AGENT.socket = socket
+        socket.onopen = function () {
+          if (generation !== AGENT.generation || AGENT.socket !== socket) { socket.close(); return }
+          AGENT.socketRetry = 5000
+          var line = document.getElementById('agent-state-text')
+          if (line && line.textContent.indexOf('live socket') === -1) line.textContent += ' · live socket'
+        }
+        socket.onmessage = function (event) {
+          if (generation !== AGENT.generation || AGENT.socket !== socket) return
+          try {
+            var message = JSON.parse(event.data)
+            if (message && message.type === 'requests') agentHandleRequests(message.requests || [])
+          } catch (error) {
+            socket.close(1007, 'invalid bridge message')
+          }
+        }
+        socket.onerror = function () { try { socket.close() } catch (error) {} }
+        socket.onclose = function () {
+          if (AGENT.socket === socket) AGENT.socket = null
+          if (generation !== AGENT.generation) return
+          agentPoll(generation)
+          agentScheduleSocket(generation)
+        }
+      }
+
       function agentApply() {
         if (BROWSER_MIRROR) return
         var cfg = agentOptions()
         if (!cfg) return
+        agentCloseSocket()
         AGENT.generation++
         var wanted = !!(cfg.endpoint && (cfg.read || cfg.write))
         // The sandbox holds the real gate — tell it on every change, including switching off.
@@ -5260,6 +5328,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           /* a farewell that cannot be sent must never take the close down with it */
         }
         if (unloading) AGENT.session = null
+        agentCloseSocket()
       }
 
       // Figma tears the iframe down when the plugin closes. Both events are registered because
@@ -5296,6 +5365,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             skill: agentSkillText(),
             gates: { read: msg.read, write: msg.write },
             file: AGENT.file,
+            pages: msg.pages || [],
             fileKey: msg.fileKey || null,
             bridgeFingerprint: AGENT_BRIDGE_FINGERPRINT
           })
@@ -5311,6 +5381,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             // and guarantee two of them never collide.
             AGENT.session = hello.session || null
             AGENT.handle = hello.handle || null
+            AGENT.socketPath = typeof hello.ws === 'string' ? hello.ws : ''
             agentRenderView()
             var stale =
               hello.bridgeFingerprint && hello.bridgeFingerprint !== AGENT_BRIDGE_FINGERPRINT
@@ -5330,7 +5401,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
                 'ok'
               )
             }
-            agentPoll(generation)
+            if (AGENT.socketPath && typeof WebSocket !== 'undefined') agentOpenSocket(generation)
+            else agentPoll(generation)
           })
           .catch(function (err) {
             if (generation !== AGENT.generation) return
@@ -5340,6 +5412,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
 
       function agentPoll(generation) {
+        if (AGENT.socket && AGENT.socket.readyState === WebSocket.OPEN) return
         if (generation !== AGENT.generation) return
         agentFetch('/plugin/poll?session=' + encodeURIComponent(AGENT.session || ''), { method: 'GET' })
           .then(function (response) {
@@ -5352,12 +5425,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           .then(function (data) {
             if (generation !== AGENT.generation) return
             if (data === null) { if (AGENT.hello) agentHandshake(AGENT.hello); return }
-            var requests = data.requests || []
-            for (var i = 0; i < requests.length; i++) {
-              parent.postMessage({ pluginMessage: {
-                type: 'AGENT_REQUEST', id: requests[i].id, op: requests[i].op, params: requests[i].params
-              } }, '*')
-            }
+            agentHandleRequests(data.requests || [])
             agentPoll(generation)
           })
           .catch(function (err) {
@@ -5852,6 +5920,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       var AGENT_RESULT_CAP = 3 * 1024 * 1024
 
       function agentDeliverResult(payload, fallbackFor) {
+        if (AGENT.socket && AGENT.socket.readyState === WebSocket.OPEN) {
+          try {
+            AGENT.socket.send(JSON.stringify({ type: 'result', body: JSON.parse(payload) }))
+            return Promise.resolve()
+          } catch (error) {
+            try { AGENT.socket.close() } catch (closeError) {}
+          }
+        }
         return agentFetch('/plugin/result', { method: 'POST', body: payload })
           .catch(function (err) {
             if (!fallbackFor) return

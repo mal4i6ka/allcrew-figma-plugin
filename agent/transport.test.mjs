@@ -52,6 +52,26 @@ async function api(method, route, body, { secret = SECRET } = {}) {
   return { status: res.status, body: parsed, headers: res.headers }
 }
 
+async function upgradeStatus(route, origin) {
+  return await new Promise((resolve, reject) => {
+    const socket = net.createConnection(PORT, '127.0.0.1')
+    let reply = ''
+    socket.on('connect', () => {
+      socket.write(
+        `GET ${route} HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\n` +
+        'Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n' +
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
+        (origin ? `Origin: ${origin}\r\n` : '') +
+        '\r\n'
+      )
+    })
+    socket.on('data', (chunk) => { reply += chunk.toString('utf8') })
+    socket.on('end', () => resolve(Number(/^HTTP\/1\.1 (\d+)/.exec(reply)?.[1] || 0)))
+    socket.on('close', () => resolve(Number(/^HTTP\/1\.1 (\d+)/.exec(reply)?.[1] || 0)))
+    socket.on('error', reject)
+  })
+}
+
 test.before(async () => {
   PORT = await freePort()
   child = spawn(process.execPath, [path.join(HERE, 'bridge.mjs'), '--pair'], {
@@ -207,6 +227,12 @@ test('the live browser client serves the real UI and round-trips commands and sa
   })
   assert.equal(hello.status, 200)
   assert.equal(hello.body.handle, 'live-design')
+  assert.equal(hello.body.watched, false)
+
+  const idleStarted = Date.now()
+  const idle = await api('GET', `/mirror/plugin/poll?clientId=${clientId}&idle=1`)
+  assert.equal(idle.body.watched, false)
+  assert.ok(Date.now() - idleStarted < 2000, 'an unwatched mirror poll must not park a connection')
 
   const page = await fetch(base() + '/ui?target=live-design')
   const html = await page.text()
@@ -215,10 +241,17 @@ test('the live browser client serves the real UI and round-trips commands and sa
   assert.match(html, /__ALLCREW_BROWSER_MIRROR__/)
   assert.match(html, /real plugin UI/)
 
-  const initial = await api(
-    'GET',
-    '/mirror/events?target=live-design&viewerId=viewer-a&cursor=0'
-  )
+  const initialPromise = api('GET', '/mirror/events?target=live-design&viewerId=viewer-a&cursor=0')
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const watched = await api('GET', `/mirror/plugin/poll?clientId=${clientId}&idle=1`)
+  assert.equal(watched.body.watched, true)
+  await api('POST', '/mirror/plugin/hello', {
+    clientId,
+    file: 'Live Design',
+    source: '<html><head></head><body><main id=\"real-ui\">real plugin UI</main></body></html>',
+    snapshot: [{ type: 'EXPORT_OPTIONS', options: { target: 'django' } }],
+  })
+  const initial = await initialPromise
   assert.equal(initial.status, 200)
   assert.equal(initial.body.events[0].message.type, 'EXPORT_OPTIONS')
   const cursor = initial.body.cursor
@@ -264,13 +297,79 @@ test('the live browser client serves the real UI and round-trips commands and sa
     snapshot: [{ type: 'RECONNECTED' }],
   })
   assert.equal(rehello.status, 200)
-  const replay = await api(
+  assert.equal(rehello.body.watched, false)
+  const replayPromise = api(
     'GET',
     `/mirror/events?target=live-design&viewerId=viewer-a&cursor=999&generation=${generation}`
   )
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const rewatched = await api('GET', `/mirror/plugin/poll?clientId=${clientId}&idle=1`)
+  assert.equal(rewatched.body.watched, true)
+  await api('POST', '/mirror/plugin/hello', {
+    clientId,
+    file: 'Live Design',
+    source: '<html><head></head><body>reconnected</body></html>',
+    snapshot: [{ type: 'RECONNECTED' }],
+  })
+  const replay = await replayPromise
   assert.deepEqual(replay.body.events.map((entry) => entry.message.type), ['RECONNECTED'])
   assert.notEqual(replay.body.generation, generation)
   await api('POST', '/mirror/plugin/bye', { clientId })
+})
+
+test('WebSocket transport delivers and returns a plugin call without waiting for an HTTP poll', async () => {
+  const clientId = 'ws-' + Math.random().toString(36).slice(2)
+  const hello = await api('POST', '/plugin/hello', {
+    clientId,
+    ops: ECHO_OPS,
+    gates: { read: true, write: true },
+    file: 'Socket File',
+  })
+  assert.equal(hello.status, 200)
+  assert.equal(hello.body.ws, '/plugin/ws')
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${PORT}${hello.body.ws}?session=${encodeURIComponent(hello.body.session)}&secret=${encodeURIComponent(SECRET)}`
+  )
+  await new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve, { once: true })
+    socket.addEventListener('error', reject, { once: true })
+  })
+  socket.addEventListener('message', (event) => {
+    const message = JSON.parse(event.data)
+    for (const request of message.requests || []) {
+      socket.send(JSON.stringify({
+        type: 'result',
+        body: { id: request.id, ok: true, result: { transport: 'websocket', op: request.op } },
+      }))
+    }
+  })
+  const started = Date.now()
+  const answer = await api('POST', '/call', { op: 'document.info', target: hello.body.handle })
+  assert.equal(answer.status, 200)
+  assert.deepEqual(answer.body.result, { transport: 'websocket', op: 'document.info' })
+  assert.ok(Date.now() - started < 1000, 'socket call should not wait for a poll interval')
+  const status = await api('GET', '/status')
+  const row = status.body.files.find((file) => file.handle === hello.body.handle)
+  assert.equal(row.transport, 'websocket')
+  socket.close()
+  await api('POST', '/plugin/gates', { session: hello.body.session, read: false, write: false })
+})
+
+test('WebSocket upgrade rejects bad secrets, unknown sessions and real web origins', async () => {
+  const hello = await api('POST', '/plugin/hello', {
+    clientId: 'ws-auth-' + Math.random().toString(36).slice(2),
+    ops: ECHO_OPS,
+    gates: { read: true, write: false },
+    file: 'Socket Auth',
+  })
+  const session = encodeURIComponent(hello.body.session)
+  assert.equal(await upgradeStatus(`/plugin/ws?session=${session}&secret=wrong`), 401)
+  assert.equal(await upgradeStatus(`/plugin/ws?session=missing&secret=${encodeURIComponent(SECRET)}`), 409)
+  assert.equal(
+    await upgradeStatus(`/plugin/ws?session=${session}&secret=${encodeURIComponent(SECRET)}`, 'https://example.com'),
+    403
+  )
+  await api('POST', '/plugin/gates', { session: hello.body.session, read: false, write: false })
 })
 
 test('a call reaches the plugin and the answer comes back named by file', async () => {

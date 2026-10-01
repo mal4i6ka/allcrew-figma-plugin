@@ -29,6 +29,11 @@ test('a file key is taken from whatever the caller typed', () => {
 
 test('REST is for when the caller asked for it, or when nothing is open', () => {
   assert.equal(wantsRest({ fileKey: 'SVXDZrXVVyh7PtEicpsbVD' }, true), true, 'an explicit key wins over an open plugin')
+  assert.equal(
+    wantsRest({ params: { fileKey: 'SVXDZrXVVyh7PtEicpsbVD' } }, true),
+    true,
+    'an op-level fileKey follows the same REST rule as an envelope-level one'
+  )
   assert.equal(wantsRest({ target: 'rest:SVXDZrXVVyh7PtEicpsbVD' }, true), true)
   assert.equal(wantsRest({ target: 'new-website-django' }, true), false, 'an open plugin answers for its own file')
   // With nothing open and no default key configured there is nothing to fall back to — the

@@ -3,14 +3,15 @@
  * AllCrew Figma Workspace bridge — the local relay between a CLI agent and the running Figma plugins.
  *
  * Figma plugins cannot be reached from outside: the sandbox has no listening socket, and
- * there is no headless mode. So each plugin dials *out* — its UI long-polls this process —
- * and this process gives a CLI something conventional to talk to:
+ * there is no headless mode. So each plugin UI dials *out* over an authenticated loopback
+ * WebSocket (falling back to HTTP polling for older clients), and this process gives a CLI
+ * something conventional to talk to:
  *
  *     agent (Claude Code, curl, anything)          plugin (UI iframe → sandbox)
  *        │  POST /call {op, params, target}           │
- *        ▼                                            │ GET /plugin/poll  (parked ~25s)
+ *        ▼                                            │ WebSocket /plugin/ws
  *      bridge ──────── hands the request over ────────┤
- *        │                                            │ POST /plugin/result
+ *        │                                            │ result on the same socket
  *        ◄──────────── answers the waiting call ──────┘
  *
  * MANY plugins, not one. A design system lives in one file and is consumed in others, so the
@@ -19,7 +20,7 @@
  * published-library view of its neighbours; two plugin windows on one bridge give an agent the
  * full op surface against both documents at once, which no Figma API offers.
  *
- * Every connection therefore gets its own registry entry, its own parked poll and its own
+ * Every connection therefore gets its own registry entry, socket (or compatibility poll) and
  * queue, and every call names its target:
  *
  *     POST /call {"op":"lint.colors","target":"mobile"}   → one file
@@ -37,9 +38,9 @@
  * to private plugins on Organization plans, so it is absent for almost everyone; the file *name*
  * is carried as the human handle and is what an agent actually types.
  *
- * Deliberately dependency-free, like server/receiver.mjs — Node built-ins only. The plugin
- * carries a copy of this file and hands it over from its Agent Listener screen, so a designer
- * who installed the plugin from Figma has it without ever seeing this repo:
+ * Runtime dependencies are Node built-ins only. The repository source is split into reviewed
+ * local modules; build.mjs bundles that source set into the single bridge.mjs the plugin hands
+ * over from its Agent Listener screen, so an installed designer never needs the checkout:
  *
  *     node bridge.mjs
  *
@@ -76,30 +77,21 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { fingerprint, sourceSetFingerprint } from './source-set.mjs'
+import { acceptWebSocket } from './websocket.mjs'
+import { matchTab, readDesktopTabs, runRecentHistory } from './desktop-tabs.mjs'
 
 /**
- * A fingerprint of this file, so a stale bridge announces itself instead of behaving subtly
- * differently. The plugin carries the exact source it was built against (build.mjs inlines
- * `agent/bridge.mjs` into ui.html), so it can fingerprint that and compare — no version
- * constant for anyone to forget to bump, and no false alarm from a whitespace-identical copy.
- * FNV-1a rather than a real digest: this detects change, it does not defend against anyone.
+ * Logical source-set fingerprint. A repository run hashes bridge.mjs plus every local import;
+ * the downloadable esbuild bundle receives that same value through `define`, so both forms
+ * identify the same build even though their emitted bytes differ.
  */
-export function fingerprint(source) {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < source.length; i++) {
-    hash ^= source.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193) >>> 0
-  }
-  return hash.toString(16).padStart(8, '0')
-}
-
-const BRIDGE_FINGERPRINT = (() => {
-  try {
-    return fingerprint(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))
-  } catch {
-    return null
-  }
-})()
+export { fingerprint }
+const BRIDGE_SOURCE_FILE = fileURLToPath(import.meta.url)
+const BRIDGE_FINGERPRINT =
+  typeof __ALLCREW_BRIDGE_FINGERPRINT__ === 'string'
+    ? __ALLCREW_BRIDGE_FINGERPRINT__
+    : sourceSetFingerprint(BRIDGE_SOURCE_FILE)
 
 const PORT = parseInt(process.env.ALLCREW_CHANNEL_AGENT_PORT || '8788', 10)
 const HOST = process.env.ALLCREW_CHANNEL_AGENT_HOST || '127.0.0.1'
@@ -265,6 +257,9 @@ function describe(plugin) {
     online: isOnline(plugin),
     stale: isStale(plugin),
     gates: plugin.gates,
+    transport: plugin.ws && !plugin.ws.closed ? 'websocket' : 'poll',
+    fileKey: plugin.fileKey || null,
+    fileKeyVia: plugin.fileKeyVia || null,
     lastSeen: plugin.lastSeen ? new Date(plugin.lastSeen).toISOString() : null,
     queued: plugin.queue.length,
   }
@@ -406,9 +401,14 @@ function readBody(req) {
   })
 }
 
-/** Hands everything queued for one plugin to its parked poll, if both exist. */
+/** Hands everything queued for one plugin to its live socket, falling back to a parked poll. */
 function flush(plugin) {
-  if (!plugin.poller || plugin.queue.length === 0) return
+  if (plugin.queue.length === 0) return
+  if (plugin.ws && !plugin.ws.closed) {
+    plugin.ws.sendJson({ type: 'requests', requests: plugin.queue.splice(0, plugin.queue.length) })
+    return
+  }
+  if (!plugin.poller) return
   const { res, timer } = plugin.poller
   plugin.poller = null
   clearTimeout(timer)
@@ -694,9 +694,26 @@ export function fileKeyOf(value) {
   return /^[A-Za-z0-9]{10,}$/.test(prefixed) ? prefixed : ''
 }
 
+export function requestedFileKey(body) {
+  return fileKeyOf(body?.fileKey) || fileKeyOf(body?.params?.fileKey)
+}
+
+async function desktopKeyFor(file, pages) {
+  const tabs = readDesktopTabs()
+  const matched = await matchTab({ title: file, pages }, tabs.open, async (key) => {
+    const answer = await restFetch(`/v1/files/${encodeURIComponent(key)}?depth=1`)
+    return answer?.document?.children || []
+  })
+  return {
+    key: matched.key,
+    via: matched.via,
+    candidates: matched.candidates?.map((entry) => ({ key: entry.key, title: entry.title, path: entry.path })) || [],
+  }
+}
+
 /** True when this call is addressed at REST rather than at an open plugin. */
 export function wantsRest(body, anyPluginOnline) {
-  if (body && typeof body.fileKey === 'string' && fileKeyOf(body.fileKey)) return true
+  if (body && requestedFileKey(body)) return true
   if (typeof body?.target === 'string' && body.target.startsWith('rest:')) return true
   return !anyPluginOnline && Boolean(DEFAULT_FILE_KEY)
 }
@@ -1104,7 +1121,7 @@ export async function runCommentOp(op, params, { fileKey, aim }) {
  * cannot name a person for any of it, and the answer says so rather than crediting the author of
  * the endpoint.
  */
-export const HISTORY_OPS = ['history.versions', 'history.diff', 'history.blame']
+export const HISTORY_OPS = ['history.recent', 'history.versions', 'history.diff', 'history.blame']
 
 export const HISTORY_REFUSALS = {
   'history.activity':
@@ -1229,6 +1246,19 @@ function clip(value) {
 }
 
 export const HISTORY_MANIFEST = [
+  {
+    name: 'history.recent',
+    summary: 'Version activity since a time across Figma Desktop files on this machine.',
+    mutates: false,
+    agent:
+      'Reads open and recently closed file keys from Figma Desktop settings, then lists versions four files at a time. ' +
+      'Default `since` is local midnight. Checkpoints are periodic, not every edit, and plugin writes are attributed to the signed-in user.',
+    params: {
+      since: { type: 'string', description: 'ISO date or date-time. Omitted means local midnight.' },
+      limit: { type: 'number', default: 50, min: 1, max: 50, description: 'Recent checkpoints fetched per file.' },
+      budgetMs: { type: 'number', default: 120000, min: 1000, max: 170000, description: 'Stop starting file reads after this budget.' },
+    },
+  },
   {
     name: 'history.versions',
     summary: 'Version checkpoints of a file — who, when, and whether anybody named it.',
@@ -1645,6 +1675,28 @@ export function restTextRuns(node) {
  * least useful thing that can be said about a scope problem: `file_comments:write` missing from
  * a personal token looks identical to an expired token until the body is read.
  */
+const REST_MAX_CONCURRENCY = 4
+const REST_MAX_ATTEMPTS = 3
+const REST_TREE_TTL_MS = Math.max(
+  0,
+  Number(process.env.ALLCREW_CHANNEL_REST_TREE_TTL_MS || process.env.ALTERY_REST_TREE_TTL_MS || 30_000)
+)
+let restActive = 0
+const restWaiters = []
+const restTreeCache = new Map()
+
+async function withRestSlot(run) {
+  if (restActive >= REST_MAX_CONCURRENCY) await new Promise((resolve) => restWaiters.push(resolve))
+  restActive += 1
+  try { return await run() }
+  finally {
+    restActive -= 1
+    restWaiters.shift()?.()
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
 async function restFetch(route, { method = 'GET', body } = {}) {
   const token = figmaToken()
   if (!token) {
@@ -1652,23 +1704,49 @@ async function restFetch(route, { method = 'GET', body } = {}) {
       `no Figma token — put one in ${FIGMA_TOKEN_FILE} or FIGMA_TOKEN (figma.com/developers/api#access-tokens)`
     )
   }
-  const response = await fetch(`${FIGMA_API}${route}`, {
-    method,
-    headers: {
-      'X-Figma-Token': token,
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  })
-  const text = await response.text()
-  let parsed = null
-  try { parsed = text ? JSON.parse(text) : null } catch { /* not JSON — the status is the answer */ }
-  if (!response.ok) {
+  for (let attempt = 1; attempt <= REST_MAX_ATTEMPTS; attempt++) {
+    const response = await withRestSlot(() => fetch(`${FIGMA_API}${route}`, {
+      method,
+      headers: {
+        'X-Figma-Token': token,
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }))
+    const text = await response.text()
+    let parsed = null
+    try { parsed = text ? JSON.parse(text) : null } catch { /* not JSON — the status is the answer */ }
+    if (response.ok) return parsed
     const said = (parsed && (parsed.err || parsed.message)) || (text ? text.slice(0, 200) : '')
-    throw new Error(`Figma REST ${response.status} on ${method} ${route}${said ? ` — ${said}` : ''}`)
+    if (response.status !== 429 || attempt === REST_MAX_ATTEMPTS) {
+      const tier = response.headers.get('x-figma-plan-tier')
+      throw new Error(
+        `Figma REST ${response.status} on ${method} ${route}${said ? ` — ${said}` : ''}` +
+        `${tier ? ` (plan: ${tier})` : ''}`
+      )
+    }
+    const retryHeader = response.headers.get('retry-after')
+    const seconds = retryHeader === null ? 1 : Number(retryHeader)
+    const waitMs = Math.min(20_000, Math.max(0, Number.isFinite(seconds) ? seconds * 1000 : 1000))
+    await sleep(waitMs)
   }
-  // DELETE answers with nothing at all, and `null` is the honest result of that.
-  return parsed
+  throw new Error(`Figma REST retry loop exhausted for ${method} ${route}`)
+}
+
+async function restFileTree(key) {
+  const cached = restTreeCache.get(key)
+  if (cached?.value && Date.now() - cached.at < REST_TREE_TTL_MS) return cached.value
+  if (cached?.promise) return await cached.promise
+  const entry = cached || { at: 0, value: null, promise: null }
+  entry.promise = restFetch(`/v1/files/${encodeURIComponent(key)}?depth=2`)
+    .then((value) => {
+      entry.value = value
+      entry.at = Date.now()
+      return value
+    })
+    .finally(() => { entry.promise = null })
+  restTreeCache.set(key, entry)
+  return await entry.promise
 }
 
 /** A REST read that is allowed to fail: the library endpoints need a scope a personal token
@@ -1682,8 +1760,9 @@ async function restTry(route) {
 }
 
 /** Node → the same shape `node.get` answers with, minus what REST does not carry. */
-export function restNodeSummary(node) {
+export function restNodeSummary(node, depth = 1) {
   if (!node) return null
+  if (depth <= 0) return { id: node.id, name: node.name, type: node.type }
   const box = node.absoluteBoundingBox || {}
   return {
     id: node.id,
@@ -1705,7 +1784,7 @@ export function restNodeSummary(node) {
     ...(node.componentId ? { instanceOf: { id: node.componentId } } : {}),
     childCount: Array.isArray(node.children) ? node.children.length : 0,
     children: Array.isArray(node.children)
-      ? node.children.map((child) => ({ id: child.id, name: child.name, type: child.type }))
+      ? node.children.map((child) => restNodeSummary(child, depth - 1))
       : [],
   }
 }
@@ -1864,23 +1943,24 @@ async function restCall(op, params = {}, fileKey) {
   }
 
   if (op === 'page.frames') {
-    const file = await restFetch(`/v1/files/${key}?depth=2`)
+    const file = await restFileTree(key)
     const pages = file.document?.children || []
     const page = params.pageId ? pages.find((entry) => entry.id === params.pageId) : pages[0]
-    if (!page) throw new Error(`no page ${params.pageId} in this file`)
+    if (!page) throw new Error(`no page ${params.pageId || '(first)'} in this file`)
     return {
       page: { id: page.id, name: page.name },
-      frames: (page.children || []).map(restNodeSummary),
+      frames: (page.children || []).map((frame) => restNodeSummary(frame, 1)),
     }
   }
 
   if (op === 'node.get') {
     const ids = encodeURIComponent(String(params.nodeId || ''))
     if (!ids) throw new Error('nodeId is required')
-    const answer = await restFetch(`/v1/files/${key}/nodes?ids=${ids}&depth=${Number(params.depth) || 1}`)
+    const depth = Math.min(20, Math.max(0, Number(params.depth) || 1))
+    const answer = await restFetch(`/v1/files/${key}/nodes?ids=${ids}&depth=${depth}`)
     const entry = Object.values(answer.nodes || {})[0]
     if (!entry) throw new Error(`no node ${params.nodeId} in this file`)
-    return restNodeSummary(entry.document)
+    return restNodeSummary(entry.document, depth)
   }
 
   if (op === 'node.find') {
@@ -2130,12 +2210,36 @@ const MAX_BATCH = 32
  */
 async function runHistory(op, body) {
   const online = roster()
-  const addressed = body.target ? resolveTarget(body.target) : null
-  const plugin = addressed && addressed.plugin ? addressed.plugin : online[0] || null
-  if (plugin && (!plugin.gates || plugin.gates.read !== true)) {
-    return { code: 400, body: fail('gate_closed', 'reads are off — enable "Allow reads" in the plugin') }
+  const params = body.params && typeof body.params === 'object' ? body.params : {}
+  if (op === 'history.recent') {
+    if (online.length > 0 && !online.some((plugin) => plugin.gates?.read === true)) {
+      return { code: 400, body: fail('gate_closed', 'reads are off — enable \"Allow reads\" in one open plugin') }
+    }
+    try {
+      const tabs = readDesktopTabs()
+      const result = await runRecentHistory(params, {
+        tabs,
+        listVersions: async (key, { limit } = {}) => {
+          const query = new URLSearchParams({ page_size: String(Math.min(50, Math.max(1, Number(limit) || 50))) })
+          const answer = await restFetch(`/v1/files/${encodeURIComponent(key)}/versions?${query}`)
+          return answer?.versions || []
+        },
+        fileMeta: async (key) => await restFetch(`/v1/files/${encodeURIComponent(key)}/meta`),
+      })
+      return { code: 200, body: { ok: true, op, source: 'rest', result } }
+    } catch (error) {
+      return { code: 400, body: { ...fail('figma_threw', error.message), op, source: 'rest' } }
+    }
   }
 
+  const addressed = body.target ? resolveTarget(body.target) : null
+  if (addressed?.error) {
+    return { code: 409, body: fail('ambiguous_target', addressed.error, { files: addressed.candidates || [] }) }
+  }
+  const plugin = addressed?.plugin || (online.length === 1 ? online[0] : null)
+  if (plugin && (!plugin.gates || plugin.gates.read !== true)) {
+    return { code: 400, body: fail('gate_closed', 'reads are off — enable \"Allow reads\" in the plugin') }
+  }
   const listVersions = async (key, { limit, before } = {}) => {
     const query = new URLSearchParams()
     query.set('page_size', String(Math.min(50, Math.max(1, Number(limit) || 30))))
@@ -2143,9 +2247,6 @@ async function runHistory(op, body) {
     const answer = await restFetch(`/v1/files/${encodeURIComponent(key)}/versions?${query}`)
     return (answer && answer.versions) || []
   }
-
-  /** The file as it stood at a version, optionally scoped to one subtree. `version` omitted is
-   * the current state, which is what a diff against "now" needs. */
   const fetchVersion = async (key, { version, nodeId, depth } = {}) => {
     const query = new URLSearchParams()
     if (version) query.set('version', String(version))
@@ -2154,10 +2255,9 @@ async function runHistory(op, body) {
     const answer = await restFetch(`/v1/files/${encodeURIComponent(key)}?${query}`)
     return (answer && answer.document) || null
   }
-
   try {
-    const params = body.params && typeof body.params === 'object' ? body.params : {}
-    const result = await runHistoryOp(op, params, { fileKey: body.fileKey, listVersions, fetchVersion })
+    const fileKey = body.fileKey || params.fileKey || plugin?.fileKey
+    const result = await runHistoryOp(op, params, { fileKey, listVersions, fetchVersion })
     return { code: 200, body: { ok: true, op, source: 'rest', result } }
   } catch (err) {
     const message = (err && err.message) || String(err)
@@ -2168,10 +2268,9 @@ async function runHistory(op, body) {
         : /adjacent checkpoints/.test(message)
           ? 'param_invalid'
           : 'figma_threw'
-    const hint =
-      code === 'unauthorized'
-        ? ' — a personal token needs the file_versions:read (or files:read) scope; it is chosen when the token is created'
-        : ''
+    const hint = code === 'unauthorized'
+      ? ' — a personal token needs the file_versions:read (or files:read) scope; it is chosen when the token is created'
+      : ''
     return { code: code === 'unauthorized' ? 401 : 400, body: { ...fail(code, message + hint), op, source: 'rest' } }
   }
 }
@@ -2199,7 +2298,10 @@ async function runComments(op, body) {
   const mutates = op !== 'comments.list'
   const online = roster()
   const addressed = body.target ? resolveTarget(body.target) : null
-  const plugin = addressed && addressed.plugin ? addressed.plugin : online[0] || null
+  if (addressed?.error) {
+    return { code: 409, body: fail('ambiguous_target', addressed.error, { files: addressed.candidates || [] }) }
+  }
+  const plugin = addressed?.plugin || (online.length === 1 ? online[0] : null)
 
   if (mutates) {
     if (!plugin) {
@@ -2250,7 +2352,7 @@ async function runComments(op, body) {
     /* `body` is the /call envelope — the op's own arguments are in `body.params`. `fileKey` is
      * read from the envelope too, so a batch that names the file once still reaches every call. */
     const params = body.params && typeof body.params === 'object' ? body.params : {}
-    const result = await runCommentOp(op, params, { fileKey: body.fileKey, aim })
+    const result = await runCommentOp(op, params, { fileKey: body.fileKey || params.fileKey || plugin?.fileKey, aim })
     return { code: 200, body: { ok: true, op, source: 'rest', result } }
   } catch (err) {
     const message = (err && err.message) || String(err)
@@ -2303,7 +2405,7 @@ async function runCall(body) {
    * open and a default key is configured. The answer is marked `source: "rest"` — an agent
    * that cannot tell which half answered cannot tell a thin answer from a complete one. */
   if (wantsRest(body, roster().length > 0)) {
-    const key = fileKeyOf(body.fileKey || body.target) || DEFAULT_FILE_KEY
+    const key = requestedFileKey(body) || fileKeyOf(body.target) || DEFAULT_FILE_KEY
     if (!key) {
       return {
         code: 400,
@@ -2413,15 +2515,48 @@ async function runCall(body) {
   }
 }
 
+
+async function acceptPluginResult(body, plugin) {
+  if (plugin) plugin.lastSeen = Date.now()
+  const entry = pending.get(body.id)
+  if (!entry) return { ok: true, note: 'no caller waiting' }
+  clearTimeout(entry.timer)
+  pending.delete(body.id)
+  console.log(
+    new Date().toISOString(),
+    `${plugin ? plugin.handle : '?'} · ${entry.op} — ${body.ok ? 'ok' : 'error: ' + body.error}`,
+    `(${Date.now() - entry.startedAt}ms)`
+  )
+  if (body.ok !== true) {
+    entry.resolve(failFromPlugin(body))
+    return { ok: true }
+  }
+  let result = body.result
+  try {
+    const written = []
+    result = materialiseFiles(result, path.join(FILES_DIR, `${entry.op.replace(/[^a-z0-9.]/gi, '-')}-${body.id.slice(0, 8)}`), written)
+    if (written.length > 0) {
+      console.log(new Date().toISOString(), `  wrote ${written.length} file${written.length === 1 ? '' : 's'} → ${path.dirname(written[0])}`)
+      sweepRuns()
+    }
+  } catch (error) {
+    entry.resolve(fail('file_write_failed', `could not write the files this op returned: ${error.message}`))
+    return { ok: true }
+  }
+  entry.resolve({ ok: true, result })
+  return { ok: true }
+}
 /* ---------------------------------------------------------- browser mirror */
 
 const MIRROR_EVENT_LIMIT = 500
 const MIRROR_CONTROLLER_MS = 45_000
+const MIRROR_VIEWER_MS = 35_000
 /** client id → Figma iframe acting as the live browser client's transport. */
 const mirrorPlugins = new Map()
 
 const mirrorIsOnline = (plugin) => Date.now() - plugin.lastSeen < OFFLINE_AFTER_MS
 const mirrorRoster = () => [...mirrorPlugins.values()].filter(mirrorIsOnline)
+const mirrorIsWatched = (plugin) => Date.now() - (plugin.viewerSeen || 0) < MIRROR_VIEWER_MS
 
 function mintMirrorHandle(fileName) {
   const base =
@@ -2441,6 +2576,7 @@ function describeMirror(plugin) {
     handle: plugin.handle,
     file: plugin.file,
     online: mirrorIsOnline(plugin),
+    watched: mirrorIsWatched(plugin),
     viewers: plugin.viewers.size,
     queued: plugin.commands.length,
     lastSeen: new Date(plugin.lastSeen).toISOString(),
@@ -2514,7 +2650,7 @@ function flushMirrorCommands(plugin) {
   const { res, timer } = plugin.poller
   plugin.poller = null
   clearTimeout(timer)
-  send(res, 200, { ok: true, commands: plugin.commands.splice(0, plugin.commands.length) })
+  send(res, 200, { ok: true, watched: mirrorIsWatched(plugin), commands: plugin.commands.splice(0, plugin.commands.length) })
 }
 
 function claimMirrorController(plugin, viewerId) {
@@ -2754,6 +2890,8 @@ const ROUTES = {
         nextSeq: 1,
         generation: crypto.randomUUID(),
         viewers: new Set(),
+        viewerSeen: 0,
+        viewerAnnounced: false,
         controller: null,
       }
       mirrorPlugins.set(clientId, plugin)
@@ -2761,7 +2899,8 @@ const ROUTES = {
     plugin.file = file
     plugin.lastSeen = Date.now()
     if (typeof body.source === 'string' && body.source.includes('<html')) plugin.source = body.source
-    if (Array.isArray(body.snapshot)) {
+    const watched = mirrorIsWatched(plugin)
+    if (Array.isArray(body.snapshot) && watched) {
       for (const message of body.snapshot) {
         if (message && typeof message === 'object') appendMirrorEvent(plugin, message)
       }
@@ -2773,6 +2912,7 @@ const ROUTES = {
         ok: true,
         handle: plugin.handle,
         pollHoldMs: POLL_HOLD_MS,
+        watched,
         url: `http://${HOST}:${PORT}/ui?target=${encodeURIComponent(plugin.handle)}`,
       },
     }
@@ -2782,17 +2922,25 @@ const ROUTES = {
     const plugin = mirrorPlugins.get(url.searchParams.get('clientId'))
     if (!plugin) return { code: 409, body: fail('disconnected', 'unknown browser mirror client') }
     plugin.lastSeen = Date.now()
+    const idle = url.searchParams.get('idle') === '1'
+    const watched = mirrorIsWatched(plugin)
+    if (!watched) plugin.viewerAnnounced = false
     if (plugin.poller) {
       clearTimeout(plugin.poller.timer)
-      send(plugin.poller.res, 200, { ok: true, commands: [] })
+      send(plugin.poller.res, 200, { ok: true, watched, commands: [] })
       plugin.poller = null
     }
     if (plugin.commands.length > 0) {
-      return { code: 200, body: { ok: true, commands: plugin.commands.splice(0, plugin.commands.length) } }
+      return { code: 200, body: { ok: true, watched, commands: plugin.commands.splice(0, plugin.commands.length) } }
+    }
+    if (idle && !watched) return { code: 200, body: { ok: true, watched: false, commands: [] } }
+    if (idle && watched && !plugin.viewerAnnounced) {
+      plugin.viewerAnnounced = true
+      return { code: 200, body: { ok: true, watched: true, commands: [] } }
     }
     const timer = setTimeout(() => {
       plugin.poller = null
-      send(res, 200, { ok: true, commands: [] })
+      send(res, 200, { ok: true, watched: mirrorIsWatched(plugin), commands: [] })
     }, POLL_HOLD_MS)
     plugin.poller = { res, timer }
     res.on('close', () => {
@@ -2833,6 +2981,7 @@ const ROUTES = {
       }
     }
     const plugin = found.plugin
+    plugin.viewerSeen = Date.now()
     const viewerId = typeof body.viewerId === 'string' && body.viewerId ? body.viewerId : ''
     if (!viewerId) return { code: 400, body: fail('bad_request', 'missing browser viewerId') }
     if (!claimMirrorController(plugin, viewerId)) {
@@ -2856,6 +3005,7 @@ const ROUTES = {
       }
     }
     const plugin = found.plugin
+    plugin.viewerSeen = Date.now()
     let cursor = Math.max(0, Number(url.searchParams.get('cursor')) || 0)
     if (url.searchParams.get('generation') !== plugin.generation) cursor = 0
     const viewerId = url.searchParams.get('viewerId') || ''
@@ -2881,6 +3031,9 @@ const ROUTES = {
   'POST /plugin/hello': async (req) => {
     const body = await readBody(req)
     const file = typeof body.file === 'string' ? body.file : null
+    const desktopKey = typeof body.fileKey === 'string' && body.fileKey
+      ? { key: body.fileKey, via: 'plugin', candidates: [] }
+      : await desktopKeyFor(file, body.pages)
     // A plugin too old to send one still connects; it just cannot be recognised across a
     // reconnect, which is exactly the behaviour it had before clientId existed.
     const session = typeof body.clientId === 'string' && body.clientId ? body.clientId : crypto.randomUUID()
@@ -2895,9 +3048,13 @@ const ROUTES = {
         send(known.poller.res, 200, { requests: [] })
         known.poller = null
       }
+      if (known.ws && !known.ws.closed) known.ws.close(1012, 'plugin reconnected')
+      known.ws = null
       failPending(known, `"${known.handle}" reconnected mid-call`, 'reconnected')
       known.file = file
-      known.fileKey = typeof body.fileKey === 'string' ? body.fileKey : null
+      known.fileKey = desktopKey.key || null
+      known.fileKeyVia = desktopKey.via || null
+      known.fileKeyCandidates = desktopKey.candidates
       known.ops = Array.isArray(body.ops) ? body.ops : []
       known.skill = typeof body.skill === 'string' ? body.skill : known.skill ?? null
       known.gates = { read: body.gates?.read === true, write: body.gates?.write === true }
@@ -2912,7 +3069,7 @@ const ROUTES = {
       installSkill(known)
       return {
         code: 200,
-        body: { ok: true, session, handle: known.handle, pollHoldMs: POLL_HOLD_MS, bridgeFingerprint: BRIDGE_FINGERPRINT },
+        body: { ok: true, session, handle: known.handle, pollHoldMs: POLL_HOLD_MS, ws: '/plugin/ws', bridgeFingerprint: BRIDGE_FINGERPRINT },
       }
     }
 
@@ -2920,13 +3077,16 @@ const ROUTES = {
       session,
       handle: mintHandle(file),
       file,
-      fileKey: typeof body.fileKey === 'string' ? body.fileKey : null,
+      fileKey: desktopKey.key || null,
+      fileKeyVia: desktopKey.via || null,
+      fileKeyCandidates: desktopKey.candidates,
       ops: Array.isArray(body.ops) ? body.ops : [],
       skill: typeof body.skill === 'string' ? body.skill : null,
       gates: { read: body.gates?.read === true, write: body.gates?.write === true },
       expects: typeof body.bridgeFingerprint === 'string' ? body.bridgeFingerprint : null,
       lastSeen: Date.now(),
       poller: null,
+      ws: null,
       queue: [],
     }
     plugins.set(session, plugin)
@@ -2939,7 +3099,7 @@ const ROUTES = {
     installSkill(plugin)
     return {
       code: 200,
-      body: { ok: true, session, handle: plugin.handle, pollHoldMs: POLL_HOLD_MS, bridgeFingerprint: BRIDGE_FINGERPRINT },
+      body: { ok: true, session, handle: plugin.handle, pollHoldMs: POLL_HOLD_MS, ws: '/plugin/ws', bridgeFingerprint: BRIDGE_FINGERPRINT },
     }
   },
 
@@ -2978,38 +3138,7 @@ const ROUTES = {
 
   'POST /plugin/result': async (req) => {
     const body = await readBody(req)
-    const plugin = plugins.get(body.session)
-    if (plugin) plugin.lastSeen = Date.now()
-    const entry = pending.get(body.id)
-    // No entry means the call already timed out — the plugin answering late is not an error.
-    if (!entry) return { code: 200, body: { ok: true, note: 'no caller waiting' } }
-    clearTimeout(entry.timer)
-    pending.delete(body.id)
-    console.log(
-      new Date().toISOString(),
-      `${plugin ? plugin.handle : '?'} · ${entry.op} — ${body.ok ? 'ok' : 'error: ' + body.error}`,
-      `(${Date.now() - entry.startedAt}ms)`
-    )
-    if (body.ok !== true) {
-      // The plugin's own code, not one guessed from the text: only the sandbox knows whether a
-      // gate was closed, the op was missing, or Figma threw.
-      entry.resolve(failFromPlugin(body))
-      return { code: 200, body: { ok: true } }
-    }
-    let result = body.result
-    try {
-      const written = []
-      result = materialiseFiles(result, path.join(FILES_DIR, `${entry.op.replace(/[^a-z0-9.]/gi, '-')}-${body.id.slice(0, 8)}`), written)
-      if (written.length > 0) {
-        console.log(new Date().toISOString(), `  wrote ${written.length} file${written.length === 1 ? '' : 's'} → ${path.dirname(written[0])}`)
-        sweepRuns()
-      }
-    } catch (err) {
-      entry.resolve(fail('file_write_failed', `could not write the files this op returned: ${err.message}`))
-      return { code: 200, body: { ok: true } }
-    }
-    entry.resolve({ ok: true, result })
-    return { code: 200, body: { ok: true } }
+    return { code: 200, body: await acceptPluginResult(body, plugins.get(body.session)) }
   },
 
   'POST /plugin/gates': async (req) => {
@@ -3020,6 +3149,7 @@ const ROUTES = {
     plugin.gates = { read: body.read === true, write: body.write === true }
     if (!plugin.gates.read && !plugin.gates.write) {
       failPending(plugin, 'the designer turned that file\'s agent listener off', 'listener_off')
+      if (plugin.ws && !plugin.ws.closed) plugin.ws.close(1000, 'listener off')
       plugins.delete(plugin.session)
       console.log(new Date().toISOString(), `- "${plugin.file}" (${plugin.handle}) — listener off · ${roster().length} connected`)
       return { code: 200, body: { ok: true, disconnected: true } }
@@ -3171,6 +3301,56 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
+function rejectUpgrade(socket, status, message) {
+  const body = JSON.stringify(fail(status === 401 ? 'unauthorized' : 'disconnected', message))
+  socket.write(
+    `HTTP/1.1 ${status} ${status === 401 ? 'Unauthorized' : status === 403 ? 'Forbidden' : 'Conflict'}\r\n` +
+    'Content-Type: application/json\r\n' +
+    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+    'Connection: close\r\n\r\n' +
+    body
+  )
+  socket.destroy()
+}
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url || '/', `http://${HOST}:${PORT}`)
+  if (url.pathname !== '/plugin/ws') return rejectUpgrade(socket, 409, 'unknown WebSocket route')
+  if (!isLoopback(req)) return rejectUpgrade(socket, 403, 'WebSocket transport is loopback-only')
+  const origin = req.headers.origin
+  if (origin !== undefined && origin !== 'null') {
+    return rejectUpgrade(socket, 403, 'WebSocket transport accepts only the Figma null origin or a local client')
+  }
+  if (!safeEqual(url.searchParams.get('secret'), SECRET)) return rejectUpgrade(socket, 401, 'bad WebSocket secret')
+  const plugin = plugins.get(url.searchParams.get('session'))
+  if (!plugin) return rejectUpgrade(socket, 409, 'unknown session')
+  if (plugin.ws && !plugin.ws.closed) plugin.ws.close(1012, 'replaced by a newer socket')
+  if (plugin.poller) {
+    clearTimeout(plugin.poller.timer)
+    send(plugin.poller.res, 200, { requests: [] })
+    plugin.poller = null
+  }
+  let peer
+  try {
+    peer = acceptWebSocket(req, socket, head, {
+      onMessage(message) {
+        if (!message || message.type !== 'result' || !message.body || typeof message.body !== 'object') {
+          peer.close(1003, 'expected {type:\"result\",body}')
+          return
+        }
+        void acceptPluginResult(message.body, plugin)
+      },
+      onPong() { plugin.lastSeen = Date.now() },
+      onClose() { if (plugin.ws === peer) plugin.ws = null },
+    })
+  } catch (error) {
+    return rejectUpgrade(socket, 409, error.message)
+  }
+  plugin.ws = peer
+  plugin.lastSeen = Date.now()
+  flush(plugin)
+})
+
 // A dropped poll is how we learn a plugin closed; nothing else notices.
 setInterval(() => {
   for (const plugin of [...plugins.values()]) {
@@ -3178,6 +3358,7 @@ setInterval(() => {
     failPending(plugin, `"${plugin.handle}" disconnected`, 'disconnected')
     plugins.delete(plugin.session)
     console.log(new Date().toISOString(), `- "${plugin.file}" (${plugin.handle}) — gone · ${roster().length} connected`)
+    if (plugin.ws && !plugin.ws.closed) plugin.ws.close(1001, 'plugin timed out')
   }
   for (const plugin of [...mirrorPlugins.values()]) {
     if (mirrorIsOnline(plugin)) continue
@@ -3185,6 +3366,12 @@ setInterval(() => {
     console.log(new Date().toISOString(), `- browser mirror "${plugin.file}" (${plugin.handle}) — gone`)
   }
 }, 5_000).unref()
+
+setInterval(() => {
+  for (const plugin of plugins.values()) {
+    if (plugin.ws && !plugin.ws.closed) plugin.ws.ping('allcrew')
+  }
+}, 20_000).unref()
 
 /* Started only when this file is what was run. Imported — by a test, or by a wrapper that
  * wants the REST helpers — it defines everything and listens on nothing: a second process

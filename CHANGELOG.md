@@ -2,6 +2,27 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.8.0 — 2026-10-01
+
+### Added
+
+- Added atomic `collections.update`, `pages.update`, Enterprise `variables.extend`, and read-only `variables.audit` operations.
+- Added a self-contained downloadable bridge bundle with source-set fingerprint parity between checkout and downloaded forms.
+- Added authenticated loopback WebSocket transport for agent calls, with HTTP polling fallback and transport status reporting.
+- Added Figma Desktop tab discovery, automatic file-key matching, and `history.recent` across open and recently viewed files.
+
+### Changed
+
+- Browser mirror polling no longer parks a connection or forwards sandbox events while no browser viewer is present.
+- Plugin window size persistence is delayed until 400 ms after the last persisted resize request.
+
+### Fixed
+
+- REST history and comment calls now use the addressed plugin window's discovered file key.
+- REST `page.frames` shares one 30-second cached file-tree request across pages, `node.get` recursively honors requested depth, and nested `params.fileKey` consistently selects REST.
+- Figma REST requests are limited to four concurrent calls and retry HTTP 429 responses up to three attempts using bounded `Retry-After`.
+- CLI call output now identifies Figma REST and bridge-owned answers instead of printing an undefined plugin window.
+
 ## 1.7.0 — 2026-09-30
 
 ### Added

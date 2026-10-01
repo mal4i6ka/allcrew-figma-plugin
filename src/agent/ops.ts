@@ -47,6 +47,7 @@ import { WRITE_OPS } from './write-ops.ts'
 import { PLUGIN_OPS } from './plugin-ops.ts'
 import { MODULE_OPS } from './module-ops.ts'
 import { COMPONENT_READ_OPS, COMPONENT_WRITE_OPS } from './component-ops.ts'
+import { ADMIN_OPS } from './admin-ops.ts'
 
 /* ------------------------------------------------------------- serializers */
 
@@ -2635,6 +2636,7 @@ export const ALL_OPS: readonly OpDef[] = [
   ...STATE_OPS,
   ...TRANSITION_OPS,
   ...COMPONENT_WRITE_OPS,
+  ...ADMIN_OPS,
   ...WRITE_OPS,
   ...MODULE_OPS,
   ...PLUGIN_OPS,
