@@ -2,12 +2,14 @@ import * as esbuild from "esbuild";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { embeddedScript } from "./agent/embed-script.mjs";
+import { FIDELITY_POLICY } from "./agent/design-policy.mjs";
 import { extractUiCommands } from "./src/agent/ui-commands.ts";
 import { extractProps } from "./src/agent/props-vocabulary.ts";
 
 const watch = process.argv.includes("--watch");
 const PLUGIN_VERSION = JSON.parse(readFileSync("package.json", "utf8")).version;
 const PLUGIN_VERSION_MARKER = "'__ALLCREW_PLUGIN_VERSION__'";
+const FIDELITY_POLICY_MARKER = "'__ALLCREW_FIDELITY_POLICY__'";
 
 const commonOptions = {
   bundle: true,
@@ -32,7 +34,7 @@ const EMBEDS = [
     file: "agent/bridge.mjs",
     bundle: true,
   },
-  { marker: "'__ALLCREW_CHANNEL_MCP_SOURCE__'", file: "agent/mcp.mjs", bundle: false },
+  { marker: "'__ALLCREW_CHANNEL_MCP_SOURCE__'", file: "agent/mcp.mjs", bundle: true },
   { marker: "'__ALLCREW_CHANNEL_RECEIVER_SOURCE__'", file: "server/receiver.mjs", bundle: false },
 ];
 
@@ -52,6 +54,11 @@ async function copyUi() {
       ui = ui.replace(entry.fingerprintMarker, JSON.stringify(output.fingerprint));
     }
   }
+  const policyMarkers = ui.split(FIDELITY_POLICY_MARKER).length - 1;
+  if (policyMarkers !== 1) {
+    throw new Error(`ui.html contains ${FIDELITY_POLICY_MARKER} ${policyMarkers} time(s), expected exactly 1`);
+  }
+  ui = ui.replace(FIDELITY_POLICY_MARKER, JSON.stringify(JSON.stringify(FIDELITY_POLICY)));
   const versionMarkers = ui.split(PLUGIN_VERSION_MARKER).length - 1;
   if (versionMarkers !== 1) {
     throw new Error(`ui.html contains ${PLUGIN_VERSION_MARKER} ${versionMarkers} time(s), expected exactly 1`);

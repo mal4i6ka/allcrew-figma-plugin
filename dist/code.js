@@ -462,8 +462,8 @@
   // src/tokens/native.ts
   function parseColor(value2) {
     if (typeof value2 !== "string") return null;
-    const text5 = value2.trim();
-    const hex = /^#([0-9a-f]{3,8})$/i.exec(text5);
+    const text6 = value2.trim();
+    const hex = /^#([0-9a-f]{3,8})$/i.exec(text6);
     if (hex) {
       const digits = hex[1];
       const expand = (pair2) => parseInt(pair2.length === 1 ? pair2 + pair2 : pair2, 16);
@@ -485,7 +485,7 @@
       }
       return null;
     }
-    const rgb = /^rgba?\(([^)]+)\)$/i.exec(text5);
+    const rgb = /^rgba?\(([^)]+)\)$/i.exec(text6);
     if (!rgb) return null;
     const parts = rgb[1].split(/[,/\s]+/).filter((part) => part !== "");
     if (parts.length < 3) return null;
@@ -3023,12 +3023,12 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   function inst(of, values, opts = {}) {
     return __spreadValues({ type: "instance", of, values }, opts);
   }
-  function txt(name, text5, opts = {}) {
+  function txt(name, text6, opts = {}) {
     var _a, _b;
     return {
       type: "text",
       name,
-      text: text5,
+      text: text6,
       fontSize: (_a = opts.fontSize) != null ? _a : FONT.base,
       color: (_b = opts.color) != null ? _b : opts.muted ? solid(COLOR.secondaryText) : solid(COLOR.bodyText),
       bold: opts.bold,
@@ -3071,20 +3071,20 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const role = isOutline ? raw.replace(/^outline-?/i, "") : raw;
     let fill = NONE;
     let stroke;
-    let text5;
+    let text6;
     if (isLink) {
-      text5 = solid(roleColor("primary"));
+      text6 = solid(roleColor("primary"));
     } else if (isOutline) {
       stroke = { color: roleColor(role), weight: 1 };
       if (state === "hover" || state === "active") {
         fill = stateFill(role, state);
-        text5 = solid(roleTextColor(role));
+        text6 = solid(roleTextColor(role));
       } else {
-        text5 = solid(roleColor(role));
+        text6 = solid(roleColor(role));
       }
     } else {
       fill = stateFill(role, state);
-      text5 = solid(roleTextColor(role));
+      text6 = solid(roleTextColor(role));
     }
     return frame("Button", {
       direction: "horizontal",
@@ -3098,7 +3098,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       stroke,
       radius: sizeRadius(size),
       opacity: state === "disabled" ? 0.65 : 1,
-      children: [txt("Label", labelText(spec, "Button"), { fontSize: sizeFont(size), color: text5 })]
+      children: [txt("Label", labelText(spec, "Button"), { fontSize: sizeFont(size), color: text6 })]
     });
   };
   var badge = (spec, v) => {
@@ -3266,7 +3266,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const activeColor = dark ? COLOR.surface : roleColor("primary");
     const mutedColor = dark ? { r: 0.73, g: 0.75, b: 0.78 } : COLOR.secondaryText;
     const navPad = [SPACE.navLink.padV, SPACE.navLink.padH, SPACE.navLink.padV, SPACE.navLink.padH];
-    const link = (text5, active) => frame("Item", { direction: "horizontal", padding: navPad, width: "hug", children: [txt("ItemText", text5, { color: solid(active ? activeColor : mutedColor) })] });
+    const link = (text6, active) => frame("Item", { direction: "horizontal", padding: navPad, width: "hug", children: [txt("ItemText", text6, { color: solid(active ? activeColor : mutedColor) })] });
     return frame("Navbar", {
       direction: "horizontal",
       padding: [SPACE.navbar.padV, SPACE.navbar.padH, SPACE.navbar.padV, SPACE.navbar.padH],
@@ -3573,7 +3573,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const size = (_a = v.Size) != null ? _a : "md";
     const [padV, padH] = (_b = CONTROL_PAD[size]) != null ? _b : CONTROL_PAD.md;
     const font = sizeFont(size);
-    const seg = (text5, active = false) => frame("Button", {
+    const seg = (text6, active = false) => frame("Button", {
       direction: "horizontal",
       primaryAlign: "center",
       counterAlign: "center",
@@ -3581,7 +3581,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       width: "hug",
       fill: active ? token("Primary") : NONE,
       stroke: { color: roleColor("primary"), weight: 1 },
-      children: [txt("Label", text5, { fontSize: font, color: active ? solid(roleTextColor("Primary")) : solid(roleColor("primary")) })]
+      children: [txt("Label", text6, { fontSize: font, color: active ? solid(roleTextColor("Primary")) : solid(roleColor("primary")) })]
     });
     return frame("ButtonGroup", { direction: "horizontal", gap: 0, width: "hug", slot: openSlot("Buttons \u2014 drop Button instances", ["Button"]), children: [seg("Left", true), seg("Middle"), seg("Right")] });
   };
@@ -5122,10 +5122,10 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   function maskFilename(id, name) {
     return `${idSegment(id)}-${slugify(name)}-mask.svg`;
   }
-  function utf8ByteLength(text5) {
+  function utf8ByteLength(text6) {
     var _a;
     let bytes = 0;
-    for (const char of text5) {
+    for (const char of text6) {
       const codePoint = (_a = char.codePointAt(0)) != null ? _a : 0;
       if (codePoint <= 127) bytes += 1;
       else if (codePoint <= 2047) bytes += 2;
@@ -9730,8 +9730,8 @@ ${rule.decls.map((d) => `  ${d.property}: ${d.value};`).join("\n")}
           const destComponentName = overlayDestinationComponentName(irNodeById.get(overlay.destinationId));
           const body = (_f = (_e = options.renderOverlayBody) == null ? void 0 : _e.call(options, overlay.destinationId)) != null ? _f : "";
           if (options.bootstrapModals && (destComponentName === "tooltip" || destComponentName === "popover")) {
-            const text5 = escapeHtml(firstTextOf(irNodeById.get(overlay.destinationId)));
-            const attr = destComponentName === "tooltip" ? ` data-bs-toggle="tooltip" data-bs-title="${text5}"` : ` data-bs-toggle="popover" data-bs-content="${text5}"`;
+            const text6 = escapeHtml(firstTextOf(irNodeById.get(overlay.destinationId)));
+            const attr = destComponentName === "tooltip" ? ` data-bs-toggle="tooltip" data-bs-title="${text6}"` : ` data-bs-toggle="popover" data-bs-content="${text6}"`;
             triggerAttributes.set(className, `${(_g = triggerAttributes.get(className)) != null ? _g : ""}${attr}`);
             needsTooltipInit || (needsTooltipInit = destComponentName === "tooltip");
             needsPopoverInit || (needsPopoverInit = destComponentName === "popover");
@@ -10643,17 +10643,17 @@ ${mediaCss}`;
     const slash = name.lastIndexOf("/");
     return slash >= 0 ? name.slice(0, slash) : "";
   }
-  function applyPlaceholders(text5, placeholders) {
-    if (!placeholders || placeholders.length === 0) return text5;
+  function applyPlaceholders(text6, placeholders) {
+    if (!placeholders || placeholders.length === 0) return text6;
     const sorted = [...placeholders].sort((a, b) => a.start - b.start);
     let result = "";
     let cursor = 0;
     for (const ph of sorted) {
-      result += text5.slice(cursor, ph.start);
+      result += text6.slice(cursor, ph.start);
       result += `%(${ph.name})s`;
       cursor = ph.end;
     }
-    result += text5.slice(cursor);
+    result += text6.slice(cursor);
     return result;
   }
   function resolveManualKey(node) {
@@ -12525,8 +12525,8 @@ ${mediaCss}`;
     (_a = ctx.progress) == null ? void 0 : _a.call(ctx, "collecting page text styles\u2026");
     try {
       const seen = /* @__PURE__ */ new Set();
-      for (const text5 of figma.currentPage.findAllWithCriteria({ types: ["TEXT"] })) {
-        const styleId = text5.textStyleId;
+      for (const text6 of figma.currentPage.findAllWithCriteria({ types: ["TEXT"] })) {
+        const styleId = text6.textStyleId;
         if (typeof styleId !== "string" || styleId === "" || seen.has(styleId)) continue;
         seen.add(styleId);
         const style = await figma.getStyleByIdAsync(styleId);
@@ -13479,8 +13479,8 @@ ${frames.map(formatFrame).join("\n")}
     let lastPercent = 0;
     let lastPositionSec = 0;
     for (const keyframe of sorted) {
-      const text5 = requireTextData(keyframe.value, `${track.field} keyframe ${keyframe.id}`);
-      const vars = { text: { value: text5 } };
+      const text6 = requireTextData(keyframe.value, `${track.field} keyframe ${keyframe.id}`);
+      const vars = { text: { value: text6 } };
       lastVars = vars;
       if (keyframe.timelinePosition <= 0) {
         lastPercent = 0;
@@ -14644,9 +14644,9 @@ ${options.intro}`;
     }
     return index2;
   }
-  function mentionKey(text5) {
+  function mentionKey(text6) {
     return varName([
-      text5.trim().replace(/^--/, "").replace(/^\{|\}$/g, "").replace(/[/.]+/g, "-").replace(/\s+/g, "-")
+      text6.trim().replace(/^--/, "").replace(/^\{|\}$/g, "").replace(/[/.]+/g, "-").replace(/\s+/g, "-")
     ]);
   }
   var REFERENCE_SHAPED = /^(?:--[A-Za-z0-9-]+|\{[^}]+\}|[A-Za-z0-9][A-Za-z0-9_-]*(?:[/.][A-Za-z0-9_-]+)+)$/;
@@ -14660,23 +14660,23 @@ ${options.intro}`;
     const rampMisses = [];
     const seen = /* @__PURE__ */ new Set();
     for (const match of (_a = description.match(CANDIDATE)) != null ? _a : []) {
-      const text5 = match.trim();
-      const referenceShaped = REFERENCE_SHAPED.test(text5);
-      if (!referenceShaped && !HAS_LETTER.test(text5)) continue;
-      const key = mentionKey(text5);
+      const text6 = match.trim();
+      const referenceShaped = REFERENCE_SHAPED.test(text6);
+      if (!referenceShaped && !HAS_LETTER.test(text6)) continue;
+      const key = mentionKey(text6);
       if (!key || seen.has(key)) continue;
       const entry = index2.byKey.get(key);
       if (entry) {
         seen.add(key);
-        resolved.push({ text: text5, entry });
+        resolved.push({ text: text6, entry });
         continue;
       }
       if (referenceShaped) {
         seen.add(key);
-        unresolved.push(text5);
-      } else if (RAMP_STEP.test(text5)) {
+        unresolved.push(text6);
+      } else if (RAMP_STEP.test(text6)) {
         seen.add(key);
-        rampMisses.push(text5);
+        rampMisses.push(text6);
       }
     }
     if (resolved.length > 0) unresolved.push(...rampMisses);
@@ -14689,16 +14689,16 @@ ${options.intro}`;
   var TAG_SEGMENT = /^[A-Za-z][A-Za-z0-9 '’&/-]{0,40}$/;
   var BEHAVIOUR_LANGUAGE = /\b(if|when|while|unless|until|then|must|should|never|always|only|hover(ed)?|press(ed)?|focus(ed)?|disabled|active|selected|checked|loading|error|invalid|state|states|min|max|fill|chang(e|es|ing)|switch(es)?|toggle(s)?|show(s)?|hide(s)?|limit(s)?)\b|%|\d+\s*px/i;
   function classifyDescription(description, properties = [], resolvedMentionCount = 0) {
-    const text5 = description.trim();
-    if (!text5) return "notes";
-    const segments = text5.split(/[,;\n]+/).map((segment) => segment.trim()).filter(Boolean);
+    const text6 = description.trim();
+    if (!text6) return "notes";
+    const segments = text6.split(/[,;\n]+/).map((segment) => segment.trim()).filter(Boolean);
     const tagLike = segments.filter(
       (segment) => TAG_SEGMENT.test(segment) && segment.split(/\s+/).length <= 3
     );
     if (segments.length >= 3 && tagLike.length >= segments.length * 0.8) return "tags";
     if (resolvedMentionCount > 0) return "contract";
-    if (BEHAVIOUR_LANGUAGE.test(text5)) return "contract";
-    const lower = text5.toLowerCase();
+    if (BEHAVIOUR_LANGUAGE.test(text6)) return "contract";
+    const lower = text6.toLowerCase();
     if (properties.some((property) => property.name && lower.indexOf(property.name.toLowerCase()) !== -1))
       return "contract";
     return "notes";
@@ -14762,7 +14762,7 @@ ${mdTable(["Property", "Type", "Options", "Default"], rows)}`;
     }
     if (unresolved.length > 0) {
       parts.push(
-        `**Stale references:** ${unresolved.map((text5) => `\`${text5}\``).join(", ")} \u2014 written like a variable name but matching nothing in this file (renamed, removed, or ambiguous between several variables). Do NOT invent a value: ask the designer which variable is meant.`
+        `**Stale references:** ${unresolved.map((text6) => `\`${text6}\``).join(", ")} \u2014 written like a variable name but matching nothing in this file (renamed, removed, or ambiguous between several variables). Do NOT invent a value: ask the designer which variable is meant.`
       );
     }
     return parts.length > 0 ? `
@@ -15017,12 +15017,12 @@ ${mdTable(["Component", "Contract (first line)", "Preview"], rows)}${more}${note
     const recipeLines = [];
     const recipeGaps = [];
     const surface = (_d = (_b = model.byRole.get("surface")) == null ? void 0 : _b[0]) != null ? _d : (_c = model.byRole.get("color")) == null ? void 0 : _c[0];
-    const text5 = (_e = model.byRole.get("text")) == null ? void 0 : _e[0];
+    const text6 = (_e = model.byRole.get("text")) == null ? void 0 : _e[0];
     const border = (_f = model.byRole.get("border")) == null ? void 0 : _f[0];
     const radius = (_g = model.byRole.get("radius")) == null ? void 0 : _g[0];
     const spacing = (_h = model.byRole.get("spacing")) == null ? void 0 : _h[0];
     if (surface) recipeLines.push(`  background: ${surface.cssRef};`);
-    if (text5) recipeLines.push(`  color: ${text5.cssRef};`);
+    if (text6) recipeLines.push(`  color: ${text6.cssRef};`);
     if (border) recipeLines.push(`  border: 1px solid ${border.cssRef};`);
     if (radius) recipeLines.push(`  border-radius: ${radius.cssRef};`);
     else recipeGaps.push("radius");
@@ -16450,11 +16450,11 @@ ${scrollGuards}` : project.css;
     return { body: first };
   }
   var solid2 = (hex) => ({ type: "SOLID", color: rgbOf(hex) });
-  function label(text5, fonts, size, hex) {
+  function label(text6, fonts, size, hex) {
     const node = figma.createText();
     node.fontName = fonts.body;
     node.fontSize = size;
-    node.characters = text5;
+    node.characters = text6;
     node.fills = [solid2(hex)];
     return node;
   }
@@ -16551,10 +16551,10 @@ ${scrollGuards}` : project.css;
         (name) => existing.findOne((node) => node.name === name) !== null
       );
       if (intact) {
-        for (const text5 of existing.findAllWithCriteria({ types: ["TEXT"] })) {
-          if (text5.fontName !== figma.mixed) {
+        for (const text6 of existing.findAllWithCriteria({ types: ["TEXT"] })) {
+          if (text6.fontName !== figma.mixed) {
             try {
-              await figma.loadFontAsync(text5.fontName);
+              await figma.loadFontAsync(text6.fontName);
             } catch (e) {
             }
           }
@@ -16727,7 +16727,7 @@ ${scrollGuards}` : project.css;
     walk3.loosePlaces++;
     return id;
   }
-  var pairKey = (a, b, text5) => (a < b ? `${a} ${b}` : `${b} ${a}`) + (text5 ? " t" : " n");
+  var pairKey = (a, b, text6) => (a < b ? `${a} ${b}` : `${b} ${a}`) + (text6 ? " t" : " n");
   var EMPTY = [];
   async function walkDocument(localIds, depth, progress2) {
     var _a;
@@ -16749,10 +16749,10 @@ ${scrollGuards}` : project.css;
       walk3.usage.set(id, ((_a2 = walk3.usage.get(id)) != null ? _a2 : 0) + 1);
       if (!localIds.has(id)) walk3.foreign.add(id);
     };
-    const notePair = (a, b, text5) => {
+    const notePair = (a, b, text6) => {
       if (walk3.neighbours.size >= MAX_ADJACENT_PAIRS) return;
-      const key = pairKey(a, b, text5);
-      if (!walk3.neighbours.has(key)) walk3.neighbours.set(key, { a, b, text: text5 });
+      const key = pairKey(a, b, text6);
+      if (!walk3.neighbours.has(key)) walk3.neighbours.set(key, { a, b, text: text6 });
     };
     const noteStyle = (styleId) => {
       var _a2;
@@ -17127,10 +17127,10 @@ ${scrollGuards}` : project.css;
     if (oldPrefix.length >= compact.length) return matchCase(oldPrefix, compact);
     return matchCase(oldPrefix, compact.slice(0, oldPrefix.length));
   }
-  function matchCase(sample, text5) {
-    if (sample === sample.toUpperCase()) return text5.toUpperCase();
-    if (sample === sample.toLowerCase()) return text5.toLowerCase();
-    return text5.charAt(0).toUpperCase() + text5.slice(1).toLowerCase();
+  function matchCase(sample, text6) {
+    if (sample === sample.toUpperCase()) return text6.toUpperCase();
+    if (sample === sample.toLowerCase()) return text6.toLowerCase();
+    return text6.charAt(0).toUpperCase() + text6.slice(1).toLowerCase();
   }
 
   // src/tokens/remap/spectrum.ts
@@ -17628,9 +17628,9 @@ ${scrollGuards}` : project.css;
     }
     return { version: 2, values: packed.values, names: packed.names, styles: packed.styles, paints: paints2 };
   }
-  function writeChunked(text5) {
+  function writeChunked(text6) {
     const chunks = [];
-    for (let i = 0; i < text5.length; i += CHUNK_BYTES) chunks.push(text5.slice(i, i + CHUNK_BYTES));
+    for (let i = 0; i < text6.length; i += CHUNK_BYTES) chunks.push(text6.slice(i, i + CHUNK_BYTES));
     if (chunks.length > MAX_CHUNKS) {
       throw new Error(`the undo snapshot needs ${chunks.length} slots, more than the ${MAX_CHUNKS} available`);
     }
@@ -17638,13 +17638,13 @@ ${scrollGuards}` : project.css;
     for (const [index2, chunk] of chunks.entries()) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index2}`, chunk);
     for (let index2 = chunks.length; index2 < previous; index2++) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index2}`, "");
     figma.root.setPluginData(SNAPSHOT_COUNT_KEY, String(chunks.length));
-    return text5.length;
+    return text6.length;
   }
   function readChunked() {
     const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
-    let text5 = "";
-    for (let index2 = 0; index2 < count; index2++) text5 += figma.root.getPluginData(`${SNAPSHOT_KEY}-${index2}`);
-    return text5;
+    let text6 = "";
+    for (let index2 = 0; index2 < count; index2++) text6 += figma.root.getPluginData(`${SNAPSHOT_KEY}-${index2}`);
+    return text6;
   }
   function clearSnapshot() {
     const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
@@ -18488,17 +18488,17 @@ ${scrollGuards}` : project.css;
   var HEX_RE = /#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\b/g;
   var FUNC_RE = /\b(rgba?|hsla?|hwb|oklch|oklab)\(\s*([^()]*)\)/gi;
   var NAMED_RE = new RegExp("(?<![\\w-])([a-zA-Z]{3,20})(?![\\w-])", "g");
-  function inValuePosition(text5, start, end) {
-    const before = text5[start - 1];
-    const after = text5[end];
+  function inValuePosition(text6, start, end) {
+    const before = text6[start - 1];
+    const after = text6[end];
     const quotedTight = (before === '"' || before === "'") && after === before;
     let probe = quotedTight ? end + 1 : end;
-    while (probe < text5.length && (text5[probe] === " " || text5[probe] === "	")) probe++;
-    if (text5[probe] === ":") return false;
+    while (probe < text6.length && (text6[probe] === " " || text6[probe] === "	")) probe++;
+    if (text6[probe] === ":") return false;
     if (quotedTight) return true;
     let lineStart = start;
-    while (lineStart > 0 && text5[lineStart - 1] !== "\n") lineStart--;
-    const head = text5.slice(lineStart, start);
+    while (lineStart > 0 && text6[lineStart - 1] !== "\n") lineStart--;
+    const head = text6.slice(lineStart, start);
     if (head.indexOf("//") !== -1 || head.trim().startsWith("*")) return false;
     let single2 = 0;
     let double = 0;
@@ -18508,17 +18508,17 @@ ${scrollGuards}` : project.css;
     }
     if (single2 % 2 === 1 || double % 2 === 1) return false;
     for (let i = start - 1; i >= lineStart; i--) {
-      const character = text5[i];
+      const character = text6[i];
       if (character === ":") return true;
       if (character === ";" || character === "{" || character === "}") return false;
     }
     return false;
   }
   function parseComponent(raw) {
-    const text5 = raw.trim();
-    if (text5 === "") return null;
-    const percent = text5.endsWith("%");
-    const value2 = Number(percent ? text5.slice(0, -1) : text5);
+    const text6 = raw.trim();
+    if (text6 === "") return null;
+    const percent = text6.endsWith("%");
+    const value2 = Number(percent ? text6.slice(0, -1) : text6);
     return Number.isFinite(value2) ? { value: value2, percent } : null;
   }
   function splitArguments(body) {
@@ -18568,18 +18568,18 @@ ${scrollGuards}` : project.css;
       notation: short ? "hex4" : "hex8"
     };
   }
-  function commentSpans(text5) {
+  function commentSpans(text6) {
     const spans = [];
-    for (const match of text5.matchAll(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->/g)) {
+    for (const match of text6.matchAll(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->/g)) {
       spans.push([match.index, match.index + match[0].length]);
     }
     return spans;
   }
-  function findColorLiterals(text5) {
+  function findColorLiterals(text6) {
     const found = [];
-    const comments = commentSpans(text5);
+    const comments = commentSpans(text6);
     const commented = (start) => comments.some(([from, to]) => start >= from && start < to);
-    for (const match of text5.matchAll(HEX_RE)) {
+    for (const match of text6.matchAll(HEX_RE)) {
       const parsed = parseHexLiteral(match[1]);
       if (!parsed) continue;
       found.push({
@@ -18590,7 +18590,7 @@ ${scrollGuards}` : project.css;
         end: match.index + match[0].length
       });
     }
-    for (const match of text5.matchAll(FUNC_RE)) {
+    for (const match of text6.matchAll(FUNC_RE)) {
       const fn = match[1].toLowerCase();
       const kind = fn.startsWith("rgb") ? "rgb" : fn.startsWith("hsl") ? "hsl" : fn;
       const rgba = parseFunctional(kind, match[2]);
@@ -18603,10 +18603,10 @@ ${scrollGuards}` : project.css;
         end: match.index + match[0].length
       });
     }
-    for (const match of text5.matchAll(NAMED_RE)) {
+    for (const match of text6.matchAll(NAMED_RE)) {
       const hex = NAMED_COLORS[match[1].toLowerCase()];
       if (hex === void 0) continue;
-      if (!inValuePosition(text5, match.index, match.index + match[0].length)) continue;
+      if (!inValuePosition(text6, match.index, match.index + match[0].length)) continue;
       const rgb = parseHex(hex);
       if (!rgb) continue;
       found.push({
@@ -18619,8 +18619,8 @@ ${scrollGuards}` : project.css;
     }
     return found.filter((literal) => !commented(literal.start)).sort((a, b) => a.start - b.start);
   }
-  function parseColorLiteral(text5) {
-    const found = findColorLiterals(text5);
+  function parseColorLiteral(text6) {
+    const found = findColorLiterals(text6);
     return found.length === 1 ? found[0] : null;
   }
   var round8 = (value2, places = 4) => {
@@ -18706,11 +18706,11 @@ ${scrollGuards}` : project.css;
     return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b } : { r: 0.5, g: 0.5, b: 0.5 };
   };
   var solid3 = (hex) => ({ type: "SOLID", color: rgbOf2(hex) });
-  function label2(text5, fonts, size, hex) {
+  function label2(text6, fonts, size, hex) {
     const node = figma.createText();
     node.fontName = fonts.body;
     node.fontSize = size;
-    node.characters = text5;
+    node.characters = text6;
     node.fills = [solid3(hex)];
     return node;
   }
@@ -18749,15 +18749,15 @@ ${scrollGuards}` : project.css;
   }
   function gutter(fonts) {
     const column2 = autoLayout2("legend", "VERTICAL", 3);
-    for (const text5 of ["old", "new"]) {
-      const cell = autoLayout2(text5, "VERTICAL", 0);
+    for (const text6 of ["old", "new"]) {
+      const cell = autoLayout2(text6, "VERTICAL", 0);
       cell.primaryAxisSizingMode = "FIXED";
       cell.counterAxisSizingMode = "FIXED";
       cell.resize(34, SWATCH_HEIGHT);
       cell.primaryAxisAlignItems = "CENTER";
       cell.counterAxisAlignItems = "MAX";
       cell.paddingRight = 8;
-      cell.appendChild(label2(text5, fonts, CAPTION_SIZE2, "#8A8A8A"));
+      cell.appendChild(label2(text6, fonts, CAPTION_SIZE2, "#8A8A8A"));
       column2.appendChild(cell);
     }
     return column2;
@@ -19008,9 +19008,9 @@ ${scrollGuards}` : project.css;
   var CHUNK_BYTES2 = 8e4;
   var MAX_CHUNKS2 = 12;
   var REBIND_BUDGET_BYTES = CHUNK_BYTES2 * MAX_CHUNKS2;
-  function writeChunked2(text5) {
+  function writeChunked2(text6) {
     const chunks = [];
-    for (let i = 0; i < text5.length; i += CHUNK_BYTES2) chunks.push(text5.slice(i, i + CHUNK_BYTES2));
+    for (let i = 0; i < text6.length; i += CHUNK_BYTES2) chunks.push(text6.slice(i, i + CHUNK_BYTES2));
     if (chunks.length > MAX_CHUNKS2) {
       throw new Error(`the rebind snapshot needs ${chunks.length} slots, more than the ${MAX_CHUNKS2} available`);
     }
@@ -19021,9 +19021,9 @@ ${scrollGuards}` : project.css;
   }
   function readChunked2() {
     const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
-    let text5 = "";
-    for (let index2 = 0; index2 < count; index2++) text5 += figma.root.getPluginData(`${SNAPSHOT_KEY2}-${index2}`);
-    return text5;
+    let text6 = "";
+    for (let index2 = 0; index2 < count; index2++) text6 += figma.root.getPluginData(`${SNAPSHOT_KEY2}-${index2}`);
+    return text6;
   }
   function clearChunked() {
     const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
@@ -19477,8 +19477,8 @@ ${scrollGuards}` : project.css;
   // src/tokens/remap/input.ts
   var NAME_KEYS = ["name", "token", "key", "id", "label", "title"];
   var VALUE_KEYS = ["$value", "value", "hex", "color", "colour", "rgb", "fill"];
-  function swatchFrom(text5, name) {
-    const literals = findColorLiterals(text5);
+  function swatchFrom(text6, name) {
+    const literals = findColorLiterals(text6);
     if (literals.length !== 1) return null;
     const { rgba } = literals[0];
     const parsed = parseTokenName(name);
@@ -19532,8 +19532,8 @@ ${scrollGuards}` : project.css;
       readJsonNode(value2, joinName(prefix, key), out, warnings);
     }
   }
-  function cleanName(text5) {
-    return text5.replace(/["'`]/g, " ").replace(/[,;\t|]+/g, " ").replace(/[:=]+/g, " ").replace(/^\s*[-*•]\s*/, "").replace(/\s+/g, " ").trim();
+  function cleanName(text6) {
+    return text6.replace(/["'`]/g, " ").replace(/[,;\t|]+/g, " ").replace(/[:=]+/g, " ").replace(/^\s*[-*•]\s*/, "").replace(/\s+/g, " ").trim();
   }
   function readTextLine(line, index2, out, warnings) {
     const literals = findColorLiterals(line);
@@ -19571,10 +19571,10 @@ ${scrollGuards}` : project.css;
     return kept2;
   }
   function parsePaletteInput(raw) {
-    const text5 = String(raw != null ? raw : "");
+    const text6 = String(raw != null ? raw : "");
     const warnings = [];
     const swatches = [];
-    const trimmed = text5.trim();
+    const trimmed = text6.trim();
     if (trimmed === "") return { swatches: [], warnings: [], format: "text" };
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
@@ -19584,7 +19584,7 @@ ${scrollGuards}` : project.css;
         warnings.push("looks like JSON but does not parse \u2014 read line by line instead");
       }
     }
-    for (const [index2, line] of text5.split(/\r?\n/).entries()) readTextLine(line, index2, swatches, warnings);
+    for (const [index2, line] of text6.split(/\r?\n/).entries()) readTextLine(line, index2, swatches, warnings);
     return { swatches: dedupe(swatches, warnings), warnings, format: "text" };
   }
 
@@ -19998,8 +19998,8 @@ ${scrollGuards}` : project.css;
     };
   }
   var csvCell = (value2) => {
-    const text5 = value2 === null || value2 === void 0 ? "" : String(value2);
-    return /[",\n]/.test(text5) ? `"${text5.replace(/"/g, '""')}"` : text5;
+    const text6 = value2 === null || value2 === void 0 ? "" : String(value2);
+    return /[",\n]/.test(text6) ? `"${text6.replace(/"/g, '""')}"` : text6;
   };
   var CSV_COLUMNS = [
     "kind",
@@ -20172,18 +20172,18 @@ ${scrollGuards}` : project.css;
     }
     return best ? { target: best, snapped: true } : null;
   }
-  function positionOf(text5, offset) {
+  function positionOf(text6, offset) {
     let line = 1;
     let lineStart = 0;
     for (let i = 0; i < offset; i++) {
-      if (text5[i] === "\n") {
+      if (text6[i] === "\n") {
         line++;
         lineStart = i + 1;
       }
     }
     return { line, column: offset - lineStart + 1 };
   }
-  function applyEdits(text5, edits) {
+  function applyEdits(text6, edits) {
     const ordered = [...edits].sort((a, b) => a.start - b.start);
     const kept2 = [];
     let reach = -1;
@@ -20192,13 +20192,13 @@ ${scrollGuards}` : project.css;
       kept2.push(edit);
       reach = edit.end;
     }
-    const replacements = kept2.map((edit) => __spreadProps(__spreadValues({}, positionOf(text5, edit.start)), {
+    const replacements = kept2.map((edit) => __spreadProps(__spreadValues({}, positionOf(text6, edit.start)), {
       from: edit.from,
       to: edit.to,
       via: edit.via,
       snapped: edit.snapped
     }));
-    let out = text5;
+    let out = text6;
     for (let i = kept2.length - 1; i >= 0; i--) {
       const edit = kept2[i];
       out = out.slice(0, edit.start) + edit.to + out.slice(edit.end);
@@ -20207,7 +20207,7 @@ ${scrollGuards}` : project.css;
   }
   var CSS_DECLARATION_RE = /(--[\w-]+)(\s*:\s*)([^;{}\n]+)/g;
   var JSON_DECLARATION_RE = /("([^"\\]+)"\s*:\s*")([^"\\]*)(")/g;
-  function nameEdits(text5, lookup) {
+  function nameEdits(text6, lookup) {
     const edits = [];
     const claim = (name, valueStart, value2) => {
       const target = lookup.byName.get(nameKey(name));
@@ -20226,20 +20226,20 @@ ${scrollGuards}` : project.css;
         snapped: false
       });
     };
-    for (const match of text5.matchAll(CSS_DECLARATION_RE)) {
+    for (const match of text6.matchAll(CSS_DECLARATION_RE)) {
       claim(match[1].slice(2), match.index + match[1].length + match[2].length, match[3]);
     }
-    for (const match of text5.matchAll(JSON_DECLARATION_RE)) {
+    for (const match of text6.matchAll(JSON_DECLARATION_RE)) {
       claim(match[2], match.index + match[1].length, match[3]);
     }
     return edits;
   }
-  function rewriteColors(text5, mapping, options = {}) {
+  function rewriteColors(text6, mapping, options = {}) {
     const settings = __spreadValues(__spreadValues({}, DEFAULT_REWRITE_OPTIONS), options);
     const lookup = buildLookup(mapping, settings);
-    const edits = settings.byName ? nameEdits(text5, lookup) : [];
+    const edits = settings.byName ? nameEdits(text6, lookup) : [];
     let untouched = 0;
-    for (const literal of findColorLiterals(text5)) {
+    for (const literal of findColorLiterals(text6)) {
       const matched = matchLiteral(literal, lookup, settings.snap);
       if (!matched) {
         untouched++;
@@ -20256,7 +20256,7 @@ ${scrollGuards}` : project.css;
         snapped: matched.snapped
       });
     }
-    const applied = applyEdits(text5, edits);
+    const applied = applyEdits(text6, edits);
     return __spreadProps(__spreadValues({}, applied), { untouched, warnings: lookup.warnings });
   }
 
@@ -20651,8 +20651,8 @@ ${renderSections(sections)}
         body: zipBytes
       });
       if (!response.ok) {
-        const text5 = await response.text().catch(() => "");
-        return { ok: false, status: response.status, message: text5 || response.statusText };
+        const text6 = await response.text().catch(() => "");
+        return { ok: false, status: response.status, message: text6 || response.statusText };
       }
       return { ok: true, status: response.status };
     } catch (err) {
@@ -23101,20 +23101,20 @@ ${renderSections(sections)}
       return null;
     }
     if (typeof input !== "string") return null;
-    const text5 = input.trim();
-    const withPercent = /^(#?[0-9a-fA-F]{3,8})\s*[@/]?\s*([0-9.]+)\s*%$/.exec(text5);
+    const text6 = input.trim();
+    const withPercent = /^(#?[0-9a-fA-F]{3,8})\s*[@/]?\s*([0-9.]+)\s*%$/.exec(text6);
     if (withPercent) {
       const rgb2 = parseHex(withPercent[1]);
       if (!rgb2) return null;
       return __spreadProps(__spreadValues({}, rgb2), { a: clamp013(Number(withPercent[2]) / 100) });
     }
-    const hex = text5.replace(/^#/, "");
+    const hex = text6.replace(/^#/, "");
     if (/^[0-9a-fA-F]{8}$/.test(hex)) {
       const rgb2 = parseHex(hex.slice(0, 6));
       if (!rgb2) return null;
       return __spreadProps(__spreadValues({}, rgb2), { a: parseInt(hex.slice(6, 8), 16) / 255 });
     }
-    const rgb = parseHex(text5);
+    const rgb = parseHex(text6);
     return rgb ? __spreadProps(__spreadValues({}, rgb), { a: 1 }) : null;
   }
   function describeColor(color) {
@@ -23415,8 +23415,8 @@ ${renderSections(sections)}
   }
   function describeDefault(value2) {
     if (value2 === void 0 || value2 === null || value2 === "") return "";
-    const text5 = String(value2);
-    const short = text5.length > MAX_DEFAULT_TEXT ? `${text5.slice(0, MAX_DEFAULT_TEXT)}\u2026` : text5;
+    const text6 = String(value2);
+    const short = text6.length > MAX_DEFAULT_TEXT ? `${text6.slice(0, MAX_DEFAULT_TEXT)}\u2026` : text6;
     return ` (=${short})`;
   }
   function resolveProperties(wanted, defined) {
@@ -23871,10 +23871,10 @@ ${renderSections(sections)}
       case "EFFECT":
         return effects(style.effects);
       case "TEXT": {
-        const text5 = style;
-        const height = text5.lineHeight.unit === "AUTO" ? "auto" : `${Math.round(text5.lineHeight.value * 100) / 100}${text5.lineHeight.unit === "PERCENT" ? "%" : ""}`;
-        const spacing = text5.letterSpacing.value === 0 ? "" : ` \xB7 tracking ${Math.round(text5.letterSpacing.value * 100) / 100}${text5.letterSpacing.unit === "PERCENT" ? "%" : ""}`;
-        return `${text5.fontName.family} ${text5.fontName.style} ${text5.fontSize}/${height}${spacing}`;
+        const text6 = style;
+        const height = text6.lineHeight.unit === "AUTO" ? "auto" : `${Math.round(text6.lineHeight.value * 100) / 100}${text6.lineHeight.unit === "PERCENT" ? "%" : ""}`;
+        const spacing = text6.letterSpacing.value === 0 ? "" : ` \xB7 tracking ${Math.round(text6.letterSpacing.value * 100) / 100}${text6.letterSpacing.unit === "PERCENT" ? "%" : ""}`;
+        return `${text6.fontName.family} ${text6.fontName.style} ${text6.fontSize}/${height}${spacing}`;
       }
       default:
         return grids(style.layoutGrids);
@@ -26045,9 +26045,9 @@ ${scripts}`, "");
     const spec = inner;
     return typeof spec.name === "string" && typeof spec.data === "string";
   }
-  function textFile(name, mime, text5) {
+  function textFile(name, mime, text6) {
     if (!isSafeFileName(name)) throw new Error(`unsafe file name "${name}"`);
-    return { [FILE_ENVELOPE]: { name, mime, encoding: "utf8", data: text5 } };
+    return { [FILE_ENVELOPE]: { name, mime, encoding: "utf8", data: text6 } };
   }
   function binaryFile(name, mime, bytes) {
     if (!isSafeFileName(name)) throw new Error(`unsafe file name "${name}"`);
@@ -26101,8 +26101,8 @@ ${scripts}`, "");
       const bound = node.boundVariables;
       if (!bound) continue;
       for (const entry of Object.values(bound)) {
-        const aliases = Array.isArray(entry) ? entry : [entry];
-        for (const alias of aliases) {
+        const aliases2 = Array.isArray(entry) ? entry : [entry];
+        for (const alias of aliases2) {
           const id = alias == null ? void 0 : alias.id;
           if (typeof id !== "string") continue;
           const name = await nameFor(id);
@@ -27457,7 +27457,7 @@ ${scripts}`, "");
     }
     return out;
   }
-  async function appearanceOf(source, resolve2, text5) {
+  async function appearanceOf(source, resolve2, text6) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
     const out = {};
     const scalars = await tokensByField(source, SCALAR_TOKEN_FIELDS, resolve2);
@@ -27507,7 +27507,7 @@ ${scripts}`, "");
     if (rotation !== void 0 && round13(rotation) !== 0) out.rotation = round13(rotation);
     if (source.isMask === true) out.mask = { type: typeof source.maskType === "string" ? source.maskType : "ALPHA" };
     if (Object.keys(layout).length > 0) out.layoutTokens = layout;
-    if (text5) out.typography = typeStyleOf(text5, await typeTokenNames(text5, resolve2));
+    if (text6) out.typography = typeStyleOf(text6, await typeTokenNames(text6, resolve2));
     return Object.keys(out).length > 0 ? out : void 0;
   }
   function isValue(candidate) {
@@ -28066,6 +28066,53 @@ ${scripts}`, "");
       ]
     },
     {
+      id: "product.fidelity",
+      title: "Ground product design before making choices",
+      goal: "A decision to proceed or ask, backed by repository context and Figma evidence rather than an invented product or brand direction.",
+      when: "Before implementing product UI, especially a new surface, new flow or redesign. Existing-screen fixes still use it, but should not be blocked by a missing broad brief.",
+      steps: [
+        {
+          op: "document.info",
+          why: "Confirms the live file before any evidence is attributed to the product."
+        },
+        {
+          op: "design.evidence",
+          why: "Collects annotations, dev resources, design-system atoms, behavior, layout grids and inferred layout in one bounded read, and names what Figma does not document.",
+          params: { nodeId: "1:16", includeChildren: true }
+        },
+        {
+          op: "design.ir",
+          why: "The exact screen tree is the visual source for reproduction and the neighboring vocabulary for a measured extension; appearance keeps token and literal provenance together.",
+          params: { nodeId: "1:16", appearance: true }
+        },
+        {
+          op: "flow.map",
+          why: "The existing navigation graph prevents a new flow from being invented beside the one the product already uses.",
+          params: { pageId: "0:1" }
+        },
+        {
+          op: "node.states",
+          why: "Variant state deltas are evidence for hover and press behavior; generic interaction styling is not.",
+          params: { nodeId: "1:16" }
+        },
+        {
+          op: "motion.context",
+          why: "Figma curves and tracks are the motion source; platform defaults are only for a behavior Figma never specified.",
+          params: { nodeId: "1:16" }
+        }
+      ],
+      checks: [
+        "For reproduction, bug fixes and measured adaptation, an existing Figma/code source is enough to proceed without asking for a broad direction.",
+        "For a new surface, new flow or redesign, product goal, primary user/job and visual direction are explicit in the user request, repository context or evidence; otherwise ask one grouped question.",
+        "Every product/visual decision has a provenance label. PLATFORM_DEFAULT appears only on functional or accessibility gaps.",
+        "A material PRODUCT.md \u2194 Figma conflict is unresolved until the user chooses the governing source."
+      ],
+      notes: [
+        "The plugin cannot read the repository. Search AGENTS.md, PRODUCT.md, DESIGN.md, .agents/context, README/ADRs and existing product code before deciding a fact is missing.",
+        "Do not create product/design documentation silently. Offer to record an agreed direction after the user answers."
+      ]
+    },
+    {
       id: "screen.build",
       title: "Turn a screen into code",
       goal: "A framework-agnostic description of one screen \u2014 layout, type, colour as tokens, assets, interactions \u2014 plus a way to check what you built against it.",
@@ -28459,18 +28506,18 @@ ${scripts}`, "");
   }
   function textHolds(property, node) {
     var _a;
-    const text5 = node;
+    const text6 = node;
     switch (property) {
       case "text":
-        return typeof text5.characters === "string" ? { value: text5.characters } : null;
+        return typeof text6.characters === "string" ? { value: text6.characters } : null;
       case "textAlign":
-        return typeof text5.characters === "string" ? { value: typeof text5.textAlign === "string" ? text5.textAlign : "left" } : null;
+        return typeof text6.characters === "string" ? { value: typeof text6.textAlign === "string" ? text6.textAlign : "left" } : null;
       case "maxLines":
-        if (typeof text5.characters !== "string") return null;
-        if (!text5.truncate) return { value: "none" };
-        return { value: text5.truncate.maxLines === null ? "unbounded" : (_a = text5.truncate.maxLines) != null ? _a : "unbounded" };
+        if (typeof text6.characters !== "string") return null;
+        if (!text6.truncate) return { value: "none" };
+        return { value: text6.truncate.maxLines === null ? "unbounded" : (_a = text6.truncate.maxLines) != null ? _a : "unbounded" };
       case "noWrap":
-        return typeof text5.characters === "string" ? { value: text5.noWrap === true } : null;
+        return typeof text6.characters === "string" ? { value: text6.noWrap === true } : null;
       default:
         return null;
     }
@@ -29259,20 +29306,20 @@ ${scripts}`, "");
           const visible = node.visible !== false;
           if (!visible && !includeHidden) continue;
           if (node.type === "TEXT") {
-            const text5 = node;
+            const text6 = node;
             const role = current.bakedIn ? "baked" : "content";
             if (wanted === "all" || wanted === role) {
               if (rows.length >= limit) {
                 truncated = true;
               } else {
-                const style = text5.textStyleId ? await figma.getStyleByIdAsync(String(text5.textStyleId)) : null;
+                const style = text6.textStyleId ? await figma.getStyleByIdAsync(String(text6.textStyleId)) : null;
                 rows.push(__spreadProps(__spreadValues(__spreadValues({
-                  id: text5.id,
-                  name: text5.name,
+                  id: text6.id,
+                  name: text6.name,
                   path: current.path,
                   // Newlines escaped: a paragraph mark in the middle of a report reads as a broken row.
-                  characters: text5.characters.replace(/\n/g, "\\n"),
-                  length: text5.characters.length,
+                  characters: text6.characters.replace(/\n/g, "\\n"),
+                  length: text6.characters.length,
                   role
                 }, current.bakedIn ? { bakedIn: current.bakedIn } : {}), style ? { style: style.name } : {}), {
                   visible
@@ -30070,8 +30117,8 @@ ${scripts}`, "");
     ...Object.keys(FIELD_GROUPS),
     ...Object.keys(SCALAR_FIELDS)
   ];
-  async function loadTextFonts(text5) {
-    const fonts = text5.characters.length > 0 ? text5.getRangeAllFontNames(0, text5.characters.length) : text5.fontName === figma.mixed ? [] : [text5.fontName];
+  async function loadTextFonts(text6) {
+    const fonts = text6.characters.length > 0 ? text6.getRangeAllFontNames(0, text6.characters.length) : text6.fontName === figma.mixed ? [] : [text6.fontName];
     await Promise.all(fonts.map((font) => figma.loadFontAsync(font)));
   }
   async function describePriorPaint(paint) {
@@ -30140,7 +30187,7 @@ ${scripts}`, "");
     return warnings;
   }
   function planDescribe(entry, where) {
-    const text5 = (value2, key) => {
+    const text6 = (value2, key) => {
       if (value2 === null) return "";
       if (typeof value2 !== "string") throw new Error(`${where}.${key} must be a string (null or "" clears it)`);
       return value2;
@@ -30172,7 +30219,7 @@ ${scripts}`, "");
     if (!hasDescription && !hasMarkdown && links === void 0) {
       throw new Error(`${where}: nothing to write \u2014 send "description", "markdown" or "documentationLinks"`);
     }
-    return __spreadProps(__spreadValues(__spreadValues(__spreadValues({}, hasDescription ? { description: text5(entry.description, "description") } : {}), hasMarkdown ? { markdown: text5(entry.markdown, "markdown") } : {}), links === void 0 ? {} : { links }), {
+    return __spreadProps(__spreadValues(__spreadValues(__spreadValues({}, hasDescription ? { description: text6(entry.description, "description") } : {}), hasMarkdown ? { markdown: text6(entry.markdown, "markdown") } : {}), links === void 0 ? {} : { links }), {
       variant: entry.variant === true
     });
   }
@@ -31357,16 +31404,16 @@ ${scripts}`, "");
         }
         for (const job of textJobs) {
           try {
-            const text5 = job.node;
-            await loadTextFonts(text5);
-            const segments = text5.getStyledTextSegments(["boundVariables"]);
+            const text6 = job.node;
+            await loadTextFonts(text6);
+            const segments = text6.getStyledTextSegments(["boundVariables"]);
             for (const segment of segments) {
               const at = pairByFromId.get((_c = (_b = (_a = segment.boundVariables) == null ? void 0 : _a[job.field]) == null ? void 0 : _b.id) != null ? _c : "");
               if (at === void 0) continue;
-              text5.setRangeBoundVariable(segment.start, segment.end, job.field, pairs[at].to);
+              text6.setRangeBoundVariable(segment.start, segment.end, job.field, pairs[at].to);
               pairs[at].rebound += 1;
             }
-            const after = (_d = text5.boundVariables) == null ? void 0 : _d[job.field];
+            const after = (_d = text6.boundVariables) == null ? void 0 : _d[job.field];
             const leftover = Array.isArray(after) ? after.filter((entry) => {
               var _a2;
               return pairByFromId.has((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
@@ -31391,15 +31438,15 @@ ${scripts}`, "");
                   const target = pairs[at].to;
                   for (const attempt of ["range", "node"]) {
                     if (attempt === "range") {
-                      text5.setRangeBoundVariable(0, text5.characters.length, job.field, target);
+                      text6.setRangeBoundVariable(0, text6.characters.length, job.field, target);
                     } else {
                       ;
-                      text5.setBoundVariable(
+                      text6.setBoundVariable(
                         job.field,
                         target
                       );
                     }
-                    const recheck = (_f = text5.boundVariables) == null ? void 0 : _f[job.field];
+                    const recheck = (_f = text6.boundVariables) == null ? void 0 : _f[job.field];
                     const still = Array.isArray(recheck) ? recheck.filter((entry) => {
                       var _a2;
                       return pairByFromId.has((_a2 = entry == null ? void 0 : entry.id) != null ? _a2 : "");
@@ -31413,7 +31460,7 @@ ${scripts}`, "");
                 }
               }
               if (!cleared && writeErrors.length < 5) {
-                writeErrors.push(`${text5.name} (${text5.id}) ${job.field}: ${leftover} segment(s) still on the old variable`);
+                writeErrors.push(`${text6.name} (${text6.id}) ${job.field}: ${leftover} segment(s) still on the old variable`);
               }
             }
           } catch (err) {
@@ -31424,9 +31471,9 @@ ${scripts}`, "");
         }
         for (const node of textFillJobs) {
           try {
-            const text5 = node;
-            await loadTextFonts(text5);
-            const segments = text5.getStyledTextSegments(["fills"]);
+            const text6 = node;
+            await loadTextFonts(text6);
+            const segments = text6.getStyledTextSegments(["fills"]);
             for (const segment of segments) {
               let next = null;
               segment.fills.forEach((paint, index2) => {
@@ -31440,7 +31487,7 @@ ${scripts}`, "");
                   pairs[at].rebound += 1;
                 }
               });
-              if (next) text5.setRangeFills(segment.start, segment.end, next);
+              if (next) text6.setRangeFills(segment.start, segment.end, next);
             }
           } catch (err) {
             if (writeErrors.length < 5) {
@@ -31555,7 +31602,7 @@ ${scripts}`, "");
           page.name = ref;
           return page;
         };
-        const pageOf7 = (node) => {
+        const pageOf8 = (node) => {
           let walk3 = node.parent;
           while (walk3 && walk3.type !== "PAGE") walk3 = walk3.parent;
           return walk3 != null ? walk3 : null;
@@ -31570,7 +31617,7 @@ ${scripts}`, "");
             if (!source) throw new Error(`no node with id ${id}`);
             if (source.type === "PAGE" || source.type === "DOCUMENT") throw new Error(`${source.type} cannot be copied`);
             const scene = source;
-            const home = pageOf7(scene);
+            const home = pageOf8(scene);
             if (home) await home.loadAsync();
             const wantAs = typeof entry.as === "string" ? entry.as : null;
             if (wantAs !== null && wantAs !== "instance" && wantAs !== "clone") {
@@ -31836,10 +31883,10 @@ ${scripts}`, "");
         if (ids.length === 0) throw new Error('"nodes" must be a non-empty array of TEXT ids');
         const dryRun = params.dryRun === true;
         if (!dryRun) figma.commitUndo();
-        const orphanCount = (text5) => {
+        const orphanCount = (text6) => {
           var _a, _b, _c, _d, _e;
           const owned = /* @__PURE__ */ new Set();
-          const segments = text5.getStyledTextSegments(["boundVariables", "fills"]);
+          const segments = text6.getStyledTextSegments(["boundVariables", "fills"]);
           for (const segment of segments) {
             for (const value2 of Object.values((_a = segment.boundVariables) != null ? _a : {})) {
               const entries = Array.isArray(value2) ? value2 : [value2];
@@ -31855,7 +31902,7 @@ ${scripts}`, "");
           }
           let orphans = 0;
           for (const value2 of Object.values(
-            (_e = text5.boundVariables) != null ? _e : {}
+            (_e = text6.boundVariables) != null ? _e : {}
           )) {
             const entries = Array.isArray(value2) ? value2 : [value2];
             for (const entry of entries) {
@@ -31870,20 +31917,20 @@ ${scripts}`, "");
           try {
             const found = await figma.getNodeByIdAsync(id);
             if (!found || found.type !== "TEXT") throw new Error(`${found ? found.type : "nothing"} \u2014 need a TEXT node`);
-            const text5 = found;
-            const before = orphanCount(text5);
+            const text6 = found;
+            const before = orphanCount(text6);
             if (dryRun || before === 0) {
-              results.push({ node: id, name: text5.name, orphansBefore: before, orphansAfter: before, ok: true, changed: false });
+              results.push({ node: id, name: text6.name, orphansBefore: before, orphansAfter: before, ok: true, changed: false });
               continue;
             }
-            await loadTextFonts(text5);
-            const length = text5.characters.length;
-            text5.insertCharacters(length, "\u200B", "BEFORE");
-            text5.deleteCharacters(length, length + 1);
-            const after = orphanCount(text5);
+            await loadTextFonts(text6);
+            const length = text6.characters.length;
+            text6.insertCharacters(length, "\u200B", "BEFORE");
+            text6.deleteCharacters(length, length + 1);
+            const after = orphanCount(text6);
             results.push(__spreadValues({
               node: id,
-              name: text5.name,
+              name: text6.name,
               orphansBefore: before,
               orphansAfter: after,
               ok: after === 0,
@@ -34287,7 +34334,7 @@ ${scripts}`, "");
     for (const variable of allVariables) {
       const collection = collectionById.get(variable.variableCollectionId);
       if (!collection || matches(variable.name, ignore)) continue;
-      let aliases = 0;
+      let aliases2 = 0;
       let literals = 0;
       for (const mode of collection.modes) {
         if (!Object.prototype.hasOwnProperty.call(variable.valuesByMode, mode.modeId)) {
@@ -34304,7 +34351,7 @@ ${scripts}`, "");
         const value2 = variable.valuesByMode[mode.modeId];
         const alias = value2;
         if (alias && typeof alias === "object" && alias.type === "VARIABLE_ALIAS") {
-          aliases++;
+          aliases2++;
           if (localById.has(alias.id)) continue;
           if (/^VariableID:\d+:\d+$/.test(alias.id)) {
             findings.push({
@@ -34345,16 +34392,16 @@ ${scripts}`, "");
           literals++;
         }
       }
-      if (aliases > 0 && literals > 0) {
+      if (aliases2 > 0 && literals > 0) {
         findings.push({
           kind: "MIXED",
           variable: variable.name,
           variableId: variable.id,
           collection: collection.name,
-          detail: `${aliases} alias mode(s), ${literals} literal mode(s)`
+          detail: `${aliases2} alias mode(s), ${literals} literal mode(s)`
         });
       }
-      if (literals > 0 && aliases === 0 && matches(collection.name, aliasOnly)) {
+      if (literals > 0 && aliases2 === 0 && matches(collection.name, aliasOnly)) {
         findings.push({
           kind: "LITERAL",
           variable: variable.name,
@@ -34551,6 +34598,275 @@ ${scripts}`, "");
         budgetMs: { type: "number", default: 3e4, min: 1e3, max: 11e4, description: "Maximum time to start library reads." }
       },
       run: auditVariables
+    }
+  ];
+
+  // src/agent/design-evidence.ts
+  var text5 = (value2) => typeof value2 === "string" && value2.trim() ? value2.trim() : void 0;
+  function pageOf6(node) {
+    var _a;
+    let current = node;
+    while (current && current.type !== "PAGE") current = (_a = current.parent) != null ? _a : null;
+    return (current == null ? void 0 : current.type) === "PAGE" ? current : null;
+  }
+  function aliases(value2, out) {
+    if (!value2 || typeof value2 !== "object") return;
+    if (value2.type === "VARIABLE_ALIAS" && typeof value2.id === "string") {
+      out.add(value2.id);
+      return;
+    }
+    if (Array.isArray(value2)) {
+      for (const entry of value2) aliases(entry, out);
+      return;
+    }
+    for (const entry of Object.values(value2)) aliases(entry, out);
+  }
+  function layoutGrid(grid) {
+    const common = __spreadValues(__spreadValues({
+      pattern: grid.pattern
+    }, grid.visible === void 0 ? {} : { visible: grid.visible }), grid.color === void 0 ? {} : { color: grid.color });
+    if (grid.pattern === "GRID") return __spreadProps(__spreadValues({}, common), { sectionSize: grid.sectionSize });
+    return __spreadValues(__spreadValues(__spreadProps(__spreadValues({}, common), {
+      alignment: grid.alignment,
+      gutterSize: grid.gutterSize,
+      count: grid.count
+    }), grid.sectionSize === void 0 ? {} : { sectionSize: grid.sectionSize }), grid.offset === void 0 ? {} : { offset: grid.offset });
+  }
+  function inferredLayout(value2) {
+    return {
+      layoutMode: value2.layoutMode,
+      paddingLeft: value2.paddingLeft,
+      paddingRight: value2.paddingRight,
+      paddingTop: value2.paddingTop,
+      paddingBottom: value2.paddingBottom,
+      primaryAxisSizingMode: value2.primaryAxisSizingMode,
+      counterAxisSizingMode: value2.counterAxisSizingMode,
+      strokesIncludedInLayout: value2.strokesIncludedInLayout,
+      layoutWrap: value2.layoutWrap,
+      primaryAxisAlignItems: value2.primaryAxisAlignItems,
+      counterAxisAlignItems: value2.counterAxisAlignItems,
+      counterAxisAlignContent: value2.counterAxisAlignContent,
+      itemSpacing: value2.itemSpacing,
+      counterAxisSpacing: value2.counterAxisSpacing,
+      itemReverseZIndex: value2.itemReverseZIndex
+    };
+  }
+  async function resolveRoot(reference2) {
+    if (typeof reference2 === "string" && reference2) {
+      const found = await figma.getNodeByIdAsync(reference2);
+      if (!found || found.type === "DOCUMENT") throw new Error(`no evidence-readable node ${reference2}`);
+      return found;
+    }
+    const selected = figma.currentPage.selection[0];
+    if (selected) return selected;
+    return figma.currentPage;
+  }
+  var DESIGN_EVIDENCE_OPS = [
+    {
+      name: "design.evidence",
+      summary: "Figma evidence for fidelity-first work: intent, system atoms, behavior, grids and inferred layout.",
+      agent: "Call this after checking AGENTS.md / PRODUCT.md / DESIGN.md and before choice-bearing product design. It reports Figma facts and gaps, not permission to invent. Existing-screen reproduction can proceed from strong visual evidence even when product intent is undocumented; new surfaces may need one grouped direction question.",
+      mutates: false,
+      params: {
+        nodeId: {
+          type: "string",
+          description: "Frame, component, section or other subtree root. Omitted uses the current selection, then current page."
+        },
+        includeChildren: {
+          type: "boolean",
+          default: true,
+          description: "Read annotations, tokens, components, grids and behavior through the subtree rather than only the root."
+        },
+        limit: {
+          type: "number",
+          default: 500,
+          min: 1,
+          max: 5e3,
+          description: "Maximum nodes inspected. The response names truncation instead of pretending the subtree was complete."
+        },
+        budgetMs: {
+          type: "number",
+          default: 15e3,
+          min: 1e3,
+          max: 11e4,
+          description: "Stop starting optional reads after this time and report the evidence gap."
+        }
+      },
+      async run(params) {
+        var _a, _b, _c, _d, _e, _f, _g;
+        const started = Date.now();
+        const budgetMs = Number((_a = params.budgetMs) != null ? _a : 15e3);
+        const deadline2 = started + budgetMs;
+        const limit = Number((_b = params.limit) != null ? _b : 500);
+        const includeChildren = params.includeChildren !== false;
+        const root = await resolveRoot(params.nodeId);
+        const page = pageOf6(root);
+        if (page == null ? void 0 : page.loadAsync) await page.loadAsync();
+        let categoryById = /* @__PURE__ */ new Map();
+        try {
+          const api = figma.annotations;
+          if (api && Date.now() < deadline2) {
+            const categories = await api.getAnnotationCategoriesAsync();
+            categoryById = new Map(categories.map((category) => [category.id, { label: category.label, color: category.color }]));
+          }
+        } catch (e) {
+          categoryById = /* @__PURE__ */ new Map();
+        }
+        const nodes = [];
+        const stack = [root];
+        let truncated = false;
+        while (stack.length > 0) {
+          if (nodes.length >= limit || Date.now() >= deadline2) {
+            truncated = true;
+            break;
+          }
+          const node = stack.pop();
+          nodes.push(node);
+          if (includeChildren && Array.isArray(node.children)) {
+            for (let index2 = node.children.length - 1; index2 >= 0; index2--) stack.push(node.children[index2]);
+          }
+        }
+        const annotations = [];
+        const grids = [];
+        const inferred = [];
+        const components = [];
+        const descriptions = [];
+        const styles = /* @__PURE__ */ new Set();
+        const variables = /* @__PURE__ */ new Set();
+        let reactions = 0;
+        let transitions = 0;
+        let textNodes = 0;
+        let explicitLayouts = 0;
+        for (const node of nodes) {
+          if (node.type === "TEXT") textNodes += 1;
+          aliases(node.boundVariables, variables);
+          for (const styleId of [node.fillStyleId, node.strokeStyleId, node.textStyleId, node.effectStyleId, node.gridStyleId]) {
+            if (typeof styleId === "string" && styleId) styles.add(styleId);
+          }
+          if (node.layoutMode && node.layoutMode !== "NONE") explicitLayouts += 1;
+          if (Array.isArray(node.layoutGrids) && node.layoutGrids.length > 0) {
+            grids.push({ nodeId: node.id, name: node.name, grids: node.layoutGrids.map(layoutGrid) });
+          }
+          if ((!node.layoutMode || node.layoutMode === "NONE") && node.inferredAutoLayout) {
+            inferred.push({ nodeId: node.id, name: node.name, inferred: true, layout: inferredLayout(node.inferredAutoLayout) });
+          }
+          for (const annotation of Array.isArray(node.annotations) ? node.annotations : []) {
+            const category = annotation.categoryId ? categoryById.get(annotation.categoryId) : void 0;
+            annotations.push(__spreadValues(__spreadValues(__spreadProps(__spreadValues(__spreadValues({
+              nodeId: node.id,
+              name: node.name
+            }, text5(annotation.labelMarkdown) ? { markdown: text5(annotation.labelMarkdown) } : {}), text5(annotation.label) ? { label: text5(annotation.label) } : {}), {
+              properties: ((_c = annotation.properties) != null ? _c : []).map((property) => property.type)
+            }), annotation.categoryId ? { categoryId: annotation.categoryId } : {}), category ? { category } : {}));
+          }
+          if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
+            components.push({ nodeId: node.id, name: node.name, type: node.type });
+          } else if (node.type === "INSTANCE") {
+            const entry = {
+              nodeId: node.id,
+              name: node.name,
+              type: node.type,
+              properties: (_d = node.componentProperties) != null ? _d : {}
+            };
+            if (Date.now() < deadline2 && typeof node.getMainComponentAsync === "function") {
+              try {
+                const main = await node.getMainComponentAsync();
+                if (main) entry.main = { id: main.id, name: main.name, key: main.key };
+              } catch (e) {
+                entry.main = null;
+              }
+            }
+            components.push(entry);
+          }
+          const description = (_e = text5(node.descriptionMarkdown)) != null ? _e : text5(node.description);
+          const links = Array.isArray(node.documentationLinks) ? node.documentationLinks.map((link) => link.uri) : [];
+          if (description || links.length > 0) descriptions.push({ nodeId: node.id, name: node.name, description, links });
+          let nodeReactions = Array.isArray(node.reactions) ? node.reactions : [];
+          if (Date.now() < deadline2 && typeof node.getReactionsAsync === "function") {
+            try {
+              nodeReactions = await node.getReactionsAsync();
+            } catch (e) {
+            }
+          }
+          reactions += nodeReactions.length;
+          for (const reaction of nodeReactions) {
+            const actions = (_f = reaction.actions) != null ? _f : reaction.action ? [reaction.action] : [];
+            transitions += actions.filter((action) => action.transition).length;
+          }
+        }
+        let devResources = [];
+        if (Date.now() < deadline2 && typeof root.getDevResourcesAsync === "function") {
+          try {
+            devResources = (await root.getDevResourcesAsync({ includeChildren })).map((resource) => __spreadValues({
+              nodeId: resource.nodeId,
+              name: resource.name,
+              url: resource.url
+            }, resource.inheritedNodeId ? { inheritedNodeId: resource.inheritedNodeId } : {}));
+          } catch (e) {
+            devResources = [];
+          }
+        }
+        const intentSignals = annotations.filter((annotation) => annotation.label || annotation.markdown).length + devResources.length + descriptions.length;
+        const visualSignals = variables.size + styles.size + components.length + grids.length + explicitLayouts;
+        const gaps = [];
+        if (intentSignals === 0) {
+          gaps.push({
+            code: "FIGMA_INTENT_NOT_DOCUMENTED",
+            detail: "No annotations, dev resources or component documentation in this subtree.",
+            blockingFor: ["new-surface", "new-flow", "redesign"],
+            blockingForExistingReproduction: false
+          });
+        }
+        if (visualSignals === 0) {
+          gaps.push({
+            code: "NO_DESIGN_SYSTEM_SIGNALS",
+            detail: "No variable bindings, shared styles, components, grids or explicit layout were found.",
+            blockingFor: ["reproduction", "new-surface", "new-flow", "redesign"]
+          });
+        }
+        if (truncated) {
+          gaps.push({
+            code: "EVIDENCE_TRUNCATED",
+            detail: `Stopped after ${nodes.length} nodes or ${budgetMs} ms. Narrow the subtree or raise the bounded limit/budget.`,
+            blockingFor: ["reproduction", "new-surface", "new-flow", "redesign"]
+          });
+        }
+        return {
+          policy: "allcrew.fidelity-first",
+          scope: { id: root.id, name: root.name, type: root.type, page: page ? { id: page.id, name: page.name } : null },
+          coverage: {
+            visual: visualSignals >= 3 ? "strong" : visualSignals > 0 ? "partial" : "missing",
+            behavior: reactions > 0 ? "declared" : "not-declared",
+            content: textNodes > 0 ? "present" : "not-present",
+            productIntent: intentSignals > 0 ? "signals-present" : "not-documented-in-figma",
+            layout: explicitLayouts > 0 ? "configured" : inferred.length > 0 ? "inferred-only" : "absolute-or-unknown"
+          },
+          sources: {
+            annotations,
+            devResources,
+            documentation: descriptions,
+            designSystem: {
+              variableBindings: variables.size,
+              variableIds: [...variables].slice(0, 100),
+              sharedStyles: styles.size,
+              styleIds: [...styles].slice(0, 100),
+              components
+            },
+            behavior: { reactions, transitions, flowStartingPoints: (_g = page == null ? void 0 : page.flowStartingPoints) != null ? _g : [] },
+            layout: { explicitAutoLayoutNodes: explicitLayouts, layoutGrids: grids, inferredLayouts: inferred },
+            content: { textNodes }
+          },
+          gaps,
+          provenance: {
+            facts: intentSignals + visualSignals + reactions + transitions + textNodes,
+            inferred: inferred.length,
+            missing: gaps.length
+          },
+          inspected: nodes.length,
+          truncated,
+          ms: Date.now() - started
+        };
+      }
     }
   ];
 
@@ -35316,7 +35632,7 @@ ${scripts}`, "");
         }
       },
       async run(params) {
-        const [text5, paint, effect, grid] = await Promise.all([
+        const [text6, paint, effect, grid] = await Promise.all([
           figma.getLocalTextStylesAsync(),
           figma.getLocalPaintStylesAsync(),
           figma.getLocalEffectStylesAsync(),
@@ -35338,7 +35654,7 @@ ${scripts}`, "");
         }
         const consumerDetail = /* @__PURE__ */ new Map();
         if (params.consumers === true) {
-          for (const style of [...text5, ...paint, ...effect, ...grid]) {
+          for (const style of [...text6, ...paint, ...effect, ...grid]) {
             try {
               const users = await style.getStyleConsumersAsync();
               consumerDetail.set(style.id, {
@@ -35352,7 +35668,7 @@ ${scripts}`, "");
         }
         const withConsumers = (style, row) => consumerDetail.has(style.id) ? __spreadProps(__spreadValues({}, row), { consumers: consumerDetail.get(style.id) }) : row;
         return {
-          text: text5.map((style) => __spreadProps(__spreadValues({}, base(style)), {
+          text: text6.map((style) => __spreadProps(__spreadValues({}, base(style)), {
             fontFamily: style.fontName.family,
             fontStyle: style.fontName.style,
             fontSize: style.fontSize,
@@ -35669,7 +35985,7 @@ ${scripts}`, "");
         }
         const walkMs = Date.now() - tWalk;
         if (params.styles !== false) {
-          const [text5, paint, effect, grid] = await Promise.all([
+          const [text6, paint, effect, grid] = await Promise.all([
             figma.getLocalTextStylesAsync(),
             figma.getLocalPaintStylesAsync(),
             figma.getLocalEffectStylesAsync(),
@@ -35680,7 +35996,7 @@ ${scripts}`, "");
             scanPaints(style.paints, site);
             scanBoundMap(style.boundVariables, site);
           }
-          for (const style of [...text5, ...effect, ...grid]) {
+          for (const style of [...text6, ...effect, ...grid]) {
             const site = (detail) => ({ style: style.name, type: style.type, field: detail });
             scanBoundMap(style.boundVariables, site);
           }
@@ -35910,19 +36226,19 @@ ${scripts}`, "");
         const walkMs = Date.now() - tWalk;
         let styleCount = 0;
         if (params.styles !== false) {
-          const [text5, paint, effect, grid] = await Promise.all([
+          const [text6, paint, effect, grid] = await Promise.all([
             figma.getLocalTextStylesAsync(),
             figma.getLocalPaintStylesAsync(),
             figma.getLocalEffectStylesAsync(),
             figma.getLocalGridStylesAsync()
           ]);
-          styleCount = text5.length + paint.length + effect.length + grid.length;
+          styleCount = text6.length + paint.length + effect.length + grid.length;
           for (const style of paint) {
             const label3 = (detail) => ({ style: style.name, type: "PAINT", field: detail });
             scanPaints(style.paints, "styles", label3);
             scanBoundMap(style.boundVariables, "styles", label3);
           }
-          for (const style of [...text5, ...effect, ...grid]) {
+          for (const style of [...text6, ...effect, ...grid]) {
             const label3 = (detail) => ({ style: style.name, type: style.type, field: detail });
             scanBoundMap(style.boundVariables, "styles", label3);
             scanPaints(style.effects, "styles", label3);
@@ -36278,9 +36594,9 @@ ${scripts}`, "");
         var _a;
         const found = await figma.getNodeByIdAsync(params.nodeId);
         if (!found || found.type !== "TEXT") throw new Error(`${found ? found.type : "nothing"} \u2014 need a TEXT node`);
-        const text5 = found;
-        const raw = text5.getStyledTextSegments(["boundVariables", "fills"]);
-        const styles = await styledRuns(text5);
+        const text6 = found;
+        const raw = text6.getStyledTextSegments(["boundVariables", "fills"]);
+        const styles = await styledRuns(text6);
         const segments = raw.map((segment) => {
           var _a2, _b;
           return {
@@ -36298,10 +36614,10 @@ ${scripts}`, "");
           };
         });
         return {
-          node: { id: text5.id, name: text5.name },
-          length: text5.characters.length,
-          characters: text5.characters.replace(/\n/g, "\\n"),
-          nodeBound: (_a = text5.boundVariables) != null ? _a : {},
+          node: { id: text6.id, name: text6.name },
+          length: text6.characters.length,
+          characters: text6.characters.replace(/\n/g, "\\n"),
+          nodeBound: (_a = text6.boundVariables) != null ? _a : {},
           segments,
           // Sendable as it stands: this is `runs` in the shape NODE_SET takes.
           runs: styles
@@ -36372,6 +36688,7 @@ ${scripts}`, "");
     ...READ_OPS,
     ...COMPONENT_READ_OPS,
     ...CONTEXT_OPS,
+    ...DESIGN_EVIDENCE_OPS,
     ...EXPORT_OPS,
     ...TEXT_OPS,
     ...EXPORT_PLAN_OPS,
@@ -36632,10 +36949,10 @@ ${scripts}`, "");
     if (camel === "") return "value";
     return /^[A-Za-z_]/.test(camel) ? camel : `value${camel.charAt(0).toUpperCase()}${camel.slice(1)}`;
   }
-  function copyKey(scope, text5, taken) {
-    const slug2 = text5.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "").slice(0, 32) || "text";
+  function copyKey(scope, text6, taken) {
+    const slug2 = text6.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "").slice(0, 32) || "text";
     let key = `${scope}.${slug2}`;
-    for (let n = 2; key in taken && taken[key] !== text5; n++) key = `${scope}.${slug2}_${n}`;
+    for (let n = 2; key in taken && taken[key] !== text6; n++) key = `${scope}.${slug2}_${n}`;
     return key;
   }
   function textsInside(node) {
@@ -36726,13 +37043,13 @@ ${pad2})}`;
       context.instanceRoots.add(node.id);
       const props = [];
       const declared = (_i = context.declares) == null ? void 0 : _i.get(name);
-      for (const [layer, text5] of textsInside(node)) {
+      for (const [layer, text6] of textsInside(node)) {
         const prop = textProp(propName(layer), declared);
         if (declared && declared.get(prop) !== "text") {
-          context.gaps.push(`${node.name}: ${name} takes no ${prop} text \u2014 "${text5}" stayed in the component`);
+          context.gaps.push(`${node.name}: ${name} takes no ${prop} text \u2014 "${text6}" stayed in the component`);
           continue;
         }
-        props.push(`${prop}=${JSON.stringify(text5)}`);
+        props.push(`${prop}=${JSON.stringify(text6)}`);
       }
       for (const [raw, value2] of Object.entries((_j = node.componentProperties) != null ? _j : {})) {
         const prop = propName(raw);
@@ -36971,8 +37288,8 @@ ${pad2}</${tag}>`;
 
   // src/targets/react/code-connect.ts
   var isIdentifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-  var sq = (text5) => `'${text5.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
-  var objectKey = (text5) => isIdentifier.test(text5) ? text5 : sq(text5);
+  var sq = (text6) => `'${text6.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+  var objectKey = (text6) => isIdentifier.test(text6) ? text6 : sq(text6);
   var urlNodeId = (nodeId) => nodeId.replace(/:/g, "-");
   var urlFileName = (fileName) => {
     const slug2 = fileName.trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -37703,10 +38020,10 @@ createRoot(document.getElementById('root')!).render(
       case "component":
         return figma.createComponent();
       case "text": {
-        const text5 = figma.createText();
-        const font = text5.fontName;
+        const text6 = figma.createText();
+        const font = text6.fontName;
         if (font !== figma.mixed) await figma.loadFontAsync(font);
-        return text5;
+        return text6;
       }
       case "vector":
         return figma.createVector();
@@ -38349,7 +38666,7 @@ createRoot(document.getElementById('root')!).render(
         if (found) return [found];
         const node = await figma.getNodeByIdAsync(scope.frameId);
         if (node && "visible" in node) {
-          const page = pageOf6(node);
+          const page = pageOf7(node);
           if (page) await page.loadAsync();
           return [node];
         }
@@ -38359,7 +38676,7 @@ createRoot(document.getElementById('root')!).render(
         return figma.currentPage.children;
     }
   }
-  function pageOf6(node) {
+  function pageOf7(node) {
     let parent = node.parent;
     while (parent && parent.type !== "PAGE") parent = parent.parent;
     return parent != null ? parent : null;
@@ -38668,7 +38985,7 @@ createRoot(document.getElementById('root')!).render(
       targets = figma.root.findAllWithCriteria({ types: ["COMPONENT_SET", "COMPONENT"] }).filter(isDocumentableComponent);
     }
     const pageNameById = /* @__PURE__ */ new Map();
-    const pageOf7 = (node) => {
+    const pageOf8 = (node) => {
       let current = node;
       while (current && current.type !== "PAGE") current = current.parent;
       if (!current) return void 0;
@@ -38689,7 +39006,7 @@ createRoot(document.getElementById('root')!).render(
       const doc = {
         id: node.id,
         name: node.name,
-        page: pageOf7(node),
+        page: pageOf8(node),
         description,
         links,
         properties: componentPropertiesOf(node),
@@ -38937,8 +39254,8 @@ createRoot(document.getElementById('root')!).render(
     const bound = {};
     for (const [field, alias] of Object.entries(value2)) {
       if (["fills", "strokes", "effects", "componentProperties"].includes(field)) continue;
-      const aliases = Array.isArray(alias) ? alias : [alias];
-      for (const one of aliases) {
+      const aliases2 = Array.isArray(alias) ? alias : [alias];
+      for (const one of aliases2) {
         const id = one == null ? void 0 : one.id;
         if (!id || field in bound) continue;
         const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
@@ -41374,21 +41691,21 @@ createRoot(document.getElementById('root')!).render(
               refuse("STYLE_MAKE", "a text style needs `from` naming a TEXT node, or `text` describing it");
               break;
             }
-            const text5 = style;
+            const text6 = style;
             if (from) {
               if (from.fontName === figma.mixed) {
                 refuse("STYLE_MAKE", `${from.name} has more than one font \u2014 a style cannot hold mixed text`);
                 break;
               }
               await figma.loadFontAsync(from.fontName);
-              text5.fontName = from.fontName;
-              text5.fontSize = from.fontSize;
-              text5.lineHeight = from.lineHeight;
-              text5.letterSpacing = from.letterSpacing;
-              text5.textCase = from.textCase;
-              text5.textDecoration = from.textDecoration;
-              if (typeof from.paragraphSpacing === "number") text5.paragraphSpacing = from.paragraphSpacing;
-              if (typeof from.paragraphIndent === "number") text5.paragraphIndent = from.paragraphIndent;
+              text6.fontName = from.fontName;
+              text6.fontSize = from.fontSize;
+              text6.lineHeight = from.lineHeight;
+              text6.letterSpacing = from.letterSpacing;
+              text6.textCase = from.textCase;
+              text6.textDecoration = from.textDecoration;
+              if (typeof from.paragraphSpacing === "number") text6.paragraphSpacing = from.paragraphSpacing;
+              if (typeof from.paragraphIndent === "number") text6.paragraphIndent = from.paragraphIndent;
             } else {
               const wanted = msg.text;
               const font = wanted.fontName;
@@ -41397,16 +41714,16 @@ createRoot(document.getElementById('root')!).render(
                 break;
               }
               await figma.loadFontAsync(font);
-              text5.fontName = font;
-              if (typeof wanted.fontSize === "number") text5.fontSize = wanted.fontSize;
+              text6.fontName = font;
+              if (typeof wanted.fontSize === "number") text6.fontSize = wanted.fontSize;
               if (wanted.lineHeight !== void 0) {
-                text5.lineHeight = wanted.lineHeight === "AUTO" ? { unit: "AUTO" } : { value: wanted.lineHeight, unit: "PIXELS" };
+                text6.lineHeight = wanted.lineHeight === "AUTO" ? { unit: "AUTO" } : { value: wanted.lineHeight, unit: "PIXELS" };
               }
               if (typeof wanted.letterSpacing === "number") {
-                text5.letterSpacing = { value: wanted.letterSpacing, unit: "PIXELS" };
+                text6.letterSpacing = { value: wanted.letterSpacing, unit: "PIXELS" };
               }
-              if (typeof wanted.textCase === "string") text5.textCase = wanted.textCase;
-              if (typeof wanted.textDecoration === "string") text5.textDecoration = wanted.textDecoration;
+              if (typeof wanted.textCase === "string") text6.textCase = wanted.textCase;
+              if (typeof wanted.textDecoration === "string") text6.textDecoration = wanted.textDecoration;
             }
           }
           figma.commitUndo();

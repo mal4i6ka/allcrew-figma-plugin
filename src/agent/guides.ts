@@ -86,6 +86,56 @@ export const GUIDES: readonly Guide[] = [
   },
 
   {
+    id: 'product.fidelity',
+    title: 'Ground product design before making choices',
+    goal: 'A decision to proceed or ask, backed by repository context and Figma evidence rather than an invented product or brand direction.',
+    when: 'Before implementing product UI, especially a new surface, new flow or redesign. Existing-screen fixes still use it, but should not be blocked by a missing broad brief.',
+    steps: [
+      {
+        op: 'document.info',
+        why: 'Confirms the live file before any evidence is attributed to the product.',
+      },
+      {
+        op: 'design.evidence',
+        why:
+          'Collects annotations, dev resources, design-system atoms, behavior, layout grids and inferred layout in one bounded read, and names what Figma does not document.',
+        params: { nodeId: '1:16', includeChildren: true },
+      },
+      {
+        op: 'design.ir',
+        why:
+          'The exact screen tree is the visual source for reproduction and the neighboring vocabulary for a measured extension; appearance keeps token and literal provenance together.',
+        params: { nodeId: '1:16', appearance: true },
+      },
+      {
+        op: 'flow.map',
+        why: 'The existing navigation graph prevents a new flow from being invented beside the one the product already uses.',
+        params: { pageId: '0:1' },
+      },
+      {
+        op: 'node.states',
+        why: 'Variant state deltas are evidence for hover and press behavior; generic interaction styling is not.',
+        params: { nodeId: '1:16' },
+      },
+      {
+        op: 'motion.context',
+        why: 'Figma curves and tracks are the motion source; platform defaults are only for a behavior Figma never specified.',
+        params: { nodeId: '1:16' },
+      },
+    ],
+    checks: [
+      'For reproduction, bug fixes and measured adaptation, an existing Figma/code source is enough to proceed without asking for a broad direction.',
+      'For a new surface, new flow or redesign, product goal, primary user/job and visual direction are explicit in the user request, repository context or evidence; otherwise ask one grouped question.',
+      'Every product/visual decision has a provenance label. PLATFORM_DEFAULT appears only on functional or accessibility gaps.',
+      'A material PRODUCT.md ↔ Figma conflict is unresolved until the user chooses the governing source.',
+    ],
+    notes: [
+      'The plugin cannot read the repository. Search AGENTS.md, PRODUCT.md, DESIGN.md, .agents/context, README/ADRs and existing product code before deciding a fact is missing.',
+      'Do not create product/design documentation silently. Offer to record an agreed direction after the user answers.',
+    ],
+  },
+
+  {
     id: 'screen.build',
     title: 'Turn a screen into code',
     goal: 'A framework-agnostic description of one screen — layout, type, colour as tokens, assets, interactions — plus a way to check what you built against it.',

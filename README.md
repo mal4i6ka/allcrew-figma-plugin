@@ -111,7 +111,14 @@ file in Chrome.
 Agent calls use one authenticated loopback WebSocket per open Figma file and fall back to HTTP
 polling when a previous bridge does not advertise socket support. The bridge also reads Figma
 Desktop's local tab list to resolve file keys without asking for URLs; `history.recent` summarizes
-version checkpoints across files opened on this machine. For an MCP client:
+version checkpoints across files opened on this machine.
+
+The agent channel publishes a fidelity-first product-design contract through both the generated
+skill and MCP initialization. Before choice-bearing UI work, agents check repository context and
+call `design.evidence`; existing-screen reproduction proceeds without a broad brief, while a new
+surface missing its product goal, primary user/job, or visual direction produces one grouped
+clarification question. Platform standards fill accessibility and system-behavior gaps only, never
+brand styling. For an MCP client:
 
 ```bash
 node tools/mcp.mjs --install claude

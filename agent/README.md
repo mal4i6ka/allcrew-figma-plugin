@@ -363,6 +363,7 @@ allcrew-channel ops --json       # the same, machine-readable
 |----|---------|
 | `document.info` | file name, editor type, current page, all pages |
 | `guide.list` / `guide.get` | playbooks: named tasks with the ops they take, in order, and what to check when done — the first call on an unfamiliar file |
+| `design.evidence` | bounded fidelity preflight: annotations, Dev Resources, component documentation, tokens/styles/components, prototype signals, layout grids, inferred auto layout, and explicit evidence gaps |
 | `page.frames` | top-level frames, sections and components on a page |
 | `page.warm` | loads a page on purpose and reports what it cost — the wait moved to where you chose it, instead of arriving inside the first read that touched a cold page |
 | `node.get` | one node by id — geometry, auto-layout, text, instance bindings, children |
@@ -677,6 +678,19 @@ components". An agent can name the button variant it wants, name the frame it be
 read back how the prototype already wires the screens together — before anything is allowed to
 touch the document.
 
+### Fidelity-first product design
+
+The generated skill, MCP `initialize` response and bridge `/ops` all publish the same
+`allcrew.fidelity-first` contract. Before product-design work, the agent searches repository
+context (`AGENTS.md`, `PRODUCT.md`, `DESIGN.md`, `.agents/context/`, README/ADRs and existing code),
+then calls `design.evidence` on the relevant Figma subtree.
+
+Existing-screen reproduction, bug fixes and measured adaptation proceed from evidence without a
+broad direction question. New surfaces, new flows and redesigns ask one grouped question only when
+product goal, primary user/job or visual direction remains missing and affects the result. A
+material repository-contract ↔ Figma conflict is always surfaced. Platform conventions may fill
+functional and accessibility gaps, labelled `PLATFORM_DEFAULT`; they never replace brand styling.
+
 ### Playbooks: the order, not just the surface
 
 The manifest says what each op does. It does not say which five to call, in which order, to
@@ -684,8 +698,8 @@ get a screen built — and that is what a fresh agent gets wrong: it screenshots
 writes code from the pixels while the file could have told it the token, the variant and the
 transition.
 
-`guide.list` names the tasks (`file.bootstrap`, `screen.build`, `mobile.app`, `system.extract`,
-`motion.implement`, `fidelity.check`, `document.write`); `guide.get` hands one back with its
+`guide.list` names the tasks (`file.bootstrap`, `product.fidelity`, `screen.build`, `mobile.app`,
+`system.extract`, `motion.implement`, `fidelity.check`, `document.write`); `guide.get` hands one back with its
 steps, the example params for each, what to verify when it is finished, and the traps the task
 has. Each step carries the op's *own* summary and guidance alongside it, so a playbook is one
 call rather than one plus five lookups.

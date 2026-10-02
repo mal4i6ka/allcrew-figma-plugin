@@ -80,6 +80,7 @@ import { fileURLToPath } from 'node:url'
 import { fingerprint, sourceSetFingerprint } from './source-set.mjs'
 import { acceptWebSocket } from './websocket.mjs'
 import { matchTab, readDesktopTabs, runRecentHistory } from './desktop-tabs.mjs'
+import { FIDELITY_POLICY } from './design-policy.mjs'
 
 /**
  * Logical source-set fingerprint. A repository run hashes bridge.mjs plus every local import;
@@ -2747,7 +2748,7 @@ const ROUTES = {
     if (target) {
       const found = resolveTarget(target)
       if (found.error) return { code: 404, body: fail('ambiguous_target', found.error, { files: found.candidates || [] }) }
-      return { code: 200, body: { ...describe(found.plugin), ops: withComments(found.plugin.ops || []) } }
+      return { code: 200, body: { ...describe(found.plugin), policy: FIDELITY_POLICY, ops: withComments(found.plugin.ops || []) } }
     }
     if (roster().length === 0) {
       // Nothing open: say what REST can still answer rather than an empty list that reads as
@@ -2759,6 +2760,7 @@ const ROUTES = {
           count: 0,
           files: [],
           source: 'rest',
+          policy: FIDELITY_POLICY,
           ops: withComments(REST_OPS.map((name) => ({ name, mutates: false, source: 'rest' }))),
           refuses: { ...REST_REFUSALS, ...COMMENT_REFUSALS, ...HISTORY_REFUSALS },
           token: Boolean(figmaToken()),
@@ -2766,7 +2768,7 @@ const ROUTES = {
       }
     }
     const files = roster().map((plugin) => ({ ...describe(plugin), ops: withComments(plugin.ops || []) }))
-    return { code: 200, body: { online: true, count: files.length, files, refuses: { ...COMMENT_REFUSALS, ...HISTORY_REFUSALS } } }
+    return { code: 200, body: { online: true, count: files.length, policy: FIDELITY_POLICY, files, refuses: { ...COMMENT_REFUSALS, ...HISTORY_REFUSALS } } }
   },
 
   'GET /skill': async (req, res, url) => {

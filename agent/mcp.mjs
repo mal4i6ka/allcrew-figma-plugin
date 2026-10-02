@@ -9,9 +9,9 @@
  *
  *     MCP client (Claude Desktop, Cursor, …)          plugin (open in Figma)
  *        │  stdio: JSON-RPC (initialize, tools/*)         │
- *        ▼                                                │  GET /plugin/poll (parked ~25s)
+ *        ▼                                                │  WebSocket /plugin/ws
  *      mcp.mjs ── POST /call {op, params, target} ──▶ bridge.mjs ──┤
- *        ◄──────────── the op's answer ─────────────────────┘  POST /plugin/result
+ *        ◄──────────── the op's answer ─────────────────────┘
  *
  * It is a *client* of the bridge, exactly like agent/allcrew-channel.mjs is — not a replacement.
  * The bridge is what the plugin dials out to and where the read/write gates, the op registry
@@ -40,6 +40,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fidelityInstructions } from './design-policy.mjs'
 
 const BASE = (process.env.ALLCREW_CHANNEL_AGENT_URL || 'http://127.0.0.1:8788').replace(/\/+$/, '')
 const SECRET_FILE =
@@ -403,6 +404,15 @@ function fail(id, code, message) {
   send({ jsonrpc: '2.0', id, error: { code, message } })
 }
 
+export function initializeResult(clientVersion = PROTOCOL_VERSION) {
+  return {
+    protocolVersion: clientVersion,
+    capabilities: { tools: { listChanged: true } },
+    serverInfo: SERVER_INFO,
+    instructions: fidelityInstructions(),
+  }
+}
+
 let initialized = false
 
 async function handle(message) {
@@ -417,11 +427,7 @@ async function handle(message) {
     case 'initialize': {
       initialized = true
       const clientVersion = typeof params?.protocolVersion === 'string' ? params.protocolVersion : PROTOCOL_VERSION
-      reply(id, {
-        protocolVersion: clientVersion,
-        capabilities: { tools: { listChanged: true } },
-        serverInfo: SERVER_INFO,
-      })
+      reply(id, initializeResult(clientVersion))
       startRosterWatch()
       return
     }

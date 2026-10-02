@@ -8,7 +8,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-const { mergeServers, serverEntry, MCP_CLIENTS, SERVER_NAME, opToTool, toolName } = await import('./mcp.mjs')
+const { initializeResult, mergeServers, serverEntry, MCP_CLIENTS, SERVER_NAME, opToTool, toolName } = await import('./mcp.mjs')
 
 test('installing keeps every other server in the client’s config', () => {
   // People have other MCP servers configured. Overwriting the file — the obvious way to write
@@ -65,4 +65,11 @@ test('an op becomes a tool that can also name a file key', () => {
   assert.deepEqual(tool.inputSchema.required, ['nodeId'])
   assert.ok(tool.inputSchema.properties.fileKey, 'no way to address a file over REST')
   assert.ok(tool.inputSchema.properties.target, 'no way to address one of several open files')
+})
+
+test('MCP initialization publishes the fidelity-first contract even without an installed skill', () => {
+  const initialized = initializeResult('2024-11-05')
+  assert.match(initialized.instructions, /Fidelity-first product design contract/)
+  assert.match(initialized.instructions, /Search repository context before asking/)
+  assert.match(initialized.instructions, /PLATFORM_DEFAULT/)
 })

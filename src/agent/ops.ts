@@ -48,6 +48,7 @@ import { PLUGIN_OPS } from './plugin-ops.ts'
 import { MODULE_OPS } from './module-ops.ts'
 import { COMPONENT_READ_OPS, COMPONENT_WRITE_OPS } from './component-ops.ts'
 import { ADMIN_OPS } from './admin-ops.ts'
+import { DESIGN_EVIDENCE_OPS } from './design-evidence.ts'
 
 /* ------------------------------------------------------------- serializers */
 
@@ -2627,6 +2628,7 @@ export const ALL_OPS: readonly OpDef[] = [
   ...READ_OPS,
   ...COMPONENT_READ_OPS,
   ...CONTEXT_OPS,
+  ...DESIGN_EVIDENCE_OPS,
   ...EXPORT_OPS,
   ...TEXT_OPS,
   ...EXPORT_PLAN_OPS,

@@ -17,6 +17,13 @@ test('downloadable bridge is one executable ESM file with its logical fingerprin
   assert.doesNotMatch(output.source, /__ALLCREW_BRIDGE_FINGERPRINT__/)
 })
 
+test('downloadable MCP front is self-contained and carries the fidelity contract', async () => {
+  const output = await embeddedScript({ file: resolve('agent/mcp.mjs'), bundle: true })
+  assert.match(output.source, /^#!\/usr\/bin\/env node/)
+  assert.deepEqual(localImports(output.source), [])
+  assert.match(output.source, /Fidelity-first product design contract/)
+})
+
 test('the fingerprint covers every local import transitively without duplicates', () => {
   const files = sourceSetFiles(ENTRY)
   assert.ok(files.some(({ file }) => file.endsWith('/agent/source-set.mjs')))

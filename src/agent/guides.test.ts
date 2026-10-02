@@ -42,9 +42,9 @@ test('playbook ids are unique and every one says what it is for', () => {
 })
 
 test('the task a fresh agent starts with is covered', () => {
-  // These four are the reason playbooks exist at all: an agent that cannot find them ends up
-  // reading pixels instead of the file. Losing one silently is the failure this test blocks.
-  for (const id of ['file.bootstrap', 'screen.build', 'mobile.app', 'system.extract']) {
+  // These five are the reason playbooks exist at all: an agent that cannot find them ends up
+  // reading pixels or inventing product direction. Losing one silently is the failure this test blocks.
+  for (const id of ['file.bootstrap', 'product.fidelity', 'screen.build', 'mobile.app', 'system.extract']) {
     assert.ok(GUIDES.some((guide) => guide.id === id), `playbook ${id} is gone`)
   }
 })

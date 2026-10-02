@@ -2,6 +2,14 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.9.0 — 2026-10-02
+
+### Added
+
+- Added a fidelity-first product-design contract published through the generated agent skill, MCP initialization, bridge `/ops`, and a new `product.fidelity` playbook.
+- Added `design.evidence`, a bounded read of Figma annotations, Dev Resources, component documentation, variable/style/component usage, prototype signals, layout grids, and inferred auto layout.
+- Added machine-readable provenance labels and deterministic preflight decisions for existing-screen work, missing product briefs, platform defaults, and repository-contract conflicts.
+
 ## 1.8.0 — 2026-10-01
 
 ### Added

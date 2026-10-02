@@ -5187,6 +5187,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
        * and a repository checkout therefore agree even though their emitted bytes differ. */
       var AGENT_BRIDGE_FINGERPRINT = '__ALLCREW_CHANNEL_BRIDGE_FINGERPRINT__'
       var AGENT_BRIDGE_EMBEDDED = AGENT_BRIDGE_SOURCE.indexOf('allcrew-channel-bridge') !== -1
+      var FIDELITY_POLICY_SOURCE = '__ALLCREW_FIDELITY_POLICY__'
+      function fidelityPolicy() {
+        try { return JSON.parse(FIDELITY_POLICY_SOURCE) }
+        catch (error) { return { sourceOrder: [], neverInvent: [], reportSections: [], platformDefaults: { label: 'PLATFORM_DEFAULT' } } }
+      }
       // The MCP front for the same bridge — an MCP client (Claude Desktop, Cursor) spawns it and
       // talks the one wire format they all speak, so no SKILL.md and no curl. Shipped the same
       // way as the bridge: inlined at build time, handed over as a download.
@@ -5486,6 +5491,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function agentSkillText() {
         var base = agentBase()
         var auth = ' -H "x-allcrew-channel-secret: $(cat ~/.allcrew-channel/agent-secret)"'
+        var fidelity = fidelityPolicy()
         var rows = (AGENT.ops || []).map(function (op) {
           var params = Object.keys(op.params || {}).map(function (name) {
             return op.params[name].required ? name + '!' : name
@@ -5563,6 +5569,31 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           'copy from there instead of asking anyone to re-paste it. A bridge started with',
           '`--install-skill` also keeps `~/.allcrew-channel/SKILL.md` current — an agent-neutral copy any',
           'tool can be pointed at.',
+          '',
+          '## Fidelity-first product design contract',
+          '',
+          'Classify the task before asking: existing-surface reproduction / bug fix / measured',
+          'adaptation, or choice-bearing new surface / new flow / redesign.',
+          '',
+          'Exhaust available evidence before asking the user. Evidence order:',
+          '',
+          '    ' + (fidelity.sourceOrder || []).join(' → '),
+          '',
+          'Search `AGENTS.md`, `PRODUCT.md`, `DESIGN.md`, `.agents/context/`, README/ADRs and',
+          'existing product code, then call `design.evidence` for the relevant Figma subtree.',
+          '',
+          'Never invent: ' + (fidelity.neverInvent || []).join(', ') + '. Explicit user permission',
+          'overrides this only within the scope they stated.',
+          '',
+          '- Existing Figma surface: proceed from frames, tokens, components, annotations,',
+          '  prototype reactions and motion. Do not ask for a broad design direction.',
+          '- New surface / flow / redesign: when product goal, primary user/job or visual direction',
+          '  is still missing and materially changes the result, ask ONE grouped direction question.',
+          '- A material `PRODUCT.md` ↔ Figma conflict is a question, never a silent precedence choice.',
+          '- Platform conventions fill functional/accessibility gaps only. Label each one `' +
+          (fidelity.platformDefaults && fidelity.platformDefaults.label || 'PLATFORM_DEFAULT') +
+          '`; never use a platform design system to replace brand styling.',
+          '- Final report: ' + (fidelity.reportSections || []).join('; ') + '.',
           '',
           '## Several files open at once',
           '',

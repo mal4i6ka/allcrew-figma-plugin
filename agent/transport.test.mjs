@@ -631,6 +631,7 @@ test('the roster and the ops manifest are what the plugin published', async () =
     assert.deepEqual(status.body.files[0].gates, { read: true, write: true })
 
     const ops = await api('GET', '/ops')
+    assert.equal(ops.body.policy.id, 'allcrew.fidelity-first')
     const names = ops.body.files[0].ops.map((op) => op.name)
     // The plugin's own ops, in the order it published them...
     assert.deepEqual(names.slice(0, 3), ['document.info', 'node.get', 'node.bind'])
