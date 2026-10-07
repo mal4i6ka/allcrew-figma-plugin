@@ -17,11 +17,12 @@
  * is a second program with its own bugs. A hit here means "we have heard of it"; a MISS is the
  * honest finding, and misses are what the ledger is for.
  *
- *   node agent/api-coverage.mjs            # the ledger, from the installed typings
- *   node agent/api-coverage.mjs --releases # download past versions and add the release history
+ *   node agent/api-coverage.mjs                         # print the ledger
+ *   node agent/api-coverage.mjs --releases 1.107.0     # include release history
+ *   node agent/api-coverage.mjs --releases 1.107.0 --write
  *
- * `--releases` fetches tarballs from npm into a cache directory; without network it prints the
- * namespace half alone rather than failing.
+ * `--write` replaces the generated block in TASK-api-coverage.md. `--releases` fetches tarballs
+ * from npm into a cache directory; without network it prints the namespace half alone.
  */
 
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -214,24 +215,47 @@ function releaseTable(since) {
 const surface = surfaceOf(readFileSync(TYPINGS, 'utf8'))
 const installed = JSON.parse(readFileSync(join(ROOT, 'node_modules/@figma/plugin-typings/package.json'), 'utf8')).version
 
-console.log(`# Покрытие Figma Plugin API\n`)
-console.log(`Типизации ${installed}, идентификаторов в поверхности: ${surface.size}.`)
-console.log(`Сигнал «у нас» — слово встречается в src/ (кроме тестов): грубо, но без вранья в пользу покрытия.\n`)
+const lines = []
+const emit = (line = '') => lines.push(line)
 
-console.log(`## Неймспейсы\n`)
-console.log(`| API | членов | не тронуто | что именно |`)
-console.log(`| --- | ---: | ---: | --- |`)
+emit(`# Покрытие Figma Plugin API\n`)
+emit(`Типизации ${installed}, идентификаторов в поверхности: ${surface.size}.`)
+emit(`Сигнал «у нас» — слово встречается в src/ (кроме тестов): грубо, но без вранья в пользу покрытия.\n`)
+
+emit(`## Неймспейсы\n`)
+emit(`| API | членов | не тронуто | что именно |`)
+emit(`| --- | ---: | ---: | --- |`)
 for (const row of namespaceTable(surface)) {
   const names = row.missing.length > 0 ? row.missing.slice(0, 8).join(', ') + (row.missing.length > 8 ? ' …' : '') : '—'
-  console.log(`| ${row.space} | ${row.total} | ${row.missing.length} | ${names} |`)
+  emit(`| ${row.space} | ${row.total} | ${row.missing.length} | ${names} |`)
 }
 
 if (process.argv.includes('--releases')) {
   const since = process.argv[process.argv.indexOf('--releases') + 1] ?? '1.107.0'
-  console.log(`\n## Релизы, от свежего к старому (с ${since})\n`)
+  emit(`\n## Релизы, от свежего к старому (с ${since})\n`)
   for (const row of releaseTable(since)) {
-    console.log(`### ${row.version} — ${row.date}  (+${row.added.length}, не тронуто ${row.missing.length})\n`)
-    if (row.missing.length > 0) console.log(`${row.missing.join(', ')}\n`)
-    else console.log(`всё тронуто\n`)
+    emit(`### ${row.version} — ${row.date}  (+${row.added.length}, не тронуто ${row.missing.length})\n`)
+    if (row.missing.length > 0) emit(`${row.missing.join(', ')}\n`)
+    else emit(`всё тронуто\n`)
   }
+}
+
+const report = lines.join('\n') + '\n'
+if (process.argv.includes('--write')) {
+  const path = join(ROOT, 'TASK-api-coverage.md')
+  const source = readFileSync(path, 'utf8')
+  const start = '<!-- api-coverage:start -->'
+  const end = '<!-- api-coverage:end -->'
+  if (!source.includes(start) || !source.includes(end)) {
+    throw new Error(`${path} is missing ${start} / ${end} markers`)
+  }
+  const embedded = report.replace(/^# Покрытие Figma Plugin API\n\n/, '').trimEnd()
+  const updated = source.replace(
+    new RegExp(`${start}[\\s\\S]*?${end}`),
+    `${start}\n\n${embedded}\n\n${end}`
+  )
+  writeFileSync(path, updated)
+  console.log(`updated ${path}`)
+} else {
+  process.stdout.write(report)
 }

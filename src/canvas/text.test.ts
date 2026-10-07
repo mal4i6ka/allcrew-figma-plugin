@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { planProps, resolveRanges } from './props.ts'
+import { styledRuns } from './text-runs.ts'
 
 const runsOf = (runs: unknown) => {
   const plan = planProps({ runs })
@@ -44,6 +45,17 @@ test('a run keeps what it was told, and the vocabulary is the layer vocabulary',
   assert.deepEqual(runsOf([{ match: '299 ₽', fontName: { family: 'Inter', style: 'Bold' }, fill: '#FF5B0A' }]), [
     { match: '299 ₽', fontName: { family: 'Inter', style: 'Bold' }, fill: '#FF5B0A' },
   ])
+})
+
+test('variable-font axes survive a styled-run read', async () => {
+  const fontName = { family: 'Roboto Flex', style: 'Regular', variationSettings: { wght: 575, wdth: 90 } }
+  const node = {
+    fontName: { family: 'Roboto Flex', style: 'Regular', variationSettings: { wght: 400, wdth: 100 } },
+    getStyledTextSegments() {
+      return [{ start: 0, end: 4, fontName }]
+    },
+  }
+  assert.deepEqual(await styledRuns(node as never), [{ from: 0, to: 4, fontName }])
 })
 
 test('a run that sets nothing is refused rather than applied to no effect', () => {

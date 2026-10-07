@@ -54,8 +54,12 @@ export async function styledRuns(node: TextLike): Promise<StyledRun[]> {
     const differs = (field: string, value: unknown) => JSON.stringify(bag[field]) !== JSON.stringify(value)
 
     if (differs('fontName', segment.fontName)) {
-      const font = segment.fontName as { family: string; style: string }
-      run.fontName = { family: font.family, style: font.style }
+      const font = segment.fontName as FontName
+      run.fontName = {
+        family: font.family,
+        style: font.style,
+        ...(font.variationSettings ? { variationSettings: { ...font.variationSettings } } : {}),
+      }
     }
     if (differs('fontSize', segment.fontSize)) run.fontSize = segment.fontSize
     if (differs('fills', segment.fills)) run.fill = await describePaints(segment.fills)

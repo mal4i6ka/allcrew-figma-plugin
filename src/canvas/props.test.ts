@@ -754,7 +754,7 @@ test('a prop may follow a variable, and anything Figma cannot hold is refused', 
 test('null and [] both take the animation off, and a nameless style is refused', () => {
   assert.deepEqual((stepsOf({ animation: null })[0] as { styles: unknown[]; summary: string }).styles, [])
   assert.equal((stepsOf({ animation: [] })[0] as { summary: string }).summary, 'none')
-  assert.match(planProps({ animation: { duration: 1 } }).problems[0], /style must name one of the styles MOTION_STYLES lists/)
+  assert.match(planProps({ animation: { duration: 1 } }).problems[0], /style must name one of the Figma or custom styles MOTION_STYLES lists/)
   assert.match(planProps({ animation: { style: 'Position', speed: 2 } }).problems[0], /unknown key "speed"/)
   assert.match(planProps({ animation: { style: 'Position', duration: -1 } }).problems[0], /duration must be a number of seconds >= 0/)
 })

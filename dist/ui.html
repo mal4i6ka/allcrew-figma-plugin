@@ -528,6 +528,35 @@
   .pal-opts input { accent-color: var(--accent); margin-top: 1px; flex: none; }
   .pal-opts b { color: var(--text); font-weight: 500; font-family: var(--mono); font-size: 10.5px; }
 
+  /* Exact replacement is two decisions: A finds the current color; B owns the replacement
+     picker and every source that can feed it. */
+  .direct-flow { display: flex; flex-direction: column; gap: 8px; }
+  .direct-step { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 11px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg); }
+  .direct-step-head { display: flex; align-items: flex-start; gap: 8px; }
+  .direct-step-id { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex: none; border-radius: 5px; background: var(--accent-tint); border: 1px solid rgba(251,91,10,.34); color: var(--accent-hi); font-family: var(--mono); font-size: 10px; font-weight: 600; }
+  .direct-step-copy { min-width: 0; }
+  .direct-step-copy b { display: block; color: var(--text); font-family: var(--brand); font-size: 12px; font-weight: 500; }
+  .direct-step-copy i { display: block; margin-top: 2px; color: var(--faint); font-size: 10.5px; font-style: normal; line-height: 1.4; }
+  .direct-color-field { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 11px; }
+  .direct-color-control { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 6px; }
+  .direct-color-control input[type=color] { appearance: none; width: 34px; height: 32px; padding: 0; border: 1px solid var(--border-2); border-radius: var(--r-sm); background: transparent; cursor: pointer; }
+  .direct-color-control input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
+  .direct-color-control input[type=color]::-webkit-color-swatch { border: 0; border-radius: 4px; }
+  .direct-color-control input[type=text] { min-width: 0; width: 100%; box-sizing: border-box; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 7px 9px; font-family: var(--mono); font-size: 11px; text-transform: uppercase; }
+  .direct-color-control input[type=text]:focus { outline: none; border-color: var(--accent); }
+  .direct-arrow { align-self: center; height: 18px; display: flex; align-items: center; justify-content: center; color: var(--faint); transform: rotate(90deg); }
+  .direct-source { display: flex; flex-direction: column; gap: 7px; padding-top: 2px; border-top: 1px solid var(--border); }
+  .direct-source-label { color: var(--muted); font-size: 10.5px; }
+  .direct-source-tools { display: flex; flex-direction: column; gap: 8px; }
+  .direct-summary { min-height: 17px; padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-2); color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .direct-summary:empty::before { content: 'Preview first. Nothing is written until you apply.'; color: var(--faint); }
+  .direct-summary.ok { border-color: rgba(73, 176, 123, .38); color: var(--text); }
+  .direct-summary.err { border-color: rgba(251, 91, 10, .42); color: var(--accent-hi); }
+  .rmp-advanced { border-top: 1px solid var(--border); padding-top: 9px; }
+  .rmp-advanced > summary { cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 500; }
+  .rmp-advanced[open] > summary { color: var(--text); }
+  .rmp-advanced-body { display: flex; flex-direction: column; gap: 11px; padding-top: 11px; }
+
   /* Remap: the approval table. Density matters more than decoration — a real file produces
      hundreds of rows and the eye has to compare two swatches per row without scrolling twice. */
   .rmp-paste { width: 100%; box-sizing: border-box; min-height: 78px; resize: vertical; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 8px 9px; font-family: var(--mono); font-size: 11px; line-height: 1.5; }
@@ -536,9 +565,8 @@
   .rmp-actions .btn { flex: 1 1 auto; }
   .rmp-stats { color: var(--faint); font-size: 11px; line-height: 1.5; }
   .rmp-stats b { color: var(--text); font-family: var(--mono); font-weight: 500; }
-  /* Taller than the panel strictly needs: a filter above the list is only worth its row if
-     the list it filters did not shrink by the same amount. */
-  .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: clamp(300px, calc(var(--ui-h) - 140px), 960px); overflow-y: auto; overflow-x: hidden; }
+  /* Keeps the reviewed mapping visible without burying the Apply action below a full viewport. */
+  .rmp-table { display: flex; flex-direction: column; gap: 2px; max-height: clamp(240px, 38vh, 520px); overflow-y: auto; overflow-x: hidden; }
   /* A module's table. Borrowing .rmp-table was wrong: that is a flex column of div rows, and
      applied to a real <table> it collapses every cell against its neighbour. Same visual
      language — mono, faint uppercase head, thin separators — scoped to its own name, and it
@@ -1570,8 +1598,9 @@
       gap: 16px;
     }
     #view-main #video-attach-panel,
-    #view-ds-tools #pal-card,
-    #view-ds-tools #rmp-card { grid-column: 1 / -1; }
+    #view-ds-tools > [data-ds-tool-screen] { grid-column: 1 / -1; }
+    .direct-flow { display: grid; grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr); align-items: stretch; }
+    .direct-arrow { height: auto; transform: none; }
     #view-design-tokens > .summary,
     #view-design-tokens > .preview { min-height: 100%; }
     #view-agent .agent-setup-lane { grid-column: 1; min-width: 0; }
@@ -1579,8 +1608,6 @@
     #view-agent .agent-skill-content { height: clamp(260px, 48vh, 520px); }
     #view-ds-tools > #dt-genTypoCard,
     #view-ds-tools > #dt-genBpCard { width: min(100%, 560px); justify-self: start; }
-    #view-ds-tools:has(#dt-genTypoCard.hidden) > #dt-genBpCard:not(.hidden),
-    #view-ds-tools:has(#dt-genBpCard.hidden) > #dt-genTypoCard:not(.hidden) { grid-column: 1 / -1; }
     #view-module #mod-blocks {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
@@ -1632,14 +1659,20 @@
          The target picker hides on the settings page (its views live under the main dash). -->
     <!-- Grouped, not mixed: which half a target belongs to decides who to talk to when it
          misbehaves. The Modules group is added by renderModulePicker() when there are any. -->
-    <select id="target-select" class="target-select" aria-label="Export target">
+    <select id="target-select" class="target-select" aria-label="Workspace screen">
       <optgroup label="Workspace" id="target-native">
         <option value="agent">Agent Listener</option>
         <option value="modules">User Modules</option>
         <option value="django">Django × Bootstrap</option>
         <option value="tauri">Tauri</option>
-        <option value="design-tokens">Design Tokens</option>
-        <option value="ds-tools">DS Tools</option>
+      </optgroup>
+      <optgroup label="Design system" id="target-design-system">
+        <option value="design-tokens">Token export</option>
+        <option value="ds-palette">Palette generator</option>
+        <option value="ds-replace">Replace a color</option>
+        <option value="ds-remap">Palette migration</option>
+        <option value="ds-typography">Typography</option>
+        <option value="ds-breakpoints">Breakpoints</option>
       </optgroup>
       <optgroup label="AllCrew SDK" id="target-sdk">
         <option value="sdk-builder">Build a screen</option>
@@ -1803,7 +1836,7 @@
          emitting a package. Typography scale and Breakpoints moved here from Design Tokens —
          they were never part of the export, they build the system the export later reads. -->
     <div id="view-ds-tools" class="view hidden">
-      <section class="card gen hidden" id="dt-genTypoCard">
+      <section class="card gen hidden" id="dt-genTypoCard" data-ds-tool-screen="typography">
         <div class="gen-row">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8 19 13M15 9h.01M17.8 6.2 19 5M3 21l9-9M12.2 6.2 11 5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="gen-text"><b>Typography scale</b><i id="dt-genTypoHint">Build a scoped collection from your text styles and bind the styles to it.</i></span>
@@ -1811,7 +1844,7 @@
         <button class="btn primary" id="dt-genTypoBtn">Generate from text styles</button>
       </section>
 
-      <section class="card gen hidden" id="dt-genBpCard" style="border-color:var(--border);background:var(--surface);">
+      <section class="card gen hidden" id="dt-genBpCard" data-ds-tool-screen="breakpoints" style="border-color:var(--border);background:var(--surface);">
         <div class="gen-row">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 5h16M4 12h16M4 19h16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
           <span class="gen-text"><b>Generate Breakpoint variables</b><i id="dt-genBpHint">No Breakpoints collection found. Create a modes-as-breakpoints collection (Desktop/Tablet/Mobile) with a Width variable per mode.</i></span>
@@ -1825,7 +1858,7 @@
         <div id="dt-genBpResult" class="gen-result" style="margin-top:8px;font-size:11px;line-height:1.4;color:var(--faint)"></div>
       </section>
 
-      <section class="card gen" id="pal-card" style="border-color:var(--border);background:var(--surface);">
+      <section class="card gen" id="pal-card" data-ds-tool-screen="palette" style="border-color:var(--border);background:var(--surface);">
         <div class="gen-row">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3a9 9 0 1 0 0 18c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1a1.5 1.5 0 0 1 1.06-2.56H16a5 5 0 0 0 5-5c0-4.42-4.03-8-9-8Z" stroke="currentColor" stroke-width="1.6"/><circle cx="7.5" cy="11" r="1.2" fill="currentColor"/><circle cx="10.5" cy="7" r="1.2" fill="currentColor"/><circle cx="15" cy="8" r="1.2" fill="currentColor"/></svg>
           <span class="gen-text"><b>Color palettes</b><i>Ramps from key colors on one shared lightness ladder &mdash; so <code>O500</code> and <code>B500</code> carry the same visual weight and a light/dark theme falls out of the mirror.</i></span>
@@ -1883,20 +1916,104 @@
           <label><input type="checkbox" id="pal-opt-theme" checked /> <span><b>theme</b> collection &mdash; Light/Dark modes aliasing into colors</span></label>
           <label><input type="checkbox" id="pal-opt-canvas" checked /> <span>Swatch board in a <b>Colors</b> section on canvas</span></label>
         </div>
-        <button class="btn primary" id="pal-apply">Generate in Figma</button>
+        <div class="rmp-stats">Creates the selected palette outputs. It does not recolor existing content; use <b>Replace a color</b> or <b>Palette migration</b> for that.</div>
+        <button class="btn primary" id="pal-apply">Create selected outputs</button>
         <div id="pal-result" class="gen-result" style="margin-top:8px;font-size:11px;line-height:1.45;color:var(--faint)"></div>
+      </section>
+
+
+      <section class="card gen hidden" id="rmp-direct-card" data-ds-tool-screen="replace" style="border-color:var(--border);background:var(--surface);">
+        <div class="gen-row">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h11m0 0-3-3m3 3-3 3M20 17H9m0 0 3-3m-3 3 3 3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="gen-text"><b>Replace one color</b><i>Find one exact RGB color and replace it everywhere in the chosen scope. Opacity is preserved. Token names and palette structure stay unchanged.</i></span>
+        </div>
+        <div class="direct-flow">
+          <section class="direct-step" aria-labelledby="rmp-direct-find-title">
+            <div class="direct-step-head">
+              <span class="direct-step-id">A</span>
+              <span class="direct-step-copy">
+                <b id="rmp-direct-find-title">Find color</b>
+                <i>Exact RGB match. Opacity does not affect matching.</i>
+              </span>
+            </div>
+            <label class="direct-color-field">Color to find
+              <span class="direct-color-control">
+                <input id="rmp-direct-from-picker" type="color" value="#FE012D" aria-label="Pick the color to find" />
+                <input id="rmp-direct-from" type="text" value="#FE012D" maxlength="7" spellcheck="false" autocomplete="off" />
+              </span>
+            </label>
+          </section>
+
+          <span class="direct-arrow" aria-hidden="true">→</span>
+
+          <section class="direct-step direct-step-target" aria-labelledby="rmp-direct-target-title">
+            <div class="direct-step-head">
+              <span class="direct-step-id">B</span>
+              <span class="direct-step-copy">
+                <b id="rmp-direct-target-title">Replace with</b>
+                <i>Choose a source, or edit the picker and HEX for a custom color.</i>
+              </span>
+            </div>
+            <label class="direct-color-field">Replacement color
+              <span class="direct-color-control">
+                <input id="rmp-direct-to-picker" type="color" value="#FFBC03" aria-label="Pick the replacement color" />
+                <input id="rmp-direct-to" type="text" value="#FFBC03" maxlength="7" spellcheck="false" autocomplete="off" />
+              </span>
+            </label>
+            <div class="direct-source">
+              <span class="direct-source-label">Color source</span>
+              <div class="pal-seg" id="rmp-direct-source-tabs" role="group" aria-label="Where the replacement color comes from">
+                <button type="button" class="seg active" data-direct-source="manual">Custom</button>
+                <button type="button" class="seg" data-direct-source="generator">Generator</button>
+                <button type="button" class="seg" data-direct-source="selection">Selection</button>
+                <button type="button" class="seg" data-direct-source="library">Library</button>
+              </div>
+              <div class="direct-source-tools hidden" id="rmp-direct-source-tools">
+                <label class="pal-field pal-wide hidden" id="rmp-direct-library-row">Library collection
+                  <select id="rmp-direct-library"><option value="">Loading&hellip;</option></select>
+                </label>
+                <div class="rmp-actions">
+                  <button class="btn ghost" id="rmp-direct-source-load" type="button">Load replacement colors</button>
+                </div>
+                <label class="pal-field pal-wide">Choose loaded color
+                  <select id="rmp-direct-source-colors" disabled><option value="">Load colors first</option></select>
+                </label>
+                <div class="rmp-stats" id="rmp-direct-source-note"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <label class="pal-field pal-wide">Search scope
+          <select id="rmp-direct-depth">
+            <option value="document">Whole document</option>
+            <option value="page">This page</option>
+            <option value="tokens">Variables &amp; styles only</option>
+          </select>
+        </label>
+        <div class="pal-opts">
+          <label><input type="checkbox" id="rmp-direct-values" checked /> <span><b>Variables</b></span></label>
+          <label><input type="checkbox" id="rmp-direct-styles" checked /> <span><b>Paint &amp; effect styles</b></span></label>
+          <label><input type="checkbox" id="rmp-direct-canvas" checked /> <span><b>Loose colors on layers</b></span></label>
+        </div>
+        <div id="rmp-direct-result" class="direct-summary" role="status"></div>
+        <div class="rmp-actions">
+          <button class="btn ghost" id="rmp-direct-preview" type="button">Find exact matches</button>
+          <button class="btn primary" id="rmp-direct-apply" type="button" disabled>Replace matched colors</button>
+          <button class="btn ghost" id="rmp-direct-revert" type="button" disabled>Revert last replacement</button>
+        </div>
       </section>
 
       <!-- Moving an existing file onto a palette somebody else designed. The generator above
            builds a scheme; this one adopts one, matching family to family and step to step
            against what the document already holds. -->
-      <section class="card gen" id="rmp-card" style="border-color:var(--border);background:var(--surface);">
+      <section class="card gen hidden" id="rmp-card" data-ds-tool-screen="remap" style="border-color:var(--border);background:var(--surface);">
         <div class="gen-row">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h11m0 0-3-3m3 3-3 3M20 17H9m0 0 3-3m-3 3 3 3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <span class="gen-text"><b>Remap color tokens</b><i>Move this file onto a new palette. Families are matched to families and steps to steps &mdash; and only to steps the new scale actually has.</i></span>
+          <span class="gen-text"><b>Migrate to a palette</b><i>Map full color families and scale steps onto another palette. For a single exact color replacement, use “Replace a color” instead.</i></span>
         </div>
 
-        <p class="label rmp-label-mid">New palette from</p>
+        <p class="label rmp-label-mid">1 · Choose the new palette</p>
         <div class="pal-seg" role="group" aria-label="Where the new palette comes from">
           <button type="button" class="seg active" data-source="paste">Paste</button>
           <button type="button" class="seg" data-source="generator">Generator</button>
@@ -1917,8 +2034,8 @@
             <option value="page">This page only</option>
             <option value="tokens">Variables &amp; styles only</option>
           </select>
-          <button class="btn ghost" id="rmp-scan" type="button">Read this file</button>
-          <button class="btn primary" id="rmp-preview" type="button" disabled>Build mapping</button>
+          <button class="btn ghost" id="rmp-scan" type="button">2 · Read current colors</button>
+          <button class="btn primary" id="rmp-preview" type="button" disabled>3 · Build mapping</button>
         </div>
         <div id="rmp-stats" class="rmp-stats"></div>
         <div id="rmp-warnings" class="pal-warnings"></div>
@@ -1937,7 +2054,13 @@
           <label><input type="checkbox" id="rmp-opt-separate" checked /> <span>Pull apart two tokens that land on one color <b>and touch on canvas</b></span></label>
         </div>
 
-        <p class="label">Write</p>
+        <p class="label">4 · Apply reviewed mapping</p>
+        <div class="rmp-actions">
+          <button class="btn primary" id="rmp-apply" type="button" disabled>Apply reviewed mapping</button>
+          <button class="btn ghost" id="rmp-revert" type="button" disabled>Revert</button>
+        </div>
+        <div id="rmp-result" class="gen-result" role="status" style="font-size:11px;line-height:1.45;color:var(--faint)"></div>
+        <p class="label">Write options</p>
         <div class="pal-opts" id="rmp-writes">
           <label><input type="checkbox" id="rmp-w-values" checked /> <span><b>Variables</b> &mdash; values in place, so every binding follows</span></label>
           <label><input type="checkbox" id="rmp-opt-rename" checked /> <span>&hellip;and <b>rename primitives</b> onto their new family. A rename is a write: this does nothing unless Variables is on.</span></label>
@@ -1953,10 +2076,9 @@
           </select>
         </label>
 
-        <div class="rmp-actions">
-          <button class="btn primary" id="rmp-apply" type="button" disabled>Apply to this file</button>
-          <button class="btn ghost" id="rmp-revert" type="button" disabled>Revert</button>
-        </div>
+        <details class="rmp-advanced">
+          <summary>Advanced tools: names, rebind, mapping files</summary>
+          <div class="rmp-advanced-body">
         <div class="rmp-actions">
           <button class="btn ghost" id="rmp-unpark" type="button">Restore names this plugin parked in legacy/</button>
         </div>
@@ -1993,7 +2115,8 @@
           <label><input type="checkbox" id="rmp-f-byname" /> <span>Also rewrite by <b>token name</b>, whatever value the declaration holds</span></label>
           <label><input type="checkbox" id="rmp-f-exact" /> <span>Exact colours only &mdash; no near matches within &Delta;E&nbsp;2</span></label>
         </div>
-        <div id="rmp-result" class="gen-result" style="margin-top:8px;font-size:11px;line-height:1.45;color:var(--faint)"></div>
+          </div>
+        </details>
       </section>
     </div>
 
@@ -3114,7 +3237,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         })
       }
 
-      var existingFiles = {}
       var latestPlan = null
       var latestCss = ''
       var latestCssFile = ''
@@ -3156,6 +3278,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (PAGE_TARGET) return PAGE_TARGET
         if (!OPTIONS) return 'agent'
         if (OPTIONS.target === 'django' && OPTIONS.targetOptions && OPTIONS.targetOptions.platform === 'tauri') return 'tauri'
+        if (OPTIONS.target === 'ds-tools') return 'ds-' + (OPTIONS.dsTool || 'palette')
         return OPTIONS.target || 'agent'
       }
       function syncTargetSelect() {
@@ -3186,6 +3309,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return { mode: mode }
       }
 
+      function syncDsToolScreen() {
+        var active = (OPTIONS && OPTIONS.dsTool) || 'palette'
+        Array.prototype.forEach.call(document.querySelectorAll('[data-ds-tool-screen]'), function (screen) {
+          screen.classList.toggle('hidden', screen.getAttribute('data-ds-tool-screen') !== active)
+        })
+      }
+
       // T6.1: reads the module checkboxes (токены/шаблоны/i18n/анимация) into `ExportModules`.
       function currentModules() {
         return {
@@ -3195,7 +3325,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           animation: document.getElementById('module-animation').checked,
         }
       }
-      var PLUGIN_VERSION = "1.9.0"
+      var PLUGIN_VERSION = "1.10.0"
       var UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000
       var UPDATE_API = 'https://api.github.com/repos/mal4i6ka/allcrew-figma-plugin/releases/latest'
       var UPDATE_PREFS = { automatic: false, lastCheckedAt: 0, latestVersion: '', releaseUrl: '', downloadUrl: '' }
@@ -3237,15 +3367,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         document.getElementById('view-agent').classList.toggle('hidden', settings || target !== 'agent')
         document.getElementById('view-sdk-builder').classList.toggle('hidden', settings || target !== 'sdk-builder')
         document.getElementById('view-modules').classList.toggle('hidden', settings || target !== 'modules')
-        // A module's own target id is `module:<id>` — the picker's value carries which one.
         document.getElementById('view-module').classList.toggle('hidden', settings || target.slice(0, 7) !== 'module:')
         document.getElementById('view-settings').classList.toggle('hidden', !settings)
+        syncDsToolScreen()
         if (settings && !THEME_COLLECTIONS_LOADING) {
           THEME_COLLECTIONS_LOADING = true
           parent.postMessage({ pluginMessage: { type: 'LIST_VARIABLE_COLLECTIONS' } }, '*')
         }
-        // DS Tools has the compact status-only footer from its own mockup; export targets keep
-        // the 119px action footer.
         var footer = document.querySelector('footer')
         var compactDsFooter = !settings && target === 'ds-tools'
         var handleOnlyFooter =
@@ -3254,8 +3382,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         footer.classList.toggle('handle-only', handleOnlyFooter)
         document.body.classList.toggle('ds-tools-mode', compactDsFooter)
         document.body.classList.toggle('handle-only-footer', handleOnlyFooter)
-        // A module's options live in Settings, under its own heading — and only while the
-        // picker is pointed at it.
         var modSettings = document.getElementById('mod-settings-head')
         if (modSettings) {
           var hasSettings = Boolean(MODULE_TARGET && MOD.screens && MOD.screens.settings)
@@ -3264,7 +3390,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         document.getElementById('open-settings').classList.toggle('hidden', settings)
         document.getElementById('close-settings').classList.toggle('hidden', !settings)
-        // the target picker belongs to the dashboards — hide it while Settings is open
         document.getElementById('target-select').classList.toggle('hidden', settings)
         document.getElementById('crumb').textContent = settings ? ' · Settings' : ''
       }
@@ -3274,15 +3399,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // the platform back. Preset application passes the display value too (see below).
       function onTargetChange(picked) {
         if (!OPTIONS) return
-        // A module is a target like any other as far as the picker is concerned, and unlike any
-        // other it is not persisted as one: `OPTIONS.target` keeps the last *native* choice, so
-        // uninstalling a module cannot leave the panel pointed at a view that no longer exists.
         if (picked.slice(0, 7) === 'module:') {
           PAGE_TARGET = null
           MODULE_TARGET = picked.slice(7)
-          // Another target's chrome has no business here: the Django export footer was still
-          // sitting under a module's screen, one click away from running an export nobody asked
-          // for. Everything that belongs to a native target goes away with it.
           document.getElementById('export-btn').classList.add('hidden')
           document.getElementById('pipeline').classList.add('hidden')
           document.getElementById('dt-foot').classList.add('hidden')
@@ -3323,30 +3442,30 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
         MODULE_TARGET = null
         PAGE_TARGET = null
-        var target = picked === 'tauri' ? 'django' : picked
+        var dsTool = picked.slice(0, 3) === 'ds-' ? picked.slice(3) : null
+        var target = picked === 'tauri' ? 'django' : (dsTool ? 'ds-tools' : picked)
         OPTIONS.target = target
+        if (dsTool) OPTIONS.dsTool = dsTool
         if (picked === 'tauri') OPTIONS.targetOptions.platform = 'tauri'
         if (picked === 'django') OPTIONS.targetOptions.platform = 'django'
         syncSettingsControls()
         var isDjango = target === 'django'
         var isTokens = target === 'design-tokens'
         var isAgent = target === 'agent'
+        var isDsTools = target === 'ds-tools'
         document.getElementById('export-btn').classList.toggle('hidden', !isDjango)
         document.getElementById('pipeline').classList.toggle('hidden', !isDjango)
         document.getElementById('dt-foot').classList.toggle('hidden', !isTokens)
-        // Settings sections that belong to exactly one mode — Django's export knobs, the
-        // Agent Listener's bridge fields. Everything untagged is shared and always visible.
         Array.prototype.forEach.call(document.querySelectorAll('[data-needs-target]'), function (el) {
           el.classList.toggle('hidden', el.getAttribute('data-needs-target') !== target)
         })
         show(VIEW)
         persistExportOptions()
-        // Agent Listener reads nothing on its own — the agent does the asking. Scanning here
-        // would just spend a document walk on a screen that never displays the result.
         if (isAgent) agentRenderView()
-        // DS Tools needs the same scan: its typography/breakpoint cards key off that summary.
         else if (isDjango) requestScan()
-        else parent.postMessage({ pluginMessage: { type: 'SCAN_TOKENS' } }, '*')
+        else if (isTokens || (isDsTools && (OPTIONS.dsTool === 'typography' || OPTIONS.dsTool === 'breakpoints'))) {
+          parent.postMessage({ pluginMessage: { type: 'SCAN_TOKENS' } }, '*')
+        }
       }
       document.getElementById('target-select').addEventListener('change', function () {
         onTargetChange(this.value)
@@ -4596,7 +4715,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }).join('')
       }
       function dtRenderTabs() {
-        // .md included so DESIGN.md / README.md are previewable — they ship in the zip either way.
         var names = Object.keys(DT_FILES).filter(function (n) { return /\.(css|json|ts|md)$/.test(n) })
         if (DT_TAB === null || names.indexOf(DT_TAB) === -1) DT_TAB = names[0] || null
         document.getElementById('dt-tabs').innerHTML = names.map(function (n) {
@@ -4615,23 +4733,30 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function dtRefreshGenCard() {
         var s = DT_SUMMARY || {}
         var regen = !!s.hasGeneratedTypoCollection
-        var offer = s.textStyleCount > 0 && (s.hasTypographyVars === false || regen)
-        document.getElementById('dt-genTypoCard').classList.toggle('hidden', !offer)
-        if (!offer) return
+        var hasStyles = (s.textStyleCount || 0) > 0
+        var offer = hasStyles && (s.hasTypographyVars === false || regen)
         var btn = document.getElementById('dt-genTypoBtn')
-        btn.disabled = false
-        btn.textContent = regen ? 'Regenerate typography variables' : 'Generate from text styles'
-        document.getElementById('dt-genTypoCard').classList.remove('busy')
         var hint = document.getElementById('dt-genTypoHint')
+        document.getElementById('dt-genTypoCard').classList.remove('busy')
         hint.className = ''
-        hint.textContent = regen
-          ? "Rebuilds the plugin's Typography collection from your " + s.textStyleCount + ' text styles, replacing the previous one.'
-          : 'No typography variables found. Build a scoped collection from your ' + s.textStyleCount + ' text styles and bind the styles to it.'
+        if (!hasStyles) {
+          btn.disabled = true
+          btn.textContent = 'No text styles to convert'
+          hint.textContent = 'This file has no local text styles. Add text styles, then reopen this screen.'
+        } else if (!offer) {
+          btn.disabled = true
+          btn.textContent = 'Typography already configured'
+          hint.textContent = 'Typography variables already exist in this file. Nothing needs to be generated.'
+        } else {
+          btn.disabled = false
+          btn.textContent = regen ? 'Regenerate typography variables' : 'Generate from text styles'
+          hint.textContent = regen
+            ? "Rebuilds the plugin's Typography collection from your " + s.textStyleCount + ' text styles, replacing the previous one.'
+            : 'No typography variables found. Build a scoped collection from your ' + s.textStyleCount + ' text styles and bind the styles to it.'
+        }
       }
       function dtRefreshBpCard() {
         var s = DT_SUMMARY || {}
-        // Always offer (breakpoints are useful even without an existing collection).
-        document.getElementById('dt-genBpCard').classList.remove('hidden')
         var exists = !!s.hasBreakpointCollection
         var regen = !!s.hasGeneratedBpCollection
         var btn = document.getElementById('dt-genBpBtn')
@@ -6972,6 +7097,188 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // The plan is rebuilt on the plugin side for every preview, so the UI keeps only what a
       // human typed: the palette text and any row they overrode. Nothing here is state that
       // could drift from what Apply will write.
+      var RMP_DIRECT_MATCHES = 0
+      var RMP_DIRECT_BUSY = false
+      var RMP_DIRECT_SOURCE = 'manual'
+      var RMP_DIRECT_SOURCE_LOADED = true
+
+      function directColorValue(id) {
+        var value = String(rmpEl(id).value || '').trim().toUpperCase()
+        if (/^[0-9A-F]{6}$/.test(value)) value = '#' + value
+        return /^#[0-9A-F]{6}$/.test(value) ? value : null
+      }
+
+      function directReady() {
+        var from = directColorValue('rmp-direct-from')
+        var to = directColorValue('rmp-direct-to')
+        return Boolean(from && to && from !== to && (RMP_DIRECT_SOURCE === 'manual' || RMP_DIRECT_SOURCE_LOADED))
+      }
+
+      function directResult(text, state) {
+        var node = rmpEl('rmp-direct-result')
+        node.textContent = text || ''
+        node.className = 'direct-summary' + (state ? ' ' + state : '')
+      }
+
+      function directSetBusy(busy) {
+        RMP_DIRECT_BUSY = busy
+        rmpEl('rmp-direct-card').classList.toggle('busy', busy)
+      }
+
+      function directSyncApply() {
+        var writes = rmpEl('rmp-direct-values').checked ||
+          rmpEl('rmp-direct-styles').checked ||
+          (!rmpEl('rmp-direct-canvas').disabled && rmpEl('rmp-direct-canvas').checked)
+        rmpEl('rmp-direct-apply').disabled = RMP_DIRECT_MATCHES === 0 || !writes
+      }
+
+      function directInvalidate() {
+        RMP_DIRECT_MATCHES = 0
+        directSyncApply()
+        var ready = directReady()
+        var missingSource = RMP_DIRECT_SOURCE !== 'manual' && !RMP_DIRECT_SOURCE_LOADED
+        directResult(
+          ready ? '' : (missingSource ? 'Load and choose a replacement color first.' : 'Enter two different colors as #RRGGBB.'),
+          ready ? '' : 'err'
+        )
+      }
+
+      function bindDirectColor(textId, pickerId, switchToCustom) {
+        var text = rmpEl(textId)
+        var picker = rmpEl(pickerId)
+        text.addEventListener('input', function () {
+          var value = directColorValue(textId)
+          if (value) picker.value = value
+          if (switchToCustom && RMP_DIRECT_SOURCE !== 'manual') directChooseSource('manual')
+          directInvalidate()
+        })
+        picker.addEventListener('input', function () {
+          text.value = picker.value.toUpperCase()
+          if (switchToCustom && RMP_DIRECT_SOURCE !== 'manual') directChooseSource('manual')
+          directInvalidate()
+        })
+      }
+
+      function directSetTarget(hex) {
+        rmpEl('rmp-direct-to').value = hex
+        rmpEl('rmp-direct-to-picker').value = hex
+        directInvalidate()
+      }
+
+      function directSourceDescriptor() {
+        if (RMP_DIRECT_SOURCE === 'generator') return PAL ? { kind: 'generator', settings: PAL } : null
+        if (RMP_DIRECT_SOURCE === 'selection') return { kind: 'selection' }
+        if (RMP_DIRECT_SOURCE === 'library') {
+          var key = rmpEl('rmp-direct-library').value
+          return key ? { kind: 'library', key: key } : null
+        }
+        return null
+      }
+
+      function directSyncSourceUi() {
+        var manual = RMP_DIRECT_SOURCE === 'manual'
+        rmpEl('rmp-direct-source-tools').classList.toggle('hidden', manual)
+        rmpEl('rmp-direct-library-row').classList.toggle('hidden', RMP_DIRECT_SOURCE !== 'library')
+        rmpEl('rmp-direct-source-colors').disabled = !RMP_DIRECT_SOURCE_LOADED
+        var labels = {
+          generator: 'Load colors from the Palette generator screen.',
+          selection: 'Read solid fills and gradient stops from the current Figma selection.',
+          library: 'Choose a published variable collection, then load its colors.'
+        }
+        rmpText('rmp-direct-source-note', manual ? '' : labels[RMP_DIRECT_SOURCE])
+        rmpEl('rmp-direct-source-load').textContent =
+          RMP_DIRECT_SOURCE === 'selection' ? 'Read selected colors' :
+          RMP_DIRECT_SOURCE === 'library' ? 'Load library colors' :
+          'Load generator colors'
+      }
+
+      function directChooseSource(source) {
+        RMP_DIRECT_SOURCE = source
+        RMP_DIRECT_SOURCE_LOADED = source === 'manual'
+        Array.prototype.forEach.call(rmpEl('rmp-direct-source-tabs').querySelectorAll('.seg'), function (button) {
+          button.classList.toggle('active', button.getAttribute('data-direct-source') === source)
+        })
+        if (source === 'library' && !RMP_LIBRARIES_ASKED) {
+          RMP_LIBRARIES_ASKED = true
+          parent.postMessage({ pluginMessage: { type: 'REMAP_LIST_LIBRARIES' } }, '*')
+        }
+        rmpEl('rmp-direct-source-colors').innerHTML = '<option value="">Load colors first</option>'
+        directSyncSourceUi()
+        directInvalidate()
+      }
+
+      function directLoadSource() {
+        var source = directSourceDescriptor()
+        if (!source) {
+          directResult(
+            RMP_DIRECT_SOURCE === 'generator'
+              ? 'Open Palette generator once so its colors are available.'
+              : 'Choose a library collection first.',
+            'err'
+          )
+          return
+        }
+        directSetBusy(true)
+        directResult('Loading replacement colors…', '')
+        parent.postMessage({ pluginMessage: { type: 'REMAP_SOURCE_PREVIEW', source: source } }, '*')
+      }
+
+      function directRequest(type) {
+        if (RMP_DIRECT_BUSY || !directReady()) return
+        directSetBusy(true)
+        directResult(type === 'REMAP_DIRECT_APPLY' ? 'Replacing matched colors…' : 'Reading exact color matches…', '')
+        var depth = rmpEl('rmp-direct-depth').value
+        var message = {
+          type: type,
+          from: directColorValue('rmp-direct-from'),
+          to: directColorValue('rmp-direct-to'),
+          depth: depth
+        }
+        if (type === 'REMAP_DIRECT_APPLY') {
+          message.applyOptions = {
+            values: rmpEl('rmp-direct-values').checked,
+            rename: false,
+            styles: rmpEl('rmp-direct-styles').checked,
+            canvas: depth !== 'tokens' && rmpEl('rmp-direct-canvas').checked,
+            bind: false,
+            scope: depth === 'page' ? 'page' : 'document'
+          }
+        }
+        parent.postMessage({ pluginMessage: message }, '*')
+      }
+
+      bindDirectColor('rmp-direct-from', 'rmp-direct-from-picker', false)
+      bindDirectColor('rmp-direct-to', 'rmp-direct-to-picker', true)
+      Array.prototype.forEach.call(rmpEl('rmp-direct-source-tabs').querySelectorAll('.seg'), function (button) {
+        button.addEventListener('click', function () { directChooseSource(button.getAttribute('data-direct-source')) })
+      })
+      rmpEl('rmp-direct-source-load').addEventListener('click', directLoadSource)
+      rmpEl('rmp-direct-library').addEventListener('change', function () {
+        RMP_DIRECT_SOURCE_LOADED = false
+        directSyncSourceUi()
+        directInvalidate()
+      })
+      rmpEl('rmp-direct-source-colors').addEventListener('change', function () {
+        if (this.value) {
+          RMP_DIRECT_SOURCE_LOADED = true
+          directSetTarget(this.value)
+        }
+      })
+      rmpEl('rmp-direct-depth').addEventListener('change', function () {
+        rmpEl('rmp-direct-canvas').disabled = this.value === 'tokens'
+        directInvalidate()
+      })
+      Array.prototype.forEach.call(document.querySelectorAll('#rmp-direct-card input[type=checkbox]'), function (input) {
+        input.addEventListener('change', directSyncApply)
+      })
+      rmpEl('rmp-direct-preview').addEventListener('click', function () { directRequest('REMAP_DIRECT_PREVIEW') })
+      rmpEl('rmp-direct-apply').addEventListener('click', function () { directRequest('REMAP_DIRECT_APPLY') })
+      rmpEl('rmp-direct-revert').addEventListener('click', function () {
+        directSetBusy(true)
+        directResult('Reverting the last color replacement…', '')
+        parent.postMessage({ pluginMessage: { type: 'REMAP_REVERT' } }, '*')
+      })
+
       var RMP_ROWS = null
       var RMP_OVERRIDES = {}
       var RMP_SCANNED = false
@@ -6982,7 +7289,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       var RMP_LIBRARIES_ASKED = false
 
       var RMP_SOURCE_NOTES = {
-        generator: 'Uses the Color palettes card above, exactly as configured there — families and steps come across intact, so every step maps to its own number.',
+        generator: 'Uses the Palette generator screen exactly as configured there — families and steps come across intact, so every step maps to its own number.',
         selection: 'Reads every solid fill and gradient stop under the current selection. Layer names are read as token names, so a swatch called Violet/500 arrives already sorted.',
         library: 'Reads a published collection\u2019s color variables. Alias-valued tokens are skipped \u2014 they point at colors already in the list.'
       }
@@ -7696,6 +8003,74 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           updatePresetIndicator()
         } else if (msg.type === 'REMAP_PROGRESS') {
           rmpProgress(msg.label)
+        } else if (msg.type === 'REMAP_SOURCE_COLORS') {
+          directSetBusy(false)
+          rmpProgress('')
+          var sourceColors = msg.colors || []
+          var sourcePicker = rmpEl('rmp-direct-source-colors')
+          sourcePicker.innerHTML = ''
+          for (var sci = 0; sci < sourceColors.length; sci++) {
+            var sourceOption = document.createElement('option')
+            sourceOption.value = sourceColors[sci].hex
+            sourceOption.textContent = (sourceColors[sci].name || 'Unnamed color') + ' · ' + sourceColors[sci].hex
+            sourcePicker.appendChild(sourceOption)
+          }
+          RMP_DIRECT_SOURCE_LOADED = sourceColors.length > 0
+          directSyncSourceUi()
+          if (sourceColors.length > 0) {
+            directSetTarget(sourceColors[0].hex)
+            rmpText('rmp-direct-source-note', sourceColors.length + ' colors loaded. Choose the replacement color from the list.')
+          } else {
+            sourcePicker.innerHTML = '<option value="">No colors found</option>'
+            directInvalidate()
+            directResult((msg.warnings && msg.warnings[0]) || 'That source contains no readable colors.', 'err')
+          }
+        } else if (msg.type === 'REMAP_SOURCE_ERROR') {
+          directSetBusy(false)
+          RMP_DIRECT_SOURCE_LOADED = false
+          directSyncSourceUi()
+          directInvalidate()
+          directResult(msg.message || 'Could not read replacement colors.', 'err')
+        } else if (msg.type === 'REMAP_DIRECT_PLAN') {
+          directSetBusy(false)
+          rmpProgress('')
+          var directRows = msg.rows || []
+          var writable = directRows.filter(function (row) {
+            return row.flags.indexOf('library') === -1 && row.flags.indexOf('unchanged') === -1
+          })
+          RMP_DIRECT_MATCHES = writable.length
+          directSyncApply()
+          rmpEl('rmp-direct-revert').disabled = !msg.canRevert
+          var kinds = {}
+          for (var dri = 0; dri < writable.length; dri++) kinds[writable[dri].kind] = (kinds[writable[dri].kind] || 0) + 1
+          var detail = Object.keys(kinds).map(function (kind) { return kinds[kind] + ' ' + kind }).join(' · ')
+          var directWarnings = msg.warnings || []
+          directResult(
+            writable.length
+              ? 'Found ' + writable.length + ' writable exact match' + (writable.length === 1 ? '' : 'es') + (detail ? ': ' + detail : '') + '. Review complete; Apply changes only these matches.'
+              : (directWarnings[0] || 'No writable exact matches found.'),
+            writable.length ? 'ok' : 'err'
+          )
+        } else if (msg.type === 'REMAP_DIRECT_APPLIED') {
+          directSetBusy(false)
+          rmpProgress('')
+          var dr = msg.report || {}
+          var directDone = []
+          if (dr.values) directDone.push(dr.values + ' variable values')
+          if (dr.styles) directDone.push(dr.styles + ' styles')
+          if (dr.paints) directDone.push(dr.paints + ' painted places')
+          if (dr.skippedLibrary) directDone.push(dr.skippedLibrary + ' library tokens skipped')
+          if (dr.failed) directDone.push(dr.failed + ' failed')
+          directResult((directDone.join(' · ') || 'Nothing changed') + '. Revert restores the previous colors.', dr.failed ? 'err' : 'ok')
+          rmpEl('rmp-direct-apply').disabled = true
+          rmpEl('rmp-direct-revert').disabled = !msg.canRevert
+          RMP_DIRECT_MATCHES = 0
+          rmpEl('rmp-revert').disabled = !msg.canRevert
+        } else if (msg.type === 'REMAP_DIRECT_ERROR') {
+          directSetBusy(false)
+          rmpProgress('')
+          rmpEl('rmp-direct-apply').disabled = true
+          directResult(msg.message || 'Color replacement failed.', 'err')
         } else if (msg.type === 'REMAP_INVENTORY') {
           RMP_SCANNED = true
           rmpSetBusy(false)
@@ -7718,20 +8093,26 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpSyncButtons()
           if (rmpSourceReady()) rmpPreview()
         } else if (msg.type === 'REMAP_LIBRARIES') {
-          var picker = rmpEl('rmp-library')
-          picker.innerHTML = ''
-          var blank = document.createElement('option')
-          blank.value = ''
-          blank.textContent = (msg.collections || []).length ? 'Choose a collection…' : 'No libraries available'
-          picker.appendChild(blank)
-          for (var ci = 0; ci < (msg.collections || []).length; ci++) {
-            var collection = msg.collections[ci]
-            var option = document.createElement('option')
-            option.value = collection.key
-            option.textContent = collection.library + ' · ' + collection.name
-            picker.appendChild(option)
+          var libraryPickers = [rmpEl('rmp-library'), rmpEl('rmp-direct-library')]
+          for (var lpi = 0; lpi < libraryPickers.length; lpi++) {
+            var picker = libraryPickers[lpi]
+            picker.innerHTML = ''
+            var blank = document.createElement('option')
+            blank.value = ''
+            blank.textContent = (msg.collections || []).length ? 'Choose a collection…' : 'No libraries available'
+            picker.appendChild(blank)
+            for (var ci = 0; ci < (msg.collections || []).length; ci++) {
+              var collection = msg.collections[ci]
+              var option = document.createElement('option')
+              option.value = collection.key
+              option.textContent = collection.library + ' · ' + collection.name
+              picker.appendChild(option)
+            }
           }
-          if ((msg.warnings || []).length) rmpRenderWarnings(msg.warnings)
+          if ((msg.warnings || []).length) {
+            rmpRenderWarnings(msg.warnings)
+            if (RMP_DIRECT_SOURCE === 'library') rmpText('rmp-direct-source-note', msg.warnings[0])
+          }
         } else if (msg.type === 'REMAP_PLAN') {
           RMP_SCANNED = true
           rmpSetBusy(false)
@@ -7793,6 +8174,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpEl('rmp-revert').disabled = !msg.canRevert
         } else if (msg.type === 'REMAP_REVERTED') {
           rmpSetBusy(false)
+          directSetBusy(false)
           rmpProgress('')
           var rv = msg.report || {}
           var back = [rv.values + ' values']
@@ -7802,6 +8184,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           rmpText('rmp-result', 'Reverted ' + back.join(', ') + '.')
           rmpRenderWarnings(rv.warnings)
           rmpEl('rmp-revert').disabled = !msg.canRevert
+          rmpEl('rmp-direct-revert').disabled = !msg.canRevert
+          directResult('Reverted ' + back.join(', ') + '.', 'ok')
           RMP_ROWS = null
           rmpEl('rmp-table').innerHTML = ''
           rmpSyncButtons()

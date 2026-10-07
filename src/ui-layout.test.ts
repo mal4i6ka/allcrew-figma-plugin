@@ -18,6 +18,7 @@ const SOURCE = readFileSync(resolve('ui.html'), 'utf8')
 
 const options = {
   target: 'agent',
+  dsTool: 'palette',
   scopeMode: 'page',
   modules: { tokens: true, templates: true, i18n: true, animation: true },
   targetOptions: {
@@ -63,7 +64,7 @@ function injectedUi(width: number, height: number): string {
   const injection = `<script>
 +  (function () {
 +    var TEST_OPTIONS = ${JSON.stringify(options)}
-+    var TARGETS = ['django', 'tauri', 'design-tokens', 'ds-tools', 'agent', 'modules', 'module', 'module-settings', 'sdk-builder', 'settings']
+    var TARGETS = ['django', 'tauri', 'design-tokens', 'ds-palette', 'ds-replace', 'ds-remap', 'ds-typography', 'ds-breakpoints', 'agent', 'modules', 'module', 'module-settings', 'sdk-builder', 'settings']
 +    function visible(el) {
 +      if (!el) return false
 +      var style = getComputedStyle(el)
@@ -130,9 +131,15 @@ function injectedUi(width: number, height: number): string {
 +      select.value = target
 +      select.dispatchEvent(new Event('change', { bubbles: true }))
 +      if (target === 'django' || target === 'tauri') document.getElementById('video-attach-panel').style.display = 'flex'
-+      if (target === 'ds-tools') {
-+        document.getElementById('dt-genTypoCard').classList.add('hidden')
-+        document.getElementById('dt-genBpCard').classList.remove('hidden')
+      if (target === 'ds-typography' || target === 'ds-breakpoints') {
+        dtApplyResult({ summary: { textStyleCount: 3, hasTypographyVars: false }, files: {} })
+      }
++      if (target === 'ds-replace') {
++        document.querySelector('[data-direct-source="generator"]').click()
++        onmessage({ data: { pluginMessage: { type: 'REMAP_SOURCE_COLORS', colors: [
++          { name: 'Yellow/500', hex: '#FFBC03', alpha: 1 },
++          { name: 'Red/500', hex: '#FE012D', alpha: 1 },
++        ], warnings: [] } } })
 +      }
 +      if (target === 'agent') {
 +        document.getElementById('agent-skill').textContent = Array(80).fill('skill line with a command and context').join('\\n')
@@ -174,8 +181,9 @@ function injectedUi(width: number, height: number): string {
 +      fail(errors, Math.abs(hr.width - 24) < 1 && Math.abs(hr.height - 24) < 1, 'resize handle is not 24 px')
 +      fail(errors, hr.left >= fr.left - 1 && hr.right <= fr.right + 1 && hr.bottom <= fr.bottom + 1, 'resize handle escapes footer')
 +
-+      var expectedFooter = target === 'django' || target === 'tauri' || target === 'design-tokens' ? 119 : target === 'ds-tools' ? 71 : 24
-+      fail(errors, Math.abs(fr.height - expectedFooter) < 1.5, 'wrong footer height: ' + fr.height + ' expected ' + expectedFooter)
+      var isDsTool = target.slice(0, 3) === 'ds-'
+      var expectedFooter = target === 'django' || target === 'tauri' || target === 'design-tokens' ? 119 : isDsTool ? 71 : 24
+      fail(errors, Math.abs(fr.height - expectedFooter) < 1.5, 'wrong footer height: ' + fr.height + ' expected ' + expectedFooter)
 +
 +      if (target === 'agent') {
 +        var status = rectOf(document.querySelector('.agent-status-card'))
@@ -192,11 +200,27 @@ function injectedUi(width: number, height: number): string {
 +        fail(errors, document.querySelector('.agent-skill-content').getBoundingClientRect().height <= 521, 'Agent skill pane exceeds cap')
 +      }
 +
-+      if (target === 'ds-tools') {
-+        var generator = rectOf(document.getElementById('dt-genBpCard'))
-+        if (innerWidth >= 720) fail(errors, generator.width <= 561, 'single DS generator exceeds 560 px cap')
-+        fail(errors, rectOf(document.getElementById('pal-card')).width <= vr.width + 1, 'palette card escapes workspace')
-+      }
+      if (target.slice(0, 3) === 'ds-') {
+        var visibleScreens = Array.prototype.filter.call(document.querySelectorAll('[data-ds-tool-screen]'), visible)
+        fail(errors, visibleScreens.length === 1, 'DS target shows ' + visibleScreens.length + ' module screens')
+        if (target === 'ds-breakpoints' && innerWidth >= 720) {
+          fail(errors, rectOf(document.getElementById('dt-genBpCard')).width <= 561, 'Breakpoints screen exceeds 560 px cap')
+        }
+        if (target === 'ds-typography' && innerWidth >= 720) {
+          fail(errors, rectOf(document.getElementById('dt-genTypoCard')).width <= 561, 'Typography screen exceeds 560 px cap')
+        }
++        if (target === 'ds-replace') {
++          fail(errors, visible(document.getElementById('rmp-direct-source-tools')), 'replacement source controls are hidden')
++          fail(errors, document.getElementById('rmp-direct-source-colors').value === '#FFBC03', 'generator color was not selected')
++          fail(errors, document.getElementById('rmp-direct-to').value === '#FFBC03', 'generator color did not reach exact replacement')
++          var customField = document.getElementById('rmp-direct-to')
++          customField.value = '#123456'
++          customField.dispatchEvent(new Event('input', { bubbles: true }))
++          fail(errors, document.querySelector('[data-direct-source="manual"]').classList.contains('active'), 'edited target did not switch to Custom')
++          fail(errors, !visible(document.getElementById('rmp-direct-source-tools')), 'Custom target left source controls open')
++          fail(errors, document.getElementById('rmp-direct-to-picker').value.toUpperCase() === '#123456', 'custom HEX did not update replacement picker')
++        }
+      }
 +
 +      if (target === 'django' || target === 'tauri') {
 +        var scope = rectOf(document.getElementById('scope-panel'))

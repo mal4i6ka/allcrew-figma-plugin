@@ -2,6 +2,20 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.10.0 — 2026-10-07
+
+### Added
+
+- Added local custom Motion animation styles from Figma Plugin API 1.140: `MOTION_STYLES` lists ordered custom entries, `MOTION_STYLE_SET` creates or atomically replaces them, `MOTION_STYLE_MOVE` reorders styles or folders, and `NODE_SET` applies them with the required `CUSTOM` discriminator.
+- Added `FONT_FAMILY_AXES` plus variable-font reads and writes through `fontName.variationSettings`; omitting `style` lets Figma select the closest named instance.
+- Added vertical auto-layout wrapping and the `SPACE_AROUND` / `SPACE_EVENLY` primary-axis distributions to the canvas vocabulary.
+
+### Changed
+
+- Updated `@figma/plugin-typings` from 1.139.0 to 1.141.0.
+- Shader paints and effects now use Plugin API 1.141 `propertyMetadata`, so setting names are readable without importing the shader into the file.
+- `MOTION_STYLES` now reports the current Motion playhead position.
+
 ## 1.9.0 — 2026-10-02
 
 ### Added
@@ -9,6 +23,16 @@ All notable changes to AllCrew Figma Workspace are documented here.
 - Added a fidelity-first product-design contract published through the generated agent skill, MCP initialization, bridge `/ops`, and a new `product.fidelity` playbook.
 - Added `design.evidence`, a bounded read of Figma annotations, Dev Resources, component documentation, variable/style/component usage, prototype signals, layout grids, and inferred auto layout.
 - Added machine-readable provenance labels and deterministic preflight decisions for existing-screen work, missing product briefs, platform defaults, and repository-contract conflicts.
+
+### Changed
+
+- Split Design System tools into dedicated picker screens for palette generation, exact color replacement, palette migration, typography, and breakpoints.
+- Clarified that palette generation creates variables and boards rather than recoloring existing content; palette migration now uses a numbered workflow with its Apply result kept beside the action and secondary tools collapsed.
+- Grouped exact replacement into **A · Find color** and **B · Replace with**; Generator, Selection, and Library now feed the replacement picker, while editing that picker or HEX automatically switches the source to Custom.
+
+### Fixed
+
+- Fixed one-color replacements by adding an exact RGB workflow for variables, paint/effect styles, and loose canvas colors. It previews writable matches, preserves each site's opacity, uses the existing undo snapshot, and never renames or rebinds tokens.
 
 ## 1.8.0 — 2026-10-01
 

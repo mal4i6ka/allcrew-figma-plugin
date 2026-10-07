@@ -157,6 +157,16 @@ test('a named shader gives its settings names, and the ids stay for the write ba
   assert.deepEqual(described.properties, [{ id: '11:22', name: 'Blur', type: 'NUMBER', value: 4.08 }])
 })
 
+test('applied shader metadata names settings without importing the shader', async () => {
+  const described = await describeShader({
+    id: 'sh/1',
+    properties: { '11:22': 4.08 },
+    propertyMetadata: { '11:22': { name: 'Blur', type: 'NUMBER' } },
+  })
+  assert.equal(described.named, true)
+  assert.deepEqual(described.properties, [{ id: '11:22', name: 'Blur', type: 'NUMBER', value: 4.08 }])
+})
+
 test('a variable bound inside a shader setting is named where it sits', async () => {
   const described = await describeShader({
     id: 'sh/2',

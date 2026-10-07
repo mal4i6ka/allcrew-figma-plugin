@@ -26,8 +26,9 @@ node agent/api-coverage.mjs --releases 1.107.0
 анимации.
 
 ---
+<!-- api-coverage:start -->
 
-Типизации 1.136.0, идентификаторов в поверхности: 1558.
+Типизации 1.141.0, идентификаторов в поверхности: 1589.
 Сигнал «у нас» — слово встречается в src/ (кроме тестов): грубо, но без вранья в пользу покрытия.
 
 ## Неймспейсы
@@ -37,22 +38,38 @@ node agent/api-coverage.mjs --releases 1.107.0
 | AnnotationsAPI | 3 | 2 | addAnnotationCategoryAsync, getAnnotationCategoryByIdAsync |
 | BuzzAPI | 7 | 7 | createFrame, createInstance, getBuzzAssetTypeForNode, getMediaContent, getTextContent, setBuzzAssetTypeForNode, smartResize |
 | ClientStorageAPI | 4 | 2 | deleteAsync, keysAsync |
-| CodegenAPI | 6 | 6 | callback, off, on, once, preferences, refresh |
+| CodegenAPI | 6 | 2 | callback, refresh |
 | ConstantsAPI | 1 | 1 | colors |
 | DevResourcesAPI | 4 | 4 | callback, off, on, once |
-| MotionAPI | 3 | 1 | playheadPosition |
+| MotionAPI | 3 | 0 | — |
 | ParametersAPI | 3 | 3 | off, on, once |
 | PaymentsAPI | 6 | 6 | getPluginPaymentTokenAsync, getUserFirstRanSecondsAgo, initiateCheckoutAsync, requestCheckout, setPaymentStatusInDevelopment, status |
-| PluginAPI | 133 | 49 | buzz, callback, closePlugin, createBooleanOperation, createCanvasRow, createCodeBlock, createConnector, createGif … |
+| PluginAPI | 141 | 49 | buzz, callback, closePlugin, createBooleanOperation, createCanvasRow, createCodeBlock, createConnector, createGif … |
 | TeamLibraryAPI | 2 | 0 | — |
 | TextReviewAPI | 3 | 3 | isEnabled, requestToBeDisabledAsync, requestToBeEnabledAsync |
 | TimerAPI | 7 | 7 | pause, remaining, resume, start, state, stop, total |
 | UIAPI | 11 | 2 | getPosition, reposition |
 | UtilAPI | 4 | 0 | — |
-| VariablesAPI | 27 | 7 | createVariableAliasByIdAsync, extendLibraryCollectionByKeyAsync, getLocalVariableCollections, getLocalVariables, getVariableById, getVariableCollectionById, layoutGrid |
+| VariablesAPI | 27 | 5 | createVariableAliasByIdAsync, getLocalVariableCollections, getLocalVariables, getVariableById, getVariableCollectionById |
 | ViewportAPI | 6 | 3 | canvasView, slidesView, zoom |
 
 ## Релизы, от свежего к старому (с 1.107.0)
+
+### 1.141.0 — 2026-10-05  (+2, не тронуто 0)
+
+всё тронуто
+
+### 1.140.0 — 2026-09-30  (+25, не тронуто 2)
+
+PluginAPI.getLocalCustomAnimationStyles, PluginAPI.targetNode
+
+### 1.139.0 — 2026-09-23  (+1, не тронуто 0)
+
+всё тронуто
+
+### 1.138.0 — 2026-09-03  (+7, не тронуто 0)
+
+всё тронуто
 
 ### 1.136.0 — 2026-08-27  (+1, не тронуто 0)
 
@@ -62,17 +79,17 @@ node agent/api-coverage.mjs --releases 1.107.0
 
 NonResizableTextMixin.getRangeTextWrapStyle, SublayerDimensionsMixin, TextWrapStyle
 
-### 1.132.0 — 2026-07-29  (+1, не тронуто 1)
+### 1.132.0 — 2026-07-29  (+1, не тронуто 0)
 
-MotionAPI.playheadPosition
+всё тронуто
 
 ### 1.131.0 — 2026-07-16  (+18, не тронуто 2)
 
 VideoExportConstraint, VideoExportScale
 
-### 1.130.0 — 2026-06-24  (+98, не тронуто 16)
+### 1.130.0 — 2026-06-24  (+98, не тронуто 13)
 
-AnimationStylePropValue, Animations, AvailableAnimationStylePropValue, ComponentPropKeyframeBindings, ComponentPropKeyframeTracks, EffectKeyframeBindings, EffectKeyframeFieldName, EffectManualKeyframeTracks, ManualKeyframeTrack.keyframeOperation, ManualKeyframeTracks, MotionNodeMixin.applyManualKeyframeTrack, MotionNodeMixin.removeManualKeyframeTrack, MotionNodeMixin.setTimelineDuration, PaintKeyframeBinding, PaintManualKeyframeTrack, ShaderPropertyValue
+Animations, AvailableAnimationStylePropValue, ComponentPropKeyframeBindings, ComponentPropKeyframeTracks, EffectKeyframeBindings, EffectKeyframeFieldName, EffectManualKeyframeTracks, ManualKeyframeTrack.keyframeOperation, ManualKeyframeTracks, MotionNodeMixin.removeManualKeyframeTrack, PaintKeyframeBinding, PaintManualKeyframeTrack, ShaderPropertyValue
 
 ### 1.128.0 — 2026-06-03  (+2, не тронуто 1)
 
@@ -94,17 +111,17 @@ PluginAPI.createAutoLayout
 
 SlotNode.resetSlot
 
-### 1.123.0 — 2026-01-26  (+51, не тронуто 11)
+### 1.123.0 — 2026-01-26  (+51, не тронуто 6)
 
-BrushStrokeProperties, CustomVariableWidthStrokeProperties, CustomVariableWidthStrokeProperties.variableWidthPoints, CustomVariableWidthStrokeProperties.widthProfile, MinimalFillsMixin.setFillsAsync, MinimalStrokesMixin.setStrokesAsync, PresetVariableWidthStrokeProperties, PresetVariableWidthStrokeProperties.widthProfile, TextPathNode.textPathStartData, TransformGroupNode.transformModifiers, VariableWidthStrokeProperties
+BrushStrokeProperties, MinimalFillsMixin.setFillsAsync, MinimalStrokesMixin.setStrokesAsync, TextPathNode.textPathStartData, TransformGroupNode.transformModifiers, VariableWidthStrokeProperties
 
 ### 1.122.0 — 2026-01-14  (+1, не тронуто 1)
 
 ExtendedVariableCollection.rootVariableCollectionId
 
-### 1.121.0 — 2025-11-20  (+14, не тронуто 10)
+### 1.121.0 — 2025-11-20  (+14, не тронуто 1)
 
-ExtendedVariableCollection.isExtension, ExtendedVariableCollection.parentVariableCollectionId, ExtendedVariableCollection.removeMode, ExtendedVariableCollection.removeOverridesForVariable, ExtendedVariableCollection.variableOverrides, Variable.removeOverrideForMode, Variable.valuesByModeForCollectionAsync, VariableCollection.extend, VariableCollection.isExtension, VariablesAPI.extendLibraryCollectionByKeyAsync
+Variable.valuesByModeForCollectionAsync
 
 ### 1.120.0 — 2025-11-19  (+1, не тронуто 0)
 
@@ -118,9 +135,9 @@ BuzzAPI, BuzzAPI.createFrame, BuzzAPI.createInstance, BuzzAPI.getBuzzAssetTypeFo
 
 FontStyle
 
-### 1.116.0 — 2025-07-17  (+13, не тронуто 4)
+### 1.116.0 — 2025-07-17  (+13, не тронуто 0)
 
-GlassEffect.dispersion, GlassEffect.lightAngle, GlassEffect.lightIntensity, GlassEffect.refraction
+всё тронуто
 
 ### 1.115.0 — 2025-07-08  (+19, не тронуто 4)
 
@@ -134,9 +151,9 @@ GridChildrenMixin.gridChildHorizontalAlign, GridChildrenMixin.setGridChildPositi
 
 всё тронуто
 
-### 1.111.0 — 2025-05-07  (+89, не тронуто 34)
+### 1.111.0 — 2025-05-07  (+89, не тронуто 17)
 
-BaseNonResizableTextMixin.Pick, BaseNonResizableTextMixin.getRangeBoundVariable, BaseNonResizableTextMixin.getRangeFillStyleId, BaseNonResizableTextMixin.getRangeFills, BaseNonResizableTextMixin.getRangeFontSize, BaseNonResizableTextMixin.getRangeFontWeight, BaseNonResizableTextMixin.getRangeHyperlink, BaseNonResizableTextMixin.getRangeLetterSpacing, BaseNonResizableTextMixin.getRangeOpenTypeFeatures, BaseNonResizableTextMixin.getRangeTextCase, BaseNonResizableTextMixin.getRangeTextStyleId, BaseNonResizableTextMixin.setRangeFillStyleId, BaseNonResizableTextMixin.setRangeFillStyleIdAsync, BaseNonResizableTextMixin.setRangeTextStyleId, BlurEffectProgressive.endOffset, BlurEffectProgressive.startOffset, BlurEffectProgressive.startRadius, NoiseEffect, NoiseEffectBase.density, NoiseEffectBase.noiseSize, NoiseEffectDuotone, NoiseEffectDuotone.noiseType, NoiseEffectDuotone.secondaryColor, NoiseEffectMonotone, NoiseEffectMonotone.noiseType, NoiseEffectMultitone.noiseType, NonResizableTextPathMixin, PatternPaint.horizontalAlignment, PatternPaint.scalingFactor, PatternPaint.sourceNodeId, PatternPaint.tileType, TextPathNode.handleMirroring, TextureEffect.clipToShape, TextureEffect.noiseSize
+BaseNonResizableTextMixin.Pick, BaseNonResizableTextMixin.getRangeBoundVariable, BaseNonResizableTextMixin.getRangeFillStyleId, BaseNonResizableTextMixin.getRangeFills, BaseNonResizableTextMixin.getRangeFontSize, BaseNonResizableTextMixin.getRangeFontWeight, BaseNonResizableTextMixin.getRangeHyperlink, BaseNonResizableTextMixin.getRangeLetterSpacing, BaseNonResizableTextMixin.getRangeOpenTypeFeatures, BaseNonResizableTextMixin.getRangeTextCase, BaseNonResizableTextMixin.getRangeTextStyleId, BaseNonResizableTextMixin.setRangeFillStyleId, BaseNonResizableTextMixin.setRangeFillStyleIdAsync, BaseNonResizableTextMixin.setRangeTextStyleId, NoiseEffect, NonResizableTextPathMixin, TextPathNode.handleMirroring
 
 ### 1.110.0 — 2025-04-17  (+15, не тронуто 6)
 
@@ -145,6 +162,8 @@ AnnotationCategory.isPreset, AnnotationCategory.setColor, AnnotationCategory.set
 ### 1.108.0 — 2025-02-26  (+24, не тронуто 13)
 
 BaseNodeMixin.getTopLevelFrame, InteractiveSlideElementNode, InteractiveSlideElementNode.interactiveSlideElementType, PageNode.focusedSlide, PluginAPI.createSlide, PluginAPI.createSlideRow, PluginAPI.getSlideGrid, PluginAPI.setSlideGrid, SlideGridNode, SlideNode.getSlideTransition, SlideNode.isSkippedSlide, SlideNode.setSlideTransition, ViewportAPI.slidesView
+
+<!-- api-coverage:end -->
 ---
 
 ## Приоритеты — по цели выгрузки, не по дате

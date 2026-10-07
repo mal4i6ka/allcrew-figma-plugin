@@ -12,6 +12,7 @@
 import { isRecord } from './utils/type-guards.ts'
 
 export type TargetId = 'design-tokens' | 'django' | 'ds-tools' | 'agent'
+export type DsToolId = 'palette' | 'replace' | 'remap' | 'typography' | 'breakpoints'
 
 export interface ExportModulesOptions {
   tokens: boolean
@@ -151,6 +152,7 @@ export interface ExportThemeMergesOptions {
 
 export interface ExportOptions {
   target: TargetId
+  dsTool: DsToolId
   scopeMode: 'page' | 'selection' | 'frame'
   modules: ExportModulesOptions
   targetOptions: ExportTargetOptions
@@ -165,7 +167,7 @@ export interface ExportOptions {
 
 export type PackageFormingOptions = Omit<
   ExportOptions,
-  'scopeMode' | 'delivery' | 'agent' | 'lint' | 'docs' | 'themeMerges'
+  'dsTool' | 'scopeMode' | 'delivery' | 'agent' | 'lint' | 'docs' | 'themeMerges'
 >
 
 export type ExportPresetId = 'django-bootstrap' | 'design-tokens' | 'bootstrap-tokens' | 'tauri-app'
@@ -279,6 +281,7 @@ export const DEFAULT_UPDATES: UpdatePreferences = {
 }
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
+  dsTool: 'palette',
   scopeMode: 'page',
   delivery: { ...DEFAULT_DELIVERY },
   agent: { ...DEFAULT_AGENT },
@@ -295,6 +298,10 @@ function isScopeMode(value: unknown): value is ExportOptions['scopeMode'] {
 
 function isTargetId(value: unknown): value is TargetId {
   return value === 'design-tokens' || value === 'django' || value === 'ds-tools' || value === 'agent'
+}
+
+function isDsToolId(value: unknown): value is DsToolId {
+  return value === 'palette' || value === 'replace' || value === 'remap' || value === 'typography' || value === 'breakpoints'
 }
 
 function normalizeModules(raw: unknown): ExportModulesOptions {
@@ -484,6 +491,7 @@ export function normalizeExportOptions(raw: unknown): ExportOptions {
   const candidate = isRecord(raw) ? raw : {}
   return {
     target: isTargetId(candidate.target) ? candidate.target : DEFAULT_EXPORT_OPTIONS.target,
+    dsTool: isDsToolId(candidate.dsTool) ? candidate.dsTool : DEFAULT_EXPORT_OPTIONS.dsTool,
     scopeMode: isScopeMode(candidate.scopeMode) ? candidate.scopeMode : DEFAULT_EXPORT_OPTIONS.scopeMode,
     modules: normalizeModules(candidate.modules),
     targetOptions: normalizeTargetOptions(candidate.targetOptions),
@@ -537,6 +545,7 @@ export function applyPreset(
   return {
     ...clonePackage(preset.values),
     scopeMode: options.scopeMode,
+    dsTool: options.dsTool,
     delivery: { ...options.delivery },
     agent: { ...options.agent },
     lint: { ...options.lint },

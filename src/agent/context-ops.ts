@@ -787,8 +787,8 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       'rebuild the stack: the node’s own opacity and blend mode under the paints, the style the paints came from, and ' +
       'a catalogue entry per shader in the stack. A shader paint carries no colour, no stops and no hash — its id and ' +
       'its settings are the whole of it, so they are reported in full, with any variable bound inside them named. ' +
-      'Read-only: nothing is imported into the file, which is why a shader the file did not author comes back with ' +
-      'named:false and its settings numbered rather than named — see `shaders[].why`.',
+      'Plugin API 1.141+ supplies property names on the applied shader itself; `named:false` now means an older host or ' +
+      'a shader that omitted that metadata, not that every remote shader must be imported.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'The layer to take apart.' },
@@ -872,7 +872,10 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       if (Array.isArray(effects)) {
         for (const effect of effects) {
           if ((effect as { type?: string })?.type !== 'SHADER') continue
-          const described = await describeShader(effect as { id?: unknown; properties?: unknown }, await shadersFor(catalogue))
+          const described = await describeShader(
+            effect as { id?: unknown; properties?: unknown; propertyMetadata?: unknown },
+            await shadersFor(catalogue)
+          )
           seen.set(described.id, described)
           shaderEffects.push({
             visible: (effect as { visible?: boolean }).visible !== false,
@@ -887,9 +890,9 @@ export const CONTEXT_OPS: readonly OpDef[] = [
           ? {}
           : {
               why:
-                'listAvailableShaders() does not offer this shader, so its settings could not be named. ' +
-                'The ids below are stable and go back verbatim on a write; to get their names, import the ' +
-                'shader into the file first (figma.importShaderById) — a write, and not this op’s to make.',
+                'Neither the applied shader metadata nor listAvailableShaders() named these settings. ' +
+                'The ids below are stable and go back verbatim on a write; importing the shader can recover ' +
+                'definitions on older hosts, but it is a write and not this op’s to make.',
             }),
       }))
 
@@ -904,16 +907,13 @@ export const CONTEXT_OPS: readonly OpDef[] = [
 
   {
     name: 'shader.define',
-    summary: 'Import a shader by id so its settings get names — the one thing a read cannot do.',
+    summary: 'Import a shader by id when an older host or metadata-poor shader cannot name its settings.',
     agent:
-      'A shader paint carries opaque setting ids (`2331874402:1925656642`) and nothing else; the names live in the ' +
-      "shader's `propertyDefinitions`, which only `listAvailableShaders()` and `importShaderById()` hand out — and the " +
-      'first answers EMPTY on a file that merely uses a shader it did not author. So `paints.stack` reports such a ' +
-      'shader as `named: false`. This op closes that: it imports the ids you name and returns their definitions. ' +
-      'Write-gated because `importShaderById` materialises the shader into the file — for a shader already on a layer ' +
-      'that is a no-op, but it is the Plugin API call for putting one there, and an op does not get to decide that on ' +
-      "the designer's behalf. Run it once; afterwards every read names the settings, because the shader is then in the " +
-      'catalogue. Ids come from `paints.stack` or `SHADER_LIST`.',
+      'Plugin API 1.141+ normally puts each setting definition in the applied shader’s `propertyMetadata`, so ' +
+      '`paints.stack` can name a shader without importing it. This write remains for older hosts, shaders that omit ' +
+      'metadata, and workflows that need to materialise a shader before applying it elsewhere. It imports the ids you ' +
+      'name and returns their definitions. Write-gated because `importShaderById` changes the file; a read must never ' +
+      'make that choice. Ids come from `paints.stack` or `SHADER_LIST`.',
     mutates: true,
     params: {
       shaders: {

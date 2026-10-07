@@ -17,6 +17,7 @@ import { componentFor, humanPropertyName, resolveProperties } from './components
 import { describeLinks, gradientHandles, gradientTransform, measure, resolveRanges } from './props.ts'
 import { addressIn } from './overrides.ts'
 import { styleFor } from './styles.ts'
+import { resolveMotionStyleTarget } from './motion-styles.ts'
 import type {
   GradientRef,
   ImageRef,
@@ -115,12 +116,15 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     case 'font': {
       if (!isText(node)) throw new Error(`only a text node has a font, not a ${node.type}`)
       const before = describeFont(node.fontName)
-      const font: FontName = { family: step.family, style: step.style }
-      // Loaded even on a dry run: "that font is not available" is exactly the answer a dry run
-      // exists to give, and finding out at apply time would be too late.
+      const font: FontNameInput = step.font
+      // Loading a family without a style loads every named instance, which is what variable-font
+      // axis selection needs before Figma can choose the closest instance.
       await figma.loadFontAsync(font)
-      if (!dry) node.fontName = font
-      return { property: 'fontName', before, after: `${step.family} ${step.style}` }
+      // The 1.141 docs explicitly accept FontNameInput here, but the generated property type
+      // still says FontName. Keep the cast at this one upstream mismatch rather than requiring
+      // a fake style and defeating variable-font instance selection.
+      if (!dry) (node as unknown as { fontName: FontNameInput }).fontName = font
+      return { property: 'fontName', before, after: describeFont(font) }
     }
 
     case 'text': {
@@ -399,7 +403,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
 
     case 'animation': {
       const holder = node as SceneNode & {
-        animationStyles?: ReadonlyArray<{ id: string; styleId: string }>
+        animationStyles?: ReadonlyArray<AppliedAnimationStyle>
         applyAnimationStyle?: (styleId: string, data?: AnimationStyleConfiguration) => string
         removeAnimationStyle?: (id: string) => void
       }
@@ -407,24 +411,42 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         throw new Error(`a ${node.type} takes no animation styles`)
       }
       const held = holder.animationStyles ?? []
-      const before = held.map((one) => one.styleId).join(', ') || 'none'
+      const before = held.map((one) => `${one.type}:${one.styleId}`).join(', ') || 'none'
 
-      // Checked against the styles Figma actually has BEFORE anything is removed. The list is
-      // replaced whole, so a typo used to take the node's existing animation with it — and the
-      // catalogue that would have caught it was one call away.
-      const available = figma.motion.figmaAnimationStyles().map((style) => style.styleId)
-      const unknown = step.styles.map((one) => one.style).filter((name) => !available.includes(name))
-      if (unknown.length > 0) {
-        throw new Error(`no animation style called ${unknown.join(', ')} — Figma has ${available.join(', ')}`)
+      // Resolve the whole requested list before removing anything. A typo must not erase the
+      // node's current animation, and a custom style needs a different configuration shape from
+      // a Figma-provided animation.
+      const figmaStyles = figma.motion.figmaAnimationStyles()
+      const customStyles =
+        typeof figma.getLocalCustomAnimationStylesAsync === 'function'
+          ? await figma.getLocalCustomAnimationStylesAsync()
+          : []
+      const resolved = step.styles.map((one) => ({
+        ...one,
+        target: resolveMotionStyleTarget(one.style, figmaStyles, customStyles),
+      }))
+      for (const one of resolved) {
+        if (one.target.type === 'CUSTOM' && (one.duration !== undefined || Object.keys(one.props).length > 0)) {
+          throw new Error(
+            `custom animation style "${one.target.name}" owns its durations and props — only offset may be overridden`
+          )
+        }
       }
 
       const failures: string[] = []
       if (!dry) {
-        // Replaced whole, like links and effects: the list is what the node has, and there is no
-        // way to say "remove that one" in a vocabulary that only describes the end state.
+        // Replaced whole, like links and effects: the list is what the node has.
         for (const applied of [...held]) holder.removeAnimationStyle?.(applied.id)
-        for (const one of step.styles) {
+        for (const one of resolved) {
           try {
+            if (one.target.type === 'CUSTOM') {
+              holder.applyAnimationStyle(one.target.id, {
+                type: 'CUSTOM',
+                ...(one.offset === undefined ? {} : { timelineOffset: one.offset }),
+              })
+              continue
+            }
+
             const settings: Record<string, unknown> = {}
             for (const [name, value] of Object.entries(one.props)) {
               const named = value as { variable?: string }
@@ -435,10 +457,13 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
               }
               settings[name] = value
             }
-            holder.applyAnimationStyle(one.style, {
+            holder.applyAnimationStyle(one.target.id, {
+              type: 'FIGMA',
               ...(one.duration === undefined ? {} : { duration: one.duration }),
               ...(one.offset === undefined ? {} : { timelineOffset: one.offset }),
-              ...(Object.keys(settings).length > 0 ? { props: settings as AnimationStyleConfiguration['props'] } : {}),
+              ...(Object.keys(settings).length > 0
+                ? { props: settings as FigmaAnimationStyleConfiguration['props'] }
+                : {}),
             })
           } catch (error) {
             failures.push(`${one.style}: ${String((error as Error)?.message || error)}`)
@@ -901,7 +926,7 @@ function describeMeasure(value: unknown): string {
 
 function describeRun(run: TextRun): string {
   const parts: string[] = []
-  if (run.fontName) parts.push(`${run.fontName.family} ${run.fontName.style}`)
+  if (run.fontName) parts.push(describeFont(run.fontName))
   if (run.fontSize !== undefined) parts.push(`${run.fontSize}px`)
   if (run.fill !== undefined) parts.push(typeof run.fill === 'string' ? run.fill : 'fill')
   if (run.textDecoration) parts.push(run.textDecoration.toLowerCase())
@@ -1213,6 +1238,10 @@ export async function describeAnimation(value: unknown): Promise<string> {
   if (!Array.isArray(value) || value.length === 0) return 'none'
   const lines: string[] = []
   for (const style of value as AppliedAnimationStyle[]) {
+    if (style.type === 'CUSTOM') {
+      lines.push(`${style.name || style.styleId} (custom)`)
+      continue
+    }
     lines.push(await (async () => {
       // Figma answers with every setting the style has, defaults and all — eleven of them for
       // Position — which turned one line into a file. The first few are the ones a caller set or
@@ -1378,7 +1407,13 @@ export async function describeEffects(value: unknown): Promise<string> {
   return parts.join(' · ')
 }
 
-const describeFont = (font: FontName | typeof figma.mixed): string =>
-  font === figma.mixed ? 'mixed' : `${(font as FontName).family} ${(font as FontName).style}`
+const describeFont = (font: FontNameInput | FontName | typeof figma.mixed): string => {
+  if (font === figma.mixed) return 'mixed'
+  const named = font as FontNameInput
+  const axes = named.variationSettings
+    ? ` (${Object.entries(named.variationSettings).map(([axis, value]) => `${axis}=${value}`).join(', ')})`
+    : ''
+  return `${named.family}${named.style ? ` ${named.style}` : ''}${axes}`
+}
 
 const round = (value: number): number => Math.round(value * 100) / 100

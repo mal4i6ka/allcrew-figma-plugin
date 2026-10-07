@@ -75,3 +75,10 @@ test('browser UI mirroring is explicit, normalized and preserved across presets'
   assert.equal(enabled.agent.uiMirror, true)
   assert.equal(applyPreset(enabled, 'design-tokens').agent.uiMirror, true)
 })
+
+test('the selected design-system tool is normalized and survives package presets', () => {
+  const remap = normalizeExportOptions({ target: 'ds-tools', dsTool: 'remap' })
+  assert.equal(remap.dsTool, 'remap')
+  assert.equal(applyPreset(remap, 'design-tokens').dsTool, 'remap')
+  assert.equal(normalizeExportOptions({ dsTool: 'unknown' }).dsTool, 'palette')
+})

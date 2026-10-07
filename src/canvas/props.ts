@@ -234,20 +234,21 @@ export type BrushSpec =
   | { stretch: string; direction?: 'FORWARD' | 'BACKWARD' }
 
 /**
- * One of Figma's animation styles, applied to a node.
+ * One Figma-provided or local custom animation style applied to a node.
  *
- * The styles are Figma's own — Position, Scale, Rotation, Size, Opacity, Path — and each has its
- * own settings, which MOTION_STYLES lists with their types and defaults. So `props` is passed
- * through rather than second-guessed: this vocabulary cannot know what `wStartWithDivider` means
- * and should not pretend to. What it does insist on is that a value is something Figma can hold.
+ * `MOTION_STYLES` lists both kinds. Figma-provided styles accept duration, offset and props;
+ * custom styles already own their ordered animations, durations and props, so they accept only
+ * an offset. The apply pass resolves the name/id against the live catalogue before removing any
+ * existing animation.
  */
 export interface AnimationSpec {
-  /** The styleId, which is a plain word: `Position`, `Scale`, `Opacity`, … */
+  /** A `styleId`/name for a Figma animation, or an id/name for a local custom style. */
   style: string
-  /** Seconds. */
+  /** Seconds. Figma-provided styles only. */
   duration?: number
-  /** Seconds into the timeline. */
+  /** Seconds into the timeline. Accepted by both style kinds. */
   offset?: number
+  /** Figma-provided styles only. */
   props?: Record<string, unknown>
 }
 
@@ -278,7 +279,7 @@ export interface LayoutProps {
   wrapGap?: number
   /** One number for all four, or [top, right, bottom, left]. */
   padding?: number | [number, number, number, number]
-  primaryAxis?: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN'
+  primaryAxis?: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN' | 'SPACE_AROUND' | 'SPACE_EVENLY'
   counterAxis?: 'MIN' | 'CENTER' | 'MAX' | 'BASELINE'
   wrap?: boolean
   sizing?: { horizontal?: SizingMode; vertical?: SizingMode }
@@ -294,6 +295,14 @@ export interface LayoutProps {
 }
 
 export type SizingMode = 'FIXED' | 'HUG' | 'FILL'
+
+export interface FontSpec {
+  family: string
+  /** Optional for variable fonts: Figma chooses the named instance that best fits the axes. */
+  style?: string
+  /** OpenType axis values keyed by four-character tags such as `wght`, `wdth`, and `slnt`. */
+  variationSettings?: FontVariationSettings
+}
 
 export interface NodeProps {
   /** What the layer is called in the panel. */
@@ -374,8 +383,8 @@ export interface NodeProps {
   text?: string
   /** Pixels. */
   fontSize?: number
-  /** Family and style together, because Figma loads them as a pair. */
-  fontName?: { family: string; style: string }
+  /** Static font name or variable-font family plus OpenType axes. */
+  fontName?: FontSpec
   /** Horizontal alignment within the text box. */
   textAlign?: 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'
   /** Pixels (`16` or `"16px"`), a percentage of the font size like `"150%"`, or AUTO to follow the font. */
@@ -499,7 +508,7 @@ export interface TextRun {
   to?: number
   /** Every occurrence of this text. Either this, or from/to. */
   match?: string
-  fontName?: { family: string; style: string }
+  fontName?: FontSpec
   fontSize?: number
   fill?: PaintRef
   textDecoration?: 'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'
@@ -565,7 +574,7 @@ export interface FlowLink {
 
 export type PropStep =
   | { step: 'assign'; property: string; value: string | number | boolean }
-  | { step: 'font'; family: string; style: string }
+  | { step: 'font'; font: FontSpec }
   | { step: 'text'; characters: string }
   | { step: 'layout'; layout: LayoutProps }
   | { step: 'resize'; width?: number; height?: number }
@@ -651,7 +660,7 @@ const LAYOUT_KEYS = [
   'columns',
   'autoTracks',
 ]
-const PRIMARY_AXIS = ['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN']
+const PRIMARY_AXIS = ['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN', 'SPACE_AROUND', 'SPACE_EVENLY']
 const COUNTER_AXIS = ['MIN', 'CENTER', 'MAX', 'BASELINE']
 const SIZING = ['FIXED', 'HUG', 'FILL']
 const CONSTRAINTS = ['MIN', 'CENTER', 'MAX', 'STRETCH', 'SCALE']
@@ -660,6 +669,29 @@ const STROKE_CAP = ['NONE', 'ROUND', 'SQUARE', 'ARROW_LINES', 'ARROW_EQUILATERAL
 const STROKE_JOIN = ['MITER', 'BEVEL', 'ROUND']
 const SCALE_MODES = ['FILL', 'FIT', 'CROP', 'TILE']
 const GRADIENTS = ['LINEAR', 'RADIAL', 'ANGULAR', 'DIAMOND']
+
+function fontSpecOf(raw: unknown): FontSpec | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const value = raw as { family?: unknown; style?: unknown; variationSettings?: unknown }
+  if (typeof value.family !== 'string' || value.family.trim() === '') return null
+  if (value.style !== undefined && (typeof value.style !== 'string' || value.style.trim() === '')) return null
+  let variationSettings: Record<string, number> | undefined
+  if (value.variationSettings !== undefined) {
+    if (!value.variationSettings || typeof value.variationSettings !== 'object' || Array.isArray(value.variationSettings)) {
+      return null
+    }
+    variationSettings = {}
+    for (const [axis, setting] of Object.entries(value.variationSettings as Record<string, unknown>)) {
+      if (!/^[A-Za-z0-9]{4}$/.test(axis) || typeof setting !== 'number' || !Number.isFinite(setting)) return null
+      variationSettings[axis] = setting
+    }
+  }
+  return {
+    family: value.family.trim(),
+    ...(typeof value.style === 'string' ? { style: value.style.trim() } : {}),
+    ...(variationSettings ? { variationSettings } : {}),
+  }
+}
 
 /** Top to bottom, because that is what Figma gives a designer who clicks "Linear". */
 const DEFAULT_GRADIENT_ANGLE = 90
@@ -1059,17 +1091,11 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         break
       }
       case 'fontName': {
-        const font = props.fontName
-        if (
-          typeof font !== 'object' ||
-          font === null ||
-          typeof (font as { family?: unknown }).family !== 'string' ||
-          typeof (font as { style?: unknown }).style !== 'string'
-        ) {
-          fail('fontName must be { family, style }')
+        const font = fontSpecOf(props.fontName)
+        if (!font) {
+          fail('fontName must be { family, style?, variationSettings?: { wght: 550, ... } }')
         } else {
-          const named = font as { family: string; style: string }
-          steps.push({ step: 'font', family: named.family, style: named.style })
+          steps.push({ step: 'font', font })
         }
         break
       }
@@ -2117,14 +2143,15 @@ function planRuns(raw: unknown, where: string, problems: string[]): PropStep | n
         bad = true
       }
     }
-    check(
-      'fontName',
-      typeof run.fontName === 'object' &&
-        run.fontName !== null &&
-        typeof (run.fontName as { family?: unknown }).family === 'string' &&
-        typeof (run.fontName as { style?: unknown }).style === 'string',
-      'fontName must be { family, style }'
-    )
+    if (run.fontName !== undefined) {
+      const font = fontSpecOf(run.fontName)
+      if (!font) {
+        fail('fontName must be { family, style?, variationSettings?: { wght: 550, ... } }')
+        bad = true
+      } else {
+        run.fontName = font
+      }
+    }
     check('fontSize', typeof run.fontSize === 'number' && run.fontSize > 0, 'fontSize must be a number > 0')
     check(
       'letterSpacing',
@@ -2575,7 +2602,7 @@ function planAnimation(raw: unknown, where: string, problems: string[]): PropSte
       }
     }
     if (typeof spec.style !== 'string' || spec.style.trim() === '') {
-      fail('style must name one of the styles MOTION_STYLES lists, e.g. "Position"')
+      fail('style must name one of the Figma or custom styles MOTION_STYLES lists')
       continue
     }
     let wrong = false

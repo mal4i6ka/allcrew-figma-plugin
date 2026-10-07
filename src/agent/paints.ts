@@ -108,12 +108,10 @@ export interface PaintStopSummary {
 /**
  * A shader paint or effect, as far as this file can describe it.
  *
- * The uniform ids are opaque (`2331874402:1925656642`) and mean nothing on their own; their
- * names live in the shader's `propertyDefinitions`, which only `listAvailableShaders()` and
- * `importShaderById()` hand out. On a file that merely *uses* a shader the first comes back
- * empty, so `named` says plainly whether the settings below are named or just numbered —
- * silently reporting ids as if they were the whole answer is what made a shader layer look
- * like a paint with nothing in it.
+ * In Plugin API 1.141+, applied shader paints and effects carry `propertyMetadata`, so property
+ * names are available without importing the shader. Older hosts and synthetic inputs may omit
+ * it; the optional shader catalogue remains the fallback, and `named` says when neither source
+ * could name the settings.
  */
 export interface ShaderSummary {
   /** The id that puts this shader, and no other, on another layer. */
@@ -204,22 +202,23 @@ async function nameAliasesWithin(value: unknown): Promise<unknown> {
 /**
  * One shader — paint or effect — with its settings.
  *
- * `definitions` is the shader catalogue when the file could produce one. It is optional
- * because `listAvailableShaders()` costs a round trip and comes back empty on a file that
- * only uses shaders it did not author, which is the common case: the settings are then
- * reported by id, and `named: false` says so rather than leaving the reader to wonder why
- * every name is missing.
+ * Plugin API 1.141+ supplies `propertyMetadata` on the applied shader itself. `definitions`
+ * remains the fallback for older hosts and for callers that already loaded the catalogue.
  */
 export async function describeShader(
-  shader: { id?: unknown; properties?: unknown },
+  shader: { id?: unknown; properties?: unknown; propertyMetadata?: unknown },
   definitions?: Map<string, Shader>
 ): Promise<ShaderSummary> {
   const id = typeof shader?.id === 'string' ? shader.id : ''
   const known = definitions?.get(id)
-  const declared = known?.propertyDefinitions ?? {}
+  const metadata =
+    shader?.propertyMetadata && typeof shader.propertyMetadata === 'object'
+      ? (shader.propertyMetadata as Record<string, ShaderPropertyDefinition>)
+      : null
+  const declared = metadata ?? known?.propertyDefinitions ?? {}
   const out: ShaderSummary = {
     id,
-    named: known !== undefined,
+    named: known !== undefined || Object.keys(declared).length > 0,
     ...(known ? { name: known.name, kind: known.type } : {}),
   }
 

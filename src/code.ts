@@ -91,6 +91,7 @@ import { applyRebind, hasRebindSnapshot, previewRebind, revertRebind } from './t
 import { auditContrast, describeContrast } from './tokens/remap/audit'
 import { parsePaletteInput } from './tokens/remap/input'
 import { buildRemapPlan, type RemapOptions, type RemapPlan } from './tokens/remap/plan'
+import { buildDirectColorReplacement } from './tokens/remap/direct'
 import { buildMappingFile, parseMappingFile, planFromMappingFile, toCsv } from './tokens/remap/contract'
 import { rewriteColors } from './tokens/remap/rewrite'
 import { swatchesFromPalette } from './tokens/remap/sources'
@@ -108,6 +109,7 @@ import { postToUi } from './agent/ui-post.ts'
 import { setModuleProvider, setUiMessageRunner } from './agent/plugin-ops.ts'
 import { setModuleAdminProvider } from './agent/module-ops.ts'
 import { UI_COMMANDS } from './agent/ui-commands.ts'
+import { resolveVariableRef } from './agent/values.ts'
 import {
   compareModuleVersions,
   describeModules,
@@ -125,6 +127,7 @@ import {
 import { conditionMatches, moduleCapabilities, moduleStateValueError, parseUserModule, type ModuleProblem, type UserModule } from './modules/contract.ts'
 import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TEMPLATE, moduleAgentPrompt } from './modules/schema.ts'
 import { planProps } from './canvas/props.ts'
+import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
 import { componentName as reactComponentName } from './targets/react/jsx.ts'
 import type { MotionSnapshot } from './targets/django/motion/types.ts'
@@ -254,7 +257,16 @@ type PluginMessage =
       svgIdAttribute?: boolean
       svgSimplifyStroke?: boolean
     }
+  | { type: 'FONT_FAMILY_AXES'; family: string }
   | { type: 'MOTION_STYLES' }
+  | {
+      type: 'MOTION_STYLE_SET'
+      id?: string
+      name: string
+      description?: string
+      entries: Array<{ style: string; props?: Record<string, unknown> }>
+    }
+  | { type: 'MOTION_STYLE_MOVE'; id?: string; folder?: string; after?: string | null }
   | { type: 'SHADER_LIST'; kind?: string; scope?: string }
   | { type: 'STYLE_LIST'; kind?: string; query?: string; limit?: number }
   | {
@@ -315,6 +327,15 @@ type PluginMessage =
   | { type: 'FIX_PALETTE'; settings: unknown; fix: unknown }
   | { type: 'APPLY_PALETTE'; settings: unknown; applyOptions?: Partial<PaletteApplyOptions> }
   | { type: 'SAVE_PALETTE_SETTINGS'; settings: unknown }
+  | { type: 'REMAP_SOURCE_PREVIEW'; source: RemapSource }
+  | { type: 'REMAP_DIRECT_PREVIEW'; from: string; to: string; depth?: ScanDepth }
+  | {
+      type: 'REMAP_DIRECT_APPLY'
+      from: string
+      to: string
+      depth?: ScanDepth
+      applyOptions?: Partial<RemapApplyOptions>
+    }
   | { type: 'REMAP_SCAN'; depth?: ScanDepth }
   | { type: 'REMAP_LIST_LIBRARIES' }
   | { type: 'REMAP_PREVIEW'; source: RemapSource; options?: Partial<RemapOptions>; overrides?: Record<string, string>; excluded?: string[] }
@@ -503,6 +524,19 @@ async function planRemap(
   })
   plan.warnings.push(...resolved.warnings)
   return { plan: applyRemapOverrides(plan, overrides), palette: resolved.swatches }
+}
+
+async function planDirectRemap(from: string, to: string, depth: ScanDepth): Promise<RemapPlan> {
+  const fromLiteral = parseColorLiteral(from)
+  if (!fromLiteral) throw new Error('Enter the source color as #RRGGBB.')
+  const toLiteral = parseColorLiteral(to)
+  if (!toLiteral) throw new Error('Enter the replacement color as #RRGGBB.')
+  const inventory = remapInventory && remapDepth === depth ? remapInventory : await readInventory(depth)
+  return buildDirectColorReplacement({
+    sites: inventory.sites,
+    from: fromLiteral.rgba,
+    to: toLiteral.rgba,
+  })
 }
 
 /** The plan as the table renders it — colors as hex, one row per site. */
@@ -2658,6 +2692,78 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
 
     /* ---- DS Tools: color token remapping ---- */
+    case 'REMAP_SOURCE_PREVIEW': {
+      // @agent read: resolve generator, selection, or library colors so one can be chosen for an exact replacement
+      // @agent param source: { kind: "generator", settings }, { kind: "selection" }, or { kind: "library", key }
+      try {
+        const resolved = await resolveRemapSource(msg.source)
+        postToUi({
+          type: 'REMAP_SOURCE_COLORS',
+          colors: resolved.swatches.map((swatch) => ({
+            name: swatch.name,
+            hex: toHex(swatch.rgba),
+            alpha: swatch.rgba.a,
+          })),
+          warnings: resolved.warnings,
+        })
+      } catch (err) {
+        postToUi({ type: 'REMAP_SOURCE_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+
+    case 'REMAP_DIRECT_PREVIEW': {
+      // @agent read: find exact RGB matches for one color without building a palette migration
+      // @agent param from: source color as #RRGGBB; alpha is ignored while matching
+      // @agent param to: replacement color as #RRGGBB; every matched site's alpha is preserved
+      // @agent param depth: "document", "page", or "tokens"
+      try {
+        const plan = await planDirectRemap(msg.from, msg.to, msg.depth ?? 'document')
+        postToUi({
+          type: 'REMAP_DIRECT_PLAN',
+          ...remapPlanView(plan),
+          canRevert: hasRemapSnapshot(),
+          inventory: inventoryStamp(),
+        })
+      } catch (err) {
+        postToUi({ type: 'REMAP_DIRECT_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'REMAP_DIRECT_APPLY': {
+      // @agent write: replace exact RGB matches in variables, styles, and/or loose canvas paints behind an undo snapshot
+      // @agent param from: source color as #RRGGBB
+      // @agent param to: replacement color as #RRGGBB
+      // @agent param depth: "document", "page", or "tokens"
+      // @agent param applyOptions: choose variables, styles, canvas, and document/page scope; names and bindings never change
+      try {
+        const plan = await planDirectRemap(msg.from, msg.to, msg.depth ?? 'document')
+        const options: RemapApplyOptions = {
+          ...DEFAULT_REMAP_APPLY_OPTIONS,
+          ...(msg.applyOptions ?? {}),
+          rename: false,
+          bind: false,
+        }
+        const report = await applyRemap(plan, options, (label) =>
+          postToUi({ type: 'REMAP_PROGRESS', label })
+        )
+        remapInventory = null
+        figma.notify(
+          [
+            report.values ? `${report.values} values` : '',
+            report.styles ? `${report.styles} styles` : '',
+            report.paints ? `${report.paints} painted places` : '',
+          ].filter(Boolean).join(' · ') || 'Nothing to replace'
+        )
+        postToUi({ type: 'REMAP_DIRECT_APPLIED', report, canRevert: hasRemapSnapshot() })
+      } catch (err) {
+        const message = String((err as Error)?.message || err)
+        figma.notify('Color replacement failed: ' + message, { error: true })
+        postToUi({ type: 'REMAP_DIRECT_ERROR', message })
+      }
+      break
+    }
+
     case 'REMAP_SCAN': {
       // @agent read: inventory every colour in the document — variables, styles, gradient stops, loose paints
       // @agent cost: one walk of the whole document — 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.
@@ -4618,18 +4724,185 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       }
       break
     }
+    case 'FONT_FAMILY_AXES': {
+      // @agent read: list the OpenType variation axis tags a font family accepts; null means the family is static
+      // @agent param family: exact font family name, for example "Roboto Flex"
+      try {
+        const family = typeof msg.family === 'string' ? msg.family.trim() : ''
+        if (!family) throw new Error('family must be a non-empty font family name')
+        const axes = figma.getFontFamilyVariationAxes(family)
+        postToUi({ type: 'FONT_FAMILY_AXES', family, variable: axes !== null, axes: axes ?? [] })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'FONT_FAMILY_AXES', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
     case 'MOTION_STYLES': {
-      // @agent read: the animation styles Figma offers, with the settings each one takes — what you have to know before applying one
+      // @agent read: Figma-provided and local custom animation styles, including every ordered entry a custom style owns
       try {
         const styles = figma.motion.figmaAnimationStyles().map((style) => ({
+          type: 'FIGMA' as const,
           styleId: style.styleId,
           name: style.name,
           ...(style.description ? { description: style.description } : {}),
           ...(style.props ? { props: style.props } : {}),
         }))
-        postToUi({ type: 'MOTION_STYLES', total: styles.length, styles })
+        const local =
+          typeof figma.getLocalCustomAnimationStylesAsync === 'function'
+            ? await figma.getLocalCustomAnimationStylesAsync()
+            : []
+        const customStyles = local.map((style) => ({
+          type: 'CUSTOM' as const,
+          id: style.id,
+          key: style.key,
+          name: style.name,
+          ...(style.description ? { description: style.description } : {}),
+          entries: style.animationEntries.map((entry) => ({
+            id: entry.id,
+            styleId: entry.styleId,
+            name: entry.name,
+            ...(entry.description ? { description: entry.description } : {}),
+            ...(entry.duration === undefined ? {} : { duration: entry.duration }),
+            ...(entry.timelineOffset === undefined ? {} : { timelineOffset: entry.timelineOffset }),
+            ...(entry.props ? { props: entry.props } : {}),
+          })),
+        }))
+        postToUi({
+          type: 'MOTION_STYLES',
+          total: styles.length + customStyles.length,
+          styles,
+          customStyles,
+          playheadPosition: figma.motion.playheadPosition,
+        })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'MOTION_STYLES', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'MOTION_STYLE_SET': {
+      // @agent write: create a local custom animation style or replace one by id, preserving its ordered Figma animation entries
+      // @agent param id: local custom animation style id to update; omit to create a new style
+      // @agent param name: final custom style name
+      // @agent param description: final description; omitted preserves it on update
+      // @agent param entries: ordered [{ style, props? }] using Figma animation styleIds or names from MOTION_STYLES
+      try {
+        const name = typeof msg.name === 'string' ? msg.name.trim() : ''
+        if (!name) throw new Error('name must be a non-empty custom animation style name')
+        if (!Array.isArray(msg.entries)) throw new Error('entries must be an array of { style, props? }')
+
+        const available = figma.motion.figmaAnimationStyles()
+        const entries: Array<{ styleId: string; props: Record<string, AnimationStylePropValue> }> = []
+        for (const [index, raw] of msg.entries.entries()) {
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+            throw new Error(`entries[${index}] must be { style, props? }`)
+          }
+          const ref = typeof raw.style === 'string' ? raw.style.trim() : ''
+          if (!ref) throw new Error(`entries[${index}].style must name a Figma animation from MOTION_STYLES`)
+          const resolved = resolveFigmaAnimationStyle(ref, available)
+          if (raw.props !== undefined && (!raw.props || typeof raw.props !== 'object' || Array.isArray(raw.props))) {
+            throw new Error(`entries[${index}].props must be an object`)
+          }
+          const props: Record<string, AnimationStylePropValue> = {}
+          for (const [prop, value] of Object.entries(raw.props ?? {})) {
+            const alias = value as { variable?: unknown }
+            if (typeof alias?.variable === 'string' && alias.variable.trim()) {
+              const variable = await resolveVariableRef(alias.variable.trim())
+              props[prop] = { type: 'VARIABLE_ALIAS', id: variable.id }
+            } else {
+              props[prop] = value as AnimationStylePropValue
+            }
+          }
+          entries.push({ styleId: resolved.styleId, props })
+        }
+
+        const local = await figma.getLocalCustomAnimationStylesAsync()
+        const id = typeof msg.id === 'string' ? msg.id.trim() : ''
+        const existing = id ? local.find((style) => style.id === id) : undefined
+        if (id && !existing) throw new Error(`no local custom animation style has id "${id}"`)
+        const style = existing ?? figma.createCustomAnimationStyle()
+        const created = !existing
+        const previous = {
+          name: style.name,
+          description: style.description,
+          entries: style.animationEntries.map((entry) => ({ styleId: entry.styleId, props: entry.props ?? {} })),
+        }
+        if (msg.description !== undefined && typeof msg.description !== 'string') {
+          throw new Error('description must be a string')
+        }
+
+        try {
+          await replaceCustomAnimationEntries(style, entries)
+          style.name = name
+          if (msg.description !== undefined) style.description = msg.description
+        } catch (error) {
+          if (created) {
+            style.remove()
+          } else {
+            try {
+              await replaceCustomAnimationEntries(style, previous.entries)
+              style.name = previous.name
+              style.description = previous.description
+            } catch (rollbackError) {
+              throw new Error(
+                `${String((error as Error)?.message || error)}; rollback also failed: ${String(
+                  (rollbackError as Error)?.message || rollbackError
+                )}`
+              )
+            }
+          }
+          throw error
+        }
+
+        postToUi({
+          type: 'MOTION_STYLE_UPDATED',
+          created,
+          style: {
+            id: style.id,
+            key: style.key,
+            name: style.name,
+            description: style.description,
+            entries: style.animationEntries.map((entry) => ({
+              id: entry.id,
+              styleId: entry.styleId,
+              name: entry.name,
+              ...(entry.duration === undefined ? {} : { duration: entry.duration }),
+              ...(entry.props ? { props: entry.props } : {}),
+            })),
+          },
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'MOTION_STYLE_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'MOTION_STYLE_MOVE': {
+      // @agent write: reorder a local custom animation style or one of its folders
+      // @agent param id: custom animation style id to move; mutually exclusive with folder
+      // @agent param folder: full slash-delimited folder name to move; mutually exclusive with id
+      // @agent param after: style id or folder name to place it after; null/omitted moves it first
+      try {
+        const id = typeof msg.id === 'string' ? msg.id.trim() : ''
+        const folder = typeof msg.folder === 'string' ? msg.folder.trim() : ''
+        if (Boolean(id) === Boolean(folder)) throw new Error('provide exactly one of id or folder')
+        if (msg.after !== undefined && msg.after !== null && typeof msg.after !== 'string') {
+          throw new Error('after must be a style id, folder name, or null')
+        }
+        const after = typeof msg.after === 'string' ? msg.after.trim() : null
+
+        if (id) {
+          const styles = await figma.getLocalCustomAnimationStylesAsync()
+          const target = styles.find((style) => style.id === id)
+          if (!target) throw new Error(`no local custom animation style has id "${id}"`)
+          const reference = after ? styles.find((style) => style.id === after) ?? null : null
+          if (after && reference === null) throw new Error(`no local custom animation style has id "${after}"`)
+          figma.moveLocalCustomAnimationStyleAfter(target, reference)
+          postToUi({ type: 'MOTION_STYLE_MOVED', id, after: reference?.id ?? null })
+        } else {
+          figma.moveLocalCustomAnimationFolderAfter(folder, after)
+          postToUi({ type: 'MOTION_STYLE_FOLDER_MOVED', folder, after })
+        }
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'MOTION_STYLE_MOVE', message: String((error as Error)?.message || error) })
       }
       break
     }
