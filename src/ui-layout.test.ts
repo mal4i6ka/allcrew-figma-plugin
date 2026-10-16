@@ -273,6 +273,8 @@ function injectedUi(width: number, height: number): string {
   return SOURCE.replace('</body>', injection.replace(/^\+/gm, '') + '\n</body>')
 }
 
+const CHROME_TIMEOUT_MS = 60_000
+
 function runLayout(width: number, height: number): LayoutResult[] {
   assert.ok(chrome)
   const dir = mkdtempSync(join(tmpdir(), 'allcrew-ui-layout-'))
@@ -282,18 +284,26 @@ function runLayout(width: number, height: number): LayoutResult[] {
     const linuxSandboxArgs = process.platform === 'linux'
       ? ['--no-sandbox', '--disable-dev-shm-usage']
       : []
-    const browser = spawnSync(chrome, [
+    // Headless `--dump-dom` occasionally never returns on CI runners: a release job sat in this
+    // test for fifteen minutes with Chrome still alive. A private profile keeps parallel runs from
+    // contending for one, and the timeout turns a hang into one retry and then a named failure
+    // instead of a job killed with no output.
+    const launch = () => spawnSync(chrome, [
       '--headless=new',
       ...linuxSandboxArgs,
       '--disable-gpu',
       '--no-first-run',
       '--no-default-browser-check',
+      `--user-data-dir=${join(dir, 'profile')}`,
       '--allow-file-access-from-files',
       '--force-device-scale-factor=1',
       `--window-size=${width},${height}`,
       '--dump-dom',
       `file://${file}`,
-    ], { encoding: 'utf8', maxBuffer: 40 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
+    ], { encoding: 'utf8', maxBuffer: 40 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], timeout: CHROME_TIMEOUT_MS, killSignal: 'SIGKILL' })
+    let browser = launch()
+    if (browser.signal === 'SIGKILL') browser = launch()
+    if (browser.signal === 'SIGKILL') throw new Error(`Chromium did not finish within ${CHROME_TIMEOUT_MS} ms at ${width}×${height}, twice`)
     if (browser.error) throw browser.error
     const html = browser.stdout
     const match = /data-layout-results="([^"]+)"/.exec(html)
