@@ -27,6 +27,7 @@ import {
   isLengthKind,
   isTextMetricKind,
   leaves,
+  opacityFraction,
   tokenKind,
   valueForTheme,
   varName,
@@ -309,6 +310,7 @@ function swiftValue(entry: GroupedEntry, value: TokenValue): string | null {
   // does change is the unitless cases: an opacity or a line-height RATIO must not be a CGFloat
   // that a caller then passes to `.padding()`.
   if (typeof value === 'number') {
+    if (entry.kind === 'opacity') return `${round(opacityFraction(value), 4)}`
     return isLengthKind(entry.kind, value) ? `CGFloat(${round(value, 4)})` : `${round(value, 4)}`
   }
   if (typeof value === 'boolean') return String(value)
@@ -324,6 +326,7 @@ function kotlinValue(entry: GroupedEntry, value: TokenValue): string | null {
     return `Color(0x${toArgbHex(color).slice(1)})`
   }
   if (typeof value === 'number') {
+    if (entry.kind === 'opacity') return `${round(opacityFraction(value), 4)}f`
     if (!isLengthKind(entry.kind, value)) return `${round(value, 4)}f`
     // `sp` scales with the user's system font-size setting and `dp` does not. A text metric in
     // `dp` is the single most common accessibility defect in a generated Android UI: raising the

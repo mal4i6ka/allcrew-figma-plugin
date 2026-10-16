@@ -32,12 +32,28 @@ test('a composed colour exports as the colour it paints', () => {
   assert.match(css, /--brand-half: rgba\(255, 0, 0, 0\.5\);/)
 })
 
-test('a COLOR_OPACITY float is a bare number, not pixels', () => {
+test('a composed colour over another composed colour multiplies both opacities', () => {
+  // Live shape: semantic `Orange/Main` = { color: alias(Orange/O500), opacity: alias(solid) },
+  // and Orange/O500 is itself { color: literal, opacity: alias }. It exported as [object Object].
+  const css = cssOf({
+    collections: [{ id: 'c', name: 'Core', modes: [{ modeId: 'm', name: 'Default' }], defaultModeId: 'm' }],
+    variables: [
+      { id: 'solid', name: 'alpha/100', collectionId: 'c', resolvedType: 'FLOAT', valuesByMode: { m: 100 } },
+      { id: 'half', name: 'alpha/50', collectionId: 'c', resolvedType: 'FLOAT', valuesByMode: { m: 50 } },
+      { id: 'p', name: 'orange/500', collectionId: 'c', resolvedType: 'COLOR', valuesByMode: { m: { color: { r: 1, g: 0.5, b: 0, a: 1 }, opacity: alias('half') } } },
+      { id: 'main', name: 'orange/main', collectionId: 'c', resolvedType: 'COLOR', valuesByMode: { m: { color: alias('p'), opacity: alias('solid') } } },
+    ],
+  })
+  assert.ok(!css.includes('[object Object]'), css)
+  assert.match(css, /--orange-main: rgba\(255, 128, 0, 0\.5\);/)
+})
+
+test('a COLOR_OPACITY float is a fraction, not pixels', () => {
   const css = cssOf({
     collections: [{ id: 'c', name: 'Core', modes: [{ modeId: 'm', name: 'Default' }], defaultModeId: 'm' }],
     variables: [{ id: 'o', name: 'alpha/40', collectionId: 'c', resolvedType: 'FLOAT', valuesByMode: { m: 40 }, scopes: ['COLOR_OPACITY'] }],
   })
-  assert.match(css, /--alpha-40: 40;/)
+  assert.match(css, /--alpha-40: 0\.4;/)
 })
 
 test('a themed composed colour reads its halves in the theme of the same name', () => {

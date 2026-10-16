@@ -179,6 +179,7 @@ Before anything is emitted the export is shaped for code:
 - `TIMING` variables export as milliseconds, `EASING` variables as their
   `cubic-bezier()` (or a sampled `linear()` for a spring), and a composed
   colour (`{ color, opacity }`) as the flat colour it paints in each mode;
+- opacity tokens, which Figma holds as percentages, export as 0–1 fractions;
 - colours authored outside sRGB keep their space: `oklch()`, `oklab()` or
   `color(display-p3 …)`.
 

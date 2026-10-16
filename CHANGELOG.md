@@ -41,7 +41,8 @@ All notable changes to AllCrew Figma Workspace are documented here.
 - Fixed `selectionchange` throwing when a selected node was swapped or deleted under the panel.
 - Fixed hidden primitive layers deleting the semantic tokens that alias them.
 - Fixed distributed auto-layout wraps losing their cross-axis gap in the CSS export.
-- Fixed composed colour variables exporting as `[object Object]`.
+- Fixed composed colour variables exporting as `[object Object]`, including a composed colour whose colour half aliases another composed colour.
+- Fixed opacity tokens exporting Figma's percentage (`opacity: var(--opacity-10)` became `opacity: 10`, fully opaque): CSS, Swift and Kotlin now receive the 0–1 fraction.
 - Fixed video export of a nested layer, which now names the top-level frame that can export it.
 - Fixed `code.ts` being detected as binary because of literal NUL separators.
 - Fixed `node.remove` reporting a forced main-component deletion as failed: Figma unparents a main whose instances still exist instead of marking it removed.

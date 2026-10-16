@@ -14,7 +14,6 @@ import {
   codeSyntaxOf,
   cssValue,
   isLengthKind,
-  isLengthToken,
   isTextMetricKind,
   tokenKind,
   variablesToW3CMultiMode,
@@ -75,15 +74,27 @@ test('a line-height is a ratio below 4 and a length at or above it', () => {
 /* ------------------------------------------------- the CSS answer is unchanged */
 
 test('the CSS emitter renders exactly what it rendered before the kind existed', () => {
-  assert.equal(isLengthToken(16, ['spacing', 'md']), true)
-  assert.equal(isLengthToken(0.3, ['opacity', 'muted']), false)
-  assert.equal(isLengthToken(500, ['font-weight', 'medium']), false)
-  assert.equal(isLengthToken(1.5, ['line-height', 'body']), false)
-  assert.equal(isLengthToken(24, ['line-height', 'body']), true)
-  assert.equal(isLengthToken(2, ['z-index', 'modal']), false)
+  assert.equal(cssValue(16, ['spacing', 'md']), '16px')
+  assert.equal(cssValue(0.3, ['opacity', 'muted']), '0.3')
+  assert.equal(cssValue(500, ['font-weight', 'medium']), '500')
+  assert.equal(cssValue(1.5, ['line-height', 'body']), '1.5')
+  assert.equal(cssValue(24, ['line-height', 'body']), '24px')
+  assert.equal(cssValue(2, ['z-index', 'modal']), '2')
   // `scale` is a length here and was the bug that proved it: a unitless 16 made every
   // `calc(var(--scale-16, 16px) * 1.36)` invalid.
-  assert.equal(isLengthToken(16, ['scale', '16']), true)
+  assert.equal(cssValue(16, ['scale', '16']), '16px')
+})
+
+test('an opacity Figma holds as a percentage reaches code as a fraction', () => {
+  // Live: `Trancperancy/10` = 10 exported as `10`, and `opacity: 10` clamps to fully opaque.
+  assert.equal(cssValue(10, ['trancperancy', '10'], scoped('number', 10, ['OPACITY'])), '0.1')
+  assert.equal(cssValue(40, ['alpha', '40'], scoped('number', 40, ['COLOR_OPACITY'])), '0.4')
+  assert.equal(cssValue(100, ['opacity', 'solid']), '1')
+  assert.equal(cssValue(0, ['opacity', 'hidden']), '0')
+  // Already a fraction: left alone.
+  assert.equal(cssValue(0.3, ['opacity', 'muted']), '0.3')
+  const swift = toTokensSwift({ alpha: { '10': scoped('number', 10, ['OPACITY']) } } as TokenTree, ['Light'])
+  assert.match(swift, /= 0\.1\b/)
 })
 
 test('a duration carries milliseconds, not pixels', () => {

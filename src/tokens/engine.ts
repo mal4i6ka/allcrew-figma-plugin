@@ -522,17 +522,24 @@ function addEffectStyleTokens(out: TokenTree, effectStyles: readonly TokenGraphE
  * `var()`s, because the halves are usually primitives, and a flattened or hidden-primitives
  * package removes exactly the custom properties such an expression would point at. Each half is
  * read in the mode of the same NAME where its collection has one, so a themed composed colour
- * still comes out per theme. `undefined` when either half does not resolve.
+ * still comes out per theme. The colour half may itself alias another composed colour (a semantic
+ * `Orange/Main` over a palette `Orange/O500` that carries its own opacity token), so a composed
+ * target is flattened the same way before it is multiplied. `undefined` when either half does
+ * not resolve.
  */
 function resolveComposedColor(
   value: Record<string, unknown>,
   modeName: string,
   byId: ReadonlyMap<string, TokenGraphVariable>,
-  collectionById: ReadonlyMap<string, TokenGraphCollection>
+  collectionById: ReadonlyMap<string, TokenGraphCollection>,
+  seen: ReadonlySet<string> = new Set()
 ): Record<string, number> | undefined {
-  const literal = (raw: unknown, seen: Set<string>): unknown => {
-    if (!isRecord(raw) || raw.type !== 'VARIABLE_ALIAS' || typeof raw.id !== 'string') return raw
-    if (seen.has(raw.id)) return undefined
+  const literal = (raw: unknown, visited: ReadonlySet<string>): unknown => {
+    if (!isRecord(raw)) return raw
+    if (raw.type !== 'VARIABLE_ALIAS' || typeof raw.id !== 'string') {
+      return 'color' in raw && 'opacity' in raw ? resolveComposedColor(raw, modeName, byId, collectionById, visited) : raw
+    }
+    if (visited.has(raw.id)) return undefined
     const target = byId.get(raw.id)
     if (!target || !isRecord(target.valuesByMode)) return undefined
     const collection = collectionById.get(target.collectionId)
@@ -541,10 +548,10 @@ function resolveComposedColor(
       (collection?.defaultModeId && collection.defaultModeId in target.valuesByMode ? collection.defaultModeId : undefined) ??
       Object.keys(target.valuesByMode)[0]
     if (modeId === undefined) return undefined
-    return literal(target.valuesByMode[modeId], new Set(seen).add(raw.id))
+    return literal(target.valuesByMode[modeId], new Set(visited).add(raw.id))
   }
-  const color = literal(value.color, new Set())
-  const opacity = literal(value.opacity, new Set())
+  const color = literal(value.color, seen)
+  const opacity = literal(value.opacity, seen)
   if (!isRecord(color) || typeof color.r !== 'number' || typeof color.g !== 'number' || typeof color.b !== 'number') return undefined
   if (typeof opacity !== 'number' || !Number.isFinite(opacity)) return undefined
   // The opacity half is a percentage, the way Figma's opacity fields are.
@@ -803,11 +810,14 @@ export function isLengthKind(kind: TokenKind, value: number): boolean {
 }
 
 /**
- * Whether a number token means pixels. Kept as the CSS-shaped question — it has only a path to go
- * on — and now answered through `tokenKind` so the heuristic exists once.
+ * An opacity token as the 0–1 fraction CSS `opacity`, SwiftUI `.opacity()` and Compose `alpha`
+ * take. Figma binds opacity variables as a percentage, so `Opacity/10` holds `10` — emitted as is,
+ * `opacity: var(--opacity-10)` clamps to 1 and the layer turns fully opaque. A fraction never
+ * exceeds 1, so anything above it is a percentage; the one value both readings share is `1`,
+ * left as the fully-opaque fraction.
  */
-export function isLengthToken(value: number, path?: readonly string[]): boolean {
-  return isLengthKind(tokenKind(undefined, path ?? []), value)
+export function opacityFraction(value: number): number {
+  return value > 1 ? value / 100 : value
 }
 
 /** `token`, when the caller has it, lets Figma's scopes decide the unit the way they already do
@@ -817,19 +827,15 @@ export function cssValue(value: TokenValue, path?: readonly string[], token?: Pi
   const alias = aliasTarget(value)
   if (alias) return `var(--${varName(alias)})`
   if (typeof value === 'number') {
-    const rounded = roundEmitted(value)
+    const kind = tokenKind(token, path ?? [])
+    const rounded = roundEmitted(kind === 'opacity' ? opacityFraction(value) : value)
     if (rounded === 0) return '0'
-    if (token) {
-      const kind = tokenKind(token, path ?? [])
-      if (kind === 'duration') return `${rounded}ms`
-      return isLengthKind(kind, value) ? `${rounded}px` : String(rounded)
-    }
     // A duration is the one numeric kind whose CSS unit is not `px`. Emitting `200px` for
     // `motion/duration/fast` made every `transition-duration` referencing it invalid — the
     // Python port had this right and this side did not, which is what the parity goldens exist
     // to catch.
-    if (tokenKind(undefined, path ?? []) === 'duration') return `${rounded}ms`
-    return isLengthToken(value, path) ? `${rounded}px` : String(rounded)
+    if (kind === 'duration') return `${rounded}ms`
+    return isLengthKind(kind, value) ? `${rounded}px` : String(rounded)
   }
   if (typeof value === 'boolean') return String(value)
   if (typeof value === 'string') return value

@@ -33,6 +33,7 @@ UNITLESS_TOKEN = re.compile(
 )
 DURATION_TOKEN = re.compile(r"(^|[-_])(durations?|delay)([-_]|$)", re.IGNORECASE)
 LINE_HEIGHT_TOKEN = re.compile(r"(^|[-_])line-?height([-_]|$)", re.IGNORECASE)
+OPACITY_TOKEN = re.compile(r"(^|[-_])opacity([-_]|$)", re.IGNORECASE)
 LINE_HEIGHT_RATIO_MAX = 4
 
 
@@ -104,6 +105,11 @@ def css_value(value, path=None) -> str:
         # tells them apart. `src/tokens/engine.ts` LINE_HEIGHT_RATIO_MAX is the same number.
         if path and any(LINE_HEIGHT_TOKEN.search(seg) for seg in path):
             return _number_str(value) if abs(value) < LINE_HEIGHT_RATIO_MAX else f"{_number_str(value)}px"
+        # Figma binds opacity as a percentage; CSS takes a fraction, and `opacity: 10` clamps to
+        # fully opaque. `opacityFraction` in `src/tokens/engine.ts` is the same rule.
+        if path and any(OPACITY_TOKEN.search(seg) for seg in path) and value > 1:
+            fraction = value / 100
+            return _number_str(int(fraction) if fraction.is_integer() else fraction)
         unitless = path is not None and any(UNITLESS_TOKEN.search(seg) for seg in path)
         return _number_str(value) if unitless else f"{_number_str(value)}px"
     if isinstance(value, str):

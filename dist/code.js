@@ -1101,6 +1101,7 @@ ${lines.join("\n")}
       return `Color(.sRGB, red: ${round2(color.r / 255)}, green: ${round2(color.g / 255)}, blue: ${round2(color.b / 255)}, opacity: ${round2(color.a)})`;
     }
     if (typeof value2 === "number") {
+      if (entry.kind === "opacity") return `${round2(opacityFraction(value2), 4)}`;
       return isLengthKind(entry.kind, value2) ? `CGFloat(${round2(value2, 4)})` : `${round2(value2, 4)}`;
     }
     if (typeof value2 === "boolean") return String(value2);
@@ -1113,6 +1114,7 @@ ${lines.join("\n")}
       return `Color(0x${toArgbHex(color).slice(1)})`;
     }
     if (typeof value2 === "number") {
+      if (entry.kind === "opacity") return `${round2(opacityFraction(value2), 4)}f`;
       if (!isLengthKind(entry.kind, value2)) return `${round2(value2, 4)}f`;
       return isTextMetricKind(entry.kind) ? `${round2(value2, 4)}.sp` : `${round2(value2, 4)}.dp`;
     }
@@ -1456,20 +1458,23 @@ ${sharedLines.join("\n")}
       }
     }
   }
-  function resolveComposedColor(value2, modeName, byId, collectionById) {
-    const literal = (raw, seen) => {
+  function resolveComposedColor(value2, modeName, byId, collectionById, seen = /* @__PURE__ */ new Set()) {
+    const literal = (raw, visited) => {
       var _a, _b, _c, _d;
-      if (!isRecord(raw) || raw.type !== "VARIABLE_ALIAS" || typeof raw.id !== "string") return raw;
-      if (seen.has(raw.id)) return void 0;
+      if (!isRecord(raw)) return raw;
+      if (raw.type !== "VARIABLE_ALIAS" || typeof raw.id !== "string") {
+        return "color" in raw && "opacity" in raw ? resolveComposedColor(raw, modeName, byId, collectionById, visited) : raw;
+      }
+      if (visited.has(raw.id)) return void 0;
       const target = byId.get(raw.id);
       if (!target || !isRecord(target.valuesByMode)) return void 0;
       const collection = collectionById.get(target.collectionId);
       const modeId = (_d = (_c = (_b = ((_a = collection == null ? void 0 : collection.modes) != null ? _a : []).find((m) => m.name === modeName)) == null ? void 0 : _b.modeId) != null ? _c : (collection == null ? void 0 : collection.defaultModeId) && collection.defaultModeId in target.valuesByMode ? collection.defaultModeId : void 0) != null ? _d : Object.keys(target.valuesByMode)[0];
       if (modeId === void 0) return void 0;
-      return literal(target.valuesByMode[modeId], new Set(seen).add(raw.id));
+      return literal(target.valuesByMode[modeId], new Set(visited).add(raw.id));
     };
-    const color = literal(value2.color, /* @__PURE__ */ new Set());
-    const opacity = literal(value2.opacity, /* @__PURE__ */ new Set());
+    const color = literal(value2.color, seen);
+    const opacity = literal(value2.opacity, seen);
     if (!isRecord(color) || typeof color.r !== "number" || typeof color.g !== "number" || typeof color.b !== "number") return void 0;
     if (typeof opacity !== "number" || !Number.isFinite(opacity)) return void 0;
     const base = typeof color.a === "number" ? color.a : 1;
@@ -1624,22 +1629,18 @@ ${sharedLines.join("\n")}
     if (kind === "lineHeight") return Math.abs(roundEmitted(value2)) >= LINE_HEIGHT_RATIO_MAX;
     return kind !== "opacity" && kind !== "fontWeight" && kind !== "number" && kind !== "duration";
   }
-  function isLengthToken(value2, path) {
-    return isLengthKind(tokenKind(void 0, path != null ? path : []), value2);
+  function opacityFraction(value2) {
+    return value2 > 1 ? value2 / 100 : value2;
   }
   function cssValue(value2, path, token2) {
     const alias = aliasTarget(value2);
     if (alias) return `var(--${varName(alias)})`;
     if (typeof value2 === "number") {
-      const rounded = roundEmitted(value2);
+      const kind = tokenKind(token2, path != null ? path : []);
+      const rounded = roundEmitted(kind === "opacity" ? opacityFraction(value2) : value2);
       if (rounded === 0) return "0";
-      if (token2) {
-        const kind = tokenKind(token2, path != null ? path : []);
-        if (kind === "duration") return `${rounded}ms`;
-        return isLengthKind(kind, value2) ? `${rounded}px` : String(rounded);
-      }
-      if (tokenKind(void 0, path != null ? path : []) === "duration") return `${rounded}ms`;
-      return isLengthToken(value2, path) ? `${rounded}px` : String(rounded);
+      if (kind === "duration") return `${rounded}ms`;
+      return isLengthKind(kind, value2) ? `${rounded}px` : String(rounded);
     }
     if (typeof value2 === "boolean") return String(value2);
     if (typeof value2 === "string") return value2;
