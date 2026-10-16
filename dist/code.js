@@ -30848,7 +30848,8 @@ ${scripts}`, "");
         for (const entry of planned) {
           try {
             entry.node.remove();
-            results.push(__spreadProps(__spreadValues({}, entry.row), { ok: entry.node.removed === true, removed: entry.node.removed === true }));
+            const gone = entry.node.removed === true || entry.node.parent === null;
+            results.push(__spreadProps(__spreadValues({}, entry.row), { ok: gone, removed: gone }));
           } catch (err) {
             results.push(__spreadProps(__spreadValues({}, entry.row), { ok: false, removed: false, error: String((err == null ? void 0 : err.message) || err) }));
           }

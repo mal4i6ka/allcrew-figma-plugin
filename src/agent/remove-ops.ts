@@ -93,9 +93,12 @@ export const REMOVE_OPS: readonly OpDef[] = [
       for (const entry of planned) {
         try {
           entry.node.remove()
-          /* `removed` is read back off the node rather than assumed from a call that did not
-           * throw: this is the one op with no other way to tell success from silence. */
-          results.push({ ...entry.row, ok: entry.node.removed === true, removed: entry.node.removed === true })
+          /* Success is read back off the node rather than assumed from a call that did not
+           * throw: this is the one op with no other way to tell success from silence. A main
+           * component whose instances still exist is not marked `removed` — Figma unparents it
+           * and keeps it alive for those instances — so having no parent counts as deleted too. */
+          const gone = entry.node.removed === true || entry.node.parent === null
+          results.push({ ...entry.row, ok: gone, removed: gone })
         } catch (err) {
           results.push({ ...entry.row, ok: false, removed: false, error: String((err as Error)?.message || err) })
         }

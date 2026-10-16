@@ -44,6 +44,7 @@ All notable changes to AllCrew Figma Workspace are documented here.
 - Fixed composed colour variables exporting as `[object Object]`.
 - Fixed video export of a nested layer, which now names the top-level frame that can export it.
 - Fixed `code.ts` being detected as binary because of literal NUL separators.
+- Fixed `node.remove` reporting a forced main-component deletion as failed: Figma unparents a main whose instances still exist instead of marking it removed.
 
 ## 1.10.0 — 2026-10-07
 
