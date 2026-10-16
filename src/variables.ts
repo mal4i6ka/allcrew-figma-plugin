@@ -10,6 +10,9 @@ export interface CollectionEntry {
   name: string
   defaultModeId: string
   modes: Array<{ modeId: string; name: string }>
+  /** Reached only by following an alias out of the file (`readAliasTargets`): its values are
+   * substituted into the tokens that point at it, and it is never emitted as the file's own. */
+  inlineOnly?: true
 }
 
 export interface VariableEntry {
@@ -71,6 +74,82 @@ export async function readLocalVariables(): Promise<VariableSnapshot> {
   }
 }
 
+function aliasIdsOf(value: unknown, into: string[]): void {
+  if (typeof value !== 'object' || value === null) return
+  const record = value as { type?: unknown; id?: unknown; color?: unknown; opacity?: unknown }
+  if (record.type === 'VARIABLE_ALIAS' && typeof record.id === 'string') into.push(record.id)
+  // A composed colour holds its aliases one level down, per channel.
+  if ('color' in record) aliasIdsOf(record.color, into)
+  if ('opacity' in record) aliasIdsOf(record.opacity, into)
+}
+
+/**
+ * The variables an alias points at that the read did not return, fetched by id.
+ *
+ * A file that consumes a library holds its tokens as aliases onto variables it does not own, and
+ * the export wrote each unknown target as its raw id - `var(--variableid-73e58…-411-1)`, which
+ * resolves to nothing in a browser. Figma already has every variable this file references (that
+ * is how the canvas renders), so `getVariableByIdAsync` answers from the file without the
+ * team-library service: no network, no enabled-library requirement - the case the "include
+ * libraries" sweep cannot reach, since it only sees libraries switched on in this file. Chains are
+ * followed until nothing new turns up.
+ */
+export async function readAliasTargets(known: VariableSnapshot): Promise<VariableSnapshot> {
+  const variableIds = new Set(known.variables.map((variable) => variable.id))
+  const collectionIds = new Set(known.collections.map((collection) => collection.id))
+  const collections: CollectionEntry[] = []
+  const variables: VariableEntry[] = []
+  let frontier: VariableEntry[] = known.variables
+
+  while (frontier.length > 0) {
+    const wanted: string[] = []
+    for (const variable of frontier) {
+      for (const value of Object.values(variable.valuesByMode)) aliasIdsOf(value, wanted)
+    }
+    const next: VariableEntry[] = []
+    for (const id of wanted) {
+      if (variableIds.has(id)) continue
+      variableIds.add(id)
+      let variable: Variable | null = null
+      try {
+        variable = await figma.variables.getVariableByIdAsync(id)
+      } catch {
+        variable = null
+      }
+      if (!variable) continue
+      const entry = toVariableEntry(variable)
+      next.push(entry)
+      if (!collectionIds.has(entry.collectionId)) {
+        collectionIds.add(entry.collectionId)
+        let collection: VariableCollection | null = null
+        try {
+          collection = await figma.variables.getVariableCollectionByIdAsync(entry.collectionId)
+        } catch {
+          collection = null
+        }
+        // Without its collection a variable has no mode names; its own mode keys still let the
+        // engine resolve the value, which is all an inlined primitive needs.
+        const modeIds = Object.keys(entry.valuesByMode)
+        collections.push({
+          ...(collection
+            ? toCollectionEntry(collection)
+            : {
+                id: entry.collectionId,
+                name: 'Library',
+                defaultModeId: modeIds[0] ?? '',
+                modes: modeIds.map((modeId, index) => ({ modeId, name: index === 0 ? 'Value' : modeId })),
+              }),
+          inlineOnly: true,
+        })
+      }
+    }
+    variables.push(...next)
+    frontier = next
+  }
+
+  return { collections, variables }
+}
+
 /**
  * How much of the library sweep one call may do, and where a previous one stopped.
  *
@@ -92,6 +171,10 @@ export interface LibraryReadOptions {
   readonly offset?: number
   /** Explicit single-mode collections grouped into exported theme structures. */
   readonly collectionMerges?: readonly CollectionMerge[]
+  /** Called once the sweep's size is known and again after every import - the only sign of life
+   * a panel gets during a read that runs for a minute and more. `total` counts the whole sweep,
+   * so `done` starts at the offset when one was passed. */
+  readonly onProgress?: (done: number, total: number) => void
 }
 
 export interface LibraryReadProgress {
@@ -117,16 +200,28 @@ export async function readLibraryVariables(options: LibraryReadOptions = {}): Pr
     return { collections, variables }
   }
 
+  // Listed up front - one cheap call per collection - so the sweep knows its size before the slow
+  // part starts and progress can be reported as N of M rather than as a count with no end.
+  const listed: { libraryCollection: LibraryVariableCollection; libraryVariables: LibraryVariable[] }[] = []
   for (const libraryCollection of libraryCollections) {
-    if (ranOut) break
     if (wanted && libraryCollection.name.toLowerCase() !== wanted && libraryCollection.key !== options.collection) {
       continue
     }
     try {
-      const libraryVariables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(
-        libraryCollection.key
-      )
+      listed.push({
+        libraryCollection,
+        libraryVariables: await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libraryCollection.key),
+      })
+    } catch (error) {
+      console.error(`Failed to list library collection "${libraryCollection.name}"`, error)
+    }
+  }
+  const total = listed.reduce((sum, entry) => sum + entry.libraryVariables.length, 0)
+  options.onProgress?.(Math.min(skip, total), total)
 
+  for (const { libraryCollection, libraryVariables } of listed) {
+    if (ranOut) break
+    try {
       const importedVariables: Variable[] = []
       for (const libraryVariable of libraryVariables) {
         // Counted before the skip so `nextOffset` means the same thing on every page: how many
@@ -139,6 +234,7 @@ export async function readLibraryVariables(options: LibraryReadOptions = {}): Pr
           break
         }
         importedVariables.push(await figma.variables.importVariableByKeyAsync(libraryVariable.key))
+        options.onProgress?.(seen, total)
       }
 
       if (importedVariables.length === 0) continue

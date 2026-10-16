@@ -10,6 +10,7 @@
  */
 
 import {
+  readAliasTargets,
   readAllVariables,
   readLibraryVariables,
   readLocalVariables,
@@ -126,7 +127,7 @@ import {
 } from './modules/registry.ts'
 import { conditionMatches, moduleCapabilities, moduleStateValueError, parseUserModule, type ModuleProblem, type UserModule } from './modules/contract.ts'
 import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TEMPLATE, moduleAgentPrompt } from './modules/schema.ts'
-import { planProps } from './canvas/props.ts'
+import { planFont, planProps } from './canvas/props.ts'
 import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
 import { componentName as reactComponentName } from './targets/react/jsx.ts'
@@ -144,7 +145,7 @@ import {
   variableName,
 } from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan, type CreateSpec } from './canvas/create.ts'
-import { styledRuns } from './canvas/text-runs.ts'
+import { styledRuns, writableFont } from './canvas/text-runs.ts'
 import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
 import { addressIn, readOverrides } from './canvas/overrides.ts'
@@ -179,7 +180,7 @@ type PluginMessage =
   | { type: 'READ_VARIABLES' }
   | { type: 'EMIT_TOKENS' }
   | { type: 'EMIT_DJANGO'; cssFile: string; scope?: ExportScope }
-  | { type: 'EMIT_DJANGO_PROJECT'; cssFile: string; scope?: ExportScope; existingFiles?: Record<string, string> }
+  | { type: 'EMIT_DJANGO_PROJECT'; cssFile: string; scope?: ExportScope; existingFiles?: Record<string, string | Uint8Array> }
   | { type: 'SCAN'; scope: ExportScope; lintMaxDepth?: number }
   | { type: 'SCAN_TOP' }
   | { type: 'SCROLL_INTO_VIEW'; nodeId: string }
@@ -281,6 +282,7 @@ type PluginMessage =
       grid?: unknown
     }
   | { type: 'STYLE_REMOVE'; kind: string; name: string }
+  | { type: 'STYLE_MOVE'; kind: string; name?: string; after?: string | null; folder?: string; afterFolder?: string | null }
   | { type: 'PAGE_LIST' }
   | { type: 'FLOW_LIST'; pageId?: string }
   | { type: 'FLOW_SET'; flows: unknown; pageId?: string }
@@ -320,7 +322,7 @@ type PluginMessage =
       tokens?: { includeLibraries?: boolean; emitNative?: boolean }
     }
   | { type: 'GENERATE_TYPOGRAPHY' }
-  | { type: 'DELIVER'; zipBase64: string }
+  | { type: 'DELIVER'; files: Record<string, string | { base64: string }>; dryRun?: boolean }
   // DS Tools target messages
   | { type: 'PREVIEW_PALETTE'; settings: unknown }
   | { type: 'SUGGEST_SPECTRUM'; settings: unknown }
@@ -1003,7 +1005,7 @@ function serializeBoundVars(bv: unknown): Record<string, string> {
   return out
 }
 
-const fontKey = (f: FontName): string => `${f.family} ${f.style}`
+const fontKey = (f: FontName): string => `${f.family}\x00${f.style}`
 
 interface FontFacts { weight: number; italic: boolean }
 
@@ -1072,7 +1074,41 @@ async function readGraph(
   // the same package it would from a paid-plan file.
   // Imported before the fold, so a library theme split across two collections is folded with the
   // local ones rather than beside them.
-  const library = includeLibraries ? await readLibraryVariables().catch(() => null) : null
+  // The import is a network round trip per variable - a minute and more on a real library - and
+  // without a running count the panel sits on "0 variables" looking broken. Throttled, because
+  // a message per import is hundreds of panel redraws for a number nobody reads that fast.
+  let lastProgressAt = 0
+  const onProgress = (done: number, total: number): void => {
+    const now = Date.now()
+    if (done < total && done > 0 && now - lastProgressAt < 200) return
+    lastProgressAt = now
+    postToUi({ type: 'TOKENS_PROGRESS', done, total })
+  }
+  const library = includeLibraries ? await readLibraryVariables({ onProgress }).catch(() => null) : null
+  // Whatever the sweep did not cover — a library not enabled in this file, a sweep that failed, or
+  // no sweep at all — the aliases still name their targets, and the file can hand those over by id.
+  const aliasTargets = await readAliasTargets({
+    collections: [
+      ...collections.map((c) => ({ id: c.id, name: c.name, defaultModeId: c.defaultModeId, modes: [] })),
+      ...(library?.collections ?? []),
+    ],
+    variables: [
+      ...variables.map((v) => ({
+        id: v.id,
+        key: v.key,
+        name: v.name,
+        collectionId: v.variableCollectionId,
+        scopes: v.scopes,
+        resolvedType: v.resolvedType,
+        valuesByMode: v.valuesByMode,
+      })),
+      ...(library?.variables ?? []),
+    ],
+  }).catch(() => ({ collections: [], variables: [] }))
+  const outside = {
+    collections: [...(library?.collections ?? []), ...aliasTargets.collections],
+    variables: [...(library?.variables ?? []), ...aliasTargets.variables],
+  }
   const libraryNote = includeLibraries ? undefined : await libraryCollectionsNote()
   const graph = foldSplitThemeCollections({
     fileName: figma.root.name,
@@ -1091,7 +1127,7 @@ async function readGraph(
       // A library collection imported into this file has a local id, so a collection reached both
       // ways would otherwise appear twice with the same variables under it.
       .concat(
-        (library?.collections ?? [])
+        outside.collections
           .filter((entry: CollectionEntry) => !collections.some((local) => local.id === entry.id))
           .map((entry: CollectionEntry) => ({ ...entry, generated: false }))
       ),
@@ -1107,7 +1143,7 @@ async function readGraph(
         scopes: v.scopes,
       }))
       .concat(
-        (library?.variables ?? [])
+        outside.variables
           .filter((entry: VariableEntry) => !variables.some((local) => local.id === entry.id))
           .map((entry: VariableEntry) => ({
             id: entry.id,
@@ -1121,7 +1157,7 @@ async function readGraph(
     textStyles: textStyles.map((t) => ({
       id: t.id,
       name: t.name,
-      fontName: t.fontName ? { family: t.fontName.family, style: t.fontName.style } : null,
+      fontName: writableFont(t.fontName) ?? null,
       fontWeight: t.fontName ? fontFacts.get(fontKey(t.fontName))?.weight : undefined,
       italic: t.fontName ? fontFacts.get(fontKey(t.fontName))?.italic : undefined,
       fontSize: t.fontSize,
@@ -1165,9 +1201,12 @@ async function libraryCollectionsNote(): Promise<string | undefined> {
     const available = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync()
     if (!available || available.length === 0) return undefined
     const names = available.map((one) => one.name).join(', ')
+    // Not "turn the switch on": since readAliasTargets every alias into a library already resolves
+    // to its value, and the switch would pour whole libraries into the package (with `-2` names
+    // where two of them overlap). It is only for exporting a library's own collections.
     return (
-      `${available.length} library variable collection(s) were NOT included (${names}) — ` +
-      'turn on Settings → Tokens → Include library variables to export a theme this file consumes rather than owns'
+      `Values this file takes from enabled libraries (${names}) are already substituted into its tokens. ` +
+      'Turn on Settings → Tokens → Include library variables only to export those libraries\' own collections as well'
     )
   } catch {
     return undefined
@@ -1384,13 +1423,21 @@ async function generateTypographyVariables(options: unknown): Promise<Typography
     const style = styleById[b.styleId], variable = byName[b.varName]
     if (!style || !variable) { failed++; continue }
     const field = b.field as VariableBindableTextField
-    const before = style.fontName ? { family: style.fontName.family, style: style.fontName.style } : null
+    // The whole FontName, axes included: a variable style put back without its variationSettings
+    // would return at the named instance's weight instead of the one the designer set.
+    const before = style.fontName ?? null
     try {
       style.setBoundVariable(field, variable)
       // Binding a font field can silently swap the face to one Figma likes better.
       // The style must keep the face the designer chose — otherwise roll the bind back.
       const after = style.fontName
-      if (before && after && (after.family !== before.family || after.style !== before.style)) {
+      if (
+        before &&
+        after &&
+        (after.family !== before.family ||
+          after.style !== before.style ||
+          JSON.stringify(after.variationSettings) !== JSON.stringify(before.variationSettings))
+      ) {
         style.setBoundVariable(field, null)
         try { style.fontName = before } catch { /* ignore */ }
         failed++
@@ -1550,10 +1597,20 @@ Promise.all([
 
 
 function postSelectionToUi(): void {
-  const selection = figma.currentPage.selection
-  if (selection.length === 0) return
-  const node = selection[0]
-  const top = topLevelAncestorOrNull(node)
+  /* A selected node can vanish under the selection - swapped, detached or deleted by an op - and
+   * Figma then throws from the selection getter itself ("in get_selection: the node ... does not
+   * exist"). This runs on every selectionchange, so an uncaught throw here is a crash on a click;
+   * the panel simply keeps its last selection until the next change. */
+  let node: SceneNode
+  let top: SceneNode | null
+  try {
+    const selection = figma.currentPage.selection
+    if (selection.length === 0) return
+    node = selection[0]
+    top = topLevelAncestorOrNull(node)
+  } catch {
+    return
+  }
   if (!top) return
   postToUi({
     type: 'SELECTION_CHANGED',
@@ -2107,7 +2164,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     props.fontSize = node.fontSize === figma.mixed ? 'mixed' : round(node.fontSize)
     // `{ family, style }`, not "Inter Regular": the write takes the pair and refuses the string,
     // and a font family can hold spaces ("Museo Sans 700"), so no parser could tell the two apart.
-    props.fontName = node.fontName === figma.mixed ? 'mixed' : { family: node.fontName.family, style: node.fontName.style }
+    // A variable font carries its axis values along, or the read would flatten a 550-weight
+    // heading to its nearest named instance and write it back at the wrong weight.
+    props.fontName = node.fontName === figma.mixed ? 'mixed' : writableFont(node.fontName)
     props.textAlign = node.textAlignHorizontal
     // Everything below is the promise this shape makes everywhere else: a read complete enough to
     // be sent back as a write. The box's own behaviour is always said, since it decides what a
@@ -2590,17 +2649,18 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       break
     }
     case 'DELIVER': {
-      // @agent write: POST a built package to the configured delivery endpoint — it leaves this machine
-      // @agent param zipBase64: the package itself, base64 — the bytes CONFIRM_EXPORT handed back
+      // @agent write: POST a built package to the configured delivery endpoint — it leaves this machine; with dryRun the receiver writes nothing and answers with the plan it would have applied
+      // @agent param files: the package as `{ 'path/file.css': 'text' }`, or `{ base64 }` for bytes
+      // @agent param dryRun: change nothing, just report the plan — omit to use the saved default
       try {
         const stored = await figma.clientStorage.getAsync('exportOptions')
         const options = normalizeExportOptions(stored)
-        const zipBytes = figma.base64Decode(msg.zipBase64)
-        const result = await deliverPackage(zipBytes, {
+        const result = await deliverPackage(msg.files || {}, {
           endpoint: options.delivery.endpoint,
           secret: options.delivery.secret,
-          target: 'folder',
-          route: { repo: '', branch: '', path: '', package: '' },
+          target: options.delivery.target,
+          route: options.delivery.route,
+          dryRun: msg.dryRun ?? options.delivery.dryRun,
           onChange: false,
           onOpen: false,
         })
@@ -3061,7 +3121,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         defaultModeId: collection.defaultModeId,
         modes: collection.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name })),
       })))
-      postToUi({ type: 'VARIABLE_COLLECTIONS', ...state })
+      // `all` feeds the Collection roles list, which needs every collection — a breakpoint
+      // collection has several modes and is exactly the one the theme table leaves out.
+      const all = collections.map((collection) => ({ name: collection.name, modes: collection.modes.length }))
+      postToUi({ type: 'VARIABLE_COLLECTIONS', ...state, all })
       break
     }
     case 'READ_VARIABLES': {
@@ -3422,11 +3485,21 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         }
       )
 
+      // Assets belong in the same preview plan as generated text so a binary replacement is never
+      // approved invisibly. Marker merging only applies to text; asset node ids are unused.
+      const regenAssets = await collectExportAssets(
+        pageRoots,
+        sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>,
+        (hash) => figma.getImageByHash(hash)
+      )
       const freshFiles = new Map<string, FreshFile>(
         Object.entries({ 'base.html': baseHtml, ...pages, ...partials }).map(([path, content]) => [
           path, { nodeId: fileNodeIds[path], content },
         ])
       )
+      for (const asset of regenAssets) {
+        freshFiles.set(`static/img/${asset.filename}`, { nodeId: '', content: asset.content })
+      }
       const existingFiles = new Map(Object.entries(msg.existingFiles ?? {}))
       const plan = planRegeneration(existingFiles, freshFiles)
 
@@ -3453,6 +3526,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         themeCss,
         transitionsCss,
         transitionsJs,
+        assets: regenAssets,
       })
 
       postToUi({ type: 'DJANGO_PROJECT_PLAN', css, cssFile: msg.cssFile, plan, staticFiles })
@@ -3792,7 +3866,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           }
           const plan = planProps(entry.props, `nodes[${index}].props`)
           problems.push(...plan.problems)
-          if (plan.steps.length === 0) problems.push(`nodes[${index}].props sets nothing`)
+          // Only when nothing else was said: after "unknown property" it is the same news twice,
+          // and it doubled the count a caller reads as the size of its mistake.
+          if (plan.steps.length === 0 && plan.problems.length === 0) problems.push(`nodes[${index}].props sets nothing`)
           planned.push({ id: entry.node, steps: plan.steps })
         }
         if (problems.length > 0) {
@@ -4656,6 +4732,20 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             })
             continue
           }
+          // A video is the whole timeline of a top-level frame — Figma rejects one asked of anything
+          // nested, with a message about the call rather than the frame. Name the frame that would work.
+          if (video && scene.parent?.type !== 'PAGE') {
+            const top = scene.getTopLevelFrame()
+            reports.push({
+              node: id,
+              name: scene.name,
+              ok: false,
+              error:
+                `a ${format} renders a top-level frame's whole animation, and this layer is nested` +
+                (top ? ` — export "${top.name}" (${top.id}) instead` : ' with no top-level frame above it'),
+            })
+            continue
+          }
           try {
             if (format === 'SVG') {
               const svg = await scene.exportAsync({
@@ -4951,15 +5041,29 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         // report "no shaders" about a document you can see one in. What is on the canvas is
         // findable, so it is found: id, where it is used, and the setting ids it was given.
         // Those ids are what a write puts back, so an unnamed shader is still a usable one.
-        const used = new Map<string, { kind: 'fill' | 'effect'; nodes: string[]; keys: Set<string> }>()
+        const used = new Map<
+          string,
+          { kind: 'fill' | 'effect'; nodes: string[]; keys: Set<string>; meta: Record<string, ShaderPropertyDefinition> }
+        >()
         if (scope !== 'none') {
-          const note = (id: unknown, shaderKind: 'fill' | 'effect', node: SceneNode, properties: unknown) => {
+          const note = (
+            id: unknown,
+            shaderKind: 'fill' | 'effect',
+            node: SceneNode,
+            properties: unknown,
+            metadata: unknown
+          ) => {
             if (typeof id !== 'string' || id === '') return
             if (kind !== '' && kind !== shaderKind) return
-            const entry = used.get(id) ?? { kind: shaderKind, nodes: [], keys: new Set<string>() }
+            const entry = used.get(id) ?? { kind: shaderKind, nodes: [], keys: new Set<string>(), meta: {} }
             if (entry.nodes.length < 10) entry.nodes.push(`${node.name} (${node.id})`)
             if (properties && typeof properties === 'object') {
               for (const key of Object.keys(properties as Record<string, unknown>)) entry.keys.add(key)
+            }
+            // API 1.141: an applied shader carries its own definitions, so a shader this file
+            // does not offer is still named — no import needed to read what its settings are.
+            if (metadata && typeof metadata === 'object') {
+              Object.assign(entry.meta, metadata as Record<string, ShaderPropertyDefinition>)
             }
             used.set(id, entry)
           }
@@ -4969,14 +5073,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               if (!Array.isArray(paints)) continue
               for (const paint of paints) {
                 if ((paint as Paint)?.type !== 'SHADER') continue
-                note((paint as ShaderPaint).id, 'fill', node, (paint as ShaderPaint).properties)
+                const paintShader = paint as ShaderPaint
+                note(paintShader.id, 'fill', node, paintShader.properties, paintShader.propertyMetadata)
               }
             }
             const effects = (node as unknown as { effects?: readonly Effect[] }).effects
             if (Array.isArray(effects)) {
               for (const effect of effects) {
                 if (effect?.type !== 'SHADER') continue
-                note((effect as ShaderEffect).id, 'effect', node, (effect as ShaderEffect).properties)
+                const effectShader = effect as ShaderEffect
+                note(effectShader.id, 'effect', node, effectShader.properties, effectShader.propertyMetadata)
               }
             }
             if ('children' in node) for (const child of node.children) visit(child)
@@ -4997,10 +5103,21 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             imported: true,
             inUse: entry.nodes.length,
             usedBy: entry.nodes,
-            // Numbered, not named: the definitions live on the Shader object, and this file
-            // does not offer one for this id. `importShaderById` would fetch them — a write.
-            properties: [...entry.keys].join(' · '),
-            named: false,
+            // Named from the metadata the applied shader carries (API 1.141); where a runtime
+            // supplies none, the ids are the whole answer and `named: false` says so —
+            // `importShaderById` would fetch the definitions, and that is a write.
+            properties: [...entry.keys]
+              .map((defId) => {
+                const definition = entry.meta[defId]
+                if (!definition) return defId
+                const fallback =
+                  definition.defaultValue === undefined
+                    ? ''
+                    : ` (=${typeof definition.defaultValue === 'object' ? JSON.stringify(definition.defaultValue) : definition.defaultValue})`
+                return `${defId} ${definition.name}: ${definition.type.toLowerCase()}${fallback}`
+              })
+              .join(' · '),
+            named: Object.keys(entry.meta).length > 0,
           })
         }
 
@@ -5011,8 +5128,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       break
     }
     case 'STYLE_LIST': {
-      // @agent read: the file's own styles — paint, text, effect and grid — with what each one holds
-      // @agent param kind: paint, text, effect or grid; omitted means all four
+      // @agent read: the file's own styles — paint, text, effect, grid and custom animation — with what each one holds
+      // @agent param kind: paint, text, effect, grid or animation; omitted means all five
       // @agent param query: a name substring
       // @agent param limit: how many styles come back — 100 by default, 500 at most
       try {
@@ -5035,6 +5152,20 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               name: style.name,
               kind,
               holds: await describeStyle(style, describePaints, describeEffects, describeGrids),
+              // A custom animation style is its entries and nothing else, and the one-line form
+              // names them without saying what each was set to. The order is the order they run
+              // in, and the props are what MOTION_STYLE_SET takes back.
+              ...(style.type === 'CUSTOM_ANIMATION'
+                ? {
+                    animations: style.animationEntries.map((entry) => ({
+                      id: entry.id,
+                      style: entry.styleId,
+                      name: entry.name,
+                      ...(entry.duration === undefined ? {} : { duration: entry.duration }),
+                      ...(entry.props && Object.keys(entry.props).length > 0 ? { props: entry.props } : {}),
+                    })),
+                  }
+                : {}),
               ...(style.description ? { description: style.description } : {}),
             })
           }
@@ -5052,18 +5183,22 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     }
     case 'STYLE_MAKE': {
       // @agent write: create a style, or update one of the same name
-      // @agent param as: paint, text, effect or grid
+      // @agent param as: paint, text, effect or grid — custom animation styles are made with MOTION_STYLE_SET
       // @agent param from: read what the style should hold off this node — the usual way one is made, since the layer is already right
-      // @agent param paints: for a paint style, the same fill vocabulary NODE_SET takes: "#RRGGBB", { variable }, { gradient }, { image }, or a list
-      // @agent param text: for a text style, { fontName: { family, style }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? }
+      // @agent param paints: for a paint style, the same fill vocabulary NODE_SET takes: "#RRGGBB" or a CSS colour like "oklch(70% 0.2 140)", { variable }, { gradient }, { image }, or a list
+      // @agent param text: for a text style, { fontName: { family, style?, variationSettings? }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? } — variationSettings names a variable font's axes, like { wght: 550 }
       // @agent param effects: for an effect style, the same effects vocabulary NODE_SET takes
       // @agent param grid: for a grid style, the same grid vocabulary NODE_SET takes — [{ columns: 12, gutter: 16, margin: 24 }]
       // @agent param name: what the style is called — an existing style of the same name and kind is updated rather than duplicated
       // @agent param description: the style's description, which is what a designer reads in the panel
       try {
           const kind = typeof msg.as === 'string' ? (msg.as.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
+        if (kind === 'animation') {
+          refuse('STYLE_MAKE', 'custom animation styles are created and updated with MOTION_STYLE_SET')
+          break
+        }
         if (!STYLE_KINDS.includes(kind)) {
-          refuse('STYLE_MAKE', `as must be one of: ${STYLE_KINDS.join(', ')}`)
+          refuse('STYLE_MAKE', `as must be one of: ${STYLE_KINDS.filter((one) => one !== 'animation').join(', ')}`)
           break
         }
         const name = typeof msg.name === 'string' ? msg.name.trim() : ''
@@ -5136,13 +5271,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             if (typeof from.paragraphIndent === 'number') text.paragraphIndent = from.paragraphIndent
           } else {
             const wanted = msg.text as Record<string, unknown>
-            const font = wanted.fontName as FontName | undefined
-            if (!font || typeof font.family !== 'string' || typeof font.style !== 'string') {
-              refuse('STYLE_MAKE', 'text.fontName must be { family, style }')
-              break
-            }
+            const font = planFont(wanted.fontName, 'text.fontName', (message) => refuse('STYLE_MAKE', message))
+            if (!font) break
             await figma.loadFontAsync(font)
-            text.fontName = font
+            // One type for reading and writing in the typings; the API itself takes the style-less
+            // input and resolves the face from the axes.
+            text.fontName = font as FontName
             if (typeof wanted.fontSize === 'number') text.fontSize = wanted.fontSize
             if (wanted.lineHeight !== undefined) {
               text.lineHeight =
@@ -5179,7 +5313,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'STYLE_REMOVE': {
       // @agent write: delete a local style. Layers that followed it keep the values it gave them
       // @agent param name: its name, id or key — the same way every other style is named here
-      // @agent param kind: paint, text, effect or grid — a name alone is ambiguous across kinds
+      // @agent param kind: paint, text, effect, grid or animation — a name alone is ambiguous across kinds
       try {
         const kind = typeof msg.kind === 'string' ? (msg.kind.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
         if (!STYLE_KINDS.includes(kind)) {
@@ -5199,6 +5333,62 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       } catch (error) {
         const message = String((error as Error)?.message || error)
         postToUi({ type: 'CANVAS_ERROR', command: 'STYLE_REMOVE', message })
+      }
+      break
+    }
+    case 'STYLE_MOVE': {
+      // @agent write: reorder local styles in the panel — one style after another, or a whole folder after another folder
+      // @agent param kind: paint, text, effect or grid — custom animation styles are reordered with MOTION_STYLE_MOVE
+      // @agent param name: the style to move — its name, id or key. Give this, or folder
+      // @agent param after: the style it should follow, from the same folder; null or "" puts it first
+      // @agent param folder: the folder to move instead of a style, by its full path ("Brand/Primary")
+      // @agent param afterFolder: the sibling folder it should follow; null or "" puts it first in its parent
+      try {
+        const kind = typeof msg.kind === 'string' ? (msg.kind.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
+        if (kind === 'animation') {
+          refuse('STYLE_MOVE', 'custom animation styles are reordered with MOTION_STYLE_MOVE')
+          break
+        }
+        if (!STYLE_KINDS.includes(kind)) {
+          refuse('STYLE_MOVE', `kind must be one of: ${STYLE_KINDS.filter((one) => one !== 'animation').join(', ')}`)
+          break
+        }
+        const hasName = typeof msg.name === 'string' && msg.name.trim() !== ''
+        const hasFolder = typeof msg.folder === 'string' && msg.folder.trim() !== ''
+        if (hasName === hasFolder) {
+          refuse('STYLE_MOVE', 'give name (a style to move) or folder (a folder to move) — exactly one')
+          break
+        }
+        // Figma has one pair of methods per kind and no generic one; the table is the whole mapping.
+        const MOVES = {
+          paint: [figma.moveLocalPaintStyleAfter, figma.moveLocalPaintFolderAfter],
+          text: [figma.moveLocalTextStyleAfter, figma.moveLocalTextFolderAfter],
+          effect: [figma.moveLocalEffectStyleAfter, figma.moveLocalEffectFolderAfter],
+          grid: [figma.moveLocalGridStyleAfter, figma.moveLocalGridFolderAfter],
+        } as const
+        const [moveStyle, moveFolder] = MOVES[kind]
+        if (hasFolder) {
+          const folder = (msg.folder as string).trim()
+          const afterFolder = typeof msg.afterFolder === 'string' && msg.afterFolder.trim() !== '' ? msg.afterFolder.trim() : null
+          ;(moveFolder as (target: string, reference: string | null) => void).call(figma, folder, afterFolder)
+          figma.commitUndo()
+          postToUi({ type: 'STYLE_MOVED', kind, folder, after: afterFolder })
+          break
+        }
+        const style = await styleFor(msg.name as string, kind)
+        const reference = typeof msg.after === 'string' && msg.after.trim() !== '' ? await styleFor(msg.after, kind) : null
+        if (style.remote || reference?.remote) {
+          refuse('STYLE_MOVE', `"${(style.remote ? style : reference!).name}" belongs to a library — only local styles have an order here`)
+          break
+        }
+        ;(moveStyle as (target: BaseStyle, reference: BaseStyle | null) => void).call(figma, style, reference)
+        figma.commitUndo()
+        // The order as it now stands, so the caller sees where it landed without a second read.
+        const order = (await localStyles(kind)).map((s) => s.name)
+        postToUi({ type: 'STYLE_MOVED', kind, name: style.name, after: reference?.name ?? null, order })
+      } catch (error) {
+        const message = String((error as Error)?.message || error)
+        postToUi({ type: 'CANVAS_ERROR', command: 'STYLE_MOVE', message })
       }
       break
     }

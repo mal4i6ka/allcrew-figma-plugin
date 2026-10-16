@@ -32,6 +32,9 @@ export interface TypeStyle {
   family: string
   /** Figma's own style name: "Semi Bold", "Italic" — the face, not a CSS weight. */
   face: string
+  /** A variable font's axis values by four-letter tag: `{ wght: 550 }`. Absent for a static face,
+   * and the one place a build learns that "Regular" here is not Regular. */
+  axes?: Record<string, number>
   size: number
   weight?: number
   /** `24px`, `150%`, or `auto` — Figma's three ways of saying leading. */
@@ -85,7 +88,7 @@ export interface TextNodeFacts {
 const TYPE_BINDINGS = ['fontFamily', 'fontStyle', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'] as const
 
 export function typeStyleOf(node: TextNodeFacts, tokenNames: ReadonlyMap<string, string>): TypeStyle {
-  const font = single<{ family?: string; style?: string }>(node.fontName)
+  const font = single<{ family?: string; style?: string; variationSettings?: Record<string, number> }>(node.fontName)
   const tokens: Record<string, string> = {}
   for (const field of TYPE_BINDINGS) {
     const alias = node.boundVariables?.[field]
@@ -98,6 +101,7 @@ export function typeStyleOf(node: TextNodeFacts, tokenNames: ReadonlyMap<string,
   return {
     family: font?.family ?? 'mixed',
     face: font?.style ?? 'mixed',
+    ...(font?.variationSettings ? { axes: font.variationSettings } : {}),
     size: single<number>(node.fontSize) ?? 0,
     ...(single<number>(node.fontWeight) !== undefined ? { weight: single<number>(node.fontWeight) } : {}),
     lineHeight: measureText(node.lineHeight),

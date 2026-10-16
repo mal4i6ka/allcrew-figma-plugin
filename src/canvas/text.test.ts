@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { planProps, resolveRanges } from './props.ts'
-import { styledRuns } from './text-runs.ts'
+import { styledRuns, writableFont } from './text-runs.ts'
 
 const runsOf = (runs: unknown) => {
   const plan = planProps({ runs })
@@ -91,4 +91,38 @@ test('runs are styled after the characters they style are written', () => {
     plan.steps.map((step) => (step.step === 'assign' ? step.property : step.step)),
     ['name', 'text', 'runs']
   )
+})
+
+/* -------------------------------------------------------------------- fonts */
+
+test('a variable font keeps its axes through a read and back into a write', () => {
+  // `writableFont` is what a read reports; `planProps` is what a write takes. A 550-weight
+  // heading that lost its axes on the way out would come back as plain Regular.
+  const read = writableFont({ family: 'Inter', style: 'Regular', variationSettings: { wght: 550, slnt: -4 } })
+  assert.deepEqual(read, { family: 'Inter', style: 'Regular', variationSettings: { wght: 550, slnt: -4 } })
+  assert.deepEqual(runsOf([{ match: '299 ₽', fontName: read }]), [{ match: '299 ₽', fontName: read }])
+  assert.deepEqual(planProps({ fontName: read }).steps, [{ step: 'font', font: read }])
+})
+
+test('a font may be named by its axes alone, because no named face sits at 550', () => {
+  assert.deepEqual(planProps({ fontName: { family: 'Inter', variationSettings: { wght: 550 } } }).steps, [
+    { step: 'font', font: { family: 'Inter', variationSettings: { wght: 550 } } },
+  ])
+})
+
+test('an axis that is not a four-letter tag is refused, because Figma throws on it', () => {
+  assert.match(
+    planProps({ fontName: { family: 'Inter', variationSettings: { weight: 550 } } }).problems[0],
+    /"weight" is not a four-letter axis tag/
+  )
+  assert.match(
+    planProps({ fontName: { family: 'Inter', variationSettings: { wght: 'bold' } } }).problems[0],
+    /variationSettings\.wght must be a number/
+  )
+  assert.match(
+    planProps({ runs: [{ match: 'x', fontName: { family: 'Inter', variationSettings: { wg: 1 } } }] }).problems[0],
+    /"wg" is not a four-letter axis tag/
+  )
+  assert.match(planProps({ fontName: { family: 'Inter', weight: 700 } }).problems[0], /unknown key "weight"/)
+  assert.match(planProps({ fontName: 'Inter Bold' }).problems[0], /must be \{ family, style\?, variationSettings\? \}/)
 })

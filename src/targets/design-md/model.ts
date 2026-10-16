@@ -354,7 +354,7 @@ export function buildTokenEntries(
     const type = String((token as W3CToken).$type || '')
     const { base, state } = splitState(slug)
     const themeValues: Record<string, string> = {}
-    for (const theme of themeList) themeValues[theme] = cssValue(valueForTheme(token, theme), path)
+    for (const theme of themeList) themeValues[theme] = cssValue(valueForTheme(token, theme), path, token as W3CToken)
     const distinct = new Set(Object.keys(themeValues).map((theme) => themeValues[theme]))
     // The designer's scopes win. The name heuristic (on the state-stripped slug, so `…-bg-hovered`
     // is still a background) breaks ties inside a multi-scope set and covers unscoped variables:
@@ -364,7 +364,10 @@ export function buildTokenEntries(
     // A "modes as breakpoints" collection names its variable `Width`, which the size heuristic
     // would happily read as a fixed dimension. The collection it came from settles it.
     const collection = collectionOf(token)?.trim().toLowerCase()
-    const named = collection === 'breakpoints' && type === 'number' ? 'breakpoint' : classifyRole(base || slug, type)
+    // `--bp-*` is what the export makes of breakpoint thresholds (shapeForCode), whatever collection
+    // the designer kept them in.
+    const isBreakpoint = path[0] === 'bp' || (collection === 'breakpoints' && (type === 'number' || type === 'dimension'))
+    const named = isBreakpoint ? 'breakpoint' : classifyRole(base || slug, type)
     // The collection→role setting only catches what scopes and names both missed — it exists for
     // the worded numeric scale (`number/Base`) that would otherwise land in "Unclassified".
     const mapped = scopeRoles.length === 0 && named === 'other' ? collectionRoles[collection ?? ''] : undefined
@@ -382,7 +385,7 @@ export function buildTokenEntries(
       state,
       lifecycle: lifecycleOf(path),
       collection: collectionOf(token),
-      value: themeValues[defaultTheme] ?? cssValue(token.$value, path),
+      value: themeValues[defaultTheme] ?? cssValue(token.$value, path, token as W3CToken),
       themeValues,
       themed: distinct.size > 1,
     }

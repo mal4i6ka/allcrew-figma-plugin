@@ -10,16 +10,17 @@
  * only stands in when there is none. That is why this is async.
  */
 
-import { formatHex } from '../tokens/color.ts'
+import { authoredColourText, formatHex } from '../tokens/color.ts'
 
 const point = (value: { x: number; y: number } | undefined): [number, number] | undefined =>
   value ? [round(value.x), round(value.y)] : undefined
 
 const round = (value: number): number => Math.round(value * 100) / 100
 
-/** `#RRGGBB`, with the alpha only when it is not 1 — the same spelling a paint uses. */
+/** `#RRGGBB` — or the authored `oklch(…)`/P3/HSL form when Figma kept one, which the write
+ * vocabulary takes back as is, so a read-then-write does not flatten it to sRGB. */
 function colourWords(colour: { r: number; g: number; b: number; a: number }): string {
-  return formatHex({ r: colour.r, g: colour.g, b: colour.b }).toUpperCase()
+  return authoredColourText(colour) ?? formatHex({ r: colour.r, g: colour.g, b: colour.b }).toUpperCase()
 }
 
 export async function readEffects(value: unknown): Promise<unknown[] | null> {

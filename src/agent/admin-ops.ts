@@ -1,5 +1,12 @@
 import type { OpDef } from './protocol.ts'
-import { coerceVariableValue, describeValue } from './values.ts'
+import {
+  coerceVariableValue,
+  describeValue,
+  isAlias,
+  isLibraryKey,
+  resolveCollection,
+  resolveVariableRef,
+} from './values.ts'
 
 function object(value: unknown, where: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${where} must be an object`)
@@ -43,22 +50,26 @@ function resolveCollectionFrom(
   where = 'collection'
 ): VariableCollection {
   const ref = text(reference, where)
-  const exact = collections.filter((collection) => collection.id === ref || collection.key === ref || collection.name === ref)
-  if (exact.length === 0) throw new Error(`${where} "${ref}" does not match a local collection`)
-  if (exact.length > 1) throw new Error(`${where} "${ref}" is ambiguous; use its id`)
-  return exact[0]
+  const byId = collections.find((collection) => collection.id === ref || collection.key === ref)
+  if (byId) return byId
+  const named = collections.filter((collection) => collection.name.toLowerCase() === ref.toLowerCase())
+  if (named.length === 0) throw new Error(`${where} "${ref}" does not match a local collection`)
+  if (named.length > 1) throw new Error(`${where} "${ref}" is ambiguous; use its id`)
+  return named[0]
 }
 
-function resolveMode(
+export function resolveMode(
   modes: readonly { modeId: string; name: string }[],
   reference: unknown,
   where: string
 ): { modeId: string; name: string } {
   const ref = text(reference, where)
-  const exact = modes.filter((mode) => mode.modeId === ref || mode.name === ref)
-  if (exact.length === 0) throw new Error(`${where} "${ref}" does not match a mode`)
-  if (exact.length > 1) throw new Error(`${where} "${ref}" is ambiguous; use its id`)
-  return exact[0]
+  const byId = modes.find((mode) => mode.modeId === ref)
+  if (byId) return byId
+  const named = modes.filter((mode) => mode.name.toLowerCase() === ref.toLowerCase())
+  if (named.length === 0) throw new Error(`${where} "${ref}" does not match a mode`)
+  if (named.length > 1) throw new Error(`${where} "${ref}" is ambiguous; use its id`)
+  return named[0]
 }
 
 interface CollectionModePlan {
@@ -105,6 +116,12 @@ export async function planCollectionUpdates(raw: unknown, force = false): Promis
     if (hidden !== undefined && typeof hidden !== 'boolean') {
       throw new Error(`collections[${index}].hiddenFromPublishing must be a boolean`)
     }
+    if (newName !== undefined && newName.toLowerCase() !== collection.name.toLowerCase()) {
+      const clash = collections.some(
+        (candidate) => candidate.id !== collection.id && candidate.name.toLowerCase() === newName.toLowerCase()
+      )
+      if (clash) throw new Error(`a collection named "${newName}" already exists`)
+    }
     const steps = entry.modes === undefined ? [] : array(entry.modes, `collections[${index}].modes`)
     if (remove && (newName !== undefined || hidden !== undefined || steps.length > 0)) {
       throw new Error(`collections[${index}] cannot combine remove with other changes`)
@@ -130,6 +147,9 @@ export async function planCollectionUpdates(raw: unknown, force = false): Promis
       }
 
       const mode = resolveMode(simulated, step.mode, `collections[${index}].modes[${stepIndex}].mode`)
+      if (step.remove === true && step.newName !== undefined) {
+        throw new Error(`collections[${index}].modes[${stepIndex}] cannot combine remove with newName`)
+      }
       if (step.remove === true) {
         if (mode.modeId === collection.defaultModeId) throw new Error(`default mode "${mode.name}" cannot be removed`)
         if (simulated.length === 1) throw new Error(`the last mode in "${collection.name}" cannot be removed`)
@@ -187,7 +207,7 @@ function pageMatches(page: PageNode, reference: string): boolean {
   return page.id === reference || page.name === reference
 }
 
-interface PagePlan {
+export interface PagePlan {
   id: string
   before: { name: string; index: number; children: number; components: number }
   newName?: string
@@ -249,120 +269,242 @@ export async function planPageUpdates(raw: unknown, force = false): Promise<Page
   return plans
 }
 
-interface AuditFinding {
-  kind: 'MIXED' | 'MISSING_MODE' | 'UNRESOLVED_ALIAS' | 'LITERAL'
-  variable: string
-  variableId: string
-  collection: string
-  mode?: string
-  detail: string
+export function expectedPageOrder(ids: readonly string[], plans: readonly PagePlan[]): string[] {
+  const order = ids.filter((id) => !plans.some((plan) => plan.remove && plan.id === id))
+  for (const plan of plans) {
+    if (plan.index === undefined) continue
+    const current = order.indexOf(plan.id)
+    if (current >= 0) order.splice(current, 1)
+    order.splice(Math.min(plan.index, order.length), 0, plan.id)
+  }
+  return order
+}
+
+export type AuditKind = 'MIXED' | 'MISSING_MODE' | 'UNRESOLVED_ALIAS' | 'LITERAL'
+
+export function classifyModeColumns(
+  valuesByMode: Readonly<Record<string, unknown>>,
+  modeIds: readonly string[],
+  unresolved: ReadonlySet<string> = new Set(),
+  aliasOnly = false
+): AuditKind[] {
+  const kinds: AuditKind[] = []
+  let aliases = 0
+  let literals = 0
+  let missing = 0
+  let broken = 0
+  for (const modeId of modeIds) {
+    const value = valuesByMode[modeId]
+    if (value === undefined) missing++
+    else if (isAlias(value)) {
+      aliases++
+      if (unresolved.has(value.id)) broken++
+    } else literals++
+  }
+  if (aliases > 0 && literals > 0) kinds.push('MIXED')
+  if (missing > 0) kinds.push('MISSING_MODE')
+  if (broken > 0) kinds.push('UNRESOLVED_ALIAS')
+  if (aliasOnly && literals > 0 && aliases === 0) kinds.push('LITERAL')
+  return kinds
+}
+
+export const isLibraryId = (id: string): boolean => id.includes('/')
+
+async function describeCached(value: unknown, lookups: ReadonlyMap<string, Variable | null>): Promise<string> {
+  if (value === undefined) return '(unset)'
+  if (isAlias(value)) {
+    const target = lookups.get(value.id)
+    if (target === undefined && isLibraryId(value.id)) return '→ (library variable, not read)'
+    if (!target) return `→ ${value.id} (unresolved)`
+    return target.remote ? `→ ${target.name} (library)` : `→ ${target.name}`
+  }
+  return describeValue(value as VariableValue)
 }
 
 export async function auditVariables(params: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const requested = Array.isArray(params.collections)
-    ? (params.collections as unknown[]).filter((entry): entry is string => typeof entry === 'string' && entry !== '')
-    : []
-  const aliasOnly = Array.isArray(params.aliasOnly)
-    ? (params.aliasOnly as unknown[]).filter((entry): entry is string => typeof entry === 'string' && entry !== '')
-    : []
-  const ignore = Array.isArray(params.ignore)
-    ? (params.ignore as unknown[]).filter((entry): entry is string => typeof entry === 'string' && entry !== '')
-    : []
-  const includeLibraries = params.libraries === true
-  const budgetMs = Math.min(110_000, Math.max(1_000, typeof params.budgetMs === 'number' ? params.budgetMs : 30_000))
+  const strings = (raw: unknown): string[] =>
+    (Array.isArray(raw) ? raw : []).filter((entry): entry is string => typeof entry === 'string' && entry !== '')
   const started = Date.now()
-  const collections = await localCollections()
-  const selected = requested.length === 0
-    ? collections
-    : collections.filter((collection) => requested.some((ref) => ref === collection.id || ref === collection.name))
-  if (requested.length > 0 && selected.length !== new Set(requested).size) {
-    const matched = new Set(selected.flatMap((collection) => [collection.id, collection.name]))
-    const missing = requested.filter((ref) => !matched.has(ref))
-    if (missing.length > 0) throw new Error(`unknown collection(s): ${missing.join(', ')}`)
+  const budgetMs = Math.min(110_000, Math.max(1_000, typeof params.budgetMs === 'number' ? params.budgetMs : 60_000))
+  const deadline = started + budgetMs
+  const includeRemote = params.libraries !== false
+  const ignore = strings(params.ignore)
+  const wanted = strings(params.collections)
+  const locals = await localCollections()
+  const queue = wanted.length
+    ? await Promise.all(wanted.map((ref) => resolveCollection(ref)))
+    : [...locals]
+  const audited = new Set(queue.map((collection) => collection.id))
+  const aliasOnly = new Set<string>()
+  for (const ref of strings(params.aliasOnly)) {
+    if (ref.endsWith('*')) {
+      const prefix = ref.slice(0, -1).toLowerCase()
+      for (const collection of locals) {
+        if (collection.name.toLowerCase().startsWith(prefix)) aliasOnly.add(collection.id)
+      }
+    } else {
+      aliasOnly.add((await resolveCollection(ref)).id)
+    }
   }
-  const collectionById = new Map(selected.map((collection) => [collection.id, collection]))
-  const allVariables = await figma.variables.getLocalVariablesAsync()
-  const localById = new Map(allVariables.map((variable) => [variable.id, variable]))
-  const findings: AuditFinding[] = []
-  const remoteCache = new Map<string, Variable | null>()
-  let networkErrors = 0
-  let timedOut = false
 
-  for (const variable of allVariables) {
-    const collection = collectionById.get(variable.variableCollectionId)
-    if (!collection || matches(variable.name, ignore)) continue
-    let aliases = 0
-    let literals = 0
-    for (const mode of collection.modes) {
-      if (!Object.prototype.hasOwnProperty.call(variable.valuesByMode, mode.modeId)) {
-        findings.push({
-          kind: 'MISSING_MODE', variable: variable.name, variableId: variable.id, collection: collection.name,
-          mode: mode.name, detail: `no value for ${mode.name}`,
-        })
+  /* Read local variables in one batch. Looking them up individually turns each library alias
+   * into a network trip and can make a large design-system audit take several minutes. */
+  const lookups = new Map<string, Variable | null>()
+  for (const variable of await figma.variables.getLocalVariablesAsync()) lookups.set(variable.id, variable)
+  const localMs = Date.now() - started
+
+  let networkFailures = 0
+  let skippedLibrary = 0
+  const inBudget = () => Date.now() < deadline
+  const fetchLibrary = async (id: string): Promise<Variable | null | undefined> => {
+    if (lookups.has(id)) return lookups.get(id)!
+    if (!includeRemote || !inBudget()) {
+      skippedLibrary++
+      return undefined
+    }
+    try {
+      const found = await figma.variables.getVariableByIdAsync(id)
+      lookups.set(id, found)
+      return found
+    } catch {
+      networkFailures++
+      skippedLibrary++
+      return undefined
+    }
+  }
+
+  const findings: Array<Record<string, unknown>> = []
+  const summary: Array<Record<string, unknown>> = []
+  for (let at = 0; at < queue.length; at++) {
+    const collection = queue[at]
+    const modeIds = collection.modes.map((mode) => mode.modeId)
+    const modeName = new Map(collection.modes.map((mode) => [mode.modeId, mode.name]))
+    if (modeIds.length < 2 && params.singleMode !== true && !aliasOnly.has(collection.id)) {
+      summary.push({ collection: collection.name, remote: collection.remote, modes: modeIds.length, skipped: 'single mode' })
+      continue
+    }
+    let read = 0
+    let unreadable = 0
+    let flagged = 0
+    let incomplete = false
+    for (const id of collection.variableIds) {
+      const variable = isLibraryId(id) ? await fetchLibrary(id) : (lookups.get(id) ?? null)
+      if (variable === undefined) {
+        incomplete = true
         continue
       }
-      const value = variable.valuesByMode[mode.modeId] as VariableValue
-      const alias = value as VariableAlias
-      if (alias && typeof alias === 'object' && alias.type === 'VARIABLE_ALIAS') {
-        aliases++
-        if (localById.has(alias.id)) continue
-        if (/^VariableID:\d+:\d+$/.test(alias.id)) {
-          findings.push({
-            kind: 'UNRESOLVED_ALIAS', variable: variable.name, variableId: variable.id,
-            collection: collection.name, mode: mode.name, detail: `local alias ${alias.id} no longer exists`,
-          })
+      if (!variable) {
+        unreadable++
+        continue
+      }
+      read++
+      const values = variable.valuesByMode ?? {}
+      const unresolved = new Set<string>()
+      for (const value of Object.values(values)) {
+        if (!isAlias(value)) continue
+        if (!isLibraryId(value.id)) {
+          if (!lookups.get(value.id)) unresolved.add(value.id)
           continue
         }
-        if (!includeLibraries || Date.now() - started >= budgetMs) {
-          if (Date.now() - started >= budgetMs) timedOut = true
-          continue
-        }
-        let target = remoteCache.get(alias.id)
-        if (target === undefined) {
+        if (!includeRemote) continue
+        const target = await fetchLibrary(value.id)
+        if (target === null) unresolved.add(value.id)
+        if (target && !audited.has(target.variableCollectionId) && inBudget()) {
+          let remote: VariableCollection | null
           try {
-            target = await figma.variables.getVariableByIdAsync(alias.id)
-            remoteCache.set(alias.id, target)
+            remote = await figma.variables.getVariableCollectionByIdAsync(target.variableCollectionId)
           } catch {
-            networkErrors++
-            continue
+            networkFailures++
+            skippedLibrary++
+            remote = null
+          }
+          if (remote) {
+            audited.add(remote.id)
+            queue.push(remote)
           }
         }
-        if (target === null) {
-          findings.push({
-            kind: 'UNRESOLVED_ALIAS', variable: variable.name, variableId: variable.id,
-            collection: collection.name, mode: mode.name, detail: `alias ${alias.id} does not resolve`,
-          })
-        }
-      } else {
-        literals++
       }
-    }
-    if (aliases > 0 && literals > 0) {
+      if (matches(variable.name, ignore)) continue
+      const kinds = classifyModeColumns(values, modeIds, unresolved, aliasOnly.has(collection.id))
+      if (kinds.length === 0) continue
+      flagged++
+      const byMode: Record<string, string> = {}
+      for (const modeId of modeIds) byMode[modeName.get(modeId)!] = await describeCached(values[modeId], lookups)
       findings.push({
-        kind: 'MIXED', variable: variable.name, variableId: variable.id, collection: collection.name,
-        detail: `${aliases} alias mode(s), ${literals} literal mode(s)`,
+        collection: collection.name,
+        remote: collection.remote,
+        variable: variable.name,
+        variableId: variable.id,
+        kinds,
+        values: byMode,
       })
     }
-    if (literals > 0 && aliases === 0 && matches(collection.name, aliasOnly)) {
-      findings.push({
-        kind: 'LITERAL', variable: variable.name, variableId: variable.id, collection: collection.name,
-        detail: `all ${literals} populated mode(s) are literals in an alias-only collection`,
+    summary.push({
+      collection: collection.name,
+      remote: collection.remote,
+      modes: modeIds.length,
+      variables: collection.variableIds.length,
+      read,
+      ...(unreadable ? { unreadable } : {}),
+      ...(incomplete ? { incomplete: true } : {}),
+      flagged,
+    })
+  }
+  const counts: Record<string, number> = {}
+  for (const finding of findings) {
+    for (const kind of finding.kinds as AuditKind[]) counts[kind] = (counts[kind] ?? 0) + 1
+  }
+  const ranOut = skippedLibrary > 0 && includeRemote
+  return {
+    clean: findings.length === 0 && !ranOut && networkFailures === 0,
+    total: findings.length,
+    counts,
+    collections: summary,
+    findings,
+    libraries: {
+      enabled: includeRemote,
+      read: [...lookups.keys()].filter(isLibraryId).length,
+      errors: networkFailures,
+      timedOut: ranOut,
+    },
+    ms: { local: localMs, total: Date.now() - started },
+    ...(ranOut
+      ? {
+          stoppedOn: 'budgetMs',
+          skippedLibrary,
+          note: 'the library half was incomplete; rerun with a larger budgetMs or name one collection',
+        }
+      : {}),
+    ...(networkFailures
+      ? {
+          networkFailures,
+          networkNote: 'the library service did not answer some lookups; those aliases were not judged or flagged',
+        }
+      : {}),
+  }
+}
+
+async function describeExtension(collection: ExtendedVariableCollection) {
+  const modeNames = new Map(collection.modes.map((mode) => [mode.modeId, mode.name]))
+  const overrides: Array<{ variable: string; mode: string; value: string }> = []
+  for (const [variableId, byMode] of Object.entries(collection.variableOverrides ?? {})) {
+    const variable = await figma.variables.getVariableByIdAsync(variableId)
+    for (const [modeId, value] of Object.entries(byMode)) {
+      overrides.push({
+        variable: variable?.name ?? variableId,
+        mode: modeNames.get(modeId) ?? modeId,
+        value: await describeValue(value),
       })
     }
   }
-
-  const counts = findings.reduce<Record<string, number>>((out, finding) => {
-    out[finding.kind] = (out[finding.kind] ?? 0) + 1
-    return out
-  }, {})
   return {
-    clean: findings.length === 0 && networkErrors === 0 && !timedOut,
-    collections: selected.map((collection) => ({ id: collection.id, name: collection.name })),
-    variables: allVariables.filter((variable) => collectionById.has(variable.variableCollectionId)).length,
-    counts,
-    findings,
-    libraries: { enabled: includeLibraries, read: remoteCache.size, errors: networkErrors, timedOut },
-    ms: Date.now() - started,
+    id: collection.id,
+    name: collection.name,
+    parentVariableCollectionId: collection.parentVariableCollectionId,
+    rootVariableCollectionId: collection.rootVariableCollectionId,
+    modes: collection.modes,
+    variables: collection.variableIds.length,
+    overrides,
   }
 }
 
@@ -410,8 +552,30 @@ export const ADMIN_OPS: readonly OpDef[] = [
         if (plan.remove) return { collection: plan.id, removed: !collection, ok: !collection }
         const expectedName = plan.newName ?? plan.before.name
         const expectedHidden = plan.hiddenFromPublishing ?? plan.before.hiddenFromPublishing
-        const ok = Boolean(collection && collection.name === expectedName && collection.hiddenFromPublishing === expectedHidden)
-        return { collection: plan.id, ok, after: collection ? { name: collection.name, hiddenFromPublishing: collection.hiddenFromPublishing, modes: collection.modes } : null }
+        const problems: string[] = []
+        if (!collection) {
+          problems.push('collection disappeared')
+        } else {
+          if (collection.name !== expectedName) problems.push(`name is "${collection.name}", not "${expectedName}"`)
+          if (collection.hiddenFromPublishing !== expectedHidden) problems.push('hiddenFromPublishing did not change')
+          for (const step of plan.modes) {
+            if (step.kind === 'rename' && !collection.modes.some((mode) => mode.modeId === step.modeId && mode.name === step.after)) {
+              problems.push(`mode "${step.after}" is missing after the rename`)
+            }
+            if (step.kind === 'add' && !collection.modes.some((mode) => mode.name === step.name)) {
+              problems.push(`mode "${step.name}" was not added`)
+            }
+            if (step.kind === 'remove' && collection.modes.some((mode) => mode.modeId === step.modeId)) {
+              problems.push(`mode "${step.before}" is still present`)
+            }
+          }
+        }
+        return {
+          collection: plan.id,
+          ok: problems.length === 0,
+          after: collection ? { name: collection.name, hiddenFromPublishing: collection.hiddenFromPublishing, modes: collection.modes } : null,
+          ...(problems.length ? { problems } : {}),
+        }
       })
       return { dryRun, changed: results.filter((row) => row.ok).length, failed: results.filter((row) => !row.ok).length, results }
     },
@@ -432,13 +596,16 @@ export const ADMIN_OPS: readonly OpDef[] = [
       const plans = await planPageUpdates(params.pages, params.force === true)
       if (dryRun) return { dryRun, changed: 0, plans }
       figma.commitUndo()
+      const beforeOrder = figma.root.children.map((page) => page.id)
       const pages = new Map(figma.root.children.map((page) => [page.id, page]))
       for (const plan of plans) if (!plan.remove && plan.newName !== undefined) pages.get(plan.id)!.name = plan.newName
       for (const plan of plans) {
         if (!plan.remove) continue
         const page = pages.get(plan.id)!
         if (figma.currentPage.id === page.id) {
-          const next = figma.root.children.find((candidate) => candidate.id !== page.id)
+          const next = figma.root.children.find(
+            (candidate) => candidate.id !== page.id && !plans.some((entry) => entry.remove && entry.id === candidate.id)
+          )
           if (!next) throw new Error('the last page cannot be removed')
           await figma.setCurrentPageAsync(next)
         }
@@ -450,90 +617,174 @@ export const ADMIN_OPS: readonly OpDef[] = [
         if (page) figma.root.insertChild(plan.index, page)
       }
       const roster = [...figma.root.children]
+      const expected = expectedPageOrder(beforeOrder, plans)
+      const actual = roster.map((page) => page.id)
+      const orderOk = actual.length === expected.length && actual.every((id, index) => id === expected[index])
       const results = plans.map((plan) => {
         const page = roster.find((candidate) => candidate.id === plan.id)
         if (plan.remove) return { page: plan.id, removed: !page, ok: !page }
-        const ok = Boolean(page && (plan.newName === undefined || page.name === plan.newName) && (plan.index === undefined || roster.indexOf(page) === plan.index))
+        const expectedIndex = expected.indexOf(plan.id)
+        const ok = Boolean(
+          page &&
+          (plan.newName === undefined || page.name === plan.newName) &&
+          roster.indexOf(page) === expectedIndex
+        )
         return { page: plan.id, ok, after: page ? { name: page.name, index: roster.indexOf(page) } : null }
       })
-      return { dryRun, changed: results.filter((row) => row.ok).length, failed: results.filter((row) => !row.ok).length, results }
+      return {
+        dryRun,
+        changed: results.filter((row) => row.ok).length,
+        failed: results.filter((row) => !row.ok).length + (orderOk ? 0 : 1),
+        results,
+        ...(orderOk ? {} : { problems: ['final page order does not match the validated plan'] }),
+      }
     },
   },
   {
     name: 'variables.extend',
-    summary: 'Create an Enterprise extended collection and manage its variable overrides.',
+    summary: 'Create, read or edit an Enterprise extended collection and its variable overrides.',
     agent:
-      'Enterprise only. A plan failure leaves nothing created; a pricing-tier refusal is returned verbatim. Overrides accept {variable,mode,value}, {variable,mode,remove:true}, or {variable,removeAll:true}.',
+      'Enterprise only. Every override row is resolved and validated before the first write. Overrides accept {variable,mode,value}, {variable,mode,remove:true}, or {variable,removeAll:true}.',
     mutates: true,
     params: {
-      source: { type: 'string', required: true, description: 'Local collection id/name/key or a published library collection key.' },
-      name: { type: 'string', required: true, description: 'Name for the extended collection.' },
+      source: { type: 'string', description: 'Create from this local collection id/name/key or published library collection key.' },
+      name: { type: 'string', description: 'Name for a new extended collection; required with source.' },
+      collection: { type: 'string', description: 'Existing extended collection id or name to read or edit.' },
       overrides: { type: 'json', default: [], description: 'Override actions for inherited variables.' },
-      dryRun: { type: 'boolean', default: false, description: 'Validate the source and override shapes without creating anything.' },
+      dryRun: { type: 'boolean', default: false, description: 'Validate every row and report without writing.' },
     },
     async run(params) {
-      const source = text(params.source, 'source')
-      const name = text(params.name, 'name')
-      const rows = params.overrides === undefined ? [] : (Array.isArray(params.overrides) ? params.overrides : (() => { throw new Error('overrides must be an array') })())
-      const parsed = rows.map((row, index) => object(row, `overrides[${index}]`))
-      for (const [index, row] of parsed.entries()) {
-        text(row.variable, `overrides[${index}].variable`)
-        if (row.removeAll === true) continue
-        text(row.mode, `overrides[${index}].mode`)
-        if (row.remove !== true && row.value === undefined) throw new Error(`overrides[${index}] needs value, remove: true or removeAll: true`)
+      if (params.source !== undefined && params.collection !== undefined) {
+        throw new Error('send source + name to create, or collection to read or edit, not both')
       }
-      let local: VariableCollection | null = null
-      try { local = resolveCollectionFrom(await localCollections(), source, 'source') } catch { local = null }
-      if (params.dryRun === true) return { dryRun: true, source: local ? { id: local.id, name: local.name } : { key: source }, name, overrides: parsed }
-      figma.commitUndo()
-      let extension: ExtendedVariableCollection
-      try {
-        extension = local
-          ? local.extend(name)
-          : await figma.variables.extendLibraryCollectionByKeyAsync(source, name)
-      } catch (error) {
-        const message = errorMessage(error)
-        if (/outside of enterprise plan/i.test(message)) {
-          throw new Error('variables.extend requires an Enterprise Figma plan: ' + message)
+      const creating = params.source !== undefined
+      const dryRun = params.dryRun === true
+      let source: string | undefined
+      let name: string | undefined
+      let context: VariableCollection | null
+      let extension: ExtendedVariableCollection | null = null
+
+      if (creating) {
+        source = text(params.source, 'source')
+        name = text(params.name, 'name')
+        try {
+          context = resolveCollectionFrom(await localCollections(), source, 'source')
+        } catch (error) {
+          if (source.startsWith('VariableCollectionId:')) {
+            context = await resolveCollection(source)
+          } else {
+            if (!isLibraryKey(source)) throw error
+            context = null
+          }
         }
-        throw error
+        if (context && context.remote) {
+          throw new Error(`"${context.name}" is a library collection seen through this file; pass its published key instead`)
+        }
+      } else {
+        context = await resolveCollection(params.collection)
+        if (!context.isExtension) throw new Error(`"${context.name}" is not an extended collection`)
+        extension = context as unknown as ExtendedVariableCollection
       }
-      const inherited = (await Promise.all(extension.variableIds.map((id) => figma.variables.getVariableByIdAsync(id)))).filter((entry): entry is Variable => Boolean(entry))
-      for (const [index, row] of parsed.entries()) {
-        const ref = String(row.variable)
-        const found = inherited.filter((variable) => variable.id === ref || variable.name === ref)
-        if (found.length !== 1) throw new Error(`overrides[${index}].variable "${ref}" ${found.length ? 'is ambiguous' : 'does not exist'}`)
-        const variable = found[0]
+
+      const rawRows = params.overrides === undefined ? [] : params.overrides
+      if (!Array.isArray(rawRows)) throw new Error('overrides must be an array')
+      const planned: Array<{
+        variable: Variable
+        mode?: { modeId: string; name: string }
+        action: 'set' | 'remove' | 'removeAll'
+        value?: VariableValue
+      }> = []
+      const report: Array<Record<string, unknown>> = []
+      let libraryContext: VariableCollection | null = null
+      for (const [index, rawRow] of rawRows.entries()) {
+        const where = `overrides[${index}]`
+        const row = object(rawRow, where)
+        const variableRef = text(row.variable, `${where}.variable`)
+        const variable = await resolveVariableRef(variableRef)
+        if (!context) {
+          libraryContext = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId)
+          if (!libraryContext || libraryContext.key !== source) {
+            throw new Error(`${where}.variable "${variable.name}" is not in the source library collection`)
+          }
+          context = libraryContext
+        }
+        if (!context || !context.variableIds.includes(variable.id)) {
+          throw new Error(`${where}.variable "${variable.name}" is not in "${context?.name ?? 'the source collection'}" or its parent`)
+        }
         if (row.removeAll === true) {
-          extension.removeOverridesForVariable(variable)
+          if (row.remove === true || row.mode !== undefined || row.value !== undefined) {
+            throw new Error(`${where}.removeAll cannot be combined with mode, value or remove`)
+          }
+          planned.push({ variable, action: 'removeAll' })
+          report.push({ op: 'removeAll', variable: variable.name })
           continue
         }
-        const mode = resolveMode(extension.modes, row.mode, `overrides[${index}].mode`)
-        if (row.remove === true) variable.removeOverrideForMode(mode.modeId)
-        else variable.setValueForMode(mode.modeId, await coerceVariableValue(variable, row.value))
+        const mode = resolveMode(context.modes, row.mode, `${where}.mode`)
+        if (row.remove === true) {
+          if (row.value !== undefined) throw new Error(`${where}.remove cannot be combined with value`)
+          planned.push({ variable, mode, action: 'remove' })
+          report.push({ op: 'remove', variable: variable.name, mode: mode.name })
+          continue
+        }
+        if (row.value === undefined) throw new Error(`${where} needs value, remove: true or removeAll: true`)
+        const value = await coerceVariableValue(variable, row.value)
+        planned.push({ variable, mode, action: 'set', value })
+        report.push({ op: 'override', variable: variable.name, mode: mode.name, value: await describeValue(value) })
       }
-      const roster = await localCollections()
-      const fresh = roster.find((collection) => collection.id === extension.id) as ExtendedVariableCollection | undefined
+
+      if (dryRun) {
+        return {
+          dryRun,
+          created: false,
+          source: creating ? (context ? { id: context.id, name: context.name } : { key: source }) : undefined,
+          name,
+          steps: report,
+          ...(extension ? { extension: await describeExtension(extension) } : {}),
+        }
+      }
+      if (creating) {
+        figma.commitUndo()
+        try {
+          extension = context && !context.remote
+            ? context.extend(name!)
+            : await figma.variables.extendLibraryCollectionByKeyAsync(source!, name!)
+        } catch (error) {
+          const message = errorMessage(error)
+          if (/enterprise/i.test(message)) {
+            throw new Error(`variables.extend requires an Enterprise Figma plan; nothing was created (${message})`)
+          }
+          throw error
+        }
+      } else if (planned.length > 0) {
+        figma.commitUndo()
+      }
+      for (const step of planned) {
+        if (step.action === 'removeAll') {
+          extension!.removeOverridesForVariable(step.variable)
+          continue
+        }
+        const mode = resolveMode(extension!.modes, step.mode!.name, 'override mode')
+        if (step.action === 'remove') step.variable.removeOverrideForMode(mode.modeId)
+        else step.variable.setValueForMode(mode.modeId, step.value!)
+      }
+      const fresh = await figma.variables.getVariableCollectionByIdAsync(extension!.id) as ExtendedVariableCollection | null
       if (!fresh || !fresh.isExtension) throw new Error('extended collection did not appear in the fresh collection roster')
-      return {
-        dryRun: false,
-        collection: { id: fresh.id, name: fresh.name, parentVariableCollectionId: fresh.parentVariableCollectionId, modes: fresh.modes },
-        overrides: fresh.variableOverrides,
-      }
+      return { dryRun, created: creating, steps: report, extension: await describeExtension(fresh) }
     },
   },
   {
     name: 'variables.audit',
     summary: 'Audit variable modes for missing values, mixed aliases, broken aliases and forbidden literals.',
     agent:
-      'Reads all local variables once. Set aliasOnly to semantic collection names and ignore to exact names or prefix* patterns. Library aliases are checked only when libraries: true; network failures are reported as unread, never as false broken aliases.',
+      'Reads local variables in one batch and follows library aliases by default. Set aliasOnly to semantic collections and ignore to exact names or prefix* patterns. Network failures are reported as unread, never as false broken aliases.',
     mutates: false,
     params: {
-      collections: { type: 'string[]', description: 'Local collection ids or exact names. Empty means every local collection.' },
-      aliasOnly: { type: 'string[]', default: [], description: 'Collection names or prefix* patterns whose variables must contain aliases.' },
+      collections: { type: 'string[]', description: 'Collection ids or case-insensitive names. Empty means every local collection.' },
+      aliasOnly: { type: 'string[]', default: [], description: 'Collection names or ids whose variables must contain aliases.' },
       ignore: { type: 'string[]', default: [], description: 'Exact variable names or prefix* patterns to omit.' },
-      libraries: { type: 'boolean', default: false, description: 'Resolve library alias ids one at a time within the time budget.' },
-      budgetMs: { type: 'number', default: 30000, min: 1000, max: 110000, description: 'Maximum time to start library reads.' },
+      libraries: { type: 'boolean', default: true, description: 'Follow aliases into library collections and audit those collections too.' },
+      singleMode: { type: 'boolean', default: false, description: 'Audit single-mode collections instead of skipping them.' },
+      budgetMs: { type: 'number', default: 60000, min: 1000, max: 110000, description: 'Maximum time to start library reads.' },
     },
     run: auditVariables,
   },

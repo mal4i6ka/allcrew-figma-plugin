@@ -116,6 +116,14 @@ function nativeFindAllWithCriteria(
  *
  * Excludes `root` itself, matching the DFS's default (`includeRoot` restores it either way) —
  * Figma's own method never considers its receiver a match.
+ *
+ * Instance contents are included, exactly as the walk sees them. Measured 16.10 on New Website
+ * Django, frame 2259:129906, its page never opened since launch: TEXT 174 (130 inside instances),
+ * INSTANCE 103 (55 nested), FRAME 253 (136) — the same ids from the index and from the walk,
+ * before and after `page.loadAsync()`, at 0–6 ms against ~350 ms. The flag below is the only
+ * difference it makes: off, the same index also returns invisible instance children (206 TEXT).
+ * So a caller counting nested copies (the instance census) can keep this; a caller that wants
+ * only top-level nodes has to filter, not switch engines.
  */
 export async function findAllByTypes<T extends SceneNode = SceneNode>(
   root: BaseNode,

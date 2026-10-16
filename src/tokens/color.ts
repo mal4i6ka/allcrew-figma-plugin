@@ -220,3 +220,65 @@ export function contrastRatio(a: Rgb, b: Rgb): number {
 export function readableInk(background: Rgb): Rgb {
   return contrastRatio(background, BLACK) >= contrastRatio(background, WHITE) ? BLACK : WHITE
 }
+
+/* ------------------------------------------------------------ source color */
+
+/**
+ * The colour as the designer authored it, when Figma kept that (`sourceColor`, plugin API
+ * 1.142). `r/g/b` beside it are only the projection into the document's profile — a Display P3
+ * red in an sRGB file reads back as plain `#ff0000`, so the authored form is the lossless one.
+ * Every component is 0…1 (OKLCH `l: 0.401` is `40.1%`); hues are degrees. Probed live 16.10.
+ */
+export type SourceColor =
+  | { readonly space: 'SRGB' | 'DISPLAY_P3'; readonly r: number; readonly g: number; readonly b: number }
+  | { readonly space: 'HSL'; readonly h: number; readonly s: number; readonly l: number }
+  | { readonly space: 'HSB'; readonly h: number; readonly s: number; readonly b: number }
+  | { readonly space: 'OKLAB'; readonly l: number; readonly a: number; readonly b: number }
+  | { readonly space: 'OKLCH'; readonly l: number; readonly c: number; readonly h: number }
+
+const SOURCE_SPACES = new Set(['SRGB', 'DISPLAY_P3', 'HSL', 'HSB', 'OKLAB', 'OKLCH'])
+
+/** The `sourceColor` riding on a Figma colour object, or null when there is none to trust. */
+export function sourceColorOf(color: unknown): SourceColor | null {
+  if (!color || typeof color !== 'object') return null
+  const source = (color as { sourceColor?: unknown }).sourceColor
+  if (!source || typeof source !== 'object') return null
+  const space = (source as { space?: unknown }).space
+  if (typeof space !== 'string' || !SOURCE_SPACES.has(space)) return null
+  const finite = Object.entries(source).every(([key, value]) => key === 'space' || (typeof value === 'number' && Number.isFinite(value)))
+  return finite ? (source as SourceColor) : null
+}
+
+const fixed = (value: number, digits: number): string => String(Number(value.toFixed(digits)))
+
+/**
+ * CSS Color 4 for an authored colour that sRGB hex cannot say: `oklch()`, `oklab()`,
+ * `color(display-p3 …)`. Null for SRGB, HSL and HSB: in an sRGB document (the usual web file)
+ * their projection already is the authored colour, and the caller's hex says it shorter.
+ */
+export function sourceColorCss(source: SourceColor, alpha = 1): string | null {
+  const slash = alpha < 1 ? ` / ${fixed(alpha, 4)}` : ''
+  switch (source.space) {
+    case 'OKLCH':
+      return `oklch(${fixed(source.l * 100, 2)}% ${fixed(source.c, 4)} ${fixed(source.h, 2)}${slash})`
+    case 'OKLAB':
+      return `oklab(${fixed(source.l * 100, 2)}% ${fixed(source.a, 4)} ${fixed(source.b, 4)}${slash})`
+    case 'DISPLAY_P3':
+      return `color(display-p3 ${fixed(source.r, 4)} ${fixed(source.g, 4)} ${fixed(source.b, 4)}${slash})`
+    default:
+      return null
+  }
+}
+
+/**
+ * How a reader names the authored colour — the CSS form, which the canvas vocabulary takes back
+ * as a write, so a read round-trips without flattening. HSL is included here (unlike the export,
+ * where its hex is just as exact) because "the designer picked this in HSL" is worth knowing.
+ * Null for SRGB (hex says it) and HSB (CSS has no such function to write back).
+ */
+export function authoredColourText(color: unknown): string | null {
+  const source = sourceColorOf(color)
+  if (!source) return null
+  if (source.space === 'HSL') return `hsl(${fixed(source.h, 2)} ${fixed(source.s * 100, 2)}% ${fixed(source.l * 100, 2)}%)`
+  return sourceColorCss(source)
+}

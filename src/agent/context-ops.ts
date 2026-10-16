@@ -15,6 +15,7 @@
  * Both ops return *paths*, never payloads — see `files.ts` for why.
  */
 
+import { regionFills, summarizeRegions } from '../utils/vector-regions.ts'
 import { emitDjango } from '../targets/django/index.ts'
 import { imageStaticPath } from '../targets/django/html-emitter.ts'
 import { pickBackend, type MotionTrigger } from '../targets/django/motion/backend.ts'
@@ -693,6 +694,9 @@ export const CONTEXT_OPS: readonly OpDef[] = [
 
       const root = await resolveSceneNode(params.nodeId)
       const sceneNodesById = await indexSceneNodes([root])
+      // Where the designer has the timeline parked (Update 132), in seconds — null with no Motion
+      // timeline open. "The keyframe I'm looking at" means the one under it.
+      const playhead = (figma.motion as { playheadPosition?: number }).playheadPosition ?? null
 
       const motionNodes: MotionExportNode[] = []
       for (const node of sceneNodesById.values()) {
@@ -701,7 +705,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       }
 
       if (motionNodes.length === 0) {
-        return { available: true, scanned: sceneNodesById.size, animated: [], files: [] }
+        return { available: true, scanned: sceneNodesById.size, playhead, animated: [], files: [] }
       }
 
       const trigger = params.trigger as MotionTrigger
@@ -723,6 +727,29 @@ export const CONTEXT_OPS: readonly OpDef[] = [
           name: node?.name ?? entry.nodeId,
           type: node?.type ?? null,
           timelines: entry.snapshot.timelines.length,
+          // The styles applied on top of the hand-made tracks, Figma's own and this file's
+          // custom ones, told apart by `type`. A custom one holds its animations and their
+          // timing itself, so all that is set here is where it starts.
+          ...(entry.snapshot.animationStyles.length > 0
+            ? {
+                styles: entry.snapshot.animationStyles.map((style) =>
+                  style.type === 'CUSTOM'
+                    ? {
+                        type: 'CUSTOM',
+                        name: style.name,
+                        styleId: style.styleId,
+                        ...(style.timelineOffset ? { offset: style.timelineOffset } : {}),
+                      }
+                    : {
+                        type: 'FIGMA',
+                        name: style.name,
+                        styleId: style.styleId,
+                        ...(style.duration === undefined ? {} : { duration: style.duration }),
+                        ...(style.timelineOffset ? { offset: style.timelineOffset } : {}),
+                      }
+                ),
+              }
+            : {}),
           ...(decision ? { backend: decision.backend, reason: decision.reason } : {}),
           tracks: await Promise.all(
             tracks.map(async (track) => ({
@@ -754,6 +781,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         return {
           available: true,
           scanned: sceneNodesById.size,
+          playhead,
           target: 'native',
           animated,
           files: [],
@@ -771,6 +799,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       return {
         available: true,
         scanned: sceneNodesById.size,
+          playhead,
         animated,
         gsapPlugins: animation.gsapPlugins,
         files,
@@ -787,8 +816,9 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       'rebuild the stack: the node’s own opacity and blend mode under the paints, the style the paints came from, and ' +
       'a catalogue entry per shader in the stack. A shader paint carries no colour, no stops and no hash — its id and ' +
       'its settings are the whole of it, so they are reported in full, with any variable bound inside them named. ' +
-      'Plugin API 1.141+ supplies property names on the applied shader itself; `named:false` now means an older host or ' +
-      'a shader that omitted that metadata, not that every remote shader must be imported.',
+      'An applied shader hands its own setting names, types and defaults back with the paint, so the usual answer is ' +
+      'named:true without importing anything; where the layer carries no such metadata the settings come back ' +
+      'numbered with named:false — see `shaders[].why`. Read-only: nothing is imported into the file.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'The layer to take apart.' },
@@ -830,10 +860,18 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         return style ? style.name : id
       }
 
+      /* A vector painted per region keeps one stack per region of its network; its node-level
+       * fills read as mixed, which used to make the whole layer look unpainted. */
+      const regionsOf = async (node: SceneNode) => {
+        const regions = regionFills(node)
+        return regions ? summarizeRegions(regions) : null
+      }
+
       const describeLayer = async (node: SceneNode) => {
         const fills = await paintsOf(node, 'fills')
         const strokes = await paintsOf(node, 'strokes')
-        if (!fills && !strokes) return null
+        const regions = await regionsOf(node)
+        if (!fills && !strokes && !regions) return null
         const opacity = (node as unknown as { opacity?: number }).opacity
         const blendMode = (node as unknown as { blendMode?: string }).blendMode
         return {
@@ -849,6 +887,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
             : {}),
           ...(fills ? { fills, fillStyle: await styleName(node, 'fillStyleId') } : {}),
           ...(strokes ? { strokes, strokeStyle: await styleName(node, 'strokeStyleId') } : {}),
+          ...(regions ? { regions } : {}),
         }
       }
 
@@ -890,9 +929,10 @@ export const CONTEXT_OPS: readonly OpDef[] = [
           ? {}
           : {
               why:
-                'Neither the applied shader metadata nor listAvailableShaders() named these settings. ' +
-                'The ids below are stable and go back verbatim on a write; importing the shader can recover ' +
-                'definitions on older hosts, but it is a write and not this op’s to make.',
+                'Neither this layer’s shader metadata nor listAvailableShaders() could name the settings — an ' +
+                'older Figma runtime, or a shader not offered here. The ids below are stable and go back verbatim ' +
+                'on a write; to get names, import the shader into the file first (figma.importShaderById, see ' +
+                '`shader.define`) — a write, and not this op’s to make.',
             }),
       }))
 
@@ -907,13 +947,17 @@ export const CONTEXT_OPS: readonly OpDef[] = [
 
   {
     name: 'shader.define',
-    summary: 'Import a shader by id when an older host or metadata-poor shader cannot name its settings.',
+    summary: 'Import a shader by id so its settings get names — for the reads that come back unnamed.',
     agent:
-      'Plugin API 1.141+ normally puts each setting definition in the applied shader’s `propertyMetadata`, so ' +
-      '`paints.stack` can name a shader without importing it. This write remains for older hosts, shaders that omit ' +
-      'metadata, and workflows that need to materialise a shader before applying it elsewhere. It imports the ids you ' +
-      'name and returns their definitions. Write-gated because `importShaderById` changes the file; a read must never ' +
-      'make that choice. Ids come from `paints.stack` or `SHADER_LIST`.',
+      'An applied shader usually names its own settings: Figma hands the definitions back on the paint/effect ' +
+      '(`propertyMetadata`), so `paints.stack` reports `named: true` with names, types and defaults without any ' +
+      'import. This op is for the leftovers — a runtime old enough not to supply that metadata, or an id you have ' +
+      'but have not applied to anything — where a read can only show opaque setting ids (`2331874402:1925656642`) ' +
+      'and answers `named: false`. It imports the ids you name and returns their definitions. Write-gated because ' +
+      '`importShaderById` materialises the shader into the file — for a shader already on a layer that is a no-op, ' +
+      'but it is the Plugin API call for putting one there, and an op does not get to decide that on the ' +
+      "designer's behalf. Run it once; afterwards every read names the settings, because the shader is then in the " +
+      'catalogue. Ids come from `paints.stack` or `SHADER_LIST`.',
     mutates: true,
     params: {
       shaders: {
@@ -947,6 +991,27 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         /* a sandbox without the shader API — the import below will say so per id */
       }
 
+      // Since API 1.141 an applied shader hands its definitions back on the paint/effect itself,
+      // so an import changes nothing for an id already on this page. Scanned only for a dry run,
+      // because that is the question a dry run is asked.
+      const namedOnCanvas = new Set<string>()
+      if (dryRun) {
+        const note = (entry: unknown) => {
+          const one = entry as { type?: string; id?: unknown; propertyMetadata?: unknown }
+          if (one?.type !== 'SHADER' || typeof one.id !== 'string') return
+          if (one.propertyMetadata && Object.keys(one.propertyMetadata).length > 0) namedOnCanvas.add(one.id)
+        }
+        const visit = (node: SceneNode) => {
+          for (const field of ['fills', 'strokes', 'effects'] as const) {
+            const bag = (node as unknown as Record<string, unknown>)[field]
+            if (Array.isArray(bag)) for (const entry of bag) note(entry)
+          }
+          if ('children' in node) for (const child of node.children) visit(child)
+        }
+        await figma.currentPage.loadAsync()
+        for (const node of figma.currentPage.children) visit(node)
+      }
+
       const results: Array<Record<string, unknown>> = []
       for (const id of ids) {
         const before = offered.get(id)
@@ -956,7 +1021,11 @@ export const CONTEXT_OPS: readonly OpDef[] = [
             ok: true,
             offeredAlready: before !== undefined,
             ...(before ? { name: before.name, kind: before.type, imported: before.imported } : {}),
-            would: before?.propertyDefinitions ? 'nothing — the file already names it' : 'import to read its settings',
+            would: namedOnCanvas.has(id)
+              ? 'nothing — the read already names it'
+              : before?.propertyDefinitions
+                ? 'nothing — the file already names it'
+                : 'import to read its settings',
           })
           continue
         }
@@ -990,9 +1059,10 @@ export const CONTEXT_OPS: readonly OpDef[] = [
               ? {
                   why:
                     'listAvailableShaders() offers nothing in this file, so no id can be imported — including the ' +
-                    'ids of shaders visibly in use here. The names of a shader\'s settings are then unreachable ' +
-                    'through the Plugin API; read them from the shader panel in Figma, or from the source the ' +
-                    'Figma MCP hands out (list_shaders → get_shader).',
+                    'ids of shaders visibly in use here. Read the shader off a layer instead: an applied shader ' +
+                    'carries its own setting names (`paints.stack` → `named: true`). Failing that — an older ' +
+                    'Figma runtime — read them from the shader panel, or from the source the Figma MCP hands out ' +
+                    '(list_shaders → get_shader).',
                 }
               : { offeredIds: [...offered.keys()].slice(0, 20) }),
           })

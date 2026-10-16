@@ -81,6 +81,14 @@ import { fingerprint, sourceSetFingerprint } from './source-set.mjs'
 import { acceptWebSocket } from './websocket.mjs'
 import { matchTab, readDesktopTabs, runRecentHistory } from './desktop-tabs.mjs'
 import { FIDELITY_POLICY } from './design-policy.mjs'
+import {
+  ANALYTICS_MANIFEST,
+  ANALYTICS_OPS,
+  ORG_MANIFEST,
+  ORG_OPS,
+  readOAuth,
+  runOrgOp,
+} from './figma-org.mjs'
 
 /**
  * Logical source-set fingerprint. A repository run hashes bridge.mjs plus every local import;
@@ -576,7 +584,7 @@ function typeOk(type, value) {
  * comes out the moment the plugin publishes an item schema of its own.
  */
 const ROW_SHAPES = {
-  'node.bind': { list: 'bindings', keys: ['node', 'field', 'variable', 'paintIndex'], required: ['node', 'field'] },
+  'node.bind': { list: 'bindings', keys: ['node', 'field', 'variable', 'paintIndex', 'region'], required: ['node', 'field'] },
 }
 
 function checkParams(entry, params) {
@@ -1126,10 +1134,9 @@ export const HISTORY_OPS = ['history.recent', 'history.versions', 'history.diff'
 
 export const HISTORY_REFUSALS = {
   'history.activity':
-    'Activity logs need a PLAN access token with `org:activity_log_read`, sent as an OAuth Bearer header — a ' +
-    'personal access token answers 401 no matter its scopes, and the endpoint is organisation-level rather than ' +
-    'per-file. If you have one, call it directly; this channel deliberately does not hold an org-wide credential. ' +
-    'For per-file "who and when", history.versions is the answer that works on any plan.',
+    'Activity logs are organisation-level and require an OAuth grant, not a personal access token. ' +
+    'Use org.activity after running `allcrew-channel auth`. For per-file "who and when", ' +
+    'history.versions works on any plan.',
   'history.developerLogs':
     'Developer logs need a plan access token with `org:developer_log_read`, and they record REST/MCP API REQUESTS ' +
     'rather than design edits — they answer "which token read this file", not "who changed this layer".',
@@ -1252,12 +1259,14 @@ export const HISTORY_MANIFEST = [
     summary: 'Version activity since a time across Figma Desktop files on this machine.',
     mutates: false,
     agent:
-      'Reads open and recently closed file keys from Figma Desktop settings, then lists versions four files at a time. ' +
-      'Default `since` is local midnight. Checkpoints are periodic, not every edit, and plugin writes are attributed to the signed-in user.',
+      'Reads open and up to 15 recently closed files from Figma Desktop settings, or the explicit `files` list. ' +
+      'Default `since` is local midnight. Each touched file includes checkpoint ids so adjacent rows can be passed directly to history.diff.',
     params: {
+      files: { type: 'array', description: 'File keys or Figma URLs. When present, Desktop tabs are not read.' },
+      recent: { type: 'number', default: 15, min: 0, description: 'Recently closed files to scan in addition to every open file.' },
       since: { type: 'string', description: 'ISO date or date-time. Omitted means local midnight.' },
       limit: { type: 'number', default: 50, min: 1, max: 50, description: 'Recent checkpoints fetched per file.' },
-      budgetMs: { type: 'number', default: 120000, min: 1000, max: 170000, description: 'Stop starting file reads after this budget.' },
+      budgetMs: { type: 'number', default: 60000, min: 1000, max: 170000, description: 'Stop starting file reads after this budget.' },
     },
   },
   {
@@ -1678,9 +1687,10 @@ export function restTextRuns(node) {
  */
 const REST_MAX_CONCURRENCY = 4
 const REST_MAX_ATTEMPTS = 3
+const REST_RETRY_CAP_MS = 20_000
 const REST_TREE_TTL_MS = Math.max(
   0,
-  Number(process.env.ALLCREW_CHANNEL_REST_TREE_TTL_MS || process.env.ALTERY_REST_TREE_TTL_MS || 30_000)
+  Number(process.env.ALLCREW_CHANNEL_REST_TREE_TTL_MS || 30_000)
 )
 let restActive = 0
 const restWaiters = []
@@ -1697,6 +1707,13 @@ async function withRestSlot(run) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+export function retryAfterMs(header, attempt) {
+  if (header === null || header === undefined || String(header).trim() === '') return 1000 * 2 ** attempt
+  const seconds = Number(header)
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+  const date = Date.parse(String(header))
+  return Number.isNaN(date) ? 1000 * 2 ** attempt : Math.max(0, date - Date.now())
+}
 
 async function restFetch(route, { method = 'GET', body } = {}) {
   const token = figmaToken()
@@ -1726,9 +1743,14 @@ async function restFetch(route, { method = 'GET', body } = {}) {
         `${tier ? ` (plan: ${tier})` : ''}`
       )
     }
-    const retryHeader = response.headers.get('retry-after')
-    const seconds = retryHeader === null ? 1 : Number(retryHeader)
-    const waitMs = Math.min(20_000, Math.max(0, Number.isFinite(seconds) ? seconds * 1000 : 1000))
+    const waitMs = retryAfterMs(response.headers.get('retry-after'), attempt - 1)
+    if (waitMs > REST_RETRY_CAP_MS) {
+      const tier = response.headers.get('x-figma-plan-tier')
+      throw new Error(
+        `Figma REST 429 on ${method} ${route} — rate limited, Figma asks to retry in ${Math.ceil(waitMs / 1000)} s` +
+        `${tier ? ` (plan: ${tier})` : ''}`
+      )
+    }
     await sleep(waitMs)
   }
   throw new Error(`Figma REST retry loop exhausted for ${method} ${route}`)
@@ -1736,8 +1758,8 @@ async function restFetch(route, { method = 'GET', body } = {}) {
 
 async function restFileTree(key) {
   const cached = restTreeCache.get(key)
-  if (cached?.value && Date.now() - cached.at < REST_TREE_TTL_MS) return cached.value
-  if (cached?.promise) return await cached.promise
+  if (cached?.value && Date.now() - cached.at < REST_TREE_TTL_MS) return { tree: cached.value, cached: true }
+  if (cached?.promise) return { tree: await cached.promise, cached: true }
   const entry = cached || { at: 0, value: null, promise: null }
   entry.promise = restFetch(`/v1/files/${encodeURIComponent(key)}?depth=2`)
     .then((value) => {
@@ -1747,7 +1769,7 @@ async function restFileTree(key) {
     })
     .finally(() => { entry.promise = null })
   restTreeCache.set(key, entry)
-  return await entry.promise
+  return { tree: await entry.promise, cached: false }
 }
 
 /** A REST read that is allowed to fail: the library endpoints need a scope a personal token
@@ -1944,13 +1966,14 @@ async function restCall(op, params = {}, fileKey) {
   }
 
   if (op === 'page.frames') {
-    const file = await restFileTree(key)
-    const pages = file.document?.children || []
+    const { tree, cached } = await restFileTree(key)
+    const pages = tree.document?.children || []
     const page = params.pageId ? pages.find((entry) => entry.id === params.pageId) : pages[0]
     if (!page) throw new Error(`no page ${params.pageId || '(first)'} in this file`)
     return {
       page: { id: page.id, name: page.name },
       frames: (page.children || []).map((frame) => restNodeSummary(frame, 1)),
+      ...(cached ? { cached: true } : {}),
     }
   }
 
@@ -1965,16 +1988,31 @@ async function restCall(op, params = {}, fileKey) {
   }
 
   if (op === 'node.find') {
-    const file = await restFetch(`/v1/files/${key}?depth=${Number(params.depth) || 4}`)
     const needle = String(params.name || '').toLowerCase()
-    const types = Array.isArray(params.types) ? params.types : null
+    const said = typeof params.text === 'string' && params.text.trim() ? params.text.replace(/\s+/g, ' ').trim().toLowerCase() : null
+    const types = said ? ['TEXT'] : Array.isArray(params.types) ? params.types : null
+    // Text lives at the leaves, so a text search needs the whole tree, not the shallow default.
+    // `within` reads one subtree instead of the file, which keeps that affordable.
+    let roots
+    if (params.within) {
+      const answer = await restFetch(`/v1/files/${key}/nodes?ids=${encodeURIComponent(params.within)}`)
+      const entry = Object.values(answer.nodes || {})[0]
+      if (!entry) throw new Error(`no node ${params.within} in this file`)
+      roots = [entry.document]
+    } else {
+      const file = await restFetch(`/v1/files/${key}${said ? '' : `?depth=${Number(params.depth) || 4}`}`)
+      roots = [file.document]
+    }
     const found = []
-    restWalk(file.document, (node) => {
-      if (found.length >= (Number(params.limit) || 50)) return
-      if (needle && !String(node.name || '').toLowerCase().includes(needle)) return
-      if (types && !types.includes(node.type)) return
-      found.push({ id: node.id, name: node.name, type: node.type })
-    })
+    for (const root of roots) {
+      restWalk(root, (node) => {
+        if (found.length >= (Number(params.limit) || 50)) return
+        if (needle && !String(node.name || '').toLowerCase().includes(needle)) return
+        if (types && !types.includes(node.type)) return
+        if (said && !String(node.characters || '').replace(/\s+/g, ' ').toLowerCase().includes(said)) return
+        found.push({ id: node.id, name: node.name, type: node.type, ...(said ? { text: String(node.characters).slice(0, 160) } : {}) })
+      })
+    }
     return { count: found.length, nodes: found }
   }
 
@@ -2202,6 +2240,18 @@ async function restCall(op, params = {}, fileKey) {
  * shares: at a second an op, thirty-two is comfortably inside 180s, and a caller with more work
  * than that wants several batches and the chance to look at what the first one did. */
 const MAX_BATCH = 32
+async function fileKeyForPlugin(plugin) {
+  if (!plugin) return null
+  if (plugin.fileKey) return plugin.fileKey
+  const found = await desktopKeyFor(plugin.file, plugin.pages)
+  if (found.key) {
+    plugin.fileKey = found.key
+    plugin.fileKeyVia = found.via
+    plugin.fileKeyCandidates = found.candidates
+  }
+  return found.key || null
+}
+
 
 /**
  * A history op, gated like a read and costed out loud.
@@ -2257,7 +2307,7 @@ async function runHistory(op, body) {
     return (answer && answer.document) || null
   }
   try {
-    const fileKey = body.fileKey || params.fileKey || plugin?.fileKey
+    const fileKey = body.fileKey || params.fileKey || (await fileKeyForPlugin(plugin))
     const result = await runHistoryOp(op, params, { fileKey, listVersions, fetchVersion })
     return { code: 200, body: { ok: true, op, source: 'rest', result } }
   } catch (err) {
@@ -2353,7 +2403,8 @@ async function runComments(op, body) {
     /* `body` is the /call envelope — the op's own arguments are in `body.params`. `fileKey` is
      * read from the envelope too, so a batch that names the file once still reaches every call. */
     const params = body.params && typeof body.params === 'object' ? body.params : {}
-    const result = await runCommentOp(op, params, { fileKey: body.fileKey || params.fileKey || plugin?.fileKey, aim })
+    const fileKey = body.fileKey || params.fileKey || (await fileKeyForPlugin(plugin))
+    const result = await runCommentOp(op, params, { fileKey, aim })
     return { code: 200, body: { ok: true, op, source: 'rest', result } }
   } catch (err) {
     const message = (err && err.message) || String(err)
@@ -2373,6 +2424,28 @@ async function runComments(op, body) {
           'both are chosen when the token is created and cannot be added later'
         : ''
     return { code: code === 'unauthorized' ? 401 : 400, body: { ...fail(code, message + hint), op, source: 'rest' } }
+  }
+}
+
+async function runOrg(op, body) {
+  const grant = readOAuth()
+  try {
+    const params = body.params && typeof body.params === 'object' ? body.params : {}
+    const result = await runOrgOp(op, params, {
+      pat: figmaToken(),
+      oauth: grant.state === 'fresh' || grant.state === 'env' ? grant.accessToken : '',
+    })
+    return { code: 200, body: { ok: true, op, source: 'rest', result } }
+  } catch (err) {
+    const message = (err && err.message) || String(err)
+    const code = /OAuth grant, not a personal access token|allcrew-channel auth/.test(message)
+      ? 'rest_unavailable'
+      : /Invalid scope|requires the .* scope|\b401\b/.test(message)
+        ? 'unauthorized'
+        : /needs (teamId|projectId)|must be one of|is not a date|needs the LIBRARY/.test(message)
+          ? 'param_invalid'
+          : 'figma_threw'
+    return { code: code === 'unauthorized' ? 401 : 400, body: { ...fail(code, message), op, source: 'rest' } }
   }
 }
 
@@ -2401,6 +2474,8 @@ async function runCall(body) {
     return { code: 400, body: { ...fail('rest_unavailable', HISTORY_REFUSALS[op]), op } }
   }
   if (HISTORY_OPS.includes(op)) return runHistory(op, body)
+
+  if (ORG_OPS.includes(op) || ANALYTICS_OPS.includes(op)) return runOrg(op, body)
 
   /* REST before the roster: either the caller addressed a file key outright, or nothing is
    * open and a default key is configured. The answer is marked `source: "rest"` — an agent
@@ -2739,16 +2814,18 @@ const ROUTES = {
     /* Comment ops ride along in every view. They are not the plugin's and not the REST
      * fallback's — they are the bridge's own, and a client that cannot see them in the manifest
      * has no way to learn the channel can annotate a design at all. */
-    const withComments = (ops) => [
+    const withBridgeOps = (ops) => [
       ...ops,
       ...COMMENT_MANIFEST.map((op) => ({ ...op, source: 'rest' })),
       ...HISTORY_MANIFEST.map((op) => ({ ...op, source: 'rest' })),
+      ...ORG_MANIFEST.map((op) => ({ ...op, source: 'rest' })),
+      ...ANALYTICS_MANIFEST.map((op) => ({ ...op, source: 'rest' })),
     ]
     const target = url.searchParams.get('target')
     if (target) {
       const found = resolveTarget(target)
       if (found.error) return { code: 404, body: fail('ambiguous_target', found.error, { files: found.candidates || [] }) }
-      return { code: 200, body: { ...describe(found.plugin), policy: FIDELITY_POLICY, ops: withComments(found.plugin.ops || []) } }
+      return { code: 200, body: { ...describe(found.plugin), policy: FIDELITY_POLICY, ops: withBridgeOps(found.plugin.ops || []) } }
     }
     if (roster().length === 0) {
       // Nothing open: say what REST can still answer rather than an empty list that reads as
@@ -2761,13 +2838,13 @@ const ROUTES = {
           files: [],
           source: 'rest',
           policy: FIDELITY_POLICY,
-          ops: withComments(REST_OPS.map((name) => ({ name, mutates: false, source: 'rest' }))),
+          ops: withBridgeOps(REST_OPS.map((name) => ({ name, mutates: false, source: 'rest' }))),
           refuses: { ...REST_REFUSALS, ...COMMENT_REFUSALS, ...HISTORY_REFUSALS },
           token: Boolean(figmaToken()),
         },
       }
     }
-    const files = roster().map((plugin) => ({ ...describe(plugin), ops: withComments(plugin.ops || []) }))
+    const files = roster().map((plugin) => ({ ...describe(plugin), ops: withBridgeOps(plugin.ops || []) }))
     return { code: 200, body: { online: true, count: files.length, policy: FIDELITY_POLICY, files, refuses: { ...COMMENT_REFUSALS, ...HISTORY_REFUSALS } } }
   },
 
@@ -3054,6 +3131,7 @@ const ROUTES = {
       known.ws = null
       failPending(known, `"${known.handle}" reconnected mid-call`, 'reconnected')
       known.file = file
+      known.pages = Array.isArray(body.pages) ? body.pages : []
       known.fileKey = desktopKey.key || null
       known.fileKeyVia = desktopKey.via || null
       known.fileKeyCandidates = desktopKey.candidates
@@ -3079,6 +3157,7 @@ const ROUTES = {
       session,
       handle: mintHandle(file),
       file,
+      pages: Array.isArray(body.pages) ? body.pages : [],
       fileKey: desktopKey.key || null,
       fileKeyVia: desktopKey.via || null,
       fileKeyCandidates: desktopKey.candidates,
@@ -3378,7 +3457,9 @@ setInterval(() => {
 /* Started only when this file is what was run. Imported — by a test, or by a wrapper that
  * wants the REST helpers — it defines everything and listens on nothing: a second process
  * binding 8788 would take the port away from the bridge the plugin is already talking to. */
-const RUN_AS_MAIN = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false
+const RUN_AS_MAIN = process.argv[1]
+  ? fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url))
+  : false
 
 if (RUN_AS_MAIN) server.listen(PORT, HOST, () => {
   console.log(`AllCrew Figma Workspace listening on http://${HOST}:${PORT}`)

@@ -21,7 +21,7 @@
 import { emitTokenArtifacts } from '../tokens/index.ts'
 import { toTokensTs } from '../tokens/engine.ts'
 import { toAndroidColors, toColorSets, toTokensKotlin, toTokensSwift } from '../tokens/native.ts'
-import { readAllVariables, readLocalVariables } from '../variables.ts'
+import { readAliasTargets, readAllVariables, readLocalVariables } from '../variables.ts'
 import { textFile } from './files.ts'
 import type { OpDef } from './protocol.ts'
 
@@ -69,7 +69,14 @@ export const TOKENS_OPS: readonly OpDef[] = [
       const wants = (target: (typeof PLATFORMS)[number]) => platform === 'all' || platform === target
       const inline = params.inlinePrimitives !== false
       // Local variables come from the file's own graph; libraries are network round trips.
-      const snapshot = params.library === true ? await readAllVariables() : await readLocalVariables()
+      const read = params.library === true ? await readAllVariables() : await readLocalVariables()
+      // Aliases onto variables the read did not cover are followed by id, so a consumer file
+      // never exports `var(--variableid-…)` (see readAliasTargets).
+      const targets = await readAliasTargets(read).catch(() => ({ collections: [], variables: [] }))
+      const snapshot = {
+        collections: [...read.collections, ...targets.collections],
+        variables: [...read.variables, ...targets.variables],
+      }
       const artifacts = emitTokenArtifacts(snapshot, {
         inlinePrimitives: inline,
         flattenAliases: inline,

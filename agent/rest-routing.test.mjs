@@ -83,6 +83,13 @@ test.before(async () => {
       }))
       return
     }
+    if (id === 'rate-date') {
+      res.statusCode = 429
+      res.setHeader('Retry-After', new Date(Date.now() + 30_000).toUTCString())
+      res.setHeader('x-figma-plan-tier', 'enterprise')
+      res.end(JSON.stringify({ err: 'rate limited' }))
+      return
+    }
     if (id === 'rate' && ++rateAttempts < 3) {
       res.statusCode = 429
       res.setHeader('Retry-After', '0')
@@ -145,6 +152,7 @@ test('parallel page.frames calls share one cached file-tree request', async () =
   assert.ok(answers.every((answer) => answer.status === 200))
   assert.equal(answers[0].body.result.frames[0].name, 'Frame One')
   assert.deepEqual(requests, [`/v1/files/${FILE}?depth=2`])
+  assert.ok(answers.slice(1).every((answer) => answer.body.result.cached === true))
 })
 
 test('node.get recursively reports the requested depth, including document pages and frames', async () => {
@@ -162,6 +170,15 @@ test('429 responses honor Retry-After and retry at most through the successful t
   const answer = await call('node.get', { fileKey: FILE, nodeId: 'rate', depth: 1 })
   assert.equal(answer.status, 200)
   assert.equal(rateAttempts, 3)
+})
+
+test('429 HTTP-date waits over the cap fail fast and preserve the plan tier', async () => {
+  const started = Date.now()
+  const answer = await call('node.get', { fileKey: FILE, nodeId: 'rate-date', depth: 1 })
+  assert.equal(answer.status, 400)
+  assert.match(answer.body.error, /asks to retry in \d+ s/)
+  assert.match(answer.body.error, /\(plan: enterprise\)/)
+  assert.ok(Date.now() - started < 2_000)
 })
 
 test('the REST bridge starts at most four Figma requests concurrently', async () => {

@@ -2,6 +2,49 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.11.0 — 2026-10-16
+
+### Added
+
+- Added Figma Plugin API 1.142 colour spaces: colours authored in Display P3, OKLCH, OKLAB, HSL or HSB keep their space — paints, gradient stops and effects read back an `authored` colour, the canvas vocabulary accepts CSS colour functions (parsed by Figma itself), and the token, Django and Smart Animate exports write `oklch()`, `oklab()` or `color(display-p3 …)` instead of flattening to hex. Plain hex output is unchanged.
+- Added organisation and library-analytics ops answered by the bridge over REST: `org.capabilities`, `org.activity` (OAuth), `org.projects`, `org.files`, `library.actions` and `library.usages`, plus the CLI `allcrew-channel auth` OAuth flow (`--status`, `--refresh`). `allcrew-channel activity` now reads the audit log through that grant.
+- Added the design-to-site fidelity tool (`npm run fidelity`, `npm run fidelity:deliver`): compares Figma frames with built pages by text and reports style, position, wrapping, vertical-shift, text-in-image and missing-content findings as an HTML report, ticket drafts carrying the design spec, section comments and a CSS fix brief.
+- Added the `mr` (GitLab merge request) delivery target, dry-run delivery plans with per-file actions and diffs, route `base`/`project`/`title`/`description`, branch guards, and Settings → Delivery target, route, dry-run and **Preview** controls; PR/MR results carry their link.
+- Added `node.find` `text` (search what a TEXT layer says) and `within` (one frame or section); text matches name their top-level frame.
+- Added library styles to `node.style` — by the id `node.get` reports or a published key, imported on first use — and `like: <layer id>` to copy a neighbour's style; writes are verified by style id.
+- Added text-style field binding to `style.bind` (`fontFamily`, `fontStyle`, `fontWeight`, `fontSize`, `lineHeight`, `letterSpacing`, `paragraphSpacing`, `paragraphIndent`).
+- Added `STYLE_MOVE` for reordering paint, text, effect and grid styles or folders; `STYLE_LIST`/`STYLE_REMOVE` accept `kind: animation` for custom animation styles.
+- Added the Motion playhead: `motion.context` reports it and a keyframe `time` may be `"playhead"`.
+- Added per-region paints on vectors: `node.get`/`paints.stack` report `regions`, `node.bind` takes `region`, and `variables.rebind`, `variables.usage` and `lint.colors` reach region paints.
+- Added `component.instances` targeting and scope (`nodeId`, `name`, `exact`, `scope`, `pageId`, `components`, `nested`, `unused`, `budgetMs`) with per-page and per-variant breakdowns; `component.orphans` scope, ranked `restoreFrom` candidates and a `detached` report; `component.restore` placement, relink matching and dry-run listing; `instance.swap` `preserveOverrides`; and the `component.repair` playbook.
+- Added `history.recent` `files` and `recent` params with per-file checkpoint rows, `skipped` and `truncated`.
+- Added a **Collections in the export** list in Settings: each collection's role is picked from a menu (Export, Hide from code, Breakpoints, Separate file, or a DESIGN.md role) instead of typed.
+- Added separate token files per product collection (`<name>.css`, prefixed theme modules) with a cross-product gap summary.
+- Added `TIMING` and `EASING` variable export (milliseconds; `cubic-bezier()` or a sampled `linear()` spring), `text-wrap-style` balance/pretty and `font-variation-settings` in the Django CSS, and binary image assets in the Django regeneration preview and download.
+
+### Changed
+
+- Updated `@figma/plugin-typings` from 1.141.0 to 1.142.0.
+- The token export is shaped for code: themes come only from multi-mode collections (a single `:root` otherwise), non-default theme blocks hold only what they change, alias-only and hidden collections are substituted and dropped, `_`/`.`-prefixed variables stay private, and `--bp-*` come only from breakpoint threshold variables.
+- A consumer file now exports the values it takes from libraries (aliases are resolved by id) instead of `var(--variableid-…)`; **Include library variables** only adds the libraries' own collections and reports progress.
+- Delivery uses one JSON contract (`{ target, dryRun, route, files }`, bytes as `{ base64 }`) from the plugin, the Node receiver and `allcrew-channel receive`; dry run is on by default.
+- Upgraded the component recovery engine: deleted local mains are detected (they are unparented, not `removed`), component properties are carried across mains by name when their keys differ, nested instance properties and text/layout fields are restored, and swaps keep names and export settings.
+- `collections.update`, `pages.update`, `variables.extend` and `variables.audit` match names case-insensitively and verify against a fresh read; `variables.extend` validates every row before writing and can read or edit an existing extension; `variables.audit` follows library aliases by default (`libraries: false` stays local) and skips single-mode collections unless `singleMode: true`.
+- REST 429 handling reads HTTP-date `Retry-After`, backs off exponentially without one, and fails fast on waits over 20 s; cached `page.frames` answers say `cached: true`; a file key missing at hello is looked up again at call time.
+- Shader settings fall back per setting from applied `propertyMetadata` to the catalogue; variable-font validation names the offending key or axis tag.
+- An unknown canvas property is answered with the name the vocabulary uses.
+
+### Fixed
+
+- Fixed the release archive's `tools/bridge.mjs` and `tools/mcp.mjs`, which imported sibling modules the archive does not ship; both are now self-contained bundles.
+- Fixed plugin-to-receiver delivery, which sent zip bodies the receiver could not parse.
+- Fixed `selectionchange` throwing when a selected node was swapped or deleted under the panel.
+- Fixed hidden primitive layers deleting the semantic tokens that alias them.
+- Fixed distributed auto-layout wraps losing their cross-axis gap in the CSS export.
+- Fixed composed colour variables exporting as `[object Object]`.
+- Fixed video export of a nested layer, which now names the top-level frame that can export it.
+- Fixed `code.ts` being detected as binary because of literal NUL separators.
+
 ## 1.10.0 — 2026-10-07
 
 ### Added

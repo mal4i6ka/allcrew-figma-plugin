@@ -13,7 +13,9 @@ type DecorationMetric = { readonly value: number; readonly unit: 'PIXELS' | 'PER
 
 export interface TextStyleSegment {
   readonly characters: string
-  readonly fontName: { readonly family: string; readonly style: string }
+  /** `variationSettings` (Update 138) is present only for a variable font, and then carries every
+   * axis the family defines — not just the ones the designer moved. */
+  readonly fontName: { readonly family: string; readonly style: string; readonly variationSettings?: { readonly [axis: string]: number } }
   readonly fontSize: number
   readonly fontWeight: number
   readonly lineHeight: { readonly value: number; readonly unit: 'PIXELS' | 'PERCENT' } | { readonly unit: 'AUTO' }
@@ -37,6 +39,8 @@ export interface TextStyleSegment {
   readonly listOptions?: { readonly type: 'ORDERED' | 'UNORDERED' | 'NONE' }
   /** Nested-list depth (`getRangeIndentation`), 0 for a non-nested item. */
   readonly indentation?: number
+  /** Paragraph-level line breaking (Update 134) — `AUTO` is the browser's own greedy wrap. */
+  readonly textWrapStyle?: 'AUTO' | 'BALANCE' | 'PRETTY'
 }
 
 export const TEXT_SEGMENT_FIELDS = [
@@ -56,6 +60,7 @@ export const TEXT_SEGMENT_FIELDS = [
   'hyperlink',
   'listOptions',
   'indentation',
+  'textWrapStyle',
 ] as const
 
 /** Node-level properties (not per-range, so not part of `TEXT_SEGMENT_FIELDS`) folded into every
@@ -137,6 +142,18 @@ function openTypeFeatureSettingsCss(features: TextStyleSegment['openTypeFeatures
   return tags.map((tag) => `"${tag.toLowerCase()}" ${features[tag] ? 1 : 0}`).join(', ')
 }
 
+/** A variable font's axis values as `font-variation-settings`. Figma reports every axis the family
+ * defines, so the font's defaults ride along — written out anyway, because the CSS default is the
+ * font file's own default instance, and that is not necessarily the named style Figma started from.
+ * Tags stay as Figma spells them: registered axes are lowercase, custom ones uppercase, and CSS
+ * matches them case-sensitively. */
+function fontVariationSettingsCss(settings: TextStyleSegment['fontName']['variationSettings']): string | null {
+  if (!settings) return null
+  const tags = Object.keys(settings).sort()
+  if (tags.length === 0) return null
+  return tags.map((tag) => `"${tag}" ${settings[tag]}`).join(', ')
+}
+
 /** Generic CSS family a Figma font degrades to when it isn't installed on the viewing machine —
  * font binaries can't be exported through the Plugin API, so the fallback keeps metrics in the
  * right ballpark (mono stays mono, serifs stay serifs) instead of the browser default. */
@@ -174,6 +191,8 @@ export function segmentToDeclarations(segment: TextStyleSegment, overrides: Text
     if (segment.textDecorationSkipInk === true) declarations.push('text-decoration-skip-ink: auto;')
     else if (segment.textDecorationSkipInk === false) declarations.push('text-decoration-skip-ink: none;')
   }
+  const variationSettings = fontVariationSettingsCss(segment.fontName.variationSettings)
+  if (variationSettings) declarations.push(`font-variation-settings: ${variationSettings};`)
   const featureSettings = openTypeFeatureSettingsCss(segment.openTypeFeatures)
   if (featureSettings) declarations.push(`font-feature-settings: ${featureSettings};`)
   // `text-box-trim`/`text-box-edge` (2025 CSS baseline) and `hanging-punctuation` (Safari only)
@@ -186,6 +205,34 @@ export function segmentToDeclarations(segment: TextStyleSegment, overrides: Text
   }
   if (overrides.color) declarations.push(`color: ${overrides.color};`)
   return declarations
+}
+
+const TEXT_WRAP_CSS: Record<string, string> = { BALANCE: 'balance', PRETTY: 'pretty' }
+
+/**
+ * `textWrapStyle` as `text-wrap-style` rules — the longhand, because the `text-wrap` shorthand also
+ * resets `text-wrap-mode` and would undo the `white-space: nowrap` a hugging or truncated box sets.
+ * It belongs to a paragraph, and it only takes effect on a block — the segment `<span>`s can't carry it, the `<p>`/`<li>` must.
+ *
+ * Every paragraph element carries the base class, so one style across the whole node is a single
+ * rule on that class. When paragraphs differ, a paragraph is picked out by the segment it holds:
+ * Figma splits style runs wherever the wrap style changes, so a run never straddles two paragraphs
+ * that disagree. `AUTO` everywhere returns nothing — it is the browser's default.
+ */
+export function textWrapRules(baseClassName: string, segments: readonly Pick<TextStyleSegment, 'characters' | 'textWrapStyle'>[]): string[] {
+  const styles = new Set(segments.filter((s) => s.characters.trim() !== '').map((s) => s.textWrapStyle ?? 'AUTO'))
+  if (styles.size === 1) {
+    const css = TEXT_WRAP_CSS[[...styles][0]]
+    return css ? [`.${baseClassName} {\n  text-wrap-style: ${css};\n}`] : []
+  }
+  const rules: string[] = []
+  for (const [style, css] of Object.entries(TEXT_WRAP_CSS)) {
+    const selectors = segments
+      .map((segment, index) => (segment.textWrapStyle === style ? `.${baseClassName}:has(.${segmentClassName(baseClassName, index)})` : null))
+      .filter((selector): selector is string => selector !== null)
+    if (selectors.length > 0) rules.push(`${selectors.join(',\n')} {\n  text-wrap-style: ${css};\n}`)
+  }
+  return rules
 }
 
 /** Returns one full CSS rule string per distinct style range in `segments`. */

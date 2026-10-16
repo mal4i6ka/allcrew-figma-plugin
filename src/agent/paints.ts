@@ -13,6 +13,8 @@
  * answer could do it. Two descriptions of one thing drift; one cannot.
  */
 
+import { authoredColourText } from '../tokens/color.ts'
+
 /** One paint in a stack, described so it can be acted on: what it renders, whether it is
  * bound, and its index — the same index `node.bind` and `lint.colors` use. */
 export interface PaintSummary {
@@ -21,6 +23,9 @@ export interface PaintSummary {
   index: number
   /** `#RRGGBB`. Solid paints only; a gradient carries its colours per stop. */
   color?: string
+  /** The colour as the designer authored it (`oklch(…)`, `color(display-p3 …)`, `hsl(…)`), when
+   * that is not sRGB hex — `color` is then only its sRGB projection. API 1.142 `sourceColor`. */
+  authored?: string
   /** Only when the paint is not fully opaque — an absent `alpha` means 1. */
   alpha?: number
   /** Present only when the paint is hidden — an invisible paint is not a lint finding. */
@@ -101,6 +106,8 @@ export interface PaintStopSummary {
   /** Percent along the gradient — the unit a `pNN` token name is written in. */
   position: number
   color: string
+  /** As on `PaintSummary`: the authored colour when hex is only its projection. */
+  authored?: string
   alpha?: number
   bound: string | null
 }
@@ -108,18 +115,23 @@ export interface PaintStopSummary {
 /**
  * A shader paint or effect, as far as this file can describe it.
  *
- * In Plugin API 1.141+, applied shader paints and effects carry `propertyMetadata`, so property
- * names are available without importing the shader. Older hosts and synthetic inputs may omit
- * it; the optional shader catalogue remains the fallback, and `named` says when neither source
- * could name the settings.
+ * The uniform ids are opaque (`2331874402:1925656642`) and mean nothing on their own. An
+ * applied shader carries its own `propertyMetadata` (API 1.141) — name, type, default and
+ * description per id — so a read usually names the settings without importing anything; where
+ * that is missing (older runtime, or an id that is not on a layer) the names only live in the
+ * shader's `propertyDefinitions`, which `listAvailableShaders()` and `importShaderById()` hand
+ * out and which come back empty on a file that merely *uses* a shader it did not author.
+ * `named` says plainly whether the settings below are named or just numbered — silently
+ * reporting ids as if they were the whole answer is what made a shader layer look like a paint
+ * with nothing in it.
  */
 export interface ShaderSummary {
   /** The id that puts this shader, and no other, on another layer. */
   id: string
   name?: string
   kind?: 'fill' | 'effect'
-  /** False when the file could not name the settings — then `properties[].name` is absent and
-   * the ids are all there is. */
+  /** False when nothing — neither the layer's own metadata nor the catalogue — could name the
+   * settings; then `properties[].name` is absent and the ids are all there is. */
   named: boolean
   properties?: ShaderPropertySummary[]
 }
@@ -131,6 +143,11 @@ export interface ShaderPropertySummary {
   name?: string
   /** NUMBER, COLOR, GRADIENT, POINT, … — the shape `value` is in. */
   type?: string
+  /** The author's default, when the metadata carries one — what the setting is worth leaving
+   * alone at. */
+  default?: unknown
+  /** The author's own words for the setting, when there are any. */
+  description?: string
   /** The value as Figma holds it. Variable aliases inside it — a gradient stop bound to a
    * token, a colour bound to one — are replaced by `{ token, id }`, because an id alone
    * cannot be read and a name alone cannot be written back. */
@@ -202,8 +219,16 @@ async function nameAliasesWithin(value: unknown): Promise<unknown> {
 /**
  * One shader — paint or effect — with its settings.
  *
- * Plugin API 1.141+ supplies `propertyMetadata` on the applied shader itself. `definitions`
- * remains the fallback for older hosts and for callers that already loaded the catalogue.
+ * Names come from the shader's own `propertyMetadata` first: since API 1.141 an APPLIED shader
+ * carries its definitions on the paint/effect itself, so the common case — a file that merely
+ * uses a shader it did not author — is named without importing anything.
+ *
+ * `definitions` is the shader catalogue when the file could produce one, and is the fallback
+ * for what metadata does not cover (an older runtime, or a shader read from somewhere other
+ * than a layer). It stays optional because `listAvailableShaders()` costs a round trip and
+ * comes back empty on exactly those files. When neither names a setting it is reported by id,
+ * and `named: false` says so rather than leaving the reader to wonder why every name is
+ * missing.
  */
 export async function describeShader(
   shader: { id?: unknown; properties?: unknown; propertyMetadata?: unknown },
@@ -211,14 +236,13 @@ export async function describeShader(
 ): Promise<ShaderSummary> {
   const id = typeof shader?.id === 'string' ? shader.id : ''
   const known = definitions?.get(id)
-  const metadata =
-    shader?.propertyMetadata && typeof shader.propertyMetadata === 'object'
-      ? (shader.propertyMetadata as Record<string, ShaderPropertyDefinition>)
-      : null
-  const declared = metadata ?? known?.propertyDefinitions ?? {}
+  const declared = known?.propertyDefinitions ?? {}
+  const metadata = (
+    shader?.propertyMetadata && typeof shader.propertyMetadata === 'object' ? shader.propertyMetadata : {}
+  ) as Record<string, ShaderPropertyDefinition | undefined>
   const out: ShaderSummary = {
     id,
-    named: known !== undefined || Object.keys(declared).length > 0,
+    named: known !== undefined || Object.keys(metadata).length > 0,
     ...(known ? { name: known.name, kind: known.type } : {}),
   }
 
@@ -226,10 +250,12 @@ export async function describeShader(
   if (properties && typeof properties === 'object') {
     const described: ShaderPropertySummary[] = []
     for (const [defId, value] of Object.entries(properties as Record<string, unknown>)) {
-      const definition = declared[defId]
+      const definition = metadata[defId] ?? declared[defId]
       described.push({
         id: defId,
         ...(definition ? { name: definition.name, type: definition.type } : {}),
+        ...(definition?.defaultValue === undefined ? {} : { default: definition.defaultValue }),
+        ...(definition?.description ? { description: definition.description } : {}),
         value: await nameAliasesWithin(value),
       })
     }
@@ -299,6 +325,8 @@ export async function describePaint(
 
   if (paint?.type === 'SOLID' && paint.color) {
     out.color = paintHex(paint.color)
+    const authored = authoredColourText(paint.color)
+    if (authored) out.authored = authored
     // `alpha` predates `opacity` here and means the same thing on a solid. Kept because
     // callers read it; the two never disagree.
     if (typeof paint.opacity === 'number' && paint.opacity < 1) out.alpha = paint.opacity
@@ -316,6 +344,8 @@ export async function describePaint(
         color: paintHex(stop.color),
         bound: await boundTokenName(stop, resolve),
       }
+      const authored = authoredColourText(stop.color)
+      if (authored) described.authored = authored
       if (typeof stop.color?.a === 'number' && stop.color.a < 1) described.alpha = stop.color.a
       out.stops.push(described)
     }

@@ -8,6 +8,7 @@
 
 import { isExportedGraphic } from '../../../utils/graphics.ts'
 import { isBootstrapComponentName, wantsVariantProp, VARIANT_PROP_NAMES } from '../bootstrap/components.ts'
+import { regionFills } from '../../../utils/vector-regions.ts'
 
 /** Default `excessive-nesting` threshold; overridable per team via Settings → lint.maxNestingDepth. */
 export const DEFAULT_MAX_NESTING_DEPTH = 8
@@ -43,6 +44,9 @@ export interface LintFinding {
   paintIndex?: number
   /** Only when the paint is not fully opaque — an absent `alpha` means 1. */
   alpha?: number
+  /** Set when the paint belongs to one region of a vector painted per region (its node-level
+   * fills read as mixed): the `region` argument `node.bind` takes alongside `paintIndex`. */
+  region?: number
 }
 
 /** A non-empty (or mixed, for text) paint-style id: the paints come from a style, which is as
@@ -117,6 +121,26 @@ function checkNodeShallow(node: SceneNode, depth: number, findings: LintFinding[
         rule: 'unbound-fill',
         message: 'Solid fill is not bound to a color variable',
         ...paintDetail(node.fills[unboundFill] as SolidPaint, unboundFill),
+      })
+    }
+  }
+
+  /* A vector painted per region reads its fills as mixed, so the check above never sees it — and
+   * a raw colour there is exactly the one a recolour cannot reach. The first unbound solid paint
+   * of each region is reported, the way the node-level check reports the first of the stack. */
+  const regions = regionFills(node)
+  if (regions) {
+    for (const one of regions) {
+      if (one.fillStyleId) continue
+      const unbound = one.fills.findIndex((fill) => fill.type === 'SOLID' && fill.visible !== false && !paintBound(fill))
+      if (unbound === -1) continue
+      findings.push({
+        nodeId: node.id,
+        nodeName: node.name,
+        rule: 'unbound-fill',
+        message: `Solid fill of region ${one.region} is not bound to a color variable`,
+        ...paintDetail(one.fills[unbound] as SolidPaint, unbound),
+        region: one.region,
       })
     }
   }

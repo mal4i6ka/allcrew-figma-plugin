@@ -14,7 +14,9 @@
  */
 
 import { isRecord } from '../utils/type-guards.ts'
+import { easingToCss, resolveSpringBounce, springToCssLinear } from '../targets/django/easing/index.ts'
 import { toNativeFiles } from './native.ts'
+import { sourceColorCss, sourceColorOf } from './color.ts'
 
 /* ------------------------------------------------------------------ types */
 
@@ -24,6 +26,13 @@ export interface TokenGraphCollection {
   defaultModeId?: string
   modes: Array<{ modeId: string; name: string }>
   generated?: boolean
+  /** Reached only because a token here aliases it — a library collection fetched by id. Its
+   * values are substituted into the tokens that point at it and it is never emitted itself:
+   * the file consumes it, it does not own it. */
+  inlineOnly?: boolean
+  /** A product's own collection while its package is built: it claims token names first, so a
+   * base collection's same-named token is the one that yields. */
+  product?: boolean
 }
 
 export interface TokenGraphVariable {
@@ -70,7 +79,7 @@ export interface TokenGraphEffect {
 export interface TokenGraphTextStyle {
   id: string
   name: string
-  fontName?: { family: string; style: string } | null
+  fontName?: { family: string; style: string; variationSettings?: Record<string, number> } | null
   /** Real weight reported by Figma for the resolved font face. Authoritative — the style-name heuristic is only a fallback. */
   fontWeight?: number
   /** Real italic flag reported by Figma for the resolved font face. */
@@ -95,6 +104,14 @@ export interface W3CToken {
       defaultMode: string
       scopes?: readonly string[]
       codeSyntax?: { WEB?: string; ANDROID?: string; iOS?: string }
+      /** See `TokenGraphCollection.inlineOnly`. */
+      inlineOnly?: true
+      /** A group or name starting with `_` or `.` — Figma's own spelling for "not for consumers"
+       * (`_deprecated/font-size/sm`). The slug drops the underscore, so this is the only record. */
+      private?: true
+      /** Held an alias into a layer of this file that `shapeForCode` hid, and now holds its value
+       * — a semantic token, never a primitive, however raw that value looks. */
+      resolved?: true
     }
   }
 }
@@ -121,6 +138,19 @@ export interface TokenSummary {
   /** Things the package is missing and the reason, in the designer's words - e.g. the library
    * collections a local-only read left out. Absent when there is nothing to say. */
   notes?: string[]
+  /** One per collection with the `product` role: its file, its themes, and the tokens other
+   * products define that it does not. Absent when no collection is a product. */
+  products?: ProductSummary[]
+}
+
+export interface ProductSummary {
+  name: string
+  file: string
+  themes: string[]
+  tokenCount: number
+  /** Tokens (as CSS names) another product defines and this one does not — the ones a component
+   * written against that product would find missing here. */
+  missing: string[]
 }
 
 export interface TokenPackage {
@@ -158,6 +188,9 @@ function figmaColorToCss(value: Record<string, unknown>): string {
   const r = value.r as number, g = value.g as number, b = value.b as number
   if (typeof r !== 'number' || typeof g !== 'number' || typeof b !== 'number') return String(value)
   const a = typeof value.a === 'number' ? value.a : 1
+  const source = sourceColorOf(value)
+  const authored = source && sourceColorCss(source, a)
+  if (authored) return authored
   const toByte = (n: number) => Math.max(0, Math.min(255, Math.round(n * 255)))
   const hex = [toByte(r), toByte(g), toByte(b)].map((n) => n.toString(16).padStart(2, '0')).join('')
   if (a >= 1) return '#' + hex
@@ -169,18 +202,48 @@ function figmaTypeToW3C(type: string | undefined, value: unknown): string {
   if (n === 'COLOR') return 'color'
   if (n === 'FLOAT' || n === 'NUMBER') return 'number'
   if (n === 'BOOLEAN') return 'boolean'
+  if (n === 'TIMING') return 'duration'
+  if (n === 'EASING') return 'easing'
   if (typeof value === 'number') return 'number'
   if (typeof value === 'boolean') return 'boolean'
   if (typeof value === 'string' && /^#|rgb\(|hsl\(/i.test(value.trim())) return 'color'
   return 'string'
 }
 
-function normalizeVariableValue(value: unknown, idToName: Map<string, string>): TokenValue {
+const SPRING_EASINGS = new Set(['GENTLE', 'QUICK', 'BOUNCY', 'SLOW', 'CUSTOM_SPRING'])
+
+/**
+ * Figma's motion variable types (Update 133), as the CSS they stand for.
+ *
+ * A TIMING holds seconds and is written as milliseconds with the unit attached — the engine's
+ * other durations are bare numbers that `cssValue` recognises by NAME, and a TIMING variable needs
+ * no name to be a duration. An EASING holds a curve object, which `String()` turns into
+ * "[object Object]"; it is written as the timing function itself, a spring as its sampled
+ * `linear()`. Returns `undefined` for anything else, aliases included.
+ */
+function motionVariableValue(resolvedType: string | undefined, value: unknown): string | undefined {
+  if (resolvedType === 'TIMING' && typeof value === 'number' && Number.isFinite(value)) {
+    return `${roundEmitted(value * 1000)}ms`
+  }
+  if (resolvedType === 'EASING' && isRecord(value) && typeof value.type === 'string' && value.type !== 'VARIABLE_ALIAS') {
+    const easing = value as unknown as MotionEasing
+    try {
+      return SPRING_EASINGS.has(easing.type) ? springToCssLinear(resolveSpringBounce(easing)).easing : easingToCss(easing)
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
+}
+
+function normalizeVariableValue(value: unknown, idToName: Map<string, string>, resolvedType?: string): TokenValue {
   if (isRecord(value) && 'type' in value && value.type === 'VARIABLE_ALIAS') {
     const id = typeof value.id === 'string' ? value.id : ''
     const name = idToName.get(id)
     return name ? `{${name}}` : `{${id}}`
   }
+  const motion = motionVariableValue(resolvedType, value)
+  if (motion !== undefined) return motion
   if (isRecord(value) && 'r' in value && 'g' in value && 'b' in value) return figmaColorToCss(value)
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value
   return isRecord(value) ? value : String(value != null ? value : '')
@@ -214,9 +277,17 @@ export function resolveCanonicalPaths(
     .map((v) => ({ v, path: natural(v) }))
     .filter((x): x is { v: TokenGraphVariable; path: string[] } => x.path !== null)
     .sort((a, b) => {
+      // A collection the file only reaches through an alias never gets emitted, so it must not
+      // push a name the file owns to `-2`.
+      const rank = (id: string) => {
+        const c = collectionById.get(id)
+        return c?.product ? -1 : c?.inlineOnly ? 1 : 0
+      }
+      const ia = rank(a.v.collectionId)
+      const ib = rank(b.v.collectionId)
       const ca = collectionById.get(a.v.collectionId)?.name ?? ''
       const cb = collectionById.get(b.v.collectionId)?.name ?? ''
-      return ca.localeCompare(cb) || a.v.name.localeCompare(b.v.name) || a.v.id.localeCompare(b.v.id)
+      return ia - ib || ca.localeCompare(cb) || a.v.name.localeCompare(b.v.name) || a.v.id.localeCompare(b.v.id)
     })
   const claimed = new Set<string>()
   const paths = new Map<string, string[]>()
@@ -442,6 +513,45 @@ function addEffectStyleTokens(out: TokenTree, effectStyles: readonly TokenGraphE
 
 /* ------------------------------------------------------------------ graph → W3C tree */
 
+/**
+ * A composed colour (Update 139) as the colour it paints, in one mode.
+ *
+ * Figma keeps a colour and an opacity as two halves, at least one an alias — a palette colour at
+ * a 50% opacity token. Nothing downstream speaks that pair: it reached tokens.css as
+ * "[object Object]". It is resolved here to the flat RGBA instead of a `color-mix()` over two
+ * `var()`s, because the halves are usually primitives, and a flattened or hidden-primitives
+ * package removes exactly the custom properties such an expression would point at. Each half is
+ * read in the mode of the same NAME where its collection has one, so a themed composed colour
+ * still comes out per theme. `undefined` when either half does not resolve.
+ */
+function resolveComposedColor(
+  value: Record<string, unknown>,
+  modeName: string,
+  byId: ReadonlyMap<string, TokenGraphVariable>,
+  collectionById: ReadonlyMap<string, TokenGraphCollection>
+): Record<string, number> | undefined {
+  const literal = (raw: unknown, seen: Set<string>): unknown => {
+    if (!isRecord(raw) || raw.type !== 'VARIABLE_ALIAS' || typeof raw.id !== 'string') return raw
+    if (seen.has(raw.id)) return undefined
+    const target = byId.get(raw.id)
+    if (!target || !isRecord(target.valuesByMode)) return undefined
+    const collection = collectionById.get(target.collectionId)
+    const modeId =
+      (collection?.modes ?? []).find((m) => m.name === modeName)?.modeId ??
+      (collection?.defaultModeId && collection.defaultModeId in target.valuesByMode ? collection.defaultModeId : undefined) ??
+      Object.keys(target.valuesByMode)[0]
+    if (modeId === undefined) return undefined
+    return literal(target.valuesByMode[modeId], new Set(seen).add(raw.id))
+  }
+  const color = literal(value.color, new Set())
+  const opacity = literal(value.opacity, new Set())
+  if (!isRecord(color) || typeof color.r !== 'number' || typeof color.g !== 'number' || typeof color.b !== 'number') return undefined
+  if (typeof opacity !== 'number' || !Number.isFinite(opacity)) return undefined
+  // The opacity half is a percentage, the way Figma's opacity fields are.
+  const base = typeof color.a === 'number' ? color.a : 1
+  return { r: color.r, g: color.g, b: color.b, a: base * Math.min(1, Math.max(0, opacity / 100)) }
+}
+
 export function variablesToW3CMultiMode(graph: TokenGraph): TokenTree {
   const out: TokenTree = {}
   const collections = Array.isArray(graph?.collections) ? graph.collections : []
@@ -452,6 +562,8 @@ export function variablesToW3CMultiMode(graph: TokenGraph): TokenTree {
   const canonicalPaths = resolveCanonicalPaths(variables, collectionById)
   const idToName = new Map<string, string>()
   for (const [id, path] of canonicalPaths) idToName.set(id, path.join('.'))
+  const byId = new Map<string, TokenGraphVariable>()
+  for (const v of variables) if (v && typeof v.id === 'string') byId.set(v.id, v)
 
   for (const variable of variables) {
     const path = canonicalPaths.get(variable.id)
@@ -467,7 +579,11 @@ export function variablesToW3CMultiMode(graph: TokenGraph): TokenTree {
     const byMode: Record<string, TokenValue> = {}
     for (const mode of modes) {
       if (!(mode.modeId in valuesByMode)) continue
-      byMode[mode.name] = normalizeVariableValue(valuesByMode[mode.modeId], idToName)
+      const raw = valuesByMode[mode.modeId]
+      const composed = isRecord(raw) && 'color' in raw && 'opacity' in raw
+        ? resolveComposedColor(raw, mode.name, byId, collectionById)
+        : undefined
+      byMode[mode.name] = normalizeVariableValue(composed ?? raw, idToName, variable.resolvedType)
     }
 
     const defaultModeId =
@@ -481,6 +597,8 @@ export function variablesToW3CMultiMode(graph: TokenGraph): TokenTree {
     const $extensions: W3CToken['$extensions'] = { modes: byMode }
     if (collectionName) {
       $extensions.figma = { collection: collectionName, defaultMode: defaultMode.name }
+      if (collection?.inlineOnly) $extensions.figma.inlineOnly = true
+      if (String(variable.name).split('/').some((segment: string) => /^[_.]/.test(segment.trim()))) $extensions.figma.private = true
       // `ALL_SCOPES` is Figma's "unscoped" default and says nothing — carrying it would let a
       // consumer mistake it for a deliberate restriction.
       const scopes = Array.isArray(variable.scopes)
@@ -609,6 +727,8 @@ const KIND_BY_SCOPE: Readonly<Record<string, TokenKind>> = {
   FONT_FAMILY: 'fontFamily',
   FONT_STYLE: 'fontFamily',
   OPACITY: 'opacity',
+  // Update 139: a FLOAT shown only in colour opacity pickers — a percentage, never a length.
+  COLOR_OPACITY: 'opacity',
   TEXT_CONTENT: 'string',
 }
 
@@ -647,6 +767,7 @@ export function tokenKind(
   if (token) {
     if (token.$type === 'color') return 'color'
     if (token.$type === 'boolean') return 'boolean'
+    if (token.$type === 'duration') return 'duration'
     const figma = token.$extensions?.figma
     const scopes = figma && Array.isArray(figma.scopes) ? figma.scopes : []
     for (const scope of scopes) {
@@ -689,12 +810,20 @@ export function isLengthToken(value: number, path?: readonly string[]): boolean 
   return isLengthKind(tokenKind(undefined, path ?? []), value)
 }
 
-export function cssValue(value: TokenValue, path?: readonly string[]): string {
+/** `token`, when the caller has it, lets Figma's scopes decide the unit the way they already do
+ * for the native packages — without it a `COLOR_OPACITY` or `OPACITY` float with a plain name came
+ * out as pixels here and as a bare number in Swift. */
+export function cssValue(value: TokenValue, path?: readonly string[], token?: Pick<W3CToken, '$type' | '$extensions'>): string {
   const alias = aliasTarget(value)
   if (alias) return `var(--${varName(alias)})`
   if (typeof value === 'number') {
     const rounded = roundEmitted(value)
     if (rounded === 0) return '0'
+    if (token) {
+      const kind = tokenKind(token, path ?? [])
+      if (kind === 'duration') return `${rounded}ms`
+      return isLengthKind(kind, value) ? `${rounded}px` : String(rounded)
+    }
     // A duration is the one numeric kind whose CSS unit is not `px`. Emitting `200px` for
     // `motion/duration/fast` made every `transition-duration` referencing it invalid — the
     // Python port had this right and this side did not, which is what the parity goldens exist
@@ -754,11 +883,19 @@ export function participatesInTheming(token: W3CToken): boolean {
   return names.length >= 2 || isAliasValue(token.$value) || names.some((n) => isAliasValue(modes[n]))
 }
 
+/**
+ * The themes a stylesheet switches between: the modes of collections that HAVE more than one.
+ *
+ * A single-mode collection is not a theme, whatever its one mode is called. Counting every mode
+ * an alias passes through turned a consumer file into six blocks — `Mode 1` from its primitives,
+ * `Light` from a one-mode semantic layer, `Desktop`/`Tablet`/`Mobile` from its breakpoints — each
+ * repeating every variable. With no multi-mode collection there is exactly one theme, the hint.
+ */
 export function themeModesOf(allLeaves: TokenLeaf[], hint?: string): string[] {
   const themes: string[] = []
   for (const entry of allLeaves) {
-    if (!participatesInTheming(entry.token)) continue
     const names = Object.keys(modesOf(entry.token))
+    if (names.length < 2) continue
     for (const name of names) if (themes.indexOf(name) === -1) themes.push(name)
   }
   if (themes.length === 0) {
@@ -915,7 +1052,13 @@ export function inlinePrimitivesTree(tree: TokenTree, flattenAll: boolean): Toke
   for (const e of all) byName.set(e.path.join('.'), e)
 
   const primitive = new Set<string>()
-  for (const e of all) if (!participatesInTheming(e.token) && !isScaleToken(e.token)) primitive.add(e.path.join('.'))
+  // `resolved`: the token pointed at a hidden layer and now holds its value — it is the
+  // semantic token the code asked for, and treating it as a primitive deleted every one another
+  // token referenced (`--colors-action-default`, because the glyph colours point at it).
+  for (const e of all) {
+    if (participatesInTheming(e.token) || isScaleToken(e.token) || e.token.$extensions?.figma?.resolved) continue
+    primitive.add(e.path.join('.'))
+  }
 
   const referenced = new Set<string>()
   const noteRef = (value: TokenValue) => {
@@ -929,9 +1072,9 @@ export function inlinePrimitivesTree(tree: TokenTree, flattenAll: boolean): Toke
     for (const k of Object.keys(modes)) noteRef(modes[k])
   }
 
-  const inline = (value: TokenValue, theme: string, seen: Set<string>, originPath?: string[]): TokenValue => {
+  const inline = (value: TokenValue, theme: string, seen: Set<string>, originPath?: string[], originToken?: W3CToken): TokenValue => {
     if (!isAliasValue(value)) {
-      return originPath && typeof value === 'number' ? cssValue(value, originPath) : value
+      return originPath && typeof value === 'number' ? cssValue(value, originPath, originToken) : value
     }
     const target = aliasTarget(value)!.join('.')
     if (!byName.has(target) || seen.has(target)) return value
@@ -939,7 +1082,7 @@ export function inlinePrimitivesTree(tree: TokenTree, flattenAll: boolean): Toke
     const entry = byName.get(target)!
     const next = new Set(seen)
     next.add(target)
-    return inline(valueForTheme(entry.token, theme), theme, next, entry.path)
+    return inline(valueForTheme(entry.token, theme), theme, next, entry.path, entry.token)
   }
 
   const out: TokenTree = {}
@@ -963,6 +1106,123 @@ export function inlinePrimitivesTree(tree: TokenTree, flattenAll: boolean): Toke
   return out
 }
 
+/* ------------------------------------------------------------------ shape for code */
+
+export interface CodeShapeOptions {
+  /** Collections (by name, any case) whose values are substituted into the tokens that use them
+   * and which are not emitted themselves — a primitive layer the code should never see. */
+  hidden?: readonly string[]
+  /** Collections whose modes are viewport widths, emitted as `--bp-<mode>` rather than as
+   * themes. A collection named `Breakpoints` always is. */
+  breakpoints?: readonly string[]
+  /** Leave the text-style mirror (`--typography-h3-*`) out when the file has a typography scale
+   * to compose text from. */
+  scaleOnly?: boolean
+}
+
+/**
+ * The `Collection roles` setting, read for the two roles that change what is EMITTED (the rest
+ * classify tokens for DESIGN.md — see `parseCollectionRoles`): `Primitives: hidden`,
+ * `Breakpoints: breakpoints`.
+ */
+export function parseCollectionModes(raw: string | undefined): { hidden: string[]; breakpoints: string[]; products: string[] } {
+  const hidden: string[] = []
+  const breakpoints: string[] = []
+  const products: string[] = []
+  for (const pair of String(raw ?? '').split(/[,;\n]+/)) {
+    const separator = pair.indexOf(pair.indexOf(':') !== -1 ? ':' : '=')
+    if (separator === -1) continue
+    const collection = pair.slice(0, separator).trim()
+    const role = pair.slice(separator + 1).trim().toLowerCase()
+    if (!collection) continue
+    if (role === 'hidden' || role === 'hide') hidden.push(collection)
+    else if (role === 'breakpoints' || role === 'breakpoint' || role === 'bp') breakpoints.push(collection)
+    else if (role === 'product') products.push(collection)
+  }
+  return { hidden, breakpoints, products }
+}
+
+/**
+ * The tree as code should see it: only the tokens the file means to hand over.
+ *
+ * Four layers of Figma bookkeeping go: collections reached only through an alias (a library
+ * fetched by id), collections the designer marked hidden, variables named private (`_deprecated/…`)
+ * and the breakpoint collection — whose
+ * tokens are substituted into whatever points at them, so nothing dangles. Breakpoints come back
+ * as `--bp-<mode>` widths, narrowest first, instead of as one theme per viewport. With
+ * `scaleOnly`, the text-style mirror goes too, provided there is a scale left to compose from.
+ */
+export function shapeForCode(graph: TokenGraph, tree: TokenTree, options: CodeShapeOptions = {}): TokenTree {
+  const lower = (name: string) => name.trim().toLowerCase()
+  const hidden = new Set((options.hidden ?? []).map(lower))
+  const bpNames = new Set(['breakpoints', ...(options.breakpoints ?? []).map(lower)])
+  const bpCollections = (graph?.collections ?? []).filter((c) => bpNames.has(lower(c.name)))
+  const dropTextStyles = options.scaleOnly === true && hasTypographyVars(graph)
+
+  const all = leaves(tree)
+  const byName = new Map<string, TokenLeaf>()
+  for (const e of all) byName.set(e.path.join('.'), e)
+
+  const isDropped = (token: W3CToken): boolean => {
+    if (token.$extensions?.figma?.inlineOnly || token.$extensions?.figma?.private) return true
+    const collection = collectionOf(token)
+    if (collection === undefined) return false
+    const name = lower(collection)
+    return hidden.has(name) || bpCollections.some((c) => lower(c.name) === name)
+  }
+  // Whether a token reached its value through a layer the FILE owns and hid — as opposed to only
+  // through a library it consumes. The first makes it a semantic token over a hidden primitive;
+  // the second leaves a primitive a primitive (a consumer file's own `colors/b/800` aliasing the library).
+  let throughOwnLayer = false
+  const resolve = (value: TokenValue, mode: string, seen: Set<string>): TokenValue => {
+    if (!isAliasValue(value)) return value
+    const target = aliasTarget(value)!.join('.')
+    const entry = byName.get(target)
+    if (!entry || !isDropped(entry.token) || seen.has(target)) return value
+    if (!entry.token.$extensions?.figma?.inlineOnly) throughOwnLayer = true
+    const next = new Set(seen)
+    next.add(target)
+    return resolve(valueForTheme(entry.token, mode), mode, next)
+  }
+
+  const out: TokenTree = {}
+  for (const e of all) {
+    if (isDropped(e.token)) continue
+    if (dropTextStyles && collectionOf(e.token) === TEXT_STYLE_COLLECTION) continue
+    const modes = modesOf(e.token)
+    throughOwnLayer = false
+    const newModes: Record<string, TokenValue> = {}
+    for (const k of Object.keys(modes)) newModes[k] = resolve(modes[k], k, new Set())
+    const defMode = collectionDefaultModeOf(e.token) || Object.keys(modes)[0] || ''
+    const $value = resolve(e.token.$value, defMode, new Set())
+    const wasAlias = throughOwnLayer
+    const figma = e.token.$extensions.figma
+    setToken(out, e.path, {
+      ...e.token,
+      $value,
+      $extensions: {
+        ...e.token.$extensions,
+        modes: newModes,
+        ...(figma && wasAlias ? { figma: { ...figma, resolved: true as const } } : {}),
+      },
+    })
+  }
+  for (const coll of bpCollections) {
+    const thresholds = Object.entries(breakpointThresholdsOf(graph, coll)).sort((a, b) => a[1] - b[1])
+    for (const [name, width] of thresholds) {
+      const slug = varName([name])
+      if (!slug) continue
+      const value = `${width}px`
+      setToken(out, ['bp', slug], {
+        $type: 'dimension',
+        $value: value,
+        $extensions: { modes: {}, figma: { collection: coll.name, defaultMode: '' } },
+      })
+    }
+  }
+  return out
+}
+
 /* ------------------------------------------------------------------ theme ordering */
 
 function themeDeclarations(allLeaves: TokenLeaf[], theme: string): string[] {
@@ -981,7 +1241,7 @@ function themeDeclarations(allLeaves: TokenLeaf[], theme: string): string[] {
   for (const col of order) {
     if (labeled && col) lines.push(`  /* ${col} */`)
     for (const entry of groups.get(col)!) {
-      lines.push(`  --${varName(entry.path)}: ${cssValue(valueForTheme(entry.token, theme), entry.path)};`)
+      lines.push(`  --${varName(entry.path)}: ${cssValue(valueForTheme(entry.token, theme), entry.path, entry.token)};`)
     }
   }
   return lines
@@ -1090,11 +1350,23 @@ export function toTokensCss(
   const a = attr || 'data-theme-name'
   const allLeaves = leaves(tree)
   if (allLeaves.length === 0) return ''
-  const blocks = ordered.map((theme) => {
-    const themeSel = `[${a}="${cssAttrValue(theme)}"]`
-    const selector = theme === defaultTheme ? `:root,\n${themeSel}` : themeSel
-    return themeBlock(allLeaves, theme, selector)
-  })
+  // One theme is no theme: a selector for it would only be something a consumer has to set.
+  if (ordered.length <= 1) {
+    const legacyOnly = toLegacyAliasCss(legacyAliasPairs(tree, renames))
+    return themeBlock(allLeaves, defaultTheme, ':root') + '\n' + (legacyOnly === '' ? '' : '\n' + legacyOnly)
+  }
+  // The default block holds every token; another theme's block holds only what it changes, so a
+  // variable that is the same everywhere is written once instead of once per theme.
+  const blocks = ordered
+    .map((theme) => {
+      const themeSel = `[${a}="${cssAttrValue(theme)}"]`
+      if (theme === defaultTheme) return themeBlock(allLeaves, theme, `:root,\n${themeSel}`)
+      const differing = allLeaves.filter(
+        (leaf) => cssValue(valueForTheme(leaf.token, theme), leaf.path, leaf.token) !== cssValue(valueForTheme(leaf.token, defaultTheme), leaf.path, leaf.token)
+      )
+      return differing.length === 0 ? '' : themeBlock(differing, theme, themeSel)
+    })
+    .filter((block) => block !== '')
   // Last, and outside the theme blocks: an alias resolves wherever it is used, so one copy
   // covers every theme.
   const legacy = toLegacyAliasCss(legacyAliasPairs(tree, renames))
@@ -1108,10 +1380,11 @@ export function toThemeModuleCssFiles(tree: TokenTree, ordered: string[], defaul
   const files: Record<string, string> = {}
   if (allLeaves.length === 0) return files
   const used = new Set<string>()
+  const single = ordered.length <= 1
   for (const theme of ordered) {
     const themeSel = wrap(`[${a}="${cssAttrValue(theme)}"]`)
-    const selector = theme === defaultTheme ? `${wrap(':root')},\n${themeSel}` : themeSel
-    const base = varName([theme]) || 'theme'
+    const selector = single ? wrap(':root') : theme === defaultTheme ? `${wrap(':root')},\n${themeSel}` : themeSel
+    const base = single ? 'default' : varName([theme]) || 'theme'
     let name = base
     let n = 2
     while (used.has(name)) name = `${base}-${n++}`
@@ -1178,10 +1451,48 @@ const BP_NAMED_WIDTHS: Record<string, number> = { desktop: 1280, tablet: 768, mo
 const DEFAULT_BREAKPOINTS: Record<string, number> = { Desktop: 1280, Tablet: 768, Mobile: 375 }
 
 export function extractBreakpointTokens(graph: TokenGraph): Record<string, number> {
-  const out: Record<string, number> = {}
-  if (!graph?.collections || !graph?.variables) return out
+  if (!graph?.collections || !graph?.variables) return {}
   const coll = graph.collections.filter((c) => c.name.trim().toLowerCase() === 'breakpoints')[0]
-  if (!coll) return out
+  return coll ? breakpointWidthsOf(graph, coll) : {}
+}
+
+const THRESHOLD_GROUPS = new Set(['breakpoint', 'breakpoints', 'bp', 'min-width'])
+
+/**
+ * The min-widths a layout switches at, as code needs them — never the size of a Figma frame.
+ *
+ * A typical Breakpoints collection holds `Width` = 1440/834/390 per mode: the artboards designers
+ * draw on (desktop, iPad 11", iPhone 15). Exported as `--bp-mobile: 390px` it read as "the mobile
+ * layout starts at 390px", which is nonsense. Thresholds are variables named `breakpoint/<name>`
+ * (or `bp/…`, `min-width/…`), one value whatever the mode. A single-mode collection of plain
+ * numbers is read the old way — there every variable IS a threshold. A mode-based collection with
+ * no threshold variables yields nothing, and the export says so.
+ */
+export function breakpointThresholdsOf(graph: TokenGraph, coll: TokenGraphCollection): Record<string, number> {
+  const out: Record<string, number> = {}
+  const modeId = coll.defaultModeId || coll.modes?.[0]?.modeId || ''
+  const valueOf = (v: TokenGraphVariable): number | undefined => {
+    const value = (v.valuesByMode as Record<string, unknown>)[modeId] ?? Object.values(v.valuesByMode)[0]
+    return typeof value === 'number' && isFinite(value) && value >= 0 ? Math.round(value) : undefined
+  }
+  const numbers = graph.variables.filter((v) => v.collectionId === coll.id && v.resolvedType === 'FLOAT')
+  for (const v of numbers) {
+    const segs = v.name.split('/').map((seg) => seg.trim()).filter(Boolean)
+    if (segs.length < 2 || !THRESHOLD_GROUPS.has(segs[0].toLowerCase())) continue
+    const value = valueOf(v)
+    if (value !== undefined) out[segs.slice(1).join('-').toLowerCase()] = value
+  }
+  if (Object.keys(out).length > 0 || (coll.modes || []).length >= 2) return out
+  for (const v of numbers) {
+    const value = valueOf(v)
+    const segs = v.name.split('/')
+    const key = segs[segs.length - 1].trim().toLowerCase()
+    if (key && value !== undefined && value > 0) out[key] = value
+  }
+  return out
+}
+
+function breakpointWidthsOf(graph: TokenGraph, coll: TokenGraphCollection): Record<string, number> {
   const bpModeNames: Record<string, number> = { desktop: 1, tablet: 1, mobile: 1, xl: 1, lg: 1, md: 1, sm: 1, xs: 1 }
   const modeKeys = (coll.modes || []).map((m) => m.name.trim().toLowerCase())
   const looksModeBased = (coll.modes || []).length >= 2 && modeKeys.every((k) => bpModeNames[k] || /^\d{3,5}$/.test(k))
@@ -1403,6 +1714,8 @@ export interface NormalizedOptions {
   typoScaleOnly: boolean
   typoNaming: 'tshirt' | 'value'
   typoShorthand: boolean
+  /** The `Collection roles` setting; `hidden` and `breakpoints` change what is emitted. */
+  collectionRoles: string
   delivery: NormalizedDelivery
 }
 
@@ -1431,6 +1744,7 @@ export const DEFAULT_OPTIONS: NormalizedOptions = {
   typoNaming: 'tshirt',
   typoShorthand: false,
   emitNative: false,
+  collectionRoles: '',
   delivery: {
     endpoint: '',
     secret: '',
@@ -1480,26 +1794,115 @@ export function normalizeOptions(o: unknown): NormalizedOptions {
     typoNaming: obj.typoNaming === 'value' ? 'value' : 'tshirt',
     typoShorthand: pick('typoShorthand') as boolean,
     themeAttr: sanitizeAttr(obj.themeAttr as string),
+    collectionRoles: typeof obj.collectionRoles === 'string' ? obj.collectionRoles : '',
     delivery: normalizeDelivery(obj.delivery),
   }
 }
 
+/**
+ * The graph a product's package is built from — or, with `product` undefined, the shared base.
+ *
+ * Products are parallel (One, Business, Platform): the same token names, different values, and a
+ * consumer loads exactly one. So each package sees the base collections plus ITS product, which
+ * claims names first; every other product is reachable only by substitution (`inlineOnly`), so a
+ * base token aliasing into a product still resolves instead of dangling, and nothing of another
+ * product is ever emitted here.
+ */
+function productGraph(graph: TokenGraph, productIds: ReadonlySet<string>, product?: string): TokenGraph {
+  return {
+    ...graph,
+    collections: (graph.collections || []).map((c) => {
+      if (!productIds.has(c.id)) return c
+      return c.id === product ? { ...c, product: true } : { ...c, inlineOnly: true }
+    }),
+  }
+}
+
+function buildProductCss(
+  graph: TokenGraph,
+  collection: TokenGraphCollection,
+  productIds: ReadonlySet<string>,
+  opts: NormalizedOptions,
+  roles: { hidden: string[]; breakpoints: string[] }
+): { tree: TokenTree; themes: string[]; defaultTheme: string; css: string; modules: Record<string, string> } {
+  const g = productGraph(graph, productIds, collection.id)
+  const shaped = shapeForCode(g, variablesToW3CMultiMode(g), { ...roles, scaleOnly: opts.typoScaleOnly })
+  const inlined = opts.inlinePrimitives ? inlinePrimitivesTree(shaped, opts.flattenAliases) : shaped
+  const tree: TokenTree = {}
+  for (const leaf of leaves(inlined)) if (collectionOf(leaf.token) === collection.name) setToken(tree, leaf.path, leaf.token)
+  const hint = collection.modes.find((m) => m.modeId === collection.defaultModeId)?.name ?? collection.modes[0]?.name
+  const { defaultTheme, ordered } = orderedThemes(leaves(tree), hint)
+  const slug = varName([collection.name]) || 'product'
+  const modules: Record<string, string> = {}
+  if (opts.emitModuleFiles) {
+    const themeFiles = toThemeModuleCssFiles(tree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal)
+    for (const name of Object.keys(themeFiles)) modules[`${slug}-${name}`] = themeFiles[name]
+  }
+  return { tree, themes: ordered, defaultTheme, css: toTokensCss(tree, ordered, defaultTheme, opts.themeAttr), modules }
+}
+
 export function buildPackage(graph: TokenGraph, options: unknown, renames?: RenameMap): TokenPackage {
   const opts = normalizeOptions(options)
-  const rawTree = variablesToW3CMultiMode(graph)
-  const generated = (graph.collections || []).some((c) => c?.generated)
-  let sourceTree: TokenTree
-  if (opts.typoExtract && !generated) sourceTree = extractTypographyScale(rawTree, opts)
-  else if (opts.typoScaleOnly) { sourceTree = { ...rawTree }; delete sourceTree.typography }
-  else sourceTree = rawTree
+  const roles = parseCollectionModes(opts.collectionRoles)
+  const productNames = new Set(roles.products.map((name) => name.trim().toLowerCase()))
+  const products = (graph.collections || []).filter((c) => productNames.has(c.name.trim().toLowerCase()))
+  const productIds = new Set(products.map((c) => c.id))
+  // With products, tokens.css is the shared base and each product gets its own file.
+  const baseGraph = products.length > 0 ? productGraph(graph, productIds) : graph
+  // Shaped before anything is counted or emitted: what the file only consumes, what the designer
+  // hid and the breakpoint bookkeeping never reach a theme, a stylesheet or the summary.
+  const sourceTree = shapeForCode(baseGraph, variablesToW3CMultiMode(baseGraph), {
+    hidden: roles.hidden,
+    breakpoints: roles.breakpoints,
+    scaleOnly: opts.typoScaleOnly,
+  })
   const summary = buildSummary(graph, sourceTree)
   const files: Record<string, string> = {}
   const emitted: TokenPackage['emitted'] = { tree: {}, themes: [], defaultTheme: '' }
-  if (summary.tokenCount > 0) {
+  const bpNames = new Set(['breakpoints', ...roles.breakpoints.map((name) => name.trim().toLowerCase())])
+  for (const coll of (graph.collections || []).filter((c) => bpNames.has(c.name.trim().toLowerCase()))) {
+    if (Object.keys(breakpointThresholdsOf(graph, coll)).length > 0) continue
+    const frames = Object.entries(breakpointWidthsOf(graph, coll)).map(([mode, width]) => `${mode} ${width}`).join(', ')
+    summary.notes = [
+      ...(summary.notes ?? []),
+      `${coll.name} holds frame widths${frames ? ` (${frames})` : ''} but no thresholds, so no --bp-* was exported — ` +
+        'add FLOAT variables breakpoint/sm, breakpoint/md, … with the min-width of each layout',
+    ]
+  }
+  if (products.length > 0) {
+    const built = products.map((collection) => ({ collection, ...buildProductCss(graph, collection, productIds, opts, roles) }))
+    const namesOf = (tree: TokenTree) => new Set(leaves(tree).map((leaf) => varName(leaf.path)))
+    const names = built.map((b) => namesOf(b.tree))
+    const union = new Set<string>()
+    for (const set of names) for (const name of set) union.add(name)
+    summary.products = built.map((b, index) => {
+      const file = `${varName([b.collection.name]) || 'product'}.css`
+      files[file] = b.css
+      for (const name of Object.keys(b.modules)) files[name] = b.modules[name]
+      return {
+        name: b.collection.name,
+        file,
+        themes: b.themes,
+        tokenCount: names[index].size,
+        missing: [...union].filter((name) => !names[index].has(name)).sort(),
+      }
+    })
+    // A component written against one product reads a name another product never defines —
+    // said here, where the developer looks, instead of as a blank in production.
+    if (summary.products.length > 1) {
+      const gaps = summary.products
+        .filter((p) => p.missing.length > 0)
+        .map((p) => `${p.name} lacks ${p.missing.length} token(s) another product defines (${p.missing.slice(0, 5).map((n) => '--' + n).join(', ')}${p.missing.length > 5 ? ', …' : ''})`)
+      if (gaps.length > 0) summary.notes = [...(summary.notes ?? []), ...gaps]
+    }
+  }
+  if (summary.tokenCount > 0 || products.length > 0) {
     const defaultMode = primaryDefaultMode(graph)
     const { defaultTheme, ordered } = orderedThemes(leaves(sourceTree), defaultMode)
     const cssTree = opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree, opts.flattenAliases) : sourceTree
     files['tokens.css'] = toTokensCss(cssTree, ordered, defaultTheme, opts.themeAttr, renames)
+    // Everything may live in separate files: an empty shared stylesheet is not worth shipping.
+    if (files['tokens.css'].trim() === '') delete files['tokens.css']
     if (opts.emitModuleFiles) {
       const themeFiles = toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal, renames)
       for (const name of Object.keys(themeFiles)) files[name] = themeFiles[name]

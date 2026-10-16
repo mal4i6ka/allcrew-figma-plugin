@@ -8,6 +8,8 @@ import type { TokenGraph, TokenTree } from './engine.ts'
 import {
   inlinePrimitivesTree,
   leaves,
+  parseCollectionModes,
+  shapeForCode,
   orderedThemes,
   toTokensCss,
   toTokensJson,
@@ -23,6 +25,8 @@ export interface TokenEmitOptions {
   themeAttribute: string
   /** Names a colour remap rewrote, so the export can keep the old keys resolving. */
   renames?: RenameMap
+  /** The `Collection roles` setting (`Primitives: hidden`, `Breakpoints: breakpoints`). */
+  collectionRoles?: string
 }
 
 export interface TokenArtifacts {
@@ -42,11 +46,14 @@ export function tokenEmitOptionsFrom(options: ExportOptions, renames?: RenameMap
     flattenAliases: options.tokens.flattenAliases,
     themeAttribute: resolveThemeAttribute(options),
     renames,
+    collectionRoles: options.tokens.collectionRoles,
   }
 }
 
 export function emitTokenArtifacts(snapshot: VariableSnapshot, options: TokenEmitOptions): TokenArtifacts {
-  const source = variablesToW3CMultiMode(snapshot as unknown as TokenGraph)
+  const graph = snapshot as unknown as TokenGraph
+  const roles = parseCollectionModes(options.collectionRoles)
+  const source = shapeForCode(graph, variablesToW3CMultiMode(graph), roles)
   const { ordered, defaultTheme } = orderedThemes(leaves(source))
   const cssTree = options.inlinePrimitives ? inlinePrimitivesTree(source, options.flattenAliases) : source
   return {

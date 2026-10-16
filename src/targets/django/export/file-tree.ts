@@ -83,36 +83,20 @@ export function buildExportTree(opts: BuildExportTreeOptions): Record<string, Ex
 }
 
 /**
- * Regeneration download (EMIT_DJANGO_PROJECT → "Preview changes" → Download): the `static/…` assets
- * base.html `{% static %}`-links but `planRegeneration` never diffs — they're regenerated wholesale,
- * not hand-merged like the templates. This assembles the map the UI must add to the zip alongside
- * the merged templates (and the project stylesheet, which travels separately) so the downloaded
- * project doesn't 404 the files its base.html references — the same interactions/tokens set
- * `buildExportTree` writes for a full export. Empty/absent inputs are omitted so no file ships that
- * base.html wouldn't link, and none is linked that doesn't ship.
- *
- * NOTE: `img/` assets (raster/vector/video bytes) are intentionally NOT included — the regen path is
- * a lightweight text-only diff preview that doesn't run the binary asset pass, so a `url(img/…)`
- * reference inside the generated CSS can still 404. That is a pre-existing gap of this path, separate
- * from the base.html `{% static %}`-link 404s this covers.
+ * Regeneration download static files, including the binary assets referenced by generated CSS.
+ * Empty optional outputs stay omitted so the download matches what the project links.
  */
 export function buildRegenStaticFiles(opts: {
-  /** `EmitDjangoProjectOutput.interactionsCss` — shipped as `static/css/interactions.css` when non-empty. */
   interactionsCss: string
-  /** `EmitDjangoProjectOutput.interactionsJs` — shipped as `static/js/interactions.js` when non-empty. */
   interactionsJs: string
-  /** Themed `tokens.css` (`emitTokenArtifacts().css`) — present only when the tokens module is on. */
   tokensCss?: string
-  /** Bootstrap `--bs-*` overrides (`emitBootstrapArtifacts().css`) — present only for a bootstrap+tokens export. */
   bootstrapTokensCss?: string
-  /** `EmitDjangoProjectOutput.themeCss` (REFORM phase 14 B) — shipped as `static/css/bootstrap-theme.css` when non-empty. */
   themeCss?: string
-  /** `EmitDjangoProjectOutput.transitionsCss/Js` — base.html links them, so a regen preview that
-   * left them out would 404 exactly the files the page transitions need. */
   transitionsCss?: string
   transitionsJs?: string
-}): Record<string, string> {
-  const files: Record<string, string> = {}
+  assets?: readonly ExportAsset[]
+}): Record<string, ExportFileContent> {
+  const files: Record<string, ExportFileContent> = {}
   if (opts.tokensCss) files['static/css/tokens.css'] = opts.tokensCss
   if (opts.bootstrapTokensCss) files['static/css/bootstrap-tokens.css'] = opts.bootstrapTokensCss
   if (opts.themeCss) files['static/css/bootstrap-theme.css'] = opts.themeCss
@@ -120,5 +104,6 @@ export function buildRegenStaticFiles(opts: {
   if (opts.interactionsJs) files['static/js/interactions.js'] = opts.interactionsJs
   if (opts.transitionsCss) files['static/css/transitions.css'] = opts.transitionsCss
   if (opts.transitionsJs) files['static/js/transitions.js'] = opts.transitionsJs
+  for (const asset of opts.assets ?? []) files[`static/img/${asset.filename}`] = asset.content
   return files
 }

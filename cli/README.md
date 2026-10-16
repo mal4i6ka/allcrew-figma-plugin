@@ -55,7 +55,7 @@ allcrew-channel demo up export.zip --app .django-demo    # venv + скаффол
 | `allcrew-channel tokens [--format css\|bootstrap\|scss\|all] [--app DIR] [--theme-attr A] [--no-inline] [--flatten-all]` | пересобрать производные файлы из tokens.json (+ bootstrap.map.json) без переэкспорта из Figma |
 | `allcrew-channel po merge [--locale ru] [--app DIR] [--django-po P] [--figma-po P]` | `msgmerge -U` figma.po → django.po (makemessages/compilemessages остаются за Django) |
 | `allcrew-channel bootstrap vendor [--version 5.3] [--app DIR]` | скачать Bootstrap в static/vendor/bootstrap/ (для источника «vendored») |
-| `allcrew-channel receive [--app DIR] [--port 8765] [--host H] [--secret S] [--once]` | HTTP-приёмник для Settings → Delivery плагина: принятый zip применяется как `apply` |
+| `allcrew-channel receive [--app DIR] [--port 8765] [--host H] [--secret S] [--once]` | HTTP-приёмник для Settings → Delivery плагина. Принимает общий JSON-контракт `{target:"folder", dryRun, route, files}`: текстовые файлы передаются строками, бинарные — как `{base64}`. Применяет пакет тем же путём, что `apply` (только известные корни и метаданные; файлы Django-проекта пропускаются); `dryRun:true` возвращает план без записи |
 | `allcrew-channel help [команда]` | справка с примерами |
 
 ## Типовые сценарии
@@ -82,9 +82,13 @@ allcrew-channel tokens --format bootstrap --app .django-demo
 (например `--app pages/`), либо проведи корневые templates/static в его `settings.py`
 (`TEMPLATES.DIRS` + `STATICFILES_DIRS`) — иначе стоковый Django не увидит записанные файлы.
 
-Без скачиваний вообще (Delivery): на машине разработчика `allcrew-channel receive --app site/
---secret s3cret`, в плагине Settings → Delivery → Endpoint `http://<машина>:8765` + тот же
-секрет + «Send after export» — каждый экспорт прилетает применённым.
+Без скачиваний вообще (Delivery): на машине разработчика запусти
+`allcrew-channel receive --app site/ --secret s3cret`, а в плагине в Settings → Delivery укажи
+Target **Folder**, Endpoint `http://<машина>:8765`, тот же секрет и включи «Send after export».
+Плагин отправляет JSON с отдельными файлами; при включённом Dry run приёмник вернёт план и
+ничего не запишет. Реальная доставка применяет те же правила, что `allcrew-channel apply`:
+записывает только известные деревья/метаданные, сообщает о пропущенных файлах Django-проекта
+и недостающих manual assets.
 
 ## Паритет с плагином
 

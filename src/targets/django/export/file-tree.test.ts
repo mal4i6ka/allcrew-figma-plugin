@@ -201,3 +201,25 @@ test('theme B: buildRegenStaticFiles ships the theme in the regen download too',
   const files = buildRegenStaticFiles({ interactionsCss: '', interactionsJs: '', themeCss: '.btn { --bs-btn-padding-x: 12px; }' })
   assert.equal(files['static/css/bootstrap-theme.css'], '.btn { --bs-btn-padding-x: 12px; }')
 })
+
+test('buildRegenStaticFiles ships static/img assets so they reach the regeneration plan', () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+  const files = buildRegenStaticFiles({
+    interactionsCss: '',
+    interactionsJs: '',
+    assets: [
+      { filename: 'hero.png', content: png },
+      { filename: 'logo.svg', content: '<svg/>' },
+    ],
+  })
+
+  assert.deepEqual(files['static/img/hero.png'], png)
+  assert.equal(files['static/img/logo.svg'], '<svg/>')
+  const full = buildExportTree({
+    project: makeProject(),
+    tokensCss: '',
+    cssFile: 'css/project.css',
+    assets: [{ filename: 'hero.png', content: png }],
+  })
+  assert.ok('static/img/hero.png' in full)
+})

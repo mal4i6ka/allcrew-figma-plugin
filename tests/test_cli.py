@@ -500,14 +500,16 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def test_receive_applies_a_delivered_zip_and_rejects_a_bad_secret(tmp_path: Path) -> None:
-    """REFORM phase 8: the plugin's Delivery POST lands applied, like `allcrew-channel apply`."""
+def test_receive_applies_json_folder_delivery_and_dry_run_writes_nothing(tmp_path: Path) -> None:
+    """The CLI receiver speaks the same JSON contract as the plugin and previews safely."""
+    import base64
     import urllib.error
     import urllib.request
 
     app_dir = make_app(tmp_path)
-    zip_path = tmp_path / 'export.zip'
-    build_export_zip(zip_path)
+    generated = app_dir / 'generated'
+    (generated / 'static' / 'css').mkdir(parents=True)
+    (generated / 'static' / 'css' / 'existing.css').write_text('same')
     port = _free_port()
 
     env = dict(os.environ, PYTHONPATH=str(CLI_DIR))
@@ -520,27 +522,80 @@ def test_receive_applies_a_delivered_zip_and_rejects_a_bad_secret(tmp_path: Path
         env=env,
     )
     try:
-        assert 'listening' in server.stdout.readline()  # startup barrier
-        body = zip_path.read_bytes()
+        assert 'listening' in server.stdout.readline()
+        payload = {
+            'target': 'folder',
+            'route': {'path': 'generated'},
+            'files': {
+                'templates/base.html': '{% load static %}<html></html>',
+                'static/img/logo.png': {'base64': base64.b64encode(b'\\x89PNG').decode()},
+                'static/css/existing.css': 'same',
+                'tokens.json': '{}',
+                'export-report.json': json.dumps({'manualAssets': ['video/hero.mp4']}),
+                'manage.py': 'must not replace the project',
+                'config/settings.py': 'must not replace settings',
+                'unrelated-root-file.txt': 'must not be applied',
+            },
+        }
 
-        bad = urllib.request.Request(f'http://127.0.0.1:{port}/', data=body, method='POST',
-                                     headers={'Content-Type': 'application/zip', 'X-AllCrew-Channel-Secret': 'wrong'})
-        try:
+        bad = urllib.request.Request(
+            f'http://127.0.0.1:{port}/',
+            data=json.dumps(payload).encode(),
+            method='POST',
+            headers={'Content-Type': 'application/json', 'X-AllCrew-Channel-Secret': 'wrong'},
+        )
+        with pytest.raises(urllib.error.HTTPError) as denied:
             urllib.request.urlopen(bad, timeout=10)
-            raise AssertionError('a bad secret must be rejected')
-        except urllib.error.HTTPError as error:
-            assert error.code == 403
+        assert denied.value.code == 403
 
-        good = urllib.request.Request(f'http://127.0.0.1:{port}/', data=body, method='POST',
-                                      headers={'Content-Type': 'application/zip', 'X-AllCrew-Channel-Secret': 's3cret'})
-        with urllib.request.urlopen(good, timeout=10) as response:
-            payload = json.loads(response.read())
-        assert payload['written'] > 0
-        assert payload['missingManualAssets'] == ['video/hero.mp4']
-        assert (app_dir / 'templates' / 'base.html').exists()
-        assert (app_dir / 'tokens.json').exists()
+        dry = urllib.request.Request(
+            f'http://127.0.0.1:{port}/',
+            data=json.dumps({**payload, 'dryRun': True}).encode(),
+            method='POST',
+            headers={'Content-Type': 'application/json', 'X-AllCrew-Channel-Secret': 's3cret'},
+        )
+        with urllib.request.urlopen(dry, timeout=10) as response:
+            preview = json.loads(response.read())
+        assert preview['ok'] is True
+        assert preview['dryRun'] is True
+        plan = {item['path']: item for item in preview['plan']['files']}
+        assert set(plan) == {
+            'templates/base.html',
+            'static/img/logo.png',
+            'static/css/existing.css',
+            'tokens.json',
+        }
+        assert plan['templates/base.html']['action'] == 'create'
+        assert plan['static/img/logo.png']['binary'] is True
+        assert plan['static/css/existing.css']['action'] == 'unchanged'
+        assert 'manage.py' in preview['detail']
+        assert 'config/settings.py' in preview['detail']
+        assert 'static/video/hero.mp4' in preview['detail']
+        assert not (generated / 'templates' / 'base.html').exists()
+        assert (generated / 'static' / 'css' / 'existing.css').read_text() == 'same'
 
-        assert server.wait(timeout=10) == 0  # --once: exits after the applied package
+        real = urllib.request.Request(
+            f'http://127.0.0.1:{port}/',
+            data=json.dumps(payload).encode(),
+            method='POST',
+            headers={'Content-Type': 'application/json', 'X-AllCrew-Channel-Secret': 's3cret'},
+        )
+        with urllib.request.urlopen(real, timeout=10) as response:
+            result = json.loads(response.read())
+        assert result['ok'] is True
+        assert result['dryRun'] is False
+        assert (generated / 'templates' / 'base.html').exists()
+        assert (generated / 'static' / 'img' / 'logo.png').read_bytes() == b'\\x89PNG'
+        assert (generated / 'tokens.json').read_text() == '{}'
+        assert not (generated / 'manage.py').exists()
+        assert not (generated / 'config' / 'settings.py').exists()
+        assert not (generated / 'export-report.json').exists()
+        assert not (generated / 'unrelated-root-file.txt').exists()
+
+        assert server.wait(timeout=10) == 0
+        logs = server.stdout.read()
+        assert 'applied 4 file(s)' in logs
+        assert 'manual asset still missing: static/video/hero.mp4' in logs
     finally:
         if server.poll() is None:
             server.kill()

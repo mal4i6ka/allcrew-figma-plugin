@@ -83,3 +83,35 @@ test('mixing interpolates in sRGB and saturates at the ends', () => {
   assert.equal(formatHex(mixRgb(key, BLACK, 1)), '#000000')
   assert.equal(formatHex(mixRgb(key, WHITE, 0.5)), '#FDAD85')
 })
+
+// sourceColor (plugin API 1.142): the authored colour beside the sRGB projection. Shapes are
+// the ones figma.util.rgba returned in a live file on 16.10.
+test('an authored OKLCH, OKLAB or P3 colour is written as authored', async () => {
+  const { sourceColorCss, sourceColorOf } = await import('./color.ts')
+  const { rgbaToCss } = await import('../targets/django/tokens.ts')
+  const { shadowEffectToCss } = await import('./engine.ts')
+
+  const oklch = { r: 0.49, g: 0.139, b: 0.159, a: 1, sourceColor: { space: 'OKLCH', l: 0.401, c: 0.123, h: 21.569999999999993 } }
+  assert.equal(sourceColorCss(sourceColorOf(oklch)!), 'oklch(40.1% 0.123 21.57)')
+  assert.equal(rgbaToCss(oklch as unknown as RGBA), 'oklch(40.1% 0.123 21.57)')
+  assert.equal(rgbaToCss({ ...oklch, a: 0.5 } as unknown as RGBA), 'oklch(40.1% 0.123 21.57 / 0.5)')
+
+  const p3 = { r: 1, g: 0, b: 0, a: 1, sourceColor: { space: 'DISPLAY_P3', r: 1, g: 0, b: 0 } }
+  assert.equal(rgbaToCss(p3 as unknown as RGBA), 'color(display-p3 1 0 0)')
+
+  const oklab = { r: 0.5, g: 0.27, b: 0.6, a: 0.25, sourceColor: { space: 'OKLAB', l: 0.5, a: 0.1, b: -0.1 } }
+  assert.equal(
+    shadowEffectToCss({ type: 'DROP_SHADOW', offset: { x: 0, y: 4 }, radius: 8, color: oklab } as never),
+    '0px 4px 8px oklab(50% 0.1 -0.1 / 0.25)',
+  )
+})
+
+test('sRGB-family and missing source colours keep the hex the export always wrote', async () => {
+  const { sourceColorOf } = await import('./color.ts')
+  const { rgbaToCss } = await import('../targets/django/tokens.ts')
+  const hsl = { r: 0.2, g: 0.4667, b: 0.6, a: 1, sourceColor: { space: 'HSL', h: 200, s: 0.5, l: 0.4 } }
+  assert.equal(rgbaToCss(hsl as unknown as RGBA), '#337799')
+  assert.equal(rgbaToCss({ r: 1, g: 0, b: 0, a: 1 }), '#ff0000')
+  assert.equal(sourceColorOf({ r: 0, g: 0, b: 0, sourceColor: { space: 'CMYK', c: 1 } }), null)
+  assert.equal(sourceColorOf({ r: 0, g: 0, b: 0, sourceColor: { space: 'OKLCH', l: NaN, c: 0, h: 0 } }), null)
+})

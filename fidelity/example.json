@@ -1,0 +1,21 @@
+{
+  "project": "example.com",
+  "fileKey": "YOUR_FIGMA_FILE_KEY",
+  "bases": {
+    "production": "https://example.com",
+    "local": "http://127.0.0.1:8000"
+  },
+  "defaultBase": "production",
+  "skipLayers": ["Status Bar"],
+  "hide": ["#cookie-banner"],
+  "pages": [
+    {
+      "name": "Home",
+      "url": "/",
+      "frames": {
+        "1440": "0:1",
+        "375": "0:2"
+      }
+    }
+  ]
+}

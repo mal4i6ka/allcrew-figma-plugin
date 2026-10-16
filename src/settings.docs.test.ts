@@ -82,3 +82,27 @@ test('the selected design-system tool is normalized and survives package presets
   assert.equal(applyPreset(remap, 'design-tokens').dsTool, 'remap')
   assert.equal(normalizeExportOptions({ dsTool: 'unknown' }).dsTool, 'palette')
 })
+
+test('a delivery blob stored before targets existed normalises to the safe defaults', () => {
+  const options = normalizeExportOptions({
+    delivery: { endpoint: 'http://127.0.0.1:8787', secret: 's3cret', onExport: true },
+  })
+  assert.deepEqual(options.delivery, {
+    endpoint: 'http://127.0.0.1:8787',
+    secret: 's3cret',
+    onExport: true,
+    target: 'folder',
+    route: { repo: '', branch: '', base: '', path: '', package: '', project: '' },
+    dryRun: true,
+  })
+})
+
+test('an unknown delivery target falls back to the one that pushes nowhere', () => {
+  const options = normalizeExportOptions({
+    delivery: { target: 'gerrit', route: { repo: '  git@host:team/site.git  ', branch: 'x ', extra: 7 } },
+  })
+  assert.equal(options.delivery.target, 'folder')
+  assert.equal(options.delivery.route.repo, 'git@host:team/site.git')
+  assert.equal(options.delivery.route.branch, 'x')
+  assert.equal(options.delivery.route.project, '')
+})

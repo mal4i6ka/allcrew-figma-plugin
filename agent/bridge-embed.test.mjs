@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { embeddedScript } from './embed-script.mjs'
@@ -22,6 +22,13 @@ test('downloadable MCP front is self-contained and carries the fidelity contract
   assert.match(output.source, /^#!\/usr\/bin\/env node/)
   assert.deepEqual(localImports(output.source), [])
   assert.match(output.source, /Fidelity-first product design contract/)
+})
+
+test('release packaging stages the bridge and MCP through the self-contained bundler', () => {
+  const source = readFileSync(resolve('package.mjs'), 'utf8')
+  assert.match(source, /\{ source: 'agent\/bridge\.mjs', target: 'tools\/bridge\.mjs', bundle: true \}/)
+  assert.match(source, /\{ source: 'agent\/mcp\.mjs', target: 'tools\/mcp\.mjs', bundle: true \}/)
+  assert.match(source, /await embeddedScript\(\{ file: join\(ROOT, entry\.source\), bundle: true \}\)/)
 })
 
 test('the fingerprint covers every local import transitively without duplicates', () => {

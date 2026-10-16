@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { embeddedScript } from './agent/embed-script.mjs'
 
 const ROOT = process.cwd()
 const OUT_DIR = join(ROOT, 'build')
@@ -27,8 +28,8 @@ const ENTRIES = [
   { source: 'dist/ui.html', target: 'dist/ui.html' },
   { source: 'build/README.md', target: 'README.md' },
   { source: 'LICENSE', target: 'LICENSE' },
-  { source: 'agent/bridge.mjs', target: 'tools/bridge.mjs' },
-  { source: 'agent/mcp.mjs', target: 'tools/mcp.mjs' },
+  { source: 'agent/bridge.mjs', target: 'tools/bridge.mjs', bundle: true },
+  { source: 'agent/mcp.mjs', target: 'tools/mcp.mjs', bundle: true },
   { source: 'server/receiver.mjs', target: 'tools/receiver.mjs' },
   { source: 'PRIVACY.md', target: 'PRIVACY.md' },
   { source: 'SECURITY.md', target: 'SECURITY.md' },
@@ -65,7 +66,12 @@ rmSync(STAGING, { recursive: true, force: true })
 for (const entry of ENTRIES) {
   const target = join(STAGING, entry.target)
   mkdirSync(dirname(target), { recursive: true })
-  copyFileSync(join(ROOT, entry.source), target)
+  if (entry.bundle) {
+    const output = await embeddedScript({ file: join(ROOT, entry.source), bundle: true })
+    writeFileSync(target, output.source, { mode: 0o755 })
+  } else {
+    copyFileSync(join(ROOT, entry.source), target)
+  }
 }
 
 mkdirSync(OUT_DIR, { recursive: true })

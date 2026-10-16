@@ -71,8 +71,35 @@ test('history.recent groups touched, quiet and unavailable files and aggregates 
     }
   )
   assert.equal(result.touched[0].name, 'A')
-  assert.equal(result.touched[0].checkpoints, 2)
+  assert.equal(result.touched[0].checkpoints.length, 2)
   assert.equal(result.quiet[0].fileKey, 'b')
   assert.equal(result.unavailable[0].fileKey, 'c')
   assert.deepEqual(result.authors, [{ author: 'Alex', checkpoints: 2 }])
+})
+
+test('history.recent accepts explicit files and exposes checkpoint ids, autosaves, and truncation', async () => {
+  const rows = Array.from({ length: 2 }, (_, index) => ({
+    id: `v${index}`,
+    created_at: `2026-10-01T0${9 - index}:00:00Z`,
+    user: { handle: 'Designer' },
+    ...(index === 0 ? { label: 'Release' } : {}),
+  }))
+  const result = await runRecentHistory(
+    { files: ['https://www.figma.com/design/abcdefghijklmnopqrstuv/Example'], since: '2026-10-01', limit: 2 },
+    {
+      tabs: { open: [{ key: 'ignored' }], recent: [] },
+      now: () => Date.parse('2026-10-01T12:00:00Z'),
+      fileMeta: async () => ({ name: 'Example Library' }),
+      listVersions: async (key) => {
+        assert.equal(key, 'abcdefghijklmnopqrstuv')
+        return rows
+      },
+    }
+  )
+  assert.equal(result.totalCandidates, 1)
+  assert.equal(result.touched[0].name, 'Example Library')
+  assert.deepEqual(result.touched[0].checkpoints.map((row) => row.id), ['v0', 'v1'])
+  assert.equal(result.touched[0].checkpoints[0].autosave, false)
+  assert.equal(result.touched[0].checkpoints[1].autosave, true)
+  assert.equal(result.touched[0].truncated, true)
 })

@@ -7,7 +7,7 @@
  * so this is the one place that translates nested → flat before handing off to the engine.
  */
 
-import { buildPackage, extractBreakpointTokens, type RenameMap, type TokenGraph, type TokenPackage } from '../tokens/engine.ts'
+import { buildPackage, type RenameMap, type TokenGraph, type TokenPackage } from '../tokens/engine.ts'
 import { normalizeExportOptions, resolveThemeAttribute } from '../settings.ts'
 import { buildTokenAudit } from './design-md/audit.ts'
 import { buildTokensDesignMd } from './design-md/tokens-target.ts'
@@ -42,6 +42,7 @@ export function buildDesignTokens(
     typoShorthand: opts.tokens.typoShorthand,
     typoNaming: opts.tokens.typoNaming,
     emitNative: opts.tokens.emitNative,
+    collectionRoles: opts.tokens.collectionRoles,
   }
   const pkg: TokenPackage = buildPackage(graph, engineOptions, renames)
   const collectionRoles = parseCollectionRoles(opts.tokens.collectionRoles)
@@ -67,7 +68,6 @@ export function buildDesignTokens(
       ],
       options: pkg.options,
       audit: buildTokenAudit(graph),
-      breakpoints: extractBreakpointTokens(graph),
       componentDocs: realComponentDocs,
       collectionRoles,
       generatedAt,

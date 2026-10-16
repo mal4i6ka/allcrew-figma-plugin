@@ -1,255 +1,530 @@
+/**
+ * Components, their copies, and the repair for a main somebody deleted.
+ *
+ * The document here is plain objects: these ops are graph walks and property writes, and what
+ * has to be proven is the DECISIONS — which copies count as orphaned, which copy is worth
+ * rebuilding a main from, and above all that an override survives a repoint. Figma's own
+ * `swapComponent` preserves overrides "with the same heuristics as the UI", so the failure this
+ * suite is written against is the silent one: a swap that quietly resets a text layer and a
+ * report that still says it worked.
+ */
+
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import './ops.ts'
 import { OPS_BY_NAME } from './ops.ts'
+import { classifyMain, sameValue } from './component-ops.ts'
 import { validateParams } from './protocol.ts'
 
-function setFigma(mock: Record<string, unknown>) {
-  ;(globalThis as { figma?: unknown }).figma = mock
+/* ------------------------------------------------------------- fake document */
+
+type Fake = Record<string, any>
+
+const MIXED = Symbol('figma.mixed')
+let nextId = 0
+
+function node(props: Fake): Fake {
+  const built: Fake = {
+    visible: true,
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 40,
+    parent: null,
+    children: [],
+    getPluginDataKeys: () => [],
+    getPluginData: () => '',
+    ...props,
+  }
+  for (const child of built.children) child.parent = built
+  if (built.type === 'FRAME' || built.type === 'INSTANCE' || built.type === 'COMPONENT') {
+    built.insertChild = (index: number, child: Fake) => {
+      if (child.parent) child.parent.children = child.parent.children.filter((one: Fake) => one !== child)
+      built.children.splice(index, 0, child)
+      child.parent = built
+    }
+    built.appendChild = (child: Fake) => built.insertChild(built.children.length, child)
+    built.remove = () => {
+      if (built.parent) built.parent.children = built.parent.children.filter((one: Fake) => one !== built)
+      built.parent = null
+      built.removed = true
+    }
+    built.resize = (w: number, h: number) => {
+      built.width = w
+      built.height = h
+    }
+    built.resizeWithoutConstraints = built.resize
+  }
+  return built
 }
 
-function rootWith(nodes: unknown[], pages: unknown[] = []) {
-  return {
-    children: pages,
-    findAllWithCriteria({ types }: { types: string[] }) {
-      return nodes.filter((node) => types.includes((node as { type: string }).type))
+function text(name: string, characters: string): Fake {
+  return node({ id: `t:${name}:${++nextId}`, name, type: 'TEXT', characters })
+}
+
+/** An instance whose `swapComponent` behaves like Figma's: the subtree becomes the new main's,
+ * and only the overrides the heuristics recognise come along. `keeps` names those. */
+function instance(props: Fake & { main: Fake | null; keeps?: string[] }): Fake {
+  const built = node({ type: 'INSTANCE', componentProperties: {}, overrides: [], ...props })
+  built.getMainComponentAsync = async () => built.main
+  built.setProperties = (values: Record<string, string | boolean>) => {
+    for (const [key, value] of Object.entries(values)) {
+      if (!(key in built.componentProperties)) throw new Error(`no property ${key}`)
+      built.componentProperties[key] = { type: 'TEXT', value }
+    }
+  }
+  built.swapComponent = (main: Fake) => {
+    if (built.swapRefuses) throw new Error(built.swapRefuses)
+    built.main = main
+    built.getMainComponentAsync = async () => main
+    /* The heuristic: children are rebuilt from the new main, and a field not named in `keeps`
+     * goes back to what the main says. This is the exact behaviour the repair pass exists for. */
+    const keeps = new Set(built.keeps ?? [])
+    built.children = main.children.map((child: Fake) => {
+      const mirror = node({ ...child, id: `${built.id};${child.id}`, children: [], parent: built })
+      const was = built.children.find((one: Fake) => one.name === child.name)
+      if (was && keeps.has(child.name)) mirror.characters = was.characters
+      return mirror
+    })
+    built.componentProperties = { ...(main.componentProperties ?? {}) }
+  }
+  built.clone = () => {
+    const copy = node({
+      ...built,
+      id: `${built.id}:clone`,
+      parent: null,
+      children: built.children.map((child: Fake) => node({ ...child, id: `${child.id}:clone`, children: [] })),
+    })
+    copy.detachInstance = () => {
+      copy.type = 'FRAME'
+      return copy
+    }
+    return copy
+  }
+  built.detachInstance = () => {
+    built.type = 'FRAME'
+    return built
+  }
+  return built
+}
+
+function component(props: Fake): Fake {
+  const built = node({ type: 'COMPONENT', key: '', remote: false, componentProperties: {}, ...props })
+  built.createInstance = () => {
+    const made = instance({
+      id: `${built.id}:i${++nextId}`,
+      name: built.name,
+      main: built,
+      children: built.children.map((child: Fake) => node({ ...child, id: `${child.id}:m`, children: [] })),
+      componentProperties: { ...built.componentProperties },
+    })
+    return made
+  }
+  return built
+}
+
+function page(id: string, name: string, children: Fake[]): Fake {
+  const built = node({ id, name, type: 'PAGE', children, loadAsync: async () => {} })
+  built.insertChild = (index: number, child: Fake) => {
+    if (child.parent) child.parent.children = child.parent.children.filter((one: Fake) => one !== child)
+    built.children.splice(index, 0, child)
+    child.parent = built
+  }
+  built.appendChild = (child: Fake) => built.insertChild(built.children.length, child)
+  return built
+}
+
+function mount(pages: Fake[], extra: Fake = {}): Map<string, Fake> {
+  const byId = new Map<string, Fake>()
+  const index = (one: Fake) => {
+    byId.set(one.id, one)
+    for (const child of one.children ?? []) {
+      child.parent = one
+      index(child)
+    }
+  }
+  const root = node({ id: '0:0', type: 'DOCUMENT', name: 'Document', children: pages })
+  for (const one of pages) {
+    one.parent = root
+    index(one)
+  }
+  const created: Fake[] = []
+  ;(globalThis as Fake).figma = {
+    root,
+    currentPage: pages[0],
+    mixed: MIXED,
+    skipInvisibleInstanceChildren: false,
+    fileKey: null,
+    loadAllPagesAsync: async () => {},
+    commitUndo: () => {},
+    getNodeByIdAsync: async (id: string) => byId.get(id) ?? created.find((one) => one.id === id) ?? null,
+    loadFontAsync: async () => {},
+    createComponentFromNode: (frame: Fake) => {
+      frame.type = 'COMPONENT'
+      frame.key = 'restored-key'
+      frame.remote = false
+      frame.createInstance = component({ id: frame.id, name: frame.name, children: frame.children }).createInstance
+      created.push(frame)
+      byId.set(frame.id, frame)
+      return frame
     },
+    ...extra,
   }
+  return byId
 }
 
-test('component.instances inventories used and unused local masters with placement links', async () => {
-  const page = { id: 'p:1', name: 'Page', type: 'PAGE', parent: null, loadAsync: async () => {} }
-  const frame = { id: 'f:1', name: 'Hero', type: 'FRAME', parent: page }
-  const used = { id: 'c:1', key: 'used-key', name: 'Button', type: 'COMPONENT', parent: page, removed: false }
-  const unused = { id: 'c:2', key: 'unused-key', name: 'Badge', type: 'COMPONENT', parent: page, removed: false }
-  const instance = {
-    id: 'i:1', name: 'Button', type: 'INSTANCE', parent: frame,
-    getMainComponentAsync: async () => used,
-  }
-  const root = rootWith([used, unused, instance], [page])
-  setFigma({ root, fileKey: 'file-key', skipInvisibleInstanceChildren: false, loadAllPagesAsync: async () => {} })
+async function run(op: string, params: Record<string, unknown>): Promise<Fake> {
+  const def = OPS_BY_NAME.get(op)
+  assert.ok(def, `${op} is not registered`)
+  return (await def.run(validateParams(def.params, params))) as Fake
+}
 
-  const op = OPS_BY_NAME.get('component.instances')!
-  const result = await op.run(validateParams(op.params, {})) as {
-    instances: number
-    unused: number
-    inventory: Array<{ component: { id: string }; count: number; copies: Array<{ frame: { id: string }; link: string }> }>
-  }
-  assert.equal(result.instances, 1)
-  assert.equal(result.unused, 1)
-  assert.deepEqual(result.inventory.map((row) => [row.component.id, row.count]), [['c:1', 1], ['c:2', 0]])
-  assert.equal(result.inventory[0].copies[0].frame.id, 'f:1')
-  assert.equal(result.inventory[0].copies[0].link, 'https://www.figma.com/design/file-key/?node-id=i-1')
+/* ------------------------------------------------------------------- rules */
+
+test('a main with no page is deleted, a library main is not, and an unresolvable one is missing', () => {
+  assert.equal(classifyMain(null, false), 'missing')
+  assert.equal(classifyMain({ removed: false, remote: false }, true), 'live')
+  // The whole diagnosis: Figma unparents a deleted main instead of removing it, and the
+  // instances go on rendering from a component that is on no page.
+  assert.equal(classifyMain({ removed: false, remote: false }, false), 'deleted')
+  assert.equal(classifyMain({ removed: true, remote: false }, true), 'deleted')
+  // A library main is never on a page of THIS file — the same test would call every library
+  // instance an orphan.
+  assert.equal(classifyMain({ removed: false, remote: true }, false), 'live')
 })
 
-test('component.orphans separates deleted local masters from missing masters and ranks groups', async () => {
-  const page = { id: 'p:1', name: 'Page', type: 'PAGE', parent: null, loadAsync: async () => {} }
-  const dead = { id: 'c:dead', name: 'Old Button', type: 'COMPONENT', removed: true }
-  const deleted = {
-    id: 'i:1', name: 'Old Button', type: 'INSTANCE', parent: page,
-    getMainComponentAsync: async () => dead,
-  }
-  const missing = {
-    id: 'i:2', name: 'Library Card', type: 'INSTANCE', parent: page,
-    getMainComponentAsync: async () => null,
-  }
-  const root = rootWith([deleted, missing], [page])
-  setFigma({ root, skipInvisibleInstanceChildren: false, loadAllPagesAsync: async () => {} })
+test('a mixed value never counts as preserved, so nothing claims an override it cannot read', () => {
+  ;(globalThis as Fake).figma = { mixed: MIXED }
+  assert.equal(sameValue(MIXED, 'Sale'), false)
+  assert.equal(sameValue(MIXED, MIXED), false)
+  assert.equal(sameValue('Sale', MIXED), false)
+  assert.equal(sameValue([{ type: 'SOLID', color: { r: 1, g: 0, b: 0 } }], [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 } }]), true)
+  assert.equal(sameValue([{ type: 'SOLID' }], [{ type: 'IMAGE' }]), false)
+})
 
-  const op = OPS_BY_NAME.get('component.orphans')!
-  const result = await op.run({}) as { groups: number; orphans: Array<{ status: string; name: string; count: number }> }
-  assert.equal(result.groups, 2)
+/* ----------------------------------------------------------------- census */
+
+test('component.instances counts copies per component, splits nested from placed, and names the unused', async () => {
+  const button = component({ id: 'c:1', name: 'Button' })
+  const card = component({ id: 'c:2', name: 'Card' })
+  const orphanMain = component({ id: 'c:dead', name: 'Chip', parent: null })
+  const nested = instance({ id: 'i:3', name: 'Button', main: button })
+  mount([
+    page('p:1', 'Screens', [
+      instance({ id: 'i:1', name: 'Button', main: button }),
+      instance({ id: 'i:2', name: 'Card', main: card, children: [nested] }),
+      instance({ id: 'i:4', name: 'Chip', main: orphanMain }),
+    ]),
+    page('p:2', 'Library', [button, card]),
+  ])
+
+  const inventory = await run('component.instances', {})
+  assert.equal(inventory.mode, 'inventory')
+  assert.equal(inventory.totals.instances, 4)
+  assert.equal(inventory.totals.orphans, 1, 'the copy of the deleted Chip is counted as an orphan')
+  const byName = new Map(inventory.components.map((row: Fake) => [row.component.name, row]))
+  assert.equal(byName.get('Button').instances, 2)
+  assert.equal(byName.get('Button').nested, 1, 'the copy inside the Card is a mirror, not a placed copy')
+  assert.equal(byName.get('Button').placed, 1)
   assert.deepEqual(
-    result.orphans.map((group) => [group.status, group.name, group.count]).sort(),
-    [['deleted', 'Old Button', 1], ['missing', 'Library Card', 1]]
+    inventory.unused.map((row: Fake) => row.name),
+    [],
+    'every local component here has a copy'
+  )
+
+  const detail = await run('component.instances', { nodeId: 'c:1' })
+  assert.equal(detail.mode, 'component')
+  assert.equal(detail.components.length, 1)
+  assert.deepEqual(
+    detail.components[0].rows.map((row: Fake) => row.id),
+    ['i:1'],
+    'nested copies stay out of the rows until nested: true asks for them'
+  )
+  assert.equal(detail.components[0].rows[0].link, '?node-id=i-1')
+
+  const withNested = await run('component.instances', { nodeId: 'c:1', nested: true })
+  assert.deepEqual(
+    withNested.components[0].rows.map((row: Fake) => row.id),
+    ['i:1', 'i:3']
   )
 })
 
-test('instance.swap accepts a component id and reports the native swap without rebuilding', async () => {
-  const target = { id: 'c:2', key: 'target', name: 'New Button', type: 'COMPONENT', parent: null, removed: false }
-  const old = { id: 'c:1', key: 'old', name: 'Old Button', type: 'COMPONENT', parent: null, removed: false }
-  let swappedTo: unknown = null
-  const instance = {
-    id: 'i:1', name: 'Button', type: 'INSTANCE', parent: { type: 'PAGE' },
-    overrides: [], componentProperties: {},
-    getMainComponentAsync: async () => old,
-    swapComponent(component: unknown) { swappedTo = component },
-    setProperties() {},
-  }
-  setFigma({
-    mixed: Symbol('mixed'),
-    commitUndo() {},
-    getNodeByIdAsync: async (id: string) => id === 'i:1' ? instance : id === 'c:2' ? target : null,
-  })
+test('the per-page counts cover every copy, not just the rows that fit under limit', async () => {
+  const button = component({ id: 'c:1', name: 'Button' })
+  const copies = [1, 2, 3, 4, 5].map((n) => instance({ id: `i:${n}`, name: 'Button', main: button }))
+  mount([page('p:1', 'Screens', copies), page('p:2', 'Library', [button])])
 
-  const op = OPS_BY_NAME.get('instance.swap')!
-  const result = await op.run(validateParams(op.params, { nodes: ['i:1'], to: 'c:2', strategy: 'swap' })) as {
-    succeeded: number
-    results: Array<{ strategy: string; newId?: string }>
-  }
-  assert.equal(swappedTo, target)
-  assert.equal(result.succeeded, 1)
-  assert.equal(result.results[0].strategy, 'swap')
-  assert.equal(result.results[0].newId, undefined)
+  // Measured on a live file first: 20 copies on one page reported as 2, because the page tally
+  // was taken off the truncated row list instead of the census.
+  const report = await run('component.instances', { nodeId: 'c:1', limit: 2 })
+  assert.equal(report.components[0].instances, 5)
+  assert.equal(report.components[0].rows.length, 2)
+  assert.deepEqual(report.components[0].byPage, [{ name: 'Screens', count: 5 }])
+  assert.equal(report.components[0].truncated, true)
 })
 
-test('instance.swap auto falls back to rebuild, returns newId, and keeps unsupported overrides separate', async () => {
-  const children: unknown[] = []
-  const parent = {
-    type: 'FRAME', layoutMode: 'NONE', children,
-    insertChild(index: number, node: unknown) { children.splice(index, 0, node) },
-  }
-  let oldRemoved = false
-  const old = { id: 'c:1', key: 'old', name: 'Old', type: 'COMPONENT', parent: null, removed: false }
-  const replacement = {
-    id: 'i:2', name: 'New', type: 'INSTANCE', parent,
-    overrides: [], componentProperties: {}, x: 0, y: 0, rotation: 0, visible: true, locked: false,
-    opacity: 1, blendMode: 'PASS_THROUGH', constraints: { horizontal: 'MIN', vertical: 'MIN' },
-    layoutAlign: 'INHERIT', layoutGrow: 0, layoutPositioning: 'AUTO',
-    layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED',
-    minWidth: null, maxWidth: null, minHeight: null, maxHeight: null, width: 10, height: 10,
-    reactions: [], getPluginDataKeys: () => [], getPluginData: () => '', setPluginData() {},
-    resize(width: number, height: number) { this.width = width; this.height = height },
-    setReactionsAsync: async () => {}, setProperties() {}, remove() {},
-  }
-  const target = {
-    id: 'c:2', key: 'target', name: 'New', type: 'COMPONENT', parent: null, removed: false,
-    createInstance: () => replacement,
-  }
-  const instance = {
-    id: 'i:1', name: 'Old', type: 'INSTANCE', parent,
-    overrides: [{ id: 'i:1', overriddenFields: ['boundVariables'] }], componentProperties: {},
-    x: 4, y: 5, rotation: 0, visible: true, locked: false, opacity: 1, blendMode: 'PASS_THROUGH',
-    constraints: { horizontal: 'MIN', vertical: 'MIN' }, layoutAlign: 'INHERIT', layoutGrow: 0,
-    layoutPositioning: 'AUTO', layoutSizingHorizontal: 'FILL', layoutSizingVertical: 'HUG',
-    minWidth: null, maxWidth: null, minHeight: null, maxHeight: null, width: 40, height: 20,
-    reactions: [], getPluginDataKeys: () => [], getPluginData: () => '',
-    getMainComponentAsync: async () => old,
-    swapComponent() { throw new Error('native swap refused') },
-    remove() { oldRemoved = true },
-  }
-  children.push(instance)
-  setFigma({
-    mixed: Symbol('mixed'), commitUndo() {},
-    getNodeByIdAsync: async (id: string) => id === 'i:1' ? instance : id === 'c:2' ? target : null,
-  })
+test('component.instances lists a component nothing instantiates', async () => {
+  const used = component({ id: 'c:1', name: 'Button' })
+  const never = component({ id: 'c:2', name: 'Legacy Banner' })
+  mount([page('p:1', 'Screens', [instance({ id: 'i:1', name: 'Button', main: used })]), page('p:2', 'Library', [used, never])])
 
-  const op = OPS_BY_NAME.get('instance.swap')!
-  const result = await op.run(validateParams(op.params, { nodes: ['i:1'], to: 'c:2', strategy: 'auto' })) as {
-    succeeded: number
-    results: Array<{ newId: string; strategy: string; fellBackBecause: string; lost: unknown[]; unsupported: unknown[] }>
-  }
-  assert.equal(oldRemoved, true)
-  assert.equal(result.succeeded, 1)
-  assert.equal(result.results[0].newId, 'i:2')
-  assert.equal(result.results[0].strategy, 'rebuild')
-  assert.match(result.results[0].fellBackBecause, /native swap refused/)
-  assert.deepEqual(result.results[0].lost, [])
-  assert.deepEqual(result.results[0].unsupported, [{ layer: 'Old', field: 'boundVariables' }])
+  const inventory = await run('component.instances', {})
+  assert.deepEqual(
+    inventory.unused.map((row: Fake) => row.name),
+    ['Legacy Banner']
+  )
 })
 
-test('instance.swap removes a partial replacement when rebuild property copying fails', async () => {
-  const children: unknown[] = []
-  const parent = {
-    type: 'FRAME', layoutMode: 'NONE', children,
-    insertChild(index: number, node: unknown) { children.splice(index, 0, node) },
-  }
-  let replacementRemoved = false
-  let oldRemoved = false
-  const replacement = {
-    id: 'i:2', name: 'New', type: 'INSTANCE', parent,
-    x: 0, y: 0, layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED',
-    resize() { throw new Error('cannot resize in parent') },
-    remove() { replacementRemoved = true; children.splice(children.indexOf(this), 1) },
-  }
-  const target = {
-    id: 'c:2', key: 'target', name: 'New', type: 'COMPONENT', parent: null, removed: false,
-    createInstance: () => replacement,
-  }
-  const instance = {
-    id: 'i:1', name: 'Old', type: 'INSTANCE', parent,
-    overrides: [], componentProperties: {}, x: 4, y: 5, rotation: 0, visible: true, locked: false,
-    opacity: 1, blendMode: 'PASS_THROUGH', constraints: { horizontal: 'MIN', vertical: 'MIN' },
-    layoutAlign: 'INHERIT', layoutGrow: 0, layoutPositioning: 'AUTO',
-    layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED',
-    minWidth: null, maxWidth: null, minHeight: null, maxHeight: null, width: 40, height: 20,
-    reactions: [], getPluginDataKeys: () => [], getPluginData: () => '',
-    getMainComponentAsync: async () => null,
-    remove() { oldRemoved = true },
-  }
-  children.push(instance)
-  setFigma({
-    mixed: Symbol('mixed'), commitUndo() {},
-    getNodeByIdAsync: async (id: string) => id === 'i:1' ? instance : id === 'c:2' ? target : null,
-  })
+/* ---------------------------------------------------------------- orphans */
 
-  const op = OPS_BY_NAME.get('instance.swap')!
-  const result = await op.run(validateParams(op.params, { nodes: ['i:1'], to: 'c:2', strategy: 'rebuild' })) as {
-    failed: number
-  }
-  assert.equal(result.failed, 1)
-  assert.equal(replacementRemoved, true)
-  assert.equal(oldRemoved, false)
-  assert.deepEqual(children, [instance])
+test('component.orphans groups copies by the dead main and ranks rebuild sources by structure kept', async () => {
+  const dead = component({ id: 'c:dead', name: 'Chip', parent: null })
+  const alive = component({ id: 'c:1', name: 'Button' })
+  const rich = instance({
+    id: 'i:rich',
+    name: 'Chip',
+    main: dead,
+    children: [text('Label', 'Sale'), text('Icon', '★')],
+    overrides: [],
+  })
+  const thin = instance({ id: 'i:thin', name: 'Chip', main: dead, children: [text('Label', 'New')] })
+  mount([
+    page('p:1', 'Screens', [rich, thin, instance({ id: 'i:ok', name: 'Button', main: alive })]),
+    page('p:2', 'Library', [alive]),
+  ])
+
+  const report = await run('component.orphans', {})
+  assert.equal(report.totals.deadMains, 1)
+  assert.equal(report.totals.orphanInstances, 2)
+  assert.equal(report.groups[0].status, 'deleted')
+  assert.equal(report.groups[0].keyedBy, 'main')
+  assert.deepEqual(
+    report.groups[0].restoreFrom.map((row: Fake) => row.id),
+    ['i:rich', 'i:thin'],
+    'the copy that kept the most structure is the one worth rebuilding the main from'
+  )
 })
 
-test('component.restore creates a master and reassigns every orphan in its group', async () => {
-  const page = {
-    id: 'p:1', name: 'Page', type: 'PAGE', parent: null, children: [] as unknown[],
-    loadAsync: async () => {}, appendChild(node: unknown) { this.children.push(node) },
-  }
-  const dead = { id: 'c:dead', name: 'Old Card', type: 'COMPONENT', removed: true }
-  const master = { id: 'c:new', key: 'new', name: '', type: 'COMPONENT', parent: page, removed: false, x: 0, y: 0 }
-  let swappedTo: unknown = null
-  const source = {
-    id: 'i:1', name: 'Old Card', type: 'INSTANCE', parent: page, x: 10, y: 20, width: 100,
-    overrides: [], componentProperties: {},
-    getMainComponentAsync: async () => dead,
-    clone: () => ({ detachInstance: () => ({ id: 'frame:clone', type: 'FRAME' }) }),
-    swapComponent(component: unknown) { swappedTo = component },
-    setProperties() {},
-  }
-  const root = rootWith([source], [page])
-  setFigma({
-    root, fileKey: null, skipInvisibleInstanceChildren: false, loadAllPagesAsync: async () => {},
-    commitUndo() {}, getNodeByIdAsync: async (id: string) => id === 'i:1' ? source : null,
-    createComponentFromNode: () => master,
-  })
+test('component.orphans keys an unresolvable main by name, because there is no id to key on', async () => {
+  const lost = instance({ id: 'i:1', name: 'Avatar', main: null })
+  mount([page('p:1', 'Screens', [lost])])
 
-  const op = OPS_BY_NAME.get('component.restore')!
-  const result = await op.run(validateParams(op.params, { restoreFrom: 'i:1' })) as {
-    restored: number
-    master: { id: string; name: string }
-  }
-  assert.equal(swappedTo, master)
-  assert.equal(result.restored, 1)
-  assert.deepEqual(result.master, { id: 'c:new', name: 'Old Card', type: 'COMPONENT', link: '?node-id=c-new' })
+  const report = await run('component.orphans', { detached: false })
+  assert.equal(report.groups.length, 1)
+  assert.equal(report.groups[0].status, 'missing')
+  assert.equal(report.groups[0].keyedBy, 'name')
+  assert.equal(report.groups[0].main.name, 'Avatar')
+})
+test('component.orphans reports detached local casualties separately from unverified library origins', async () => {
+  const local = node({
+    id: 'f:local',
+    name: 'Detached local',
+    type: 'FRAME',
+    detachedInfo: { componentId: 'c:gone' },
+  })
+  const library = node({
+    id: 'f:library',
+    name: 'Detached library',
+    type: 'FRAME',
+    detachedInfo: { componentKey: 'library-key' },
+  })
+  mount([page('p:1', 'Screens', [local, library])])
+
+  const report = await run('component.orphans', {})
+  assert.equal(report.totals.detachedFrames, 1)
+  assert.equal(report.totals.detachedUnverified, 1)
+  assert.deepEqual(report.detached.map((row: Fake) => [row.id, row.verified]), [
+    ['f:local', true],
+    ['f:library', false],
+  ])
 })
 
-test('node.focus selects same-page nodes together and groups other pages under elsewhere', async () => {
-  const pageA = { id: 'p:a', name: 'A', type: 'PAGE', parent: null, loadAsync: async () => {}, selection: [] as unknown[] }
-  const pageB = { id: 'p:b', name: 'B', type: 'PAGE', parent: null, loadAsync: async () => {}, selection: [] as unknown[] }
-  const one = { id: '1:1', name: 'One', type: 'FRAME', parent: pageA }
-  const two = { id: '1:2', name: 'Two', type: 'FRAME', parent: pageA }
-  const three = { id: '2:1', name: 'Three', type: 'FRAME', parent: pageB }
-  let currentPage = pageB
-  let scrolled: unknown[] = []
-  setFigma({
-    fileKey: null,
-    get currentPage() { return currentPage },
-    getNodeByIdAsync: async (id: string) => ({ '1:1': one, '1:2': two, '2:1': three } as Record<string, unknown>)[id] ?? null,
-    setCurrentPageAsync: async (page: typeof pageA) => { currentPage = page },
-    viewport: { scrollAndZoomIntoView(nodes: unknown[]) { scrolled = nodes } },
-  })
 
-  const op = OPS_BY_NAME.get('node.focus')!
-  const result = await op.run(validateParams(op.params, { nodes: ['1:1', '1:2', '2:1'] })) as {
-    selected: Array<{ id: string }>
-    elsewhere: Array<{ page: { id: string }; nodes: unknown[] }>
-  }
-  assert.deepEqual(result.selected.map((node) => node.id), ['1:1', '1:2'])
-  assert.deepEqual(pageA.selection, [one, two])
-  assert.deepEqual(scrolled, [one, two])
-  assert.equal(result.elsewhere[0].page.id, 'p:b')
-  assert.equal(result.elsewhere[0].nodes.length, 1)
+/* -------------------------------------------------------------------- swap */
+
+test('instance.swap writes back the override Figma\'s own heuristics dropped', async () => {
+  const target = component({ id: 'c:new', name: 'Chip v2', children: [text('Label', 'Label'), text('Caption', 'Caption')] })
+  const old = component({ id: 'c:old', name: 'Chip' })
+  const copy = instance({
+    id: 'i:1',
+    name: 'Chip',
+    main: old,
+    children: [text('Label', 'Sale'), text('Caption', 'ends today')],
+    keeps: ['Label'], // the swap keeps Label's text and resets Caption — the silent failure
+  })
+  copy.overrides = copy.children.map((child: Fake) => ({ id: child.id, overriddenFields: ['characters'] }))
+  mount([page('p:1', 'Screens', [copy]), page('p:2', 'Library', [target, old])])
+
+  const report = await run('instance.swap', { nodes: ['i:1'], to: 'c:new' })
+  assert.equal(report.repointed, 1)
+  const row = report.rows[0]
+  assert.equal(row.method, 'swap')
+  assert.equal(row.overrides.kept, 1, 'Label survived on its own')
+  assert.deepEqual(row.overrides.restored, [
+    { layer: 'Caption', path: [1], fields: ['characters'], matchedBy: 'path' },
+  ])
+  assert.deepEqual(row.overrides.lost, [])
+  assert.deepEqual(
+    copy.children.map((child: Fake) => child.characters),
+    ['Sale', 'ends today'],
+    'the copy still reads the way the designer wrote it'
+  )
+})
+
+test('instance.swap remaps component property keys by their designer-visible name', async () => {
+  const target = component({
+    id: 'c:new',
+    name: 'Chip v2',
+    componentProperties: { 'Label#new': { type: 'TEXT', value: 'Default' } },
+  })
+  const old = component({ id: 'c:old', name: 'Chip' })
+  const copy = instance({
+    id: 'i:1',
+    name: 'Chip',
+    main: old,
+    componentProperties: { 'Label#old': { type: 'TEXT', value: 'Sale' } },
+  })
+  mount([page('p:1', 'Screens', [copy]), page('p:2', 'Library', [target, old])])
+
+  const report = await run('instance.swap', { nodes: ['i:1'], to: 'c:new' })
+  assert.equal(copy.componentProperties['Label#new'].value, 'Sale')
+  assert.deepEqual(report.rows[0].overrides.properties.restored, ['Label#new'])
+})
+
+test('instance.swap can deliberately reset overrides to the new main defaults', async () => {
+  const target = component({ id: 'c:new', name: 'Chip v2', children: [text('Label', 'Default')] })
+  const old = component({ id: 'c:old', name: 'Chip' })
+  const copy = instance({
+    id: 'i:1',
+    name: 'Chip',
+    main: old,
+    children: [text('Label', 'Sale')],
+    keeps: [],
+  })
+  copy.overrides = [{ id: copy.children[0].id, overriddenFields: ['characters'] }]
+  mount([page('p:1', 'Screens', [copy]), page('p:2', 'Library', [target, old])])
+
+  const report = await run('instance.swap', { nodes: ['i:1'], to: 'c:new', preserveOverrides: false })
+  assert.equal(copy.children[0].characters, 'Default')
+  assert.match(report.rows[0].note, /not preserved/)
+})
+
+test('instance.swap names the override it could not carry instead of reporting a clean run', async () => {
+  const target = component({ id: 'c:new', name: 'Chip v2', children: [text('Label', 'Label')] })
+  const old = component({ id: 'c:old', name: 'Chip' })
+  const copy = instance({
+    id: 'i:1',
+    name: 'Chip',
+    main: old,
+    children: [text('Label', 'Sale'), text('Badge', '3')],
+  })
+  copy.overrides = copy.children.map((child: Fake) => ({ id: child.id, overriddenFields: ['characters'] }))
+  mount([page('p:1', 'Screens', [copy]), page('p:2', 'Library', [target, old])])
+
+  const report = await run('instance.swap', { nodes: ['i:1'], to: 'c:new' })
+  const lost = report.rows[0].overrides.lost
+  assert.equal(lost.length, 1)
+  assert.equal(lost[0].layer, 'Badge')
+  assert.match(lost[0].reason, /no layer at that position or by that name/)
+})
+
+test('instance.swap falls back to the rebuild when Figma refuses the swap, and says why', async () => {
+  const target = component({ id: 'c:new', name: 'Chip v2', children: [text('Label', 'Label')] })
+  const old = component({ id: 'c:old', name: 'Chip' })
+  const copy = instance({ id: 'i:1', name: 'Chip', main: old, children: [text('Label', 'Sale')] })
+  copy.overrides = [{ id: copy.children[0].id, overriddenFields: ['characters'] }]
+  copy.swapRefuses = 'cannot swap this instance'
+  const screens = page('p:1', 'Screens', [node({ id: 'f:0', name: 'Spacer', type: 'FRAME' }), copy])
+  mount([screens, page('p:2', 'Library', [target, old])])
+
+  const report = await run('instance.swap', { nodes: ['i:1'], to: 'c:new' })
+  const row = report.rows[0]
+  assert.equal(row.method, 'rebuild')
+  assert.equal(row.fellBackBecause, 'cannot swap this instance')
+  assert.ok(row.newId && row.newId !== 'i:1', 'a rebuild is a new node, and the report says so')
+  assert.deepEqual(
+    screens.children.map((child: Fake) => child.id),
+    ['f:0', row.newId],
+    'the replacement sits exactly where the old copy did'
+  )
+  assert.equal(screens.children[1].children[0].characters, 'Sale', 'the override was replayed onto the fresh copy')
+})
+
+test('instance.swap refuses to rebuild a copy nested inside another instance', async () => {
+  const target = component({ id: 'c:new', name: 'Chip v2', children: [text('Label', 'Label')] })
+  const old = component({ id: 'c:old', name: 'Chip' })
+  const inner = instance({ id: 'i:inner', name: 'Chip', main: old, children: [text('Label', 'Sale')] })
+  const outer = instance({ id: 'i:outer', name: 'Card', main: component({ id: 'c:card', name: 'Card' }), children: [inner] })
+  mount([page('p:1', 'Screens', [outer]), page('p:2', 'Library', [target, old])])
+
+  const report = await run('instance.swap', { nodes: ['i:inner'], to: 'c:new', strategy: 'rebuild' })
+  assert.equal(report.rows[0].ok, false)
+  assert.match(report.rows[0].error, /nested inside an instance/)
+})
+
+test('instance.swap dry run touches nothing', async () => {
+  const target = component({ id: 'c:new', name: 'Chip v2', children: [text('Label', 'Label')] })
+  const old = component({ id: 'c:old', name: 'Chip' })
+  const copy = instance({ id: 'i:1', name: 'Chip', main: old, children: [text('Label', 'Sale')] })
+  mount([page('p:1', 'Screens', [copy]), page('p:2', 'Library', [target, old])])
+
+  const report = await run('instance.swap', { nodes: ['i:1'], to: 'c:new', dryRun: true })
+  assert.equal(report.repointed, 0)
+  assert.equal(report.rows[0].repointed, false)
+  assert.equal(await copy.getMainComponentAsync(), old, 'the copy still points at the main it had')
+})
+
+/* ----------------------------------------------------------------- restore */
+
+test('component.restore refuses a copy whose main is alive', async () => {
+  const alive = component({ id: 'c:1', name: 'Button' })
+  mount([page('p:1', 'Screens', [instance({ id: 'i:1', name: 'Button', main: alive })]), page('p:2', 'Library', [alive])])
+
+  await assert.rejects(() => run('component.restore', { restoreFrom: 'i:1' }), /still has its main/)
+})
+
+test('component.restore dry run names every copy it would relink and writes nothing', async () => {
+  const dead = component({ id: 'c:dead', name: 'Chip', parent: null })
+  const one = instance({ id: 'i:1', name: 'Chip', main: dead, children: [text('Label', 'Sale')] })
+  const two = instance({ id: 'i:2', name: 'Chip', main: dead, children: [text('Label', 'New')] })
+  const screens = page('p:1', 'Screens', [one, two])
+  mount([screens])
+
+  const plan = await run('component.restore', { restoreFrom: 'i:1', dryRun: true })
+  assert.equal(plan.restored, false)
+  assert.deepEqual(
+    plan.relink.map((row: Fake) => row.id),
+    ['i:1', 'i:2']
+  )
+  assert.equal(plan.dead.matchedBy, 'main')
+  assert.equal(screens.children.length, 2, 'no component was created')
+})
+
+test('component.restore rebuilds the main from a copy and relinks the siblings with their own overrides', async () => {
+  const dead = component({ id: 'c:dead', name: 'Chip', parent: null })
+  const source = instance({ id: 'i:1', name: 'Chip', main: dead, children: [text('Label', 'Sale'), text('Caption', 'ends today')] })
+  const sibling = instance({
+    id: 'i:2',
+    name: 'Chip',
+    main: dead,
+    children: [text('Label', 'New'), text('Caption', 'this week')],
+    keeps: ['Label'], // the swap drops Caption — the restore has to put it back
+  })
+  sibling.overrides = sibling.children.map((child: Fake) => ({ id: child.id, overriddenFields: ['characters'] }))
+  const screens = page('p:1', 'Screens', [source, sibling])
+  mount([screens])
+
+  const report = await run('component.restore', { restoreFrom: 'i:1', name: 'Chip' })
+  assert.equal(report.restored, true)
+  assert.equal(report.relinked, 2)
+  assert.equal(report.component.name, 'Chip')
+  assert.equal(report.failed, 0)
+
+  const restored = screens.children.find((child: Fake) => child.type === 'COMPONENT')
+  assert.ok(restored, 'the rebuilt main is on the page')
+  assert.equal(await sibling.getMainComponentAsync(), restored, 'the sibling points at the restored main')
+  assert.deepEqual(
+    sibling.children.map((child: Fake) => child.characters),
+    ['New', 'this week'],
+    'the sibling kept its own copy, not the source copy it was rebuilt from'
+  )
 })

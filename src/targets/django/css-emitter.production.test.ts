@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { emitCss, groupComponentVariantSets, type DjangoNodeSource } from './css-emitter.ts'
+import { emitCss, groupComponentVariantSets, layoutDeclarations, type DjangoNodeSource } from './css-emitter.ts'
 import type { IrContainerNode } from './ir.ts'
 
 function makeBase() {
@@ -197,4 +197,101 @@ test('a fixed layer keeps the offset the design already gave it', async () => {
   assert.match(rule[1], /position: fixed;/)
   assert.match(rule[1], /top: 40px;/)
   assert.doesNotMatch(rule[1], /top: 0;/)
+})
+
+// --- wrap and distributed alignment --------------------------------------------------------------
+
+function flexFrame(layout: IrContainerNode['layout']): IrContainerNode {
+  return { ...makeBase(), id: '3:1', name: 'Row', type: 'container', layout, component: null, children: [] }
+}
+
+test('a column wrap puts the main gap in row-gap and the cross gap in column-gap', () => {
+  const decl = layoutDeclarations(
+    flexFrame({
+      kind: 'flex',
+      direction: 'column',
+      wrap: true,
+      gap: 8,
+      crossGap: 24,
+      justifyContent: 'flex-start',
+      alignItems: 'flex-start',
+      padding: { top: 0, right: 0, bottom: 0, left: 0 },
+    }),
+    null
+  )
+  assert.equal(decl['flex-direction'], 'column')
+  assert.equal(decl['flex-wrap'], 'wrap')
+  assert.equal(decl['gap'], '8px 24px')
+})
+
+test('a row wrap keeps the cross gap as the row gap', () => {
+  const decl = layoutDeclarations(
+    flexFrame({
+      kind: 'flex',
+      direction: 'row',
+      wrap: true,
+      gap: 8,
+      crossGap: 24,
+      justifyContent: 'flex-start',
+      alignItems: 'flex-start',
+      padding: { top: 0, right: 0, bottom: 0, left: 0 },
+    }),
+    null
+  )
+  assert.equal(decl['gap'], '24px 8px')
+})
+
+test('space-evenly and space-around distribute the children themselves, so the stale main gap is dropped', () => {
+  for (const justify of ['space-evenly', 'space-around', 'space-between'] as const) {
+    const decl = layoutDeclarations(
+      flexFrame({
+        kind: 'flex',
+        direction: 'row',
+        wrap: false,
+        gap: 143,
+        justifyContent: justify,
+        alignItems: 'center',
+        padding: { top: 0, right: 0, bottom: 0, left: 0 },
+      }),
+      null
+    )
+    assert.equal(decl['gap'], undefined)
+    assert.equal(decl['justify-content'], justify)
+  }
+})
+
+test('a distributed wrap keeps its cross gap when it equals itemSpacing', () => {
+  // The IR omits crossGap when it matches itemSpacing; the distributing mode then dropped the
+  // main gap, and with it the only gap there was — wrapped lines touched.
+  for (const direction of ['row', 'column'] as const) {
+    const decl = layoutDeclarations(
+      flexFrame({
+        kind: 'flex',
+        direction,
+        wrap: true,
+        gap: 16,
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        padding: { top: 0, right: 0, bottom: 0, left: 0 },
+      }),
+      null
+    )
+    assert.equal(decl['gap'], direction === 'row' ? '16px 0px' : '0px 16px', direction)
+  }
+})
+
+test('a plain wrap with equal gaps still writes one value', () => {
+  const decl = layoutDeclarations(
+    flexFrame({
+      kind: 'flex',
+      direction: 'column',
+      wrap: true,
+      gap: 12,
+      justifyContent: 'flex-start',
+      alignItems: 'flex-start',
+      padding: { top: 0, right: 0, bottom: 0, left: 0 },
+    }),
+    null
+  )
+  assert.equal(decl['gap'], '12px')
 })

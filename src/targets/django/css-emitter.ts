@@ -29,7 +29,7 @@ import type {
 } from './ir.ts'
 import { rasterFilename } from './assets.ts'
 import { toCssVarName, rgbaToCss } from './tokens.ts'
-import { segmentsToCss, splitTextParagraphs, isMultiBlockText, TEXT_SEGMENT_FIELDS, type TextStyleSegment } from './text-styles.ts'
+import { segmentsToCss, textWrapRules, splitTextParagraphs, isMultiBlockText, TEXT_SEGMENT_FIELDS, type TextStyleSegment } from './text-styles.ts'
 import { parseVariantName, themeButtonInstanceDecl } from './bootstrap/theme.ts'
 
 /** A single bindable field: `VariableAlias` for a scalar property (e.g. `cornerRadius`). */
@@ -429,6 +429,9 @@ function applyConstraints(
   )
 }
 
+/** Figma's distributing primary-axis modes: spacing comes from the distribution, not itemSpacing. */
+const DISTRIBUTED_JUSTIFY: Record<string, true> = { 'space-between': true, 'space-evenly': true, 'space-around': true }
+
 /**
  * CSS for the IR's layout model: the node's own layout (Auto Layout → flex, GRID → grid,
  * NONE → a positioning context), its placement inside the parent (absolute x/y under an
@@ -452,14 +455,25 @@ export function layoutDeclarations(
     if (layout.wrap) decl['flex-wrap'] = 'wrap'
     // CSS `gap` can't be negative — a negative itemSpacing (overlapping children) is compiled to
     // negative margins on the flow children instead (see the child-margin block below). Only a
-    // positive main gap (or any cross gap) is emitted here. Figma IGNORES itemSpacing under
-    // SPACE_BETWEEN (the stored value is stale editor state — e.g. 143px on a 4-stat row) while
-    // CSS treats gap as a minimum and overflows the row — so SPACE_BETWEEN drops the main gap.
-    const mainGap = layout.gap > 0 && layout.justifyContent !== 'space-between' ? layout.gap : 0
-    if (mainGap || layout.crossGap != null) {
-      // gap shorthand is <row-gap> <column-gap>; the cross-axis gap of a horizontal wrap is the
-      // row gap (counterAxisSpacing), the main-axis gap the column gap (itemSpacing).
-      decl['gap'] = layout.crossGap != null ? `${px(layout.crossGap)} ${px(mainGap)}` : px(mainGap)
+    // positive main gap (or any cross gap) is emitted here. Figma IGNORES itemSpacing under the
+    // distributing modes SPACE_BETWEEN / SPACE_EVENLY / SPACE_AROUND (the stored value is stale
+    // editor state — e.g. 143px on a 4-stat row) while CSS treats gap as a minimum and overflows
+    // the row — so those three drop the main gap.
+    const mainGap = layout.gap > 0 && !DISTRIBUTED_JUSTIFY[layout.justifyContent] ? layout.gap : 0
+    // The IR leaves crossGap out when it equals itemSpacing. A wrap still HAS that cross gap — and
+    // under a distributing mode, where the main gap is dropped, leaving it implicit lost it too:
+    // wrapped lines touched.
+    const crossGap = layout.crossGap ?? (layout.wrap && layout.gap > 0 ? layout.gap : null)
+    if (mainGap || crossGap != null) {
+      // gap shorthand is <row-gap> <column-gap>. On a row the main-axis gap (itemSpacing) is the
+      // column gap and the cross-axis gap (counterAxisSpacing) the row gap; a column wrap swaps
+      // the two.
+      decl['gap'] =
+        crossGap == null || crossGap === mainGap
+          ? px(mainGap)
+          : layout.direction === 'column'
+            ? `${px(mainGap)} ${px(crossGap)}`
+            : `${px(crossGap)} ${px(mainGap)}`
     }
     const { top, right, bottom, left } = layout.padding
     if (top || right || bottom || left) decl['padding'] = `${px(top)} ${px(right)} ${px(bottom)} ${px(left)}`
@@ -730,6 +744,7 @@ async function emitTextRules(
       hangingPunctuation: node.hangingPunctuation,
       hangingList: node.hangingList,
     }))
+    rules.push(...textWrapRules(className, segments))
   }
   // No live node to query (e.g. regenerating from IR alone) — nothing to size text with.
 }

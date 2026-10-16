@@ -27,6 +27,7 @@ import {
 } from './values.ts'
 import { loadAllPagesAsync, walkSceneNodes } from '../utils/tree.ts'
 import { REMOVE_OPS } from './remove-ops.ts'
+import { regionFills, writeRegionFills, paintAliasId, type RegionPaints } from '../utils/vector-regions.ts'
 
 /* ------------------------------------------------------------------ report */
 
@@ -315,7 +316,8 @@ async function bindPaints(
   prop: 'fills' | 'strokes',
   variable: Variable | null,
   paintIndex: number | undefined,
-  dryRun: boolean
+  dryRun: boolean,
+  region?: number
 ): Promise<{ detail: string; before: string }> {
   const styleId = (node as unknown as Record<string, unknown>)[prop === 'fills' ? 'fillStyleId' : 'strokeStyleId']
   // Binding a variable on top of a paint style silently breaks the style link. The linter skips
@@ -324,7 +326,14 @@ async function bindPaints(
     throw new Error(`${prop} come from a paint style — unlink it first, or the binding would break the style`)
   }
   const paints = (node as unknown as Record<string, unknown>)[prop]
-  if (!Array.isArray(paints)) throw new Error(`${prop} are unreadable on this node`)
+  if (!Array.isArray(paints)) {
+    /* A vector painted per region reads its fills as `figma.mixed`; the paints live on the
+     * network's regions instead, and that is where the binding has to go. */
+    const regions = prop === 'fills' ? regionFills(node) : null
+    if (regions) return bindRegionPaints(node, regions, variable, paintIndex, region, dryRun)
+    throw new Error(`${prop} are unreadable on this node`)
+  }
+  if (region !== undefined) throw new Error(`"region" only applies to a vector whose fills differ per region`)
 
   const next = (paints as Paint[]).slice()
   const touched: number[] = []
@@ -347,6 +356,53 @@ async function bindPaints(
     detail: touched.length === next.length ? prop : `${prop}[${touched.join(',')}]`,
     before: was.join(' '),
   }
+}
+
+/** `bindPaints` for a vector whose fills differ per region: the same solid-paint rewrite, done
+ * on each region's own stack and written back as one network. A region that follows a paint
+ * style is refused when it was asked for by number and skipped otherwise — the same rule as a
+ * styled node, for the same reason. */
+async function bindRegionPaints(
+  node: SceneNode,
+  regions: RegionPaints[],
+  variable: Variable | null,
+  paintIndex: number | undefined,
+  region: number | undefined,
+  dryRun: boolean
+): Promise<{ detail: string; before: string }> {
+  if (region !== undefined && !regions.some((one) => one.region === region)) {
+    throw new Error(`no region ${region} — this vector has ${regions.length}`)
+  }
+  const next = new Map<number, Paint[]>()
+  const touched: string[] = []
+  const was: string[] = []
+  for (const one of regions) {
+    if (region !== undefined && one.region !== region) continue
+    if (one.fillStyleId) {
+      if (region !== undefined) {
+        throw new Error(`regions[${one.region}] fills come from a paint style — unlink it first, or the binding would break the style`)
+      }
+      continue
+    }
+    const fills = one.fills.slice()
+    let changed = false
+    for (let i = 0; i < fills.length; i++) {
+      if (paintIndex !== undefined && i !== paintIndex) continue
+      if (fills[i].type !== 'SOLID') continue
+      was.push(`regions[${one.region}].fills[${i}]=${await describePriorPaint(fills[i] as SolidPaint)}`)
+      fills[i] = figma.variables.setBoundVariableForPaint(fills[i] as SolidPaint, 'color', variable)
+      touched.push(`regions[${one.region}].fills[${i}]`)
+      changed = true
+    }
+    if (changed) next.set(one.region, fills)
+  }
+  if (touched.length === 0) {
+    throw new Error(
+      paintIndex === undefined ? 'no solid paint in any region' : `no region has a solid paint at fills[${paintIndex}]`
+    )
+  }
+  if (!dryRun) await writeRegionFills(node, next)
+  return { detail: touched.join(','), before: was.join(' ') }
 }
 
 /* -------------------------------------------------------------- component docs */
@@ -582,6 +638,40 @@ export function mainAliasFor(main: Record<string, unknown> | null, job: Override
   }
   const bound = main.boundVariables as Record<string, { id?: string }> | undefined
   return bound?.[job.field]?.id
+}
+
+/**
+ * A style for `node.style` from what a caller can actually hold: a local style's id, key or name,
+ * or a LIBRARY style's id or key. The website's text styles all live in a library — `Text/Body 4`
+ * on a layer reads as "S:cb93…,313:306" with remote: true — and a local-only lookup could not
+ * apply the one style every neighbouring layer already uses.
+ *
+ * Library names are not resolvable: the plugin API lists no remote styles, and guessing among
+ * the libraries' namesakes is exactly the coin toss the name rule refuses. Ids and keys are not
+ * ambiguous; `like` covers the case where all one has is a layer that looks right.
+ */
+export async function resolveStyleRef(ref: string, kind: string, local: readonly BaseStyle[]): Promise<BaseStyle> {
+  const direct = local.find((one) => one.id === ref || one.key === ref)
+  if (direct) return direct
+  const named = local.filter((one) => one.name.toLowerCase() === ref.toLowerCase())
+  if (named.length > 1) throw new Error(`"${ref}" names ${named.length} styles — pass an id instead`)
+  if (named.length === 1) return named[0]
+
+  const check = (style: BaseStyle) => {
+    if (style.type !== kind) throw new Error(`${ref} is a ${style.type} style, not ${kind}`)
+    return style
+  }
+  const byId = await figma.getStyleByIdAsync(ref).catch(() => null)
+  if (byId) return check(byId)
+  // A library style's id is "S:<key>,<node id>": a style the file has not met yet resolves by
+  // that key, the same as a bare published key.
+  const key = /^S:([0-9a-f]{40}),/.exec(ref)?.[1] ?? (/^[0-9a-f]{40}$/.test(ref) ? ref : null)
+  if (key) {
+    const imported = await figma.importStyleByKeyAsync(key).catch(() => null)
+    if (imported) return check(imported)
+    throw new Error(`library style ${key} could not be imported — is its library enabled for this file and published?`)
+  }
+  throw new Error(`no local ${kind.toLowerCase()} style "${ref}" — a library style needs its id or key (node.get reports textStyle.id), or "like" with a layer that has it`)
 }
 
 export const WRITE_OPS: readonly OpDef[] = [
@@ -965,7 +1055,9 @@ export const WRITE_OPS: readonly OpDef[] = [
           '"padding"), or a scalar field (width, height, topLeftRadius, itemSpacing, paddingLeft, ' +
           'strokeWeight, opacity, visible, characters, …). Layer `opacity` takes a FLOAT variable scoped OPACITY. ' +
           '`variable` is an id, a name ("Colors/orange/500") or a library key from `library.variables`; null unbinds. ' +
-          '`paintIndex` narrows a fill/stroke color binding to one solid paint; COLOR_OPACITY is not yet writable through the Plugin API.',
+          '`paintIndex` narrows a fill/stroke color binding to one solid paint; COLOR_OPACITY is not yet writable through the Plugin API. ' +
+          '`region` narrows a fill on a vector painted per region (its fills read as mixed) to one region of its network; ' +
+          'without it every region\'s solid paints are bound.',
       },
       dryRun: {
         type: 'boolean',
@@ -1019,6 +1111,8 @@ export const WRITE_OPS: readonly OpDef[] = [
           if (paintIndex !== undefined && !Number.isInteger(paintIndex)) {
             throw new Error('"paintIndex" must be a whole number')
           }
+          const region = entry.region === undefined ? undefined : Number(entry.region)
+          if (region !== undefined && !Number.isInteger(region)) throw new Error('"region" must be a whole number')
 
           // A fix on an instance sublayer belongs on the main component — one edit reaches every
           // instance, and the binding is not reverted by the next scan. Inside a *library*
@@ -1040,7 +1134,7 @@ export const WRITE_OPS: readonly OpDef[] = [
               let before: string
               if (one in PAINT_FIELDS) {
                 const applyTo = target.kind === 'library' ? node : target.node
-                const done = await bindPaints(applyTo, PAINT_FIELDS[one], variable, paintIndex, dryRun)
+                const done = await bindPaints(applyTo, PAINT_FIELDS[one], variable, paintIndex, dryRun, region)
                 detail = done.detail
                 before = done.before
               } else {
@@ -1112,19 +1206,21 @@ export const WRITE_OPS: readonly OpDef[] = [
   },
   {
     name: 'style.bind',
-    summary: 'Bind a paint style — solid paint, or one gradient stop — to a variable, and verify it stuck.',
+    summary: 'Bind a style to a variable — a paint style\'s solid paint or gradient stop, or a text style\'s font family, size, line height… — and verify it stuck.',
     agent:
-      'stop is the position in percent — the same number a pNN token name carries. Gradient-stop binding is undocumented API, so the op re-reads the style and reports verified.',
+      'stop is the position in percent — the same number a pNN token name carries. Gradient-stop binding is undocumented API, so the op re-reads the style and reports verified. With `field`, the row targets a TEXT style instead: fontFamily/fontStyle take a STRING variable, the rest a FLOAT.',
     mutates: true,
     params: {
       bindings: {
         type: 'json',
         required: true,
         description:
-          'Array of { style, paint?, stop?, variable }. `style` is a style id, key or name from ' +
+          'Array of { style, paint?, stop?, field?, variable }. `style` is a style id, key or name from ' +
           '`styles.list`. `paint` is the index in the style (default 0). `stop` is a gradient stop ' +
           'POSITION IN PERCENT — the same number a `pNN` token name carries — omitted for a solid ' +
-          'paint. `variable` is an id, a name ("Colors/orange/500") or a library key; null unbinds.',
+          'paint. `field` makes the row a TEXT style binding instead: fontFamily, fontStyle, fontWeight, ' +
+          'fontSize, lineHeight, letterSpacing, paragraphSpacing or paragraphIndent. `variable` is an ' +
+          'id, a name ("Colors/orange/500") or a library key; null unbinds.',
       },
       dryRun: { type: 'boolean', default: false, description: 'Report what would change without writing anything.' },
     },
@@ -1163,6 +1259,59 @@ export const WRITE_OPS: readonly OpDef[] = [
       const nameOf = async (id: string | undefined) =>
         id ? ((await figma.variables.getVariableByIdAsync(id))?.name ?? id) : null
 
+      /* A text style is bound field by field (`fontFamily` → a STRING variable holding "Onest"),
+       * which is how a typography collection reaches the styles a designer actually applies. */
+      const TEXT_FIELDS: Record<string, 'STRING' | 'FLOAT'> = {
+        fontFamily: 'STRING',
+        fontStyle: 'STRING',
+        fontWeight: 'FLOAT',
+        fontSize: 'FLOAT',
+        lineHeight: 'FLOAT',
+        letterSpacing: 'FLOAT',
+        paragraphSpacing: 'FLOAT',
+        paragraphIndent: 'FLOAT',
+      }
+      let textStyles: TextStyle[] | null = null
+      const findTextStyle = async (ref: unknown): Promise<TextStyle> => {
+        if (typeof ref !== 'string' || ref === '') throw new Error('missing "style"')
+        textStyles = textStyles ?? (await figma.getLocalTextStylesAsync())
+        const byId = textStyles.find((style) => style.id === ref || style.key === ref || style.id === `${ref},`)
+        if (byId) return byId
+        const named = textStyles.filter((style) => style.name.toLowerCase() === ref.toLowerCase())
+        if (named.length === 1) return named[0]
+        if (named.length > 1) throw new Error(`"${ref}" names ${named.length} text styles — pass an id instead`)
+        throw new Error(`no local text style "${ref}"`)
+      }
+      const bindText = async (entry: Record<string, unknown>) => {
+        const field = String(entry.field)
+        const kind = TEXT_FIELDS[field]
+        if (!kind) throw new Error(`"${field}" is not a text style field — one of ${Object.keys(TEXT_FIELDS).join(', ')}`)
+        const style = await findTextStyle(entry.style)
+        const variable = entry.variable === null ? null : await resolveVariableRef(entry.variable)
+        if (variable && variable.resolvedType !== kind) {
+          throw new Error(`"${variable.name}" is ${variable.resolvedType}, but ${field} takes ${kind}`)
+        }
+        const bound = (style as unknown as { boundVariables?: Record<string, { id?: string }> }).boundVariables
+        const before = await nameOf(bound?.[field]?.id)
+        const row = { style: style.name, field, before, variable: variable ? variable.name : null }
+        if (dryRun) return { ...row, ok: true, verified: null }
+        // Figma refuses to touch a text style whose font is not loaded.
+        await figma.loadFontAsync(style.fontName)
+        ;(style as unknown as { setBoundVariable: (f: string, v: Variable | null) => void }).setBoundVariable(field, variable)
+        const written = (await figma.getStyleByIdAsync(style.id)) as TextStyle | null
+        const landed =
+          (written as unknown as { boundVariables?: Record<string, { id?: string }> } | null)?.boundVariables?.[field]?.id ??
+          null
+        const verified = variable ? landed === variable.id : landed === null
+        return {
+          ...row,
+          ...(written ? { holds: `${written.fontName.family} ${written.fontName.style}` } : {}),
+          ok: verified,
+          verified,
+          ...(verified ? {} : { error: 'the runtime accepted the write but the binding did not persist' }),
+        }
+      }
+
       const results = []
       for (const [index, raw] of rows.entries()) {
         const label = `bindings[${index}]`
@@ -1170,6 +1319,10 @@ export const WRITE_OPS: readonly OpDef[] = [
           const entry = record(raw, label)
           if (!Object.prototype.hasOwnProperty.call(entry, 'variable')) {
             throw new Error('missing "variable" — pass null explicitly to unbind')
+          }
+          if (entry.field !== undefined) {
+            results.push(await bindText(entry))
+            continue
           }
           const style = await findStyle(entry.style)
           const paintIndex = entry.paint === undefined ? 0 : Number(entry.paint)
@@ -1265,16 +1418,20 @@ export const WRITE_OPS: readonly OpDef[] = [
     name: 'node.style',
     summary: 'Apply a style to layers — or detach them — and verify it took. Re-attaches what drifted.',
     agent:
-      'Applying a style replaces what the layer renders — the report names the displaced paints. null detaches, keeping pixels.',
+      'Applying a style replaces what the layer renders — the report names the displaced paints. null detaches, keeping pixels. ' +
+      'Library styles work too: pass the id `node.get` reports as textStyle.id (or a published key), or `like` — another ' +
+      'layer whose style this one should take, the usual way to say "the same as its neighbour".',
     mutates: true,
     params: {
       assignments: {
         type: 'json',
         required: true,
         description:
-          'Array of { node, field, style }. `field` is "fill", "stroke", "text", "effect" or "grid". ' +
-          '`style` is a style id, key or name from `styles.list`; null detaches, leaving the layer ' +
-          'with whatever it currently renders.',
+          'Array of { node, field, style } or { node, field, like }. `field` is "fill", "stroke", "text", ' +
+          '"effect" or "grid". `style` is a local style\'s id, key or name from `styles.list`, or a library ' +
+          'style\'s id ("S:<key>,<id>", as `node.get` reports it) or published key — imported when the file ' +
+          'does not have it yet; null detaches, leaving the layer with whatever it currently renders. `like` is ' +
+          'a layer id: this layer takes whatever style that one has in the same field.',
       },
       dryRun: { type: 'boolean', default: false, description: 'Report what would change without writing anything.' },
     },
@@ -1317,8 +1474,9 @@ export const WRITE_OPS: readonly OpDef[] = [
           const fieldName = String(entry.field ?? '')
           const field = (FIELDS as Record<string, { prop: string; setter: string; kind: string } | undefined>)[fieldName]
           if (!field) throw new Error(`"${fieldName}" is not a style field — try: ${Object.keys(FIELDS).join(', ')}`)
-          if (!Object.prototype.hasOwnProperty.call(entry, 'style')) {
-            throw new Error('missing "style" — pass null explicitly to detach')
+          const hasLike = typeof entry.like === 'string' && entry.like !== ''
+          if (!hasLike && !Object.prototype.hasOwnProperty.call(entry, 'style')) {
+            throw new Error('missing "style" — pass null explicitly to detach, or "like" with a layer id')
           }
 
           const found = await figma.getNodeByIdAsync(nodeId)
@@ -1329,18 +1487,23 @@ export const WRITE_OPS: readonly OpDef[] = [
           const holder = node as unknown as Record<string, unknown>
           if (!(field.prop in holder)) throw new Error(`a ${node.type} has no "${fieldName}" style`)
 
+          let ref: unknown = entry.style
+          if (hasLike) {
+            const model = await figma.getNodeByIdAsync(entry.like as string)
+            if (!model || model.type === 'PAGE' || model.type === 'DOCUMENT') throw new Error(`no layer with id ${entry.like} to take the style from`)
+            const theirs = (model as unknown as Record<string, unknown>)[field.prop]
+            if (theirs === figma.mixed) throw new Error(`${model.name} has more than one ${fieldName} style — name one instead`)
+            if (typeof theirs !== 'string' || theirs === '') throw new Error(`${model.name} has no ${fieldName} style to copy`)
+            ref = theirs
+          }
+
           let styleId = ''
           let styleName: string | null = null
-          if (entry.style !== null) {
-            const ref = entry.style
+          if (ref !== null) {
             if (typeof ref !== 'string' || ref === '') throw new Error('"style" must be a non-empty string, or null')
-            const pool = await localOf(field.kind)
-            const direct = pool.find((one) => one.id === ref || one.key === ref)
-            const named = direct ? [direct] : pool.filter((one) => one.name.toLowerCase() === ref.toLowerCase())
-            if (named.length === 0) throw new Error(`no local ${field.kind.toLowerCase()} style "${ref}"`)
-            if (named.length > 1) throw new Error(`"${ref}" names ${named.length} styles — pass an id instead`)
-            styleId = named[0].id
-            styleName = named[0].name
+            const found = await resolveStyleRef(ref, field.kind, await localOf(field.kind))
+            styleId = found.id
+            styleName = found.name
           }
 
           const before = await nameOfStyle(holder[field.prop])
@@ -1371,8 +1534,11 @@ export const WRITE_OPS: readonly OpDef[] = [
 
           /* Read it back. `setFillStyleIdAsync` resolves without complaint on a node that cannot
            * take the style, and a silent no-op is the one outcome a caller cannot see. */
-          const after = await nameOfStyle((node as unknown as Record<string, unknown>)[field.prop])
-          const verified = styleName === null ? after === null : after === styleName
+          // By id, not name: two copies of one library style share a name — a stale "Text/Body 3"
+          // swapped for the current one reads identical by name whichever of them stuck.
+          const afterId = (node as unknown as Record<string, unknown>)[field.prop]
+          const after = await nameOfStyle(afterId)
+          const verified = styleName === null ? after === null : afterId === styleId
           results.push({
             node: nodeId,
             name: node.name,
@@ -1403,7 +1569,9 @@ export const WRITE_OPS: readonly OpDef[] = [
       styles: {
         type: 'string[]',
         required: true,
-        description: 'Styles to delete, each an id, a key or an exact name from `styles.list`.',
+        description:
+          'Styles to delete, each an id, a key or an exact name from `styles.list` — paint, text, ' +
+          'effect, grid or custom animation.',
       },
       dryRun: {
         type: 'boolean',
@@ -1434,6 +1602,7 @@ export const WRITE_OPS: readonly OpDef[] = [
         figma.getLocalTextStylesAsync(),
         figma.getLocalEffectStylesAsync(),
         figma.getLocalGridStylesAsync(),
+        figma.getLocalCustomAnimationStylesAsync(),
       ])
       const all = pools.flat()
 
@@ -1617,6 +1786,10 @@ export const WRITE_OPS: readonly OpDef[] = [
        * the node's fonts loaded, which is async, and the walk visitor is deliberately sync. */
       const textJobs: Array<{ node: SceneNode; field: string }> = []
       const textFillJobs: SceneNode[] = []
+      /* Vectors painted per region: their fills read as mixed, so the paint pass below cannot see
+       * them. Matches are counted during the walk; the network is rewritten after it, because
+       * `setVectorNetworkAsync` is async and the visitor is not. */
+      const regionJobs: SceneNode[] = []
       /* Fills that come from a paint style are the style's paints seen through the node —
        * assigning them back would silently break the style link, and the style itself is
        * migrated in the styles pass below. */
@@ -1754,7 +1927,22 @@ export const WRITE_OPS: readonly OpDef[] = [
         for (const prop of ['fills', 'strokes'] as const) {
           if (styled(holder[prop === 'fills' ? 'fillStyleId' : 'strokeStyleId'])) continue
           const paints = holder[prop]
-          if (!Array.isArray(paints)) continue
+          if (!Array.isArray(paints)) {
+            const regions = prop === 'fills' ? regionFills(node) : null
+            if (!regions) continue
+            let hits = 0
+            for (const one of regions) {
+              if (one.fillStyleId) continue // the style is migrated in the styles pass
+              for (const paint of one.fills) {
+                const at = paint.type === 'SOLID' ? pairByFromId.get(paintAliasId(paint)) : undefined
+                if (at === undefined) continue
+                pairs[at].matched += 1
+                hits += 1
+              }
+            }
+            if (hits > 0 && !dryRun) regionJobs.push(node)
+            continue
+          }
           let next: Paint[] | null = null
           ;(paints as Paint[]).forEach((paint, index) => {
             const paintAt = pairByFromId.get(
@@ -2058,6 +2246,34 @@ export const WRITE_OPS: readonly OpDef[] = [
         } catch (err) {
           if (writeErrors.length < 5) {
             writeErrors.push(`${node.name} (${node.id}) segment fills: ${String((err as Error)?.message || err)}`)
+          }
+        }
+      }
+
+      for (const node of regionJobs) {
+        const regions = regionFills(node) ?? []
+        const next = new Map<number, Paint[]>()
+        const counted: number[] = []
+        for (const one of regions) {
+          if (one.fillStyleId) continue
+          let fills: Paint[] | null = null
+          one.fills.forEach((paint, index) => {
+            const at = paint.type === 'SOLID' ? pairByFromId.get(paintAliasId(paint)) : undefined
+            if (at === undefined) return
+            fills = fills ?? one.fills.slice()
+            fills[index] = figma.variables.setBoundVariableForPaint(fills[index] as SolidPaint, 'color', pairs[at].to)
+            counted.push(at)
+          })
+          if (fills) next.set(one.region, fills)
+        }
+        if (next.size === 0) continue
+        try {
+          await writeRegionFills(node, next)
+          for (const at of counted) pairs[at].rebound += 1
+        } catch (err) {
+          for (const at of counted) pairs[at].failed += 1
+          if (writeErrors.length < 5) {
+            writeErrors.push(`${node.name} (${node.id}) region fills: ${String((err as Error)?.message || err)}`)
           }
         }
       }

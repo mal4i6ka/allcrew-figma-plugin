@@ -205,13 +205,49 @@ a plugin would make the plugin channel depend on a credential it currently does 
 ```bash
 allcrew-channel comments -k https://figma.com/design/<key>/…   # threads, replies grouped
 allcrew-channel versions -k <key or URL>                       # named versions vs autosaves
-allcrew-channel activity --since 2026-08-01                    # Enterprise, org-admin token
+allcrew-channel auth                                           # once, for the audit log
+allcrew-channel activity --since 2026-08-01                    # who did what, org-wide
 ```
 
 `$FIGMA_TOKEN`, else `~/.allcrew-channel/figma-token` — the same resolution order as the bridge secret,
 so a machine that has one needs no setup for the other. Nothing writes that file for you: a
 token is the designer's own credential and this tool never asks for it, prompts for it, or
 puts it anywhere but where they chose.
+
+### Two credentials, and why the audit log needs the second one
+
+The personal access token covers everything above except `activity`. That one takes an OAuth
+grant, and the difference is not a preference — measured against the live API, both ways:
+
+```
+GET /v1/activity_logs   X-Figma-Token: figd_…       → 401 "OAuth token is not passed in the
+                                                          Bearer authorization header."
+GET /v1/activity_logs   Authorization: Bearer figd_… → 401 "figd_ tokens must be passed via
+                                                          X-Figma-Token header, not Authorization"
+```
+
+A personal token is therefore refused on both headers whatever its scopes. `allcrew-channel
+auth` does the OAuth2 flow once — register an app at figma.com/developers/apps with
+`http://127.0.0.1:7789/callback` as its redirect URL (`--client-id`/`--client-secret` are saved
+0600 for next time), and the grant lands in `~/.allcrew-channel/figma-oauth.json` (0600). It
+lasts 90 days; `auth --refresh` renews it and `auth --status` says what is stored. Enterprise
+plan, organisation admin, 2FA — Figma's requirements, not ours. Overrides:
+`ALLCREW_CHANNEL_FIGMA_OAUTH_FILE`, `ALLCREW_CHANNEL_FIGMA_OAUTH_APP_FILE`,
+`ALLCREW_CHANNEL_FIGMA_OAUTH_TOKEN`, `ALLCREW_CHANNEL_FIGMA_OAUTH_CLIENT_ID`/`_SECRET`.
+
+**Library analytics needs no OAuth at all.** It takes the ordinary personal token and answers
+`403 Invalid scope: [...]. This endpoint requires the library_analytics:read scope.` when the
+token was minted without that box ticked. That 403 is also the only place Figma lists a token's
+scopes — there is no introspection endpoint — which is how `org.capabilities` knows them. Ask
+once rather than discovering it a 403 at a time:
+
+```bash
+allcrew-channel call org.capabilities '{"fileKey":"<any library you can open>"}'
+```
+
+Every surface comes back reachable `true`, `false` or `"unknown"`, with the single remedy when it
+is not. `"unknown"` is deliberate: without a real file key the analytics scope cannot be
+determined, because Figma resolves the file before it checks the scope.
 
 | | plugin channel | REST commands |
 |---|---|---|
@@ -367,13 +403,13 @@ allcrew-channel ops --json       # the same, machine-readable
 | `page.frames` | top-level frames, sections and components on a page |
 | `page.warm` | loads a page on purpose and reports what it cost — the wait moved to where you chose it, instead of arriving inside the first read that touched a cold page |
 | `node.get` | one node by id — geometry, auto-layout, text, instance bindings, children |
-| `node.find` | search by name substring and/or node type, per page or whole document |
+| `node.find` | search by name substring, node type and/or `text` — what a TEXT layer actually says, case and spacing ignored — per page or whole document; `within` narrows any search to one frame or section, and every text match names its top-level `frame` |
 | `selection.get` | what the designer has selected right now |
 | `components.list` | local components and sets, with property/variant definitions, descriptions and documentation links |
 | `component.api` | one component as an API: axes with options and defaults, the variant that isolates each option, what it changes (with the token behind each value), and which layer every boolean/text/swap property drives |
-| `component.instances` | document-wide inventory of every component copy: page, containing frame, nested status and jump link, plus local components with zero copies |
-| `component.orphans` | orphan instances grouped by dead master, separating deleted local masters from missing masters and ranking groups by affected copies |
-| `styles.list` | local text, paint, effect and grid styles |
+| `component.instances` | without a target: a document-wide inventory of every component copy — page, containing frame path, nested status, override count and jump link, plus unused local components (counted only at document scope, sets reported as one). With `nodeId`/`name`, one component, set, variant or instance's copies broken down `byPage`, `byVariant`, `nested`/`placed`. `scope`/`pageId` narrow the walk; `budgetMs` returns a partial answer marked `timedOut` instead of hitting the bridge ceiling |
+| `component.orphans` | orphan instances grouped by dead master — a local main that was deleted (unparented, on no page) or a missing one — ranked by affected copies, each group with up to three ranked `restoreFrom` candidates; `detached: true` adds frames detached from a main that is also gone. `scope`, `pageId`, `nodeId`, `limit` and `budgetMs` bound the walk |
+| `styles.list` | local text, paint, effect, grid and custom animation styles — an animation style comes back with the animations it plays, in order |
 | `variables.get` | collections, modes and values, with each token's description, scopes and per-platform `codeSyntax` |
 | `flow.map` | prototype graph of a page: starting points and every reaction edge, each carrying the navigation kind and its transition (duration, easing, curve) |
 | `node.focus` | selects one node or a same-page batch and scrolls the designer to it; cross-page nodes return grouped under `elsewhere` with one-line jump links |
@@ -384,12 +420,12 @@ allcrew-channel ops --json       # the same, machine-readable
 | `text.inventory` | every TEXT node of a subtree, split into `content` (copy that must reach the CMS and the translation file) and `baked` (text drawn inside an illustration — `img/*`, `Img`, `Interface`, `Calculator` — which ships as pixels or an SVG overlay). The rule lives here rather than in each consumer, so a fresh checkout on another machine gets the same verdict |
 | `export.plan` | how to get one slot out of Figma: `vector-over-plate`, `plate+vector` or a flat `raster`, the density that still fits the 3 MB one answer carries, and the exact calls to make. Turns four cheap reads — size, bitmap fill, which children are marked, the hop ceiling — into a strategy instead of a failed export |
 | `tokens.emit` | the file's variables as token files for a named platform: `web` (tokens.css/json/ts), `ios` (`Assets.xcassets/*.colorset`, `Tokens.swift`), `android` (`values/colors.xml`, `values-night/colors.xml`, `Tokens.kt`). The platform is an argument, so the answer does not depend on the checkbox in one designer's panel |
-| `text.segments` | the styled runs of one TEXT node — ranges, characters, and the variable bound to each run, which is the only place per-range typography is readable |
-| `paints.stack` | every layer of one node's fill sandwich, bottom to top — opacity, blend mode and shader settings included |
+| `text.segments` | the styled runs of one TEXT node — ranges, characters, and the variable bound to each run, which is the only place per-range typography is readable. `fontAxes` names the variation axes each variable family here accepts, which are the tags a `fontName.variationSettings` write may use |
+| `paints.stack` | every layer of one node's fill sandwich, bottom to top — opacity, blend mode and shader settings included, named from the metadata an applied shader carries |
 | `variables.usage` | how many things actually use each token — layers, styles and gradient stops, counted, so a token nobody binds is visible before you delete it |
 | `variables.match` | which token is this colour: exactly, or nearest, and whether the answer is ambiguous — the read behind turning a hex into a binding |
 | `variables.external` | which variables this file binds to that it does not own — the library dependency a file has without saying so |
-| `variables.audit` | mode-column defects: missing values, mixed aliases/literals, unresolved aliases, and literals in collections declared alias-only |
+| `variables.audit` | mode-column defects: missing values, mixed aliases/literals, unresolved aliases, and literals in collections declared alias-only. Follows aliases into library collections and audits them too (`libraries: false` stays local); single-mode collections are skipped unless `singleMode: true`; every finding lists all its kinds and the value in each mode, with a per-collection summary |
 | `instances.external` | which foreign components are instantiated here, and how many external bindings each brings with it |
 | `design.context` | reference HTML + CSS + PNG for a node, plus the tokens it binds, the hover/press CSS it computed, and — with `pair` — the other breakpoint's frame merged into `@media` |
 | `design.ir` | a screen as a framework-neutral tree: stacks, sizing, paints by token name, text, interactions — plus the table of type styles it is set in and what its system bands, pinned layers and scrolling are, for targets that are not web pages |
@@ -398,13 +434,18 @@ allcrew-channel ops --json       # the same, machine-readable
 | `design.audit` | the same assertion for a build with no browser to measure: report what you emitted per layer and it names what you `dropped`, what `diverged`, and what this channel could not tell you (`missing`, collected in `wanted`) |
 | `node.anchor` | where a comment pin goes for a node: the frame to address it to, the offset inside it, and all nine named points of its box — the aiming primitive behind `comments.post` |
 | `comments.list` | comment threads on the file, replies grouped, each pin resolved to its node and offset. REST, not the plugin: the Plugin API has no comment surface at all |
-| `history.recent` | version activity since local midnight (or a supplied time) across files Figma Desktop opened on this machine, four files at a time |
+| `history.recent` | version activity since local midnight (or a supplied time) across files Figma Desktop has open plus up to `recent` (15) recently opened ones — or the `files` you name — four files at a time. Each touched file lists its checkpoints (id, time, author, label, autosave), so two adjacent ids go straight into `history.diff`; files the budget did not reach come back in `skipped`, and `truncated` flags a capped list |
 | `history.versions` | version checkpoints — who, when, and whether anybody named it. `autosave` separates Figma saving on its own from a person doing something; `named` is the only place intent is recorded |
 | `history.diff` | what moved between two versions of a node: added, removed, changed, and which properties — the "what" version history itself never says |
 | `history.blame` | which checkpoint changed a node, and who made it. Bisects the version list, so it costs log2(N) renders instead of N |
+| `org.capabilities` | what this machine can see of the organisation, per surface, with the one remedy where it cannot — pass `fileKey` to make the library-analytics answer conclusive |
+| `org.activity` | the organisation audit log: who did what, including access granted and revoked. OAuth grant (`allcrew-channel auth`), Enterprise, org admin; `events`, `since`, `until`, `all` page through it with a ceiling |
+| `org.projects` / `org.files` | the project tree the audit log refers to by id, and when each file was last modified, stalest first. Personal token |
+| `library.actions` | weekly insertions and detachments of a library's components, styles or variables, by asset or by team — the detach rate is the finding. Personal token with `library_analytics:read` |
+| `library.usages` | where a library's assets are in use right now, by asset or by consuming file; a published asset with zero usages is a deprecation candidate |
 | `node.states` | what actually changes on hover, press or overlay: property-level deltas between the state variants, not a wall of CSS |
 | `frames.compare` | how the 375 frame differs from the 1440 one — matched layers with their deltas, plus what only exists on one side |
-| `motion.context` | keyframe tracks with easing (as a name and as a curve), the CSS/GSAP they compile to, and which backend fits — `target: "native"` drops that verdict and its files, which are a browser answer |
+| `motion.context` | keyframe tracks with easing (as a name and as a curve), the CSS/GSAP they compile to, which backend fits, and `playhead` — where the designer has the Motion timeline parked (a keyframe `time` may be `"playhead"`) — `target: "native"` drops that verdict and its files, which are a browser answer |
 | `motion.preview` | a standalone page that actually plays the animation |
 | `transition.context` | Smart Animate between variants → CSS transitions, a FLIP toggle or View Transitions; an empty answer says WHICH empty it is (instant links, or states that live in a variant axis instead of the prototype) |
 | `library.collections` | variable collections published by libraries enabled in this file |
@@ -427,25 +468,25 @@ build rather than going quietly undocumented, which is how the count used to rea
 | `variables.set` | sets variable values or aliases in batch; opacity-scoped FLOAT values accept `"40%"`, and composed COLOR values accept `{ color, opacity }` with an alias on either or both channels |
 | `variables.update` | edits a variable's name, description, picker scopes (including `OPACITY` / `COLOR_OPACITY`), publishing visibility and per-platform code syntax |
 | `variables.create` | creates variables in a collection, including opacity-scoped FLOAT variables, creating the collection and its modes when absent |
-| `collections.update` | atomically renames, hides, edits modes or removes local variable collections, with force guards and dry-run loss counts |
-| `variables.extend` | creates an Enterprise extended collection and sets or clears inherited variable overrides |
-| `pages.update` | atomically renames, removes and reorders pages; non-empty and last-page removal are guarded |
+| `collections.update` | atomically renames, hides, edits modes or removes local variable collections, with force guards and dry-run loss counts; names match case-insensitively and every mode change is verified against a fresh read |
+| `variables.extend` | creates an Enterprise extended collection — or reads and edits an existing one through `collection` — and sets or clears inherited variable overrides; every row is checked before the first write, so a bad row creates nothing |
+| `pages.update` | atomically renames, removes and reorders pages; non-empty and last-page removal are guarded, and the final order is verified as a whole |
 | `variables.rebind` | repoints every binding of one variable onto another, document-wide — the migration, with a dry run that says what it would move and what it would leave |
 | `variables.remove` | deletes variables nothing references. Refuses while a binding or an alias still points at one; the guard IS a full document walk |
-| `node.bind` | binds layer properties to variables; field `opacity` writes layer opacity. Figma's current Plugin API cannot yet bind a FLOAT token directly to paint opacity |
-| `node.style` | applies a style to layers, or detaches them, and verifies it took — `null` detaches while keeping the pixels |
+| `node.bind` | binds layer properties to variables; field `opacity` writes layer opacity. `region` narrows a fill on a vector painted per region to one region of its network. Figma's current Plugin API cannot yet bind a FLOAT token directly to paint opacity |
+| `node.style` | applies a style to layers, or detaches them, and verifies it took by style id — `null` detaches while keeping the pixels. Library styles apply by the id `node.get` reports or by published key (imported on first use); `like: <layer id>` takes whatever style a neighbour has in the same field |
 | `node.copy` | copies or instantiates nodes onto a page — how an agent builds a side-by-side out of real layers instead of a description |
 | `node.remove` | deletes nodes. Refuses a page or the document outright, and a component or set without `force` |
-| `style.bind` | binds a paint style — a solid paint, or ONE gradient stop by position — to a variable, and re-reads the style to check, because stop binding is undocumented API |
+| `style.bind` | binds a paint style — a solid paint, or ONE gradient stop by position — or a text style field (`fontFamily`, `fontStyle`, `fontWeight`, `fontSize`, `lineHeight`, `letterSpacing`, `paragraphSpacing`, `paragraphIndent`) to a variable, and re-reads the style to check, because stop binding is undocumented API |
 | `style.remove` | deletes styles nothing uses. Refuses while a consumer exists; reports publish status first |
 | `instance.detach` | detaches instances from their main components. Bindings survive — plan a rebind after |
 | `text.normalize` | rewrites the invisible end-of-text run so orphan variable references die — surgery, verified per node |
 | `component.describe` | writes component descriptions and their documentation links — the field `COMPONENTS.md` is built from |
-| `component.restore` | clones one orphan into a replacement master, reassigns its whole dead-master group and reports overrides as kept, restored or lost |
-| `instance.swap` | swaps or rebuilds instances to a component id, library key or exact set variant; `auto` falls back only when native swap fails and reports the reason plus any new node id |
+| `component.restore` | clones one orphan (`restoreFrom`) into a replacement master placed in free space (`name`, `pageId`, `x`, `y`), relinks its dead-master siblings matched by main id or name (`relink`, `match`), and reports overrides as kept, restored or lost. Refuses when the main is still alive; a dry run lists every copy it would relink. The new component has a new key — consumers of a published library need it republished |
+| `instance.swap` | swaps or rebuilds instances to a component id, library key or exact set variant; `auto` falls back only when native swap fails and reports the reason plus any new node id. Overrides — including component properties whose keys differ between mains, matched by name — are carried over unless `preserveOverrides: false`; a copy nested inside another instance cannot be rebuilt and is refused |
 | `board.render` | draws a documentation board: headings, callouts, swatch grids, before/after rows. `replace: true` makes re-rendering idempotent |
 | `image.plate` | renders a node with its children hidden — the photo without the badge baked over it. Sits behind the write gate because it clones: the clone is created, hidden, exported and deleted inside the one call, and the document is back to itself when it returns |
-| `shader.define` | imports a shader by id so its settings get names — the one thing a read cannot do for itself |
+| `shader.define` | imports a shader by id so its settings get names — for the reads that come back unnamed (older runtime, or an id not applied anywhere) |
 | `plugin.call` | runs one of the panel's own commands — the whole feature set, not just the ops. Gated per command: each `case` carries an `// @agent read\|write\|deny` marker and an unmarked one counts as a write |
 | `history.mark` | saves a NAMED version — the only write into version history any Figma API allows, and the only way an agent can leave intent behind rather than another anonymous checkpoint |
 | `export.configure` | sets, appends or clears a layer's export rows — the export panel in batch, with `before`/`after` per node and a `dryRun` that writes nothing |
@@ -501,6 +542,15 @@ rather than the verdict. Easings bound to a variable come back as the token name
 everywhere else here. When the Motion beta is not enabled for the account the op says so
 outright: "nothing animates here" and "I cannot see animation at all" are different answers,
 and an agent that cannot tell them apart will confidently ship a static page.
+
+Applied animation styles are reported beside the tracks, with the `type` that tells Figma's own
+presets from a custom animation style of this file: a custom one carries no duration and no
+settings where it is applied, because it holds its own, and a read appends `+0.5s` when it starts
+off the timeline's origin. `MOTION_STYLES` lists Figma's presets and the file's custom styles
+with their ordered entries (`STYLE_LIST` with `kind: animation` lists the custom ones beside the
+other style kinds), `MOTION_STYLE_SET` makes or replaces one, `MOTION_STYLE_MOVE` reorders it,
+`STYLE_REMOVE` with `kind: animation` deletes it, and `NODE_SET` takes one by name in
+`animation`. `STYLE_MOVE` reorders paint, text, effect and grid styles or whole folders.
 
 `transition.context` covers the other half of motion, the half that is not keyframes at all:
 Smart Animate between a component set's variants. It matches layers across the two states,
@@ -699,7 +749,7 @@ writes code from the pixels while the file could have told it the token, the var
 transition.
 
 `guide.list` names the tasks (`file.bootstrap`, `product.fidelity`, `screen.build`, `mobile.app`,
-`system.extract`, `motion.implement`, `fidelity.check`, `document.write`); `guide.get` hands one back with its
+`system.extract`, `motion.implement`, `fidelity.check`, `document.write`, `component.repair`); `guide.get` hands one back with its
 steps, the example params for each, what to verify when it is finished, and the traps the task
 has. Each step carries the op's *own* summary and guidance alongside it, so a playbook is one
 call rather than one plus five lookups.
@@ -791,6 +841,12 @@ screen's text layers into the handful of distinct styles it actually uses, most 
 each with the token behind each value where one is bound, the layers that use it and a sample
 of its text. A 417-layer mobile screen comes back as twenty-two styles; ninety text layers of
 body copy are one row, not ninety.
+
+A variable font carries `axes` beside `face` — the axis values it is actually rendered at,
+`{ "wght": 550 }` — because "Inter Regular" is not the whole truth about a face sitting halfway
+between two named instances. The same object comes back from `node.get` and goes straight into a
+`fontName` write, axes included; `fontName` also takes `{ family, variationSettings }` with no
+`style` at all, which is how a weight no named instance sits at is asked for.
 
 A property Figma reports as *mixed* says `mixed` rather than borrowing the value of the first
 run — a paragraph set in the style of its first three characters is exactly the bug that would
@@ -989,7 +1045,7 @@ and the label appeared on it.
 
 | Asked for | Why not |
 |-----------|---------|
-| `history.activity` | Activity logs need a **plan access token** with `org:activity_log_read` sent as an OAuth Bearer header. A personal access token answers 401 whatever its scopes, and the endpoint is organisation-level rather than per-file. This channel deliberately holds no org-wide credential. |
+| `history.activity` | Activity logs are organisation-level and need an **OAuth grant**, not a personal access token, which answers 401 on either header whatever its scopes. Use `org.activity` after `allcrew-channel auth` (see *Two credentials* above); for per-file "who and when", `history.versions` works on any plan. |
 | `history.developerLogs` | Needs `org:developer_log_read`, and it records REST/MCP **API requests** — it answers "which token read this file", not "who changed this layer". |
 | `history.restore` | No endpoint restores a version. Reverting is a person in the UI. An agent can read the old values with `history.diff` and write them back with the ordinary write ops, which is a different thing and leaves its own checkpoint. |
 
@@ -1235,11 +1291,10 @@ curl -s "$BASE/call" -H "x-allcrew-channel-secret: $SECRET" \
         "params":{"tokens":{"includeLibraries":true,"emitNative":true}},"timeoutMs":300000}}'
 ```
 
-- `includeLibraries` reads the variables of every enabled library, not only the local ones. It
-  is a network read per token — 44 s on a file with 213 of them, so raise the timeout — and it is
-  the only way to export a theme the file *consumes* rather than owns. A file whose Light/Dark
-  lives in a shared library produced a package of stray local colours with no theme in it before
-  this existed; left off, the answer's `summary.notes` now names the collections it skipped.
+- `includeLibraries` also exports the enabled libraries' own collections. It is not needed for
+  values the file takes from a library — aliases into a library are resolved by id and
+  substituted without it — and it is a network read per token, so raise the timeout when you
+  set it. Left off, `summary.notes` says the library values are already in.
 - `emitNative` adds the platform layouts beside the CSS: one `.colorset` per colour with a dark
   appearance *where the dark theme actually changes it*, `res/values{,-night}/colors.xml` (the
   night file carrying only the overrides), and `Tokens.swift`/`Tokens.kt` for the spacing, radii

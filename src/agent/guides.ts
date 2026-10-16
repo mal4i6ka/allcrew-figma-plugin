@@ -391,6 +391,57 @@ export const GUIDES: readonly Guide[] = [
   },
 
   {
+    id: 'component.repair',
+    title: 'Find a deleted main component and put it back',
+    goal:
+      'Every copy of a deleted main accounted for, the main rebuilt in the design system, and each copy repointed at it with the overrides it already carried.',
+    when:
+      'Instances still render but have no main to edit: somebody deleted the component, or a library component vanished upstream. Also the playbook for retiring one component onto another.',
+    steps: [
+      {
+        op: 'component.orphans',
+        why: 'Finds the copies whose main is gone and groups them by the main that died — no other read distinguishes them from ordinary instances.',
+        params: { scope: 'document' },
+      },
+      {
+        op: 'component.instances',
+        why: 'The blast radius before you touch anything: how many copies, on which pages, and the link to jump to each.',
+        params: { nodeId: '1:23' },
+      },
+      {
+        op: 'node.focus',
+        why: 'Put the copies in front of the designer — selection, not a description — before proposing a repair.',
+        params: { nodes: ['1:24', '1:25'] },
+      },
+      {
+        op: 'component.restore',
+        why: 'Dry run first: it names the component it would create, the page it lands on, and every copy it would relink.',
+        params: { restoreFrom: '1:24', dryRun: true },
+      },
+      {
+        op: 'component.restore',
+        why: 'The repair itself, behind one undo step. Read the per-copy report: preserved, restored, lost and unsupported are the contract, not the row count.',
+        params: { restoreFrom: '1:24' },
+      },
+      {
+        op: 'component.instances',
+        why: 'Verification from the other side: the restored main should now own exactly the copies the orphan groups held.',
+        params: { nodeId: '1:99' },
+      },
+    ],
+    checks: [
+      'The dead main is gone from component.orphans — not merely smaller.',
+      'Every relinked row reports no lost fields, or a reason you can state for each field that could not come back.',
+      'The screens that were repaired still read the way they did before the main disappeared.',
+    ],
+    notes: [
+      'The restored component is the selected copy with its overrides baked in, so inspect the ranked restoreFrom source before running.',
+      'A restored component has a new key. Consumer files need the library republished and the update accepted there.',
+      'A copy nested inside another instance can only be swapped, never rebuilt in place.',
+    ],
+  },
+
+  {
     id: 'document.write',
     title: 'Change the document safely',
     goal: 'A write that lands where intended, and is visible to the designer watching the panel.',

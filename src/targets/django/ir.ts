@@ -822,7 +822,8 @@ function flexLayout(
     children?: readonly SceneNode[]
   }
 ): IrFlexLayout {
-  const wrap = al.layoutMode === 'HORIZONTAL' && al.layoutWrap === 'WRAP'
+  // Since Plugin API 1.140 WRAP is allowed on VERTICAL auto-layout too, not just HORIZONTAL.
+  const wrap = (al.layoutMode === 'HORIZONTAL' || al.layoutMode === 'VERTICAL') && al.layoutWrap === 'WRAP'
   // counterAxisSpacing (wrap-only cross-axis gap): null means "same as itemSpacing".
   const crossGap = wrap && al.counterAxisSpacing != null && al.counterAxisSpacing !== al.itemSpacing
     ? { crossGap: al.counterAxisSpacing }

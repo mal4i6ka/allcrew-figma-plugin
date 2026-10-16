@@ -9,6 +9,7 @@
  */
 
 import type { VariableEntry, VariableSnapshot } from '../../variables.ts'
+import { sourceColorCss, sourceColorOf } from '../../tokens/color.ts'
 
 function isVariableAlias(value: VariableValue | undefined): value is VariableAlias {
   return typeof value === 'object' && value !== null && 'type' in value && value.type === 'VARIABLE_ALIAS'
@@ -38,9 +39,13 @@ function channelToHex(channel: number): string {
   return Math.round(channel * 255).toString(16).padStart(2, '0')
 }
 
-/** RGBA (components 0..1) -> `#rrggbb` when opaque, otherwise CSS Color 4 `rgb(r g b / a)`. */
+/** RGBA (components 0..1) -> `#rrggbb` when opaque, otherwise CSS Color 4 `rgb(r g b / a)` —
+ * unless Figma kept the authored OKLCH/OKLAB/P3 colour, which is then written as authored. */
 export function rgbaToCss(color: RGB | RGBA): string {
   const alpha = 'a' in color ? color.a : 1
+  const source = sourceColorOf(color)
+  const authored = source && sourceColorCss(source, alpha)
+  if (authored) return authored
   if (alpha === 1) {
     return `#${channelToHex(color.r)}${channelToHex(color.g)}${channelToHex(color.b)}`
   }

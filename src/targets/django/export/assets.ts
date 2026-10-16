@@ -344,8 +344,9 @@ export async function collectExportAssets(
         // configured export setting (format/scale/suffix as-is).
         assets.push(...(await exportDesignerAssets(source, designerSettings)))
       } else if (leaf.assetSrc?.endsWith('.mp4')) {
-        // A video-fill layer (or FigJam MediaNode): exportAsync renders the node's video content
-        // as MP4. The typings lag the runtime here (the format enum accepts MP4/GIF/WEBM).
+        // A video-fill layer (or FigJam MediaNode). Since Update 131 the typings document MP4 export
+        // as a top-level frame's whole animation, rejected on anything nested — so a nested video
+        // fill is expected to land in the catch below and ship as a still.
         // `annotateVideoFills` normally resolved the bytes already (videoBytesById) or marked the
         // leaf unavailable — then only the poster ships and the .mp4 is a declared manual asset.
         const cached = videoBytesById?.get(leaf.id)

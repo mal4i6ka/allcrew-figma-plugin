@@ -28,7 +28,7 @@ node agent/api-coverage.mjs --releases 1.107.0
 ---
 <!-- api-coverage:start -->
 
-Типизации 1.141.0, идентификаторов в поверхности: 1589.
+Типизации 1.142.0, идентификаторов в поверхности: 1597.
 Сигнал «у нас» — слово встречается в src/ (кроме тестов): грубо, но без вранья в пользу покрытия.
 
 ## Неймспейсы
@@ -44,16 +44,20 @@ node agent/api-coverage.mjs --releases 1.107.0
 | MotionAPI | 3 | 0 | — |
 | ParametersAPI | 3 | 3 | off, on, once |
 | PaymentsAPI | 6 | 6 | getPluginPaymentTokenAsync, getUserFirstRanSecondsAgo, initiateCheckoutAsync, requestCheckout, setPaymentStatusInDevelopment, status |
-| PluginAPI | 141 | 49 | buzz, callback, closePlugin, createBooleanOperation, createCanvasRow, createCodeBlock, createConnector, createGif … |
+| PluginAPI | 141 | 41 | buzz, callback, closePlugin, createBooleanOperation, createCanvasRow, createCodeBlock, createConnector, createGif … |
 | TeamLibraryAPI | 2 | 0 | — |
 | TextReviewAPI | 3 | 3 | isEnabled, requestToBeDisabledAsync, requestToBeEnabledAsync |
 | TimerAPI | 7 | 7 | pause, remaining, resume, start, state, stop, total |
 | UIAPI | 11 | 2 | getPosition, reposition |
-| UtilAPI | 4 | 0 | — |
+| UtilAPI | 7 | 1 | alphaOverride |
 | VariablesAPI | 27 | 5 | createVariableAliasByIdAsync, getLocalVariableCollections, getLocalVariables, getVariableById, getVariableCollectionById |
 | ViewportAPI | 6 | 3 | canvasView, slidesView, zoom |
 
 ## Релизы, от свежего к старому (с 1.107.0)
+
+### 1.142.0 — 2026-10-16  (+8, не тронуто 2)
+
+ColorWithColorSpace, UtilAPI.alphaOverride
 
 ### 1.141.0 — 2026-10-05  (+2, не тронуто 0)
 
@@ -159,9 +163,9 @@ BaseNonResizableTextMixin.Pick, BaseNonResizableTextMixin.getRangeBoundVariable,
 
 AnnotationCategory.isPreset, AnnotationCategory.setColor, AnnotationCategory.setLabel, AnnotationCategoryColor, AnnotationsAPI.addAnnotationCategoryAsync, AnnotationsAPI.getAnnotationCategoryByIdAsync
 
-### 1.108.0 — 2025-02-26  (+24, не тронуто 13)
+### 1.108.0 — 2025-02-26  (+24, не тронуто 12)
 
-BaseNodeMixin.getTopLevelFrame, InteractiveSlideElementNode, InteractiveSlideElementNode.interactiveSlideElementType, PageNode.focusedSlide, PluginAPI.createSlide, PluginAPI.createSlideRow, PluginAPI.getSlideGrid, PluginAPI.setSlideGrid, SlideGridNode, SlideNode.getSlideTransition, SlideNode.isSkippedSlide, SlideNode.setSlideTransition, ViewportAPI.slidesView
+InteractiveSlideElementNode, InteractiveSlideElementNode.interactiveSlideElementType, PageNode.focusedSlide, PluginAPI.createSlide, PluginAPI.createSlideRow, PluginAPI.getSlideGrid, PluginAPI.setSlideGrid, SlideGridNode, SlideNode.getSlideTransition, SlideNode.isSkippedSlide, SlideNode.setSlideTransition, ViewportAPI.slidesView
 
 <!-- api-coverage:end -->
 ---

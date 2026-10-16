@@ -49,6 +49,8 @@ import { MODULE_OPS } from './module-ops.ts'
 import { COMPONENT_READ_OPS, COMPONENT_WRITE_OPS } from './component-ops.ts'
 import { ADMIN_OPS } from './admin-ops.ts'
 import { DESIGN_EVIDENCE_OPS } from './design-evidence.ts'
+import { regionFills, summarizeRegions, type RegionSummary } from '../utils/vector-regions.ts'
+import { resolvePage, resolveScope, resolveWalkRoots } from './scope.ts'
 
 /* ------------------------------------------------------------- serializers */
 
@@ -116,6 +118,10 @@ export interface NodeSummary {
     fillStyle?: string | null
     strokes?: PaintSummary[]
     strokeStyle?: string | null
+    /** A vector painted per region: its `fills` read as mixed, so the colours are here instead,
+     * one stack per region of the network. `region` is the number `node.bind` takes to narrow a
+     * fill binding to that area. */
+    regions?: RegionSummary[]
   }
   /** Field → the token bound to it. `mismatch` is set when the layer renders something else.
    * A paint field appears per index (`fills[0]`) when the node carries several. */
@@ -254,6 +260,18 @@ const MAX_TEXT = 160
 /** Node → summary, minus anything that needs an await (bindings, modes, reactions, main
  * component, text style). Pure. `fullText` skips the 160-character truncation — off by default
  * so a deep read of many text nodes stays small, on when the whole copy is the point. */
+/** What a text layer says, the way a person searching for it would type it. */
+function normalizeSaid(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+/** The top-level frame a node sits in — the screen it belongs to — or null on the bare canvas. */
+function topFrameOf(node: BaseNode): { id: string; name: string } | null {
+  let cursor: BaseNode | null = node
+  while (cursor && cursor.parent && cursor.parent.type !== 'PAGE' && cursor.parent.type !== 'DOCUMENT') cursor = cursor.parent
+  return cursor && cursor !== node && cursor.parent?.type === 'PAGE' ? { id: cursor.id, name: cursor.name } : null
+}
+
 export function summarizeNode(node: any, fullText = false): NodeSummary {
   const summary: NodeSummary = { id: node.id, name: node.name, type: node.type }
   if (node.visible === false) summary.visible = false
@@ -625,7 +643,9 @@ async function describePaints(
     for (const [index, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index, shaders))
     out.strokeStyle = await paintStyleName(node, 'strokeStyleId')
   }
-  return out.fills || out.strokes ? out : null
+  const regions = regionFills(node)
+  if (regions) out.regions = summarizeRegions(regions)
+  return out.fills || out.strokes || out.regions ? out : null
 }
 
 /** Collection id → collection, shared across one read so a deep walk pays each fetch once.
@@ -839,56 +859,6 @@ async function describeNode(node: any, depth: number, options: DescribeOptions =
   return summary
 }
 
-/* ---------------------------------------------------------------- scoping */
-
-/**
- * What a scan should walk: one subtree, one page, or the whole document. `nodeId` is the
- * sharding escape hatch — a page too big for one bridge call (this file's "-- Main" is 22k
- * nodes) cannot be split by `pageId`, but it can be split by its top-level frames, and the
- * per-shard answers sum exactly like the per-page ones do.
- */
-async function resolveWalkRoots(params: Record<string, unknown>): Promise<{ roots: BaseNode[]; labels: string[] }> {
-  if (typeof params.nodeId === 'string' && params.nodeId !== '') {
-    const found = await getNodeByIdTimed(params.nodeId)
-    if (!found || found.type === 'DOCUMENT') throw new Error(`no node with id ${params.nodeId}`)
-    if (found.type === 'PAGE') {
-      await (found as PageNode).loadAsync()
-      return { roots: [found], labels: [found.name] }
-    }
-    let page: BaseNode | null = found.parent
-    while (page && page.type !== 'PAGE') page = page.parent
-    if (page) await (page as PageNode).loadAsync()
-    return { roots: [found], labels: [`${found.name} (subtree)`] }
-  }
-  /* An explicit pageId IS the scope. The old contract — pageId honored only next to
-   * scope:"page" — turned one forgotten field into a silent document-wide walk, the single
-   * most expensive and sandbox-hostile interpretation of the call (a peer session killed the
-   * Mobile DS VM with exactly this). Ambiguity resolves toward the cheaper read. */
-  if (params.scope === 'page' || (typeof params.pageId === 'string' && params.pageId !== '')) {
-    const page = await resolvePage(params.pageId)
-    return { roots: [page], labels: [page.name] }
-  }
-  await loadAllPagesAsync()
-  const pages = figma.root.children.slice()
-  return { roots: pages, labels: pages.map((one) => one.name) }
-}
-
-async function resolvePage(pageId?: unknown): Promise<PageNode> {
-  if (typeof pageId !== 'string' || pageId === '') return figma.currentPage
-  const page = await figma.getNodeByIdAsync(pageId)
-  if (!page || page.type !== 'PAGE') throw new Error(`no page with id ${pageId}`)
-  await page.loadAsync()
-  return page
-}
-
-/** Resolves the search root for the `scope` param shared by `node.find` / `components.list`. */
-async function resolveScope(scope: string): Promise<BaseNode> {
-  if (scope === 'document') {
-    await loadAllPagesAsync()
-    return figma.root
-  }
-  return figma.currentPage
-}
 
 /** `componentPropertyDefinitions` is a getter that THROWS — "Component set has existing errors"
  * on a set Figma cannot resolve, and a different refusal on a variant read outside its parent.
@@ -1059,10 +1029,21 @@ export const READ_OPS: readonly OpDef[] = [
 
   {
     name: 'node.find',
-    summary: 'Search nodes by name substring and/or type within a page or the whole document.',
+    summary: 'Search nodes by name substring, by the text they show, and/or type — within a page, the whole document, or one frame.',
+    agent:
+      'Designers name layers "Tag", "Text", "Title": a name search rarely finds the words on the canvas. Pass `text` to ' +
+      'match what a TEXT layer actually says (case and spacing ignored) — it searches TEXT nodes through the type index, ' +
+      'instances included, so it stays fast document-wide. Each text match carries `frame`, the top-level frame it sits in, which is how ' +
+      '"Startups" on the desktop frame is told apart from "Startups" on the mobile one. `within` narrows any search to one ' +
+      'frame or section.',
     mutates: false,
     params: {
       name: { type: 'string', description: 'Case-insensitive substring of the node name.' },
+      text: {
+        type: 'string',
+        description:
+          'Case-insensitive substring of what a TEXT layer says, whitespace collapsed. Implies types ["TEXT"].',
+      },
       types: {
         type: 'string[]',
         description: 'Node types to keep, e.g. ["FRAME","INSTANCE"]. Omit for any type.',
@@ -1073,28 +1054,55 @@ export const READ_OPS: readonly OpDef[] = [
         enum: ['page', 'document'],
         default: 'page',
       },
+      within: {
+        type: 'string',
+        description: 'Search only inside this node (a frame, section or page id) instead of the scope.',
+      },
       limit: { type: 'number', description: 'Max matches returned.', default: 50, min: 1, max: 500 },
     },
     async run(params) {
       const needle = typeof params.name === 'string' ? params.name.toLowerCase() : null
-      const types = (params.types as string[] | undefined) ?? null
-      const root = await resolveScope(params.scope as string)
+      const said = typeof params.text === 'string' && params.text.trim() !== '' ? normalizeSaid(params.text) : null
+      let types = (params.types as string[] | undefined) ?? null
+      if (said) {
+        if (types && !types.includes('TEXT')) {
+          throw new Error(`text searches TEXT layers, and types ${JSON.stringify(types)} leaves none — drop types or include "TEXT"`)
+        }
+        types = ['TEXT']
+      }
+      let root: BaseNode
+      if (typeof params.within === 'string' && params.within !== '') {
+        const node = await figma.getNodeByIdAsync(params.within)
+        if (!node) throw new Error(`no node with id ${params.within}`)
+        // Load its page first. A probe on a never-opened page (16.10) found the index and the
+        // walk already complete without it, but dynamic-page loading is documented as required
+        // before reading a page's subtree, and one loadAsync is cheap next to a wrong answer.
+        let page: BaseNode | null = node
+        while (page && page.type !== 'PAGE') page = page.parent
+        if (page && 'loadAsync' in page) await (page as PageNode).loadAsync()
+        if (!('findAllWithCriteria' in node) && !('children' in node)) throw new Error(`${params.within} is a ${node.type}, which has nothing inside to search`)
+        root = node
+      } else {
+        root = await resolveScope(params.scope as string)
+      }
       // A type list lets the native, index-backed search do the walk; without one it has nothing
       // to narrow by, so the hand-rolled DFS (which can filter on name alone) takes over.
+      const keep = (node: SceneNode) =>
+        (!needle || node.name.toLowerCase().includes(needle)) &&
+        (!said || (node.type === 'TEXT' && normalizeSaid((node as TextNode).characters).includes(said)))
+      // Text goes through the index too. It does reach inside instances: measured live on a
+      // 1440px site frame, index and walk returned the same 174 TEXT ids (130 inside instances)
+      // in 2 ms against 350 ms — see findAllByTypes. A "1 of 29" report that once moved text to
+      // the walk compared a TEXT-typed search with an untyped one matching 7 non-TEXT layers too.
       const matches =
         types && types.length > 0
-          ? (await findAllByTypes<SceneNode>(root, types)).filter(
-              (node) => !needle || node.name.toLowerCase().includes(needle)
-            )
-          : await findAllWithCriteria(
-              root,
-              (node): node is SceneNode => !needle || node.name.toLowerCase().includes(needle)
-            )
+          ? (await findAllByTypes<SceneNode>(root, types)).filter(keep)
+          : await findAllWithCriteria(root, (node): node is SceneNode => keep(node as SceneNode))
       const limit = params.limit as number
       return {
         total: matches.length,
         truncated: matches.length > limit,
-        nodes: matches.slice(0, limit).map((node) => summarizeNode(node)),
+        nodes: matches.slice(0, limit).map((node) => (said ? { ...summarizeNode(node), frame: topFrameOf(node) } : summarizeNode(node))),
       }
     },
   },
@@ -1256,9 +1264,10 @@ export const READ_OPS: readonly OpDef[] = [
 
   {
     name: 'styles.list',
-    summary: 'Local text, paint, effect and grid styles.',
+    summary: 'Local text, paint, effect, grid and custom animation styles.',
     agent:
-      'paints: true shows per-stop bindings (a gradient binds per stop; its paint-level bound is null however tokenised). consumers: true says whether anything uses a style at all.',
+      'paints: true shows per-stop bindings (a gradient binds per stop; its paint-level bound is null however tokenised). consumers: true says whether anything uses a style at all. ' +
+      'A custom animation style comes back with its `animations` in the order they play — the same `style`/`props` pairs STYLE_MAKE takes back as `entries`.',
     mutates: false,
     params: {
       paints: {
@@ -1281,11 +1290,12 @@ export const READ_OPS: readonly OpDef[] = [
       },
     },
     async run(params) {
-      const [text, paint, effect, grid] = await Promise.all([
+      const [text, paint, effect, grid, animation] = await Promise.all([
         figma.getLocalTextStylesAsync(),
         figma.getLocalPaintStylesAsync(),
         figma.getLocalEffectStylesAsync(),
         figma.getLocalGridStylesAsync(),
+        figma.getLocalCustomAnimationStylesAsync(),
       ])
       const base = (style: BaseStyle) => ({
         id: style.id,
@@ -1307,7 +1317,7 @@ export const READ_OPS: readonly OpDef[] = [
 
       const consumerDetail = new Map<string, unknown>()
       if (params.consumers === true) {
-        for (const style of [...text, ...paint, ...effect, ...grid]) {
+        for (const style of [...text, ...paint, ...effect, ...grid, ...animation]) {
           try {
             const users = await style.getStyleConsumersAsync()
             consumerDetail.set(style.id, {
@@ -1328,6 +1338,9 @@ export const READ_OPS: readonly OpDef[] = [
           ...base(style),
           fontFamily: style.fontName.family,
           fontStyle: style.fontName.style,
+          // Only a variable font has these, and without them two styles on the same named
+          // instance read as identical while rendering at different weights.
+          ...(style.fontName.variationSettings ? { fontAxes: style.fontName.variationSettings } : {}),
           fontSize: style.fontSize,
           lineHeight: style.lineHeight,
         })),
@@ -1339,6 +1352,21 @@ export const READ_OPS: readonly OpDef[] = [
         ),
         effect: effect.map((style) => ({ ...base(style), effects: style.effects.map((e) => e.type) })),
         grid: grid.map(base),
+        animation: animation.map((style) =>
+          withConsumers(style, {
+            ...base(style),
+            /* What a custom animation style holds IS its entries, in order — a row with only a
+             * name says nothing about what the thing does, and the props are what a write takes
+             * back. */
+            animations: style.animationEntries.map((entry) => ({
+              id: entry.id,
+              style: entry.styleId,
+              name: entry.name,
+              ...(entry.duration === undefined ? {} : { duration: entry.duration }),
+              ...(entry.props && Object.keys(entry.props).length > 0 ? { props: entry.props } : {}),
+            })),
+          })
+        ),
       }
     },
   },
@@ -1697,8 +1725,14 @@ export const READ_OPS: readonly OpDef[] = [
             scanPaints(holder.strokes, site)
             /* Mixed-fill TEXT: paints are the mixed sentinel, invisible to scanPaints — the
              * segment aliases in boundVariables are the only view of those bindings. */
+            /* A vector painted per region is the other mixed case: the paints sit on the network's
+             * regions, and reading them there names the region a fix has to address. */
+            const regions = regionFills(node)
+            if (regions) {
+              for (const one of regions) scanPaints(one.fills, (detail) => site(`regions[${one.region}] ${detail}`))
+            }
             const mixedBound = holder.boundVariables as Record<string, unknown> | undefined
-            if (mixedBound) {
+            if (mixedBound && !regions) {
               for (const prop of ['fills', 'strokes'] as const) {
                 if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
                   ;(mixedBound[prop] as unknown[]).forEach((entry, index) =>
@@ -2004,8 +2038,13 @@ export const READ_OPS: readonly OpDef[] = [
             /* Mixed-fill TEXT is the one case the paint pass cannot see (node.fills is the mixed
              * sentinel, not an array) — there the per-segment aliases in boundVariables are the
              * only view, and skipping them wholesale blinded the audit to bound text colours. */
+            /* …and a vector painted per region keeps its paints on the network's regions. */
+            const regions = regionFills(node)
+            if (regions) {
+              for (const one of regions) scanPaints(one.fills, 'layers', (detail) => label(`regions[${one.region}] ${detail}`))
+            }
             const mixedBound = holder.boundVariables as Record<string, unknown> | undefined
-            if (mixedBound) {
+            if (mixedBound && !regions) {
               for (const prop of ['fills', 'strokes'] as const) {
                 if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
                   ;(mixedBound[prop] as unknown[]).forEach((entry, index) =>
@@ -2493,9 +2532,11 @@ export const READ_OPS: readonly OpDef[] = [
 
   {
     name: 'text.segments',
-    summary: 'The styled runs of one TEXT node — ranges, characters, and per-run variable bindings.',
+    summary:
+      'The styled runs of one TEXT node — ranges, characters, per-run variable bindings, and the variation axes of any variable font it uses.',
     agent:
-      'The X-ray for a binding no write seems to reach: shows which styled run owns it — or that none does.',
+      'The X-ray for a binding no write seems to reach: shows which styled run owns it — or that none does. ' +
+      '`fontAxes` names the tags each variable family here accepts, which are the keys a `fontName.variationSettings` write may use.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'A TEXT node id.' },
@@ -2529,6 +2570,25 @@ export const READ_OPS: readonly OpDef[] = [
             (paint as { boundVariables?: { color?: { id?: string } } }).boundVariables?.color?.id ?? null,
         })),
       }))
+
+      /* Which axes the families on this node accept. A `variationSettings` write throws on a tag
+       * the family does not define, and nothing else in the channel can answer that — so the read
+       * of the text that would be rewritten is where the answer belongs. Static families are left
+       * out entirely: an empty entry would read as "variable, no axes". */
+      const families = new Set<string>()
+      if (text.fontName === figma.mixed) {
+        try {
+          for (const font of text.getRangeAllFontNames(0, text.characters.length)) families.add(font.family)
+        } catch {
+          // A font that will not load makes the range call throw; the rest of the read still stands.
+        }
+      } else families.add(text.fontName.family)
+      const fontAxes: Record<string, string[]> = {}
+      for (const family of families) {
+        const axes = figma.getFontFamilyVariationAxes(family)
+        if (axes && axes.length > 0) fontAxes[family] = axes
+      }
+
       return {
         node: { id: text.id, name: text.name },
         length: text.characters.length,
@@ -2537,6 +2597,7 @@ export const READ_OPS: readonly OpDef[] = [
         segments,
         // Sendable as it stands: this is `runs` in the shape NODE_SET takes.
         runs: styles,
+        ...(Object.keys(fontAxes).length > 0 ? { fontAxes } : {}),
       }
     },
   },

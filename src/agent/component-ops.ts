@@ -1,464 +1,1423 @@
-import { componentFor } from '../canvas/components.ts'
-import { findAllByTypes, loadAllPagesAsync } from '../utils/tree.ts'
-import type { OpDef } from './protocol.ts'
+/**
+ * Agent listener — components and the copies they left behind.
+ *
+ * `components.list` says what exists and `component.api` says what one of them takes. Neither
+ * says the thing a designer actually asks before touching a component: **who is using it, how
+ * many, and where**. Figma answers that in the UI and nowhere else — the Plugin API has
+ * `ComponentNode.getInstancesAsync()`, and nothing that walks the other way for a main that is
+ * no longer there.
+ *
+ * That gap is the whole reason this file exists. When a main component is deleted, Figma does
+ * NOT break its instances: they keep rendering, keep their overrides, and keep pointing at a
+ * main that has no page, no parent and no way back. The designer sees layers that look fine and
+ * cannot be edited from a library; every read in this channel until now reported them as
+ * ordinary instances. So:
+ *
+ *   - `component.instances` — the census: every copy of a component, which page and which frame
+ *     it sits in, whether it is nested inside another instance, and the deep link to jump to it.
+ *     With no target it inverts into an inventory: what is used how much, and what nothing uses.
+ *   - `component.orphans` — the copies whose main is gone, grouped by the main that died, each
+ *     group carrying the instances that are rich enough to rebuild it from.
+ *   - `component.restore` — rebuild that main out of one of its orphans and relink the rest.
+ *   - `instance.swap` — repoint instances onto another main, preserving overrides.
+ *
+ * The last two share one engine, and it is the point of the feature: `swapComponent` preserves
+ * overrides "using the same heuristics as the Figma UI", which is a promise about *most* of
+ * them, not all — and the failure mode is silent, a text layer quietly back to "Label" after a
+ * repair nobody watched. So every swap here snapshots the overrides first, swaps, diffs the
+ * result against the snapshot, writes back what the heuristics dropped, and reports per layer
+ * what was kept, what was restored, and what could not be — named, never rounded off to "done".
+ *
+ * There is a second strategy for when the first one cannot run. In the editor a designer fixes
+ * an unswappable copy by hand: place a fresh instance of the right main next to it, redo the
+ * overrides on that one, cut it, select the broken one and ⌘⇧R (paste to replace). The Plugin
+ * API has no clipboard and no "paste to replace" — but every step except the clipboard hop is
+ * reachable, and the hop exists only because a person needs somewhere to hold the node.
+ * `strategy: "rebuild"` is that same repair without it: instantiate the good main, replay the
+ * snapshot onto the new copy, insert it at the old one's index with its geometry and layout
+ * flags, then delete the old one. It is what runs when `swapComponent` refuses (Figma rejects
+ * some swaps outright), and it is exact where the swap is heuristic — at the price of a NEW node
+ * id, which prototype links pointing at the old node do not follow. Both facts are in the report.
+ */
 
-interface NodeRef {
-  id: string
-  name: string
-  type: string
+import { componentFor } from '../canvas/components.ts'
+import type { OpDef, ParamSpec } from './protocol.ts'
+import { findAllByTypes, loadAllPagesAsync, yieldToHost } from '../utils/tree.ts'
+import { pageOf, resolveWalkRoots } from './scope.ts'
+
+/* ------------------------------------------------------------------ basics */
+
+/** Yield to the host (and check the clock) every this many instances resolved. */
+const CHECK_EVERY = 200
+
+/** Clamp a caller's budget to something the bridge's own 170 s ceiling can still return inside. */
+function budgetOf(params: Record<string, unknown>, fallback: number): number {
+  const asked = typeof params.budgetMs === 'number' ? params.budgetMs : fallback
+  return Math.max(1000, Math.min(asked, 170_000))
 }
 
-interface OverrideSnapshot {
+
+/** `?node-id=1-23` — the suffix `node.focus` hands back, so a row can be jumped to directly. */
+function deepLink(id: string): string {
+  return `?node-id=${id.replace(':', '-')}`
+}
+
+/** Names from the top-level frame down to the node's parent, plus whether an INSTANCE is in
+ * that chain: a copy inside another copy is an override mirror, not a layer a designer placed. */
+function ancestry(node: SceneNode): { path: string[]; nested: boolean } {
+  const names: string[] = []
+  let nested = false
+  let walk: BaseNode | null = node.parent
+  while (walk && walk.type !== 'PAGE' && walk.type !== 'DOCUMENT') {
+    if (walk.type === 'INSTANCE') nested = true
+    names.unshift(walk.name)
+    walk = walk.parent
+  }
+  return { path: names, nested }
+}
+
+export interface InstanceRow {
+  id: string
+  name: string
+  page: string | null
+  pageId: string | null
+  /** Frame chain from the page down to the parent, e.g. `Checkout / Summary / Row`. */
+  path: string
+  /** Inside another instance — an override mirror rather than a placed copy. */
+  nested: boolean
+  x?: number
+  y?: number
+  /** Fields the designer changed on this copy. Zero means it is the component as authored. */
+  overrides: number
+  /** Feed straight to `node.focus`, or paste after the file URL. */
+  link: string
+}
+
+function describeInstance(instance: InstanceNode): InstanceRow {
+  const page = pageOf(instance)
+  const { path, nested } = ancestry(instance)
+  let overrides = 0
+  try {
+    overrides = instance.overrides.length
+  } catch {
+    overrides = 0
+  }
+  return {
+    id: instance.id,
+    name: instance.name,
+    page: page ? page.name : null,
+    pageId: page ? page.id : null,
+    path: path.join(' / '),
+    nested,
+    x: Number.isFinite(instance.x) ? Math.round(instance.x * 100) / 100 : undefined,
+    y: Number.isFinite(instance.y) ? Math.round(instance.y * 100) / 100 : undefined,
+    overrides,
+    link: deepLink(instance.id),
+  }
+}
+
+/* ------------------------------------------------------------ main identity */
+
+export type MainStatus = 'live' | 'deleted' | 'missing'
+
+export interface MainFacts {
+  id: string | null
+  key: string | null
+  name: string | null
+  remote: boolean
+  setId?: string
+  setName?: string
+  status: MainStatus
+  /** What the group is keyed by — the set when there is one, else the component, else the name
+   * (a main Figma cannot resolve at all has no id to key on). */
+  identity: string
+}
+
+/**
+ * Pure half of the diagnosis, so the rule is testable without a document.
+ *
+ * `null` means Figma would not hand the main over at all — a library component whose file is
+ * unreachable, or one deleted upstream. A main that IS handed over but sits on no page is the
+ * interesting case: deleting a main in Figma does not delete the node, it unparents it, and the
+ * instances go on rendering from a component nothing can reach. A REMOTE main is never on a page
+ * of THIS file by definition, so the same test would call every library instance an orphan —
+ * hence the `remote` branch.
+ */
+export function classifyMain(main: { removed?: boolean; remote?: boolean } | null, onPage: boolean): MainStatus {
+  if (!main) return 'missing'
+  if (main.removed === true) return 'deleted'
+  if (main.remote === true) return 'live'
+  return onPage ? 'live' : 'deleted'
+}
+
+async function readMain(instance: InstanceNode): Promise<MainFacts> {
+  let main: ComponentNode | null = null
+  try {
+    main = await instance.getMainComponentAsync()
+  } catch {
+    main = null
+  }
+  if (!main) {
+    return { id: null, key: null, name: null, remote: false, status: 'missing', identity: `name:${instance.name}` }
+  }
+  let removed = false
+  try {
+    removed = main.removed === true
+  } catch {
+    removed = false
+  }
+  const parent = main.parent
+  const set = parent && parent.type === 'COMPONENT_SET' ? parent : null
+  return {
+    id: main.id,
+    key: main.key || null,
+    name: main.name,
+    remote: main.remote === true,
+    ...(set ? { setId: set.id, setName: set.name } : {}),
+    status: classifyMain({ removed, remote: main.remote === true }, pageOf(main) !== null),
+    identity: set ? set.id : main.id,
+  }
+}
+
+/* -------------------------------------------------- override snapshot engine */
+
+interface FieldHandler {
+  read: (node: SceneNode) => unknown
+  write: (node: SceneNode, value: unknown) => void | Promise<void>
+}
+
+/** A node addressed by a field name out of {@link FIELDS}. The cast is unchecked on purpose and
+ * cannot be narrowed: the field names come from Figma's own `overriddenFields`, and every one of
+ * them is a property this table already decided is readable and writable by plain assignment. */
+function fields(node: SceneNode): Record<string, unknown> {
+  return node as unknown as Record<string, unknown>
+}
+
+function assign(field: string): FieldHandler {
+  return {
+    read: (node) => fields(node)[field],
+    write: (node, value) => {
+      fields(node)[field] = value
+    },
+  }
+}
+
+/** Style ids are write-only through their async setter under `documentAccess: "dynamic-page"`;
+ * the plain assignment still exists on older runtimes and in test doubles, so both are tried. */
+function styleId(field: string, setter: string): FieldHandler {
+  return {
+    read: (node) => fields(node)[field],
+    write: async (node, value) => {
+      const holder = fields(node)
+      const set = holder[setter]
+      if (typeof set === 'function') await (set as (id: string) => Promise<void>).call(node, String(value ?? ''))
+      else holder[field] = value
+    },
+  }
+}
+
+async function writeCharacters(node: SceneNode, value: unknown): Promise<void> {
+  if (node.type !== 'TEXT') throw new Error(`characters is not writable on ${node.type}`)
+  /* Every font in the node has to be loaded before a single character can be written, and a
+   * text layer with mixed styling has several — `fontName` alone is `figma.mixed` there, which
+   * is exactly the layer whose restore would otherwise fail after the swap already happened. */
+  const fonts: FontName[] = []
+  try {
+    fonts.push(...node.getRangeAllFontNames(0, Math.max(node.characters.length, 1)))
+  } catch {
+    const single = node.fontName
+    if (typeof single === 'object') fonts.push(single)
+  }
+  for (const font of fonts) await figma.loadFontAsync(font)
+  node.characters = String(value ?? '')
+}
+
+function resizeTo(node: SceneNode, width: number, height: number): void {
+  if (!('resizeWithoutConstraints' in node)) throw new Error(`${node.type} cannot be resized`)
+  node.resizeWithoutConstraints(width, height)
+}
+
+/**
+ * The fields a swap is allowed to carry over. Deliberately a list rather than "assign whatever
+ * `overriddenFields` names": `parent`, `type` and `componentPropertyDefinitions` are also
+ * NodeChangeProperty values, and writing those blind is how a repair turns into damage. Anything
+ * outside this table is reported as `unsupported`, never silently dropped.
+ */
+const FIELDS: Readonly<Record<string, FieldHandler>> = {
+  characters: { read: (node) => (node.type === 'TEXT' ? node.characters : undefined), write: writeCharacters },
+  fontSize: assign('fontSize'),
+  fontName: assign('fontName'),
+  letterSpacing: assign('letterSpacing'),
+  lineHeight: assign('lineHeight'),
+  textCase: assign('textCase'),
+  textDecoration: assign('textDecoration'),
+  textAlignHorizontal: assign('textAlignHorizontal'),
+  textAlignVertical: assign('textAlignVertical'),
+  textAutoResize: assign('textAutoResize'),
+  textTruncation: assign('textTruncation'),
+  maxLines: assign('maxLines'),
+  paragraphIndent: assign('paragraphIndent'),
+  paragraphSpacing: assign('paragraphSpacing'),
+  hyperlink: assign('hyperlink'),
+  fills: assign('fills'),
+  strokes: assign('strokes'),
+  strokeWeight: assign('strokeWeight'),
+  strokeAlign: assign('strokeAlign'),
+  dashPattern: assign('dashPattern'),
+  effects: assign('effects'),
+  opacity: assign('opacity'),
+  blendMode: assign('blendMode'),
+  visible: assign('visible'),
+  locked: assign('locked'),
+  name: assign('name'),
+  isMask: assign('isMask'),
+  clipsContent: assign('clipsContent'),
+  cornerRadius: assign('cornerRadius'),
+  cornerSmoothing: assign('cornerSmoothing'),
+  topLeftRadius: assign('topLeftRadius'),
+  topRightRadius: assign('topRightRadius'),
+  bottomLeftRadius: assign('bottomLeftRadius'),
+  bottomRightRadius: assign('bottomRightRadius'),
+  constraints: assign('constraints'),
+  layoutAlign: assign('layoutAlign'),
+  layoutGrow: assign('layoutGrow'),
+  layoutPositioning: assign('layoutPositioning'),
+  layoutMode: assign('layoutMode'),
+  layoutWrap: assign('layoutWrap'),
+  layoutSizingHorizontal: assign('layoutSizingHorizontal'),
+  layoutSizingVertical: assign('layoutSizingVertical'),
+  itemSpacing: assign('itemSpacing'),
+  counterAxisSpacing: assign('counterAxisSpacing'),
+  paddingLeft: assign('paddingLeft'),
+  paddingRight: assign('paddingRight'),
+  paddingTop: assign('paddingTop'),
+  paddingBottom: assign('paddingBottom'),
+  primaryAxisSizingMode: assign('primaryAxisSizingMode'),
+  counterAxisSizingMode: assign('counterAxisSizingMode'),
+  primaryAxisAlignItems: assign('primaryAxisAlignItems'),
+  counterAxisAlignItems: assign('counterAxisAlignItems'),
+  counterAxisAlignContent: assign('counterAxisAlignContent'),
+  minWidth: assign('minWidth'),
+  maxWidth: assign('maxWidth'),
+  minHeight: assign('minHeight'),
+  maxHeight: assign('maxHeight'),
+  exportSettings: assign('exportSettings'),
+  reactions: {
+    read: (node) => ('reactions' in node ? node.reactions : undefined),
+    write: async (node, value) => {
+      const holder = fields(node)
+      const set = holder.setReactionsAsync
+      if (typeof set === 'function') await (set as (reactions: unknown) => Promise<void>).call(node, value)
+      else holder.reactions = value
+    },
+  },
+  fillStyleId: styleId('fillStyleId', 'setFillStyleIdAsync'),
+  strokeStyleId: styleId('strokeStyleId', 'setStrokeStyleIdAsync'),
+  textStyleId: styleId('textStyleId', 'setTextStyleIdAsync'),
+  effectStyleId: styleId('effectStyleId', 'setEffectStyleIdAsync'),
+  gridStyleId: styleId('gridStyleId', 'setGridStyleIdAsync'),
+  width: { read: (node) => node.width, write: (node, value) => resizeTo(node, Number(value), node.height) },
+  height: { read: (node) => node.height, write: (node, value) => resizeTo(node, node.width, Number(value)) },
+}
+
+/** Overridden fields worth no attempt at all: they describe where the node is, not what it is,
+ * and a swap re-parents nothing. Listed so they never show up as `unsupported` noise. */
+const IGNORED_FIELDS: Readonly<Record<string, true>> = {
+  parent: true,
+  type: true,
+  pluginData: true,
+  expanded: true,
+  componentPropertyDefinitions: true,
+  componentPropertyReferences: true,
+}
+
+export interface LayerSnapshot {
+  /** Child indexes from the instance down to this node. Empty means the instance itself. */
   path: number[]
   name: string
   type: string
   fields: Record<string, unknown>
+  /** Nested instances carry their own property values, which a swap resets to the new main's. */
+  properties?: Record<string, string | boolean>
+  /** Overridden fields this engine will not write back — named, because a silent drop is the
+   * exact failure this whole op exists to prevent. */
   unsupported: string[]
 }
 
-const OVERRIDE_FIELDS = [
-  'characters', 'fills', 'strokes', 'fillStyleId', 'strokeStyleId', 'textStyleId', 'effectStyleId',
-  'effects', 'visible', 'opacity', 'blendMode', 'locked', 'constraints', 'width', 'height', 'minWidth',
-  'maxWidth', 'minHeight', 'maxHeight', 'x', 'y', 'rotation', 'cornerRadius', 'cornerSmoothing',
-  'topLeftRadius', 'topRightRadius', 'bottomLeftRadius', 'bottomRightRadius', 'strokeWeight',
-  'strokeAlign', 'dashPattern', 'layoutMode', 'layoutWrap', 'paddingLeft', 'paddingTop', 'paddingRight',
-  'paddingBottom', 'itemSpacing', 'counterAxisSpacing', 'layoutAlign', 'layoutGrow', 'layoutPositioning',
-  'primaryAxisSizingMode', 'counterAxisSizingMode', 'primaryAxisAlignItems', 'counterAxisAlignItems',
-  'clipsContent', 'exportSettings', 'reactions',
-] as const
-
-function nodeRef(node: BaseNode): NodeRef {
-  return { id: node.id, name: 'name' in node ? String(node.name) : '', type: node.type }
+export interface InstanceSnapshot {
+  /** The instance's own component properties (variant axes, text props, booleans, swaps). */
+  properties: Record<string, string | boolean>
+  layers: LayerSnapshot[]
+  /** Fields counted across every layer — what the report's `kept + restored + lost` sums to. */
+  captured: number
 }
 
-function pageOf(node: BaseNode): PageNode | null {
-  let cursor: BaseNode | null = node
-  while (cursor && cursor.type !== 'PAGE') cursor = cursor.parent
-  return cursor?.type === 'PAGE' ? cursor : null
+function isMixed(value: unknown): boolean {
+  return typeof figma !== 'undefined' && figma.mixed !== undefined && value === figma.mixed
 }
 
-function containingFrame(node: BaseNode): SceneNode | null {
-  let cursor = node.parent
-  while (cursor && cursor.type !== 'PAGE') {
-    if (
-      cursor.type === 'FRAME' ||
-      cursor.type === 'SECTION' ||
-      cursor.type === 'COMPONENT' ||
-      cursor.type === 'COMPONENT_SET'
-    ) return cursor
-    cursor = cursor.parent
+/** Structural equality good enough for paints, effects and layout numbers. `figma.mixed` never
+ * compares equal to anything, which is the honest answer for a value nobody can write back. */
+export function sameValue(a: unknown, b: unknown): boolean {
+  if (isMixed(a) || isMixed(b)) return false
+  if (a === b) return true
+  if (typeof a !== typeof b) return false
+  if (a === null || b === null || typeof a !== 'object') return false
+  try {
+    return JSON.stringify(a) === JSON.stringify(b)
+  } catch {
+    return false
+  }
+}
+
+function readProperties(node: SceneNode): Record<string, string | boolean> | undefined {
+  if (node.type !== 'INSTANCE') return undefined
+  let props: ComponentProperties
+  try {
+    props = node.componentProperties
+  } catch {
+    return undefined
+  }
+  if (!props || typeof props !== 'object') return undefined
+  const out: Record<string, string | boolean> = {}
+  for (const [key, entry] of Object.entries(props)) {
+    const value = entry?.value
+    if (typeof value === 'string' || typeof value === 'boolean') out[key] = value
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+function pathFrom(instance: BaseNode, node: BaseNode): number[] | null {
+  const path: number[] = []
+  let walk: BaseNode = node
+  while (walk.id !== instance.id) {
+    const parent: BaseNode | null = walk.parent
+    if (!parent || !('children' in parent)) return null
+    const child = walk
+    const index = parent.children.findIndex((one) => one.id === child.id)
+    if (index < 0) return null
+    path.unshift(index)
+    walk = parent
+  }
+  return path
+}
+
+function nodeAt(instance: SceneNode, path: readonly number[]): SceneNode | null {
+  let cursor: SceneNode = instance
+  for (const index of path) {
+    if (!('children' in cursor)) return null
+    const child = cursor.children[index]
+    if (!child) return null
+    cursor = child
+  }
+  return cursor
+}
+
+function findByName(root: SceneNode, name: string, type: string): SceneNode | null {
+  const queue: SceneNode[] = [root]
+  while (queue.length > 0) {
+    const node = queue.shift() as SceneNode
+    if (node !== root && node.name === name && node.type === type) return node
+    if ('children' in node) queue.push(...node.children)
   }
   return null
 }
 
-function deepLink(node: BaseNode): string | null {
-  const suffix = `?node-id=${node.id.replace(':', '-')}`
-  return figma.fileKey ? `https://www.figma.com/design/${figma.fileKey}/${suffix}` : suffix
-}
-
-function hasChildren(node: BaseNode): node is BaseNode & ChildrenMixin {
-  return 'children' in node
-}
-
-function childAtPath(root: BaseNode, path: readonly number[]): SceneNode | null {
-  let cursor: BaseNode = root
-  for (const index of path) {
-    if (!hasChildren(cursor) || !cursor.children[index]) return null
-    cursor = cursor.children[index]
-  }
-  return 'x' in cursor ? (cursor as SceneNode) : null
-}
-
-function pathIndex(root: BaseNode): Map<string, { node: SceneNode; path: number[] }> {
-  const found = new Map<string, { node: SceneNode; path: number[] }>()
-  const stack: Array<{ node: BaseNode; path: number[] }> = [{ node: root, path: [] }]
-  while (stack.length) {
-    const current = stack.pop()!
-    if ('x' in current.node) found.set(current.node.id, { node: current.node as SceneNode, path: current.path })
-    if (!hasChildren(current.node)) continue
-    for (let index = current.node.children.length - 1; index >= 0; index--) {
-      stack.push({ node: current.node.children[index], path: [...current.path, index] })
-    }
-  }
-  return found
-}
-
-function cloneValue(value: unknown): unknown {
-  if (value === figma.mixed) return undefined
-  if (value === null || typeof value !== 'object') return value
+/**
+ * Everything the designer changed on this copy, addressed by position rather than by node id:
+ * the ids on the far side of a swap are new, so an id-keyed snapshot would be unusable exactly
+ * when it is needed. `instance.overrides` names the layers and the fields; the values come from
+ * the layers themselves, because the override table carries none.
+ */
+export async function captureOverrides(instance: InstanceNode): Promise<InstanceSnapshot> {
+  const snapshot: InstanceSnapshot = { properties: readProperties(instance) ?? {}, layers: [], captured: 0 }
+  let entries: ReadonlyArray<{ id: string; overriddenFields: readonly string[] }> = []
   try {
-    return JSON.parse(JSON.stringify(value))
+    entries = instance.overrides
   } catch {
-    return undefined
+    entries = []
   }
-}
-
-function snapshotOverrides(instance: InstanceNode): OverrideSnapshot[] {
-  const indexed = pathIndex(instance)
-  const snapshots: OverrideSnapshot[] = []
-  for (const override of instance.overrides ?? []) {
-    const hit = indexed.get(override.id)
-    if (!hit) continue
-    const raw = hit.node as unknown as Record<string, unknown>
-    const fields: Record<string, unknown> = {}
+  for (const entry of entries) {
+    const found = await figma.getNodeByIdAsync(entry.id)
+    if (!found || found.type === 'PAGE' || found.type === 'DOCUMENT') continue
+    const node: SceneNode = found
+    const path = pathFrom(instance, node)
+    if (path === null) continue
+    const values: Record<string, unknown> = {}
     const unsupported: string[] = []
-    for (const field of override.overriddenFields) {
-      if (!(OVERRIDE_FIELDS as readonly string[]).includes(field)) {
+    for (const field of entry.overriddenFields ?? []) {
+      if (IGNORED_FIELDS[field]) continue
+      if (field === 'componentProperties') continue // carried by `properties` below
+      const handler = FIELDS[field]
+      if (!handler) {
         unsupported.push(field)
         continue
       }
       try {
-        const value = cloneValue(raw[field])
-        if (value === undefined) unsupported.push(field)
-        else fields[field] = value
+        const value = handler.read(node)
+        if (value === undefined) continue
+        if (isMixed(value)) unsupported.push(field)
+        else values[field] = value
       } catch {
         unsupported.push(field)
       }
     }
-    snapshots.push({ path: hit.path, name: hit.node.name, type: hit.node.type, fields, unsupported })
+    const properties = node.id === instance.id ? undefined : readProperties(node)
+    if (Object.keys(values).length === 0 && !properties && unsupported.length === 0) continue
+    snapshot.captured += Object.keys(values).length
+    snapshot.layers.push({
+      path,
+      name: node.name,
+      type: node.type,
+      fields: values,
+      ...(properties ? { properties } : {}),
+      unsupported,
+    })
   }
-  return snapshots
+  return snapshot
 }
 
-function propertyValues(instance: InstanceNode): Record<string, string | boolean | VariableAlias> {
-  const values: Record<string, string | boolean | VariableAlias> = {}
-  for (const [key, entry] of Object.entries(instance.componentProperties ?? {})) {
-    if (entry.type === 'SLOT' || entry.value === undefined) continue
-    if (typeof entry.value === 'string' || typeof entry.value === 'boolean') values[key] = entry.value
-  }
-  return values
+export interface OverrideReport {
+  captured: number
+  /** Fields the swap carried over by itself — nothing to do. */
+  kept: number
+  /** Fields this op wrote back because the swap dropped them. */
+  restored: Array<{ layer: string; path: number[]; fields: string[]; matchedBy: 'path' | 'name' }>
+  /** Fields nobody could put back, with the reason — a layer the new main does not have, a
+   * value the API will not write, or a write Figma refused. */
+  lost: Array<{ layer: string; path: number[]; fields: string[]; reason: string }>
+  properties: { kept: string[]; restored: string[]; dropped: string[] }
 }
 
-async function setNodeField(node: SceneNode, field: string, value: unknown): Promise<void> {
-  const target = node as unknown as Record<string, unknown>
-  if (field === 'reactions' && 'setReactionsAsync' in node) {
-    await (node as unknown as { setReactionsAsync(value: Reaction[]): Promise<void> }).setReactionsAsync(value as Reaction[])
-    return
+async function applyProperties(
+  instance: InstanceNode,
+  wanted: Record<string, string | boolean>
+): Promise<{ kept: string[]; restored: string[]; dropped: string[] }> {
+  const kept: string[] = []
+  const restored: string[] = []
+  const dropped: string[] = []
+  const current = readProperties(instance) ?? {}
+  /* `Label#12:3` and `Label#98:7` are the same property to a designer and different strings to
+   * the API — two mains never share the suffix, so the base name is the only bridge across a
+   * swap. Exact key first; the base name is the fallback. */
+  const byBase: Record<string, string> = {}
+  for (const key of Object.keys(current)) {
+    const hash = key.lastIndexOf('#')
+    byBase[hash > 0 ? key.slice(0, hash) : key] = key
   }
-  if (field === 'characters' && node.type === 'TEXT') {
-    const fonts = node.getRangeAllFontNames(0, node.characters.length)
-    for (const font of fonts) await figma.loadFontAsync(font)
+
+  const writes: Record<string, string | boolean> = {}
+  for (const [key, value] of Object.entries(wanted)) {
+    const hash = key.lastIndexOf('#')
+    const target = key in current ? key : byBase[hash > 0 ? key.slice(0, hash) : key]
+    if (!target) {
+      dropped.push(key)
+      continue
+    }
+    if (current[target] === value) kept.push(target)
+    else writes[target] = value
   }
-  if ((field === 'width' || field === 'height') && 'resize' in node) {
-    const width = field === 'width' ? Number(value) : node.width
-    const height = field === 'height' ? Number(value) : node.height
-    node.resize(width, height)
-    return
+  if (Object.keys(writes).length > 0) {
+    try {
+      instance.setProperties(writes)
+      restored.push(...Object.keys(writes))
+    } catch {
+      /* One bad key refuses the whole call, so the batch is retried one key at a time: a variant
+       * axis the new main does not have must not cost the text property that it does. */
+      for (const [key, value] of Object.entries(writes)) {
+        try {
+          instance.setProperties({ [key]: value })
+          restored.push(key)
+        } catch {
+          dropped.push(key)
+        }
+      }
+    }
   }
-  target[field] = value
+  return { kept, restored, dropped }
 }
 
-async function restoreOverrides(instance: InstanceNode, snapshots: readonly OverrideSnapshot[]) {
-  const kept: Array<{ layer: string; field: string }> = []
-  const restored: Array<{ layer: string; field: string }> = []
-  const lost: Array<{ layer: string; field: string; reason: string }> = []
-  const unsupported: Array<{ layer: string; field: string }> = []
-  const indexed = [...pathIndex(instance).values()].map((entry) => entry.node)
+/**
+ * The repair pass. Runs AFTER the swap (or onto a freshly built copy), compares what the
+ * instance renders now against the snapshot taken before, and writes back only what differs — so
+ * a heuristic that already did the right thing is left alone, and one that dropped a value is
+ * corrected.
+ */
+export async function restoreOverrides(instance: InstanceNode, snapshot: InstanceSnapshot): Promise<OverrideReport> {
+  const report: OverrideReport = {
+    captured: snapshot.captured,
+    kept: 0,
+    restored: [],
+    lost: [],
+    properties: await applyProperties(instance, snapshot.properties),
+  }
 
-  for (const snapshot of snapshots) {
-    const positional = childAtPath(instance, snapshot.path)
-    const target = positional?.type === snapshot.type
-      ? positional
-      : indexed.find((node) => node.type === snapshot.type && node.name === snapshot.name) ?? null
-    for (const field of snapshot.unsupported) unsupported.push({ layer: snapshot.name, field })
-    for (const [field, value] of Object.entries(snapshot.fields)) {
-      if (!target) {
-        lost.push({ layer: snapshot.name, field, reason: 'no matching layer after swap' })
+  for (const layer of snapshot.layers) {
+    const fieldNames = Object.keys(layer.fields)
+    if (layer.unsupported.length > 0) {
+      report.lost.push({
+        layer: layer.name,
+        path: layer.path,
+        fields: layer.unsupported,
+        reason: 'field is not writable through the Plugin API',
+      })
+    }
+    if (fieldNames.length === 0 && !layer.properties) continue
+
+    let target = layer.path.length === 0 ? instance : nodeAt(instance, layer.path)
+    let matchedBy: 'path' | 'name' = 'path'
+    if (!target || target.type !== layer.type || target.name !== layer.name) {
+      const byName = findByName(instance, layer.name, layer.type)
+      if (byName) {
+        target = byName
+        matchedBy = 'name'
+      } else if (!target || target.type !== layer.type) {
+        report.lost.push({
+          layer: layer.name,
+          path: layer.path,
+          fields: fieldNames,
+          reason: 'the new main has no layer at that position or by that name',
+        })
         continue
       }
-      const current = cloneValue((target as unknown as Record<string, unknown>)[field])
-      if (JSON.stringify(current) === JSON.stringify(value)) {
-        kept.push({ layer: target.name, field })
+    }
+
+    const written: string[] = []
+    for (const [field, value] of Object.entries(layer.fields)) {
+      const handler = FIELDS[field]
+      if (!handler) continue
+      let now: unknown
+      try {
+        now = handler.read(target)
+      } catch {
+        now = undefined
+      }
+      if (sameValue(now, value)) {
+        report.kept += 1
         continue
       }
       try {
-        await setNodeField(target, field, value)
-        const after = cloneValue((target as unknown as Record<string, unknown>)[field])
-        if (JSON.stringify(after) === JSON.stringify(value)) restored.push({ layer: target.name, field })
-        else lost.push({ layer: target.name, field, reason: 'field read back differently' })
-      } catch (error) {
-        lost.push({ layer: target.name, field, reason: String((error as Error)?.message || error) })
+        await handler.write(target, value)
+        if (sameValue(handler.read(target), value)) written.push(field)
+        else report.lost.push({ layer: layer.name, path: layer.path, fields: [field], reason: 'the write did not stick' })
+      } catch (err) {
+        report.lost.push({
+          layer: layer.name,
+          path: layer.path,
+          fields: [field],
+          reason: String((err as Error)?.message || err),
+        })
       }
     }
-  }
-  return { kept, restored, lost, unsupported }
-}
-
-async function componentTarget(raw: unknown): Promise<ComponentNode> {
-  if (typeof raw === 'string' && raw) return componentFor(raw)
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('"to" must be an id/key string or { set, variant }')
-  const target = raw as Record<string, unknown>
-  if (typeof target.set !== 'string' || !target.set) throw new Error('"to.set" must be a component-set id or key')
-  const base = await componentFor(target.set)
-  const set = base.parent?.type === 'COMPONENT_SET' ? base.parent : null
-  if (!set) throw new Error(`"${base.name}" is not in a component set`)
-  if (target.variant === undefined) return set.defaultVariant ?? base
-  if (!target.variant || typeof target.variant !== 'object' || Array.isArray(target.variant)) {
-    throw new Error('"to.variant" must be an object of variant property names to values')
-  }
-  const wanted = target.variant as Record<string, unknown>
-  const variants = set.children.filter((candidate): candidate is ComponentNode => candidate.type === 'COMPONENT')
-  const match = variants.find((candidate) => {
-    const values = candidate.variantProperties ?? {}
-    return Object.entries(wanted).every(([name, value]) => values[name] === value)
-  })
-  if (!match) throw new Error(`no variant in "${set.name}" matches ${JSON.stringify(wanted)}`)
-  return match
-}
-
-function pluginData(node: SceneNode): Record<string, string> {
-  const values: Record<string, string> = {}
-  for (const key of node.getPluginDataKeys()) values[key] = node.getPluginData(key)
-  return values
-}
-
-function applyPluginData(node: SceneNode, values: Readonly<Record<string, string>>): void {
-  for (const [key, value] of Object.entries(values)) node.setPluginData(key, value)
-}
-
-async function rebuildInstance(instance: InstanceNode, target: ComponentNode): Promise<{ instance: InstanceNode; fellBackBecause?: string }> {
-  const parent = instance.parent
-  if (!parent || !('insertChild' in parent)) throw new Error('instance parent cannot accept a replacement')
-  const index = parent.children.indexOf(instance)
-  const before = {
-    x: instance.x, y: instance.y, rotation: instance.rotation, visible: instance.visible, locked: instance.locked,
-    opacity: instance.opacity, blendMode: instance.blendMode, constraints: cloneValue(instance.constraints),
-    layoutAlign: instance.layoutAlign, layoutGrow: instance.layoutGrow, layoutPositioning: instance.layoutPositioning,
-    layoutSizingHorizontal: instance.layoutSizingHorizontal, layoutSizingVertical: instance.layoutSizingVertical,
-    minWidth: instance.minWidth, maxWidth: instance.maxWidth, minHeight: instance.minHeight, maxHeight: instance.maxHeight,
-    pluginData: pluginData(instance), reactions: cloneValue(instance.reactions), width: instance.width, height: instance.height,
-  }
-  const replacement = target.createInstance()
-  parent.insertChild(index, replacement)
-  try {
-    const autoLayoutParent = 'layoutMode' in parent && parent.layoutMode !== 'NONE'
-    replacement.layoutSizingHorizontal = 'FIXED'
-    replacement.layoutSizingVertical = 'FIXED'
-    replacement.resize(before.width, before.height)
-    replacement.layoutPositioning = before.layoutPositioning
-    if (!autoLayoutParent || before.layoutPositioning === 'ABSOLUTE') {
-      replacement.x = before.x
-      replacement.y = before.y
-      replacement.constraints = before.constraints as Constraints
+    if (layer.properties && target.type === 'INSTANCE') {
+      const nested = await applyProperties(target, layer.properties)
+      report.properties.kept.push(...nested.kept)
+      report.properties.restored.push(...nested.restored)
+      report.properties.dropped.push(...nested.dropped)
     }
-    replacement.rotation = before.rotation
-    replacement.visible = before.visible
-    replacement.locked = before.locked
-    replacement.opacity = before.opacity
-    replacement.blendMode = before.blendMode
-    replacement.layoutAlign = before.layoutAlign
-    replacement.layoutGrow = before.layoutGrow
-    replacement.minWidth = before.minWidth
-    replacement.maxWidth = before.maxWidth
-    replacement.minHeight = before.minHeight
-    replacement.maxHeight = before.maxHeight
-    replacement.layoutSizingHorizontal = before.layoutSizingHorizontal
-    replacement.layoutSizingVertical = before.layoutSizingVertical
-    applyPluginData(replacement, before.pluginData)
-    if (before.reactions) await replacement.setReactionsAsync(before.reactions as Reaction[])
+    if (written.length > 0) report.restored.push({ layer: layer.name, path: layer.path, fields: written, matchedBy })
+  }
+  return report
+}
+function productReport(report: OverrideReport): {
+  preserved: number
+  kept: number
+  restored: OverrideReport['restored']
+  lost: OverrideReport['lost']
+  unsupported: Array<{ layer: string; field: string }>
+} {
+  const unsupportedRows = report.lost.filter((row) => row.reason === 'field is not writable through the Plugin API')
+  return {
+    preserved: report.kept,
+    kept: report.kept,
+    restored: report.restored,
+    lost: report.lost.filter((row) => row.reason !== 'field is not writable through the Plugin API'),
+    unsupported: unsupportedRows.flatMap((row) => row.fields.map((field) => ({ layer: row.layer, field }))),
+  }
+}
+
+
+/* ------------------------------------------------------- swap and rebuild */
+
+export type SwapStrategy = 'auto' | 'swap' | 'rebuild'
+
+export interface SwapOutcome {
+  method: 'swap' | 'rebuild'
+  /** Set by a rebuild: the replacement is a NEW node, and this is its id. */
+  newId?: string
+  overrides?: OverrideReport
+  preserved?: number
+  kept?: number
+  restored?: OverrideReport['restored']
+  lost?: OverrideReport['lost']
+  unsupported?: Array<{ layer: string; field: string }>
+  note?: string
+  /** Why the rebuild ran, when `swapComponent` was tried first and refused. */
+  fellBackBecause?: string
+}
+
+/** Geometry and layout the replacement has to inherit — they belong to the SLOT, not to the
+ * component, so a fresh instance would otherwise land at the wrong size in the wrong place. */
+const SLOT_FIELDS = [
+  'visible',
+  'locked',
+  'opacity',
+  'blendMode',
+  'rotation',
+  'constraints',
+  'layoutAlign',
+  'layoutGrow',
+  'layoutPositioning',
+  'layoutSizingHorizontal',
+  'layoutSizingVertical',
+  'minWidth',
+  'maxWidth',
+  'minHeight',
+  'maxHeight',
+  'exportSettings',
+] as const
+
+/**
+ * The editor's own repair, minus the clipboard: instantiate the good main, replay the snapshot
+ * onto it, put it where the broken copy was, delete the broken copy. What a designer does with
+ * ⌘⇧R, which no Plugin API call exposes — `figma.currentPage.selection` and paste-to-replace are
+ * UI state, not API.
+ *
+ * Exact where `swapComponent` is heuristic, and the price is a new node id: prototype reactions
+ * that pointed AT the old node (its own are copied) do not follow, and neither does anything
+ * else keyed by id. Refused inside another instance, because nothing can be inserted into an
+ * instance's subtree — there the swap is the only route.
+ */
+async function rebuildInPlace(
+  instance: InstanceNode,
+  main: ComponentNode,
+  snapshot: InstanceSnapshot | null
+): Promise<SwapOutcome> {
+  const parent = instance.parent
+  if (!parent || !('children' in parent)) throw new Error(`"${instance.name}" has no parent to insert a replacement into`)
+  for (let walk: BaseNode | null = parent; walk && walk.type !== 'PAGE'; walk = walk.parent) {
+    if (walk.type === 'INSTANCE') {
+      throw new Error(
+        `"${instance.name}" is nested inside an instance — nothing can be inserted there; strategy "swap" is the only route for it`
+      )
+    }
+  }
+
+  const index = parent.children.findIndex((child) => child.id === instance.id)
+  const fresh = main.createInstance()
+  parent.insertChild(index < 0 ? parent.children.length : index, fresh)
+
+  try {
+    fresh.name = instance.name
+    const source = fields(instance)
+    const replacement = fields(fresh)
+    const horizontal = source.layoutSizingHorizontal
+    const vertical = source.layoutSizingVertical
+    try {
+      replacement.layoutSizingHorizontal = 'FIXED'
+      replacement.layoutSizingVertical = 'FIXED'
+      if (Number.isFinite(instance.width) && Number.isFinite(instance.height)) fresh.resize(instance.width, instance.height)
+    } catch {
+      /* Auto-layout parents can own their children's size; the remaining slot fields still
+       * preserve every value the replacement accepts. */
+    }
+    for (const field of SLOT_FIELDS) {
+      if (field === 'layoutSizingHorizontal' || field === 'layoutSizingVertical') continue
+      const value = source[field]
+      if (value === undefined || isMixed(value)) continue
+      try {
+        replacement[field] = value
+      } catch {
+        /* A layout flag the new main refuses is the component's sizing decision. */
+      }
+    }
+    if (horizontal !== undefined && !isMixed(horizontal)) replacement.layoutSizingHorizontal = horizontal
+    if (vertical !== undefined && !isMixed(vertical)) replacement.layoutSizingVertical = vertical
+    fresh.x = instance.x
+    fresh.y = instance.y
+    for (const key of instance.getPluginDataKeys()) fresh.setPluginData(key, instance.getPluginData(key))
+    if ('reactions' in instance && 'setReactionsAsync' in fresh) {
+      await fresh.setReactionsAsync(instance.reactions.slice())
+    }
+
+    const overrides = snapshot ? await restoreOverrides(fresh, snapshot) : undefined
+    instance.remove()
+    return {
+      method: 'rebuild',
+      newId: fresh.id,
+      ...(overrides ? { overrides, ...productReport(overrides) } : {}),
+      note: 'rebuilt in place — NEW node id; prototype links pointing at the old node, and anything else keyed by its id, do not follow',
+    }
   } catch (error) {
-    replacement.remove()
+    fresh.remove()
     throw error
   }
-  instance.remove()
-  return { instance: replacement }
 }
 
-async function orphanGroups() {
-  await loadAllPagesAsync()
-  const instances = await findAllByTypes<InstanceNode>(figma.root, ['INSTANCE'])
-  const groups = new Map<string, { status: 'deleted' | 'missing'; name: string; restoreFrom: NodeRef[]; instances: InstanceNode[] }>()
-  for (const instance of instances) {
-    let main: ComponentNode | null = null
-    try { main = await instance.getMainComponentAsync() } catch { main = null }
-    if (main && !main.removed) continue
-    const status: 'deleted' | 'missing' = main?.removed ? 'deleted' : 'missing'
-    const name = main?.name || instance.name
-    const key = `${status}:${main?.id ?? name}`
-    const group = groups.get(key) ?? { status, name, restoreFrom: [], instances: [] }
-    group.instances.push(instance)
-    group.restoreFrom.push(nodeRef(instance))
-    groups.set(key, group)
+/** One instance repointed onto `main`. Shared by `instance.swap` and `component.restore`. */
+async function repoint(
+  instance: InstanceNode,
+  main: ComponentNode,
+  preserve: boolean,
+  strategy: SwapStrategy
+): Promise<SwapOutcome> {
+  const snapshot = preserve ? await captureOverrides(instance) : null
+  if (strategy === 'rebuild') return rebuildInPlace(instance, main, snapshot)
+
+  try {
+    instance.swapComponent(main)
+  } catch (err) {
+    const why = String((err as Error)?.message || err)
+    /* Figma refuses some swaps outright. `auto` is what makes the op finish anyway: the same
+     * repair a designer would do by hand with ⌘⇧R, driven from the snapshot already in hand. */
+    if (strategy !== 'auto') throw err
+    const rebuilt = await rebuildInPlace(instance, main, snapshot)
+    return { ...rebuilt, fellBackBecause: why }
   }
-  return [...groups.entries()].map(([group, value]) => ({ group, ...value }))
-    .sort((a, b) => b.instances.length - a.instances.length || a.name.localeCompare(b.name))
+  if (!snapshot) return { method: 'swap', note: 'overrides not preserved — preserveOverrides was false' }
+  const overrides = await restoreOverrides(instance, snapshot)
+  return { method: 'swap', overrides, ...productReport(overrides) }
 }
+
+/* -------------------------------------------------------------- the census */
+
+interface Census {
+  instances: InstanceNode[]
+  mains: Map<string, MainFacts>
+  timedOut: boolean
+  walked: number
+}
+
+/** Every instance under the requested scope, with its main resolved once per instance (there is
+ * no batch form) and the clock checked every {@link CHECK_EVERY} so a huge file answers partially
+ * instead of dying at the bridge ceiling with nothing. */
+async function census(roots: BaseNode[], deadline: number): Promise<Census> {
+  const found: InstanceNode[] = []
+  for (const root of roots) {
+    found.push(...(await findAllByTypes<InstanceNode>(root, ['INSTANCE'], { includeRoot: true })))
+  }
+
+  const mains = new Map<string, MainFacts>()
+  let timedOut = false
+  let walked = 0
+  for (const instance of found) {
+    if (walked > 0 && walked % CHECK_EVERY === 0) {
+      await yieldToHost()
+      if (Date.now() > deadline) {
+        timedOut = true
+        break
+      }
+    }
+    mains.set(instance.id, await readMain(instance))
+    walked += 1
+  }
+  return { instances: timedOut ? found.slice(0, walked) : found, mains, timedOut, walked }
+}
+
+function countBy<T>(rows: readonly T[], key: (row: T) => string | null): Array<{ name: string; count: number }> {
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    const name = key(row)
+    if (name === null) continue
+    counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+  return [...counts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count)
+}
+
+/** Which component the census is being asked about — `null` means "all of them", the inventory. */
+async function resolveTargets(params: Record<string, unknown>): Promise<Set<string> | null> {
+  const ids = new Set<string>()
+  if (typeof params.nodeId === 'string' && params.nodeId !== '') {
+    const node = await figma.getNodeByIdAsync(params.nodeId)
+    if (!node) throw new Error(`no node with id ${params.nodeId}`)
+    if (node.type === 'INSTANCE') {
+      const facts = await readMain(node)
+      ids.add(facts.identity)
+      if (facts.id) ids.add(facts.id)
+    } else if (node.type === 'COMPONENT_SET') {
+      ids.add(node.id)
+      for (const child of node.children) ids.add(child.id)
+    } else if (node.type === 'COMPONENT') {
+      const parent = node.parent
+      if (params.exact !== true && parent && parent.type === 'COMPONENT_SET') ids.add(parent.id)
+      ids.add(node.id)
+    } else {
+      throw new Error(`${node.name} is a ${node.type} — name a component, a set, a variant or an instance`)
+    }
+  }
+  if (typeof params.name === 'string' && params.name !== '') {
+    await loadAllPagesAsync()
+    const needle = params.name.toLowerCase()
+    const found = await findAllByTypes<ComponentNode | ComponentSetNode>(figma.root, ['COMPONENT', 'COMPONENT_SET'])
+    const matches = found.filter((node) => node.name.toLowerCase().includes(needle))
+    if (matches.length === 0) throw new Error(`no component matches "${params.name}"`)
+    for (const node of matches) {
+      const parent = node.parent
+      if (node.type === 'COMPONENT' && params.exact !== true && parent && parent.type === 'COMPONENT_SET') ids.add(parent.id)
+      ids.add(node.id)
+    }
+  }
+  return ids.size > 0 ? ids : null
+}
+
+/* ------------------------------------------------------------------- reads */
 
 export const COMPONENT_READ_OPS: readonly OpDef[] = [
   {
     name: 'component.instances',
-    summary: 'Document-wide component inventory: every copy, its page/frame, nesting and jump link, plus unused locals.',
-    agent: 'Use this before component cleanup or migration. Counts are complete across loaded pages; unused means a local component has no instances in this file.',
+    summary: 'Every copy of a component: how many, on which pages, and the link to jump to each.',
+    agent:
+      'The census a designer asks for before touching a component. With `nodeId` (a component, a ' +
+      'set, a variant, or any instance of one) it answers for that component: total copies, the ' +
+      'split by page and by variant, and a row per copy with its frame path, its override count ' +
+      'and a `link` to hand to `node.focus`. With NO target it inverts into an inventory — every ' +
+      'component ranked by how many copies it has, plus `unused`, the ones nothing instantiates, ' +
+      'which is the list a library cleanup starts from. `nested: true` also lists copies that sit ' +
+      'inside other copies (they are override mirrors, counted separately either way). Copies ' +
+      'whose main is gone are counted as `orphans` here and detailed by `component.orphans`.',
     mutates: false,
     params: {
-      limit: { type: 'number', default: 500, min: 1, max: 5000, description: 'Maximum instance rows returned; counts remain complete.' },
+      nodeId: {
+        type: 'string',
+        description:
+          'The component to count: a COMPONENT, a COMPONENT_SET, one variant, or an INSTANCE (which resolves to its own main). Leave it out for the whole-file inventory.',
+      },
+      name: { type: 'string', description: 'Name substring, when you have no id. Every matching component is reported.' },
+      exact: {
+        type: 'boolean',
+        default: false,
+        description: 'Count only the exact variant given, instead of the whole component set it belongs to.',
+      },
+      scope: { type: 'string', default: 'document', enum: ['page', 'document'], description: 'Where to look for copies.' },
+      pageId: { type: 'string', description: 'Search one page — giving it implies scope: "page".' },
+      limit: { type: 'number', default: 50, min: 0, max: 1000, description: 'Instance rows listed per component; counts are complete.' },
+      components: { type: 'number', default: 40, min: 1, max: 500, description: 'Components listed in inventory mode.' },
+      nested: { type: 'boolean', default: false, description: 'Also list copies nested inside other copies. They are always counted.' },
+      unused: { type: 'boolean', default: true, description: 'Inventory mode: also list components nothing instantiates.' },
+      budgetMs: { type: 'number', default: 60000, min: 1000, max: 170000, description: 'Answer within this, partially if need be.' },
     },
     async run(params) {
-      await loadAllPagesAsync()
-      const [instances, components] = await Promise.all([
-        findAllByTypes<InstanceNode>(figma.root, ['INSTANCE']),
-        findAllByTypes<ComponentNode>(figma.root, ['COMPONENT']),
-      ])
-      const byComponent = new Map<string, { component: NodeRef & { key: string }; copies: Array<Record<string, unknown>> }>()
-      for (const component of components) {
-        byComponent.set(component.id, { component: { ...nodeRef(component), key: component.key }, copies: [] })
-      }
-      const unresolved: Array<Record<string, unknown>> = []
-      for (const instance of instances) {
-        let main: ComponentNode | null = null
-        try { main = await instance.getMainComponentAsync() } catch { main = null }
-        const page = pageOf(instance)
-        const frame = containingFrame(instance)
-        const nested = instance.parent?.type === 'INSTANCE' || (() => {
-          let parent: BaseNode | null = instance.parent
-          while (parent && parent.type !== 'PAGE') {
-            if (parent.type === 'INSTANCE') return true
-            parent = parent.parent
-          }
-          return false
-        })()
-        const row = {
-          ...nodeRef(instance),
-          page: page ? nodeRef(page) : null,
-          frame: frame ? nodeRef(frame) : null,
-          nested,
-          link: deepLink(instance),
-        }
-        if (!main || main.removed) unresolved.push(row)
-        else {
-          const entry = byComponent.get(main.id) ?? { component: { ...nodeRef(main), key: main.key }, copies: [] }
-          entry.copies.push(row)
-          byComponent.set(main.id, entry)
-        }
-      }
-      const all = [...byComponent.values()].sort((a, b) => b.copies.length - a.copies.length || a.component.name.localeCompare(b.component.name))
+      const started = Date.now()
+      const deadline = started + budgetOf(params, 60_000)
+      const wantNested = params.nested === true
       const limit = params.limit as number
-      let remaining = limit
-      const inventory = all.map((entry) => {
-        const copies = entry.copies.slice(0, Math.max(0, remaining))
-        remaining -= copies.length
-        return { component: entry.component, count: entry.copies.length, unused: entry.copies.length === 0, copies }
+
+      /* The scope params address WHERE THE COPIES ARE; `nodeId` here addresses WHICH COMPONENT,
+       * so the walk roots are resolved from scope/pageId alone. */
+      const { roots, labels } = await resolveWalkRoots({ scope: params.scope, pageId: params.pageId })
+      const { instances, mains, timedOut, walked } = await census(roots, deadline)
+      const targets = await resolveTargets(params)
+
+      const groups = new Map<
+        string,
+        {
+          facts: MainFacts
+          rows: InstanceRow[]
+          total: number
+          nested: number
+          variants: Map<string, number>
+          pages: Map<string, number>
+        }
+      >()
+      let orphans = 0
+      for (const instance of instances) {
+        const facts = mains.get(instance.id)
+        if (!facts) continue
+        if (facts.status !== 'live') orphans += 1
+        if (targets && !targets.has(facts.identity) && !(facts.id && targets.has(facts.id))) continue
+        let group = groups.get(facts.identity)
+        if (!group) {
+          group = { facts, rows: [], total: 0, nested: 0, variants: new Map(), pages: new Map() }
+          groups.set(facts.identity, group)
+        }
+        group.total += 1
+        if (facts.name) group.variants.set(facts.name, (group.variants.get(facts.name) ?? 0) + 1)
+        const row = describeInstance(instance)
+        if (row.nested) group.nested += 1
+        /* Counted off every copy, never off `rows`: the rows stop at `limit` and a per-page
+         * count taken from them would silently report 2 copies on a page that holds 20. */
+        if (row.page) group.pages.set(row.page, (group.pages.get(row.page) ?? 0) + 1)
+        if ((wantNested || !row.nested) && group.rows.length < limit) group.rows.push(row)
+      }
+
+      const inventory = targets === null
+      const ranked = [...groups.values()].sort((a, b) => b.total - a.total)
+      const shown = inventory ? ranked.slice(0, params.components as number) : ranked
+      const components = shown.map((group) => {
+        const id = group.facts.setId ?? group.facts.id
+        return {
+          component: {
+            id,
+            name: group.facts.setName ?? group.facts.name,
+            key: group.facts.key,
+            remote: group.facts.remote,
+            status: group.facts.status,
+            link: id ? deepLink(id) : null,
+          },
+          instances: group.total,
+          nested: group.nested,
+          placed: group.total - group.nested,
+          byPage: [...group.pages.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+          byVariant: [...group.variants.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+          rows: group.rows,
+          truncated: group.rows.length < (wantNested ? group.total : group.total - group.nested),
+        }
       })
-      return { components: inventory.length, instances: instances.length, unused: inventory.filter((row) => row.unused).length, unresolved: unresolved.length, truncated: instances.length > limit, inventory, orphanInstances: unresolved.slice(0, Math.max(0, remaining)) }
+
+      /* Unused is a document-scope answer only: a component with no copies ON THIS PAGE is not
+       * an unused component, and reporting it as one is how a cleanup deletes something in use. */
+      const pageScope = params.scope === 'page' || (typeof params.pageId === 'string' && params.pageId !== '')
+      let unused: Array<{ id: string; name: string; type: string; link: string }> | undefined
+      if (inventory && params.unused !== false && !pageScope && !timedOut) {
+        await loadAllPagesAsync()
+        const all = await findAllByTypes<ComponentNode | ComponentSetNode>(figma.root, ['COMPONENT', 'COMPONENT_SET'])
+        const used = new Set<string>()
+        for (const facts of mains.values()) {
+          if (facts.id) used.add(facts.id)
+          if (facts.setId) used.add(facts.setId)
+        }
+        unused = all
+          .filter((node) => {
+            if (used.has(node.id)) return false
+            // A variant is used when its set is: report the set, never each variant of it.
+            if (node.type === 'COMPONENT') return !(node.parent && node.parent.type === 'COMPONENT_SET')
+            return !node.children.some((child) => used.has(child.id))
+          })
+          .map((node) => ({ id: node.id, name: node.name, type: node.type, link: deepLink(node.id) }))
+      }
+
+      return {
+        mode: inventory ? 'inventory' : 'component',
+        scope: { pages: labels },
+        walked: { instances: walked, of: instances.length },
+        totals: {
+          instances: walked,
+          components: groups.size,
+          orphans,
+          ...(inventory ? { listed: components.length, unused: unused ? unused.length : null } : {}),
+        },
+        components,
+        ...(unused ? { unused } : {}),
+        /** Jump to any row with `node.focus`, or paste its `link` after the file URL. */
+        focusWith: 'node.focus',
+        timedOut,
+        ms: Date.now() - started,
+      }
     },
   },
+
   {
     name: 'component.orphans',
-    summary: 'Orphan instances grouped by dead master: deleted locals versus missing masters, ranked by impact.',
-    agent: 'Each group includes restoreFrom candidates. Start component.restore with the cleanest representative from the largest group.',
+    summary: 'Copies whose main component is gone — grouped by the master that died, with a source to rebuild it from.',
+    agent:
+      'Deleting a main in Figma does not break its instances: they keep rendering and keep their ' +
+      'overrides, pointing at a component that has no page and no way back — which is why every ' +
+      'other read reports them as ordinary instances. This is the op that finds them. `deleted` ' +
+      'means the main is still in the file but unparented (a local main somebody deleted); ' +
+      '`missing` means Figma would not hand the main over at all (a library component deleted ' +
+      'upstream, or a library this file cannot reach) — and a `missing` group is keyed by NAME, ' +
+      'because an unresolvable main has no id to key on. Each group ranks its copies as rebuild ' +
+      'sources — most structure, fewest overrides first — and `component.restore` takes the id of ' +
+      'one of them. `detached` lists frames that were instances once (Figma remembers what they ' +
+      'were detached from) whose main is also gone: those cannot be relinked, only rebuilt from. ' +
+      'A frame detached from a LIBRARY component carries only a key, and whether that component ' +
+      'still exists is a question only the other file can answer — those rows come back ' +
+      '`verified: false` and are counted apart, never as casualties they may not be.',
     mutates: false,
-    params: {},
-    async run() {
-      const groups = await orphanGroups()
-      return { groups: groups.length, instances: groups.reduce((sum, group) => sum + group.instances.length, 0), orphans: groups.map(({ instances, ...group }) => ({ ...group, count: instances.length })) }
+    params: {
+      scope: { type: 'string', default: 'document', enum: ['page', 'document'], description: 'Where to look.' },
+      pageId: { type: 'string', description: 'One page — giving it implies scope: "page".' },
+      nodeId: { type: 'string', description: 'Walk just this subtree. Overrides scope and pageId.' },
+      limit: { type: 'number', default: 20, min: 0, max: 500, description: 'Instance rows listed per dead main; counts are complete.' },
+      detached: { type: 'boolean', default: true, description: 'Also report detached frames whose original main is gone.' },
+      budgetMs: { type: 'number', default: 60000, min: 1000, max: 170000, description: 'Answer within this, partially if need be.' },
+    },
+    async run(params) {
+      const started = Date.now()
+      const deadline = started + budgetOf(params, 60_000)
+      const { roots, labels } = await resolveWalkRoots(params)
+      const { instances, mains, timedOut, walked } = await census(roots, deadline)
+
+      const groups = new Map<string, { facts: MainFacts; rows: Array<InstanceRow & { children: number }> }>()
+      for (const instance of instances) {
+        const facts = mains.get(instance.id)
+        if (!facts || facts.status === 'live') continue
+        let group = groups.get(facts.identity)
+        if (!group) {
+          group = { facts, rows: [] }
+          groups.set(facts.identity, group)
+        }
+        group.rows.push({ ...describeInstance(instance), children: instance.children.length })
+      }
+
+      const out = [...groups.values()]
+        .map((group) => {
+          /* Rebuild sources ranked by how much structure they still carry, then by how little
+           * of it is an override: a restore bakes the source's own state into the new main, so
+           * the least-overridden rich copy is the closest thing to the component as authored. */
+          const ranked = [...group.rows].sort((a, b) => b.children - a.children || a.overrides - b.overrides)
+          return {
+            main: {
+              id: group.facts.id,
+              key: group.facts.key,
+              name: group.facts.name ?? group.rows[0]?.name ?? null,
+              remote: group.facts.remote,
+              set: group.facts.setName ?? null,
+            },
+            status: group.facts.status,
+            keyedBy: group.facts.status === 'missing' ? 'name' : 'main',
+            instances: group.rows.length,
+            nested: group.rows.filter((row) => row.nested).length,
+            pages: countBy(group.rows, (row) => row.page),
+            restoreFrom: ranked.slice(0, 3).map((row) => ({
+              id: row.id,
+              name: row.name,
+              page: row.page,
+              children: row.children,
+              overrides: row.overrides,
+              nested: row.nested,
+              link: row.link,
+            })),
+            rows: group.rows.slice(0, params.limit as number),
+            truncated: group.rows.length > (params.limit as number),
+          }
+        })
+        .sort((a, b) => b.instances - a.instances)
+
+      let detached:
+        | Array<{ id: string; name: string; page: string | null; was: string; origin: 'local' | 'library'; verified: boolean; link: string }>
+        | undefined
+      if (params.detached !== false && !timedOut) {
+        detached = []
+        for (const root of roots) {
+          for (const frame of await findAllByTypes<FrameNode>(root, ['FRAME'])) {
+            if (!('detachedInfo' in frame)) break // this runtime has no detachedInfo at all
+            const info = frame.detachedInfo
+            if (!info) continue
+            const id = 'componentId' in info ? info.componentId : null
+            /* Only the ones whose origin is ALSO gone: a frame detached from a component that
+             * still exists is a designer's decision, not a casualty. A LIBRARY origin carries a
+             * key and no id — whether that component still exists is a question only the other
+             * file can answer, and importing 50 keys to find out is a network call per frame. So
+             * it is reported with `verified: false` rather than counted as a casualty it may not
+             * be: measured on a live file, 55 of 55 detached frames were key-only. */
+            if (id) {
+              const main = await figma.getNodeByIdAsync(id)
+              if (main && pageOf(main) !== null) continue
+            }
+            detached.push({
+              id: frame.id,
+              name: frame.name,
+              page: pageOf(frame)?.name ?? null,
+              was: id ?? ('componentKey' in info ? info.componentKey : 'unknown'),
+              origin: id ? 'local' : 'library',
+              verified: id !== null,
+              link: deepLink(frame.id),
+            })
+          }
+        }
+      }
+
+      return {
+        scope: { pages: labels },
+        walked: { instances: walked, of: instances.length },
+        totals: {
+          deadMains: out.length,
+          orphanInstances: out.reduce((sum, group) => sum + group.instances, 0),
+          detachedFrames: detached ? detached.filter((row) => row.verified).length : null,
+          detachedUnverified: detached ? detached.filter((row) => !row.verified).length : null,
+        },
+        groups: out,
+        ...(detached ? { detached } : {}),
+        next: 'component.restore — rebuild the main from one of `restoreFrom` and relink the rest',
+        timedOut,
+        ms: Date.now() - started,
+      }
     },
   },
 ]
 
+/* ------------------------------------------------------------------ writes */
+
+async function resolveInstance(id: unknown): Promise<InstanceNode> {
+  if (typeof id !== 'string' || id === '') throw new Error('an instance node id is required')
+  const node = await figma.getNodeByIdAsync(id)
+  if (!node) throw new Error(`no node with id ${id}`)
+  if (node.type !== 'INSTANCE') throw new Error(`${node.name} is a ${node.type} — only an INSTANCE can be repointed`)
+  return node
+}
+
+/** Resolve the product's released target forms: `to`, or an exact `{ set, variant }` selector. */
+async function resolveComponent(params: Record<string, unknown>): Promise<ComponentNode> {
+  if (typeof params.to === 'string' && params.to !== '') return componentFor(params.to)
+  if (typeof params.set !== 'string' || params.set === '') {
+    throw new Error('"to" must be an id/key string, or "set" must identify a component set')
+  }
+  const base = await componentFor(params.set)
+  const set = base.parent?.type === 'COMPONENT_SET' ? base.parent : null
+  if (!set) throw new Error(`"${base.name}" is not in a component set`)
+  if (params.variant === undefined) return set.defaultVariant ?? base
+  if (!params.variant || typeof params.variant !== 'object' || Array.isArray(params.variant)) {
+    throw new Error('"variant" must be an object of exact variant property names to values')
+  }
+  const wanted = params.variant as Record<string, unknown>
+  const match = set.children.find((candidate): candidate is ComponentNode =>
+    candidate.type === 'COMPONENT' &&
+    Object.entries(wanted).every(([name, value]) => candidate.variantProperties?.[name] === value)
+  )
+  if (!match) throw new Error(`no variant in "${set.name}" matches ${JSON.stringify(wanted)}`)
+  return match
+}
+
+/** Empty space to the right of everything already on the page, so a restored main never lands
+ * on top of the work. */
+function freeSpot(page: PageNode): { x: number; y: number } {
+  let right = 0
+  let top = 0
+  let seen = false
+  for (const child of page.children) {
+    if (!Number.isFinite(child.x) || !Number.isFinite(child.width)) continue
+    right = seen ? Math.max(right, child.x + child.width) : child.x + child.width
+    top = seen ? Math.min(top, child.y) : child.y
+    seen = true
+  }
+  return seen ? { x: right + 200, y: top } : { x: 0, y: 0 }
+}
+
+const STRATEGY: ParamSpec = {
+  type: 'string',
+  default: 'auto',
+  enum: ['auto', 'swap', 'rebuild'],
+  description:
+    'How the copy is repointed. "swap" is Figma\'s own instance swap (override preservation by its UI heuristics, repaired from the snapshot afterwards). "rebuild" is the ⌘⇧R repair without a clipboard: a fresh instance of the new main, the snapshot replayed onto it, inserted at the old copy\'s index with its geometry, and the old copy deleted — exact, but a NEW node id. "auto" swaps, and rebuilds only when Figma refuses the swap.',
+}
+
 export const COMPONENT_WRITE_OPS: readonly OpDef[] = [
   {
     name: 'component.restore',
-    summary: 'Rebuild one dead master from an orphan and reassign every orphan in that group with override recovery.',
-    agent: 'Pass restoreFrom from component.orphans. The source is cloned before detach; every matching orphan is swapped and the report names kept, restored and lost overrides.',
+    summary: 'Rebuild a deleted main component out of one of its orphan copies, and relink the rest with their overrides intact.',
+    agent:
+      'The repair for a main somebody deleted. It clones ONE orphan copy, detaches the clone, ' +
+      'turns that into a component, and then repoints every other orphan of the same dead main ' +
+      "onto it — snapshotting each copy's overrides first and writing back whatever the repoint " +
+      'dropped, so a screen keeps its own text, colours and variants instead of resetting to the ' +
+      "source copy's. Read `component.orphans` first and pass one of its `restoreFrom` ids: " +
+      'the restored main is that copy WITH ITS OVERRIDES BAKED IN, so picking the copy ' +
+      'nobody customised matters. `dryRun: true` lists every copy that would be relinked without ' +
+      'touching anything — show that first. When the dead main is `missing` (no id to match on) ' +
+      'siblings are matched by NAME, and every row says which way it was matched. The restored ' +
+      'component is a NEW component with a new key: consumer files that subscribed to the old ' +
+      'library component still need this library published and accepted there.',
     mutates: true,
     params: {
-      restoreFrom: { type: 'string', required: true, description: 'Orphan instance id to clone into the new master.' },
-      dryRun: { type: 'boolean', default: false, description: 'Report the group and source without changing the document.' },
+      restoreFrom: {
+        type: 'string',
+        required: true,
+        description: 'Instance id to rebuild the main from — take it from component.orphans `restoreFrom`.',
+      },
+      name: { type: 'string', description: "Name for the restored component. Defaults to the dead main's own name." },
+      pageId: { type: 'string', description: "Page to put the restored main on. Defaults to the source copy's page." },
+      x: { type: 'number', description: 'Where to put it. Defaults to clear space right of everything on the page.' },
+      y: { type: 'number', description: "Where to put it. Defaults to the top of the page's content." },
+      relink: { type: 'boolean', default: true, description: 'Repoint every other orphan of the same dead main onto the restored one.' },
+      match: {
+        type: 'string',
+        default: 'auto',
+        enum: ['auto', 'main', 'name'],
+        description:
+          "How siblings are found: by the dead main's id, by name, or auto (id when the dead main resolves, name when it does not).",
+      },
+      preserveOverrides: { type: 'boolean', default: true, description: "Snapshot each copy's overrides and write back what the repoint drops." },
+      strategy: STRATEGY,
+      dryRun: {
+        type: 'boolean',
+        default: false,
+        description: 'Report the plan — the component, the page, and every copy that would be relinked — and write nothing.',
+      },
     },
     async run(params) {
-      const source = await figma.getNodeByIdAsync(params.restoreFrom as string)
-      if (!source || source.type !== 'INSTANCE') throw new Error('restoreFrom must identify an INSTANCE')
-      const groups = await orphanGroups()
-      const group = groups.find((candidate) => candidate.instances.some((instance) => instance.id === source.id))
-      if (!group) throw new Error(`instance ${source.id} is not orphaned`)
-      if (params.dryRun === true) return { dryRun: true, group: group.group, name: group.name, count: group.instances.length, restoreFrom: nodeRef(source) }
-      figma.commitUndo()
-      const clone = source.clone()
-      const detached = clone.detachInstance()
-      const master = figma.createComponentFromNode(detached)
-      master.name = group.name
-      const page = pageOf(source)
-      if (page) page.appendChild(master)
-      master.x = source.x + source.width + 80
-      master.y = source.y
-      const results = []
-      for (const orphan of group.instances) {
-        const snapshots = snapshotOverrides(orphan)
-        const properties = propertyValues(orphan)
-        try {
-          orphan.swapComponent(master)
-          try { orphan.setProperties(properties) } catch { /* detailed layer report still follows */ }
-          const overrides = await restoreOverrides(orphan, snapshots)
-          results.push({ node: orphan.id, ok: overrides.lost.length === 0, ...overrides })
-        } catch (error) {
-          results.push({ node: orphan.id, ok: false, kept: [], restored: [], lost: [{ layer: orphan.name, field: 'master', reason: String((error as Error)?.message || error) }] })
+      const source = await resolveInstance(params.restoreFrom)
+      const facts = await readMain(source)
+      if (facts.status === 'live') {
+        throw new Error(
+          `"${source.name}" still has its main (${facts.name}) — nothing to restore. Use instance.swap to repoint it somewhere else.`
+        )
+      }
+      const sourcePage = pageOf(source)
+      let page = sourcePage ?? figma.currentPage
+      if (typeof params.pageId === 'string' && params.pageId !== '') {
+        const found = await figma.getNodeByIdAsync(params.pageId)
+        if (!found || found.type !== 'PAGE') throw new Error(`no page with id ${params.pageId}`)
+        await found.loadAsync()
+        page = found
+      }
+
+      const name = typeof params.name === 'string' && params.name !== '' ? params.name : (facts.name ?? source.name)
+      const matchBy = params.match === 'main' || params.match === 'name' ? params.match : facts.id ? 'main' : 'name'
+      if (matchBy === 'main' && !facts.id) throw new Error('the dead main has no id to match on — use match: "name"')
+
+      /* Siblings: every orphan pointing at the same dead main. `name` matching is the fallback
+       * for a main Figma will not resolve at all, and it is reported per row rather than assumed
+       * — repointing a copy that merely shares a name would be a silent mistake. */
+      const siblings: Array<{ instance: InstanceNode; matchedBy: 'main' | 'name' }> = []
+      if (params.relink === false) {
+        siblings.push({ instance: source, matchedBy: matchBy })
+      } else {
+        await loadAllPagesAsync()
+        for (const candidate of await findAllByTypes<InstanceNode>(figma.root, ['INSTANCE'])) {
+          const theirs = await readMain(candidate)
+          if (theirs.status === 'live') continue
+          if (matchBy === 'main') {
+            const sameId = theirs.id !== null && theirs.id === facts.id
+            const sameKey = theirs.key !== null && theirs.key === facts.key
+            if (sameId || sameKey) siblings.push({ instance: candidate, matchedBy: 'main' })
+          } else if ((theirs.name ?? candidate.name) === (facts.name ?? source.name)) {
+            siblings.push({ instance: candidate, matchedBy: 'name' })
+          }
         }
       }
-      return { dryRun: false, group: group.group, master: { ...nodeRef(master), link: deepLink(master) }, total: results.length, restored: results.filter((row) => row.ok).length, results }
+
+      const fallback = freeSpot(page)
+      const spot = {
+        x: typeof params.x === 'number' ? params.x : fallback.x,
+        y: typeof params.y === 'number' ? params.y : fallback.y,
+      }
+      const plan = {
+        source: describeInstance(source),
+        dead: { id: facts.id, key: facts.key, name: facts.name, status: facts.status, matchedBy: matchBy },
+        relink: siblings.map(({ instance, matchedBy }) => ({ ...describeInstance(instance), matchedBy })),
+      }
+      if (params.dryRun === true) {
+        return {
+          dryRun: true,
+          ...plan,
+          component: { name, page: page.name, pageId: page.id, x: spot.x, y: spot.y },
+          restored: false,
+          relinked: 0,
+          note: "the restored main is the source copy WITH its overrides baked in — check `source.overrides` before running for real",
+        }
+      }
+
+      figma.commitUndo()
+      /* Clone → detach → componentise. The clone is what keeps the source copy intact while it
+       * becomes the new main's geometry; detaching is what makes it a plain frame Figma will
+       * accept, since `createComponentFromNode` on a live instance would nest a copy inside. */
+      const clone = source.clone()
+      page.appendChild(clone)
+      const frame = clone.detachInstance()
+      const main = figma.createComponentFromNode(frame)
+      main.name = name
+      page.appendChild(main)
+      main.x = spot.x
+      main.y = spot.y
+
+      const strategy = (typeof params.strategy === 'string' ? params.strategy : 'auto') as SwapStrategy
+      const rows: Array<Record<string, unknown>> = []
+      let relinked = 0
+      for (const { instance, matchedBy } of siblings) {
+        const row = describeInstance(instance)
+        try {
+          const outcome = await repoint(instance, main, params.preserveOverrides !== false, strategy)
+          relinked += 1
+          rows.push({ ...row, matchedBy, ok: true, repointed: true, ...outcome })
+        } catch (err) {
+          rows.push({ ...row, matchedBy, ok: false, repointed: false, error: String((err as Error)?.message || err) })
+        }
+      }
+
+      return {
+        dryRun: false,
+        source: plan.source,
+        dead: plan.dead,
+        component: {
+          id: main.id,
+          name: main.name,
+          key: main.key || null,
+          page: page.name,
+          pageId: page.id,
+          x: main.x,
+          y: main.y,
+          link: deepLink(main.id),
+        },
+        restored: true,
+        relinked,
+        failed: rows.length - relinked,
+        rows,
+        note: 'new component, new key — a consumer file that subscribed to the deleted library component still needs this library published and accepted there',
+      }
     },
   },
+
   {
     name: 'instance.swap',
-    summary: 'Swap or rebuild instances to an id, library key, or set variant, preserving and reporting overrides.',
-    agent: 'strategy:auto tries native swap first and rebuilds only when Figma refuses; swap never silently falls back. The per-field report separates kept, restored, lost and unsupported overrides, and rebuild returns a newId.',
+    summary: 'Repoint instances onto another main component, keeping the overrides each copy carried.',
+    agent:
+      'The manual half of `component.restore`, and the op for any deliberate re-pointing: a copy ' +
+      'moved onto a rebuilt main, a deprecated component retired, a local copy pointed back at ' +
+      'the library one. `swapComponent` preserves overrides "with the same heuristics as the UI" ' +
+      '— a promise about most of them — so this snapshots every override first, repoints, and ' +
+      'writes back what was dropped. The report is the contract: `kept` is what survived on its ' +
+      'own, `restored` names each layer and field written back, and `lost` names what nobody ' +
+      'could put back and why. `to` takes a COMPONENT id, a 40-character library key, or a set id ' +
+      'plus `variant`. When Figma refuses a swap outright, `strategy: "auto"` falls back to the ' +
+      "⌘⇧R repair a designer does by hand — a fresh copy of the new main with the snapshot " +
+      'replayed onto it, inserted where the old one was, old one deleted — which costs a NEW node ' +
+      'id, reported as `newId`. `preserveOverrides: false` is the Figma-native behaviour: every ' +
+      "copy back to the new main's defaults.",
     mutates: true,
     params: {
-      nodes: { type: 'string[]', required: true, description: 'Instance node ids.' },
-      to: { type: 'string', description: 'Component id or 40-character library key.' },
+      nodes: { type: 'string[]', required: true, description: 'Instance ids to repoint.' },
+      to: {
+        type: 'string',
+        description: 'The new main: a COMPONENT id or 40-character library key.',
+      },
       set: { type: 'string', description: 'Component-set id or key when selecting a variant.' },
-      variant: { type: 'json', description: 'With set: an object of exact variant property names to values.' },
-      strategy: { type: 'string', enum: ['auto', 'swap', 'rebuild'], default: 'auto', description: 'Native swap, structural rebuild, or swap with rebuild fallback.' },
-      dryRun: { type: 'boolean', default: false, description: 'Resolve targets and report without changing nodes.' },
+      variant: { type: 'json', description: 'With set: exact variant property names to values.' },
+      preserveOverrides: { type: 'boolean', default: true, description: 'Snapshot overrides before the repoint and write back whatever it drops.' },
+      strategy: STRATEGY,
+      dryRun: {
+        type: 'boolean',
+        default: false,
+        description: "Report what would be repointed, and each copy's override count, without touching anything.",
+      },
     },
     async run(params) {
-      const ids = Array.isArray(params.nodes) ? (params.nodes as unknown[]).filter((id): id is string => typeof id === 'string' && id !== '') : []
-      if (!ids.length) throw new Error('"nodes" must be a non-empty array of instance ids')
-      const target = await componentTarget(
-        typeof params.to === 'string' && params.to !== ''
-          ? params.to
-          : { set: params.set, ...(params.variant === undefined ? {} : { variant: params.variant }) }
+      const ids = (Array.isArray(params.nodes) ? params.nodes : []).filter(
+        (entry): entry is string => typeof entry === 'string' && entry !== ''
       )
-      const strategy = params.strategy as 'auto' | 'swap' | 'rebuild'
+      if (ids.length === 0) throw new Error('"nodes" must be a non-empty array of instance ids')
+      const target = await resolveComponent(params)
       const dryRun = params.dryRun === true
+      const strategy = (typeof params.strategy === 'string' ? params.strategy : 'auto') as SwapStrategy
       if (!dryRun) figma.commitUndo()
-      const results = []
+
+      const rows: Array<Record<string, unknown>> = []
       for (const id of ids) {
-        const found = await figma.getNodeByIdAsync(id)
-        if (!found || found.type !== 'INSTANCE') {
-          results.push({ node: id, ok: false, error: `${found?.type ?? 'nothing'} — need an INSTANCE` })
-          continue
-        }
-        const before = await found.getMainComponentAsync().catch(() => null)
-        if (dryRun) {
-          results.push({ node: id, ok: true, strategy, before: before ? nodeRef(before) : null, to: nodeRef(target) })
-          continue
-        }
-        const snapshots = snapshotOverrides(found)
-        const properties = propertyValues(found)
-        let instance = found
-        let used: 'swap' | 'rebuild' = strategy === 'rebuild' ? 'rebuild' : 'swap'
-        let fellBackBecause: string | undefined
         try {
-          if (strategy === 'rebuild') {
-            instance = (await rebuildInstance(found, target)).instance
-          } else {
-            try {
-              found.swapComponent(target)
-            } catch (error) {
-              if (strategy === 'swap') throw error
-              fellBackBecause = String((error as Error)?.message || error)
-              instance = (await rebuildInstance(found, target)).instance
-              used = 'rebuild'
-            }
+          const instance = await resolveInstance(id)
+          const facts = await readMain(instance)
+          const row = { ...describeInstance(instance), from: { id: facts.id, name: facts.name, status: facts.status } }
+          if (dryRun) {
+            rows.push({ ...row, ok: true, repointed: false })
+            continue
           }
-          try { instance.setProperties(properties) } catch { /* field-level report remains authoritative */ }
-          const overrides = await restoreOverrides(instance, snapshots)
-          results.push({ node: id, newId: instance.id === id ? undefined : instance.id, ok: overrides.lost.length === 0, strategy: used, fellBackBecause, before: before ? nodeRef(before) : null, after: nodeRef(target), ...overrides })
-        } catch (error) {
-          results.push({ node: id, ok: false, strategy: used, fellBackBecause, error: String((error as Error)?.message || error) })
+          const outcome = await repoint(instance, target, params.preserveOverrides !== false, strategy)
+          rows.push({ ...row, ok: true, repointed: true, ...outcome })
+        } catch (err) {
+          rows.push({ node: id, ok: false, repointed: false, error: String((err as Error)?.message || err) })
         }
       }
-      return { dryRun, target: nodeRef(target), total: results.length, succeeded: results.filter((row) => row.ok).length, failed: results.filter((row) => !row.ok).length, results }
+
+      const ok = rows.filter((row) => row.ok === true)
+      return {
+        dryRun,
+        to: { id: target.id, name: target.name, key: target.key || null, remote: target.remote === true },
+        strategy,
+        total: rows.length,
+        repointed: dryRun ? 0 : ok.filter((row) => row.repointed === true).length,
+        failed: rows.length - ok.length,
+        rows,
+      }
     },
   },
 ]

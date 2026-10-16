@@ -116,8 +116,10 @@ export interface RegenerationFilePlan {
   readonly path: string
   readonly action: RegenerationAction
   /** The content that would be written (or, for `skipped-hand-edited`, the existing content left as-is). */
-  readonly content: string
+  readonly content: string | Uint8Array
   readonly diff: readonly DiffLine[]
+  /** Byte-comparison plans have no line diff. */
+  readonly binary: boolean
 }
 
 export interface RegenerationPlan {
@@ -128,16 +130,21 @@ export interface RegenerationPlan {
 export interface FreshFile {
   /** The Figma node id that produced this file's content — the key `mergeGenerated` matches on. */
   readonly nodeId: string
-  /** Freshly emitted content, already `wrapGenerated`-wrapped. */
-  readonly content: string
+  /** Generated text or raw asset bytes. Byte content is compared without marker merging. */
+  readonly content: string | Uint8Array
 }
 
-/** Builds a diff-preview plan for a re-export: for every fresh file, merges it against the
- * previously-exported content at the same path (if any) and diffs the result against what's
- * currently on disk. A UI can render `files[].diff` and let the user confirm before the caller
- * actually writes `files[].content` to each `files[].path`. */
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
+/** Builds a diff-preview plan for a re-export. Binary assets are included in the same consent
+ * surface as text files, but compared as bytes because they carry no generated markers. */
 export function planRegeneration(
-  existingFiles: ReadonlyMap<string, string>,
+  existingFiles: ReadonlyMap<string, string | Uint8Array>,
   freshFiles: ReadonlyMap<string, FreshFile>
 ): RegenerationPlan {
   const files: RegenerationFilePlan[] = []
@@ -145,16 +152,26 @@ export function planRegeneration(
 
   for (const [path, fresh] of freshFiles) {
     const existing = existingFiles.get(path) ?? null
-    const merged = mergeGenerated(existing, fresh.nodeId, fresh.content)
+    if (fresh.content instanceof Uint8Array || existing instanceof Uint8Array) {
+      const action: RegenerationAction =
+        existing === null
+          ? 'create'
+          : existing instanceof Uint8Array && fresh.content instanceof Uint8Array && bytesEqual(existing, fresh.content)
+            ? 'unchanged'
+            : 'update'
+      files.push({ path, action, content: fresh.content, diff: [], binary: true })
+      continue
+    }
 
+    const merged = mergeGenerated(existing, fresh.nodeId, fresh.content)
     if (merged === null) {
       warnings.push(`${path}: no GENERATED marker for ${fresh.nodeId} found — left untouched (fully hand-edited)`)
-      files.push({ path, action: 'skipped-hand-edited', content: existing as string, diff: [] })
+      files.push({ path, action: 'skipped-hand-edited', content: existing as string, diff: [], binary: false })
       continue
     }
 
     const action: RegenerationAction = existing === null ? 'create' : merged === existing ? 'unchanged' : 'update'
-    files.push({ path, action, content: merged, diff: diffLines(existing ?? '', merged) })
+    files.push({ path, action, content: merged, diff: diffLines(existing ?? '', merged), binary: false })
   }
 
   return { files, warnings }

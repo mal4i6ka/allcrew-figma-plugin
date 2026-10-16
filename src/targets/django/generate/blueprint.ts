@@ -89,7 +89,7 @@ export interface KitFrame {
   gap?: number
   /** `[top, right, bottom, left]` or a single number for all sides. */
   padding?: [number, number, number, number] | number
-  primaryAlign?: 'min' | 'center' | 'max' | 'space-between'
+  primaryAlign?: 'min' | 'center' | 'max' | 'space-between' | 'space-evenly' | 'space-around'
   counterAlign?: 'min' | 'center' | 'max'
   width?: SizeMode
   height?: SizeMode

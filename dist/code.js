@@ -252,8 +252,64 @@
       variables: variables.map(toVariableEntry)
     };
   }
+  function aliasIdsOf(value2, into) {
+    if (typeof value2 !== "object" || value2 === null) return;
+    const record2 = value2;
+    if (record2.type === "VARIABLE_ALIAS" && typeof record2.id === "string") into.push(record2.id);
+    if ("color" in record2) aliasIdsOf(record2.color, into);
+    if ("opacity" in record2) aliasIdsOf(record2.opacity, into);
+  }
+  async function readAliasTargets(known) {
+    var _a;
+    const variableIds = new Set(known.variables.map((variable) => variable.id));
+    const collectionIds = new Set(known.collections.map((collection) => collection.id));
+    const collections = [];
+    const variables = [];
+    let frontier = known.variables;
+    while (frontier.length > 0) {
+      const wanted = [];
+      for (const variable of frontier) {
+        for (const value2 of Object.values(variable.valuesByMode)) aliasIdsOf(value2, wanted);
+      }
+      const next = [];
+      for (const id of wanted) {
+        if (variableIds.has(id)) continue;
+        variableIds.add(id);
+        let variable = null;
+        try {
+          variable = await figma.variables.getVariableByIdAsync(id);
+        } catch (e) {
+          variable = null;
+        }
+        if (!variable) continue;
+        const entry = toVariableEntry(variable);
+        next.push(entry);
+        if (!collectionIds.has(entry.collectionId)) {
+          collectionIds.add(entry.collectionId);
+          let collection = null;
+          try {
+            collection = await figma.variables.getVariableCollectionByIdAsync(entry.collectionId);
+          } catch (e) {
+            collection = null;
+          }
+          const modeIds = Object.keys(entry.valuesByMode);
+          collections.push(__spreadProps(__spreadValues({}, collection ? toCollectionEntry(collection) : {
+            id: entry.collectionId,
+            name: "Library",
+            defaultModeId: (_a = modeIds[0]) != null ? _a : "",
+            modes: modeIds.map((modeId, index2) => ({ modeId, name: index2 === 0 ? "Value" : modeId }))
+          }), {
+            inlineOnly: true
+          }));
+        }
+      }
+      variables.push(...next);
+      frontier = next;
+    }
+    return { collections, variables };
+  }
   async function readLibraryVariables(options = {}) {
-    var _a, _b;
+    var _a, _b, _c, _d;
     const collections = [];
     const variables = [];
     const wanted = (_a = options.collection) == null ? void 0 : _a.trim().toLowerCase();
@@ -267,15 +323,25 @@
     } catch (e) {
       return { collections, variables };
     }
+    const listed = [];
     for (const libraryCollection of libraryCollections) {
-      if (ranOut) break;
       if (wanted && libraryCollection.name.toLowerCase() !== wanted && libraryCollection.key !== options.collection) {
         continue;
       }
       try {
-        const libraryVariables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(
-          libraryCollection.key
-        );
+        listed.push({
+          libraryCollection,
+          libraryVariables: await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libraryCollection.key)
+        });
+      } catch (error) {
+        console.error(`Failed to list library collection "${libraryCollection.name}"`, error);
+      }
+    }
+    const total = listed.reduce((sum, entry) => sum + entry.libraryVariables.length, 0);
+    (_c = options.onProgress) == null ? void 0 : _c.call(options, Math.min(skip, total), total);
+    for (const { libraryCollection, libraryVariables } of listed) {
+      if (ranOut) break;
+      try {
         const importedVariables = [];
         for (const libraryVariable2 of libraryVariables) {
           seen += 1;
@@ -286,6 +352,7 @@
             break;
           }
           importedVariables.push(await figma.variables.importVariableByKeyAsync(libraryVariable2.key));
+          (_d = options.onProgress) == null ? void 0 : _d.call(options, seen, total);
         }
         if (importedVariables.length === 0) continue;
         const collectionId = importedVariables[0].variableCollectionId;
@@ -385,6 +452,167 @@
     return { value: value2, resolvedType: variable.resolvedType };
   }
 
+  // src/tokens/color.ts
+  var clamp01 = (value2) => value2 < 0 ? 0 : value2 > 1 ? 1 : value2;
+  function parseHex(input) {
+    const hex2 = input.trim().replace(/^#/, "");
+    if (/^[0-9a-fA-F]{3}$/.test(hex2)) {
+      return {
+        r: parseInt(hex2[0] + hex2[0], 16) / 255,
+        g: parseInt(hex2[1] + hex2[1], 16) / 255,
+        b: parseInt(hex2[2] + hex2[2], 16) / 255
+      };
+    }
+    if (/^[0-9a-fA-F]{6}$/.test(hex2)) {
+      return {
+        r: parseInt(hex2.slice(0, 2), 16) / 255,
+        g: parseInt(hex2.slice(2, 4), 16) / 255,
+        b: parseInt(hex2.slice(4, 6), 16) / 255
+      };
+    }
+    return null;
+  }
+  var channelToHex = (value2) => {
+    const byte = Math.round(clamp01(value2) * 255);
+    return byte.toString(16).toUpperCase().padStart(2, "0");
+  };
+  function formatHex(rgb) {
+    return `#${channelToHex(rgb.r)}${channelToHex(rgb.g)}${channelToHex(rgb.b)}`;
+  }
+  function srgbToLinear(value2) {
+    return value2 <= 0.04045 ? value2 / 12.92 : Math.pow((value2 + 0.055) / 1.055, 2.4);
+  }
+  function linearToSrgb(value2) {
+    return value2 <= 31308e-7 ? value2 * 12.92 : 1.055 * Math.pow(value2, 1 / 2.4) - 0.055;
+  }
+  function rgbToOklab(rgb) {
+    const r = srgbToLinear(rgb.r);
+    const g = srgbToLinear(rgb.g);
+    const b = srgbToLinear(rgb.b);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return {
+      l: 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+      a: 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+      b: 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s
+    };
+  }
+  function oklabToLinearRgb(lab) {
+    const l_ = lab.l + 0.3963377774 * lab.a + 0.2158037573 * lab.b;
+    const m_ = lab.l - 0.1055613458 * lab.a - 0.0638541728 * lab.b;
+    const s_ = lab.l - 0.0894841775 * lab.a - 1.291485548 * lab.b;
+    const l = l_ * l_ * l_;
+    const m = m_ * m_ * m_;
+    const s = s_ * s_ * s_;
+    return {
+      r: 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+      g: -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+      b: -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
+    };
+  }
+  function rgbToOklch(rgb) {
+    const lab = rgbToOklab(rgb);
+    const c = Math.sqrt(lab.a * lab.a + lab.b * lab.b);
+    const h = c < 1e-7 ? 0 : (Math.atan2(lab.b, lab.a) * 180 / Math.PI + 360) % 360;
+    return { l: lab.l, c, h };
+  }
+  function oklchToLinearRgb(color) {
+    const rad = color.h * Math.PI / 180;
+    return oklabToLinearRgb({ l: color.l, a: color.c * Math.cos(rad), b: color.c * Math.sin(rad) });
+  }
+  var GAMUT_EPSILON = 1e-4;
+  function inGamut(linear) {
+    return linear.r >= -GAMUT_EPSILON && linear.r <= 1 + GAMUT_EPSILON && linear.g >= -GAMUT_EPSILON && linear.g <= 1 + GAMUT_EPSILON && linear.b >= -GAMUT_EPSILON && linear.b <= 1 + GAMUT_EPSILON;
+  }
+  function maxChroma(l, h) {
+    if (l <= 0 || l >= 1) return 0;
+    let low = 0;
+    let high = 0.4;
+    if (inGamut(oklchToLinearRgb({ l, c: high, h }))) return high;
+    for (let i = 0; i < 28; i++) {
+      const mid = (low + high) / 2;
+      if (inGamut(oklchToLinearRgb({ l, c: mid, h }))) low = mid;
+      else high = mid;
+    }
+    return low;
+  }
+  function clampToGamut(color) {
+    const l = clamp01(color.l);
+    const linear = oklchToLinearRgb(__spreadProps(__spreadValues({}, color), { l }));
+    if (inGamut(linear)) return __spreadProps(__spreadValues({}, color), { l });
+    return { l, c: Math.min(color.c, maxChroma(l, color.h)), h: color.h };
+  }
+  function oklchToRgb(color) {
+    const linear = oklchToLinearRgb(clampToGamut(color));
+    return {
+      r: clamp01(linearToSrgb(linear.r)),
+      g: clamp01(linearToSrgb(linear.g)),
+      b: clamp01(linearToSrgb(linear.b))
+    };
+  }
+  var hexToOklch = (hex2) => {
+    const rgb = parseHex(hex2);
+    return rgb ? rgbToOklch(rgb) : null;
+  };
+  var oklchToHex = (color) => formatHex(oklchToRgb(color));
+  function mixRgb(a, b, amount) {
+    const t = clamp01(amount);
+    return {
+      r: a.r + (b.r - a.r) * t,
+      g: a.g + (b.g - a.g) * t,
+      b: a.b + (b.b - a.b) * t
+    };
+  }
+  var WHITE = { r: 1, g: 1, b: 1 };
+  var BLACK = { r: 0, g: 0, b: 0 };
+  function relativeLuminance(rgb) {
+    const r = srgbToLinear(clamp01(rgb.r));
+    const g = srgbToLinear(clamp01(rgb.g));
+    const b = srgbToLinear(clamp01(rgb.b));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+  function contrastRatio(a, b) {
+    const la = relativeLuminance(a);
+    const lb = relativeLuminance(b);
+    const lighter = Math.max(la, lb);
+    const darker = Math.min(la, lb);
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+  function readableInk(background2) {
+    return contrastRatio(background2, BLACK) >= contrastRatio(background2, WHITE) ? BLACK : WHITE;
+  }
+  var SOURCE_SPACES = /* @__PURE__ */ new Set(["SRGB", "DISPLAY_P3", "HSL", "HSB", "OKLAB", "OKLCH"]);
+  function sourceColorOf(color) {
+    if (!color || typeof color !== "object") return null;
+    const source = color.sourceColor;
+    if (!source || typeof source !== "object") return null;
+    const space = source.space;
+    if (typeof space !== "string" || !SOURCE_SPACES.has(space)) return null;
+    const finite = Object.entries(source).every(([key, value2]) => key === "space" || typeof value2 === "number" && Number.isFinite(value2));
+    return finite ? source : null;
+  }
+  var fixed = (value2, digits) => String(Number(value2.toFixed(digits)));
+  function sourceColorCss(source, alpha = 1) {
+    const slash = alpha < 1 ? ` / ${fixed(alpha, 4)}` : "";
+    switch (source.space) {
+      case "OKLCH":
+        return `oklch(${fixed(source.l * 100, 2)}% ${fixed(source.c, 4)} ${fixed(source.h, 2)}${slash})`;
+      case "OKLAB":
+        return `oklab(${fixed(source.l * 100, 2)}% ${fixed(source.a, 4)} ${fixed(source.b, 4)}${slash})`;
+      case "DISPLAY_P3":
+        return `color(display-p3 ${fixed(source.r, 4)} ${fixed(source.g, 4)} ${fixed(source.b, 4)}${slash})`;
+      default:
+        return null;
+    }
+  }
+  function authoredColourText(color) {
+    const source = sourceColorOf(color);
+    if (!source) return null;
+    if (source.space === "HSL") return `hsl(${fixed(source.h, 2)} ${fixed(source.s * 100, 2)}% ${fixed(source.l * 100, 2)}%)`;
+    return sourceColorCss(source);
+  }
+
   // src/targets/django/tokens.ts
   function isVariableAlias2(value2) {
     return typeof value2 === "object" && value2 !== null && "type" in value2 && value2.type === "VARIABLE_ALIAS";
@@ -401,13 +629,16 @@
   function toDtcgPath(figmaName) {
     return figmaName.split("/").map(kebabSegment);
   }
-  function channelToHex(channel) {
+  function channelToHex2(channel) {
     return Math.round(channel * 255).toString(16).padStart(2, "0");
   }
   function rgbaToCss(color) {
     const alpha = "a" in color ? color.a : 1;
+    const source = sourceColorOf(color);
+    const authored = source && sourceColorCss(source, alpha);
+    if (authored) return authored;
     if (alpha === 1) {
-      return `#${channelToHex(color.r)}${channelToHex(color.g)}${channelToHex(color.b)}`;
+      return `#${channelToHex2(color.r)}${channelToHex2(color.g)}${channelToHex2(color.b)}`;
     }
     const to255 = (channel) => Math.round(channel * 255);
     return `rgb(${to255(color.r)} ${to255(color.g)} ${to255(color.b)} / ${+alpha.toFixed(4)})`;
@@ -459,13 +690,258 @@
     return typeof value2 === "object" && value2 !== null && !Array.isArray(value2);
   }
 
+  // src/targets/django/easing/index.ts
+  var BEZIER_PRESETS = {
+    EASE_IN: { x1: 0.42, y1: 0, x2: 1, y2: 1 },
+    EASE_OUT: { x1: 0, y1: 0, x2: 0.58, y2: 1 },
+    EASE_IN_AND_OUT: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 },
+    EASE_IN_BACK: { x1: 0.36, y1: 0, x2: 0.66, y2: -0.56 },
+    EASE_OUT_BACK: { x1: 0.34, y1: 1.56, x2: 0.64, y2: 1 },
+    EASE_IN_AND_OUT_BACK: { x1: 0.68, y1: -0.6, x2: 0.32, y2: 1.6 }
+  };
+  var NAMED_SPRING_BOUNCE = {
+    GENTLE: 0,
+    QUICK: 0.05,
+    BOUNCY: 0.6,
+    SLOW: 0.15
+  };
+  var BASE_SPRING_ANGULAR_FREQUENCY = 10;
+  function perceptualAngularFrequency(durationSec) {
+    if (!(durationSec > 0) || !Number.isFinite(durationSec)) return BASE_SPRING_ANGULAR_FREQUENCY;
+    return 2 * Math.PI / durationSec;
+  }
+  function clamp(value2, lo, hi) {
+    return Math.min(hi, Math.max(lo, value2));
+  }
+  function round(value2, decimals) {
+    const factor = 10 ** decimals;
+    return Math.round(value2 * factor) / factor;
+  }
+  function bezierToCss(bezier) {
+    return `cubic-bezier(${bezier.x1}, ${bezier.y1}, ${bezier.x2}, ${bezier.y2})`;
+  }
+  function easingToCss(easing) {
+    switch (easing.type) {
+      case "LINEAR":
+        return "linear";
+      case "HOLD":
+        return "step-end";
+      case "CUSTOM_CUBIC_BEZIER": {
+        if (!easing.easingFunctionCubicBezier) {
+          throw new Error("CUSTOM_CUBIC_BEZIER easing is missing easingFunctionCubicBezier");
+        }
+        return bezierToCss(easing.easingFunctionCubicBezier);
+      }
+      case "GENTLE":
+      case "QUICK":
+      case "BOUNCY":
+      case "SLOW":
+      case "CUSTOM_SPRING":
+        throw new Error(
+          `${easing.type} is a spring easing \u2014 use sampleSpring()/springToCssLinear() instead of easingToCss()`
+        );
+      default:
+        return bezierToCss(BEZIER_PRESETS[easing.type]);
+    }
+  }
+  function springCurve(resolved, settlingMs) {
+    const { dampingRatio, angularFrequency, initialVelocity } = resolved.params;
+    return __spreadValues({
+      kind: "spring",
+      dampingRatio: round(dampingRatio, 4),
+      angularFrequency: round(angularFrequency, 4),
+      responseMs: Math.round(2 * Math.PI / angularFrequency * 1e3),
+      stiffness: round(angularFrequency * angularFrequency, 4),
+      damping: round(2 * dampingRatio * angularFrequency, 4),
+      mass: 1,
+      initialVelocity: round(initialVelocity, 4),
+      settlingMs: Math.round(settlingMs),
+      source: resolved.source
+    }, resolved.preset ? { preset: resolved.preset } : {});
+  }
+  function motionCurve(easing, durationSec) {
+    if (!easing || typeof easing.type !== "string") return null;
+    const spring = easing;
+    switch (easing.type) {
+      case "LINEAR":
+        return { kind: "linear" };
+      case "HOLD":
+        return { kind: "hold" };
+      case "CUSTOM_CUBIC_BEZIER": {
+        const bezier = easing.easingFunctionCubicBezier;
+        if (!bezier) return null;
+        return { kind: "bezier", x1: bezier.x1, y1: bezier.y1, x2: bezier.x2, y2: bezier.y2 };
+      }
+      case "GENTLE":
+      case "QUICK":
+      case "BOUNCY":
+      case "SLOW":
+      case "CUSTOM_SPRING": {
+        const resolved = springParamsFromEasing(spring, durationSec);
+        return springCurve(resolved, sampleSpringParams(resolved.params).settlingTimeMs);
+      }
+      default: {
+        const bezier = BEZIER_PRESETS[easing.type];
+        if (!bezier) return null;
+        return { kind: "bezier", x1: bezier.x1, y1: bezier.y1, x2: bezier.x2, y2: bezier.y2, preset: easing.type };
+      }
+    }
+  }
+  function physicalSpringToNormalized(spring) {
+    const dampingRatio = spring.damping / (2 * Math.sqrt(spring.stiffness * spring.mass));
+    return clamp(1 - dampingRatio, 0, 1);
+  }
+  function resolveSpringBounce(easing) {
+    if (easing.type === "CUSTOM_SPRING") {
+      if (!easing.easingFunctionSpring) {
+        throw new Error("CUSTOM_SPRING easing is missing easingFunctionSpring");
+      }
+      return easing.easingFunctionSpring.bounce;
+    }
+    if (easing.type in NAMED_SPRING_BOUNCE) {
+      return NAMED_SPRING_BOUNCE[easing.type];
+    }
+    throw new Error(`${easing.type} is not a spring easing`);
+  }
+  function physicalSpringParams(spring) {
+    var _a;
+    const mass = spring.mass > 0 ? spring.mass : 1;
+    const stiffness = spring.stiffness > 0 ? spring.stiffness : 1;
+    const angularFrequency = Math.sqrt(stiffness / mass);
+    const dampingRatio = clamp(spring.damping / (2 * Math.sqrt(stiffness * mass)), MIN_DAMPING_RATIO, 1);
+    return { dampingRatio, angularFrequency, initialVelocity: (_a = spring.initialVelocity) != null ? _a : 0 };
+  }
+  function normalizedSpringParams(bounce, angularFrequency = BASE_SPRING_ANGULAR_FREQUENCY) {
+    return { dampingRatio: clamp(1 - bounce, MIN_DAMPING_RATIO, 1), angularFrequency, initialVelocity: 0 };
+  }
+  function springParamsFromEasing(easing, durationSec) {
+    const spring = easing.easingFunctionSpring;
+    const preset = easing.type === "CUSTOM_SPRING" ? void 0 : easing.type;
+    if (spring && typeof spring.mass === "number" && typeof spring.stiffness === "number" && typeof spring.damping === "number") {
+      return {
+        params: physicalSpringParams({
+          mass: spring.mass,
+          stiffness: spring.stiffness,
+          damping: spring.damping,
+          initialVelocity: spring.initialVelocity
+        }),
+        source: "physical",
+        preset
+      };
+    }
+    const angularFrequency = durationSec === void 0 ? BASE_SPRING_ANGULAR_FREQUENCY : perceptualAngularFrequency(durationSec);
+    if (spring && typeof spring.bounce === "number") {
+      return { params: normalizedSpringParams(spring.bounce, angularFrequency), source: "normalized", preset };
+    }
+    if (easing.type in NAMED_SPRING_BOUNCE) {
+      const bounce = NAMED_SPRING_BOUNCE[easing.type];
+      return { params: normalizedSpringParams(bounce, angularFrequency), source: "preset-table", preset };
+    }
+    throw new Error(`${easing.type} is not a spring easing`);
+  }
+  function observeSpringPreset(easing) {
+    if (!(easing.type in NAMED_SPRING_BOUNCE)) return null;
+    const spring = easing.easingFunctionSpring;
+    if (!spring) return null;
+    const tableBounce = NAMED_SPRING_BOUNCE[easing.type];
+    if (typeof spring.mass === "number" && typeof spring.stiffness === "number" && typeof spring.damping === "number") {
+      const observedBounce = physicalSpringToNormalized({ mass: spring.mass, stiffness: spring.stiffness, damping: spring.damping });
+      return { preset: easing.type, observedBounce, tableBounce };
+    }
+    if (typeof spring.bounce === "number") {
+      return { preset: easing.type, observedBounce: spring.bounce, tableBounce };
+    }
+    return null;
+  }
+  function summarizeSpringPresetObservations(observations, tolerance = 0.02) {
+    var _a;
+    const byPreset = {};
+    for (const observation of observations) {
+      const bucket = (_a = byPreset[observation.preset]) != null ? _a : { total: 0, samples: 0, tableBounce: observation.tableBounce };
+      bucket.total += observation.observedBounce;
+      bucket.samples += 1;
+      byPreset[observation.preset] = bucket;
+    }
+    const summary = {};
+    for (const preset of Object.keys(byPreset).sort()) {
+      const { total, samples, tableBounce } = byPreset[preset];
+      const observedBounce = round(total / samples, 4);
+      const delta = round(Math.abs(observedBounce - tableBounce), 4);
+      summary[preset] = { observedBounce, tableBounce, delta, matches: delta <= tolerance, samples };
+    }
+    return summary;
+  }
+  function springDerivative(state, dampingRatio, omega0) {
+    return {
+      d: state.v,
+      v: -omega0 * omega0 * state.d - 2 * dampingRatio * omega0 * state.v
+    };
+  }
+  function rk4Step(state, dt, dampingRatio, omega0) {
+    const k1 = springDerivative(state, dampingRatio, omega0);
+    const k2 = springDerivative({ d: state.d + dt / 2 * k1.d, v: state.v + dt / 2 * k1.v }, dampingRatio, omega0);
+    const k3 = springDerivative({ d: state.d + dt / 2 * k2.d, v: state.v + dt / 2 * k2.v }, dampingRatio, omega0);
+    const k4 = springDerivative({ d: state.d + dt * k3.d, v: state.v + dt * k3.v }, dampingRatio, omega0);
+    return {
+      d: state.d + dt / 6 * (k1.d + 2 * k2.d + 2 * k3.d + k4.d),
+      v: state.v + dt / 6 * (k1.v + 2 * k2.v + 2 * k3.v + k4.v)
+    };
+  }
+  var MIN_DAMPING_RATIO = 1e-3;
+  var SETTLE_TOLERANCE = 4e-3;
+  var MAX_SETTLE_TIME_SEC = 10;
+  function integrationStepSec(omega0) {
+    return Math.min(2 * Math.PI / omega0 / 100, 0.01);
+  }
+  function findSettlingTimeSec(params) {
+    const dt = integrationStepSec(params.angularFrequency);
+    const maxSteps = Math.ceil(MAX_SETTLE_TIME_SEC / dt);
+    let state = { d: -1, v: params.initialVelocity };
+    let lastUnsettledStep = 0;
+    for (let step2 = 1; step2 <= maxSteps; step2++) {
+      state = rk4Step(state, dt, params.dampingRatio, params.angularFrequency);
+      if (Math.abs(state.d) > SETTLE_TOLERANCE) lastUnsettledStep = step2;
+    }
+    return Math.min(lastUnsettledStep * dt, MAX_SETTLE_TIME_SEC);
+  }
+  var SAMPLE_COUNT = 80;
+  function sampleSpringParams(params) {
+    const settlingTimeSec = findSettlingTimeSec(params);
+    if (settlingTimeSec <= 0) {
+      return { points: Array(SAMPLE_COUNT).fill(1), settlingTimeMs: 0 };
+    }
+    const sampleDt = settlingTimeSec / (SAMPLE_COUNT - 1);
+    const stepsPerSample = Math.max(1, Math.ceil(sampleDt / integrationStepSec(params.angularFrequency)));
+    const dt = sampleDt / stepsPerSample;
+    const points = [0];
+    let state = { d: -1, v: params.initialVelocity };
+    for (let i = 1; i < SAMPLE_COUNT; i++) {
+      for (let step2 = 0; step2 < stepsPerSample; step2++) {
+        state = rk4Step(state, dt, params.dampingRatio, params.angularFrequency);
+      }
+      points.push(1 + state.d);
+    }
+    points[points.length - 1] = 1;
+    return { points, settlingTimeMs: settlingTimeSec * 1e3 };
+  }
+  function sampleSpring(bounce, angularFrequency = BASE_SPRING_ANGULAR_FREQUENCY) {
+    return sampleSpringParams(normalizedSpringParams(bounce, angularFrequency));
+  }
+  function springParamsToCssLinear(params) {
+    const { points, settlingTimeMs } = sampleSpringParams(params);
+    return { easing: `linear(${points.map((p) => round(p, 4)).join(", ")})`, durationMs: settlingTimeMs };
+  }
+  function springToCssLinear(bounce, angularFrequency) {
+    return springParamsToCssLinear(normalizedSpringParams(bounce, angularFrequency));
+  }
+
   // src/tokens/native.ts
   function parseColor(value2) {
     if (typeof value2 !== "string") return null;
     const text6 = value2.trim();
-    const hex = /^#([0-9a-f]{3,8})$/i.exec(text6);
-    if (hex) {
-      const digits = hex[1];
+    const hex2 = /^#([0-9a-f]{3,8})$/i.exec(text6);
+    if (hex2) {
+      const digits = hex2[1];
       const expand = (pair2) => parseInt(pair2.length === 1 ? pair2 + pair2 : pair2, 16);
       if (digits.length === 3 || digits.length === 4) {
         return {
@@ -501,9 +977,9 @@
     return { r, g, b, a: Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1 };
   }
   function sameColor(a, b) {
-    return a.r === b.r && a.g === b.g && a.b === b.b && round(a.a) === round(b.a);
+    return a.r === b.r && a.g === b.g && a.b === b.b && round2(a.a) === round2(b.a);
   }
-  function round(value2, decimals = 3) {
+  function round2(value2, decimals = 3) {
     const factor = 10 ** decimals;
     return Math.round(value2 * factor) / factor;
   }
@@ -568,10 +1044,10 @@
         color: {
           "color-space": "srgb",
           components: {
-            red: `${round(color.r / 255)}`,
-            green: `${round(color.g / 255)}`,
-            blue: `${round(color.b / 255)}`,
-            alpha: `${round(color.a)}`
+            red: `${round2(color.r / 255)}`,
+            green: `${round2(color.g / 255)}`,
+            blue: `${round2(color.b / 255)}`,
+            alpha: `${round2(color.a)}`
           }
         }
       });
@@ -622,10 +1098,10 @@ ${lines.join("\n")}
     if (entry.type === "color") {
       const color = parseColor(value2);
       if (!color) return null;
-      return `Color(.sRGB, red: ${round(color.r / 255)}, green: ${round(color.g / 255)}, blue: ${round(color.b / 255)}, opacity: ${round(color.a)})`;
+      return `Color(.sRGB, red: ${round2(color.r / 255)}, green: ${round2(color.g / 255)}, blue: ${round2(color.b / 255)}, opacity: ${round2(color.a)})`;
     }
     if (typeof value2 === "number") {
-      return isLengthKind(entry.kind, value2) ? `CGFloat(${round(value2, 4)})` : `${round(value2, 4)}`;
+      return isLengthKind(entry.kind, value2) ? `CGFloat(${round2(value2, 4)})` : `${round2(value2, 4)}`;
     }
     if (typeof value2 === "boolean") return String(value2);
     return JSON.stringify(cssValue(value2, entry.path));
@@ -637,8 +1113,8 @@ ${lines.join("\n")}
       return `Color(0x${toArgbHex(color).slice(1)})`;
     }
     if (typeof value2 === "number") {
-      if (!isLengthKind(entry.kind, value2)) return `${round(value2, 4)}f`;
-      return isTextMetricKind(entry.kind) ? `${round(value2, 4)}.sp` : `${round(value2, 4)}.dp`;
+      if (!isLengthKind(entry.kind, value2)) return `${round2(value2, 4)}f`;
+      return isTextMetricKind(entry.kind) ? `${round2(value2, 4)}.sp` : `${round2(value2, 4)}.dp`;
     }
     if (typeof value2 === "boolean") return String(value2);
     return JSON.stringify(cssValue(value2, entry.path));
@@ -727,9 +1203,12 @@ ${sharedLines.join("\n")}
     const r = value2.r, g = value2.g, b = value2.b;
     if (typeof r !== "number" || typeof g !== "number" || typeof b !== "number") return String(value2);
     const a = typeof value2.a === "number" ? value2.a : 1;
+    const source = sourceColorOf(value2);
+    const authored = source && sourceColorCss(source, a);
+    if (authored) return authored;
     const toByte = (n) => Math.max(0, Math.min(255, Math.round(n * 255)));
-    const hex = [toByte(r), toByte(g), toByte(b)].map((n) => n.toString(16).padStart(2, "0")).join("");
-    if (a >= 1) return "#" + hex;
+    const hex2 = [toByte(r), toByte(g), toByte(b)].map((n) => n.toString(16).padStart(2, "0")).join("");
+    if (a >= 1) return "#" + hex2;
     return `rgba(${toByte(r)}, ${toByte(g)}, ${toByte(b)}, ${Number(a.toFixed(3))})`;
   }
   function figmaTypeToW3C(type, value2) {
@@ -737,17 +1216,36 @@ ${sharedLines.join("\n")}
     if (n === "COLOR") return "color";
     if (n === "FLOAT" || n === "NUMBER") return "number";
     if (n === "BOOLEAN") return "boolean";
+    if (n === "TIMING") return "duration";
+    if (n === "EASING") return "easing";
     if (typeof value2 === "number") return "number";
     if (typeof value2 === "boolean") return "boolean";
     if (typeof value2 === "string" && /^#|rgb\(|hsl\(/i.test(value2.trim())) return "color";
     return "string";
   }
-  function normalizeVariableValue(value2, idToName) {
+  var SPRING_EASINGS = /* @__PURE__ */ new Set(["GENTLE", "QUICK", "BOUNCY", "SLOW", "CUSTOM_SPRING"]);
+  function motionVariableValue(resolvedType, value2) {
+    if (resolvedType === "TIMING" && typeof value2 === "number" && Number.isFinite(value2)) {
+      return `${roundEmitted(value2 * 1e3)}ms`;
+    }
+    if (resolvedType === "EASING" && isRecord(value2) && typeof value2.type === "string" && value2.type !== "VARIABLE_ALIAS") {
+      const easing = value2;
+      try {
+        return SPRING_EASINGS.has(easing.type) ? springToCssLinear(resolveSpringBounce(easing)).easing : easingToCss(easing);
+      } catch (e) {
+        return void 0;
+      }
+    }
+    return void 0;
+  }
+  function normalizeVariableValue(value2, idToName, resolvedType) {
     if (isRecord(value2) && "type" in value2 && value2.type === "VARIABLE_ALIAS") {
       const id = typeof value2.id === "string" ? value2.id : "";
       const name = idToName.get(id);
       return name ? `{${name}}` : `{${id}}`;
     }
+    const motion = motionVariableValue(resolvedType, value2);
+    if (motion !== void 0) return motion;
     if (isRecord(value2) && "r" in value2 && "g" in value2 && "b" in value2) return figmaColorToCss(value2);
     if (typeof value2 === "string" || typeof value2 === "number" || typeof value2 === "boolean") return value2;
     return isRecord(value2) ? value2 : String(value2 != null ? value2 : "");
@@ -771,9 +1269,15 @@ ${sharedLines.join("\n")}
     };
     const ordered = variables.filter((v) => v && typeof v.id === "string" && typeof v.name === "string" && v.name.trim() !== "").map((v) => ({ v, path: natural(v) })).filter((x) => x.path !== null).sort((a, b) => {
       var _a, _b, _c, _d;
+      const rank = (id) => {
+        const c = collectionById.get(id);
+        return (c == null ? void 0 : c.product) ? -1 : (c == null ? void 0 : c.inlineOnly) ? 1 : 0;
+      };
+      const ia = rank(a.v.collectionId);
+      const ib = rank(b.v.collectionId);
       const ca = (_b = (_a = collectionById.get(a.v.collectionId)) == null ? void 0 : _a.name) != null ? _b : "";
       const cb = (_d = (_c = collectionById.get(b.v.collectionId)) == null ? void 0 : _c.name) != null ? _d : "";
-      return ca.localeCompare(cb) || a.v.name.localeCompare(b.v.name) || a.v.id.localeCompare(b.v.id);
+      return ia - ib || ca.localeCompare(cb) || a.v.name.localeCompare(b.v.name) || a.v.id.localeCompare(b.v.id);
     });
     const claimed = /* @__PURE__ */ new Set();
     const paths = /* @__PURE__ */ new Map();
@@ -905,7 +1409,7 @@ ${sharedLines.join("\n")}
   var EFFECT_STYLE_COLLECTION = "Effect Styles";
   var SHADOW_ROOT = "shadow";
   var BLUR_ROOT = "blur";
-  function round2(value2) {
+  function round3(value2) {
     return Number(Number(value2).toFixed(3));
   }
   function stripLeadingGroup(segments, groups) {
@@ -917,11 +1421,11 @@ ${sharedLines.join("\n")}
     if (effect.type !== "DROP_SHADOW" && effect.type !== "INNER_SHADOW") return null;
     const offset = (_a = effect.offset) != null ? _a : { x: 0, y: 0 };
     const parts = [
-      `${round2(offset.x)}px`,
-      `${round2(offset.y)}px`,
-      `${round2((_b = effect.radius) != null ? _b : 0)}px`
+      `${round3(offset.x)}px`,
+      `${round3(offset.y)}px`,
+      `${round3((_b = effect.radius) != null ? _b : 0)}px`
     ];
-    if (effect.spread) parts.push(`${round2(effect.spread)}px`);
+    if (effect.spread) parts.push(`${round3(effect.spread)}px`);
     const color = effect.color ? figmaColorToCss(effect.color) : "rgba(0, 0, 0, 0.25)";
     const inset = effect.type === "INNER_SHADOW" ? "inset " : "";
     return `${inset}${parts.join(" ")} ${color}`;
@@ -929,7 +1433,7 @@ ${sharedLines.join("\n")}
   function blurEffectToCss(effect) {
     var _a;
     if (effect.type !== "LAYER_BLUR" && effect.type !== "BACKGROUND_BLUR") return null;
-    return `blur(${round2((_a = effect.radius) != null ? _a : 0)}px)`;
+    return `blur(${round3((_a = effect.radius) != null ? _a : 0)}px)`;
   }
   function addEffectStyleTokens(out, effectStyles) {
     const list2 = (Array.isArray(effectStyles) ? effectStyles : []).filter(
@@ -952,6 +1456,25 @@ ${sharedLines.join("\n")}
       }
     }
   }
+  function resolveComposedColor(value2, modeName, byId, collectionById) {
+    const literal = (raw, seen) => {
+      var _a, _b, _c, _d;
+      if (!isRecord(raw) || raw.type !== "VARIABLE_ALIAS" || typeof raw.id !== "string") return raw;
+      if (seen.has(raw.id)) return void 0;
+      const target = byId.get(raw.id);
+      if (!target || !isRecord(target.valuesByMode)) return void 0;
+      const collection = collectionById.get(target.collectionId);
+      const modeId = (_d = (_c = (_b = ((_a = collection == null ? void 0 : collection.modes) != null ? _a : []).find((m) => m.name === modeName)) == null ? void 0 : _b.modeId) != null ? _c : (collection == null ? void 0 : collection.defaultModeId) && collection.defaultModeId in target.valuesByMode ? collection.defaultModeId : void 0) != null ? _d : Object.keys(target.valuesByMode)[0];
+      if (modeId === void 0) return void 0;
+      return literal(target.valuesByMode[modeId], new Set(seen).add(raw.id));
+    };
+    const color = literal(value2.color, /* @__PURE__ */ new Set());
+    const opacity = literal(value2.opacity, /* @__PURE__ */ new Set());
+    if (!isRecord(color) || typeof color.r !== "number" || typeof color.g !== "number" || typeof color.b !== "number") return void 0;
+    if (typeof opacity !== "number" || !Number.isFinite(opacity)) return void 0;
+    const base = typeof color.a === "number" ? color.a : 1;
+    return { r: color.r, g: color.g, b: color.b, a: base * Math.min(1, Math.max(0, opacity / 100)) };
+  }
   function variablesToW3CMultiMode(graph) {
     var _a;
     const out = {};
@@ -962,6 +1485,8 @@ ${sharedLines.join("\n")}
     const canonicalPaths = resolveCanonicalPaths(variables, collectionById);
     const idToName = /* @__PURE__ */ new Map();
     for (const [id, path] of canonicalPaths) idToName.set(id, path.join("."));
+    const byId = /* @__PURE__ */ new Map();
+    for (const v of variables) if (v && typeof v.id === "string") byId.set(v.id, v);
     for (const variable of variables) {
       const path = canonicalPaths.get(variable.id);
       if (!path) continue;
@@ -972,7 +1497,9 @@ ${sharedLines.join("\n")}
       const byMode = {};
       for (const mode of modes) {
         if (!(mode.modeId in valuesByMode)) continue;
-        byMode[mode.name] = normalizeVariableValue(valuesByMode[mode.modeId], idToName);
+        const raw = valuesByMode[mode.modeId];
+        const composed = isRecord(raw) && "color" in raw && "opacity" in raw ? resolveComposedColor(raw, mode.name, byId, collectionById) : void 0;
+        byMode[mode.name] = normalizeVariableValue(composed != null ? composed : raw, idToName, variable.resolvedType);
       }
       const defaultModeId = collection && typeof collection.defaultModeId === "string" ? collection.defaultModeId : modes[0].modeId;
       const defaultMode = (_a = modes.find((m) => m.modeId === defaultModeId)) != null ? _a : modes[0];
@@ -983,6 +1510,8 @@ ${sharedLines.join("\n")}
       const $extensions = { modes: byMode };
       if (collectionName) {
         $extensions.figma = { collection: collectionName, defaultMode: defaultMode.name };
+        if (collection == null ? void 0 : collection.inlineOnly) $extensions.figma.inlineOnly = true;
+        if (String(variable.name).split("/").some((segment) => /^[_.]/.test(segment.trim()))) $extensions.figma.private = true;
         const scopes = Array.isArray(variable.scopes) ? variable.scopes.filter((scope) => scope !== "ALL_SCOPES") : [];
         if (scopes.length > 0) $extensions.figma.scopes = scopes;
         const codeSyntax = isRecord(variable.codeSyntax) ? variable.codeSyntax : void 0;
@@ -1043,6 +1572,8 @@ ${sharedLines.join("\n")}
     FONT_FAMILY: "fontFamily",
     FONT_STYLE: "fontFamily",
     OPACITY: "opacity",
+    // Update 139: a FLOAT shown only in colour opacity pickers — a percentage, never a length.
+    COLOR_OPACITY: "opacity",
     TEXT_CONTENT: "string"
   };
   var KIND_BY_NAME = [
@@ -1069,6 +1600,7 @@ ${sharedLines.join("\n")}
     if (token2) {
       if (token2.$type === "color") return "color";
       if (token2.$type === "boolean") return "boolean";
+      if (token2.$type === "duration") return "duration";
       const figma2 = (_a = token2.$extensions) == null ? void 0 : _a.figma;
       const scopes = figma2 && Array.isArray(figma2.scopes) ? figma2.scopes : [];
       for (const scope of scopes) {
@@ -1095,12 +1627,17 @@ ${sharedLines.join("\n")}
   function isLengthToken(value2, path) {
     return isLengthKind(tokenKind(void 0, path != null ? path : []), value2);
   }
-  function cssValue(value2, path) {
+  function cssValue(value2, path, token2) {
     const alias = aliasTarget(value2);
     if (alias) return `var(--${varName(alias)})`;
     if (typeof value2 === "number") {
       const rounded = roundEmitted(value2);
       if (rounded === 0) return "0";
+      if (token2) {
+        const kind = tokenKind(token2, path != null ? path : []);
+        if (kind === "duration") return `${rounded}ms`;
+        return isLengthKind(kind, value2) ? `${rounded}px` : String(rounded);
+      }
       if (tokenKind(void 0, path != null ? path : []) === "duration") return `${rounded}ms`;
       return isLengthToken(value2, path) ? `${rounded}px` : String(rounded);
     }
@@ -1154,8 +1691,8 @@ ${sharedLines.join("\n")}
   function themeModesOf(allLeaves, hint) {
     const themes = [];
     for (const entry of allLeaves) {
-      if (!participatesInTheming(entry.token)) continue;
       const names = Object.keys(modesOf(entry.token));
+      if (names.length < 2) continue;
       for (const name of names) if (themes.indexOf(name) === -1) themes.push(name);
     }
     if (themes.length === 0) {
@@ -1278,15 +1815,16 @@ ${sharedLines.join("\n")}
     }
     return { collectionName: "Typography", variables, bindings };
   }
-  function extractTypographyScale(tree, options) {
-    return tree;
-  }
   function inlinePrimitivesTree(tree, flattenAll) {
+    var _a, _b;
     const all = leaves(tree);
     const byName = /* @__PURE__ */ new Map();
     for (const e of all) byName.set(e.path.join("."), e);
     const primitive = /* @__PURE__ */ new Set();
-    for (const e of all) if (!participatesInTheming(e.token) && !isScaleToken(e.token)) primitive.add(e.path.join("."));
+    for (const e of all) {
+      if (participatesInTheming(e.token) || isScaleToken(e.token) || ((_b = (_a = e.token.$extensions) == null ? void 0 : _a.figma) == null ? void 0 : _b.resolved)) continue;
+      primitive.add(e.path.join("."));
+    }
     const referenced = /* @__PURE__ */ new Set();
     const noteRef = (value2) => {
       if (!isAliasValue(value2)) return;
@@ -1298,9 +1836,9 @@ ${sharedLines.join("\n")}
       const modes = modesOf(e.token);
       for (const k of Object.keys(modes)) noteRef(modes[k]);
     }
-    const inline = (value2, theme, seen, originPath) => {
+    const inline = (value2, theme, seen, originPath, originToken) => {
       if (!isAliasValue(value2)) {
-        return originPath && typeof value2 === "number" ? cssValue(value2, originPath) : value2;
+        return originPath && typeof value2 === "number" ? cssValue(value2, originPath, originToken) : value2;
       }
       const target = aliasTarget(value2).join(".");
       if (!byName.has(target) || seen.has(target)) return value2;
@@ -1308,7 +1846,7 @@ ${sharedLines.join("\n")}
       const entry = byName.get(target);
       const next = new Set(seen);
       next.add(target);
-      return inline(valueForTheme(entry.token, theme), theme, next, entry.path);
+      return inline(valueForTheme(entry.token, theme), theme, next, entry.path, entry.token);
     };
     const out = {};
     for (const e of all) {
@@ -1330,6 +1868,86 @@ ${sharedLines.join("\n")}
     }
     return out;
   }
+  function parseCollectionModes(raw) {
+    const hidden = [];
+    const breakpoints = [];
+    const products = [];
+    for (const pair2 of String(raw != null ? raw : "").split(/[,;\n]+/)) {
+      const separator = pair2.indexOf(pair2.indexOf(":") !== -1 ? ":" : "=");
+      if (separator === -1) continue;
+      const collection = pair2.slice(0, separator).trim();
+      const role = pair2.slice(separator + 1).trim().toLowerCase();
+      if (!collection) continue;
+      if (role === "hidden" || role === "hide") hidden.push(collection);
+      else if (role === "breakpoints" || role === "breakpoint" || role === "bp") breakpoints.push(collection);
+      else if (role === "product") products.push(collection);
+    }
+    return { hidden, breakpoints, products };
+  }
+  function shapeForCode(graph, tree, options = {}) {
+    var _a, _b, _c;
+    const lower = (name) => name.trim().toLowerCase();
+    const hidden = new Set(((_a = options.hidden) != null ? _a : []).map(lower));
+    const bpNames = /* @__PURE__ */ new Set(["breakpoints", ...((_b = options.breakpoints) != null ? _b : []).map(lower)]);
+    const bpCollections = ((_c = graph == null ? void 0 : graph.collections) != null ? _c : []).filter((c) => bpNames.has(lower(c.name)));
+    const dropTextStyles = options.scaleOnly === true && hasTypographyVars(graph);
+    const all = leaves(tree);
+    const byName = /* @__PURE__ */ new Map();
+    for (const e of all) byName.set(e.path.join("."), e);
+    const isDropped = (token2) => {
+      var _a2, _b2, _c2, _d;
+      if (((_b2 = (_a2 = token2.$extensions) == null ? void 0 : _a2.figma) == null ? void 0 : _b2.inlineOnly) || ((_d = (_c2 = token2.$extensions) == null ? void 0 : _c2.figma) == null ? void 0 : _d.private)) return true;
+      const collection = collectionOf(token2);
+      if (collection === void 0) return false;
+      const name = lower(collection);
+      return hidden.has(name) || bpCollections.some((c) => lower(c.name) === name);
+    };
+    let throughOwnLayer = false;
+    const resolve2 = (value2, mode, seen) => {
+      var _a2, _b2;
+      if (!isAliasValue(value2)) return value2;
+      const target = aliasTarget(value2).join(".");
+      const entry = byName.get(target);
+      if (!entry || !isDropped(entry.token) || seen.has(target)) return value2;
+      if (!((_b2 = (_a2 = entry.token.$extensions) == null ? void 0 : _a2.figma) == null ? void 0 : _b2.inlineOnly)) throughOwnLayer = true;
+      const next = new Set(seen);
+      next.add(target);
+      return resolve2(valueForTheme(entry.token, mode), mode, next);
+    };
+    const out = {};
+    for (const e of all) {
+      if (isDropped(e.token)) continue;
+      if (dropTextStyles && collectionOf(e.token) === TEXT_STYLE_COLLECTION) continue;
+      const modes = modesOf(e.token);
+      throughOwnLayer = false;
+      const newModes = {};
+      for (const k of Object.keys(modes)) newModes[k] = resolve2(modes[k], k, /* @__PURE__ */ new Set());
+      const defMode = collectionDefaultModeOf(e.token) || Object.keys(modes)[0] || "";
+      const $value = resolve2(e.token.$value, defMode, /* @__PURE__ */ new Set());
+      const wasAlias = throughOwnLayer;
+      const figma2 = e.token.$extensions.figma;
+      setToken(out, e.path, __spreadProps(__spreadValues({}, e.token), {
+        $value,
+        $extensions: __spreadValues(__spreadProps(__spreadValues({}, e.token.$extensions), {
+          modes: newModes
+        }), figma2 && wasAlias ? { figma: __spreadProps(__spreadValues({}, figma2), { resolved: true }) } : {})
+      }));
+    }
+    for (const coll of bpCollections) {
+      const thresholds = Object.entries(breakpointThresholdsOf(graph, coll)).sort((a, b) => a[1] - b[1]);
+      for (const [name, width] of thresholds) {
+        const slug2 = varName([name]);
+        if (!slug2) continue;
+        const value2 = `${width}px`;
+        setToken(out, ["bp", slug2], {
+          $type: "dimension",
+          $value: value2,
+          $extensions: { modes: {}, figma: { collection: coll.name, defaultMode: "" } }
+        });
+      }
+    }
+    return out;
+  }
   function themeDeclarations(allLeaves, theme) {
     const order = [];
     const groups = /* @__PURE__ */ new Map();
@@ -1346,7 +1964,7 @@ ${sharedLines.join("\n")}
     for (const col of order) {
       if (labeled && col) lines.push(`  /* ${col} */`);
       for (const entry of groups.get(col)) {
-        lines.push(`  --${varName(entry.path)}: ${cssValue(valueForTheme(entry.token, theme), entry.path)};`);
+        lines.push(`  --${varName(entry.path)}: ${cssValue(valueForTheme(entry.token, theme), entry.path, entry.token)};`);
       }
     }
     return lines;
@@ -1396,12 +2014,19 @@ ${lines.join("\n")}
     const a = attr || "data-theme-name";
     const allLeaves = leaves(tree);
     if (allLeaves.length === 0) return "";
+    if (ordered.length <= 1) {
+      const legacyOnly = toLegacyAliasCss(legacyAliasPairs(tree, renames));
+      return themeBlock(allLeaves, defaultTheme, ":root") + "\n" + (legacyOnly === "" ? "" : "\n" + legacyOnly);
+    }
     const blocks2 = ordered.map((theme) => {
       const themeSel = `[${a}="${cssAttrValue(theme)}"]`;
-      const selector = theme === defaultTheme ? `:root,
-${themeSel}` : themeSel;
-      return themeBlock(allLeaves, theme, selector);
-    });
+      if (theme === defaultTheme) return themeBlock(allLeaves, theme, `:root,
+${themeSel}`);
+      const differing = allLeaves.filter(
+        (leaf) => cssValue(valueForTheme(leaf.token, theme), leaf.path, leaf.token) !== cssValue(valueForTheme(leaf.token, defaultTheme), leaf.path, leaf.token)
+      );
+      return differing.length === 0 ? "" : themeBlock(differing, theme, themeSel);
+    }).filter((block3) => block3 !== "");
     const legacy = toLegacyAliasCss(legacyAliasPairs(tree, renames));
     return blocks2.join("\n\n") + "\n" + (legacy === "" ? "" : "\n" + legacy);
   }
@@ -1412,11 +2037,12 @@ ${themeSel}` : themeSel;
     const files = {};
     if (allLeaves.length === 0) return files;
     const used = /* @__PURE__ */ new Set();
+    const single2 = ordered.length <= 1;
     for (const theme of ordered) {
       const themeSel = wrap(`[${a}="${cssAttrValue(theme)}"]`);
-      const selector = theme === defaultTheme ? `${wrap(":root")},
+      const selector = single2 ? wrap(":root") : theme === defaultTheme ? `${wrap(":root")},
 ${themeSel}` : themeSel;
-      const base = varName([theme]) || "theme";
+      const base = single2 ? "default" : varName([theme]) || "theme";
       let name = base;
       let n = 2;
       while (used.has(name)) name = `${base}-${n++}`;
@@ -1466,11 +2092,33 @@ export type Theme = (typeof themes)[number];
     const payload = renames && Object.keys(renames).length > 0 ? __spreadProps(__spreadValues({}, tree), { $extensions: { [RENAMES_EXTENSION]: { renames } } }) : tree;
     return JSON.stringify(payload, null, 2) + "\n";
   }
-  function extractBreakpointTokens(graph) {
+  var THRESHOLD_GROUPS = /* @__PURE__ */ new Set(["breakpoint", "breakpoints", "bp", "min-width"]);
+  function breakpointThresholdsOf(graph, coll) {
+    var _a, _b;
     const out = {};
-    if (!(graph == null ? void 0 : graph.collections) || !(graph == null ? void 0 : graph.variables)) return out;
-    const coll = graph.collections.filter((c) => c.name.trim().toLowerCase() === "breakpoints")[0];
-    if (!coll) return out;
+    const modeId = coll.defaultModeId || ((_b = (_a = coll.modes) == null ? void 0 : _a[0]) == null ? void 0 : _b.modeId) || "";
+    const valueOf = (v) => {
+      var _a2;
+      const value2 = (_a2 = v.valuesByMode[modeId]) != null ? _a2 : Object.values(v.valuesByMode)[0];
+      return typeof value2 === "number" && isFinite(value2) && value2 >= 0 ? Math.round(value2) : void 0;
+    };
+    const numbers = graph.variables.filter((v) => v.collectionId === coll.id && v.resolvedType === "FLOAT");
+    for (const v of numbers) {
+      const segs = v.name.split("/").map((seg) => seg.trim()).filter(Boolean);
+      if (segs.length < 2 || !THRESHOLD_GROUPS.has(segs[0].toLowerCase())) continue;
+      const value2 = valueOf(v);
+      if (value2 !== void 0) out[segs.slice(1).join("-").toLowerCase()] = value2;
+    }
+    if (Object.keys(out).length > 0 || (coll.modes || []).length >= 2) return out;
+    for (const v of numbers) {
+      const value2 = valueOf(v);
+      const segs = v.name.split("/");
+      const key = segs[segs.length - 1].trim().toLowerCase();
+      if (key && value2 !== void 0 && value2 > 0) out[key] = value2;
+    }
+    return out;
+  }
+  function breakpointWidthsOf(graph, coll) {
     const bpModeNames = { desktop: 1, tablet: 1, mobile: 1, xl: 1, lg: 1, md: 1, sm: 1, xs: 1 };
     const modeKeys = (coll.modes || []).map((m) => m.name.trim().toLowerCase());
     const looksModeBased = (coll.modes || []).length >= 2 && modeKeys.every((k) => bpModeNames[k] || /^\d{3,5}$/.test(k));
@@ -1682,6 +2330,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     typoNaming: "tshirt",
     typoShorthand: false,
     emitNative: false,
+    collectionRoles: "",
     delivery: {
       endpoint: "",
       secret: "",
@@ -1728,27 +2377,89 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       typoNaming: obj2.typoNaming === "value" ? "value" : "tshirt",
       typoShorthand: pick("typoShorthand"),
       themeAttr: sanitizeAttr(obj2.themeAttr),
+      collectionRoles: typeof obj2.collectionRoles === "string" ? obj2.collectionRoles : "",
       delivery: normalizeDelivery(obj2.delivery)
     };
   }
+  function productGraph(graph, productIds, product) {
+    return __spreadProps(__spreadValues({}, graph), {
+      collections: (graph.collections || []).map((c) => {
+        if (!productIds.has(c.id)) return c;
+        return c.id === product ? __spreadProps(__spreadValues({}, c), { product: true }) : __spreadProps(__spreadValues({}, c), { inlineOnly: true });
+      })
+    });
+  }
+  function buildProductCss(graph, collection, productIds, opts, roles) {
+    var _a, _b, _c;
+    const g = productGraph(graph, productIds, collection.id);
+    const shaped = shapeForCode(g, variablesToW3CMultiMode(g), __spreadProps(__spreadValues({}, roles), { scaleOnly: opts.typoScaleOnly }));
+    const inlined = opts.inlinePrimitives ? inlinePrimitivesTree(shaped, opts.flattenAliases) : shaped;
+    const tree = {};
+    for (const leaf of leaves(inlined)) if (collectionOf(leaf.token) === collection.name) setToken(tree, leaf.path, leaf.token);
+    const hint = (_c = (_a = collection.modes.find((m) => m.modeId === collection.defaultModeId)) == null ? void 0 : _a.name) != null ? _c : (_b = collection.modes[0]) == null ? void 0 : _b.name;
+    const { defaultTheme, ordered } = orderedThemes(leaves(tree), hint);
+    const slug2 = varName([collection.name]) || "product";
+    const modules2 = {};
+    if (opts.emitModuleFiles) {
+      const themeFiles = toThemeModuleCssFiles(tree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal);
+      for (const name of Object.keys(themeFiles)) modules2[`${slug2}-${name}`] = themeFiles[name];
+    }
+    return { tree, themes: ordered, defaultTheme, css: toTokensCss(tree, ordered, defaultTheme, opts.themeAttr), modules: modules2 };
+  }
   function buildPackage(graph, options, renames) {
+    var _a, _b;
     const opts = normalizeOptions(options);
-    const rawTree = variablesToW3CMultiMode(graph);
-    const generated = (graph.collections || []).some((c) => c == null ? void 0 : c.generated);
-    let sourceTree;
-    if (opts.typoExtract && !generated) sourceTree = extractTypographyScale(rawTree, opts);
-    else if (opts.typoScaleOnly) {
-      sourceTree = __spreadValues({}, rawTree);
-      delete sourceTree.typography;
-    } else sourceTree = rawTree;
+    const roles = parseCollectionModes(opts.collectionRoles);
+    const productNames = new Set(roles.products.map((name) => name.trim().toLowerCase()));
+    const products = (graph.collections || []).filter((c) => productNames.has(c.name.trim().toLowerCase()));
+    const productIds = new Set(products.map((c) => c.id));
+    const baseGraph = products.length > 0 ? productGraph(graph, productIds) : graph;
+    const sourceTree = shapeForCode(baseGraph, variablesToW3CMultiMode(baseGraph), {
+      hidden: roles.hidden,
+      breakpoints: roles.breakpoints,
+      scaleOnly: opts.typoScaleOnly
+    });
     const summary = buildSummary(graph, sourceTree);
     const files = {};
     const emitted = { tree: {}, themes: [], defaultTheme: "" };
-    if (summary.tokenCount > 0) {
+    const bpNames = /* @__PURE__ */ new Set(["breakpoints", ...roles.breakpoints.map((name) => name.trim().toLowerCase())]);
+    for (const coll of (graph.collections || []).filter((c) => bpNames.has(c.name.trim().toLowerCase()))) {
+      if (Object.keys(breakpointThresholdsOf(graph, coll)).length > 0) continue;
+      const frames = Object.entries(breakpointWidthsOf(graph, coll)).map(([mode, width]) => `${mode} ${width}`).join(", ");
+      summary.notes = [
+        ...(_a = summary.notes) != null ? _a : [],
+        `${coll.name} holds frame widths${frames ? ` (${frames})` : ""} but no thresholds, so no --bp-* was exported \u2014 add FLOAT variables breakpoint/sm, breakpoint/md, \u2026 with the min-width of each layout`
+      ];
+    }
+    if (products.length > 0) {
+      const built = products.map((collection) => __spreadValues({ collection }, buildProductCss(graph, collection, productIds, opts, roles)));
+      const namesOf = (tree) => new Set(leaves(tree).map((leaf) => varName(leaf.path)));
+      const names = built.map((b) => namesOf(b.tree));
+      const union = /* @__PURE__ */ new Set();
+      for (const set of names) for (const name of set) union.add(name);
+      summary.products = built.map((b, index2) => {
+        const file = `${varName([b.collection.name]) || "product"}.css`;
+        files[file] = b.css;
+        for (const name of Object.keys(b.modules)) files[name] = b.modules[name];
+        return {
+          name: b.collection.name,
+          file,
+          themes: b.themes,
+          tokenCount: names[index2].size,
+          missing: [...union].filter((name) => !names[index2].has(name)).sort()
+        };
+      });
+      if (summary.products.length > 1) {
+        const gaps = summary.products.filter((p) => p.missing.length > 0).map((p) => `${p.name} lacks ${p.missing.length} token(s) another product defines (${p.missing.slice(0, 5).map((n) => "--" + n).join(", ")}${p.missing.length > 5 ? ", \u2026" : ""})`);
+        if (gaps.length > 0) summary.notes = [...(_b = summary.notes) != null ? _b : [], ...gaps];
+      }
+    }
+    if (summary.tokenCount > 0 || products.length > 0) {
       const defaultMode = primaryDefaultMode(graph);
       const { defaultTheme, ordered } = orderedThemes(leaves(sourceTree), defaultMode);
       const cssTree = opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree, opts.flattenAliases) : sourceTree;
       files["tokens.css"] = toTokensCss(cssTree, ordered, defaultTheme, opts.themeAttr, renames);
+      if (files["tokens.css"].trim() === "") delete files["tokens.css"];
       if (opts.emitModuleFiles) {
         const themeFiles = toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal, renames);
         for (const name of Object.keys(themeFiles)) files[name] = themeFiles[name];
@@ -1832,7 +2543,22 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       i18n: __spreadValues({}, values.i18n)
     };
   }
-  var DEFAULT_DELIVERY = { endpoint: "", secret: "", onExport: false };
+  var DEFAULT_DELIVERY_ROUTE = {
+    repo: "",
+    branch: "",
+    base: "",
+    path: "",
+    package: "",
+    project: ""
+  };
+  var DEFAULT_DELIVERY = {
+    endpoint: "",
+    secret: "",
+    onExport: false,
+    target: "folder",
+    route: __spreadValues({}, DEFAULT_DELIVERY_ROUTE),
+    dryRun: true
+  };
   var DEFAULT_AGENT = {
     endpoint: "http://127.0.0.1:8788",
     secret: "",
@@ -1852,7 +2578,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
   var DEFAULT_EXPORT_OPTIONS = __spreadProps(__spreadValues({
     dsTool: "palette",
     scopeMode: "page",
-    delivery: __spreadValues({}, DEFAULT_DELIVERY),
+    delivery: __spreadProps(__spreadValues({}, DEFAULT_DELIVERY), { route: __spreadValues({}, DEFAULT_DELIVERY_ROUTE) }),
     agent: __spreadValues({}, DEFAULT_AGENT),
     lint: __spreadValues({}, DEFAULT_LINT),
     docs: __spreadValues({}, DEFAULT_DOCS),
@@ -1967,12 +2693,30 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     }
     return codes;
   }
+  function isDeliveryTarget(value2) {
+    return value2 === "folder" || value2 === "git" || value2 === "pr" || value2 === "mr" || value2 === "npm";
+  }
+  function routeField(raw, key) {
+    const value2 = raw[key];
+    return typeof value2 === "string" ? value2.trim() : DEFAULT_DELIVERY_ROUTE[key];
+  }
   function normalizeDelivery2(raw) {
-    if (!isRecord(raw)) return __spreadValues({}, DEFAULT_DELIVERY);
+    if (!isRecord(raw)) return __spreadProps(__spreadValues({}, DEFAULT_DELIVERY), { route: __spreadValues({}, DEFAULT_DELIVERY_ROUTE) });
+    const route = isRecord(raw.route) ? raw.route : {};
     return {
       endpoint: typeof raw.endpoint === "string" ? raw.endpoint.trim() : DEFAULT_DELIVERY.endpoint,
       secret: typeof raw.secret === "string" ? raw.secret : DEFAULT_DELIVERY.secret,
-      onExport: typeof raw.onExport === "boolean" ? raw.onExport : DEFAULT_DELIVERY.onExport
+      onExport: typeof raw.onExport === "boolean" ? raw.onExport : DEFAULT_DELIVERY.onExport,
+      target: isDeliveryTarget(raw.target) ? raw.target : DEFAULT_DELIVERY.target,
+      route: {
+        repo: routeField(route, "repo"),
+        branch: routeField(route, "branch"),
+        base: routeField(route, "base"),
+        path: routeField(route, "path"),
+        package: routeField(route, "package"),
+        project: routeField(route, "project")
+      },
+      dryRun: typeof raw.dryRun === "boolean" ? raw.dryRun : DEFAULT_DELIVERY.dryRun
     };
   }
   function normalizeAgent(raw) {
@@ -2078,11 +2822,14 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       inlinePrimitives: options.tokens.inlinePrimitives,
       flattenAliases: options.tokens.flattenAliases,
       themeAttribute: resolveThemeAttribute(options),
-      renames
+      renames,
+      collectionRoles: options.tokens.collectionRoles
     };
   }
   function emitTokenArtifacts(snapshot, options) {
-    const source = variablesToW3CMultiMode(snapshot);
+    const graph = snapshot;
+    const roles = parseCollectionModes(options.collectionRoles);
+    const source = shapeForCode(graph, variablesToW3CMultiMode(graph), roles);
     const { ordered, defaultTheme } = orderedThemes(leaves(source));
     const cssTree = options.inlinePrimitives ? inlinePrimitivesTree(source, options.flattenAliases) : source;
     return {
@@ -2119,9 +2866,9 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     { bsVar: "--bs-border-radius-xl", candidates: ["radius-xl", "corner-radius-xl", "border-radius-xl"] }
   ];
   function cssColorToRgbTriplet(value2) {
-    const hex = value2.match(/^#([0-9a-f]{6})$/i);
-    if (hex) {
-      const n = parseInt(hex[1], 16);
+    const hex2 = value2.match(/^#([0-9a-f]{6})$/i);
+    if (hex2) {
+      const n = parseInt(hex2[1], 16);
       return `${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255}`;
     }
     const rgb = value2.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
@@ -2307,8 +3054,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   }
 
   // src/targets/django/generate/metrics.ts
-  function hexToRgb(hex) {
-    const h = hex.replace("#", "").trim();
+  function hexToRgb(hex2) {
+    const h = hex2.replace("#", "").trim();
     const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
     const n = parseInt(full, 16);
     return { r: (n >> 16 & 255) / 255, g: (n >> 8 & 255) / 255, b: (n & 255) / 255 };
@@ -2317,13 +3064,13 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const k = Math.max(0, Math.min(1, t));
     return { r: a.r + (b.r - a.r) * k, g: a.g + (b.g - a.g) * k, b: a.b + (b.b - a.b) * k };
   }
-  var WHITE = { r: 1, g: 1, b: 1 };
-  var BLACK = { r: 0, g: 0, b: 0 };
+  var WHITE2 = { r: 1, g: 1, b: 1 };
+  var BLACK2 = { r: 0, g: 0, b: 0 };
   function tint(color, weight) {
-    return mix(color, WHITE, weight);
+    return mix(color, WHITE2, weight);
   }
   function shade(color, weight) {
-    return mix(color, BLACK, weight);
+    return mix(color, BLACK2, weight);
   }
   var ROLE_HEX = {
     primary: "#0d6efd",
@@ -2343,7 +3090,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     return hexToRgb((_a = ROLE_HEX[role.trim().toLowerCase()]) != null ? _a : ROLE_HEX.primary);
   }
   function roleTextColor(role) {
-    return DARK_TEXT_ROLES.has(role.trim().toLowerCase()) ? hexToRgb("#000000") : WHITE;
+    return DARK_TEXT_ROLES.has(role.trim().toLowerCase()) ? hexToRgb("#000000") : WHITE2;
   }
   function alertColors(role) {
     const base = roleColor(role);
@@ -4344,7 +5091,14 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     el.paddingBottom = b;
     el.paddingLeft = l;
   }
-  var PRIMARY_ALIGN = { min: "MIN", center: "CENTER", max: "MAX", "space-between": "SPACE_BETWEEN" };
+  var PRIMARY_ALIGN = {
+    min: "MIN",
+    center: "CENTER",
+    max: "MAX",
+    "space-between": "SPACE_BETWEEN",
+    "space-evenly": "SPACE_EVENLY",
+    "space-around": "SPACE_AROUND"
+  };
   var COUNTER_ALIGN = { min: "MIN", center: "CENTER", max: "MAX" };
   function configureFrame(el, node, ctx) {
     if (node.direction && node.direction !== "none") {
@@ -4723,11 +5477,11 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   function isDefaultArc(arc) {
     return approx(arc.startingAngle, 0) && approx(arc.endingAngle, TWO_PI) && approx(arc.innerRadius, 0);
   }
-  function round3(value2) {
+  function round4(value2) {
     return Math.round(value2 * 100) / 100;
   }
   function polar(cx, cy, rx, ry, angle) {
-    return [round3(cx + rx * Math.cos(angle)), round3(cy + ry * Math.sin(angle))];
+    return [round4(cx + rx * Math.cos(angle)), round4(cy + ry * Math.sin(angle))];
   }
   function ellipseArcPath(arc, width, height) {
     const cx = width / 2;
@@ -4740,14 +5494,14 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const [ox0, oy0] = polar(cx, cy, rx, ry, arc.startingAngle);
     const [ox1, oy1] = polar(cx, cy, rx, ry, arc.endingAngle);
     if (arc.innerRadius <= 0) {
-      return `M ${round3(cx)} ${round3(cy)} L ${ox0} ${oy0} A ${round3(rx)} ${round3(ry)} 0 ${largeArc} ${sweep} ${ox1} ${oy1} Z`;
+      return `M ${round4(cx)} ${round4(cy)} L ${ox0} ${oy0} A ${round4(rx)} ${round4(ry)} 0 ${largeArc} ${sweep} ${ox1} ${oy1} Z`;
     }
     const irx = rx * arc.innerRadius;
     const iry = ry * arc.innerRadius;
     const [ix0, iy0] = polar(cx, cy, irx, iry, arc.startingAngle);
     const [ix1, iy1] = polar(cx, cy, irx, iry, arc.endingAngle);
     const innerSweep = sweep ? 0 : 1;
-    return `M ${ox0} ${oy0} A ${round3(rx)} ${round3(ry)} 0 ${largeArc} ${sweep} ${ox1} ${oy1} L ${ix1} ${iy1} A ${round3(irx)} ${round3(iry)} 0 ${largeArc} ${innerSweep} ${ix0} ${iy0} Z`;
+    return `M ${ox0} ${oy0} A ${round4(rx)} ${round4(ry)} 0 ${largeArc} ${sweep} ${ox1} ${oy1} L ${ix1} ${iy1} A ${round4(irx)} ${round4(iry)} 0 ${largeArc} ${innerSweep} ${ix0} ${iy0} Z`;
   }
   var PLAIN_STROKE_CAPS = /* @__PURE__ */ new Set(["NONE", "ROUND", "SQUARE"]);
   function isMixed(value2) {
@@ -4764,251 +5518,6 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     if (complex && (complex.type === "BRUSH" || complex.type === "DYNAMIC")) return true;
     if (node.arcData && !isDefaultArc(node.arcData)) return true;
     return false;
-  }
-
-  // src/targets/django/easing/index.ts
-  var BEZIER_PRESETS = {
-    EASE_IN: { x1: 0.42, y1: 0, x2: 1, y2: 1 },
-    EASE_OUT: { x1: 0, y1: 0, x2: 0.58, y2: 1 },
-    EASE_IN_AND_OUT: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 },
-    EASE_IN_BACK: { x1: 0.36, y1: 0, x2: 0.66, y2: -0.56 },
-    EASE_OUT_BACK: { x1: 0.34, y1: 1.56, x2: 0.64, y2: 1 },
-    EASE_IN_AND_OUT_BACK: { x1: 0.68, y1: -0.6, x2: 0.32, y2: 1.6 }
-  };
-  var NAMED_SPRING_BOUNCE = {
-    GENTLE: 0,
-    QUICK: 0.05,
-    BOUNCY: 0.6,
-    SLOW: 0.15
-  };
-  var BASE_SPRING_ANGULAR_FREQUENCY = 10;
-  function perceptualAngularFrequency(durationSec) {
-    if (!(durationSec > 0) || !Number.isFinite(durationSec)) return BASE_SPRING_ANGULAR_FREQUENCY;
-    return 2 * Math.PI / durationSec;
-  }
-  function clamp(value2, lo, hi) {
-    return Math.min(hi, Math.max(lo, value2));
-  }
-  function round4(value2, decimals) {
-    const factor = 10 ** decimals;
-    return Math.round(value2 * factor) / factor;
-  }
-  function bezierToCss(bezier) {
-    return `cubic-bezier(${bezier.x1}, ${bezier.y1}, ${bezier.x2}, ${bezier.y2})`;
-  }
-  function easingToCss(easing) {
-    switch (easing.type) {
-      case "LINEAR":
-        return "linear";
-      case "HOLD":
-        return "step-end";
-      case "CUSTOM_CUBIC_BEZIER": {
-        if (!easing.easingFunctionCubicBezier) {
-          throw new Error("CUSTOM_CUBIC_BEZIER easing is missing easingFunctionCubicBezier");
-        }
-        return bezierToCss(easing.easingFunctionCubicBezier);
-      }
-      case "GENTLE":
-      case "QUICK":
-      case "BOUNCY":
-      case "SLOW":
-      case "CUSTOM_SPRING":
-        throw new Error(
-          `${easing.type} is a spring easing \u2014 use sampleSpring()/springToCssLinear() instead of easingToCss()`
-        );
-      default:
-        return bezierToCss(BEZIER_PRESETS[easing.type]);
-    }
-  }
-  function springCurve(resolved, settlingMs) {
-    const { dampingRatio, angularFrequency, initialVelocity } = resolved.params;
-    return __spreadValues({
-      kind: "spring",
-      dampingRatio: round4(dampingRatio, 4),
-      angularFrequency: round4(angularFrequency, 4),
-      responseMs: Math.round(2 * Math.PI / angularFrequency * 1e3),
-      stiffness: round4(angularFrequency * angularFrequency, 4),
-      damping: round4(2 * dampingRatio * angularFrequency, 4),
-      mass: 1,
-      initialVelocity: round4(initialVelocity, 4),
-      settlingMs: Math.round(settlingMs),
-      source: resolved.source
-    }, resolved.preset ? { preset: resolved.preset } : {});
-  }
-  function motionCurve(easing, durationSec) {
-    if (!easing || typeof easing.type !== "string") return null;
-    const spring = easing;
-    switch (easing.type) {
-      case "LINEAR":
-        return { kind: "linear" };
-      case "HOLD":
-        return { kind: "hold" };
-      case "CUSTOM_CUBIC_BEZIER": {
-        const bezier = easing.easingFunctionCubicBezier;
-        if (!bezier) return null;
-        return { kind: "bezier", x1: bezier.x1, y1: bezier.y1, x2: bezier.x2, y2: bezier.y2 };
-      }
-      case "GENTLE":
-      case "QUICK":
-      case "BOUNCY":
-      case "SLOW":
-      case "CUSTOM_SPRING": {
-        const resolved = springParamsFromEasing(spring, durationSec);
-        return springCurve(resolved, sampleSpringParams(resolved.params).settlingTimeMs);
-      }
-      default: {
-        const bezier = BEZIER_PRESETS[easing.type];
-        if (!bezier) return null;
-        return { kind: "bezier", x1: bezier.x1, y1: bezier.y1, x2: bezier.x2, y2: bezier.y2, preset: easing.type };
-      }
-    }
-  }
-  function physicalSpringToNormalized(spring) {
-    const dampingRatio = spring.damping / (2 * Math.sqrt(spring.stiffness * spring.mass));
-    return clamp(1 - dampingRatio, 0, 1);
-  }
-  function resolveSpringBounce(easing) {
-    if (easing.type === "CUSTOM_SPRING") {
-      if (!easing.easingFunctionSpring) {
-        throw new Error("CUSTOM_SPRING easing is missing easingFunctionSpring");
-      }
-      return easing.easingFunctionSpring.bounce;
-    }
-    if (easing.type in NAMED_SPRING_BOUNCE) {
-      return NAMED_SPRING_BOUNCE[easing.type];
-    }
-    throw new Error(`${easing.type} is not a spring easing`);
-  }
-  function physicalSpringParams(spring) {
-    var _a;
-    const mass = spring.mass > 0 ? spring.mass : 1;
-    const stiffness = spring.stiffness > 0 ? spring.stiffness : 1;
-    const angularFrequency = Math.sqrt(stiffness / mass);
-    const dampingRatio = clamp(spring.damping / (2 * Math.sqrt(stiffness * mass)), MIN_DAMPING_RATIO, 1);
-    return { dampingRatio, angularFrequency, initialVelocity: (_a = spring.initialVelocity) != null ? _a : 0 };
-  }
-  function normalizedSpringParams(bounce, angularFrequency = BASE_SPRING_ANGULAR_FREQUENCY) {
-    return { dampingRatio: clamp(1 - bounce, MIN_DAMPING_RATIO, 1), angularFrequency, initialVelocity: 0 };
-  }
-  function springParamsFromEasing(easing, durationSec) {
-    const spring = easing.easingFunctionSpring;
-    const preset = easing.type === "CUSTOM_SPRING" ? void 0 : easing.type;
-    if (spring && typeof spring.mass === "number" && typeof spring.stiffness === "number" && typeof spring.damping === "number") {
-      return {
-        params: physicalSpringParams({
-          mass: spring.mass,
-          stiffness: spring.stiffness,
-          damping: spring.damping,
-          initialVelocity: spring.initialVelocity
-        }),
-        source: "physical",
-        preset
-      };
-    }
-    const angularFrequency = durationSec === void 0 ? BASE_SPRING_ANGULAR_FREQUENCY : perceptualAngularFrequency(durationSec);
-    if (spring && typeof spring.bounce === "number") {
-      return { params: normalizedSpringParams(spring.bounce, angularFrequency), source: "normalized", preset };
-    }
-    if (easing.type in NAMED_SPRING_BOUNCE) {
-      const bounce = NAMED_SPRING_BOUNCE[easing.type];
-      return { params: normalizedSpringParams(bounce, angularFrequency), source: "preset-table", preset };
-    }
-    throw new Error(`${easing.type} is not a spring easing`);
-  }
-  function observeSpringPreset(easing) {
-    if (!(easing.type in NAMED_SPRING_BOUNCE)) return null;
-    const spring = easing.easingFunctionSpring;
-    if (!spring) return null;
-    const tableBounce = NAMED_SPRING_BOUNCE[easing.type];
-    if (typeof spring.mass === "number" && typeof spring.stiffness === "number" && typeof spring.damping === "number") {
-      const observedBounce = physicalSpringToNormalized({ mass: spring.mass, stiffness: spring.stiffness, damping: spring.damping });
-      return { preset: easing.type, observedBounce, tableBounce };
-    }
-    if (typeof spring.bounce === "number") {
-      return { preset: easing.type, observedBounce: spring.bounce, tableBounce };
-    }
-    return null;
-  }
-  function summarizeSpringPresetObservations(observations, tolerance = 0.02) {
-    var _a;
-    const byPreset = {};
-    for (const observation of observations) {
-      const bucket = (_a = byPreset[observation.preset]) != null ? _a : { total: 0, samples: 0, tableBounce: observation.tableBounce };
-      bucket.total += observation.observedBounce;
-      bucket.samples += 1;
-      byPreset[observation.preset] = bucket;
-    }
-    const summary = {};
-    for (const preset of Object.keys(byPreset).sort()) {
-      const { total, samples, tableBounce } = byPreset[preset];
-      const observedBounce = round4(total / samples, 4);
-      const delta = round4(Math.abs(observedBounce - tableBounce), 4);
-      summary[preset] = { observedBounce, tableBounce, delta, matches: delta <= tolerance, samples };
-    }
-    return summary;
-  }
-  function springDerivative(state, dampingRatio, omega0) {
-    return {
-      d: state.v,
-      v: -omega0 * omega0 * state.d - 2 * dampingRatio * omega0 * state.v
-    };
-  }
-  function rk4Step(state, dt, dampingRatio, omega0) {
-    const k1 = springDerivative(state, dampingRatio, omega0);
-    const k2 = springDerivative({ d: state.d + dt / 2 * k1.d, v: state.v + dt / 2 * k1.v }, dampingRatio, omega0);
-    const k3 = springDerivative({ d: state.d + dt / 2 * k2.d, v: state.v + dt / 2 * k2.v }, dampingRatio, omega0);
-    const k4 = springDerivative({ d: state.d + dt * k3.d, v: state.v + dt * k3.v }, dampingRatio, omega0);
-    return {
-      d: state.d + dt / 6 * (k1.d + 2 * k2.d + 2 * k3.d + k4.d),
-      v: state.v + dt / 6 * (k1.v + 2 * k2.v + 2 * k3.v + k4.v)
-    };
-  }
-  var MIN_DAMPING_RATIO = 1e-3;
-  var SETTLE_TOLERANCE = 4e-3;
-  var MAX_SETTLE_TIME_SEC = 10;
-  function integrationStepSec(omega0) {
-    return Math.min(2 * Math.PI / omega0 / 100, 0.01);
-  }
-  function findSettlingTimeSec(params) {
-    const dt = integrationStepSec(params.angularFrequency);
-    const maxSteps = Math.ceil(MAX_SETTLE_TIME_SEC / dt);
-    let state = { d: -1, v: params.initialVelocity };
-    let lastUnsettledStep = 0;
-    for (let step2 = 1; step2 <= maxSteps; step2++) {
-      state = rk4Step(state, dt, params.dampingRatio, params.angularFrequency);
-      if (Math.abs(state.d) > SETTLE_TOLERANCE) lastUnsettledStep = step2;
-    }
-    return Math.min(lastUnsettledStep * dt, MAX_SETTLE_TIME_SEC);
-  }
-  var SAMPLE_COUNT = 80;
-  function sampleSpringParams(params) {
-    const settlingTimeSec = findSettlingTimeSec(params);
-    if (settlingTimeSec <= 0) {
-      return { points: Array(SAMPLE_COUNT).fill(1), settlingTimeMs: 0 };
-    }
-    const sampleDt = settlingTimeSec / (SAMPLE_COUNT - 1);
-    const stepsPerSample = Math.max(1, Math.ceil(sampleDt / integrationStepSec(params.angularFrequency)));
-    const dt = sampleDt / stepsPerSample;
-    const points = [0];
-    let state = { d: -1, v: params.initialVelocity };
-    for (let i = 1; i < SAMPLE_COUNT; i++) {
-      for (let step2 = 0; step2 < stepsPerSample; step2++) {
-        state = rk4Step(state, dt, params.dampingRatio, params.angularFrequency);
-      }
-      points.push(1 + state.d);
-    }
-    points[points.length - 1] = 1;
-    return { points, settlingTimeMs: settlingTimeSec * 1e3 };
-  }
-  function sampleSpring(bounce, angularFrequency = BASE_SPRING_ANGULAR_FREQUENCY) {
-    return sampleSpringParams(normalizedSpringParams(bounce, angularFrequency));
-  }
-  function springParamsToCssLinear(params) {
-    const { points, settlingTimeMs } = sampleSpringParams(params);
-    return { easing: `linear(${points.map((p) => round4(p, 4)).join(", ")})`, durationMs: settlingTimeMs };
-  }
-  function springToCssLinear(bounce, angularFrequency) {
-    return springParamsToCssLinear(normalizedSpringParams(bounce, angularFrequency));
   }
 
   // src/targets/django/smart-animate/easing-adapter.ts
@@ -5313,11 +5822,11 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const value2 = node[key];
     return typeof value2 === "string" && value2 !== "" ? value2 : void 0;
   }
-  async function resolveStyleId(styleId) {
+  async function resolveStyleId(styleId2) {
     var _a;
-    if (!styleId || typeof figma === "undefined") return void 0;
+    if (!styleId2 || typeof figma === "undefined") return void 0;
     try {
-      const style = await figma.getStyleByIdAsync(styleId);
+      const style = await figma.getStyleByIdAsync(styleId2);
       return (_a = style == null ? void 0 : style.name) != null ? _a : void 0;
     } catch (e) {
       return void 0;
@@ -5389,7 +5898,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     }
   }
   function flexLayout(al, node) {
-    const wrap = al.layoutMode === "HORIZONTAL" && al.layoutWrap === "WRAP";
+    const wrap = (al.layoutMode === "HORIZONTAL" || al.layoutMode === "VERTICAL") && al.layoutWrap === "WRAP";
     const crossGap = wrap && al.counterAxisSpacing != null && al.counterAxisSpacing !== al.itemSpacing ? { crossGap: al.counterAxisSpacing } : {};
     const alignContent = wrap && al.counterAxisAlignContent === "SPACE_BETWEEN" ? { alignContent: "space-between" } : {};
     return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
@@ -6086,7 +6595,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     "openTypeFeatures",
     "hyperlink",
     "listOptions",
-    "indentation"
+    "indentation",
+    "textWrapStyle"
   ];
   function segmentClassName(baseClassName, index2) {
     return `${baseClassName}--segment-${index2}`;
@@ -6140,6 +6650,12 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     if (tags.length === 0) return null;
     return tags.map((tag) => `"${tag.toLowerCase()}" ${features[tag] ? 1 : 0}`).join(", ");
   }
+  function fontVariationSettingsCss(settings) {
+    if (!settings) return null;
+    const tags = Object.keys(settings).sort();
+    if (tags.length === 0) return null;
+    return tags.map((tag) => `"${tag}" ${settings[tag]}`).join(", ");
+  }
   function genericFamilyFor(family) {
     if (/mono|code|courier/i.test(family)) return "monospace";
     if (/serif(?!\s*sans)|georgia|garamond|times/i.test(family) && !/sans/i.test(family)) return "serif";
@@ -6169,6 +6685,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
       if (segment.textDecorationSkipInk === true) declarations.push("text-decoration-skip-ink: auto;");
       else if (segment.textDecorationSkipInk === false) declarations.push("text-decoration-skip-ink: none;");
     }
+    const variationSettings = fontVariationSettingsCss(segment.fontName.variationSettings);
+    if (variationSettings) declarations.push(`font-variation-settings: ${variationSettings};`);
     const featureSettings = openTypeFeatureSettingsCss(segment.openTypeFeatures);
     if (featureSettings) declarations.push(`font-feature-settings: ${featureSettings};`);
     if (overrides.leadingTrim === "CAP_HEIGHT") {
@@ -6179,6 +6697,27 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     }
     if (overrides.color) declarations.push(`color: ${overrides.color};`);
     return declarations;
+  }
+  var TEXT_WRAP_CSS = { BALANCE: "balance", PRETTY: "pretty" };
+  function textWrapRules(baseClassName, segments) {
+    const styles = new Set(segments.filter((s) => s.characters.trim() !== "").map((s) => {
+      var _a;
+      return (_a = s.textWrapStyle) != null ? _a : "AUTO";
+    }));
+    if (styles.size === 1) {
+      const css = TEXT_WRAP_CSS[[...styles][0]];
+      return css ? [`.${baseClassName} {
+  text-wrap-style: ${css};
+}`] : [];
+    }
+    const rules = [];
+    for (const [style, css] of Object.entries(TEXT_WRAP_CSS)) {
+      const selectors = segments.map((segment, index2) => segment.textWrapStyle === style ? `.${baseClassName}:has(.${segmentClassName(baseClassName, index2)})` : null).filter((selector) => selector !== null);
+      if (selectors.length > 0) rules.push(`${selectors.join(",\n")} {
+  text-wrap-style: ${css};
+}`);
+    }
+    return rules;
   }
   function segmentsToCss(baseClassName, segments, overrides = {}) {
     return segments.map((segment, index2) => {
@@ -6743,8 +7282,9 @@ ${rules.join("\n\n")}
       "margin-top"
     );
   }
+  var DISTRIBUTED_JUSTIFY = { "space-between": true, "space-evenly": true, "space-around": true };
   function layoutDeclarations(node, parentLayout, parentSize, childIndex) {
-    var _a;
+    var _a, _b;
     const decl = {};
     const layout = "layout" in node ? node.layout : null;
     if ((layout == null ? void 0 : layout.kind) === "flex") {
@@ -6752,9 +7292,10 @@ ${rules.join("\n\n")}
       decl["flex-direction"] = layout.direction;
       decl["position"] = "relative";
       if (layout.wrap) decl["flex-wrap"] = "wrap";
-      const mainGap = layout.gap > 0 && layout.justifyContent !== "space-between" ? layout.gap : 0;
-      if (mainGap || layout.crossGap != null) {
-        decl["gap"] = layout.crossGap != null ? `${px(layout.crossGap)} ${px(mainGap)}` : px(mainGap);
+      const mainGap = layout.gap > 0 && !DISTRIBUTED_JUSTIFY[layout.justifyContent] ? layout.gap : 0;
+      const crossGap = (_a = layout.crossGap) != null ? _a : layout.wrap && layout.gap > 0 ? layout.gap : null;
+      if (mainGap || crossGap != null) {
+        decl["gap"] = crossGap == null || crossGap === mainGap ? px(mainGap) : layout.direction === "column" ? `${px(mainGap)} ${px(crossGap)}` : `${px(crossGap)} ${px(mainGap)}`;
       }
       const { top, right, bottom, left } = layout.padding;
       if (top || right || bottom || left) decl["padding"] = `${px(top)} ${px(right)} ${px(bottom)} ${px(left)}`;
@@ -6829,7 +7370,7 @@ ${rules.join("\n\n")}
       if (node.paragraphIndent) decl["text-indent"] = px(node.paragraphIndent);
       if (node.noWrap) decl["white-space"] = "nowrap";
       if (node.truncate) {
-        const maxLines = (_a = node.truncate.maxLines) != null ? _a : 1;
+        const maxLines = (_b = node.truncate.maxLines) != null ? _b : 1;
         if (maxLines <= 1) {
           decl["white-space"] = "nowrap";
           decl["overflow"] = "hidden";
@@ -6915,6 +7456,7 @@ ${body}
         hangingPunctuation: node.hangingPunctuation,
         hangingList: node.hangingList
       }));
+      rules.push(...textWrapRules(className, segments));
     }
   }
   var VECTOR_LEAF_PAINT = /* @__PURE__ */ new Set([
@@ -7521,14 +8063,14 @@ ${indent2}</a>`;
     if (node.navigate) return false;
     return ((_a = node.interactions) != null ? _a : []).some((interaction) => interaction.trigger === "ON_CLICK");
   }
-  function resolveContainerTag(node, ancestry, isPageRootChild) {
+  function resolveContainerTag(node, ancestry2, isPageRootChild) {
     const landmarkKind = landmarkKindByName(node.name);
-    if (landmarkKind && !ancestry.has(landmarkKind)) return { tag: landmarkKind, attrs: "", landmarkKind };
+    if (landmarkKind && !ancestry2.has(landmarkKind)) return { tag: landmarkKind, attrs: "", landmarkKind };
     if (isClickButton(node)) return { tag: "button", attrs: ' type="button"', landmarkKind: null };
     if (isPageRootChild && node.children.length > 0) return { tag: "section", attrs: "", landmarkKind: null };
     return { tag: "div", attrs: "", landmarkKind: null };
   }
-  function renderNode(node, sceneNodesById, indent2, navMap, headingState, ancestry = NO_LANDMARK_ANCESTRY, isPageRootChild = false, isPageRoot = true) {
+  function renderNode(node, sceneNodesById, indent2, navMap, headingState, ancestry2 = NO_LANDMARK_ANCESTRY, isPageRootChild = false, isPageRoot = true) {
     const className = toClassName(node.id);
     const rendered = (() => {
       switch (node.type) {
@@ -7539,8 +8081,8 @@ ${indent2}</a>`;
           return renderAssetLeaf(node, indent2);
         case "container":
         case "instance-ref": {
-          const { tag, attrs, landmarkKind } = resolveContainerTag(node, ancestry, isPageRootChild);
-          const childAncestry = landmarkKind ? /* @__PURE__ */ new Set([...ancestry, landmarkKind]) : ancestry;
+          const { tag, attrs, landmarkKind } = resolveContainerTag(node, ancestry2, isPageRootChild);
+          const childAncestry = landmarkKind ? /* @__PURE__ */ new Set([...ancestry2, landmarkKind]) : ancestry2;
           const bgVideo = renderBackgroundVideoLayer(node, `${indent2}  `);
           if (node.children.length === 0 && !bgVideo) return `${indent2}<${tag}${attrs} class="${className}"></${tag}>`;
           const inner = node.children.map((child) => renderNode(child, sceneNodesById, `${indent2}  `, navMap, headingState, childAncestry, isPageRoot, false)).join("\n");
@@ -8029,7 +8571,7 @@ ${body}`;
   function foldDefaultClassExprs(classAttr) {
     return classAttr.replace(/\{\{ [a-zA-Z0-9_]+\|default:'([^']*)'(?:\|lower)? \}\}/g, "$1");
   }
-  function renderPageNode(node, sceneNodesById, registry, navMap, indent2, bootstrapComponents, headingState, ancestry = NO_LANDMARK_ANCESTRY, isPageRootChild = false, isPageRoot = true) {
+  function renderPageNode(node, sceneNodesById, registry, navMap, indent2, bootstrapComponents, headingState, ancestry2 = NO_LANDMARK_ANCESTRY, isPageRootChild = false, isPageRoot = true) {
     const className = toClassName(node.id);
     const rendered = (() => {
       var _a;
@@ -8054,7 +8596,7 @@ ${body}`;
               wiring,
               literalText: true,
               // page-inline: no include binds the labels → render literal characters
-              ancestry,
+              ancestry: ancestry2,
               // continue the page's own landmark-ancestry into the recognized subtree
               headingState
               // continue the page's own H1-uniqueness tracking into the recognized subtree
@@ -8071,8 +8613,8 @@ ${body}`;
           return renderAssetLeaf(node, indent2);
         case "container":
         case "instance-ref": {
-          const { tag, attrs, landmarkKind } = resolveContainerTag(node, ancestry, isPageRootChild);
-          const childAncestry = landmarkKind ? /* @__PURE__ */ new Set([...ancestry, landmarkKind]) : ancestry;
+          const { tag, attrs, landmarkKind } = resolveContainerTag(node, ancestry2, isPageRootChild);
+          const childAncestry = landmarkKind ? /* @__PURE__ */ new Set([...ancestry2, landmarkKind]) : ancestry2;
           const bgVideo = renderBackgroundVideoLayer(node, `${indent2}  `);
           if (node.children.length === 0 && !bgVideo) return `${indent2}<${tag}${attrs} class="${className}"></${tag}>`;
           const inner = node.children.map((child) => renderPageNode(child, sceneNodesById, registry, navMap, `${indent2}  `, bootstrapComponents, headingState, childAncestry, isPageRoot, false)).join("\n");
@@ -8459,20 +9001,31 @@ ${indent2}</${tag}>`;
     }
     return result;
   }
+  function bytesEqual(a, b) {
+    if (a === b) return true;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
   function planRegeneration(existingFiles, freshFiles) {
     var _a;
     const files = [];
     const warnings = [];
     for (const [path, fresh] of freshFiles) {
       const existing = (_a = existingFiles.get(path)) != null ? _a : null;
+      if (fresh.content instanceof Uint8Array || existing instanceof Uint8Array) {
+        const action2 = existing === null ? "create" : existing instanceof Uint8Array && fresh.content instanceof Uint8Array && bytesEqual(existing, fresh.content) ? "unchanged" : "update";
+        files.push({ path, action: action2, content: fresh.content, diff: [], binary: true });
+        continue;
+      }
       const merged = mergeGenerated(existing, fresh.nodeId, fresh.content);
       if (merged === null) {
         warnings.push(`${path}: no GENERATED marker for ${fresh.nodeId} found \u2014 left untouched (fully hand-edited)`);
-        files.push({ path, action: "skipped-hand-edited", content: existing, diff: [] });
+        files.push({ path, action: "skipped-hand-edited", content: existing, diff: [], binary: false });
         continue;
       }
       const action = existing === null ? "create" : merged === existing ? "unchanged" : "update";
-      files.push({ path, action, content: merged, diff: diffLines(existing != null ? existing : "", merged) });
+      files.push({ path, action, content: merged, diff: diffLines(existing != null ? existing : "", merged), binary: false });
     }
     return { files, warnings };
   }
@@ -8719,6 +9272,9 @@ ${indent2}</${tag}>`;
     return Math.round(value2 * factor) / factor;
   }
   function rgbaToCss2(color) {
+    const source = sourceColorOf(color);
+    const authored = source && sourceColorCss(source, color.a);
+    if (authored) return authored;
     const to255 = (channel) => Math.round(channel * 255);
     return `rgba(${to255(color.r)}, ${to255(color.g)}, ${to255(color.b)}, ${round5(color.a, 4)})`;
   }
@@ -9087,7 +9643,7 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
 
   // src/targets/django/breakpoint-frames.ts
   var NAMED_WIDTHS = { desktop: 1280, tablet: 768, mobile: 375 };
-  function extractBreakpointTokens2(snapshot) {
+  function extractBreakpointTokens(snapshot) {
     if (!snapshot) return /* @__PURE__ */ new Map();
     const collection = snapshot.collections.find(
       (c) => c.name.trim().toLowerCase() === "breakpoints"
@@ -11297,16 +11853,16 @@ ${mediaCss}`;
         const variable = await figma.variables.getVariableByIdAsync(aliasId);
         if (!variable) continue;
         const solid6 = paint;
-        const hex = `#${channel(solid6.color.r)}${channel(solid6.color.g)}${channel(solid6.color.b)}`.toLowerCase();
-        const known = byColor.get(hex);
-        byColor.set(hex, known === void 0 ? variable.name : known === variable.name ? known : null);
+        const hex2 = `#${channel(solid6.color.r)}${channel(solid6.color.g)}${channel(solid6.color.b)}`.toLowerCase();
+        const known = byColor.get(hex2);
+        byColor.set(hex2, known === void 0 ? variable.name : known === variable.name ? known : null);
       }
     }
     if (byColor.size === 0) return svg;
-    return svg.replace(/\b(fill|stroke)="(#[0-9a-fA-F]{6})"/g, (whole, attribute, hex) => {
-      const token2 = byColor.get(hex.toLowerCase());
+    return svg.replace(/\b(fill|stroke)="(#[0-9a-fA-F]{6})"/g, (whole, attribute, hex2) => {
+      const token2 = byColor.get(hex2.toLowerCase());
       if (!token2) return whole;
-      return `${attribute}="var(${toCssVarName(token2)}, ${hex})"`;
+      return `${attribute}="var(${toCssVarName(token2)}, ${hex2})"`;
     });
   }
   async function annotateVectorLeaves(nodes, sceneNodesById, inlineThresholdBytes = DEFAULT_VECTOR_INLINE_THRESHOLD_BYTES) {
@@ -11506,6 +12062,7 @@ ${mediaCss}`;
     return files;
   }
   function buildRegenStaticFiles(opts) {
+    var _a;
     const files = {};
     if (opts.tokensCss) files["static/css/tokens.css"] = opts.tokensCss;
     if (opts.bootstrapTokensCss) files["static/css/bootstrap-tokens.css"] = opts.bootstrapTokensCss;
@@ -11514,6 +12071,7 @@ ${mediaCss}`;
     if (opts.interactionsJs) files["static/js/interactions.js"] = opts.interactionsJs;
     if (opts.transitionsCss) files["static/css/transitions.css"] = opts.transitionsCss;
     if (opts.transitionsJs) files["static/js/transitions.js"] = opts.transitionsJs;
+    for (const asset of (_a = opts.assets) != null ? _a : []) files[`static/img/${asset.filename}`] = asset.content;
     return files;
   }
 
@@ -12026,21 +12584,82 @@ ${mediaCss}`;
     return { key: input.key, name: input.name, pageUrls };
   }
 
+  // src/utils/vector-regions.ts
+  function regionFills(node) {
+    const holder = node;
+    if (!holder || Array.isArray(holder.fills)) return null;
+    let network;
+    try {
+      network = holder.vectorNetwork;
+    } catch (e) {
+      return null;
+    }
+    const regions = network == null ? void 0 : network.regions;
+    if (!Array.isArray(regions) || regions.length === 0) return null;
+    return regions.map((one, index2) => {
+      const out = { region: index2, fills: Array.isArray(one.fills) ? one.fills.slice() : [] };
+      if (typeof one.fillStyleId === "string" && one.fillStyleId !== "") out.fillStyleId = one.fillStyleId;
+      return out;
+    });
+  }
+  function withRegionFills(network, next) {
+    var _a;
+    return {
+      vertices: network.vertices,
+      segments: network.segments,
+      regions: ((_a = network.regions) != null ? _a : []).map((one, index2) => {
+        const fills = next.get(index2);
+        return fills ? __spreadProps(__spreadValues({}, one), { fills }) : one;
+      })
+    };
+  }
+  async function writeRegionFills(node, next) {
+    const vector = node;
+    if (!vector.vectorNetwork || typeof vector.setVectorNetworkAsync !== "function") {
+      throw new Error(`a ${node.type} has no vector network to write region fills into`);
+    }
+    await vector.setVectorNetworkAsync(withRegionFills(vector.vectorNetwork, next));
+  }
+  function paintAliasId(paint) {
+    var _a, _b, _c;
+    return (_c = (_b = (_a = paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id) != null ? _c : "";
+  }
+  var hex = (value2) => Math.round(value2 * 255).toString(16).padStart(2, "0");
+  function summarizeRegions(regions) {
+    return regions.map((one) => {
+      const fills = one.fills.map((paint, index2) => {
+        const out = { index: index2, type: paint.type };
+        if (paint.type === "SOLID") {
+          const { r, g, b } = paint.color;
+          out.color = `#${hex(r)}${hex(g)}${hex(b)}`.toUpperCase();
+        }
+        if (typeof paint.opacity === "number" && paint.opacity < 1) out.opacity = paint.opacity;
+        const alias = paintAliasId(paint);
+        if (alias) out.boundTo = alias;
+        if (paint.visible === false) out.visible = false;
+        return out;
+      });
+      const entry = { region: one.region, fills };
+      if (one.fillStyleId) entry.fillStyleId = one.fillStyleId;
+      return entry;
+    });
+  }
+
   // src/targets/django/lint/index.ts
   var DEFAULT_MAX_NESTING_DEPTH = 8;
-  function paintStyleSet(styleId) {
-    return styleId !== void 0 && styleId !== "";
+  function paintStyleSet(styleId2) {
+    return styleId2 !== void 0 && styleId2 !== "";
   }
   function paintBound(paint) {
     var _a;
     return Boolean((_a = paint.boundVariables) == null ? void 0 : _a.color);
   }
-  function channelToHex2(channel) {
+  function channelToHex3(channel) {
     return Math.round(channel * 255).toString(16).padStart(2, "0");
   }
   function paintDetail(paint, index2) {
     const detail = {
-      value: `#${channelToHex2(paint.color.r)}${channelToHex2(paint.color.g)}${channelToHex2(paint.color.b)}`,
+      value: `#${channelToHex3(paint.color.r)}${channelToHex3(paint.color.g)}${channelToHex3(paint.color.b)}`,
       paintIndex: index2
     };
     if (typeof paint.opacity === "number" && paint.opacity < 1) detail.alpha = paint.opacity;
@@ -12082,6 +12701,22 @@ ${mediaCss}`;
           rule: "unbound-fill",
           message: "Solid fill is not bound to a color variable"
         }, paintDetail(node.fills[unboundFill], unboundFill)));
+      }
+    }
+    const regions = regionFills(node);
+    if (regions) {
+      for (const one of regions) {
+        if (one.fillStyleId) continue;
+        const unbound = one.fills.findIndex((fill) => fill.type === "SOLID" && fill.visible !== false && !paintBound(fill));
+        if (unbound === -1) continue;
+        findings.push(__spreadProps(__spreadValues({
+          nodeId: node.id,
+          nodeName: node.name,
+          rule: "unbound-fill",
+          message: `Solid fill of region ${one.region} is not bound to a color variable`
+        }, paintDetail(one.fills[unbound], unbound)), {
+          region: one.region
+        }));
       }
     }
     if ("strokes" in node && Array.isArray(node.strokes) && !paintStyleSet(node.strokeStyleId)) {
@@ -12230,15 +12865,15 @@ ${mediaCss}`;
   }
   var SNAP_DELTA_E = 2;
   var SNAP_ALPHA_EPSILON = 0.01;
-  function channelToHex3(channel) {
+  function channelToHex4(channel) {
     return Math.round(channel * 255).toString(16).padStart(2, "0");
   }
   function cssHex(color) {
-    return `#${channelToHex3(color.r)}${channelToHex3(color.g)}${channelToHex3(color.b)}`;
+    return `#${channelToHex4(color.r)}${channelToHex4(color.g)}${channelToHex4(color.b)}`;
   }
   function autoVariableName(color) {
-    const hex = `${channelToHex3(color.r)}${channelToHex3(color.g)}${channelToHex3(color.b)}`;
-    return color.a >= 1 ? `auto/${hex}` : `auto/${hex}-a${Math.round(color.a * 100)}`;
+    const hex2 = `${channelToHex4(color.r)}${channelToHex4(color.g)}${channelToHex4(color.b)}`;
+    return color.a >= 1 ? `auto/${hex2}` : `auto/${hex2}-a${Math.round(color.a * 100)}`;
   }
   function sortedIndices(rects, axis) {
     return rects.map((_, i) => i).sort((a, b) => rects[a][axis] - rects[b][axis]);
@@ -12495,8 +13130,8 @@ ${mediaCss}`;
     if (ctx.boundPaintKeys.has(batchKey)) {
       return { status: "fixed", detail: "bound via shared main component" };
     }
-    const styleId = node[usage === "fill" ? "fillStyleId" : "strokeStyleId"];
-    if (styleId !== void 0 && styleId !== "") {
+    const styleId2 = node[usage === "fill" ? "fillStyleId" : "strokeStyleId"];
+    if (styleId2 !== void 0 && styleId2 !== "") {
       return { status: "skipped", detail: `${prop} come from a paint style \u2014 already tokenized, re-scan the scope` };
     }
     const paints2 = node[prop];
@@ -12531,10 +13166,10 @@ ${mediaCss}`;
     try {
       const seen = /* @__PURE__ */ new Set();
       for (const text6 of figma.currentPage.findAllWithCriteria({ types: ["TEXT"] })) {
-        const styleId = text6.textStyleId;
-        if (typeof styleId !== "string" || styleId === "" || seen.has(styleId)) continue;
-        seen.add(styleId);
-        const style = await figma.getStyleByIdAsync(styleId);
+        const styleId2 = text6.textStyleId;
+        if (typeof styleId2 !== "string" || styleId2 === "" || seen.has(styleId2)) continue;
+        seen.add(styleId2);
+        const style = await figma.getStyleByIdAsync(styleId2);
         if ((style == null ? void 0 : style.type) === "TEXT" && style.remote) styles.push(style);
       }
     } catch (e) {
@@ -13169,8 +13804,8 @@ ${mediaCss}`;
     );
   }
   function hasDualPathTrim(tracks) {
-    const fields = new Set(tracks.map((track) => track.field));
-    return fields.has("PATH_TRIM_START") && fields.has("PATH_TRIM_END");
+    const fields2 = new Set(tracks.map((track) => track.field));
+    return fields2.has("PATH_TRIM_START") && fields2.has("PATH_TRIM_END");
   }
   function pickBackend(input, override) {
     if (override) {
@@ -14061,11 +14696,12 @@ ${tweenStatements.join("\n")}
       const type = String(token2.$type || "");
       const { base, state } = splitState(slug2);
       const themeValues = {};
-      for (const theme of themeList) themeValues[theme] = cssValue(valueForTheme(token2, theme), path);
+      for (const theme of themeList) themeValues[theme] = cssValue(valueForTheme(token2, theme), path, token2);
       const distinct = new Set(Object.keys(themeValues).map((theme) => themeValues[theme]));
       const scopeRoles = rolesFromScopes((_b = (_a = token2.$extensions) == null ? void 0 : _a.figma) == null ? void 0 : _b.scopes);
       const collection = (_c = collectionOf(token2)) == null ? void 0 : _c.trim().toLowerCase();
-      const named = collection === "breakpoints" && type === "number" ? "breakpoint" : classifyRole(base || slug2, type);
+      const isBreakpoint = path[0] === "bp" || collection === "breakpoints" && (type === "number" || type === "dimension");
+      const named = isBreakpoint ? "breakpoint" : classifyRole(base || slug2, type);
       const mapped = scopeRoles.length === 0 && named === "other" ? collectionRoles[collection != null ? collection : ""] : void 0;
       const role = mapped != null ? mapped : scopeRoles.length === 0 ? named : scopeRoles.indexOf(named) !== -1 ? named : scopeRoles[0];
       return {
@@ -14081,7 +14717,7 @@ ${tweenStatements.join("\n")}
         state,
         lifecycle: lifecycleOf(path),
         collection: collectionOf(token2),
-        value: (_d = themeValues[defaultTheme]) != null ? _d : cssValue(token2.$value, path),
+        value: (_d = themeValues[defaultTheme]) != null ? _d : cssValue(token2.$value, path, token2),
         themeValues,
         themed: distinct.size > 1
       };
@@ -15112,7 +15748,8 @@ ${body}
       typoScaleOnly: opts.tokens.typoScaleOnly,
       typoShorthand: opts.tokens.typoShorthand,
       typoNaming: opts.tokens.typoNaming,
-      emitNative: opts.tokens.emitNative
+      emitNative: opts.tokens.emitNative,
+      collectionRoles: opts.tokens.collectionRoles
     };
     const pkg = buildPackage(graph, engineOptions, renames);
     const collectionRoles = parseCollectionRoles(opts.tokens.collectionRoles);
@@ -15134,7 +15771,6 @@ ${body}
         ],
         options: pkg.options,
         audit: buildTokenAudit(graph),
-        breakpoints: extractBreakpointTokens(graph),
         componentDocs: realComponentDocs,
         collectionRoles,
         generatedAt
@@ -15687,137 +16323,6 @@ ${scrollGuards}` : project.css;
     return { files, pageHrefs };
   }
 
-  // src/tokens/color.ts
-  var clamp01 = (value2) => value2 < 0 ? 0 : value2 > 1 ? 1 : value2;
-  function parseHex(input) {
-    const hex = input.trim().replace(/^#/, "");
-    if (/^[0-9a-fA-F]{3}$/.test(hex)) {
-      return {
-        r: parseInt(hex[0] + hex[0], 16) / 255,
-        g: parseInt(hex[1] + hex[1], 16) / 255,
-        b: parseInt(hex[2] + hex[2], 16) / 255
-      };
-    }
-    if (/^[0-9a-fA-F]{6}$/.test(hex)) {
-      return {
-        r: parseInt(hex.slice(0, 2), 16) / 255,
-        g: parseInt(hex.slice(2, 4), 16) / 255,
-        b: parseInt(hex.slice(4, 6), 16) / 255
-      };
-    }
-    return null;
-  }
-  var channelToHex4 = (value2) => {
-    const byte = Math.round(clamp01(value2) * 255);
-    return byte.toString(16).toUpperCase().padStart(2, "0");
-  };
-  function formatHex(rgb) {
-    return `#${channelToHex4(rgb.r)}${channelToHex4(rgb.g)}${channelToHex4(rgb.b)}`;
-  }
-  function srgbToLinear(value2) {
-    return value2 <= 0.04045 ? value2 / 12.92 : Math.pow((value2 + 0.055) / 1.055, 2.4);
-  }
-  function linearToSrgb(value2) {
-    return value2 <= 31308e-7 ? value2 * 12.92 : 1.055 * Math.pow(value2, 1 / 2.4) - 0.055;
-  }
-  function rgbToOklab(rgb) {
-    const r = srgbToLinear(rgb.r);
-    const g = srgbToLinear(rgb.g);
-    const b = srgbToLinear(rgb.b);
-    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
-    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
-    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
-    return {
-      l: 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
-      a: 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
-      b: 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s
-    };
-  }
-  function oklabToLinearRgb(lab) {
-    const l_ = lab.l + 0.3963377774 * lab.a + 0.2158037573 * lab.b;
-    const m_ = lab.l - 0.1055613458 * lab.a - 0.0638541728 * lab.b;
-    const s_ = lab.l - 0.0894841775 * lab.a - 1.291485548 * lab.b;
-    const l = l_ * l_ * l_;
-    const m = m_ * m_ * m_;
-    const s = s_ * s_ * s_;
-    return {
-      r: 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-      g: -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-      b: -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
-    };
-  }
-  function rgbToOklch(rgb) {
-    const lab = rgbToOklab(rgb);
-    const c = Math.sqrt(lab.a * lab.a + lab.b * lab.b);
-    const h = c < 1e-7 ? 0 : (Math.atan2(lab.b, lab.a) * 180 / Math.PI + 360) % 360;
-    return { l: lab.l, c, h };
-  }
-  function oklchToLinearRgb(color) {
-    const rad = color.h * Math.PI / 180;
-    return oklabToLinearRgb({ l: color.l, a: color.c * Math.cos(rad), b: color.c * Math.sin(rad) });
-  }
-  var GAMUT_EPSILON = 1e-4;
-  function inGamut(linear) {
-    return linear.r >= -GAMUT_EPSILON && linear.r <= 1 + GAMUT_EPSILON && linear.g >= -GAMUT_EPSILON && linear.g <= 1 + GAMUT_EPSILON && linear.b >= -GAMUT_EPSILON && linear.b <= 1 + GAMUT_EPSILON;
-  }
-  function maxChroma(l, h) {
-    if (l <= 0 || l >= 1) return 0;
-    let low = 0;
-    let high = 0.4;
-    if (inGamut(oklchToLinearRgb({ l, c: high, h }))) return high;
-    for (let i = 0; i < 28; i++) {
-      const mid = (low + high) / 2;
-      if (inGamut(oklchToLinearRgb({ l, c: mid, h }))) low = mid;
-      else high = mid;
-    }
-    return low;
-  }
-  function clampToGamut(color) {
-    const l = clamp01(color.l);
-    const linear = oklchToLinearRgb(__spreadProps(__spreadValues({}, color), { l }));
-    if (inGamut(linear)) return __spreadProps(__spreadValues({}, color), { l });
-    return { l, c: Math.min(color.c, maxChroma(l, color.h)), h: color.h };
-  }
-  function oklchToRgb(color) {
-    const linear = oklchToLinearRgb(clampToGamut(color));
-    return {
-      r: clamp01(linearToSrgb(linear.r)),
-      g: clamp01(linearToSrgb(linear.g)),
-      b: clamp01(linearToSrgb(linear.b))
-    };
-  }
-  var hexToOklch = (hex) => {
-    const rgb = parseHex(hex);
-    return rgb ? rgbToOklch(rgb) : null;
-  };
-  var oklchToHex = (color) => formatHex(oklchToRgb(color));
-  function mixRgb(a, b, amount) {
-    const t = clamp01(amount);
-    return {
-      r: a.r + (b.r - a.r) * t,
-      g: a.g + (b.g - a.g) * t,
-      b: a.b + (b.b - a.b) * t
-    };
-  }
-  var WHITE2 = { r: 1, g: 1, b: 1 };
-  var BLACK2 = { r: 0, g: 0, b: 0 };
-  function relativeLuminance(rgb) {
-    const r = srgbToLinear(clamp01(rgb.r));
-    const g = srgbToLinear(clamp01(rgb.g));
-    const b = srgbToLinear(clamp01(rgb.b));
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  }
-  function contrastRatio(a, b) {
-    const la = relativeLuminance(a);
-    const lb = relativeLuminance(b);
-    const lighter = Math.max(la, lb);
-    const darker = Math.min(la, lb);
-    return (lighter + 0.05) / (darker + 0.05);
-  }
-  function readableInk(background2) {
-    return contrastRatio(background2, BLACK2) >= contrastRatio(background2, WHITE2) ? BLACK2 : WHITE2;
-  }
-
   // src/tokens/palette.ts
   var DEFAULT_STEPS = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900];
   var DEFAULT_NEUTRAL_STEPS = [0, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1e3];
@@ -15908,8 +16413,8 @@ ${scrollGuards}` : project.css;
       if (i === anchor) return key;
       const t = count === 1 ? 0 : i / (count - 1);
       const tAnchor = count === 1 ? 0 : anchor / (count - 1);
-      if (i < anchor) return mixRgb(key, WHITE2, tAnchor === 0 ? 0 : (tAnchor - t) / tAnchor);
-      return mixRgb(key, BLACK2, tAnchor === 1 ? 0 : (t - tAnchor) / (1 - tAnchor));
+      if (i < anchor) return mixRgb(key, WHITE, tAnchor === 0 ? 0 : (tAnchor - t) / tAnchor);
+      return mixRgb(key, BLACK, tAnchor === 1 ? 0 : (t - tAnchor) / (1 - tAnchor));
     });
   }
   function rampByOklch(key, ladder, anchor, chromaCurve, torsion, neutralChroma) {
@@ -15935,8 +16440,8 @@ ${scrollGuards}` : project.css;
       isMain: i === marks.main,
       isLight: i === marks.light,
       isDark: i === marks.dark,
-      contrastWhite: Math.round(contrastRatio(rgb, WHITE2) * 100) / 100,
-      contrastBlack: Math.round(contrastRatio(rgb, BLACK2) * 100) / 100
+      contrastWhite: Math.round(contrastRatio(rgb, WHITE) * 100) / 100,
+      contrastBlack: Math.round(contrastRatio(rgb, BLACK) * 100) / 100
     }));
   }
   function generateSpectrum(spec, settings, prefix) {
@@ -15984,8 +16489,8 @@ ${scrollGuards}` : project.css;
     if (settings.formula === "mix") {
       colors = rampByMixing(key, safeSteps.length, anchor);
       if (neutral) {
-        colors[0] = WHITE2;
-        colors[colors.length - 1] = BLACK2;
+        colors[0] = WHITE;
+        colors[colors.length - 1] = BLACK;
       }
     } else {
       const ladder = warpLadder(base, anchor, neutral ? base[anchor] : keyOklch.l);
@@ -16316,8 +16821,8 @@ ${scrollGuards}` : project.css;
       }
     };
   }
-  var rgbOf = (hex) => {
-    const rgb = parseHex(hex);
+  var rgbOf = (hex2) => {
+    const rgb = parseHex(hex2);
     return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b } : { r: 0.5, g: 0.5, b: 0.5 };
   };
   var variablePath = (spectrum, swatch) => `${spectrum.label}/${swatch.name}`;
@@ -16454,13 +16959,13 @@ ${scrollGuards}` : project.css;
     await figma.loadFontAsync(first);
     return { body: first };
   }
-  var solid2 = (hex) => ({ type: "SOLID", color: rgbOf(hex) });
-  function label(text6, fonts, size, hex) {
+  var solid2 = (hex2) => ({ type: "SOLID", color: rgbOf(hex2) });
+  function label(text6, fonts, size, hex2) {
     const node = figma.createText();
     node.fontName = fonts.body;
     node.fontSize = size;
     node.characters = text6;
-    node.fills = [solid2(hex)];
+    node.fills = [solid2(hex2)];
     return node;
   }
   function autoLayout(name, direction, gap) {
@@ -16502,9 +17007,9 @@ ${scrollGuards}` : project.css;
     step2.textAutoResize = "HEIGHT";
     step2.resize(44, LABEL_SIZE * 1.4);
     labelRow.appendChild(step2);
-    const hex = label("#000000", fonts, LABEL_SIZE, "#1A1A1A");
-    hex.name = PART.hex;
-    labelRow.appendChild(hex);
+    const hex2 = label("#000000", fonts, LABEL_SIZE, "#1A1A1A");
+    hex2.name = PART.hex;
+    labelRow.appendChild(hex2);
     component.appendChild(labelRow);
     const markRow = autoLayout(PART.mark, "HORIZONTAL", 0);
     markRow.primaryAxisSizingMode = "FIXED";
@@ -16531,8 +17036,8 @@ ${scrollGuards}` : project.css;
     }
     const step2 = findPart(instance, PART.step);
     if (step2 && step2.type === "TEXT") step2.characters = String(swatch.step);
-    const hex = findPart(instance, PART.hex);
-    if (hex && hex.type === "TEXT") hex.characters = swatch.hex;
+    const hex2 = findPart(instance, PART.hex);
+    if (hex2 && hex2.type === "TEXT") hex2.characters = swatch.hex;
     const mark = findPart(instance, PART.mark);
     if (mark) mark.visible = markName !== null;
     const markText = findPart(instance, PART.markName);
@@ -16687,8 +17192,8 @@ ${scrollGuards}` : project.css;
   var MAX_LOOSE_COLORS = 400;
   var MAX_NODES = 2e5;
   var siteId = (variableId, modeId) => `${variableId}|${modeId}`;
-  var styleSiteId = (styleId, property, index2, stop) => `style:${styleId}#${property}:${index2}${stop === void 0 ? "" : `.${stop}`}`;
-  var looseSiteId = (hex, alpha) => `loose:${hex}:${alpha.toFixed(3)}`;
+  var styleSiteId = (styleId2, property, index2, stop) => `style:${styleId2}#${property}:${index2}${stop === void 0 ? "" : `.${stop}`}`;
+  var looseSiteId = (hex2, alpha) => `loose:${hex2}:${alpha.toFixed(3)}`;
   var isLooseSite = (id) => id.slice(0, 6) === "loose:";
   var isAlias = (value2) => typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
   var isRgb = (value2) => typeof value2 === "object" && value2 !== null && "r" in value2 && "g" in value2 && "b" in value2;
@@ -16723,11 +17228,11 @@ ${scrollGuards}` : project.css;
     return Array.isArray(bound == null ? void 0 : bound[property]) ? bound[property] : [];
   };
   function noteLoose(walk3, color) {
-    const hex = hexOf(color);
-    const id = looseSiteId(hex, color.a);
+    const hex2 = hexOf(color);
+    const id = looseSiteId(hex2, color.a);
     const existing = walk3.loose.get(id);
     if (existing) existing.count++;
-    else if (walk3.loose.size < MAX_LOOSE_COLORS) walk3.loose.set(id, { hex, alpha: color.a, rgba: color, count: 1 });
+    else if (walk3.loose.size < MAX_LOOSE_COLORS) walk3.loose.set(id, { hex: hex2, alpha: color.a, rgba: color, count: 1 });
     else walk3.looseDropped++;
     walk3.loosePlaces++;
     return id;
@@ -16759,9 +17264,9 @@ ${scrollGuards}` : project.css;
       const key = pairKey(a, b, text6);
       if (!walk3.neighbours.has(key)) walk3.neighbours.set(key, { a, b, text: text6 });
     };
-    const noteStyle = (styleId) => {
+    const noteStyle = (styleId2) => {
       var _a2;
-      if (styleId !== "") walk3.styleUsage.set(styleId, ((_a2 = walk3.styleUsage.get(styleId)) != null ? _a2 : 0) + 1);
+      if (styleId2 !== "") walk3.styleUsage.set(styleId2, ((_a2 = walk3.styleUsage.get(styleId2)) != null ? _a2 : 0) + 1);
     };
     const refsOf = (paints2, nodeLevel, boundOnly) => {
       var _a2, _b;
@@ -17690,14 +18195,14 @@ ${scrollGuards}` : project.css;
     if (id.slice(0, 6) !== "style:") return null;
     const hash = id.indexOf("#");
     if (hash < 0) return null;
-    const styleId = id.slice(6, hash);
+    const styleId2 = id.slice(6, hash);
     const [property, rest] = id.slice(hash + 1).split(":");
     if (property !== "paints" && property !== "effects") return null;
     const [indexText, stopText] = rest.split(".");
     const index2 = Number(indexText);
     if (!Number.isFinite(index2)) return null;
     const stop = stopText === void 0 ? null : Number(stopText);
-    return { styleId, property, index: index2, stop: stop === null || !Number.isFinite(stop) ? null : stop };
+    return { styleId: styleId2, property, index: index2, stop: stop === null || !Number.isFinite(stop) ? null : stop };
   }
   var round42 = (value2) => Math.round(value2 * 1e4) / 1e4;
   var channelsOf = (color) => {
@@ -17764,8 +18269,8 @@ ${scrollGuards}` : project.css;
       if (group2) group2.push({ entry, address });
       else byStyle.set(address.styleId, [{ entry, address }]);
     }
-    for (const [styleId, group2] of byStyle) {
-      const style = await figma.getStyleByIdAsync(styleId).catch(() => null);
+    for (const [styleId2, group2] of byStyle) {
+      const style = await figma.getStyleByIdAsync(styleId2).catch(() => null);
       if (!style) {
         report2.failed += group2.length;
         continue;
@@ -17778,14 +18283,14 @@ ${scrollGuards}` : project.css;
             const paint = paints2[address.index];
             if (!paint) continue;
             if (address.stop === null && paint.type === "SOLID") {
-              snapshot.styles.push({ s: styleId, p: "paints", i: address.index, j: -1, c: channelsOf(__spreadProps(__spreadValues({}, paint.color), { a: (_a = paint.opacity) != null ? _a : 1 })) });
+              snapshot.styles.push({ s: styleId2, p: "paints", i: address.index, j: -1, c: channelsOf(__spreadProps(__spreadValues({}, paint.color), { a: (_a = paint.opacity) != null ? _a : 1 })) });
               paints2[address.index] = __spreadProps(__spreadValues({}, paint), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b }, opacity: entry.to.a });
               report2.paints++;
             } else if (address.stop !== null && isGradient(paint)) {
               const stops = paint.gradientStops.map((stop2) => __spreadValues({}, stop2));
               const stop = stops[address.stop];
               if (!stop) continue;
-              snapshot.styles.push({ s: styleId, p: "paints", i: address.index, j: address.stop, c: channelsOf(withAlpha(stop.color)) });
+              snapshot.styles.push({ s: styleId2, p: "paints", i: address.index, j: address.stop, c: channelsOf(withAlpha(stop.color)) });
               stops[address.stop] = __spreadProps(__spreadValues({}, stop), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
               paints2[address.index] = __spreadProps(__spreadValues({}, paint), { gradientStops: stops });
               report2.paints++;
@@ -17798,7 +18303,7 @@ ${scrollGuards}` : project.css;
           for (const { entry, address } of group2) {
             const effect = effects[address.index];
             if (!effect || !isShadow(effect)) continue;
-            snapshot.styles.push({ s: styleId, p: "effects", i: address.index, j: -1, c: channelsOf(withAlpha(effect.color)) });
+            snapshot.styles.push({ s: styleId2, p: "effects", i: address.index, j: -1, c: channelsOf(withAlpha(effect.color)) });
             effects[address.index] = __spreadProps(__spreadValues({}, effect), { color: { r: entry.to.r, g: entry.to.g, b: entry.to.b, a: entry.to.a } });
             report2.paints++;
           }
@@ -18137,8 +18642,8 @@ ${scrollGuards}` : project.css;
       else byStyle.set(entry.s, [entry]);
     }
     let restored = 0;
-    for (const [styleId, group2] of byStyle) {
-      const style = await figma.getStyleByIdAsync(styleId).catch(() => null);
+    for (const [styleId2, group2] of byStyle) {
+      const style = await figma.getStyleByIdAsync(styleId2).catch(() => null);
       if (!style) continue;
       try {
         if (style.type === "PAINT") {
@@ -18558,7 +19063,7 @@ ${scrollGuards}` : project.css;
     return __spreadProps(__spreadValues({}, oklchToRgb({ l: ratio(first, 1), c: chroma, h: hue })), { a: alpha });
   }
   function parseHexLiteral(digits) {
-    const expand = (hex) => hex.split("").map((char) => char + char).join("");
+    const expand = (hex2) => hex2.split("").map((char) => char + char).join("");
     if (digits.length === 3 || digits.length === 6) {
       const rgb2 = parseHex(digits);
       return rgb2 ? { rgba: __spreadProps(__spreadValues({}, rgb2), { a: 1 }), notation: digits.length === 3 ? "hex3" : "hex6" } : null;
@@ -18609,10 +19114,10 @@ ${scrollGuards}` : project.css;
       });
     }
     for (const match of text6.matchAll(NAMED_RE)) {
-      const hex = NAMED_COLORS[match[1].toLowerCase()];
-      if (hex === void 0) continue;
+      const hex2 = NAMED_COLORS[match[1].toLowerCase()];
+      if (hex2 === void 0) continue;
       if (!inValuePosition(text6, match.index, match.index + match[0].length)) continue;
-      const rgb = parseHex(hex);
+      const rgb = parseHex(hex2);
       if (!rgb) continue;
       found.push({
         rgba: __spreadProps(__spreadValues({}, rgb), { a: 1 }),
@@ -18706,17 +19211,17 @@ ${scrollGuards}` : project.css;
     await figma.loadFontAsync(first);
     return { body: first };
   }
-  var rgbOf2 = (hex) => {
-    const rgb = parseHex(hex);
+  var rgbOf2 = (hex2) => {
+    const rgb = parseHex(hex2);
     return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b } : { r: 0.5, g: 0.5, b: 0.5 };
   };
-  var solid3 = (hex) => ({ type: "SOLID", color: rgbOf2(hex) });
-  function label2(text6, fonts, size, hex) {
+  var solid3 = (hex2) => ({ type: "SOLID", color: rgbOf2(hex2) });
+  function label2(text6, fonts, size, hex2) {
     const node = figma.createText();
     node.fontName = fonts.body;
     node.fontSize = size;
     node.characters = text6;
-    node.fills = [solid3(hex)];
+    node.fills = [solid3(hex2)];
     return node;
   }
   function autoLayout2(name, direction, gap) {
@@ -18747,8 +19252,8 @@ ${scrollGuards}` : project.css;
     frame3.paddingLeft = 8;
     frame3.paddingTop = 7;
     frame3.primaryAxisAlignItems = "MIN";
-    const hex = toHex(color);
-    frame3.appendChild(label2(hex, fonts, CAPTION_SIZE2, inkOn(color)));
+    const hex2 = toHex(color);
+    frame3.appendChild(label2(hex2, fonts, CAPTION_SIZE2, inkOn(color)));
     if (caption !== "") frame3.appendChild(label2(caption, fonts, CAPTION_SIZE2, inkOn(color)));
     return frame3;
   }
@@ -19205,15 +19710,15 @@ ${scrollGuards}` : project.css;
         return;
       }
       for (const override of overrides) {
-        const fields = (_a = overridden.get(override.id)) != null ? _a : /* @__PURE__ */ new Set();
-        for (const field of override.overriddenFields) fields.add(field);
-        overridden.set(override.id, fields);
+        const fields2 = (_a = overridden.get(override.id)) != null ? _a : /* @__PURE__ */ new Set();
+        for (const field of override.overriddenFields) fields2.add(field);
+        overridden.set(override.id, fields2);
       }
     };
     const collectPaintOps = (node, property, inInstance) => {
       var _a, _b, _c, _d;
-      const styleId = node[property === "fills" ? "fillStyleId" : "strokeStyleId"];
-      if (typeof styleId === "string" && styleId !== "") return;
+      const styleId2 = node[property === "fills" ? "fillStyleId" : "strokeStyleId"];
+      if (typeof styleId2 === "string" && styleId2 !== "") return;
       const paints2 = node[property];
       if (!Array.isArray(paints2)) return;
       if (inInstance && !((_a = overridden.get(node.id)) == null ? void 0 : _a.has(property))) return;
@@ -20127,9 +20632,9 @@ ${scrollGuards}` : project.css;
       flags: record2.flags
     };
   }
-  function rgbaOf(hex, alpha, where) {
-    const rgb = parseHex(hex);
-    if (!rgb) throw new Error(`mapping: ${where} is not a hex color ("${hex}")`);
+  function rgbaOf(hex2, alpha, where) {
+    const rgb = parseHex(hex2);
+    if (!rgb) throw new Error(`mapping: ${where} is not a hex color ("${hex2}")`);
     return __spreadProps(__spreadValues({}, rgb), { a: typeof alpha === "number" && alpha >= 0 && alpha <= 1 ? alpha : 1 });
   }
   function parseMappingFile(raw) {
@@ -20156,8 +20661,8 @@ ${scrollGuards}` : project.css;
 
   // src/tokens/remap/rewrite.ts
   var DEFAULT_REWRITE_OPTIONS = { snap: 2, mode: null, byName: false };
-  var rgbaOf2 = (hex, alpha) => {
-    const rgb = parseHex(hex);
+  var rgbaOf2 = (hex2, alpha) => {
+    const rgb = parseHex(hex2);
     return rgb ? __spreadProps(__spreadValues({}, rgb), { a: alpha }) : null;
   };
   var nameKey = (name) => varName(name.split(/[/.]/));
@@ -20187,22 +20692,22 @@ ${scrollGuards}` : project.css;
       }
       byHex.set(record2.from, target);
     }
-    for (const hex of conflicting) {
-      byHex.delete(hex);
+    for (const hex2 of conflicting) {
+      byHex.delete(hex2);
       warnings.push(
-        `${hex} maps to more than one new color in this file \u2014 pass --mode to say which theme this repository is`
+        `${hex2} maps to more than one new color in this file \u2014 pass --mode to say which theme this repository is`
       );
     }
-    for (const [hex, target] of byHex) {
-      const from = rgbaOf2(hex, 1);
+    for (const [hex2, target] of byHex) {
+      const from = rgbaOf2(hex2, 1);
       if (from) all.push({ from, target });
     }
     return { byHex, settled, all, byName, warnings };
   }
   function matchLiteral(literal, lookup, snap) {
-    const hex = toHex(literal.rgba);
-    if (lookup.settled.has(hex)) return null;
-    const exact = lookup.byHex.get(hex);
+    const hex2 = toHex(literal.rgba);
+    if (lookup.settled.has(hex2)) return null;
+    const exact = lookup.byHex.get(hex2);
     if (exact) return { target: exact, snapped: false };
     if (snap <= 0) return null;
     let best = null;
@@ -20305,10 +20810,10 @@ ${scrollGuards}` : project.css;
   }
 
   // src/tokens/remap/sources.ts
-  function swatchOf(hex, name, family, step2) {
-    const rgb = parseHex(hex);
+  function swatchOf(hex2, name, family, step2) {
+    const rgb = parseHex(hex2);
     if (!rgb) return null;
-    return { hex: hex.toUpperCase(), alpha: 1, rgba: __spreadProps(__spreadValues({}, rgb), { a: 1 }), name, family, step: step2 };
+    return { hex: hex2.toUpperCase(), alpha: 1, rgba: __spreadProps(__spreadValues({}, rgb), { a: 1 }), name, family, step: step2 };
   }
   function swatchesFromPalette(palette) {
     const swatches = [];
@@ -20676,7 +21181,31 @@ ${renderSections(sections)}
   }
 
   // src/delivery.ts
-  async function deliverPackage(zipBytes, config) {
+  var PLAN_ACTIONS = {
+    create: "create",
+    update: "update",
+    unchanged: "unchanged",
+    "skipped-hand-edited": "skipped-hand-edited"
+  };
+  function planFrom(raw) {
+    if (!isRecord(raw)) return void 0;
+    const files = Array.isArray(raw.files) ? raw.files.filter(isRecord).map((file) => {
+      var _a;
+      return {
+        path: String((_a = file.path) != null ? _a : ""),
+        action: typeof file.action === "string" && PLAN_ACTIONS[file.action] || "unchanged",
+        added: typeof file.added === "number" ? file.added : 0,
+        removed: typeof file.removed === "number" ? file.removed : 0,
+        binary: file.binary === true
+      };
+    }) : [];
+    return {
+      files,
+      diff: typeof raw.diff === "string" ? raw.diff : void 0,
+      truncated: raw.truncated === true
+    };
+  }
+  async function deliverPackage(files, config) {
     if (!config.endpoint) {
       return { ok: false, message: "No delivery endpoint configured." };
     }
@@ -20684,21 +21213,40 @@ ${renderSections(sections)}
       const response = await fetch(config.endpoint, {
         method: "POST",
         headers: {
-          "Content-Type": "application/zip",
-          "X-AllCrew-Channel-Secret": config.secret,
-          "X-AllCrew-Channel-Target": config.target,
-          "X-AllCrew-Channel-Route-Repo": config.route.repo,
-          "X-AllCrew-Channel-Route-Branch": config.route.branch,
-          "X-AllCrew-Channel-Route-Path": config.route.path,
-          "X-AllCrew-Channel-Route-Package": config.route.package
+          "Content-Type": "application/json",
+          "x-allcrew-channel-secret": config.secret
         },
-        body: zipBytes
+        body: JSON.stringify({
+          target: config.target,
+          dryRun: config.dryRun === true,
+          route: config.route,
+          files
+        })
       });
-      if (!response.ok) {
-        const text6 = await response.text().catch(() => "");
-        return { ok: false, status: response.status, message: text6 || response.statusText };
+      const text6 = await response.text().catch(() => "");
+      let body = void 0;
+      try {
+        body = text6 ? JSON.parse(text6) : void 0;
+      } catch (e) {
+        body = void 0;
       }
-      return { ok: true, status: response.status };
+      const parsed = isRecord(body) ? body : void 0;
+      if (!response.ok) {
+        const error = parsed && typeof parsed.error === "string" ? parsed.error : "";
+        return { ok: false, status: response.status, message: error || text6 || response.statusText };
+      }
+      if (!parsed) {
+        return { ok: true, status: response.status, message: text6 || void 0 };
+      }
+      return {
+        ok: parsed.ok !== false,
+        status: response.status,
+        detail: typeof parsed.detail === "string" ? parsed.detail : void 0,
+        dryRun: parsed.dryRun === true,
+        plan: planFrom(parsed.plan),
+        url: typeof parsed.url === "string" ? parsed.url : void 0,
+        message: typeof parsed.error === "string" ? parsed.error : void 0
+      };
     } catch (err) {
       return { ok: false, message: String((err == null ? void 0 : err.message) || err) };
     }
@@ -20827,6 +21375,54 @@ ${renderSections(sections)}
     textDecoration: "textDecoration",
     leadingTrim: "leadingTrim"
   };
+  var AXIS_TAG = /^[\x20-\x7E]{4}$/;
+  var FONT_KEYS = ["family", "style", "variationSettings"];
+  function planFont(value2, where, fail2) {
+    if (typeof value2 !== "object" || value2 === null || Array.isArray(value2) || !("family" in value2)) {
+      fail2(`${where} must be { family, style?, variationSettings? }`);
+      return null;
+    }
+    const family = value2.family;
+    if (typeof family !== "string") {
+      fail2(`${where}.family must be a string`);
+      return null;
+    }
+    for (const key of Object.keys(value2)) {
+      if (!FONT_KEYS.includes(key)) {
+        fail2(`${where}: unknown key "${key}" \u2014 accepted: ${FONT_KEYS.join(", ")}`);
+        return null;
+      }
+    }
+    const font = { family };
+    if ("style" in value2 && value2.style !== void 0) {
+      if (typeof value2.style !== "string") {
+        fail2(`${where}.style must be a string, or left out to let the axes name the face`);
+        return null;
+      }
+      font.style = value2.style;
+    }
+    if ("variationSettings" in value2 && value2.variationSettings !== void 0) {
+      const axes = value2.variationSettings;
+      if (typeof axes !== "object" || axes === null || Array.isArray(axes)) {
+        fail2(`${where}.variationSettings must be axis values by tag, like { wght: 550 }`);
+        return null;
+      }
+      const settings = {};
+      for (const [tag, amount] of Object.entries(axes)) {
+        if (!AXIS_TAG.test(tag)) {
+          fail2(`${where}.variationSettings: "${tag}" is not a four-letter axis tag like wght or slnt`);
+          return null;
+        }
+        if (typeof amount !== "number" || !Number.isFinite(amount)) {
+          fail2(`${where}.variationSettings.${tag} must be a number`);
+          return null;
+        }
+        settings[tag] = amount;
+      }
+      font.variationSettings = settings;
+    }
+    return font;
+  }
   var LAYOUT_MODES = ["NONE", "HORIZONTAL", "VERTICAL", "GRID"];
   var LAYOUT_KEYS = [
     "mode",
@@ -20852,26 +21448,6 @@ ${renderSections(sections)}
   var STROKE_JOIN = ["MITER", "BEVEL", "ROUND"];
   var SCALE_MODES = ["FILL", "FIT", "CROP", "TILE"];
   var GRADIENTS2 = ["LINEAR", "RADIAL", "ANGULAR", "DIAMOND"];
-  function fontSpecOf(raw) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-    const value2 = raw;
-    if (typeof value2.family !== "string" || value2.family.trim() === "") return null;
-    if (value2.style !== void 0 && (typeof value2.style !== "string" || value2.style.trim() === "")) return null;
-    let variationSettings;
-    if (value2.variationSettings !== void 0) {
-      if (!value2.variationSettings || typeof value2.variationSettings !== "object" || Array.isArray(value2.variationSettings)) {
-        return null;
-      }
-      variationSettings = {};
-      for (const [axis, setting] of Object.entries(value2.variationSettings)) {
-        if (!/^[A-Za-z0-9]{4}$/.test(axis) || typeof setting !== "number" || !Number.isFinite(setting)) return null;
-        variationSettings[axis] = setting;
-      }
-    }
-    return __spreadValues(__spreadValues({
-      family: value2.family.trim()
-    }, typeof value2.style === "string" ? { style: value2.style.trim() } : {}), variationSettings ? { variationSettings } : {});
-  }
   var DEFAULT_GRADIENT_ANGLE = 90;
   var BLEND_MODES = [
     "PASS_THROUGH",
@@ -20992,6 +21568,43 @@ ${renderSections(sections)}
     "index"
   ];
   var KNOWN = new Set(ORDER);
+  var FIGMA_NAMES = {
+    characters: "text",
+    fills: "fill",
+    strokes: "stroke",
+    fillStyleId: "fillStyle",
+    strokeStyleId: "strokeStyle",
+    textStyleId: "textStyle",
+    effectStyleId: "effectStyle",
+    gridStyleId: "gridStyle",
+    layoutGrids: "grid",
+    layoutMode: "layout.mode",
+    itemSpacing: "layout.gap",
+    primaryAxisAlignItems: "layout.primaryAxis",
+    counterAxisAlignItems: "layout.counterAxis",
+    paddingLeft: "layout.padding",
+    paddingRight: "layout.padding",
+    paddingTop: "layout.padding",
+    paddingBottom: "layout.padding",
+    layoutSizingHorizontal: "sizing.horizontal",
+    layoutSizingVertical: "sizing.vertical",
+    layoutPositioning: "absolute",
+    textAlignHorizontal: "textAlign",
+    textAlignVertical: "verticalAlign",
+    textAutoResize: "autoResize",
+    textTruncation: "truncate",
+    componentProperties: "properties",
+    hyperlink: "link",
+    reactions: "links",
+    boundVariables: "bind",
+    parentId: "parent"
+  };
+  function unknownProperty(where, key) {
+    var _a;
+    const meant = (_a = FIGMA_NAMES[key]) != null ? _a : [...KNOWN].find((known) => known.toLowerCase() === key.toLowerCase());
+    if (meant !== void 0) return `${where}: unknown property "${key}" \u2014 here it is "${meant}"`;
+    return `${where}: unknown property "${key}" \u2014 accepted: ${[...KNOWN].join(", ")}`;
+  }
   function dependsOnChildren(step2) {
     return step2.step === "assign" && step2.property === "numberOfFixedChildren";
   }
@@ -21024,7 +21637,7 @@ ${renderSections(sections)}
     const props = raw;
     for (const key of Object.keys(props)) {
       if (!KNOWN.has(key)) {
-        problems.push(`${where}: unknown property "${key}" \u2014 accepted: ${[...KNOWN].join(", ")}`);
+        problems.push(unknownProperty(where, key));
       }
     }
     const fail2 = (message) => problems.push(`${where}.${message}`);
@@ -21208,12 +21821,8 @@ ${renderSections(sections)}
           break;
         }
         case "fontName": {
-          const font = fontSpecOf(props.fontName);
-          if (!font) {
-            fail2("fontName must be { family, style?, variationSettings?: { wght: 550, ... } }");
-          } else {
-            steps.push({ step: "font", font });
-          }
+          const font = planFont(props.fontName, "fontName", fail2);
+          if (font) steps.push({ step: "font", font });
           break;
         }
         case "cornerRadius": {
@@ -22034,14 +22643,12 @@ ${renderSections(sections)}
           bad = true;
         }
       };
+      let font = null;
       if (run.fontName !== void 0) {
-        const font = fontSpecOf(run.fontName);
-        if (!font) {
-          fail2("fontName must be { family, style?, variationSettings?: { wght: 550, ... } }");
+        font = planFont(run.fontName, "fontName", (message) => {
+          fail2(message);
           bad = true;
-        } else {
-          run.fontName = font;
-        }
+        });
       }
       check("fontSize", typeof run.fontSize === "number" && run.fontSize > 0, "fontSize must be a number > 0");
       check(
@@ -22083,7 +22690,7 @@ ${renderSections(sections)}
         fail2("a run that sets nothing styles nothing \u2014 say what should change");
         continue;
       }
-      runs.push(__spreadValues(__spreadValues({}, run), run.fill === void 0 ? {} : { fill: normalisePaint(run.fill) }));
+      runs.push(__spreadValues(__spreadValues(__spreadValues({}, run), font ? { fontName: font } : {}), run.fill === void 0 ? {} : { fill: normalisePaint(run.fill) }));
     }
     return { step: "runs", runs };
   }
@@ -22114,13 +22721,14 @@ ${renderSections(sections)}
     return { x: value2[0], y: value2[1] };
   }
   function colourOf(value2, fallback, where, problems) {
-    const hex = value2 === void 0 ? fallback : value2;
-    if (typeof hex !== "string" || !HEX.test(hex)) {
-      problems.push(`${where} must be a #RRGGBB colour`);
+    const hex2 = value2 === void 0 ? fallback : value2;
+    if (typeof hex2 !== "string" || !isColourText(hex2)) {
+      problems.push(`${where} must be a ${COLOUR_WORDS}`);
       return null;
     }
-    const rgb = parseHex(hex);
-    return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b, a: 1 } : null;
+    const colour = colourFromText(hex2);
+    if (!colour) problems.push(`${where}: "${hex2}" is not a colour Figma can read`);
+    return colour;
   }
   function planEffects(raw, where, problems) {
     var _a, _b;
@@ -22263,20 +22871,20 @@ ${renderSections(sections)}
           fail2(`unknown key "${unknownKey}" \u2014 accepted: shadow, color, opacity, offset, radius, spread, visible`);
         }
       }
-      let hex = "#000000";
+      let hex2 = "#000000";
       const named = spec.color;
       if (typeof (named == null ? void 0 : named.variable) === "string" && named.variable.trim() !== "") {
         bind.push({ index: effects.length, field: "color", variable: named.variable.trim() });
       } else if (spec.color !== void 0) {
-        if (typeof spec.color !== "string" || !HEX.test(spec.color)) {
-          fail2("color must be a #RRGGBB colour or { variable }");
+        if (typeof spec.color !== "string" || !isColourText(spec.color)) {
+          fail2(`color must be a ${COLOUR_WORDS}, or { variable }`);
           continue;
         }
-        hex = spec.color;
+        hex2 = spec.color;
       }
-      const rgb = parseHex(hex);
+      const rgb = colourFromText(hex2);
       if (!rgb) {
-        fail2(`"${hex}" is not a colour`);
+        fail2(`"${hex2}" is not a colour`);
         continue;
       }
       const alpha = spec.opacity === void 0 ? 0.25 : spec.opacity;
@@ -22296,7 +22904,7 @@ ${renderSections(sections)}
       if (x === null || y === null || radius === null || spread === null) continue;
       effects.push({
         type: kind === "drop" ? "DROP_SHADOW" : "INNER_SHADOW",
-        color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha },
+        color: __spreadProps(__spreadValues({}, rgb), { a: alpha }),
         offset: { x, y },
         radius,
         spread,
@@ -22304,7 +22912,7 @@ ${renderSections(sections)}
         blendMode: "NORMAL"
       });
       summary.push(
-        `${kind} shadow ${hex}${alpha === 1 ? "" : ` @${alpha}`} ${x},${y} blur ${radius}${spread ? ` spread ${spread}` : ""}`
+        `${kind} shadow ${hex2}${alpha === 1 ? "" : ` @${alpha}`} ${x},${y} blur ${radius}${spread ? ` spread ${spread}` : ""}`
       );
     }
     return { step: "effects", effects, bind, summary: summary.join(" \xB7 ") || "none" };
@@ -22380,15 +22988,23 @@ ${renderSections(sections)}
       for (const [k, frame3] of one.at.entries()) {
         const spot = `${at}.at[${k}]`;
         const asked = frame3;
-        if (typeof (asked == null ? void 0 : asked.time) !== "number" || !Number.isFinite(asked.time) || asked.time < 0) {
-          problems.push(`${spot}.time must be a number of seconds from the start`);
+        let time = asked == null ? void 0 : asked.time;
+        if (time === "playhead") {
+          time = playheadPosition();
+          if (time === void 0) {
+            problems.push(`${spot}.time is "playhead", but no Motion timeline is open \u2014 there is no playhead to read`);
+            continue;
+          }
+        }
+        if (typeof time !== "number" || !Number.isFinite(time) || time < 0) {
+          problems.push(`${spot}.time must be a number of seconds from the start, or "playhead"`);
           continue;
         }
         const value2 = valueOf(asked.value, `${spot}.value`);
         if (value2 === null) continue;
         const easing = asked.easing === void 0 && asked.bezier === void 0 ? null : buildEasing(asked, (message) => problems.push(`${spot}: ${message}`));
         keyframes.push(__spreadValues({
-          timelinePosition: asked.time,
+          timelinePosition: time,
           value: value2
         }, easing ? { easing } : {}));
       }
@@ -22400,6 +23016,12 @@ ${renderSections(sections)}
       });
     }
     return tracks.length > 0 ? { step: "keyframes", tracks } : null;
+  }
+  function playheadPosition() {
+    var _a;
+    if (typeof figma === "undefined") return void 0;
+    const position = (_a = figma.motion) == null ? void 0 : _a.playheadPosition;
+    return typeof position === "number" ? position : void 0;
   }
   function planAnimation(raw, where, problems) {
     const wanted = raw === null ? [] : Array.isArray(raw) ? raw : [raw];
@@ -22747,11 +23369,11 @@ ${renderSections(sections)}
       const spec = entry;
       const paint = () => {
         if (spec.color === void 0) return {};
-        if (typeof spec.color !== "string" || !HEX.test(spec.color)) {
-          fail2("color must be a #RRGGBB colour");
+        if (typeof spec.color !== "string" || !isColourText(spec.color)) {
+          fail2(`color must be a ${COLOUR_WORDS}`);
           return null;
         }
-        const rgb = parseHex(spec.color);
+        const rgb = colourFromText(spec.color);
         if (!rgb) {
           fail2(`"${spec.color}" is not a colour`);
           return null;
@@ -22761,7 +23383,7 @@ ${renderSections(sections)}
           fail2("opacity must be between 0 and 1");
           return null;
         }
-        return { color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha } };
+        return { color: __spreadProps(__spreadValues({}, rgb), { a: alpha }) };
       };
       if (spec.square !== void 0) {
         const size2 = spec.square;
@@ -22905,6 +23527,28 @@ ${renderSections(sections)}
     return { step: saysMore ? { step: "layout", layout: rest } : null, layout };
   }
   var HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+  var CSS_COLOUR = /^(rgba?|hsla?|lab|lch|oklab|oklch|color)\(\s*[^()]*\)$/i;
+  function isColourText(text6) {
+    return HEX.test(text6) || CSS_COLOUR.test(text6.trim());
+  }
+  function colourFromText(text6) {
+    var _a;
+    if (HEX.test(text6)) {
+      const rgb = parseHex(text6);
+      return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b, a: 1 } : null;
+    }
+    if (!CSS_COLOUR.test(text6.trim()) || typeof figma === "undefined" || typeof ((_a = figma.util) == null ? void 0 : _a.rgba) !== "function") return null;
+    try {
+      return figma.util.rgba(text6.trim());
+    } catch (e) {
+      return null;
+    }
+  }
+  function solidColourOf(colour) {
+    const _a = colour, { a: _alpha } = _a, rgb = __objRest(_a, ["a"]);
+    return rgb;
+  }
+  var COLOUR_WORDS = "#RRGGBB colour or a CSS colour like oklch(70% 0.2 140)";
   var BINDABLE = {
     width: "FLOAT",
     height: "FLOAT",
@@ -22968,8 +23612,8 @@ ${renderSections(sections)}
         problems.push(`${where}.${asked}: ${BOUND_ELSEWHERE[asked]}`);
         continue;
       }
-      const fields = (_a = BIND_ALIASES[asked]) != null ? _a : BINDABLE[asked] ? [asked] : null;
-      if (!fields) {
+      const fields2 = (_a = BIND_ALIASES[asked]) != null ? _a : BINDABLE[asked] ? [asked] : null;
+      if (!fields2) {
         problems.push(
           `${where}: "${asked}" is not a bindable field \u2014 accepted: ${[...Object.keys(BIND_ALIASES), ...Object.keys(BINDABLE)].join(", ")}`
         );
@@ -22979,7 +23623,7 @@ ${renderSections(sections)}
         problems.push(`${where}.${asked} must be a variable name, id or key \u2014 or null to unbind`);
         continue;
       }
-      for (const field of fields) bindings.push({ field, variable: value2 === null ? null : value2.trim(), wants: BINDABLE[field] });
+      for (const field of fields2) bindings.push({ field, variable: value2 === null ? null : value2.trim(), wants: BINDABLE[field] });
     }
     if (bindings.length === 0 && problems.length === 0) {
       problems.push(`${where} names nothing to bind`);
@@ -23047,7 +23691,7 @@ ${renderSections(sections)}
       return null;
     }
     if (ref === null) return null;
-    if (typeof ref === "string") return HEX.test(ref) ? null : `"${ref}" is not a #RRGGBB colour`;
+    if (typeof ref === "string") return isColourText(ref) ? null : `"${ref}" is not a ${COLOUR_WORDS}`;
     if (typeof ref !== "object") return 'must be "#RRGGBB", { color }, { variable }, { image }, a list of those, or null';
     const entry = ref;
     if (entry.shader !== void 0) return shaderProblem(ref);
@@ -23055,7 +23699,7 @@ ${renderSections(sections)}
     if (entry.image !== void 0) return imageProblem(entry);
     if (typeof entry.variable === "string") return entry.variable === "" ? "variable must be a name, id or library key" : null;
     if (typeof entry.color === "string") {
-      if (!HEX.test(entry.color)) return `"${entry.color}" is not a #RRGGBB colour`;
+      if (!isColourText(entry.color)) return `"${entry.color}" is not a ${COLOUR_WORDS}`;
       if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
         return "opacity must be between 0 and 1";
       }
@@ -23094,7 +23738,7 @@ ${renderSections(sections)}
     }
     for (const [index2, stop] of entry.stops.entries()) {
       if (typeof stop === "string") {
-        if (!HEX.test(stop)) return `stops[${index2}]: "${stop}" is not a #RRGGBB colour`;
+        if (!isColourText(stop)) return `stops[${index2}]: "${stop}" is not a ${COLOUR_WORDS}`;
         continue;
       }
       if (typeof stop !== "object" || stop === null || Array.isArray(stop)) {
@@ -23107,7 +23751,7 @@ ${renderSections(sections)}
         if (typeof bound.variable !== "string" || bound.variable === "") {
           return `stops[${index2}].color must be "#RRGGBB" or { variable }`;
         }
-      } else if (typeof one.color !== "string" || !HEX.test(one.color)) {
+      } else if (typeof one.color !== "string" || !isColourText(one.color)) {
         return `stops[${index2}].color must be "#RRGGBB" or { variable }`;
       }
       if (one.opacity !== void 0 && (typeof one.opacity !== "number" || one.opacity < 0 || one.opacity > 1)) {
@@ -23175,18 +23819,18 @@ ${renderSections(sections)}
       if (!rgb2) return null;
       return __spreadProps(__spreadValues({}, rgb2), { a: clamp013(Number(withPercent[2]) / 100) });
     }
-    const hex = text6.replace(/^#/, "");
-    if (/^[0-9a-fA-F]{8}$/.test(hex)) {
-      const rgb2 = parseHex(hex.slice(0, 6));
+    const hex2 = text6.replace(/^#/, "");
+    if (/^[0-9a-fA-F]{8}$/.test(hex2)) {
+      const rgb2 = parseHex(hex2.slice(0, 6));
       if (!rgb2) return null;
-      return __spreadProps(__spreadValues({}, rgb2), { a: parseInt(hex.slice(6, 8), 16) / 255 });
+      return __spreadProps(__spreadValues({}, rgb2), { a: parseInt(hex2.slice(6, 8), 16) / 255 });
     }
     const rgb = parseHex(text6);
     return rgb ? __spreadProps(__spreadValues({}, rgb), { a: 1 }) : null;
   }
   function describeColor(color) {
-    const hex = formatHex(color);
-    return color.a >= 0.999 ? hex : `${hex} ${Math.round(color.a * 100)}%`;
+    const hex2 = formatHex(color);
+    return color.a >= 0.999 ? hex2 : `${hex2} ${Math.round(color.a * 100)}%`;
   }
   var VARIABLE_ID = /^VariableID:/;
   var COLLECTION_ID = /^VariableCollectionId:/;
@@ -23547,7 +24191,7 @@ ${renderSections(sections)}
     var _a, _b, _c, _d;
     const source = (_a = options.source) != null ? _a : "all";
     const scope = options.scope === "document" ? "document" : "page";
-    const census = options.usage !== false;
+    const census2 = options.usage !== false;
     const limit = Math.min(Math.max((_b = options.limit) != null ? _b : 100, 1), 500);
     const query = ((_c = options.query) != null ? _c : "").trim().toLowerCase();
     let root = figma.currentPage;
@@ -23570,7 +24214,7 @@ ${renderSections(sections)}
           if (isDocumentable(node)) entries.set(node.id, entryFor2(node, "local"));
         }
       }
-      if (census) {
+      if (census2) {
         const instances = root.findAllWithCriteria({ types: ["INSTANCE"] });
         sampled = instances.length > INSTANCE_CAP;
         for (const instance of instances.slice(0, INSTANCE_CAP)) {
@@ -23603,7 +24247,7 @@ ${renderSections(sections)}
       scope,
       instances: read,
       sampled,
-      note: census ? `Everything found in ${where}. Library components are the ones it already uses \u2014 Figma offers plugins no way to list a library\u2019s full contents.` : `Local components in ${where}: without the instance census (usage: false) a library component cannot be discovered at all.`
+      note: census2 ? `Everything found in ${where}. Library components are the ones it already uses \u2014 Figma offers plugins no way to list a library\u2019s full contents.` : `Local components in ${where}: without the instance census (usage: false) a library component cannot be discovered at all.`
     };
   }
   function ownerOf(main) {
@@ -23879,18 +24523,20 @@ ${renderSections(sections)}
   }
 
   // src/canvas/styles.ts
-  var STYLE_KINDS = ["paint", "text", "effect", "grid"];
+  var STYLE_KINDS = ["paint", "text", "effect", "grid", "animation"];
   var FIGMA_TYPE = {
     paint: "PAINT",
     text: "TEXT",
     effect: "EFFECT",
-    grid: "GRID"
+    grid: "GRID",
+    animation: "CUSTOM_ANIMATION"
   };
   var KIND_OF_TYPE = {
     PAINT: "paint",
     TEXT: "text",
     EFFECT: "effect",
-    GRID: "grid"
+    GRID: "grid",
+    CUSTOM_ANIMATION: "animation"
   };
   async function localStyles(kind) {
     switch (kind) {
@@ -23900,6 +24546,8 @@ ${renderSections(sections)}
         return figma.getLocalTextStylesAsync();
       case "effect":
         return figma.getLocalEffectStylesAsync();
+      case "animation":
+        return figma.getLocalCustomAnimationStylesAsync();
       default:
         return figma.getLocalGridStylesAsync();
     }
@@ -23937,11 +24585,15 @@ ${renderSections(sections)}
         return (_a = await paints2(style.paints)) != null ? _a : "none";
       case "EFFECT":
         return effects(style.effects);
+      case "CUSTOM_ANIMATION":
+        return style.animationEntries.map((entry) => `${entry.name}${entry.duration === void 0 ? "" : ` ${entry.duration}s`}`).join(" \u2192 ") || "no animations";
       case "TEXT": {
         const text6 = style;
         const height = text6.lineHeight.unit === "AUTO" ? "auto" : `${Math.round(text6.lineHeight.value * 100) / 100}${text6.lineHeight.unit === "PERCENT" ? "%" : ""}`;
         const spacing = text6.letterSpacing.value === 0 ? "" : ` \xB7 tracking ${Math.round(text6.letterSpacing.value * 100) / 100}${text6.letterSpacing.unit === "PERCENT" ? "%" : ""}`;
-        return `${text6.fontName.family} ${text6.fontName.style} ${text6.fontSize}/${height}${spacing}`;
+        const axes = text6.fontName.variationSettings;
+        const variations = axes ? ` \xB7 ${Object.entries(axes).map(([tag, value2]) => `${tag} ${value2}`).join(" ")}` : "";
+        return `${text6.fontName.family} ${text6.fontName.style} ${text6.fontSize}/${height}${variations}${spacing}`;
       }
       default:
         return grids(style.layoutGrids);
@@ -24796,7 +25448,7 @@ ${renderSections(sections)}
     }, ref.properties ? { properties: ref.properties } : {}), ref.opacity === void 0 ? {} : { opacity: ref.opacity }), ref.visible === void 0 ? {} : { visible: ref.visible });
   }
   async function buildGradient(ref) {
-    var _a;
+    var _a, _b;
     const { from, to } = gradientHandles(ref);
     const spread = ref.stops.length - 1;
     const stops = [];
@@ -24815,9 +25467,9 @@ ${renderSections(sections)}
         });
         continue;
       }
-      const rgb = parseHex(stop.color);
-      if (!rgb) throw new Error(`"${stop.color}" is not a colour`);
-      stops.push({ position: stop.at, color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha } });
+      const colour = colourFromText(stop.color);
+      if (!colour) throw new Error(`"${stop.color}" is not a colour`);
+      stops.push({ position: stop.at, color: __spreadProps(__spreadValues({}, colour), { a: (_b = stop.opacity) != null ? _b : colour.a }) });
     }
     stops.sort((left, right) => left.position - right.position);
     return __spreadValues({
@@ -24845,13 +25497,14 @@ ${renderSections(sections)}
       imageHash
     }, ref.opacity === void 0 ? {} : { opacity: ref.opacity });
   }
-  function solid4(hex, opacity) {
-    const rgb = parseHex(hex);
-    if (!rgb) throw new Error(`"${hex}" is not a colour`);
+  function solid4(text6, opacity) {
+    const colour = colourFromText(text6);
+    if (!colour) throw new Error(`"${text6}" is not a colour`);
+    const alpha = opacity != null ? opacity : colour.a < 1 ? colour.a : void 0;
     return __spreadValues({
       type: "SOLID",
-      color: { r: rgb.r, g: rgb.g, b: rgb.b }
-    }, opacity === void 0 ? {} : { opacity });
+      color: solidColourOf(colour)
+    }, alpha === void 0 ? {} : { opacity: alpha });
   }
   async function resolveParent(id) {
     if (id === "page") return figma.currentPage;
@@ -24908,21 +25561,22 @@ ${renderSections(sections)}
         continue;
       }
       const flat = entry;
-      const hex = `#${[flat.color.r, flat.color.g, flat.color.b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-      parts.push(flat.opacity !== void 0 && flat.opacity < 1 ? `${hex} @${flat.opacity}` : hex);
+      const hex2 = `#${[flat.color.r, flat.color.g, flat.color.b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+      parts.push(flat.opacity !== void 0 && flat.opacity < 1 ? `${hex2} @${flat.opacity}` : hex2);
     }
     return parts.join(" + ");
   }
   function hexOf2(color) {
-    const hex = `#${[color.r, color.g, color.b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-    return color.a !== void 0 && color.a < 1 ? `${hex} @${round11(color.a)}` : hex;
+    const hex2 = `#${[color.r, color.g, color.b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+    return color.a !== void 0 && color.a < 1 ? `${hex2} @${round11(color.a)}` : hex2;
   }
   async function describeAnimation(value2) {
     if (!Array.isArray(value2) || value2.length === 0) return "none";
     const lines = [];
     for (const style of value2) {
+      const place = style.timelineOffset ? ` +${Math.round(style.timelineOffset * 1e3) / 1e3}s` : "";
       if (style.type === "CUSTOM") {
-        lines.push(`${style.name || style.styleId} (custom)`);
+        lines.push(`${style.name || style.styleId} (custom)${place}`);
         continue;
       }
       lines.push(await (async () => {
@@ -24944,7 +25598,7 @@ ${renderSections(sections)}
         const rest = entries.length > MAX_ANIMATION_PROPS ? `, +${entries.length - MAX_ANIMATION_PROPS} more` : "";
         const called = (_e = (_d = (_c = animationStyleWord(style.name)) != null ? _c : animationStyleWord(style.styleId)) != null ? _d : style.name) != null ? _e : style.styleId;
         const seconds2 = style.duration === void 0 ? "" : ` ${Math.round(style.duration * 1e3) / 1e3}s`;
-        return `${called}${seconds2}${shown ? ` (${shown}${rest})` : ""}`;
+        return `${called}${seconds2}${place}${shown ? ` (${shown}${rest})` : ""}`;
       })());
     }
     return lines.join(" \xB7 ");
@@ -25031,8 +25685,8 @@ ${renderSections(sections)}
       }
       if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
         const { r, g, b, a } = effect.color;
-        const hex = `#${[r, g, b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-        const colour = await named("color", `${hex}${a === 1 ? "" : ` @${round11(a)}`}`);
+        const hex2 = `#${[r, g, b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+        const colour = await named("color", `${hex2}${a === 1 ? "" : ` @${round11(a)}`}`);
         const kind = effect.type === "DROP_SHADOW" ? "drop" : "inner";
         const spread = effect.spread || bound.spread ? ` spread ${await named("spread", (_b = effect.spread) != null ? _b : 0)}` : "";
         const x = await named("offsetX", effect.offset.x);
@@ -25079,13 +25733,7 @@ ${renderSections(sections)}
     for (const segment of segments) {
       const run = { from: segment.start, to: segment.end };
       const differs = (field, value2) => JSON.stringify(bag[field]) !== JSON.stringify(value2);
-      if (differs("fontName", segment.fontName)) {
-        const font = segment.fontName;
-        run.fontName = __spreadValues({
-          family: font.family,
-          style: font.style
-        }, font.variationSettings ? { variationSettings: __spreadValues({}, font.variationSettings) } : {});
-      }
+      if (differs("fontName", segment.fontName)) run.fontName = writableFont(segment.fontName);
       if (differs("fontSize", segment.fontSize)) run.fontSize = segment.fontSize;
       if (differs("fills", segment.fills)) run.fill = await describePaints(segment.fills);
       if (differs("textDecoration", segment.textDecoration)) run.textDecoration = segment.textDecoration;
@@ -25101,6 +25749,20 @@ ${renderSections(sections)}
     }
     return runs;
   }
+  function writableFont(value2) {
+    if (typeof value2 !== "object" || value2 === null || !("family" in value2) || typeof value2.family !== "string" || !("style" in value2) || typeof value2.style !== "string") {
+      return void 0;
+    }
+    const font = { family: value2.family, style: value2.style };
+    if ("variationSettings" in value2 && typeof value2.variationSettings === "object" && value2.variationSettings !== null) {
+      const axes = {};
+      for (const [tag, amount] of Object.entries(value2.variationSettings)) {
+        if (typeof amount === "number") axes[tag] = amount;
+      }
+      if (Object.keys(axes).length > 0) font.variationSettings = axes;
+    }
+    return font;
+  }
   function writableMeasure(value2) {
     if (typeof value2 !== "object" || value2 === null || !("unit" in value2)) return 0;
     const { unit, value: amount } = value2;
@@ -25113,7 +25775,8 @@ ${renderSections(sections)}
   var point = (value2) => value2 ? [round12(value2.x), round12(value2.y)] : void 0;
   var round12 = (value2) => Math.round(value2 * 100) / 100;
   function colourWords(colour) {
-    return formatHex({ r: colour.r, g: colour.g, b: colour.b }).toUpperCase();
+    var _a;
+    return (_a = authoredColourText(colour)) != null ? _a : formatHex({ r: colour.r, g: colour.g, b: colour.b }).toUpperCase();
   }
   async function readEffects(value2) {
     var _a, _b, _c, _d, _e, _f;
@@ -25232,23 +25895,23 @@ ${renderSections(sections)}
     return out;
   }
   async function describeShader(shader, definitions) {
-    var _a;
+    var _a, _b;
     const id = typeof (shader == null ? void 0 : shader.id) === "string" ? shader.id : "";
     const known = definitions == null ? void 0 : definitions.get(id);
-    const metadata = (shader == null ? void 0 : shader.propertyMetadata) && typeof shader.propertyMetadata === "object" ? shader.propertyMetadata : null;
-    const declared = (_a = metadata != null ? metadata : known == null ? void 0 : known.propertyDefinitions) != null ? _a : {};
+    const declared = (_a = known == null ? void 0 : known.propertyDefinitions) != null ? _a : {};
+    const metadata = (shader == null ? void 0 : shader.propertyMetadata) && typeof shader.propertyMetadata === "object" ? shader.propertyMetadata : {};
     const out = __spreadValues({
       id,
-      named: known !== void 0 || Object.keys(declared).length > 0
+      named: known !== void 0 || Object.keys(metadata).length > 0
     }, known ? { name: known.name, kind: known.type } : {});
     const properties = shader == null ? void 0 : shader.properties;
     if (properties && typeof properties === "object") {
       const described = [];
       for (const [defId, value2] of Object.entries(properties)) {
-        const definition = declared[defId];
-        described.push(__spreadProps(__spreadValues({
+        const definition = (_b = metadata[defId]) != null ? _b : declared[defId];
+        described.push(__spreadProps(__spreadValues(__spreadValues(__spreadValues({
           id: defId
-        }, definition ? { name: definition.name, type: definition.type } : {}), {
+        }, definition ? { name: definition.name, type: definition.type } : {}), (definition == null ? void 0 : definition.defaultValue) === void 0 ? {} : { default: definition.defaultValue }), (definition == null ? void 0 : definition.description) ? { description: definition.description } : {}), {
           value: await nameAliasesWithin(value2)
         }));
       }
@@ -25282,6 +25945,8 @@ ${renderSections(sections)}
     if (typeof (paint == null ? void 0 : paint.blendMode) === "string" && paint.blendMode !== "NORMAL") out.blendMode = paint.blendMode;
     if ((paint == null ? void 0 : paint.type) === "SOLID" && paint.color) {
       out.color = paintHex(paint.color);
+      const authored = authoredColourText(paint.color);
+      if (authored) out.authored = authored;
       if (typeof paint.opacity === "number" && paint.opacity < 1) out.alpha = paint.opacity;
       out.bound = await boundTokenName(paint, resolve2);
       return out;
@@ -25296,6 +25961,8 @@ ${renderSections(sections)}
           color: paintHex(stop.color),
           bound: await boundTokenName(stop, resolve2)
         };
+        const authored = authoredColourText(stop.color);
+        if (authored) described.authored = authored;
         if (typeof ((_b = stop.color) == null ? void 0 : _b.a) === "number" && stop.color.a < 1) described.alpha = stop.color.a;
         out.stops.push(described);
       }
@@ -26826,7 +27493,7 @@ ${scripts}`, "");
         }
       },
       async run(params) {
-        var _a, _b;
+        var _a, _b, _c;
         if (!hasMotionApi2()) {
           return {
             available: false,
@@ -26836,13 +27503,14 @@ ${scripts}`, "");
         }
         const root = await resolveSceneNode(params.nodeId);
         const sceneNodesById = await indexSceneNodes([root]);
+        const playhead = (_a = figma.motion.playheadPosition) != null ? _a : null;
         const motionNodes = [];
         for (const node of sceneNodesById.values()) {
           const snapshot = readMotionData(node);
           if (snapshot && snapshot.tracks.length > 0) motionNodes.push({ nodeId: node.id, snapshot });
         }
         if (motionNodes.length === 0) {
-          return { available: true, scanned: sceneNodesById.size, animated: [], files: [] };
+          return { available: true, scanned: sceneNodesById.size, playhead, animated: [], files: [] };
         }
         const trigger = params.trigger;
         const wantKeyframes = params.keyframes !== false;
@@ -26852,12 +27520,24 @@ ${scripts}`, "");
           const node = sceneNodesById.get(entry.nodeId);
           const tracks = entry.snapshot.tracks;
           const decision = web ? pickBackend({ tracks, nodeCount: 1, trigger }) : null;
-          animated.push(__spreadProps(__spreadValues({
+          animated.push(__spreadProps(__spreadValues(__spreadValues({
             nodeId: entry.nodeId,
-            name: (_a = node == null ? void 0 : node.name) != null ? _a : entry.nodeId,
-            type: (_b = node == null ? void 0 : node.type) != null ? _b : null,
+            name: (_b = node == null ? void 0 : node.name) != null ? _b : entry.nodeId,
+            type: (_c = node == null ? void 0 : node.type) != null ? _c : null,
             timelines: entry.snapshot.timelines.length
-          }, decision ? { backend: decision.backend, reason: decision.reason } : {}), {
+          }, entry.snapshot.animationStyles.length > 0 ? {
+            styles: entry.snapshot.animationStyles.map(
+              (style) => style.type === "CUSTOM" ? __spreadValues({
+                type: "CUSTOM",
+                name: style.name,
+                styleId: style.styleId
+              }, style.timelineOffset ? { offset: style.timelineOffset } : {}) : __spreadValues(__spreadValues({
+                type: "FIGMA",
+                name: style.name,
+                styleId: style.styleId
+              }, style.duration === void 0 ? {} : { duration: style.duration }), style.timelineOffset ? { offset: style.timelineOffset } : {})
+            )
+          } : {}), decision ? { backend: decision.backend, reason: decision.reason } : {}), {
             tracks: await Promise.all(
               tracks.map(async (track) => ({
                 field: track.field,
@@ -26881,6 +27561,7 @@ ${scripts}`, "");
           return {
             available: true,
             scanned: sceneNodesById.size,
+            playhead,
             target: "native",
             animated,
             files: [],
@@ -26894,6 +27575,7 @@ ${scripts}`, "");
         return {
           available: true,
           scanned: sceneNodesById.size,
+          playhead,
           animated,
           gsapPlugins: animation.gsapPlugins,
           files
@@ -26903,7 +27585,7 @@ ${scripts}`, "");
     {
       name: "paints.stack",
       summary: "Every layer of one node\u2019s fill sandwich, bottom to top \u2014 shader layers included.",
-      agent: "The op for \u201Cwhat is this thing actually painted with\u201D. `node.get` with paints:true answers the same question per node while walking a tree; this one answers it for one node and adds what only matters when you mean to rebuild the stack: the node\u2019s own opacity and blend mode under the paints, the style the paints came from, and a catalogue entry per shader in the stack. A shader paint carries no colour, no stops and no hash \u2014 its id and its settings are the whole of it, so they are reported in full, with any variable bound inside them named. Plugin API 1.141+ supplies property names on the applied shader itself; `named:false` now means an older host or a shader that omitted that metadata, not that every remote shader must be imported.",
+      agent: "The op for \u201Cwhat is this thing actually painted with\u201D. `node.get` with paints:true answers the same question per node while walking a tree; this one answers it for one node and adds what only matters when you mean to rebuild the stack: the node\u2019s own opacity and blend mode under the paints, the style the paints came from, and a catalogue entry per shader in the stack. A shader paint carries no colour, no stops and no hash \u2014 its id and its settings are the whole of it, so they are reported in full, with any variable bound inside them named. An applied shader hands its own setting names, types and defaults back with the paint, so the usual answer is named:true without importing anything; where the layer carries no such metadata the settings come back numbered with named:false \u2014 see `shaders[].why`. Read-only: nothing is imported into the file.",
       mutates: false,
       params: {
         nodeId: { type: "string", required: true, description: "The layer to take apart." },
@@ -26939,17 +27621,22 @@ ${scripts}`, "");
           const style = await figma.getStyleByIdAsync(id);
           return style ? style.name : id;
         };
+        const regionsOf = async (node) => {
+          const regions = regionFills(node);
+          return regions ? summarizeRegions(regions) : null;
+        };
         const describeLayer = async (node) => {
           const fills = await paintsOf2(node, "fills");
           const strokes = await paintsOf2(node, "strokes");
-          if (!fills && !strokes) return null;
+          const regions = await regionsOf(node);
+          if (!fills && !strokes && !regions) return null;
           const opacity = node.opacity;
           const blendMode = node.blendMode;
-          return __spreadValues(__spreadValues(__spreadValues(__spreadValues({
+          return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
             id: node.id,
             name: node.name,
             type: node.type
-          }, typeof opacity === "number" && opacity < 1 ? { opacity } : {}), typeof blendMode === "string" && blendMode !== "NORMAL" && blendMode !== "PASS_THROUGH" ? { blendMode } : {}), fills ? { fills, fillStyle: await styleName(node, "fillStyleId") } : {}), strokes ? { strokes, strokeStyle: await styleName(node, "strokeStyleId") } : {});
+          }, typeof opacity === "number" && opacity < 1 ? { opacity } : {}), typeof blendMode === "string" && blendMode !== "NORMAL" && blendMode !== "PASS_THROUGH" ? { blendMode } : {}), fills ? { fills, fillStyle: await styleName(node, "fillStyleId") } : {}), strokes ? { strokes, strokeStyle: await styleName(node, "strokeStyleId") } : {}), regions ? { regions } : {});
         };
         const layers = [];
         const first = await describeLayer(root);
@@ -26980,7 +27667,7 @@ ${scripts}`, "");
           }
         }
         const shaders = [...seen.values()].map((shader) => __spreadValues(__spreadValues({}, shader), shader.named ? {} : {
-          why: "Neither the applied shader metadata nor listAvailableShaders() named these settings. The ids below are stable and go back verbatim on a write; importing the shader can recover definitions on older hosts, but it is a write and not this op\u2019s to make."
+          why: "Neither this layer\u2019s shader metadata nor listAvailableShaders() could name the settings \u2014 an older Figma runtime, or a shader not offered here. The ids below are stable and go back verbatim on a write; to get names, import the shader into the file first (figma.importShaderById, see `shader.define`) \u2014 a write, and not this op\u2019s to make."
         }));
         return __spreadValues(__spreadValues({
           node: { id: root.id, name: root.name, type: root.type },
@@ -26990,8 +27677,8 @@ ${scripts}`, "");
     },
     {
       name: "shader.define",
-      summary: "Import a shader by id when an older host or metadata-poor shader cannot name its settings.",
-      agent: "Plugin API 1.141+ normally puts each setting definition in the applied shader\u2019s `propertyMetadata`, so `paints.stack` can name a shader without importing it. This write remains for older hosts, shaders that omit metadata, and workflows that need to materialise a shader before applying it elsewhere. It imports the ids you name and returns their definitions. Write-gated because `importShaderById` changes the file; a read must never make that choice. Ids come from `paints.stack` or `SHADER_LIST`.",
+      summary: "Import a shader by id so its settings get names \u2014 for the reads that come back unnamed.",
+      agent: "An applied shader usually names its own settings: Figma hands the definitions back on the paint/effect (`propertyMetadata`), so `paints.stack` reports `named: true` with names, types and defaults without any import. This op is for the leftovers \u2014 a runtime old enough not to supply that metadata, or an id you have but have not applied to anything \u2014 where a read can only show opaque setting ids (`2331874402:1925656642`) and answers `named: false`. It imports the ids you name and returns their definitions. Write-gated because `importShaderById` materialises the shader into the file \u2014 for a shader already on a layer that is a no-op, but it is the Plugin API call for putting one there, and an op does not get to decide that on the designer's behalf. Run it once; afterwards every read names the settings, because the shader is then in the catalogue. Ids come from `paints.stack` or `SHADER_LIST`.",
       mutates: true,
       params: {
         shaders: {
@@ -27018,6 +27705,23 @@ ${scripts}`, "");
           for (const shader of await figma.listAvailableShaders()) offered.set(shader.id, shader);
         } catch (e) {
         }
+        const namedOnCanvas = /* @__PURE__ */ new Set();
+        if (dryRun) {
+          const note = (entry) => {
+            const one = entry;
+            if ((one == null ? void 0 : one.type) !== "SHADER" || typeof one.id !== "string") return;
+            if (one.propertyMetadata && Object.keys(one.propertyMetadata).length > 0) namedOnCanvas.add(one.id);
+          };
+          const visit = (node) => {
+            for (const field of ["fills", "strokes", "effects"]) {
+              const bag = node[field];
+              if (Array.isArray(bag)) for (const entry of bag) note(entry);
+            }
+            if ("children" in node) for (const child of node.children) visit(child);
+          };
+          await figma.currentPage.loadAsync();
+          for (const node of figma.currentPage.children) visit(node);
+        }
         const results = [];
         for (const id of ids) {
           const before = offered.get(id);
@@ -27027,7 +27731,7 @@ ${scripts}`, "");
               ok: true,
               offeredAlready: before !== void 0
             }, before ? { name: before.name, kind: before.type, imported: before.imported } : {}), {
-              would: (before == null ? void 0 : before.propertyDefinitions) ? "nothing \u2014 the file already names it" : "import to read its settings"
+              would: namedOnCanvas.has(id) ? "nothing \u2014 the read already names it" : (before == null ? void 0 : before.propertyDefinitions) ? "nothing \u2014 the file already names it" : "import to read its settings"
             }));
             continue;
           }
@@ -27054,7 +27758,7 @@ ${scripts}`, "");
               ok: false,
               error: String((error == null ? void 0 : error.message) || error)
             }, offered.size === 0 ? {
-              why: "listAvailableShaders() offers nothing in this file, so no id can be imported \u2014 including the ids of shaders visibly in use here. The names of a shader's settings are then unreachable through the Plugin API; read them from the shader panel in Figma, or from the source the Figma MCP hands out (list_shaders \u2192 get_shader)."
+              why: "listAvailableShaders() offers nothing in this file, so no id can be imported \u2014 including the ids of shaders visibly in use here. Read the shader off a layer instead: an applied shader carries its own setting names (`paints.stack` \u2192 `named: true`). Failing that \u2014 an older Figma runtime \u2014 read them from the shader panel, or from the source the Figma MCP hands out (list_shaders \u2192 get_shader)."
             } : { offeredIds: [...offered.keys()].slice(0, 20) }));
           }
         }
@@ -27436,11 +28140,12 @@ ${scripts}`, "");
     }
     const textCase = single(node.textCase);
     const decoration = single(node.textDecoration);
-    return __spreadValues(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
+    return __spreadValues(__spreadValues(__spreadValues(__spreadProps(__spreadValues(__spreadProps(__spreadValues({
       family: (_c = font == null ? void 0 : font.family) != null ? _c : "mixed",
-      face: (_d = font == null ? void 0 : font.style) != null ? _d : "mixed",
+      face: (_d = font == null ? void 0 : font.style) != null ? _d : "mixed"
+    }, (font == null ? void 0 : font.variationSettings) ? { axes: font.variationSettings } : {}), {
       size: (_e = single(node.fontSize)) != null ? _e : 0
-    }, single(node.fontWeight) !== void 0 ? { weight: single(node.fontWeight) } : {}), {
+    }), single(node.fontWeight) !== void 0 ? { weight: single(node.fontWeight) } : {}), {
       lineHeight: measureText(node.lineHeight),
       letterSpacing: measureText(node.letterSpacing)
     }), textCase && textCase !== "ORIGINAL" ? { case: textCase } : {}), decoration && decoration !== "NONE" ? { decoration } : {}), Object.keys(tokens).length > 0 ? { tokens } : {});
@@ -27552,11 +28257,11 @@ ${scripts}`, "");
     const id = entry.id;
     return typeof id === "string" && id !== "" ? id : null;
   }
-  async function tokensByField(node, fields, resolve2) {
+  async function tokensByField(node, fields2, resolve2) {
     const bound = node.boundVariables;
     if (!bound || typeof bound !== "object") return {};
     const out = {};
-    for (const field of fields) {
+    for (const field of fields2) {
       const id = bindingId(bound[field]);
       if (!id) continue;
       const name = await resolve2(id);
@@ -28496,6 +29201,54 @@ ${scripts}`, "");
       ]
     },
     {
+      id: "component.repair",
+      title: "Find a deleted main component and put it back",
+      goal: "Every copy of a deleted main accounted for, the main rebuilt in the design system, and each copy repointed at it with the overrides it already carried.",
+      when: "Instances still render but have no main to edit: somebody deleted the component, or a library component vanished upstream. Also the playbook for retiring one component onto another.",
+      steps: [
+        {
+          op: "component.orphans",
+          why: "Finds the copies whose main is gone and groups them by the main that died \u2014 no other read distinguishes them from ordinary instances.",
+          params: { scope: "document" }
+        },
+        {
+          op: "component.instances",
+          why: "The blast radius before you touch anything: how many copies, on which pages, and the link to jump to each.",
+          params: { nodeId: "1:23" }
+        },
+        {
+          op: "node.focus",
+          why: "Put the copies in front of the designer \u2014 selection, not a description \u2014 before proposing a repair.",
+          params: { nodes: ["1:24", "1:25"] }
+        },
+        {
+          op: "component.restore",
+          why: "Dry run first: it names the component it would create, the page it lands on, and every copy it would relink.",
+          params: { restoreFrom: "1:24", dryRun: true }
+        },
+        {
+          op: "component.restore",
+          why: "The repair itself, behind one undo step. Read the per-copy report: preserved, restored, lost and unsupported are the contract, not the row count.",
+          params: { restoreFrom: "1:24" }
+        },
+        {
+          op: "component.instances",
+          why: "Verification from the other side: the restored main should now own exactly the copies the orphan groups held.",
+          params: { nodeId: "1:99" }
+        }
+      ],
+      checks: [
+        "The dead main is gone from component.orphans \u2014 not merely smaller.",
+        "Every relinked row reports no lost fields, or a reason you can state for each field that could not come back.",
+        "The screens that were repaired still read the way they did before the main disappeared."
+      ],
+      notes: [
+        "The restored component is the selected copy with its overrides baked in, so inspect the ranked restoreFrom source before running.",
+        "A restored component has a new key. Consumer files need the library republished and the update accepted there.",
+        "A copy nested inside another instance can only be swapped, never rebuilt in place."
+      ]
+    },
+    {
       id: "document.write",
       title: "Change the document safely",
       goal: "A write that lands where intended, and is visible to the designer watching the panel.",
@@ -28688,7 +29441,7 @@ ${scripts}`, "");
     return Math.abs(design - built) <= LENGTH_TOLERANCE;
   }
   function sameColor3(a, b) {
-    const norm = (hex) => hex.trim().toUpperCase().replace(/^#/, "").replace(/FF$/, "");
+    const norm = (hex2) => hex2.trim().toUpperCase().replace(/^#/, "").replace(/FF$/, "");
     return norm(a) === norm(b);
   }
   function agrees(design, built, unit, scale) {
@@ -29166,16 +29919,16 @@ ${scripts}`, "");
       return { type: effect.type, radius: 0, visible: effect.visible };
     });
   }
-  function letterSpacingOf(fields) {
-    if (fields.letterSpacing === void 0) return void 0;
-    return orMixed(fields.letterSpacing);
+  function letterSpacingOf(fields2) {
+    if (fields2.letterSpacing === void 0) return void 0;
+    return orMixed(fields2.letterSpacing);
   }
-  function lineHeightOf(fields) {
-    if (fields.lineHeight === void 0) return void 0;
-    return orMixed(fields.lineHeight);
+  function lineHeightOf(fields2) {
+    if (fields2.lineHeight === void 0) return void 0;
+    return orMixed(fields2.lineHeight);
   }
   function toDiffable2(node) {
-    const fields = node;
+    const fields2 = node;
     const children = node.children;
     return {
       id: node.id,
@@ -29185,31 +29938,31 @@ ${scripts}`, "");
       y: node.y,
       width: node.width,
       height: node.height,
-      rotation: typeof fields.rotation === "number" ? fields.rotation : void 0,
-      opacity: typeof fields.opacity === "number" ? fields.opacity : void 0,
-      visible: typeof fields.visible === "boolean" ? fields.visible : void 0,
-      blendMode: typeof fields.blendMode === "string" ? fields.blendMode : void 0,
-      cornerRadius: fields.cornerRadius === void 0 ? void 0 : orMixed(fields.cornerRadius),
-      topLeftRadius: typeof fields.topLeftRadius === "number" ? fields.topLeftRadius : void 0,
-      topRightRadius: typeof fields.topRightRadius === "number" ? fields.topRightRadius : void 0,
-      bottomRightRadius: typeof fields.bottomRightRadius === "number" ? fields.bottomRightRadius : void 0,
-      bottomLeftRadius: typeof fields.bottomLeftRadius === "number" ? fields.bottomLeftRadius : void 0,
-      fills: paintList(fields.fills),
-      strokes: paintList(fields.strokes),
-      strokeWeight: fields.strokeWeight === void 0 ? void 0 : orMixed(fields.strokeWeight),
-      strokeAlign: typeof fields.strokeAlign === "string" ? fields.strokeAlign : void 0,
-      effects: effectsList(fields.effects),
-      paddingTop: typeof fields.paddingTop === "number" ? fields.paddingTop : void 0,
-      paddingRight: typeof fields.paddingRight === "number" ? fields.paddingRight : void 0,
-      paddingBottom: typeof fields.paddingBottom === "number" ? fields.paddingBottom : void 0,
-      paddingLeft: typeof fields.paddingLeft === "number" ? fields.paddingLeft : void 0,
-      itemSpacing: typeof fields.itemSpacing === "number" ? fields.itemSpacing : void 0,
-      counterAxisSpacing: fields.counterAxisSpacing === null ? null : typeof fields.counterAxisSpacing === "number" ? fields.counterAxisSpacing : void 0,
-      fontSize: fields.fontSize === void 0 ? void 0 : orMixed(fields.fontSize),
-      fontWeight: fields.fontWeight === void 0 ? void 0 : orMixed(fields.fontWeight),
-      letterSpacing: letterSpacingOf(fields),
-      lineHeight: lineHeightOf(fields),
-      characters: typeof fields.characters === "string" ? fields.characters : void 0,
+      rotation: typeof fields2.rotation === "number" ? fields2.rotation : void 0,
+      opacity: typeof fields2.opacity === "number" ? fields2.opacity : void 0,
+      visible: typeof fields2.visible === "boolean" ? fields2.visible : void 0,
+      blendMode: typeof fields2.blendMode === "string" ? fields2.blendMode : void 0,
+      cornerRadius: fields2.cornerRadius === void 0 ? void 0 : orMixed(fields2.cornerRadius),
+      topLeftRadius: typeof fields2.topLeftRadius === "number" ? fields2.topLeftRadius : void 0,
+      topRightRadius: typeof fields2.topRightRadius === "number" ? fields2.topRightRadius : void 0,
+      bottomRightRadius: typeof fields2.bottomRightRadius === "number" ? fields2.bottomRightRadius : void 0,
+      bottomLeftRadius: typeof fields2.bottomLeftRadius === "number" ? fields2.bottomLeftRadius : void 0,
+      fills: paintList(fields2.fills),
+      strokes: paintList(fields2.strokes),
+      strokeWeight: fields2.strokeWeight === void 0 ? void 0 : orMixed(fields2.strokeWeight),
+      strokeAlign: typeof fields2.strokeAlign === "string" ? fields2.strokeAlign : void 0,
+      effects: effectsList(fields2.effects),
+      paddingTop: typeof fields2.paddingTop === "number" ? fields2.paddingTop : void 0,
+      paddingRight: typeof fields2.paddingRight === "number" ? fields2.paddingRight : void 0,
+      paddingBottom: typeof fields2.paddingBottom === "number" ? fields2.paddingBottom : void 0,
+      paddingLeft: typeof fields2.paddingLeft === "number" ? fields2.paddingLeft : void 0,
+      itemSpacing: typeof fields2.itemSpacing === "number" ? fields2.itemSpacing : void 0,
+      counterAxisSpacing: fields2.counterAxisSpacing === null ? null : typeof fields2.counterAxisSpacing === "number" ? fields2.counterAxisSpacing : void 0,
+      fontSize: fields2.fontSize === void 0 ? void 0 : orMixed(fields2.fontSize),
+      fontWeight: fields2.fontWeight === void 0 ? void 0 : orMixed(fields2.fontWeight),
+      letterSpacing: letterSpacingOf(fields2),
+      lineHeight: lineHeightOf(fields2),
+      characters: typeof fields2.characters === "string" ? fields2.characters : void 0,
       children: children ? children.map(toDiffable2) : void 0
     };
   }
@@ -29552,7 +30305,12 @@ ${scripts}`, "");
         const platform = String((_a = params.platform) != null ? _a : "web");
         const wants = (target) => platform === "all" || platform === target;
         const inline = params.inlinePrimitives !== false;
-        const snapshot = params.library === true ? await readAllVariables() : await readLocalVariables();
+        const read = params.library === true ? await readAllVariables() : await readLocalVariables();
+        const targets = await readAliasTargets(read).catch(() => ({ collections: [], variables: [] }));
+        const snapshot = {
+          collections: [...read.collections, ...targets.collections],
+          variables: [...read.variables, ...targets.variables]
+        };
         const artifacts = emitTokenArtifacts(snapshot, {
           inlinePrimitives: inline,
           flattenAliases: inline,
@@ -29633,9 +30391,9 @@ ${scripts}`, "");
     }
     throw new Error("no usable font \u2014 install Inter or Roboto");
   }
-  function solid5(hex, fallback = "#000000") {
+  function solid5(hex2, fallback = "#000000") {
     var _a, _b;
-    const color = (_b = (_a = parseColor2(hex)) != null ? _a : parseColor2(fallback)) != null ? _b : { r: 0, g: 0, b: 0, a: 1 };
+    const color = (_b = (_a = parseColor2(hex2)) != null ? _a : parseColor2(fallback)) != null ? _b : { r: 0, g: 0, b: 0, a: 1 };
     return { type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a };
   }
   function str(value2, fallback = "") {
@@ -29748,9 +30506,9 @@ ${scripts}`, "");
     const node = frame2(`status/${label3}`, "HORIZONTAL", 0);
     pad(node, 4, 10);
     node.cornerRadius = 999;
-    const hex = (_a = TONES[tone]) != null ? _a : TONES.neutral;
-    node.fills = [__spreadProps(__spreadValues({}, solid5(hex)), { opacity: 0.12 })];
-    node.appendChild(text2(label3, 11, "medium", hex));
+    const hex2 = (_a = TONES[tone]) != null ? _a : TONES.neutral;
+    node.fills = [__spreadProps(__spreadValues({}, solid5(hex2)), { opacity: 0.12 })];
+    node.appendChild(text2(label3, 11, "medium", hex2));
     return node;
   }
   async function renderBlock(raw, ctx) {
@@ -29778,14 +30536,14 @@ ${scripts}`, "");
       }
       case "callout": {
         const tone = str(spec.tone, "info");
-        const hex = (_a = TONES[tone]) != null ? _a : TONES.info;
+        const hex2 = (_a = TONES[tone]) != null ? _a : TONES.info;
         const node = frame2(`callout/${tone}`, "VERTICAL", 6);
         pad(node, 16, 20);
         node.cornerRadius = 16;
-        node.fills = [__spreadProps(__spreadValues({}, solid5(hex)), { opacity: 0.08 })];
-        node.strokes = [__spreadProps(__spreadValues({}, solid5(hex)), { opacity: 0.24 })];
+        node.fills = [__spreadProps(__spreadValues({}, solid5(hex2)), { opacity: 0.08 })];
+        node.strokes = [__spreadProps(__spreadValues({}, solid5(hex2)), { opacity: 0.24 })];
         node.strokeWeight = 1;
-        if (spec.title) node.appendChild(text2(str(spec.title), 14, "bold", hex));
+        if (spec.title) node.appendChild(text2(str(spec.title), 14, "bold", hex2));
         if (spec.text) node.appendChild(paragraph(str(spec.text), 13, "regular", chrome.ink, ctx.width - 200));
         return node;
       }
@@ -30290,16 +31048,21 @@ ${scripts}`, "");
       return known ? known.name : aliasId;
     }
     const channel = (value2) => Math.round(value2 * 255).toString(16).padStart(2, "0");
-    const hex = `#${channel(paint.color.r)}${channel(paint.color.g)}${channel(paint.color.b)}`;
-    return paint.opacity !== void 0 && paint.opacity < 1 ? `${hex} ${Math.round(paint.opacity * 100)}%` : hex;
+    const hex2 = `#${channel(paint.color.r)}${channel(paint.color.g)}${channel(paint.color.b)}`;
+    return paint.opacity !== void 0 && paint.opacity < 1 ? `${hex2} ${Math.round(paint.opacity * 100)}%` : hex2;
   }
-  async function bindPaints(node, prop, variable, paintIndex, dryRun) {
-    const styleId = node[prop === "fills" ? "fillStyleId" : "strokeStyleId"];
-    if (typeof styleId === "string" && styleId !== "") {
+  async function bindPaints(node, prop, variable, paintIndex, dryRun, region) {
+    const styleId2 = node[prop === "fills" ? "fillStyleId" : "strokeStyleId"];
+    if (typeof styleId2 === "string" && styleId2 !== "") {
       throw new Error(`${prop} come from a paint style \u2014 unlink it first, or the binding would break the style`);
     }
     const paints2 = node[prop];
-    if (!Array.isArray(paints2)) throw new Error(`${prop} are unreadable on this node`);
+    if (!Array.isArray(paints2)) {
+      const regions = prop === "fills" ? regionFills(node) : null;
+      if (regions) return bindRegionPaints(node, regions, variable, paintIndex, region, dryRun);
+      throw new Error(`${prop} are unreadable on this node`);
+    }
+    if (region !== void 0) throw new Error(`"region" only applies to a vector whose fills differ per region`);
     const next = paints2.slice();
     const touched = [];
     const was = [];
@@ -30318,6 +31081,41 @@ ${scripts}`, "");
       detail: touched.length === next.length ? prop : `${prop}[${touched.join(",")}]`,
       before: was.join(" ")
     };
+  }
+  async function bindRegionPaints(node, regions, variable, paintIndex, region, dryRun) {
+    if (region !== void 0 && !regions.some((one) => one.region === region)) {
+      throw new Error(`no region ${region} \u2014 this vector has ${regions.length}`);
+    }
+    const next = /* @__PURE__ */ new Map();
+    const touched = [];
+    const was = [];
+    for (const one of regions) {
+      if (region !== void 0 && one.region !== region) continue;
+      if (one.fillStyleId) {
+        if (region !== void 0) {
+          throw new Error(`regions[${one.region}] fills come from a paint style \u2014 unlink it first, or the binding would break the style`);
+        }
+        continue;
+      }
+      const fills = one.fills.slice();
+      let changed = false;
+      for (let i = 0; i < fills.length; i++) {
+        if (paintIndex !== void 0 && i !== paintIndex) continue;
+        if (fills[i].type !== "SOLID") continue;
+        was.push(`regions[${one.region}].fills[${i}]=${await describePriorPaint(fills[i])}`);
+        fills[i] = figma.variables.setBoundVariableForPaint(fills[i], "color", variable);
+        touched.push(`regions[${one.region}].fills[${i}]`);
+        changed = true;
+      }
+      if (changed) next.set(one.region, fills);
+    }
+    if (touched.length === 0) {
+      throw new Error(
+        paintIndex === void 0 ? "no solid paint in any region" : `no region has a solid paint at fills[${paintIndex}]`
+      );
+    }
+    if (!dryRun) await writeRegionFills(node, next);
+    return { detail: touched.join(","), before: was.join(" ") };
   }
   var MARKDOWN_SUPPORTED = [
     "paragraphs (blank line)",
@@ -30439,6 +31237,27 @@ ${scripts}`, "");
     }
     const bound = main.boundVariables;
     return (_c = bound == null ? void 0 : bound[job.field]) == null ? void 0 : _c.id;
+  }
+  async function resolveStyleRef(ref, kind, local) {
+    var _a, _b;
+    const direct = local.find((one) => one.id === ref || one.key === ref);
+    if (direct) return direct;
+    const named = local.filter((one) => one.name.toLowerCase() === ref.toLowerCase());
+    if (named.length > 1) throw new Error(`"${ref}" names ${named.length} styles \u2014 pass an id instead`);
+    if (named.length === 1) return named[0];
+    const check = (style) => {
+      if (style.type !== kind) throw new Error(`${ref} is a ${style.type} style, not ${kind}`);
+      return style;
+    };
+    const byId = await figma.getStyleByIdAsync(ref).catch(() => null);
+    if (byId) return check(byId);
+    const key = (_b = (_a = /^S:([0-9a-f]{40}),/.exec(ref)) == null ? void 0 : _a[1]) != null ? _b : /^[0-9a-f]{40}$/.test(ref) ? ref : null;
+    if (key) {
+      const imported = await figma.importStyleByKeyAsync(key).catch(() => null);
+      if (imported) return check(imported);
+      throw new Error(`library style ${key} could not be imported \u2014 is its library enabled for this file and published?`);
+    }
+    throw new Error(`no local ${kind.toLowerCase()} style "${ref}" \u2014 a library style needs its id or key (node.get reports textStyle.id), or "like" with a layer that has it`);
   }
   var WRITE_OPS = [
     {
@@ -30756,7 +31575,7 @@ ${scripts}`, "");
         bindings: {
           type: "json",
           required: true,
-          description: 'Array of { node, field, variable, paintIndex? }. `node` is a layer id, as returned by `lint.colors` or `node.find`. `field` is "fill" / "stroke", a group name ("cornerRadius", "padding"), or a scalar field (width, height, topLeftRadius, itemSpacing, paddingLeft, strokeWeight, opacity, visible, characters, \u2026). Layer `opacity` takes a FLOAT variable scoped OPACITY. `variable` is an id, a name ("Colors/orange/500") or a library key from `library.variables`; null unbinds. `paintIndex` narrows a fill/stroke color binding to one solid paint; COLOR_OPACITY is not yet writable through the Plugin API.'
+          description: 'Array of { node, field, variable, paintIndex? }. `node` is a layer id, as returned by `lint.colors` or `node.find`. `field` is "fill" / "stroke", a group name ("cornerRadius", "padding"), or a scalar field (width, height, topLeftRadius, itemSpacing, paddingLeft, strokeWeight, opacity, visible, characters, \u2026). Layer `opacity` takes a FLOAT variable scoped OPACITY. `variable` is an id, a name ("Colors/orange/500") or a library key from `library.variables`; null unbinds. `paintIndex` narrows a fill/stroke color binding to one solid paint; COLOR_OPACITY is not yet writable through the Plugin API. `region` narrows a fill on a vector painted per region (its fills read as mixed) to one region of its network; without it every region\'s solid paints are bound.'
         },
         dryRun: {
           type: "boolean",
@@ -30801,6 +31620,8 @@ ${scripts}`, "");
             if (paintIndex !== void 0 && !Number.isInteger(paintIndex)) {
               throw new Error('"paintIndex" must be a whole number');
             }
+            const region = entry.region === void 0 ? void 0 : Number(entry.region);
+            if (region !== void 0 && !Number.isInteger(region)) throw new Error('"region" must be a whole number');
             const target = await resolveEditableTarget(node);
             const where = target.kind === "library" ? "instance override" : target.onMainComponent ? "main component" : "node";
             for (const one of expandBindField(field)) {
@@ -30814,7 +31635,7 @@ ${scripts}`, "");
                 let before;
                 if (one in PAINT_FIELDS) {
                   const applyTo = target.kind === "library" ? node : target.node;
-                  const done = await bindPaints(applyTo, PAINT_FIELDS[one], variable, paintIndex, dryRun);
+                  const done = await bindPaints(applyTo, PAINT_FIELDS[one], variable, paintIndex, dryRun, region);
                   detail = done.detail;
                   before = done.before;
                 } else {
@@ -30882,14 +31703,14 @@ ${scripts}`, "");
     },
     {
       name: "style.bind",
-      summary: "Bind a paint style \u2014 solid paint, or one gradient stop \u2014 to a variable, and verify it stuck.",
-      agent: "stop is the position in percent \u2014 the same number a pNN token name carries. Gradient-stop binding is undocumented API, so the op re-reads the style and reports verified.",
+      summary: "Bind a style to a variable \u2014 a paint style's solid paint or gradient stop, or a text style's font family, size, line height\u2026 \u2014 and verify it stuck.",
+      agent: "stop is the position in percent \u2014 the same number a pNN token name carries. Gradient-stop binding is undocumented API, so the op re-reads the style and reports verified. With `field`, the row targets a TEXT style instead: fontFamily/fontStyle take a STRING variable, the rest a FLOAT.",
       mutates: true,
       params: {
         bindings: {
           type: "json",
           required: true,
-          description: 'Array of { style, paint?, stop?, variable }. `style` is a style id, key or name from `styles.list`. `paint` is the index in the style (default 0). `stop` is a gradient stop POSITION IN PERCENT \u2014 the same number a `pNN` token name carries \u2014 omitted for a solid paint. `variable` is an id, a name ("Colors/orange/500") or a library key; null unbinds.'
+          description: 'Array of { style, paint?, stop?, field?, variable }. `style` is a style id, key or name from `styles.list`. `paint` is the index in the style (default 0). `stop` is a gradient stop POSITION IN PERCENT \u2014 the same number a `pNN` token name carries \u2014 omitted for a solid paint. `field` makes the row a TEXT style binding instead: fontFamily, fontStyle, fontWeight, fontSize, lineHeight, letterSpacing, paragraphSpacing or paragraphIndent. `variable` is an id, a name ("Colors/orange/500") or a library key; null unbinds.'
         },
         dryRun: { type: "boolean", default: false, description: "Report what would change without writing anything." }
       },
@@ -30923,6 +31744,51 @@ ${scripts}`, "");
           var _a2, _b2;
           return id ? (_b2 = (_a2 = await figma.variables.getVariableByIdAsync(id)) == null ? void 0 : _a2.name) != null ? _b2 : id : null;
         };
+        const TEXT_FIELDS = {
+          fontFamily: "STRING",
+          fontStyle: "STRING",
+          fontWeight: "FLOAT",
+          fontSize: "FLOAT",
+          lineHeight: "FLOAT",
+          letterSpacing: "FLOAT",
+          paragraphSpacing: "FLOAT",
+          paragraphIndent: "FLOAT"
+        };
+        let textStyles = null;
+        const findTextStyle = async (ref) => {
+          if (typeof ref !== "string" || ref === "") throw new Error('missing "style"');
+          textStyles = textStyles != null ? textStyles : await figma.getLocalTextStylesAsync();
+          const byId = textStyles.find((style) => style.id === ref || style.key === ref || style.id === `${ref},`);
+          if (byId) return byId;
+          const named = textStyles.filter((style) => style.name.toLowerCase() === ref.toLowerCase());
+          if (named.length === 1) return named[0];
+          if (named.length > 1) throw new Error(`"${ref}" names ${named.length} text styles \u2014 pass an id instead`);
+          throw new Error(`no local text style "${ref}"`);
+        };
+        const bindText = async (entry) => {
+          var _a2, _b2, _c2, _d2;
+          const field = String(entry.field);
+          const kind = TEXT_FIELDS[field];
+          if (!kind) throw new Error(`"${field}" is not a text style field \u2014 one of ${Object.keys(TEXT_FIELDS).join(", ")}`);
+          const style = await findTextStyle(entry.style);
+          const variable = entry.variable === null ? null : await resolveVariableRef(entry.variable);
+          if (variable && variable.resolvedType !== kind) {
+            throw new Error(`"${variable.name}" is ${variable.resolvedType}, but ${field} takes ${kind}`);
+          }
+          const bound2 = style.boundVariables;
+          const before = await nameOf((_a2 = bound2 == null ? void 0 : bound2[field]) == null ? void 0 : _a2.id);
+          const row = { style: style.name, field, before, variable: variable ? variable.name : null };
+          if (dryRun) return __spreadProps(__spreadValues({}, row), { ok: true, verified: null });
+          await figma.loadFontAsync(style.fontName);
+          style.setBoundVariable(field, variable);
+          const written = await figma.getStyleByIdAsync(style.id);
+          const landed = (_d2 = (_c2 = (_b2 = written == null ? void 0 : written.boundVariables) == null ? void 0 : _b2[field]) == null ? void 0 : _c2.id) != null ? _d2 : null;
+          const verified = variable ? landed === variable.id : landed === null;
+          return __spreadValues(__spreadProps(__spreadValues(__spreadValues({}, row), written ? { holds: `${written.fontName.family} ${written.fontName.style}` } : {}), {
+            ok: verified,
+            verified
+          }), verified ? {} : { error: "the runtime accepted the write but the binding did not persist" });
+        };
         const results = [];
         for (const [index2, raw] of rows.entries()) {
           const label3 = `bindings[${index2}]`;
@@ -30930,6 +31796,10 @@ ${scripts}`, "");
             const entry = record(raw, label3);
             if (!Object.prototype.hasOwnProperty.call(entry, "variable")) {
               throw new Error('missing "variable" \u2014 pass null explicitly to unbind');
+            }
+            if (entry.field !== void 0) {
+              results.push(await bindText(entry));
+              continue;
             }
             const style = await findStyle(entry.style);
             const paintIndex = entry.paint === void 0 ? 0 : Number(entry.paint);
@@ -30999,13 +31869,13 @@ ${scripts}`, "");
     {
       name: "node.style",
       summary: "Apply a style to layers \u2014 or detach them \u2014 and verify it took. Re-attaches what drifted.",
-      agent: "Applying a style replaces what the layer renders \u2014 the report names the displaced paints. null detaches, keeping pixels.",
+      agent: 'Applying a style replaces what the layer renders \u2014 the report names the displaced paints. null detaches, keeping pixels. Library styles work too: pass the id `node.get` reports as textStyle.id (or a published key), or `like` \u2014 another layer whose style this one should take, the usual way to say "the same as its neighbour".',
       mutates: true,
       params: {
         assignments: {
           type: "json",
           required: true,
-          description: 'Array of { node, field, style }. `field` is "fill", "stroke", "text", "effect" or "grid". `style` is a style id, key or name from `styles.list`; null detaches, leaving the layer with whatever it currently renders.'
+          description: 'Array of { node, field, style } or { node, field, like }. `field` is "fill", "stroke", "text", "effect" or "grid". `style` is a local style\'s id, key or name from `styles.list`, or a library style\'s id ("S:<key>,<id>", as `node.get` reports it) or published key \u2014 imported when the file does not have it yet; null detaches, leaving the layer with whatever it currently renders. `like` is a layer id: this layer takes whatever style that one has in the same field.'
         },
         dryRun: { type: "boolean", default: false, description: "Report what would change without writing anything." }
       },
@@ -31015,7 +31885,7 @@ ${scripts}`, "");
         if (!Array.isArray(rows)) throw new Error('"assignments" must be an array');
         const dryRun = params.dryRun === true;
         if (!dryRun) figma.commitUndo();
-        const FIELDS = {
+        const FIELDS2 = {
           fill: { prop: "fillStyleId", setter: "setFillStyleIdAsync", kind: "PAINT" },
           stroke: { prop: "strokeStyleId", setter: "setStrokeStyleIdAsync", kind: "PAINT" },
           text: { prop: "textStyleId", setter: "setTextStyleIdAsync", kind: "TEXT" },
@@ -31043,10 +31913,11 @@ ${scripts}`, "");
             nodeId = String((_a = entry.node) != null ? _a : "");
             if (!nodeId) throw new Error('missing "node"');
             const fieldName = String((_b = entry.field) != null ? _b : "");
-            const field = FIELDS[fieldName];
-            if (!field) throw new Error(`"${fieldName}" is not a style field \u2014 try: ${Object.keys(FIELDS).join(", ")}`);
-            if (!Object.prototype.hasOwnProperty.call(entry, "style")) {
-              throw new Error('missing "style" \u2014 pass null explicitly to detach');
+            const field = FIELDS2[fieldName];
+            if (!field) throw new Error(`"${fieldName}" is not a style field \u2014 try: ${Object.keys(FIELDS2).join(", ")}`);
+            const hasLike = typeof entry.like === "string" && entry.like !== "";
+            if (!hasLike && !Object.prototype.hasOwnProperty.call(entry, "style")) {
+              throw new Error('missing "style" \u2014 pass null explicitly to detach, or "like" with a layer id');
             }
             const found = await figma.getNodeByIdAsync(nodeId);
             if (!found || found.type === "PAGE" || found.type === "DOCUMENT") {
@@ -31055,18 +31926,22 @@ ${scripts}`, "");
             const node = found;
             const holder = node;
             if (!(field.prop in holder)) throw new Error(`a ${node.type} has no "${fieldName}" style`);
-            let styleId = "";
+            let ref = entry.style;
+            if (hasLike) {
+              const model = await figma.getNodeByIdAsync(entry.like);
+              if (!model || model.type === "PAGE" || model.type === "DOCUMENT") throw new Error(`no layer with id ${entry.like} to take the style from`);
+              const theirs = model[field.prop];
+              if (theirs === figma.mixed) throw new Error(`${model.name} has more than one ${fieldName} style \u2014 name one instead`);
+              if (typeof theirs !== "string" || theirs === "") throw new Error(`${model.name} has no ${fieldName} style to copy`);
+              ref = theirs;
+            }
+            let styleId2 = "";
             let styleName = null;
-            if (entry.style !== null) {
-              const ref = entry.style;
+            if (ref !== null) {
               if (typeof ref !== "string" || ref === "") throw new Error('"style" must be a non-empty string, or null');
-              const pool = await localOf(field.kind);
-              const direct = pool.find((one) => one.id === ref || one.key === ref);
-              const named = direct ? [direct] : pool.filter((one) => one.name.toLowerCase() === ref.toLowerCase());
-              if (named.length === 0) throw new Error(`no local ${field.kind.toLowerCase()} style "${ref}"`);
-              if (named.length > 1) throw new Error(`"${ref}" names ${named.length} styles \u2014 pass an id instead`);
-              styleId = named[0].id;
-              styleName = named[0].name;
+              const found2 = await resolveStyleRef(ref, field.kind, await localOf(field.kind));
+              styleId2 = found2.id;
+              styleName = found2.name;
             }
             const before = await nameOfStyle(holder[field.prop]);
             const displaced = Array.isArray(holder.fills) ? `${holder.fills.length} local paint(s)` : void 0;
@@ -31083,9 +31958,10 @@ ${scripts}`, "");
               }));
               continue;
             }
-            await holder[field.setter].call(node, styleId);
-            const after = await nameOfStyle(node[field.prop]);
-            const verified = styleName === null ? after === null : after === styleName;
+            await holder[field.setter].call(node, styleId2);
+            const afterId = node[field.prop];
+            const after = await nameOfStyle(afterId);
+            const verified = styleName === null ? after === null : afterId === styleId2;
             results.push(__spreadValues(__spreadProps(__spreadValues({
               node: nodeId,
               name: node.name,
@@ -31113,7 +31989,7 @@ ${scripts}`, "");
         styles: {
           type: "string[]",
           required: true,
-          description: "Styles to delete, each an id, a key or an exact name from `styles.list`."
+          description: "Styles to delete, each an id, a key or an exact name from `styles.list` \u2014 paint, text, effect, grid or custom animation."
         },
         dryRun: {
           type: "boolean",
@@ -31137,7 +32013,8 @@ ${scripts}`, "");
           figma.getLocalPaintStylesAsync(),
           figma.getLocalTextStylesAsync(),
           figma.getLocalEffectStylesAsync(),
-          figma.getLocalGridStylesAsync()
+          figma.getLocalGridStylesAsync(),
+          figma.getLocalCustomAnimationStylesAsync()
         ]);
         const all = pools.flat();
         const results = [];
@@ -31217,7 +32094,7 @@ ${scripts}`, "");
         }
       },
       async run(params) {
-        var _a, _b, _c, _d, _e, _f, _g;
+        var _a, _b, _c, _d, _e, _f, _g, _h;
         const rows = asArray(params.map, "map");
         const dryRun = params.dryRun === true;
         const wantOverrides = params.overrides === true;
@@ -31270,6 +32147,7 @@ ${scripts}`, "");
         const aliasTo2 = (to) => ({ type: "VARIABLE_ALIAS", id: to.id });
         const textJobs = [];
         const textFillJobs = [];
+        const regionJobs = [];
         const styled = (value2) => value2 !== void 0 && value2 !== "";
         const writeErrors = [];
         const overrideJobs = [];
@@ -31380,7 +32258,22 @@ ${scripts}`, "");
           for (const prop of ["fills", "strokes"]) {
             if (styled(holder[prop === "fills" ? "fillStyleId" : "strokeStyleId"])) continue;
             const paints2 = holder[prop];
-            if (!Array.isArray(paints2)) continue;
+            if (!Array.isArray(paints2)) {
+              const regions = prop === "fills" ? regionFills(node) : null;
+              if (!regions) continue;
+              let hits = 0;
+              for (const one of regions) {
+                if (one.fillStyleId) continue;
+                for (const paint of one.fills) {
+                  const at = paint.type === "SOLID" ? pairByFromId.get(paintAliasId(paint)) : void 0;
+                  if (at === void 0) continue;
+                  pairs[at].matched += 1;
+                  hits += 1;
+                }
+              }
+              if (hits > 0 && !dryRun) regionJobs.push(node);
+              continue;
+            }
             let next = null;
             paints2.forEach((paint, index2) => {
               var _a3, _b3, _c3;
@@ -31653,6 +32546,33 @@ ${scripts}`, "");
           } catch (err) {
             if (writeErrors.length < 5) {
               writeErrors.push(`${node.name} (${node.id}) segment fills: ${String((err == null ? void 0 : err.message) || err)}`);
+            }
+          }
+        }
+        for (const node of regionJobs) {
+          const regions = (_h = regionFills(node)) != null ? _h : [];
+          const next = /* @__PURE__ */ new Map();
+          const counted = [];
+          for (const one of regions) {
+            if (one.fillStyleId) continue;
+            let fills = null;
+            one.fills.forEach((paint, index2) => {
+              const at = paint.type === "SOLID" ? pairByFromId.get(paintAliasId(paint)) : void 0;
+              if (at === void 0) return;
+              fills = fills != null ? fills : one.fills.slice();
+              fills[index2] = figma.variables.setBoundVariableForPaint(fills[index2], "color", pairs[at].to);
+              counted.push(at);
+            });
+            if (fills) next.set(one.region, fills);
+          }
+          if (next.size === 0) continue;
+          try {
+            await writeRegionFills(node, next);
+            for (const at of counted) pairs[at].rebound += 1;
+          } catch (err) {
+            for (const at of counted) pairs[at].failed += 1;
+            if (writeErrors.length < 5) {
+              writeErrors.push(`${node.name} (${node.id}) region fills: ${String((err == null ? void 0 : err.message) || err)}`);
             }
           }
         }
@@ -32216,7 +33136,7 @@ ${scripts}`, "");
   ];
 
   // src/agent/props-vocabulary.ts
-  var INJECTED = `[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer's mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"sizing","type":"{ horizontal?: SizingMode; vertical?: SizingMode }","note":"How each axis is sized inside the parent \u2014 the same thing \`layout.sizing\` says, and the word a read gives back."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see \`layout.sizing\`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; \`layout.sizing\` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent's auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. \`null\` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"'MIN' | 'CENTER' | 'MAX' | 'AUTO'","note":"GRID only: how the child sits in its cell."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up; \\"none\\" or null clears it."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes \`fill\` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"'INSIDE' | 'OUTSIDE' | 'CENTER'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'","note":"How an open end is finished."},{"name":"strokeJoin","type":"'MITER' | 'BEVEL' | 'ROUND'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. \`[]\` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw's brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. \`[]\` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. \`[]\` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Figma Motion animation styles on this node. \`null\` or \`[]\` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"FontSpec","note":"Static font name or variable-font family plus OpenType axes."},{"name":"textAlign","type":"'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | 'AUTO' | \`\${number}%\` | \`\${number}px\`","note":"Pixels (\`16\` or \`\\"16px\\"\`), a percentage of the font size like \`\\"150%\\"\`, or AUTO to follow the font."},{"name":"letterSpacing","type":"number | \`\${number}%\` | \`\${number}px\`","note":"Pixels between characters (\`1\` or \`\\"1px\\"\`), or a percentage like \`\\"5%\\"\`; negative tightens."},{"name":"autoResize","type":"'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'","note":"Whether the box follows the text, and in which direction."},{"name":"verticalAlign","type":"'TOP' | 'CENTER' | 'BOTTOM'","note":"Where the text sits in a box taller than itself."},{"name":"textCase","type":"'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE' | 'SMALL_CAPS' | 'SMALL_CAPS_FORCED'","note":"Capitals, small capitals, or the letters as typed."},{"name":"textDecoration","type":"'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'","note":"A line under the words, through them, or neither."},{"name":"paragraphSpacing","type":"number","note":"Space between paragraphs, in pixels."},{"name":"paragraphIndent","type":"number","note":"How far the first line of each paragraph is pushed in."},{"name":"truncate","type":"boolean","note":"Cut the text with an ellipsis when it will not fit."},{"name":"maxLines","type":"number | null","note":"Stop after this many lines. \`null\` lets it run on."},{"name":"link","type":"string | null","note":"A link on the whole layer. \`null\` removes it."},{"name":"listSpacing","type":"number","note":"Space between list items."},{"name":"hangingPunctuation","type":"boolean","note":"Whether punctuation may hang outside the text box."},{"name":"hangingList","type":"boolean","note":"Whether list markers hang outside the text box."},{"name":"leadingTrim","type":"'NONE' | 'CAP_HEIGHT'","note":"Trim the space a font reserves above and below its letters."},{"name":"autoRename","type":"boolean","note":"Whether the layer renames itself when the text changes."},{"name":"textWrap","type":"'AUTO' | 'BALANCE' | 'PRETTY'","note":"How lines are broken: \`AUTO\`, \`BALANCE\` (even lines) or \`PRETTY\` (no orphans)."},{"name":"strokeProfile","type":"'UNIFORM' | 'WEDGE' | 'TAPER' | 'QUARTER_TAPER' | 'EYE' | 'MIRRORED_TAPER' | Array<{ at: number; width: number }> | null","note":"How the stroke's width varies along its length \u2014 a named profile, or points of your own."},{"name":"keyframes","type":"KeyframeTrack[]","note":"Movement on a timeline: \`[{ field: \\"opacity\\", from: 0, at: [{ time: 0, value: 0 }, \u2026] }]\`."},{"name":"timeline","type":"number","note":"How long this node's timeline runs, in seconds."},{"name":"overrides","type":"Array<{ at: string; props: unknown }>","note":"INSTANCE only: what the designer changed INSIDE it \u2014 \`[{ at: \\"<child id within the instance>\\", props }]\`."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE only: throw away every override first."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin's own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma's parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. \`null\` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame's first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent's children it sits; 0 is first."}]`;
+  var INJECTED = `[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer's mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"sizing","type":"{ horizontal?: SizingMode; vertical?: SizingMode }","note":"How each axis is sized inside the parent \u2014 the same thing \`layout.sizing\` says, and the word a read gives back."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see \`layout.sizing\`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; \`layout.sizing\` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent's auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. \`null\` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"'MIN' | 'CENTER' | 'MAX' | 'AUTO'","note":"GRID only: how the child sits in its cell."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up; \\"none\\" or null clears it."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes \`fill\` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"'INSIDE' | 'OUTSIDE' | 'CENTER'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'","note":"How an open end is finished."},{"name":"strokeJoin","type":"'MITER' | 'BEVEL' | 'ROUND'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. \`[]\` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw's brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. \`[]\` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. \`[]\` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Animation styles on this node \u2014 Figma's own, or this file's custom ones. \`null\` or \`[]\` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"FontSpec","note":"Static font name or variable-font family plus OpenType axes."},{"name":"textAlign","type":"'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | 'AUTO' | \`\${number}%\` | \`\${number}px\`","note":"Pixels (\`16\` or \`\\"16px\\"\`), a percentage of the font size like \`\\"150%\\"\`, or AUTO to follow the font."},{"name":"letterSpacing","type":"number | \`\${number}%\` | \`\${number}px\`","note":"Pixels between characters (\`1\` or \`\\"1px\\"\`), or a percentage like \`\\"5%\\"\`; negative tightens."},{"name":"autoResize","type":"'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'","note":"Whether the box follows the text, and in which direction."},{"name":"verticalAlign","type":"'TOP' | 'CENTER' | 'BOTTOM'","note":"Where the text sits in a box taller than itself."},{"name":"textCase","type":"'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE' | 'SMALL_CAPS' | 'SMALL_CAPS_FORCED'","note":"Capitals, small capitals, or the letters as typed."},{"name":"textDecoration","type":"'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'","note":"A line under the words, through them, or neither."},{"name":"paragraphSpacing","type":"number","note":"Space between paragraphs, in pixels."},{"name":"paragraphIndent","type":"number","note":"How far the first line of each paragraph is pushed in."},{"name":"truncate","type":"boolean","note":"Cut the text with an ellipsis when it will not fit."},{"name":"maxLines","type":"number | null","note":"Stop after this many lines. \`null\` lets it run on."},{"name":"link","type":"string | null","note":"A link on the whole layer. \`null\` removes it."},{"name":"listSpacing","type":"number","note":"Space between list items."},{"name":"hangingPunctuation","type":"boolean","note":"Whether punctuation may hang outside the text box."},{"name":"hangingList","type":"boolean","note":"Whether list markers hang outside the text box."},{"name":"leadingTrim","type":"'NONE' | 'CAP_HEIGHT'","note":"Trim the space a font reserves above and below its letters."},{"name":"autoRename","type":"boolean","note":"Whether the layer renames itself when the text changes."},{"name":"textWrap","type":"'AUTO' | 'BALANCE' | 'PRETTY'","note":"How lines are broken: \`AUTO\`, \`BALANCE\` (even lines) or \`PRETTY\` (no orphans)."},{"name":"strokeProfile","type":"'UNIFORM' | 'WEDGE' | 'TAPER' | 'QUARTER_TAPER' | 'EYE' | 'MIRRORED_TAPER' | Array<{ at: number; width: number }> | null","note":"How the stroke's width varies along its length \u2014 a named profile, or points of your own."},{"name":"keyframes","type":"KeyframeTrack[]","note":"Movement on a timeline: \`[{ field: \\"opacity\\", from: 0, at: [{ time: 0, value: 0 }, \u2026] }]\`. A \`time\` of \`\\"playhead\\"\` is wherever the designer has the Motion timeline parked."},{"name":"timeline","type":"number","note":"How long this node's timeline runs, in seconds."},{"name":"overrides","type":"Array<{ at: string; props: unknown }>","note":"INSTANCE only: what the designer changed INSIDE it \u2014 \`[{ at: \\"<child id within the instance>\\", props }]\`."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE only: throw away every override first."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin's own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma's parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. \`null\` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame's first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent's children it sits; 0 is first."}]`;
   var PROPS_VOCABULARY = (() => {
     if (!INJECTED.startsWith("[")) return [];
     try {
@@ -32227,7 +33147,7 @@ ${scripts}`, "");
   })();
 
   // src/agent/ui-commands.ts
-  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide"},{"name":"tokens","required":false,"type":"{ includeLibraries?: boolean; emitNative?: boolean }","note":"overrides for this one build \u2014 { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine","params":[{"name":"zipBase64","required":true,"type":"string","note":"the package itself, base64 \u2014 the bytes CONFIRM_EXPORT handed back"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SOURCE_PREVIEW","access":"read","classified":true,"summary":"resolve generator, selection, or library colors so one can be chosen for an exact replacement","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"{ kind: \\"generator\\", settings }, { kind: \\"selection\\" }, or { kind: \\"library\\", key }"}],"replies":["REMAP_SOURCE_COLORS","REMAP_SOURCE_ERROR"]},{"name":"REMAP_DIRECT_PREVIEW","access":"read","classified":true,"summary":"find exact RGB matches for one color without building a palette migration","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB; alpha is ignored while matching"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB; every matched site's alpha is preserved"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""}],"replies":["REMAP_DIRECT_PLAN","REMAP_DIRECT_ERROR"]},{"name":"REMAP_DIRECT_APPLY","access":"write","classified":true,"summary":"replace exact RGB matches in variables, styles, and/or loose canvas paints behind an undo snapshot","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"choose variables, styles, canvas, and document/page scope; names and bindings never change"}],"replies":["REMAP_PROGRESS","REMAP_DIRECT_APPLIED","REMAP_DIRECT_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"LIST_VARIABLE_COLLECTIONS","access":"read","classified":true,"summary":"local variable collections for the settings table, plus whether this file has only single-mode collections","params":[],"replies":["VARIABLE_COLLECTIONS"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; dsTool: DsToolId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportD\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_UPDATE_PREFERENCES","access":"deny","classified":true,"summary":"update discovery is the designer's outbound-network preference","params":[{"name":"preferences","required":true,"type":"unknown","note":"normalized update-discovery preference and cached release metadata"}],"replies":[]},{"name":"OPEN_EXTERNAL","access":"deny","classified":true,"summary":"only visible UI controls may open a browser link for the designer","params":[{"name":"url","required":true,"type":"string","note":"the validated https://github.com release or archive URL to open"}],"replies":["UPDATE_LINK_ERROR"]},{"name":"UI_RESIZE","access":"read","classified":true,"summary":"resize the plugin panel chrome; the Figma document is untouched","params":[{"name":"width","required":true,"type":"number","note":"requested panel width in pixels, clamped to 340\u20261240"},{"name":"height","required":true,"type":"number","note":"requested panel height in pixels, clamped to 320\u20261200"},{"name":"persist","required":false,"type":"boolean","note":"schedule the clamped size for storage; false is for live drag frames"}],"replies":["UI_SIZE"]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on AllCrew Figma Workspace","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)","cost":"one render each, and a large frame at 4x is megabytes \u2014 the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"},{"name":"withoutChildren","required":false,"type":"boolean","note":"PNG or JPG only \u2014 renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly."},{"name":"contentsOnly","required":false,"type":"boolean","note":"PNG, JPG or SVG \u2014 false renders what overlaps the node from outside it too (Figma's \\"Ignore overlapping layers\\" switch, inverted); true is Figma's default"},{"name":"useAbsoluteBounds","required":false,"type":"boolean","note":"render the node's full bounds even where a parent clips or a mask crops it \u2014 the way to get a layer whose art spills outside its frame"},{"name":"colorProfile","required":false,"type":"string","note":"DOCUMENT (default), SRGB or DISPLAY_P3_V4 \u2014 the profile the raster is written in"},{"name":"svgIdAttribute","required":false,"type":"boolean","note":"SVG only \u2014 keep Figma's layer ids as \`id=\` attributes, so a build can address a part of the drawing"},{"name":"svgSimplifyStroke","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) collapses a stroke into an outlined path; false keeps it a stroked path"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FONT_FAMILY_AXES","access":"read","classified":true,"summary":"list the OpenType variation axis tags a font family accepts; null means the family is static","params":[{"name":"family","required":true,"type":"string","note":"exact font family name, for example \\"Roboto Flex\\""}],"replies":["FONT_FAMILY_AXES","CANVAS_ERROR"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"Figma-provided and local custom animation styles, including every ordered entry a custom style owns","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"MOTION_STYLE_SET","access":"write","classified":true,"summary":"create a local custom animation style or replace one by id, preserving its ordered Figma animation entries","params":[{"name":"id","required":false,"type":"string","note":"local custom animation style id to update; omit to create a new style"},{"name":"name","required":true,"type":"string","note":"final custom style name"},{"name":"description","required":false,"type":"string","note":"final description; omitted preserves it on update"},{"name":"entries","required":true,"type":"Array<{ style: string; props?: Record<string, unknown> }>","note":"ordered [{ style, props? }] using Figma animation styleIds or names from MOTION_STYLES"}],"replies":["MOTION_STYLE_UPDATED","CANVAS_ERROR"]},{"name":"MOTION_STYLE_MOVE","access":"write","classified":true,"summary":"reorder a local custom animation style or one of its folders","params":[{"name":"id","required":false,"type":"string","note":"custom animation style id to move; mutually exclusive with folder"},{"name":"folder","required":false,"type":"string","note":"full slash-delimited folder name to move; mutually exclusive with id"},{"name":"after","required":false,"type":"string | null","note":"style id or folder name to place it after; null/omitted moves it first"}],"replies":["MOTION_STYLE_MOVED","MOTION_STYLE_FOLDER_MOVED","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect and grid \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect or grid; omitted means all four"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_SCHEMA","access":"read","classified":true,"summary":"the canonical user-module JSON Schema, starter file, runtime rules and limits","params":[],"replies":["MODULE_SCHEMA"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the complete declarative module object"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id"},{"name":"allowDowngrade","required":false,"type":"boolean","note":"true explicitly permits replacing a newer SemVer"}],"replies":["MODULE_INSTALLED","MODULE_REJECTED","MODULE_ERROR"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the declared type and numeric bounds"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
+  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide"},{"name":"tokens","required":false,"type":"{ includeLibraries?: boolean; emitNative?: boolean }","note":"overrides for this one build \u2014 { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine; with dryRun the receiver writes nothing and answers with the plan it would have applied","params":[{"name":"files","required":true,"type":"Record<string, string | { base64: string }>","note":"the package as \`{ 'path/file.css': 'text' }\`, or \`{ base64 }\` for bytes"},{"name":"dryRun","required":false,"type":"boolean","note":"change nothing, just report the plan \u2014 omit to use the saved default"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SOURCE_PREVIEW","access":"read","classified":true,"summary":"resolve generator, selection, or library colors so one can be chosen for an exact replacement","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"{ kind: \\"generator\\", settings }, { kind: \\"selection\\" }, or { kind: \\"library\\", key }"}],"replies":["REMAP_SOURCE_COLORS","REMAP_SOURCE_ERROR"]},{"name":"REMAP_DIRECT_PREVIEW","access":"read","classified":true,"summary":"find exact RGB matches for one color without building a palette migration","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB; alpha is ignored while matching"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB; every matched site's alpha is preserved"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""}],"replies":["REMAP_DIRECT_PLAN","REMAP_DIRECT_ERROR"]},{"name":"REMAP_DIRECT_APPLY","access":"write","classified":true,"summary":"replace exact RGB matches in variables, styles, and/or loose canvas paints behind an undo snapshot","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"choose variables, styles, canvas, and document/page scope; names and bindings never change"}],"replies":["REMAP_PROGRESS","REMAP_DIRECT_APPLIED","REMAP_DIRECT_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"LIST_VARIABLE_COLLECTIONS","access":"read","classified":true,"summary":"local variable collections for the settings table, plus whether this file has only single-mode collections","params":[],"replies":["VARIABLE_COLLECTIONS"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string | Uint8Array>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; dsTool: DsToolId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportD\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_UPDATE_PREFERENCES","access":"deny","classified":true,"summary":"update discovery is the designer's outbound-network preference","params":[{"name":"preferences","required":true,"type":"unknown","note":"normalized update-discovery preference and cached release metadata"}],"replies":[]},{"name":"OPEN_EXTERNAL","access":"deny","classified":true,"summary":"only visible UI controls may open a browser link for the designer","params":[{"name":"url","required":true,"type":"string","note":"the validated https://github.com release or archive URL to open"}],"replies":["UPDATE_LINK_ERROR"]},{"name":"UI_RESIZE","access":"read","classified":true,"summary":"resize the plugin panel chrome; the Figma document is untouched","params":[{"name":"width","required":true,"type":"number","note":"requested panel width in pixels, clamped to 340\u20261240"},{"name":"height","required":true,"type":"number","note":"requested panel height in pixels, clamped to 320\u20261200"},{"name":"persist","required":false,"type":"boolean","note":"schedule the clamped size for storage; false is for live drag frames"}],"replies":["UI_SIZE"]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on AllCrew Figma Workspace","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)","cost":"one render each, and a large frame at 4x is megabytes \u2014 the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"},{"name":"withoutChildren","required":false,"type":"boolean","note":"PNG or JPG only \u2014 renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly."},{"name":"contentsOnly","required":false,"type":"boolean","note":"PNG, JPG or SVG \u2014 false renders what overlaps the node from outside it too (Figma's \\"Ignore overlapping layers\\" switch, inverted); true is Figma's default"},{"name":"useAbsoluteBounds","required":false,"type":"boolean","note":"render the node's full bounds even where a parent clips or a mask crops it \u2014 the way to get a layer whose art spills outside its frame"},{"name":"colorProfile","required":false,"type":"string","note":"DOCUMENT (default), SRGB or DISPLAY_P3_V4 \u2014 the profile the raster is written in"},{"name":"svgIdAttribute","required":false,"type":"boolean","note":"SVG only \u2014 keep Figma's layer ids as \`id=\` attributes, so a build can address a part of the drawing"},{"name":"svgSimplifyStroke","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) collapses a stroke into an outlined path; false keeps it a stroked path"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FONT_FAMILY_AXES","access":"read","classified":true,"summary":"list the OpenType variation axis tags a font family accepts; null means the family is static","params":[{"name":"family","required":true,"type":"string","note":"exact font family name, for example \\"Roboto Flex\\""}],"replies":["FONT_FAMILY_AXES","CANVAS_ERROR"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"Figma-provided and local custom animation styles, including every ordered entry a custom style owns","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"MOTION_STYLE_SET","access":"write","classified":true,"summary":"create a local custom animation style or replace one by id, preserving its ordered Figma animation entries","params":[{"name":"id","required":false,"type":"string","note":"local custom animation style id to update; omit to create a new style"},{"name":"name","required":true,"type":"string","note":"final custom style name"},{"name":"description","required":false,"type":"string","note":"final description; omitted preserves it on update"},{"name":"entries","required":true,"type":"Array<{ style: string; props?: Record<string, unknown> }>","note":"ordered [{ style, props? }] using Figma animation styleIds or names from MOTION_STYLES"}],"replies":["MOTION_STYLE_UPDATED","CANVAS_ERROR"]},{"name":"MOTION_STYLE_MOVE","access":"write","classified":true,"summary":"reorder a local custom animation style or one of its folders","params":[{"name":"id","required":false,"type":"string","note":"custom animation style id to move; mutually exclusive with folder"},{"name":"folder","required":false,"type":"string","note":"full slash-delimited folder name to move; mutually exclusive with id"},{"name":"after","required":false,"type":"string | null","note":"style id or folder name to place it after; null/omitted moves it first"}],"replies":["MOTION_STYLE_MOVED","MOTION_STYLE_FOLDER_MOVED","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect, grid and custom animation \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect, grid or animation; omitted means all five"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are made with MOTION_STYLE_SET"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\" or a CSS colour like \\"oklch(70% 0.2 140)\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style?, variationSettings? }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? } \u2014 variationSettings names a variable font's axes, like { wght: 550 }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect, grid or animation \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MOVE","access":"write","classified":true,"summary":"reorder local styles in the panel \u2014 one style after another, or a whole folder after another folder","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are reordered with MOTION_STYLE_MOVE"},{"name":"name","required":false,"type":"string","note":"the style to move \u2014 its name, id or key. Give this, or folder"},{"name":"after","required":false,"type":"string | null","note":"the style it should follow, from the same folder; null or \\"\\" puts it first"},{"name":"folder","required":false,"type":"string","note":"the folder to move instead of a style, by its full path (\\"Brand/Primary\\")"},{"name":"afterFolder","required":false,"type":"string | null","note":"the sibling folder it should follow; null or \\"\\" puts it first in its parent"}],"replies":["STYLE_MOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_SCHEMA","access":"read","classified":true,"summary":"the canonical user-module JSON Schema, starter file, runtime rules and limits","params":[],"replies":["MODULE_SCHEMA"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the complete declarative module object"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id"},{"name":"allowDowngrade","required":false,"type":"boolean","note":"true explicitly permits replacing a newer SemVer"}],"replies":["MODULE_INSTALLED","MODULE_REJECTED","MODULE_ERROR"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the declared type and numeric bounds"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
   var UI_COMMANDS = (() => {
     if (!INJECTED2.startsWith("[")) return [];
     try {
@@ -33342,8 +34262,8 @@ ${scripts}`, "");
     return typeof raw.label === "string" ? { label: raw.label } : {};
   }
   function knownFields(context) {
-    const fields = Object.keys(context.state);
-    return fields.length === 0 ? " (this module declares none)" : ` \u2014 declared: ${fields.join(", ")}`;
+    const fields2 = Object.keys(context.state);
+    return fields2.length === 0 ? " (this module declares none)" : ` \u2014 declared: ${fields2.join(", ")}`;
   }
   function tryJson(raw, fail2) {
     try {
@@ -33780,500 +34700,1081 @@ ${scripts}`, "");
     }
   ];
 
-  // src/agent/component-ops.ts
-  var OVERRIDE_FIELDS = [
-    "characters",
-    "fills",
-    "strokes",
-    "fillStyleId",
-    "strokeStyleId",
-    "textStyleId",
-    "effectStyleId",
-    "effects",
-    "visible",
-    "opacity",
-    "blendMode",
-    "locked",
-    "constraints",
-    "width",
-    "height",
-    "minWidth",
-    "maxWidth",
-    "minHeight",
-    "maxHeight",
-    "x",
-    "y",
-    "rotation",
-    "cornerRadius",
-    "cornerSmoothing",
-    "topLeftRadius",
-    "topRightRadius",
-    "bottomLeftRadius",
-    "bottomRightRadius",
-    "strokeWeight",
-    "strokeAlign",
-    "dashPattern",
-    "layoutMode",
-    "layoutWrap",
-    "paddingLeft",
-    "paddingTop",
-    "paddingRight",
-    "paddingBottom",
-    "itemSpacing",
-    "counterAxisSpacing",
-    "layoutAlign",
-    "layoutGrow",
-    "layoutPositioning",
-    "primaryAxisSizingMode",
-    "counterAxisSizingMode",
-    "primaryAxisAlignItems",
-    "counterAxisAlignItems",
-    "clipsContent",
-    "exportSettings",
-    "reactions"
-  ];
-  function nodeRef(node) {
-    return { id: node.id, name: "name" in node ? String(node.name) : "", type: node.type };
-  }
+  // src/agent/scope.ts
   function pageOf5(node) {
-    let cursor = node;
-    while (cursor && cursor.type !== "PAGE") cursor = cursor.parent;
-    return (cursor == null ? void 0 : cursor.type) === "PAGE" ? cursor : null;
+    let walk3 = node;
+    while (walk3 && walk3.type !== "PAGE") walk3 = walk3.parent;
+    return walk3 && walk3.type === "PAGE" ? walk3 : null;
   }
-  function containingFrame(node) {
-    let cursor = node.parent;
-    while (cursor && cursor.type !== "PAGE") {
-      if (cursor.type === "FRAME" || cursor.type === "SECTION" || cursor.type === "COMPONENT" || cursor.type === "COMPONENT_SET") return cursor;
-      cursor = cursor.parent;
-    }
-    return null;
-  }
-  function deepLink(node) {
-    const suffix = `?node-id=${node.id.replace(":", "-")}`;
-    return figma.fileKey ? `https://www.figma.com/design/${figma.fileKey}/${suffix}` : suffix;
-  }
-  function hasChildren4(node) {
-    return "children" in node;
-  }
-  function childAtPath(root, path) {
-    let cursor = root;
-    for (const index2 of path) {
-      if (!hasChildren4(cursor) || !cursor.children[index2]) return null;
-      cursor = cursor.children[index2];
-    }
-    return "x" in cursor ? cursor : null;
-  }
-  function pathIndex(root) {
-    const found = /* @__PURE__ */ new Map();
-    const stack = [{ node: root, path: [] }];
-    while (stack.length) {
-      const current = stack.pop();
-      if ("x" in current.node) found.set(current.node.id, { node: current.node, path: current.path });
-      if (!hasChildren4(current.node)) continue;
-      for (let index2 = current.node.children.length - 1; index2 >= 0; index2--) {
-        stack.push({ node: current.node.children[index2], path: [...current.path, index2] });
+  async function resolveWalkRoots(params) {
+    if (typeof params.nodeId === "string" && params.nodeId !== "") {
+      const found = await getNodeByIdTimed(params.nodeId);
+      if (!found || found.type === "DOCUMENT") throw new Error(`no node with id ${params.nodeId}`);
+      if (found.type === "PAGE") {
+        await found.loadAsync();
+        return { roots: [found], labels: [found.name] };
       }
+      let page = found.parent;
+      while (page && page.type !== "PAGE") page = page.parent;
+      if (page) await page.loadAsync();
+      return { roots: [found], labels: [`${found.name} (subtree)`] };
     }
-    return found;
+    if (params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "") {
+      const page = await resolvePage(params.pageId);
+      return { roots: [page], labels: [page.name] };
+    }
+    await loadAllPagesAsync();
+    const pages = figma.root.children.slice();
+    return { roots: pages, labels: pages.map((one) => one.name) };
   }
-  function cloneValue(value2) {
-    if (value2 === figma.mixed) return void 0;
-    if (value2 === null || typeof value2 !== "object") return value2;
+  async function resolvePage(pageId) {
+    if (typeof pageId !== "string" || pageId === "") return figma.currentPage;
+    const page = await figma.getNodeByIdAsync(pageId);
+    if (!page || page.type !== "PAGE") throw new Error(`no page with id ${pageId}`);
+    await page.loadAsync();
+    return page;
+  }
+  async function resolveScope(scope) {
+    if (scope === "document") {
+      await loadAllPagesAsync();
+      return figma.root;
+    }
+    return figma.currentPage;
+  }
+
+  // src/agent/component-ops.ts
+  var CHECK_EVERY = 200;
+  function budgetOf(params, fallback) {
+    const asked = typeof params.budgetMs === "number" ? params.budgetMs : fallback;
+    return Math.max(1e3, Math.min(asked, 17e4));
+  }
+  function deepLink(id) {
+    return `?node-id=${id.replace(":", "-")}`;
+  }
+  function ancestry(node) {
+    const names = [];
+    let nested = false;
+    let walk3 = node.parent;
+    while (walk3 && walk3.type !== "PAGE" && walk3.type !== "DOCUMENT") {
+      if (walk3.type === "INSTANCE") nested = true;
+      names.unshift(walk3.name);
+      walk3 = walk3.parent;
+    }
+    return { path: names, nested };
+  }
+  function describeInstance(instance) {
+    const page = pageOf5(instance);
+    const { path, nested } = ancestry(instance);
+    let overrides = 0;
     try {
-      return JSON.parse(JSON.stringify(value2));
+      overrides = instance.overrides.length;
+    } catch (e) {
+      overrides = 0;
+    }
+    return {
+      id: instance.id,
+      name: instance.name,
+      page: page ? page.name : null,
+      pageId: page ? page.id : null,
+      path: path.join(" / "),
+      nested,
+      x: Number.isFinite(instance.x) ? Math.round(instance.x * 100) / 100 : void 0,
+      y: Number.isFinite(instance.y) ? Math.round(instance.y * 100) / 100 : void 0,
+      overrides,
+      link: deepLink(instance.id)
+    };
+  }
+  function classifyMain(main, onPage) {
+    if (!main) return "missing";
+    if (main.removed === true) return "deleted";
+    if (main.remote === true) return "live";
+    return onPage ? "live" : "deleted";
+  }
+  async function readMain(instance) {
+    let main = null;
+    try {
+      main = await instance.getMainComponentAsync();
+    } catch (e) {
+      main = null;
+    }
+    if (!main) {
+      return { id: null, key: null, name: null, remote: false, status: "missing", identity: `name:${instance.name}` };
+    }
+    let removed = false;
+    try {
+      removed = main.removed === true;
+    } catch (e) {
+      removed = false;
+    }
+    const parent = main.parent;
+    const set = parent && parent.type === "COMPONENT_SET" ? parent : null;
+    return __spreadProps(__spreadValues({
+      id: main.id,
+      key: main.key || null,
+      name: main.name,
+      remote: main.remote === true
+    }, set ? { setId: set.id, setName: set.name } : {}), {
+      status: classifyMain({ removed, remote: main.remote === true }, pageOf5(main) !== null),
+      identity: set ? set.id : main.id
+    });
+  }
+  function fields(node) {
+    return node;
+  }
+  function assign(field) {
+    return {
+      read: (node) => fields(node)[field],
+      write: (node, value2) => {
+        fields(node)[field] = value2;
+      }
+    };
+  }
+  function styleId(field, setter) {
+    return {
+      read: (node) => fields(node)[field],
+      write: async (node, value2) => {
+        const holder = fields(node);
+        const set = holder[setter];
+        if (typeof set === "function") await set.call(node, String(value2 != null ? value2 : ""));
+        else holder[field] = value2;
+      }
+    };
+  }
+  async function writeCharacters(node, value2) {
+    if (node.type !== "TEXT") throw new Error(`characters is not writable on ${node.type}`);
+    const fonts = [];
+    try {
+      fonts.push(...node.getRangeAllFontNames(0, Math.max(node.characters.length, 1)));
+    } catch (e) {
+      const single2 = node.fontName;
+      if (typeof single2 === "object") fonts.push(single2);
+    }
+    for (const font of fonts) await figma.loadFontAsync(font);
+    node.characters = String(value2 != null ? value2 : "");
+  }
+  function resizeTo(node, width, height) {
+    if (!("resizeWithoutConstraints" in node)) throw new Error(`${node.type} cannot be resized`);
+    node.resizeWithoutConstraints(width, height);
+  }
+  var FIELDS = {
+    characters: { read: (node) => node.type === "TEXT" ? node.characters : void 0, write: writeCharacters },
+    fontSize: assign("fontSize"),
+    fontName: assign("fontName"),
+    letterSpacing: assign("letterSpacing"),
+    lineHeight: assign("lineHeight"),
+    textCase: assign("textCase"),
+    textDecoration: assign("textDecoration"),
+    textAlignHorizontal: assign("textAlignHorizontal"),
+    textAlignVertical: assign("textAlignVertical"),
+    textAutoResize: assign("textAutoResize"),
+    textTruncation: assign("textTruncation"),
+    maxLines: assign("maxLines"),
+    paragraphIndent: assign("paragraphIndent"),
+    paragraphSpacing: assign("paragraphSpacing"),
+    hyperlink: assign("hyperlink"),
+    fills: assign("fills"),
+    strokes: assign("strokes"),
+    strokeWeight: assign("strokeWeight"),
+    strokeAlign: assign("strokeAlign"),
+    dashPattern: assign("dashPattern"),
+    effects: assign("effects"),
+    opacity: assign("opacity"),
+    blendMode: assign("blendMode"),
+    visible: assign("visible"),
+    locked: assign("locked"),
+    name: assign("name"),
+    isMask: assign("isMask"),
+    clipsContent: assign("clipsContent"),
+    cornerRadius: assign("cornerRadius"),
+    cornerSmoothing: assign("cornerSmoothing"),
+    topLeftRadius: assign("topLeftRadius"),
+    topRightRadius: assign("topRightRadius"),
+    bottomLeftRadius: assign("bottomLeftRadius"),
+    bottomRightRadius: assign("bottomRightRadius"),
+    constraints: assign("constraints"),
+    layoutAlign: assign("layoutAlign"),
+    layoutGrow: assign("layoutGrow"),
+    layoutPositioning: assign("layoutPositioning"),
+    layoutMode: assign("layoutMode"),
+    layoutWrap: assign("layoutWrap"),
+    layoutSizingHorizontal: assign("layoutSizingHorizontal"),
+    layoutSizingVertical: assign("layoutSizingVertical"),
+    itemSpacing: assign("itemSpacing"),
+    counterAxisSpacing: assign("counterAxisSpacing"),
+    paddingLeft: assign("paddingLeft"),
+    paddingRight: assign("paddingRight"),
+    paddingTop: assign("paddingTop"),
+    paddingBottom: assign("paddingBottom"),
+    primaryAxisSizingMode: assign("primaryAxisSizingMode"),
+    counterAxisSizingMode: assign("counterAxisSizingMode"),
+    primaryAxisAlignItems: assign("primaryAxisAlignItems"),
+    counterAxisAlignItems: assign("counterAxisAlignItems"),
+    counterAxisAlignContent: assign("counterAxisAlignContent"),
+    minWidth: assign("minWidth"),
+    maxWidth: assign("maxWidth"),
+    minHeight: assign("minHeight"),
+    maxHeight: assign("maxHeight"),
+    exportSettings: assign("exportSettings"),
+    reactions: {
+      read: (node) => "reactions" in node ? node.reactions : void 0,
+      write: async (node, value2) => {
+        const holder = fields(node);
+        const set = holder.setReactionsAsync;
+        if (typeof set === "function") await set.call(node, value2);
+        else holder.reactions = value2;
+      }
+    },
+    fillStyleId: styleId("fillStyleId", "setFillStyleIdAsync"),
+    strokeStyleId: styleId("strokeStyleId", "setStrokeStyleIdAsync"),
+    textStyleId: styleId("textStyleId", "setTextStyleIdAsync"),
+    effectStyleId: styleId("effectStyleId", "setEffectStyleIdAsync"),
+    gridStyleId: styleId("gridStyleId", "setGridStyleIdAsync"),
+    width: { read: (node) => node.width, write: (node, value2) => resizeTo(node, Number(value2), node.height) },
+    height: { read: (node) => node.height, write: (node, value2) => resizeTo(node, node.width, Number(value2)) }
+  };
+  var IGNORED_FIELDS = {
+    parent: true,
+    type: true,
+    pluginData: true,
+    expanded: true,
+    componentPropertyDefinitions: true,
+    componentPropertyReferences: true
+  };
+  function isMixed2(value2) {
+    return typeof figma !== "undefined" && figma.mixed !== void 0 && value2 === figma.mixed;
+  }
+  function sameValue2(a, b) {
+    if (isMixed2(a) || isMixed2(b)) return false;
+    if (a === b) return true;
+    if (typeof a !== typeof b) return false;
+    if (a === null || b === null || typeof a !== "object") return false;
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch (e) {
+      return false;
+    }
+  }
+  function readProperties(node) {
+    if (node.type !== "INSTANCE") return void 0;
+    let props;
+    try {
+      props = node.componentProperties;
     } catch (e) {
       return void 0;
     }
+    if (!props || typeof props !== "object") return void 0;
+    const out = {};
+    for (const [key, entry] of Object.entries(props)) {
+      const value2 = entry == null ? void 0 : entry.value;
+      if (typeof value2 === "string" || typeof value2 === "boolean") out[key] = value2;
+    }
+    return Object.keys(out).length > 0 ? out : void 0;
   }
-  function snapshotOverrides(instance) {
-    var _a;
-    const indexed = pathIndex(instance);
-    const snapshots = [];
-    for (const override of (_a = instance.overrides) != null ? _a : []) {
-      const hit = indexed.get(override.id);
-      if (!hit) continue;
-      const raw = hit.node;
-      const fields = {};
+  function pathFrom(instance, node) {
+    const path = [];
+    let walk3 = node;
+    while (walk3.id !== instance.id) {
+      const parent = walk3.parent;
+      if (!parent || !("children" in parent)) return null;
+      const child = walk3;
+      const index2 = parent.children.findIndex((one) => one.id === child.id);
+      if (index2 < 0) return null;
+      path.unshift(index2);
+      walk3 = parent;
+    }
+    return path;
+  }
+  function nodeAt(instance, path) {
+    let cursor = instance;
+    for (const index2 of path) {
+      if (!("children" in cursor)) return null;
+      const child = cursor.children[index2];
+      if (!child) return null;
+      cursor = child;
+    }
+    return cursor;
+  }
+  function findByName(root, name, type) {
+    const queue2 = [root];
+    while (queue2.length > 0) {
+      const node = queue2.shift();
+      if (node !== root && node.name === name && node.type === type) return node;
+      if ("children" in node) queue2.push(...node.children);
+    }
+    return null;
+  }
+  async function captureOverrides(instance) {
+    var _a, _b;
+    const snapshot = { properties: (_a = readProperties(instance)) != null ? _a : {}, layers: [], captured: 0 };
+    let entries = [];
+    try {
+      entries = instance.overrides;
+    } catch (e) {
+      entries = [];
+    }
+    for (const entry of entries) {
+      const found = await figma.getNodeByIdAsync(entry.id);
+      if (!found || found.type === "PAGE" || found.type === "DOCUMENT") continue;
+      const node = found;
+      const path = pathFrom(instance, node);
+      if (path === null) continue;
+      const values = {};
       const unsupported = [];
-      for (const field of override.overriddenFields) {
-        if (!OVERRIDE_FIELDS.includes(field)) {
+      for (const field of (_b = entry.overriddenFields) != null ? _b : []) {
+        if (IGNORED_FIELDS[field]) continue;
+        if (field === "componentProperties") continue;
+        const handler = FIELDS[field];
+        if (!handler) {
           unsupported.push(field);
           continue;
         }
         try {
-          const value2 = cloneValue(raw[field]);
-          if (value2 === void 0) unsupported.push(field);
-          else fields[field] = value2;
+          const value2 = handler.read(node);
+          if (value2 === void 0) continue;
+          if (isMixed2(value2)) unsupported.push(field);
+          else values[field] = value2;
         } catch (e) {
           unsupported.push(field);
         }
       }
-      snapshots.push({ path: hit.path, name: hit.node.name, type: hit.node.type, fields, unsupported });
+      const properties = node.id === instance.id ? void 0 : readProperties(node);
+      if (Object.keys(values).length === 0 && !properties && unsupported.length === 0) continue;
+      snapshot.captured += Object.keys(values).length;
+      snapshot.layers.push(__spreadProps(__spreadValues({
+        path,
+        name: node.name,
+        type: node.type,
+        fields: values
+      }, properties ? { properties } : {}), {
+        unsupported
+      }));
     }
-    return snapshots;
+    return snapshot;
   }
-  function propertyValues(instance) {
-    var _a;
-    const values = {};
-    for (const [key, entry] of Object.entries((_a = instance.componentProperties) != null ? _a : {})) {
-      if (entry.type === "SLOT" || entry.value === void 0) continue;
-      if (typeof entry.value === "string" || typeof entry.value === "boolean") values[key] = entry.value;
-    }
-    return values;
-  }
-  async function setNodeField(node, field, value2) {
-    const target = node;
-    if (field === "reactions" && "setReactionsAsync" in node) {
-      await node.setReactionsAsync(value2);
-      return;
-    }
-    if (field === "characters" && node.type === "TEXT") {
-      const fonts = node.getRangeAllFontNames(0, node.characters.length);
-      for (const font of fonts) await figma.loadFontAsync(font);
-    }
-    if ((field === "width" || field === "height") && "resize" in node) {
-      const width = field === "width" ? Number(value2) : node.width;
-      const height = field === "height" ? Number(value2) : node.height;
-      node.resize(width, height);
-      return;
-    }
-    target[field] = value2;
-  }
-  async function restoreOverrides(instance, snapshots) {
+  async function applyProperties(instance, wanted) {
     var _a;
     const kept2 = [];
     const restored = [];
-    const lost = [];
-    const unsupported = [];
-    const indexed = [...pathIndex(instance).values()].map((entry) => entry.node);
-    for (const snapshot of snapshots) {
-      const positional = childAtPath(instance, snapshot.path);
-      const target = (positional == null ? void 0 : positional.type) === snapshot.type ? positional : (_a = indexed.find((node) => node.type === snapshot.type && node.name === snapshot.name)) != null ? _a : null;
-      for (const field of snapshot.unsupported) unsupported.push({ layer: snapshot.name, field });
-      for (const [field, value2] of Object.entries(snapshot.fields)) {
-        if (!target) {
-          lost.push({ layer: snapshot.name, field, reason: "no matching layer after swap" });
+    const dropped = [];
+    const current = (_a = readProperties(instance)) != null ? _a : {};
+    const byBase = {};
+    for (const key of Object.keys(current)) {
+      const hash = key.lastIndexOf("#");
+      byBase[hash > 0 ? key.slice(0, hash) : key] = key;
+    }
+    const writes = {};
+    for (const [key, value2] of Object.entries(wanted)) {
+      const hash = key.lastIndexOf("#");
+      const target = key in current ? key : byBase[hash > 0 ? key.slice(0, hash) : key];
+      if (!target) {
+        dropped.push(key);
+        continue;
+      }
+      if (current[target] === value2) kept2.push(target);
+      else writes[target] = value2;
+    }
+    if (Object.keys(writes).length > 0) {
+      try {
+        instance.setProperties(writes);
+        restored.push(...Object.keys(writes));
+      } catch (e) {
+        for (const [key, value2] of Object.entries(writes)) {
+          try {
+            instance.setProperties({ [key]: value2 });
+            restored.push(key);
+          } catch (e2) {
+            dropped.push(key);
+          }
+        }
+      }
+    }
+    return { kept: kept2, restored, dropped };
+  }
+  async function restoreOverrides(instance, snapshot) {
+    const report2 = {
+      captured: snapshot.captured,
+      kept: 0,
+      restored: [],
+      lost: [],
+      properties: await applyProperties(instance, snapshot.properties)
+    };
+    for (const layer of snapshot.layers) {
+      const fieldNames = Object.keys(layer.fields);
+      if (layer.unsupported.length > 0) {
+        report2.lost.push({
+          layer: layer.name,
+          path: layer.path,
+          fields: layer.unsupported,
+          reason: "field is not writable through the Plugin API"
+        });
+      }
+      if (fieldNames.length === 0 && !layer.properties) continue;
+      let target = layer.path.length === 0 ? instance : nodeAt(instance, layer.path);
+      let matchedBy = "path";
+      if (!target || target.type !== layer.type || target.name !== layer.name) {
+        const byName = findByName(instance, layer.name, layer.type);
+        if (byName) {
+          target = byName;
+          matchedBy = "name";
+        } else if (!target || target.type !== layer.type) {
+          report2.lost.push({
+            layer: layer.name,
+            path: layer.path,
+            fields: fieldNames,
+            reason: "the new main has no layer at that position or by that name"
+          });
           continue;
         }
-        const current = cloneValue(target[field]);
-        if (JSON.stringify(current) === JSON.stringify(value2)) {
-          kept2.push({ layer: target.name, field });
+      }
+      const written = [];
+      for (const [field, value2] of Object.entries(layer.fields)) {
+        const handler = FIELDS[field];
+        if (!handler) continue;
+        let now;
+        try {
+          now = handler.read(target);
+        } catch (e) {
+          now = void 0;
+        }
+        if (sameValue2(now, value2)) {
+          report2.kept += 1;
           continue;
         }
         try {
-          await setNodeField(target, field, value2);
-          const after = cloneValue(target[field]);
-          if (JSON.stringify(after) === JSON.stringify(value2)) restored.push({ layer: target.name, field });
-          else lost.push({ layer: target.name, field, reason: "field read back differently" });
-        } catch (error) {
-          lost.push({ layer: target.name, field, reason: String((error == null ? void 0 : error.message) || error) });
+          await handler.write(target, value2);
+          if (sameValue2(handler.read(target), value2)) written.push(field);
+          else report2.lost.push({ layer: layer.name, path: layer.path, fields: [field], reason: "the write did not stick" });
+        } catch (err) {
+          report2.lost.push({
+            layer: layer.name,
+            path: layer.path,
+            fields: [field],
+            reason: String((err == null ? void 0 : err.message) || err)
+          });
         }
       }
-    }
-    return { kept: kept2, restored, lost, unsupported };
-  }
-  async function componentTarget(raw) {
-    var _a, _b;
-    if (typeof raw === "string" && raw) return componentFor(raw);
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error('"to" must be an id/key string or { set, variant }');
-    const target = raw;
-    if (typeof target.set !== "string" || !target.set) throw new Error('"to.set" must be a component-set id or key');
-    const base = await componentFor(target.set);
-    const set = ((_a = base.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? base.parent : null;
-    if (!set) throw new Error(`"${base.name}" is not in a component set`);
-    if (target.variant === void 0) return (_b = set.defaultVariant) != null ? _b : base;
-    if (!target.variant || typeof target.variant !== "object" || Array.isArray(target.variant)) {
-      throw new Error('"to.variant" must be an object of variant property names to values');
-    }
-    const wanted = target.variant;
-    const variants = set.children.filter((candidate) => candidate.type === "COMPONENT");
-    const match = variants.find((candidate) => {
-      var _a2;
-      const values = (_a2 = candidate.variantProperties) != null ? _a2 : {};
-      return Object.entries(wanted).every(([name, value2]) => values[name] === value2);
-    });
-    if (!match) throw new Error(`no variant in "${set.name}" matches ${JSON.stringify(wanted)}`);
-    return match;
-  }
-  function pluginData(node) {
-    const values = {};
-    for (const key of node.getPluginDataKeys()) values[key] = node.getPluginData(key);
-    return values;
-  }
-  function applyPluginData(node, values) {
-    for (const [key, value2] of Object.entries(values)) node.setPluginData(key, value2);
-  }
-  async function rebuildInstance(instance, target) {
-    const parent = instance.parent;
-    if (!parent || !("insertChild" in parent)) throw new Error("instance parent cannot accept a replacement");
-    const index2 = parent.children.indexOf(instance);
-    const before = {
-      x: instance.x,
-      y: instance.y,
-      rotation: instance.rotation,
-      visible: instance.visible,
-      locked: instance.locked,
-      opacity: instance.opacity,
-      blendMode: instance.blendMode,
-      constraints: cloneValue(instance.constraints),
-      layoutAlign: instance.layoutAlign,
-      layoutGrow: instance.layoutGrow,
-      layoutPositioning: instance.layoutPositioning,
-      layoutSizingHorizontal: instance.layoutSizingHorizontal,
-      layoutSizingVertical: instance.layoutSizingVertical,
-      minWidth: instance.minWidth,
-      maxWidth: instance.maxWidth,
-      minHeight: instance.minHeight,
-      maxHeight: instance.maxHeight,
-      pluginData: pluginData(instance),
-      reactions: cloneValue(instance.reactions),
-      width: instance.width,
-      height: instance.height
-    };
-    const replacement = target.createInstance();
-    parent.insertChild(index2, replacement);
-    try {
-      const autoLayoutParent = "layoutMode" in parent && parent.layoutMode !== "NONE";
-      replacement.layoutSizingHorizontal = "FIXED";
-      replacement.layoutSizingVertical = "FIXED";
-      replacement.resize(before.width, before.height);
-      replacement.layoutPositioning = before.layoutPositioning;
-      if (!autoLayoutParent || before.layoutPositioning === "ABSOLUTE") {
-        replacement.x = before.x;
-        replacement.y = before.y;
-        replacement.constraints = before.constraints;
+      if (layer.properties && target.type === "INSTANCE") {
+        const nested = await applyProperties(target, layer.properties);
+        report2.properties.kept.push(...nested.kept);
+        report2.properties.restored.push(...nested.restored);
+        report2.properties.dropped.push(...nested.dropped);
       }
-      replacement.rotation = before.rotation;
-      replacement.visible = before.visible;
-      replacement.locked = before.locked;
-      replacement.opacity = before.opacity;
-      replacement.blendMode = before.blendMode;
-      replacement.layoutAlign = before.layoutAlign;
-      replacement.layoutGrow = before.layoutGrow;
-      replacement.minWidth = before.minWidth;
-      replacement.maxWidth = before.maxWidth;
-      replacement.minHeight = before.minHeight;
-      replacement.maxHeight = before.maxHeight;
-      replacement.layoutSizingHorizontal = before.layoutSizingHorizontal;
-      replacement.layoutSizingVertical = before.layoutSizingVertical;
-      applyPluginData(replacement, before.pluginData);
-      if (before.reactions) await replacement.setReactionsAsync(before.reactions);
+      if (written.length > 0) report2.restored.push({ layer: layer.name, path: layer.path, fields: written, matchedBy });
+    }
+    return report2;
+  }
+  function productReport(report2) {
+    const unsupportedRows = report2.lost.filter((row) => row.reason === "field is not writable through the Plugin API");
+    return {
+      preserved: report2.kept,
+      kept: report2.kept,
+      restored: report2.restored,
+      lost: report2.lost.filter((row) => row.reason !== "field is not writable through the Plugin API"),
+      unsupported: unsupportedRows.flatMap((row) => row.fields.map((field) => ({ layer: row.layer, field })))
+    };
+  }
+  var SLOT_FIELDS = [
+    "visible",
+    "locked",
+    "opacity",
+    "blendMode",
+    "rotation",
+    "constraints",
+    "layoutAlign",
+    "layoutGrow",
+    "layoutPositioning",
+    "layoutSizingHorizontal",
+    "layoutSizingVertical",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "exportSettings"
+  ];
+  async function rebuildInPlace(instance, main, snapshot) {
+    const parent = instance.parent;
+    if (!parent || !("children" in parent)) throw new Error(`"${instance.name}" has no parent to insert a replacement into`);
+    for (let walk3 = parent; walk3 && walk3.type !== "PAGE"; walk3 = walk3.parent) {
+      if (walk3.type === "INSTANCE") {
+        throw new Error(
+          `"${instance.name}" is nested inside an instance \u2014 nothing can be inserted there; strategy "swap" is the only route for it`
+        );
+      }
+    }
+    const index2 = parent.children.findIndex((child) => child.id === instance.id);
+    const fresh = main.createInstance();
+    parent.insertChild(index2 < 0 ? parent.children.length : index2, fresh);
+    try {
+      fresh.name = instance.name;
+      const source = fields(instance);
+      const replacement = fields(fresh);
+      const horizontal = source.layoutSizingHorizontal;
+      const vertical = source.layoutSizingVertical;
+      try {
+        replacement.layoutSizingHorizontal = "FIXED";
+        replacement.layoutSizingVertical = "FIXED";
+        if (Number.isFinite(instance.width) && Number.isFinite(instance.height)) fresh.resize(instance.width, instance.height);
+      } catch (e) {
+      }
+      for (const field of SLOT_FIELDS) {
+        if (field === "layoutSizingHorizontal" || field === "layoutSizingVertical") continue;
+        const value2 = source[field];
+        if (value2 === void 0 || isMixed2(value2)) continue;
+        try {
+          replacement[field] = value2;
+        } catch (e) {
+        }
+      }
+      if (horizontal !== void 0 && !isMixed2(horizontal)) replacement.layoutSizingHorizontal = horizontal;
+      if (vertical !== void 0 && !isMixed2(vertical)) replacement.layoutSizingVertical = vertical;
+      fresh.x = instance.x;
+      fresh.y = instance.y;
+      for (const key of instance.getPluginDataKeys()) fresh.setPluginData(key, instance.getPluginData(key));
+      if ("reactions" in instance && "setReactionsAsync" in fresh) {
+        await fresh.setReactionsAsync(instance.reactions.slice());
+      }
+      const overrides = snapshot ? await restoreOverrides(fresh, snapshot) : void 0;
+      instance.remove();
+      return __spreadProps(__spreadValues({
+        method: "rebuild",
+        newId: fresh.id
+      }, overrides ? __spreadValues({ overrides }, productReport(overrides)) : {}), {
+        note: "rebuilt in place \u2014 NEW node id; prototype links pointing at the old node, and anything else keyed by its id, do not follow"
+      });
     } catch (error) {
-      replacement.remove();
+      fresh.remove();
       throw error;
     }
-    instance.remove();
-    return { instance: replacement };
   }
-  async function orphanGroups() {
-    var _a, _b;
-    await loadAllPagesAsync();
-    const instances = await findAllByTypes(figma.root, ["INSTANCE"]);
-    const groups = /* @__PURE__ */ new Map();
-    for (const instance of instances) {
-      let main = null;
-      try {
-        main = await instance.getMainComponentAsync();
-      } catch (e) {
-        main = null;
-      }
-      if (main && !main.removed) continue;
-      const status = (main == null ? void 0 : main.removed) ? "deleted" : "missing";
-      const name = (main == null ? void 0 : main.name) || instance.name;
-      const key = `${status}:${(_a = main == null ? void 0 : main.id) != null ? _a : name}`;
-      const group2 = (_b = groups.get(key)) != null ? _b : { status, name, restoreFrom: [], instances: [] };
-      group2.instances.push(instance);
-      group2.restoreFrom.push(nodeRef(instance));
-      groups.set(key, group2);
+  async function repoint(instance, main, preserve, strategy) {
+    const snapshot = preserve ? await captureOverrides(instance) : null;
+    if (strategy === "rebuild") return rebuildInPlace(instance, main, snapshot);
+    try {
+      instance.swapComponent(main);
+    } catch (err) {
+      const why = String((err == null ? void 0 : err.message) || err);
+      if (strategy !== "auto") throw err;
+      const rebuilt = await rebuildInPlace(instance, main, snapshot);
+      return __spreadProps(__spreadValues({}, rebuilt), { fellBackBecause: why });
     }
-    return [...groups.entries()].map(([group2, value2]) => __spreadValues({ group: group2 }, value2)).sort((a, b) => b.instances.length - a.instances.length || a.name.localeCompare(b.name));
+    if (!snapshot) return { method: "swap", note: "overrides not preserved \u2014 preserveOverrides was false" };
+    const overrides = await restoreOverrides(instance, snapshot);
+    return __spreadValues({ method: "swap", overrides }, productReport(overrides));
+  }
+  async function census(roots, deadline2) {
+    const found = [];
+    for (const root of roots) {
+      found.push(...await findAllByTypes(root, ["INSTANCE"], { includeRoot: true }));
+    }
+    const mains = /* @__PURE__ */ new Map();
+    let timedOut = false;
+    let walked = 0;
+    for (const instance of found) {
+      if (walked > 0 && walked % CHECK_EVERY === 0) {
+        await yieldToHost();
+        if (Date.now() > deadline2) {
+          timedOut = true;
+          break;
+        }
+      }
+      mains.set(instance.id, await readMain(instance));
+      walked += 1;
+    }
+    return { instances: timedOut ? found.slice(0, walked) : found, mains, timedOut, walked };
+  }
+  function countBy(rows, key) {
+    var _a;
+    const counts = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      const name = key(row);
+      if (name === null) continue;
+      counts.set(name, ((_a = counts.get(name)) != null ? _a : 0) + 1);
+    }
+    return [...counts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+  }
+  async function resolveTargets(params) {
+    const ids = /* @__PURE__ */ new Set();
+    if (typeof params.nodeId === "string" && params.nodeId !== "") {
+      const node = await figma.getNodeByIdAsync(params.nodeId);
+      if (!node) throw new Error(`no node with id ${params.nodeId}`);
+      if (node.type === "INSTANCE") {
+        const facts = await readMain(node);
+        ids.add(facts.identity);
+        if (facts.id) ids.add(facts.id);
+      } else if (node.type === "COMPONENT_SET") {
+        ids.add(node.id);
+        for (const child of node.children) ids.add(child.id);
+      } else if (node.type === "COMPONENT") {
+        const parent = node.parent;
+        if (params.exact !== true && parent && parent.type === "COMPONENT_SET") ids.add(parent.id);
+        ids.add(node.id);
+      } else {
+        throw new Error(`${node.name} is a ${node.type} \u2014 name a component, a set, a variant or an instance`);
+      }
+    }
+    if (typeof params.name === "string" && params.name !== "") {
+      await loadAllPagesAsync();
+      const needle = params.name.toLowerCase();
+      const found = await findAllByTypes(figma.root, ["COMPONENT", "COMPONENT_SET"]);
+      const matches2 = found.filter((node) => node.name.toLowerCase().includes(needle));
+      if (matches2.length === 0) throw new Error(`no component matches "${params.name}"`);
+      for (const node of matches2) {
+        const parent = node.parent;
+        if (node.type === "COMPONENT" && params.exact !== true && parent && parent.type === "COMPONENT_SET") ids.add(parent.id);
+        ids.add(node.id);
+      }
+    }
+    return ids.size > 0 ? ids : null;
   }
   var COMPONENT_READ_OPS = [
     {
       name: "component.instances",
-      summary: "Document-wide component inventory: every copy, its page/frame, nesting and jump link, plus unused locals.",
-      agent: "Use this before component cleanup or migration. Counts are complete across loaded pages; unused means a local component has no instances in this file.",
+      summary: "Every copy of a component: how many, on which pages, and the link to jump to each.",
+      agent: "The census a designer asks for before touching a component. With `nodeId` (a component, a set, a variant, or any instance of one) it answers for that component: total copies, the split by page and by variant, and a row per copy with its frame path, its override count and a `link` to hand to `node.focus`. With NO target it inverts into an inventory \u2014 every component ranked by how many copies it has, plus `unused`, the ones nothing instantiates, which is the list a library cleanup starts from. `nested: true` also lists copies that sit inside other copies (they are override mirrors, counted separately either way). Copies whose main is gone are counted as `orphans` here and detailed by `component.orphans`.",
       mutates: false,
       params: {
-        limit: { type: "number", default: 500, min: 1, max: 5e3, description: "Maximum instance rows returned; counts remain complete." }
+        nodeId: {
+          type: "string",
+          description: "The component to count: a COMPONENT, a COMPONENT_SET, one variant, or an INSTANCE (which resolves to its own main). Leave it out for the whole-file inventory."
+        },
+        name: { type: "string", description: "Name substring, when you have no id. Every matching component is reported." },
+        exact: {
+          type: "boolean",
+          default: false,
+          description: "Count only the exact variant given, instead of the whole component set it belongs to."
+        },
+        scope: { type: "string", default: "document", enum: ["page", "document"], description: "Where to look for copies." },
+        pageId: { type: "string", description: 'Search one page \u2014 giving it implies scope: "page".' },
+        limit: { type: "number", default: 50, min: 0, max: 1e3, description: "Instance rows listed per component; counts are complete." },
+        components: { type: "number", default: 40, min: 1, max: 500, description: "Components listed in inventory mode." },
+        nested: { type: "boolean", default: false, description: "Also list copies nested inside other copies. They are always counted." },
+        unused: { type: "boolean", default: true, description: "Inventory mode: also list components nothing instantiates." },
+        budgetMs: { type: "number", default: 6e4, min: 1e3, max: 17e4, description: "Answer within this, partially if need be." }
       },
       async run(params) {
         var _a, _b;
-        await loadAllPagesAsync();
-        const [instances, components] = await Promise.all([
-          findAllByTypes(figma.root, ["INSTANCE"]),
-          findAllByTypes(figma.root, ["COMPONENT"])
-        ]);
-        const byComponent = /* @__PURE__ */ new Map();
-        for (const component of components) {
-          byComponent.set(component.id, { component: __spreadProps(__spreadValues({}, nodeRef(component)), { key: component.key }), copies: [] });
-        }
-        const unresolved = [];
-        for (const instance of instances) {
-          let main = null;
-          try {
-            main = await instance.getMainComponentAsync();
-          } catch (e) {
-            main = null;
-          }
-          const page = pageOf5(instance);
-          const frame3 = containingFrame(instance);
-          const nested = ((_a = instance.parent) == null ? void 0 : _a.type) === "INSTANCE" || (() => {
-            let parent = instance.parent;
-            while (parent && parent.type !== "PAGE") {
-              if (parent.type === "INSTANCE") return true;
-              parent = parent.parent;
-            }
-            return false;
-          })();
-          const row = __spreadProps(__spreadValues({}, nodeRef(instance)), {
-            page: page ? nodeRef(page) : null,
-            frame: frame3 ? nodeRef(frame3) : null,
-            nested,
-            link: deepLink(instance)
-          });
-          if (!main || main.removed) unresolved.push(row);
-          else {
-            const entry = (_b = byComponent.get(main.id)) != null ? _b : { component: __spreadProps(__spreadValues({}, nodeRef(main)), { key: main.key }), copies: [] };
-            entry.copies.push(row);
-            byComponent.set(main.id, entry);
-          }
-        }
-        const all = [...byComponent.values()].sort((a, b) => b.copies.length - a.copies.length || a.component.name.localeCompare(b.component.name));
+        const started = Date.now();
+        const deadline2 = started + budgetOf(params, 6e4);
+        const wantNested = params.nested === true;
         const limit = params.limit;
-        let remaining = limit;
-        const inventory = all.map((entry) => {
-          const copies = entry.copies.slice(0, Math.max(0, remaining));
-          remaining -= copies.length;
-          return { component: entry.component, count: entry.copies.length, unused: entry.copies.length === 0, copies };
+        const { roots, labels } = await resolveWalkRoots({ scope: params.scope, pageId: params.pageId });
+        const { instances, mains, timedOut, walked } = await census(roots, deadline2);
+        const targets = await resolveTargets(params);
+        const groups = /* @__PURE__ */ new Map();
+        let orphans = 0;
+        for (const instance of instances) {
+          const facts = mains.get(instance.id);
+          if (!facts) continue;
+          if (facts.status !== "live") orphans += 1;
+          if (targets && !targets.has(facts.identity) && !(facts.id && targets.has(facts.id))) continue;
+          let group2 = groups.get(facts.identity);
+          if (!group2) {
+            group2 = { facts, rows: [], total: 0, nested: 0, variants: /* @__PURE__ */ new Map(), pages: /* @__PURE__ */ new Map() };
+            groups.set(facts.identity, group2);
+          }
+          group2.total += 1;
+          if (facts.name) group2.variants.set(facts.name, ((_a = group2.variants.get(facts.name)) != null ? _a : 0) + 1);
+          const row = describeInstance(instance);
+          if (row.nested) group2.nested += 1;
+          if (row.page) group2.pages.set(row.page, ((_b = group2.pages.get(row.page)) != null ? _b : 0) + 1);
+          if ((wantNested || !row.nested) && group2.rows.length < limit) group2.rows.push(row);
+        }
+        const inventory = targets === null;
+        const ranked = [...groups.values()].sort((a, b) => b.total - a.total);
+        const shown = inventory ? ranked.slice(0, params.components) : ranked;
+        const components = shown.map((group2) => {
+          var _a2, _b2;
+          const id = (_a2 = group2.facts.setId) != null ? _a2 : group2.facts.id;
+          return {
+            component: {
+              id,
+              name: (_b2 = group2.facts.setName) != null ? _b2 : group2.facts.name,
+              key: group2.facts.key,
+              remote: group2.facts.remote,
+              status: group2.facts.status,
+              link: id ? deepLink(id) : null
+            },
+            instances: group2.total,
+            nested: group2.nested,
+            placed: group2.total - group2.nested,
+            byPage: [...group2.pages.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+            byVariant: [...group2.variants.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+            rows: group2.rows,
+            truncated: group2.rows.length < (wantNested ? group2.total : group2.total - group2.nested)
+          };
         });
-        return { components: inventory.length, instances: instances.length, unused: inventory.filter((row) => row.unused).length, unresolved: unresolved.length, truncated: instances.length > limit, inventory, orphanInstances: unresolved.slice(0, Math.max(0, remaining)) };
+        const pageScope = params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "";
+        let unused;
+        if (inventory && params.unused !== false && !pageScope && !timedOut) {
+          await loadAllPagesAsync();
+          const all = await findAllByTypes(figma.root, ["COMPONENT", "COMPONENT_SET"]);
+          const used = /* @__PURE__ */ new Set();
+          for (const facts of mains.values()) {
+            if (facts.id) used.add(facts.id);
+            if (facts.setId) used.add(facts.setId);
+          }
+          unused = all.filter((node) => {
+            if (used.has(node.id)) return false;
+            if (node.type === "COMPONENT") return !(node.parent && node.parent.type === "COMPONENT_SET");
+            return !node.children.some((child) => used.has(child.id));
+          }).map((node) => ({ id: node.id, name: node.name, type: node.type, link: deepLink(node.id) }));
+        }
+        return __spreadProps(__spreadValues({
+          mode: inventory ? "inventory" : "component",
+          scope: { pages: labels },
+          walked: { instances: walked, of: instances.length },
+          totals: __spreadValues({
+            instances: walked,
+            components: groups.size,
+            orphans
+          }, inventory ? { listed: components.length, unused: unused ? unused.length : null } : {}),
+          components
+        }, unused ? { unused } : {}), {
+          /** Jump to any row with `node.focus`, or paste its `link` after the file URL. */
+          focusWith: "node.focus",
+          timedOut,
+          ms: Date.now() - started
+        });
       }
     },
     {
       name: "component.orphans",
-      summary: "Orphan instances grouped by dead master: deleted locals versus missing masters, ranked by impact.",
-      agent: "Each group includes restoreFrom candidates. Start component.restore with the cleanest representative from the largest group.",
+      summary: "Copies whose main component is gone \u2014 grouped by the master that died, with a source to rebuild it from.",
+      agent: "Deleting a main in Figma does not break its instances: they keep rendering and keep their overrides, pointing at a component that has no page and no way back \u2014 which is why every other read reports them as ordinary instances. This is the op that finds them. `deleted` means the main is still in the file but unparented (a local main somebody deleted); `missing` means Figma would not hand the main over at all (a library component deleted upstream, or a library this file cannot reach) \u2014 and a `missing` group is keyed by NAME, because an unresolvable main has no id to key on. Each group ranks its copies as rebuild sources \u2014 most structure, fewest overrides first \u2014 and `component.restore` takes the id of one of them. `detached` lists frames that were instances once (Figma remembers what they were detached from) whose main is also gone: those cannot be relinked, only rebuilt from. A frame detached from a LIBRARY component carries only a key, and whether that component still exists is a question only the other file can answer \u2014 those rows come back `verified: false` and are counted apart, never as casualties they may not be.",
       mutates: false,
-      params: {},
-      async run() {
-        const groups = await orphanGroups();
-        return { groups: groups.length, instances: groups.reduce((sum, group2) => sum + group2.instances.length, 0), orphans: groups.map((_a) => {
-          var _b = _a, { instances } = _b, group2 = __objRest(_b, ["instances"]);
-          return __spreadProps(__spreadValues({}, group2), { count: instances.length });
-        }) };
+      params: {
+        scope: { type: "string", default: "document", enum: ["page", "document"], description: "Where to look." },
+        pageId: { type: "string", description: 'One page \u2014 giving it implies scope: "page".' },
+        nodeId: { type: "string", description: "Walk just this subtree. Overrides scope and pageId." },
+        limit: { type: "number", default: 20, min: 0, max: 500, description: "Instance rows listed per dead main; counts are complete." },
+        detached: { type: "boolean", default: true, description: "Also report detached frames whose original main is gone." },
+        budgetMs: { type: "number", default: 6e4, min: 1e3, max: 17e4, description: "Answer within this, partially if need be." }
+      },
+      async run(params) {
+        var _a, _b;
+        const started = Date.now();
+        const deadline2 = started + budgetOf(params, 6e4);
+        const { roots, labels } = await resolveWalkRoots(params);
+        const { instances, mains, timedOut, walked } = await census(roots, deadline2);
+        const groups = /* @__PURE__ */ new Map();
+        for (const instance of instances) {
+          const facts = mains.get(instance.id);
+          if (!facts || facts.status === "live") continue;
+          let group2 = groups.get(facts.identity);
+          if (!group2) {
+            group2 = { facts, rows: [] };
+            groups.set(facts.identity, group2);
+          }
+          group2.rows.push(__spreadProps(__spreadValues({}, describeInstance(instance)), { children: instance.children.length }));
+        }
+        const out = [...groups.values()].map((group2) => {
+          var _a2, _b2, _c, _d;
+          const ranked = [...group2.rows].sort((a, b) => b.children - a.children || a.overrides - b.overrides);
+          return {
+            main: {
+              id: group2.facts.id,
+              key: group2.facts.key,
+              name: (_c = (_b2 = group2.facts.name) != null ? _b2 : (_a2 = group2.rows[0]) == null ? void 0 : _a2.name) != null ? _c : null,
+              remote: group2.facts.remote,
+              set: (_d = group2.facts.setName) != null ? _d : null
+            },
+            status: group2.facts.status,
+            keyedBy: group2.facts.status === "missing" ? "name" : "main",
+            instances: group2.rows.length,
+            nested: group2.rows.filter((row) => row.nested).length,
+            pages: countBy(group2.rows, (row) => row.page),
+            restoreFrom: ranked.slice(0, 3).map((row) => ({
+              id: row.id,
+              name: row.name,
+              page: row.page,
+              children: row.children,
+              overrides: row.overrides,
+              nested: row.nested,
+              link: row.link
+            })),
+            rows: group2.rows.slice(0, params.limit),
+            truncated: group2.rows.length > params.limit
+          };
+        }).sort((a, b) => b.instances - a.instances);
+        let detached;
+        if (params.detached !== false && !timedOut) {
+          detached = [];
+          for (const root of roots) {
+            for (const frame3 of await findAllByTypes(root, ["FRAME"])) {
+              if (!("detachedInfo" in frame3)) break;
+              const info = frame3.detachedInfo;
+              if (!info) continue;
+              const id = "componentId" in info ? info.componentId : null;
+              if (id) {
+                const main = await figma.getNodeByIdAsync(id);
+                if (main && pageOf5(main) !== null) continue;
+              }
+              detached.push({
+                id: frame3.id,
+                name: frame3.name,
+                page: (_b = (_a = pageOf5(frame3)) == null ? void 0 : _a.name) != null ? _b : null,
+                was: id != null ? id : "componentKey" in info ? info.componentKey : "unknown",
+                origin: id ? "local" : "library",
+                verified: id !== null,
+                link: deepLink(frame3.id)
+              });
+            }
+          }
+        }
+        return __spreadProps(__spreadValues({
+          scope: { pages: labels },
+          walked: { instances: walked, of: instances.length },
+          totals: {
+            deadMains: out.length,
+            orphanInstances: out.reduce((sum, group2) => sum + group2.instances, 0),
+            detachedFrames: detached ? detached.filter((row) => row.verified).length : null,
+            detachedUnverified: detached ? detached.filter((row) => !row.verified).length : null
+          },
+          groups: out
+        }, detached ? { detached } : {}), {
+          next: "component.restore \u2014 rebuild the main from one of `restoreFrom` and relink the rest",
+          timedOut,
+          ms: Date.now() - started
+        });
       }
     }
   ];
+  async function resolveInstance(id) {
+    if (typeof id !== "string" || id === "") throw new Error("an instance node id is required");
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) throw new Error(`no node with id ${id}`);
+    if (node.type !== "INSTANCE") throw new Error(`${node.name} is a ${node.type} \u2014 only an INSTANCE can be repointed`);
+    return node;
+  }
+  async function resolveComponent(params) {
+    var _a, _b;
+    if (typeof params.to === "string" && params.to !== "") return componentFor(params.to);
+    if (typeof params.set !== "string" || params.set === "") {
+      throw new Error('"to" must be an id/key string, or "set" must identify a component set');
+    }
+    const base = await componentFor(params.set);
+    const set = ((_a = base.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? base.parent : null;
+    if (!set) throw new Error(`"${base.name}" is not in a component set`);
+    if (params.variant === void 0) return (_b = set.defaultVariant) != null ? _b : base;
+    if (!params.variant || typeof params.variant !== "object" || Array.isArray(params.variant)) {
+      throw new Error('"variant" must be an object of exact variant property names to values');
+    }
+    const wanted = params.variant;
+    const match = set.children.find(
+      (candidate) => candidate.type === "COMPONENT" && Object.entries(wanted).every(([name, value2]) => {
+        var _a2;
+        return ((_a2 = candidate.variantProperties) == null ? void 0 : _a2[name]) === value2;
+      })
+    );
+    if (!match) throw new Error(`no variant in "${set.name}" matches ${JSON.stringify(wanted)}`);
+    return match;
+  }
+  function freeSpot2(page) {
+    let right = 0;
+    let top = 0;
+    let seen = false;
+    for (const child of page.children) {
+      if (!Number.isFinite(child.x) || !Number.isFinite(child.width)) continue;
+      right = seen ? Math.max(right, child.x + child.width) : child.x + child.width;
+      top = seen ? Math.min(top, child.y) : child.y;
+      seen = true;
+    }
+    return seen ? { x: right + 200, y: top } : { x: 0, y: 0 };
+  }
+  var STRATEGY = {
+    type: "string",
+    default: "auto",
+    enum: ["auto", "swap", "rebuild"],
+    description: `How the copy is repointed. "swap" is Figma's own instance swap (override preservation by its UI heuristics, repaired from the snapshot afterwards). "rebuild" is the \u2318\u21E7R repair without a clipboard: a fresh instance of the new main, the snapshot replayed onto it, inserted at the old copy's index with its geometry, and the old copy deleted \u2014 exact, but a NEW node id. "auto" swaps, and rebuilds only when Figma refuses the swap.`
+  };
   var COMPONENT_WRITE_OPS = [
     {
       name: "component.restore",
-      summary: "Rebuild one dead master from an orphan and reassign every orphan in that group with override recovery.",
-      agent: "Pass restoreFrom from component.orphans. The source is cloned before detach; every matching orphan is swapped and the report names kept, restored and lost overrides.",
+      summary: "Rebuild a deleted main component out of one of its orphan copies, and relink the rest with their overrides intact.",
+      agent: "The repair for a main somebody deleted. It clones ONE orphan copy, detaches the clone, turns that into a component, and then repoints every other orphan of the same dead main onto it \u2014 snapshotting each copy's overrides first and writing back whatever the repoint dropped, so a screen keeps its own text, colours and variants instead of resetting to the source copy's. Read `component.orphans` first and pass one of its `restoreFrom` ids: the restored main is that copy WITH ITS OVERRIDES BAKED IN, so picking the copy nobody customised matters. `dryRun: true` lists every copy that would be relinked without touching anything \u2014 show that first. When the dead main is `missing` (no id to match on) siblings are matched by NAME, and every row says which way it was matched. The restored component is a NEW component with a new key: consumer files that subscribed to the old library component still need this library published and accepted there.",
       mutates: true,
       params: {
-        restoreFrom: { type: "string", required: true, description: "Orphan instance id to clone into the new master." },
-        dryRun: { type: "boolean", default: false, description: "Report the group and source without changing the document." }
+        restoreFrom: {
+          type: "string",
+          required: true,
+          description: "Instance id to rebuild the main from \u2014 take it from component.orphans `restoreFrom`."
+        },
+        name: { type: "string", description: "Name for the restored component. Defaults to the dead main's own name." },
+        pageId: { type: "string", description: "Page to put the restored main on. Defaults to the source copy's page." },
+        x: { type: "number", description: "Where to put it. Defaults to clear space right of everything on the page." },
+        y: { type: "number", description: "Where to put it. Defaults to the top of the page's content." },
+        relink: { type: "boolean", default: true, description: "Repoint every other orphan of the same dead main onto the restored one." },
+        match: {
+          type: "string",
+          default: "auto",
+          enum: ["auto", "main", "name"],
+          description: "How siblings are found: by the dead main's id, by name, or auto (id when the dead main resolves, name when it does not)."
+        },
+        preserveOverrides: { type: "boolean", default: true, description: "Snapshot each copy's overrides and write back what the repoint drops." },
+        strategy: STRATEGY,
+        dryRun: {
+          type: "boolean",
+          default: false,
+          description: "Report the plan \u2014 the component, the page, and every copy that would be relinked \u2014 and write nothing."
+        }
       },
       async run(params) {
-        const source = await figma.getNodeByIdAsync(params.restoreFrom);
-        if (!source || source.type !== "INSTANCE") throw new Error("restoreFrom must identify an INSTANCE");
-        const groups = await orphanGroups();
-        const group2 = groups.find((candidate) => candidate.instances.some((instance) => instance.id === source.id));
-        if (!group2) throw new Error(`instance ${source.id} is not orphaned`);
-        if (params.dryRun === true) return { dryRun: true, group: group2.group, name: group2.name, count: group2.instances.length, restoreFrom: nodeRef(source) };
-        figma.commitUndo();
-        const clone2 = source.clone();
-        const detached = clone2.detachInstance();
-        const master = figma.createComponentFromNode(detached);
-        master.name = group2.name;
-        const page = pageOf5(source);
-        if (page) page.appendChild(master);
-        master.x = source.x + source.width + 80;
-        master.y = source.y;
-        const results = [];
-        for (const orphan of group2.instances) {
-          const snapshots = snapshotOverrides(orphan);
-          const properties = propertyValues(orphan);
-          try {
-            orphan.swapComponent(master);
-            try {
-              orphan.setProperties(properties);
-            } catch (e) {
+        var _a, _b, _c;
+        const source = await resolveInstance(params.restoreFrom);
+        const facts = await readMain(source);
+        if (facts.status === "live") {
+          throw new Error(
+            `"${source.name}" still has its main (${facts.name}) \u2014 nothing to restore. Use instance.swap to repoint it somewhere else.`
+          );
+        }
+        const sourcePage = pageOf5(source);
+        let page = sourcePage != null ? sourcePage : figma.currentPage;
+        if (typeof params.pageId === "string" && params.pageId !== "") {
+          const found = await figma.getNodeByIdAsync(params.pageId);
+          if (!found || found.type !== "PAGE") throw new Error(`no page with id ${params.pageId}`);
+          await found.loadAsync();
+          page = found;
+        }
+        const name = typeof params.name === "string" && params.name !== "" ? params.name : (_a = facts.name) != null ? _a : source.name;
+        const matchBy = params.match === "main" || params.match === "name" ? params.match : facts.id ? "main" : "name";
+        if (matchBy === "main" && !facts.id) throw new Error('the dead main has no id to match on \u2014 use match: "name"');
+        const siblings = [];
+        if (params.relink === false) {
+          siblings.push({ instance: source, matchedBy: matchBy });
+        } else {
+          await loadAllPagesAsync();
+          for (const candidate of await findAllByTypes(figma.root, ["INSTANCE"])) {
+            const theirs = await readMain(candidate);
+            if (theirs.status === "live") continue;
+            if (matchBy === "main") {
+              const sameId = theirs.id !== null && theirs.id === facts.id;
+              const sameKey = theirs.key !== null && theirs.key === facts.key;
+              if (sameId || sameKey) siblings.push({ instance: candidate, matchedBy: "main" });
+            } else if (((_b = theirs.name) != null ? _b : candidate.name) === ((_c = facts.name) != null ? _c : source.name)) {
+              siblings.push({ instance: candidate, matchedBy: "name" });
             }
-            const overrides = await restoreOverrides(orphan, snapshots);
-            results.push(__spreadValues({ node: orphan.id, ok: overrides.lost.length === 0 }, overrides));
-          } catch (error) {
-            results.push({ node: orphan.id, ok: false, kept: [], restored: [], lost: [{ layer: orphan.name, field: "master", reason: String((error == null ? void 0 : error.message) || error) }] });
           }
         }
-        return { dryRun: false, group: group2.group, master: __spreadProps(__spreadValues({}, nodeRef(master)), { link: deepLink(master) }), total: results.length, restored: results.filter((row) => row.ok).length, results };
+        const fallback = freeSpot2(page);
+        const spot = {
+          x: typeof params.x === "number" ? params.x : fallback.x,
+          y: typeof params.y === "number" ? params.y : fallback.y
+        };
+        const plan = {
+          source: describeInstance(source),
+          dead: { id: facts.id, key: facts.key, name: facts.name, status: facts.status, matchedBy: matchBy },
+          relink: siblings.map(({ instance, matchedBy }) => __spreadProps(__spreadValues({}, describeInstance(instance)), { matchedBy }))
+        };
+        if (params.dryRun === true) {
+          return __spreadProps(__spreadValues({
+            dryRun: true
+          }, plan), {
+            component: { name, page: page.name, pageId: page.id, x: spot.x, y: spot.y },
+            restored: false,
+            relinked: 0,
+            note: "the restored main is the source copy WITH its overrides baked in \u2014 check `source.overrides` before running for real"
+          });
+        }
+        figma.commitUndo();
+        const clone2 = source.clone();
+        page.appendChild(clone2);
+        const frame3 = clone2.detachInstance();
+        const main = figma.createComponentFromNode(frame3);
+        main.name = name;
+        page.appendChild(main);
+        main.x = spot.x;
+        main.y = spot.y;
+        const strategy = typeof params.strategy === "string" ? params.strategy : "auto";
+        const rows = [];
+        let relinked = 0;
+        for (const { instance, matchedBy } of siblings) {
+          const row = describeInstance(instance);
+          try {
+            const outcome = await repoint(instance, main, params.preserveOverrides !== false, strategy);
+            relinked += 1;
+            rows.push(__spreadValues(__spreadProps(__spreadValues({}, row), { matchedBy, ok: true, repointed: true }), outcome));
+          } catch (err) {
+            rows.push(__spreadProps(__spreadValues({}, row), { matchedBy, ok: false, repointed: false, error: String((err == null ? void 0 : err.message) || err) }));
+          }
+        }
+        return {
+          dryRun: false,
+          source: plan.source,
+          dead: plan.dead,
+          component: {
+            id: main.id,
+            name: main.name,
+            key: main.key || null,
+            page: page.name,
+            pageId: page.id,
+            x: main.x,
+            y: main.y,
+            link: deepLink(main.id)
+          },
+          restored: true,
+          relinked,
+          failed: rows.length - relinked,
+          rows,
+          note: "new component, new key \u2014 a consumer file that subscribed to the deleted library component still needs this library published and accepted there"
+        };
       }
     },
     {
       name: "instance.swap",
-      summary: "Swap or rebuild instances to an id, library key, or set variant, preserving and reporting overrides.",
-      agent: "strategy:auto tries native swap first and rebuilds only when Figma refuses; swap never silently falls back. The per-field report separates kept, restored, lost and unsupported overrides, and rebuild returns a newId.",
+      summary: "Repoint instances onto another main component, keeping the overrides each copy carried.",
+      agent: 'The manual half of `component.restore`, and the op for any deliberate re-pointing: a copy moved onto a rebuilt main, a deprecated component retired, a local copy pointed back at the library one. `swapComponent` preserves overrides "with the same heuristics as the UI" \u2014 a promise about most of them \u2014 so this snapshots every override first, repoints, and writes back what was dropped. The report is the contract: `kept` is what survived on its own, `restored` names each layer and field written back, and `lost` names what nobody could put back and why. `to` takes a COMPONENT id, a 40-character library key, or a set id plus `variant`. When Figma refuses a swap outright, `strategy: "auto"` falls back to the \u2318\u21E7R repair a designer does by hand \u2014 a fresh copy of the new main with the snapshot replayed onto it, inserted where the old one was, old one deleted \u2014 which costs a NEW node id, reported as `newId`. `preserveOverrides: false` is the Figma-native behaviour: every copy back to the new main\'s defaults.',
       mutates: true,
       params: {
-        nodes: { type: "string[]", required: true, description: "Instance node ids." },
-        to: { type: "string", description: "Component id or 40-character library key." },
+        nodes: { type: "string[]", required: true, description: "Instance ids to repoint." },
+        to: {
+          type: "string",
+          description: "The new main: a COMPONENT id or 40-character library key."
+        },
         set: { type: "string", description: "Component-set id or key when selecting a variant." },
-        variant: { type: "json", description: "With set: an object of exact variant property names to values." },
-        strategy: { type: "string", enum: ["auto", "swap", "rebuild"], default: "auto", description: "Native swap, structural rebuild, or swap with rebuild fallback." },
-        dryRun: { type: "boolean", default: false, description: "Resolve targets and report without changing nodes." }
+        variant: { type: "json", description: "With set: exact variant property names to values." },
+        preserveOverrides: { type: "boolean", default: true, description: "Snapshot overrides before the repoint and write back whatever it drops." },
+        strategy: STRATEGY,
+        dryRun: {
+          type: "boolean",
+          default: false,
+          description: "Report what would be repointed, and each copy's override count, without touching anything."
+        }
       },
       async run(params) {
-        var _a;
-        const ids = Array.isArray(params.nodes) ? params.nodes.filter((id) => typeof id === "string" && id !== "") : [];
-        if (!ids.length) throw new Error('"nodes" must be a non-empty array of instance ids');
-        const target = await componentTarget(
-          typeof params.to === "string" && params.to !== "" ? params.to : __spreadValues({ set: params.set }, params.variant === void 0 ? {} : { variant: params.variant })
+        const ids = (Array.isArray(params.nodes) ? params.nodes : []).filter(
+          (entry) => typeof entry === "string" && entry !== ""
         );
-        const strategy = params.strategy;
+        if (ids.length === 0) throw new Error('"nodes" must be a non-empty array of instance ids');
+        const target = await resolveComponent(params);
         const dryRun = params.dryRun === true;
+        const strategy = typeof params.strategy === "string" ? params.strategy : "auto";
         if (!dryRun) figma.commitUndo();
-        const results = [];
+        const rows = [];
         for (const id of ids) {
-          const found = await figma.getNodeByIdAsync(id);
-          if (!found || found.type !== "INSTANCE") {
-            results.push({ node: id, ok: false, error: `${(_a = found == null ? void 0 : found.type) != null ? _a : "nothing"} \u2014 need an INSTANCE` });
-            continue;
-          }
-          const before = await found.getMainComponentAsync().catch(() => null);
-          if (dryRun) {
-            results.push({ node: id, ok: true, strategy, before: before ? nodeRef(before) : null, to: nodeRef(target) });
-            continue;
-          }
-          const snapshots = snapshotOverrides(found);
-          const properties = propertyValues(found);
-          let instance = found;
-          let used = strategy === "rebuild" ? "rebuild" : "swap";
-          let fellBackBecause;
           try {
-            if (strategy === "rebuild") {
-              instance = (await rebuildInstance(found, target)).instance;
-            } else {
-              try {
-                found.swapComponent(target);
-              } catch (error) {
-                if (strategy === "swap") throw error;
-                fellBackBecause = String((error == null ? void 0 : error.message) || error);
-                instance = (await rebuildInstance(found, target)).instance;
-                used = "rebuild";
-              }
+            const instance = await resolveInstance(id);
+            const facts = await readMain(instance);
+            const row = __spreadProps(__spreadValues({}, describeInstance(instance)), { from: { id: facts.id, name: facts.name, status: facts.status } });
+            if (dryRun) {
+              rows.push(__spreadProps(__spreadValues({}, row), { ok: true, repointed: false }));
+              continue;
             }
-            try {
-              instance.setProperties(properties);
-            } catch (e) {
-            }
-            const overrides = await restoreOverrides(instance, snapshots);
-            results.push(__spreadValues({ node: id, newId: instance.id === id ? void 0 : instance.id, ok: overrides.lost.length === 0, strategy: used, fellBackBecause, before: before ? nodeRef(before) : null, after: nodeRef(target) }, overrides));
-          } catch (error) {
-            results.push({ node: id, ok: false, strategy: used, fellBackBecause, error: String((error == null ? void 0 : error.message) || error) });
+            const outcome = await repoint(instance, target, params.preserveOverrides !== false, strategy);
+            rows.push(__spreadValues(__spreadProps(__spreadValues({}, row), { ok: true, repointed: true }), outcome));
+          } catch (err) {
+            rows.push({ node: id, ok: false, repointed: false, error: String((err == null ? void 0 : err.message) || err) });
           }
         }
-        return { dryRun, target: nodeRef(target), total: results.length, succeeded: results.filter((row) => row.ok).length, failed: results.filter((row) => !row.ok).length, results };
+        const ok = rows.filter((row) => row.ok === true);
+        return {
+          dryRun,
+          to: { id: target.id, name: target.name, key: target.key || null, remote: target.remote === true },
+          strategy,
+          total: rows.length,
+          repointed: dryRun ? 0 : ok.filter((row) => row.repointed === true).length,
+          failed: rows.length - ok.length,
+          rows
+        };
       }
     }
   ];
@@ -34294,7 +35795,7 @@ ${scripts}`, "");
   function errorMessage(error) {
     return String((error == null ? void 0 : error.message) || error);
   }
-  function sameValue2(a, b) {
+  function sameValue3(a, b) {
     if (a === b) return true;
     try {
       return JSON.stringify(a) === JSON.stringify(b);
@@ -34310,17 +35811,21 @@ ${scripts}`, "");
   }
   function resolveCollectionFrom(collections, reference2, where = "collection") {
     const ref = text4(reference2, where);
-    const exact = collections.filter((collection) => collection.id === ref || collection.key === ref || collection.name === ref);
-    if (exact.length === 0) throw new Error(`${where} "${ref}" does not match a local collection`);
-    if (exact.length > 1) throw new Error(`${where} "${ref}" is ambiguous; use its id`);
-    return exact[0];
+    const byId = collections.find((collection) => collection.id === ref || collection.key === ref);
+    if (byId) return byId;
+    const named = collections.filter((collection) => collection.name.toLowerCase() === ref.toLowerCase());
+    if (named.length === 0) throw new Error(`${where} "${ref}" does not match a local collection`);
+    if (named.length > 1) throw new Error(`${where} "${ref}" is ambiguous; use its id`);
+    return named[0];
   }
   function resolveMode(modes, reference2, where) {
     const ref = text4(reference2, where);
-    const exact = modes.filter((mode) => mode.modeId === ref || mode.name === ref);
-    if (exact.length === 0) throw new Error(`${where} "${ref}" does not match a mode`);
-    if (exact.length > 1) throw new Error(`${where} "${ref}" is ambiguous; use its id`);
-    return exact[0];
+    const byId = modes.find((mode) => mode.modeId === ref);
+    if (byId) return byId;
+    const named = modes.filter((mode) => mode.name.toLowerCase() === ref.toLowerCase());
+    if (named.length === 0) throw new Error(`${where} "${ref}" does not match a mode`);
+    if (named.length > 1) throw new Error(`${where} "${ref}" is ambiguous; use its id`);
+    return named[0];
   }
   async function planCollectionUpdates(raw, force = false) {
     var _a, _b;
@@ -34347,6 +35852,12 @@ ${scripts}`, "");
       if (hidden !== void 0 && typeof hidden !== "boolean") {
         throw new Error(`collections[${index2}].hiddenFromPublishing must be a boolean`);
       }
+      if (newName !== void 0 && newName.toLowerCase() !== collection.name.toLowerCase()) {
+        const clash = collections.some(
+          (candidate) => candidate.id !== collection.id && candidate.name.toLowerCase() === newName.toLowerCase()
+        );
+        if (clash) throw new Error(`a collection named "${newName}" already exists`);
+      }
       const steps = entry.modes === void 0 ? [] : array(entry.modes, `collections[${index2}].modes`);
       if (remove && (newName !== void 0 || hidden !== void 0 || steps.length > 0)) {
         throw new Error(`collections[${index2}] cannot combine remove with other changes`);
@@ -34370,11 +35881,14 @@ ${scripts}`, "");
           continue;
         }
         const mode = resolveMode(simulated, step2.mode, `collections[${index2}].modes[${stepIndex}].mode`);
+        if (step2.remove === true && step2.newName !== void 0) {
+          throw new Error(`collections[${index2}].modes[${stepIndex}] cannot combine remove with newName`);
+        }
         if (step2.remove === true) {
           if (mode.modeId === collection.defaultModeId) throw new Error(`default mode "${mode.name}" cannot be removed`);
           if (simulated.length === 1) throw new Error(`the last mode in "${collection.name}" cannot be removed`);
           const defaultValueId = collection.defaultModeId;
-          const lostVariables = ownVariables.filter((variable) => Object.prototype.hasOwnProperty.call(variable.valuesByMode, mode.modeId)).filter((variable) => !sameValue2(variable.valuesByMode[mode.modeId], variable.valuesByMode[defaultValueId])).map((variable) => variable.name);
+          const lostVariables = ownVariables.filter((variable) => Object.prototype.hasOwnProperty.call(variable.valuesByMode, mode.modeId)).filter((variable) => !sameValue3(variable.valuesByMode[mode.modeId], variable.valuesByMode[defaultValueId])).map((variable) => variable.name);
           if (lostVariables.length > 0 && !force) {
             throw new Error(
               `mode "${mode.name}" has ${lostVariables.length} value(s) different from the default; pass force: true to remove it`
@@ -34471,120 +35985,217 @@ ${scripts}`, "");
     }
     return plans;
   }
-  async function auditVariables(params) {
-    const requested = Array.isArray(params.collections) ? params.collections.filter((entry) => typeof entry === "string" && entry !== "") : [];
-    const aliasOnly = Array.isArray(params.aliasOnly) ? params.aliasOnly.filter((entry) => typeof entry === "string" && entry !== "") : [];
-    const ignore = Array.isArray(params.ignore) ? params.ignore.filter((entry) => typeof entry === "string" && entry !== "") : [];
-    const includeLibraries = params.libraries === true;
-    const budgetMs = Math.min(11e4, Math.max(1e3, typeof params.budgetMs === "number" ? params.budgetMs : 3e4));
-    const started = Date.now();
-    const collections = await localCollections();
-    const selected = requested.length === 0 ? collections : collections.filter((collection) => requested.some((ref) => ref === collection.id || ref === collection.name));
-    if (requested.length > 0 && selected.length !== new Set(requested).size) {
-      const matched = new Set(selected.flatMap((collection) => [collection.id, collection.name]));
-      const missing = requested.filter((ref) => !matched.has(ref));
-      if (missing.length > 0) throw new Error(`unknown collection(s): ${missing.join(", ")}`);
+  function expectedPageOrder(ids, plans) {
+    const order = ids.filter((id) => !plans.some((plan) => plan.remove && plan.id === id));
+    for (const plan of plans) {
+      if (plan.index === void 0) continue;
+      const current = order.indexOf(plan.id);
+      if (current >= 0) order.splice(current, 1);
+      order.splice(Math.min(plan.index, order.length), 0, plan.id);
     }
-    const collectionById = new Map(selected.map((collection) => [collection.id, collection]));
-    const allVariables = await figma.variables.getLocalVariablesAsync();
-    const localById = new Map(allVariables.map((variable) => [variable.id, variable]));
+    return order;
+  }
+  function classifyModeColumns(valuesByMode, modeIds, unresolved = /* @__PURE__ */ new Set(), aliasOnly = false) {
+    const kinds = [];
+    let aliases2 = 0;
+    let literals = 0;
+    let missing = 0;
+    let broken = 0;
+    for (const modeId of modeIds) {
+      const value2 = valuesByMode[modeId];
+      if (value2 === void 0) missing++;
+      else if (isAlias3(value2)) {
+        aliases2++;
+        if (unresolved.has(value2.id)) broken++;
+      } else literals++;
+    }
+    if (aliases2 > 0 && literals > 0) kinds.push("MIXED");
+    if (missing > 0) kinds.push("MISSING_MODE");
+    if (broken > 0) kinds.push("UNRESOLVED_ALIAS");
+    if (aliasOnly && literals > 0 && aliases2 === 0) kinds.push("LITERAL");
+    return kinds;
+  }
+  var isLibraryId = (id) => id.includes("/");
+  async function describeCached(value2, lookups) {
+    if (value2 === void 0) return "(unset)";
+    if (isAlias3(value2)) {
+      const target = lookups.get(value2.id);
+      if (target === void 0 && isLibraryId(value2.id)) return "\u2192 (library variable, not read)";
+      if (!target) return `\u2192 ${value2.id} (unresolved)`;
+      return target.remote ? `\u2192 ${target.name} (library)` : `\u2192 ${target.name}`;
+    }
+    return describeValue(value2);
+  }
+  async function auditVariables(params) {
+    var _a, _b, _c;
+    const strings = (raw) => (Array.isArray(raw) ? raw : []).filter((entry) => typeof entry === "string" && entry !== "");
+    const started = Date.now();
+    const budgetMs = Math.min(11e4, Math.max(1e3, typeof params.budgetMs === "number" ? params.budgetMs : 6e4));
+    const deadline2 = started + budgetMs;
+    const includeRemote = params.libraries !== false;
+    const ignore = strings(params.ignore);
+    const wanted = strings(params.collections);
+    const locals = await localCollections();
+    const queue2 = wanted.length ? await Promise.all(wanted.map((ref) => resolveCollection(ref))) : [...locals];
+    const audited = new Set(queue2.map((collection) => collection.id));
+    const aliasOnly = /* @__PURE__ */ new Set();
+    for (const ref of strings(params.aliasOnly)) {
+      if (ref.endsWith("*")) {
+        const prefix = ref.slice(0, -1).toLowerCase();
+        for (const collection of locals) {
+          if (collection.name.toLowerCase().startsWith(prefix)) aliasOnly.add(collection.id);
+        }
+      } else {
+        aliasOnly.add((await resolveCollection(ref)).id);
+      }
+    }
+    const lookups = /* @__PURE__ */ new Map();
+    for (const variable of await figma.variables.getLocalVariablesAsync()) lookups.set(variable.id, variable);
+    const localMs = Date.now() - started;
+    let networkFailures = 0;
+    let skippedLibrary = 0;
+    const inBudget = () => Date.now() < deadline2;
+    const fetchLibrary = async (id) => {
+      if (lookups.has(id)) return lookups.get(id);
+      if (!includeRemote || !inBudget()) {
+        skippedLibrary++;
+        return void 0;
+      }
+      try {
+        const found = await figma.variables.getVariableByIdAsync(id);
+        lookups.set(id, found);
+        return found;
+      } catch (e) {
+        networkFailures++;
+        skippedLibrary++;
+        return void 0;
+      }
+    };
     const findings = [];
-    const remoteCache = /* @__PURE__ */ new Map();
-    let networkErrors = 0;
-    let timedOut = false;
-    for (const variable of allVariables) {
-      const collection = collectionById.get(variable.variableCollectionId);
-      if (!collection || matches(variable.name, ignore)) continue;
-      let aliases2 = 0;
-      let literals = 0;
-      for (const mode of collection.modes) {
-        if (!Object.prototype.hasOwnProperty.call(variable.valuesByMode, mode.modeId)) {
-          findings.push({
-            kind: "MISSING_MODE",
-            variable: variable.name,
-            variableId: variable.id,
-            collection: collection.name,
-            mode: mode.name,
-            detail: `no value for ${mode.name}`
-          });
+    const summary = [];
+    for (let at = 0; at < queue2.length; at++) {
+      const collection = queue2[at];
+      const modeIds = collection.modes.map((mode) => mode.modeId);
+      const modeName = new Map(collection.modes.map((mode) => [mode.modeId, mode.name]));
+      if (modeIds.length < 2 && params.singleMode !== true && !aliasOnly.has(collection.id)) {
+        summary.push({ collection: collection.name, remote: collection.remote, modes: modeIds.length, skipped: "single mode" });
+        continue;
+      }
+      let read = 0;
+      let unreadable = 0;
+      let flagged = 0;
+      let incomplete = false;
+      for (const id of collection.variableIds) {
+        const variable = isLibraryId(id) ? await fetchLibrary(id) : (_a = lookups.get(id)) != null ? _a : null;
+        if (variable === void 0) {
+          incomplete = true;
           continue;
         }
-        const value2 = variable.valuesByMode[mode.modeId];
-        const alias = value2;
-        if (alias && typeof alias === "object" && alias.type === "VARIABLE_ALIAS") {
-          aliases2++;
-          if (localById.has(alias.id)) continue;
-          if (/^VariableID:\d+:\d+$/.test(alias.id)) {
-            findings.push({
-              kind: "UNRESOLVED_ALIAS",
-              variable: variable.name,
-              variableId: variable.id,
-              collection: collection.name,
-              mode: mode.name,
-              detail: `local alias ${alias.id} no longer exists`
-            });
+        if (!variable) {
+          unreadable++;
+          continue;
+        }
+        read++;
+        const values = (_b = variable.valuesByMode) != null ? _b : {};
+        const unresolved = /* @__PURE__ */ new Set();
+        for (const value2 of Object.values(values)) {
+          if (!isAlias3(value2)) continue;
+          if (!isLibraryId(value2.id)) {
+            if (!lookups.get(value2.id)) unresolved.add(value2.id);
             continue;
           }
-          if (!includeLibraries || Date.now() - started >= budgetMs) {
-            if (Date.now() - started >= budgetMs) timedOut = true;
-            continue;
-          }
-          let target = remoteCache.get(alias.id);
-          if (target === void 0) {
+          if (!includeRemote) continue;
+          const target = await fetchLibrary(value2.id);
+          if (target === null) unresolved.add(value2.id);
+          if (target && !audited.has(target.variableCollectionId) && inBudget()) {
+            let remote;
             try {
-              target = await figma.variables.getVariableByIdAsync(alias.id);
-              remoteCache.set(alias.id, target);
+              remote = await figma.variables.getVariableCollectionByIdAsync(target.variableCollectionId);
             } catch (e) {
-              networkErrors++;
-              continue;
+              networkFailures++;
+              skippedLibrary++;
+              remote = null;
+            }
+            if (remote) {
+              audited.add(remote.id);
+              queue2.push(remote);
             }
           }
-          if (target === null) {
-            findings.push({
-              kind: "UNRESOLVED_ALIAS",
-              variable: variable.name,
-              variableId: variable.id,
-              collection: collection.name,
-              mode: mode.name,
-              detail: `alias ${alias.id} does not resolve`
-            });
-          }
-        } else {
-          literals++;
         }
-      }
-      if (aliases2 > 0 && literals > 0) {
+        if (matches(variable.name, ignore)) continue;
+        const kinds = classifyModeColumns(values, modeIds, unresolved, aliasOnly.has(collection.id));
+        if (kinds.length === 0) continue;
+        flagged++;
+        const byMode = {};
+        for (const modeId of modeIds) byMode[modeName.get(modeId)] = await describeCached(values[modeId], lookups);
         findings.push({
-          kind: "MIXED",
+          collection: collection.name,
+          remote: collection.remote,
           variable: variable.name,
           variableId: variable.id,
-          collection: collection.name,
-          detail: `${aliases2} alias mode(s), ${literals} literal mode(s)`
+          kinds,
+          values: byMode
         });
       }
-      if (literals > 0 && aliases2 === 0 && matches(collection.name, aliasOnly)) {
-        findings.push({
-          kind: "LITERAL",
-          variable: variable.name,
-          variableId: variable.id,
-          collection: collection.name,
-          detail: `all ${literals} populated mode(s) are literals in an alias-only collection`
+      summary.push(__spreadProps(__spreadValues(__spreadValues({
+        collection: collection.name,
+        remote: collection.remote,
+        modes: modeIds.length,
+        variables: collection.variableIds.length,
+        read
+      }, unreadable ? { unreadable } : {}), incomplete ? { incomplete: true } : {}), {
+        flagged
+      }));
+    }
+    const counts = {};
+    for (const finding of findings) {
+      for (const kind of finding.kinds) counts[kind] = ((_c = counts[kind]) != null ? _c : 0) + 1;
+    }
+    const ranOut = skippedLibrary > 0 && includeRemote;
+    return __spreadValues(__spreadValues({
+      clean: findings.length === 0 && !ranOut && networkFailures === 0,
+      total: findings.length,
+      counts,
+      collections: summary,
+      findings,
+      libraries: {
+        enabled: includeRemote,
+        read: [...lookups.keys()].filter(isLibraryId).length,
+        errors: networkFailures,
+        timedOut: ranOut
+      },
+      ms: { local: localMs, total: Date.now() - started }
+    }, ranOut ? {
+      stoppedOn: "budgetMs",
+      skippedLibrary,
+      note: "the library half was incomplete; rerun with a larger budgetMs or name one collection"
+    } : {}), networkFailures ? {
+      networkFailures,
+      networkNote: "the library service did not answer some lookups; those aliases were not judged or flagged"
+    } : {});
+  }
+  async function describeExtension(collection) {
+    var _a, _b, _c;
+    const modeNames = new Map(collection.modes.map((mode) => [mode.modeId, mode.name]));
+    const overrides = [];
+    for (const [variableId, byMode] of Object.entries((_a = collection.variableOverrides) != null ? _a : {})) {
+      const variable = await figma.variables.getVariableByIdAsync(variableId);
+      for (const [modeId, value2] of Object.entries(byMode)) {
+        overrides.push({
+          variable: (_b = variable == null ? void 0 : variable.name) != null ? _b : variableId,
+          mode: (_c = modeNames.get(modeId)) != null ? _c : modeId,
+          value: await describeValue(value2)
         });
       }
     }
-    const counts = findings.reduce((out, finding) => {
-      var _a;
-      out[finding.kind] = ((_a = out[finding.kind]) != null ? _a : 0) + 1;
-      return out;
-    }, {});
     return {
-      clean: findings.length === 0 && networkErrors === 0 && !timedOut,
-      collections: selected.map((collection) => ({ id: collection.id, name: collection.name })),
-      variables: allVariables.filter((variable) => collectionById.has(variable.variableCollectionId)).length,
-      counts,
-      findings,
-      libraries: { enabled: includeLibraries, read: remoteCache.size, errors: networkErrors, timedOut },
-      ms: Date.now() - started
+      id: collection.id,
+      name: collection.name,
+      parentVariableCollectionId: collection.parentVariableCollectionId,
+      rootVariableCollectionId: collection.rootVariableCollectionId,
+      modes: collection.modes,
+      variables: collection.variableIds.length,
+      overrides
     };
   }
   var ADMIN_OPS = [
@@ -34632,8 +36243,29 @@ ${scripts}`, "");
           if (plan.remove) return { collection: plan.id, removed: !collection, ok: !collection };
           const expectedName = (_a = plan.newName) != null ? _a : plan.before.name;
           const expectedHidden = (_b = plan.hiddenFromPublishing) != null ? _b : plan.before.hiddenFromPublishing;
-          const ok = Boolean(collection && collection.name === expectedName && collection.hiddenFromPublishing === expectedHidden);
-          return { collection: plan.id, ok, after: collection ? { name: collection.name, hiddenFromPublishing: collection.hiddenFromPublishing, modes: collection.modes } : null };
+          const problems = [];
+          if (!collection) {
+            problems.push("collection disappeared");
+          } else {
+            if (collection.name !== expectedName) problems.push(`name is "${collection.name}", not "${expectedName}"`);
+            if (collection.hiddenFromPublishing !== expectedHidden) problems.push("hiddenFromPublishing did not change");
+            for (const step2 of plan.modes) {
+              if (step2.kind === "rename" && !collection.modes.some((mode) => mode.modeId === step2.modeId && mode.name === step2.after)) {
+                problems.push(`mode "${step2.after}" is missing after the rename`);
+              }
+              if (step2.kind === "add" && !collection.modes.some((mode) => mode.name === step2.name)) {
+                problems.push(`mode "${step2.name}" was not added`);
+              }
+              if (step2.kind === "remove" && collection.modes.some((mode) => mode.modeId === step2.modeId)) {
+                problems.push(`mode "${step2.before}" is still present`);
+              }
+            }
+          }
+          return __spreadValues({
+            collection: plan.id,
+            ok: problems.length === 0,
+            after: collection ? { name: collection.name, hiddenFromPublishing: collection.hiddenFromPublishing, modes: collection.modes } : null
+          }, problems.length ? { problems } : {});
         });
         return { dryRun, changed: results.filter((row) => row.ok).length, failed: results.filter((row) => !row.ok).length, results };
       }
@@ -34653,13 +36285,16 @@ ${scripts}`, "");
         const plans = await planPageUpdates(params.pages, params.force === true);
         if (dryRun) return { dryRun, changed: 0, plans };
         figma.commitUndo();
+        const beforeOrder = figma.root.children.map((page) => page.id);
         const pages = new Map(figma.root.children.map((page) => [page.id, page]));
         for (const plan of plans) if (!plan.remove && plan.newName !== void 0) pages.get(plan.id).name = plan.newName;
         for (const plan of plans) {
           if (!plan.remove) continue;
           const page = pages.get(plan.id);
           if (figma.currentPage.id === page.id) {
-            const next = figma.root.children.find((candidate) => candidate.id !== page.id);
+            const next = figma.root.children.find(
+              (candidate) => candidate.id !== page.id && !plans.some((entry) => entry.remove && entry.id === candidate.id)
+            );
             if (!next) throw new Error("the last page cannot be removed");
             await figma.setCurrentPageAsync(next);
           }
@@ -34671,92 +36306,159 @@ ${scripts}`, "");
           if (page) figma.root.insertChild(plan.index, page);
         }
         const roster = [...figma.root.children];
+        const expected = expectedPageOrder(beforeOrder, plans);
+        const actual = roster.map((page) => page.id);
+        const orderOk = actual.length === expected.length && actual.every((id, index2) => id === expected[index2]);
         const results = plans.map((plan) => {
           const page = roster.find((candidate) => candidate.id === plan.id);
           if (plan.remove) return { page: plan.id, removed: !page, ok: !page };
-          const ok = Boolean(page && (plan.newName === void 0 || page.name === plan.newName) && (plan.index === void 0 || roster.indexOf(page) === plan.index));
+          const expectedIndex = expected.indexOf(plan.id);
+          const ok = Boolean(
+            page && (plan.newName === void 0 || page.name === plan.newName) && roster.indexOf(page) === expectedIndex
+          );
           return { page: plan.id, ok, after: page ? { name: page.name, index: roster.indexOf(page) } : null };
         });
-        return { dryRun, changed: results.filter((row) => row.ok).length, failed: results.filter((row) => !row.ok).length, results };
+        return __spreadValues({
+          dryRun,
+          changed: results.filter((row) => row.ok).length,
+          failed: results.filter((row) => !row.ok).length + (orderOk ? 0 : 1),
+          results
+        }, orderOk ? {} : { problems: ["final page order does not match the validated plan"] });
       }
     },
     {
       name: "variables.extend",
-      summary: "Create an Enterprise extended collection and manage its variable overrides.",
-      agent: "Enterprise only. A plan failure leaves nothing created; a pricing-tier refusal is returned verbatim. Overrides accept {variable,mode,value}, {variable,mode,remove:true}, or {variable,removeAll:true}.",
+      summary: "Create, read or edit an Enterprise extended collection and its variable overrides.",
+      agent: "Enterprise only. Every override row is resolved and validated before the first write. Overrides accept {variable,mode,value}, {variable,mode,remove:true}, or {variable,removeAll:true}.",
       mutates: true,
       params: {
-        source: { type: "string", required: true, description: "Local collection id/name/key or a published library collection key." },
-        name: { type: "string", required: true, description: "Name for the extended collection." },
+        source: { type: "string", description: "Create from this local collection id/name/key or published library collection key." },
+        name: { type: "string", description: "Name for a new extended collection; required with source." },
+        collection: { type: "string", description: "Existing extended collection id or name to read or edit." },
         overrides: { type: "json", default: [], description: "Override actions for inherited variables." },
-        dryRun: { type: "boolean", default: false, description: "Validate the source and override shapes without creating anything." }
+        dryRun: { type: "boolean", default: false, description: "Validate every row and report without writing." }
       },
       async run(params) {
-        const source = text4(params.source, "source");
-        const name = text4(params.name, "name");
-        const rows = params.overrides === void 0 ? [] : Array.isArray(params.overrides) ? params.overrides : (() => {
-          throw new Error("overrides must be an array");
-        })();
-        const parsed = rows.map((row, index2) => object(row, `overrides[${index2}]`));
-        for (const [index2, row] of parsed.entries()) {
-          text4(row.variable, `overrides[${index2}].variable`);
-          if (row.removeAll === true) continue;
-          text4(row.mode, `overrides[${index2}].mode`);
-          if (row.remove !== true && row.value === void 0) throw new Error(`overrides[${index2}] needs value, remove: true or removeAll: true`);
+        var _a;
+        if (params.source !== void 0 && params.collection !== void 0) {
+          throw new Error("send source + name to create, or collection to read or edit, not both");
         }
-        let local = null;
-        try {
-          local = resolveCollectionFrom(await localCollections(), source, "source");
-        } catch (e) {
-          local = null;
-        }
-        if (params.dryRun === true) return { dryRun: true, source: local ? { id: local.id, name: local.name } : { key: source }, name, overrides: parsed };
-        figma.commitUndo();
-        let extension;
-        try {
-          extension = local ? local.extend(name) : await figma.variables.extendLibraryCollectionByKeyAsync(source, name);
-        } catch (error) {
-          const message = errorMessage(error);
-          if (/outside of enterprise plan/i.test(message)) {
-            throw new Error("variables.extend requires an Enterprise Figma plan: " + message);
+        const creating = params.source !== void 0;
+        const dryRun = params.dryRun === true;
+        let source;
+        let name;
+        let context;
+        let extension = null;
+        if (creating) {
+          source = text4(params.source, "source");
+          name = text4(params.name, "name");
+          try {
+            context = resolveCollectionFrom(await localCollections(), source, "source");
+          } catch (error) {
+            if (source.startsWith("VariableCollectionId:")) {
+              context = await resolveCollection(source);
+            } else {
+              if (!isLibraryKey(source)) throw error;
+              context = null;
+            }
           }
-          throw error;
+          if (context && context.remote) {
+            throw new Error(`"${context.name}" is a library collection seen through this file; pass its published key instead`);
+          }
+        } else {
+          context = await resolveCollection(params.collection);
+          if (!context.isExtension) throw new Error(`"${context.name}" is not an extended collection`);
+          extension = context;
         }
-        const inherited = (await Promise.all(extension.variableIds.map((id) => figma.variables.getVariableByIdAsync(id)))).filter((entry) => Boolean(entry));
-        for (const [index2, row] of parsed.entries()) {
-          const ref = String(row.variable);
-          const found = inherited.filter((variable2) => variable2.id === ref || variable2.name === ref);
-          if (found.length !== 1) throw new Error(`overrides[${index2}].variable "${ref}" ${found.length ? "is ambiguous" : "does not exist"}`);
-          const variable = found[0];
+        const rawRows = params.overrides === void 0 ? [] : params.overrides;
+        if (!Array.isArray(rawRows)) throw new Error("overrides must be an array");
+        const planned = [];
+        const report2 = [];
+        let libraryContext = null;
+        for (const [index2, rawRow] of rawRows.entries()) {
+          const where = `overrides[${index2}]`;
+          const row = object(rawRow, where);
+          const variableRef = text4(row.variable, `${where}.variable`);
+          const variable = await resolveVariableRef(variableRef);
+          if (!context) {
+            libraryContext = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+            if (!libraryContext || libraryContext.key !== source) {
+              throw new Error(`${where}.variable "${variable.name}" is not in the source library collection`);
+            }
+            context = libraryContext;
+          }
+          if (!context || !context.variableIds.includes(variable.id)) {
+            throw new Error(`${where}.variable "${variable.name}" is not in "${(_a = context == null ? void 0 : context.name) != null ? _a : "the source collection"}" or its parent`);
+          }
           if (row.removeAll === true) {
-            extension.removeOverridesForVariable(variable);
+            if (row.remove === true || row.mode !== void 0 || row.value !== void 0) {
+              throw new Error(`${where}.removeAll cannot be combined with mode, value or remove`);
+            }
+            planned.push({ variable, action: "removeAll" });
+            report2.push({ op: "removeAll", variable: variable.name });
             continue;
           }
-          const mode = resolveMode(extension.modes, row.mode, `overrides[${index2}].mode`);
-          if (row.remove === true) variable.removeOverrideForMode(mode.modeId);
-          else variable.setValueForMode(mode.modeId, await coerceVariableValue(variable, row.value));
+          const mode = resolveMode(context.modes, row.mode, `${where}.mode`);
+          if (row.remove === true) {
+            if (row.value !== void 0) throw new Error(`${where}.remove cannot be combined with value`);
+            planned.push({ variable, mode, action: "remove" });
+            report2.push({ op: "remove", variable: variable.name, mode: mode.name });
+            continue;
+          }
+          if (row.value === void 0) throw new Error(`${where} needs value, remove: true or removeAll: true`);
+          const value2 = await coerceVariableValue(variable, row.value);
+          planned.push({ variable, mode, action: "set", value: value2 });
+          report2.push({ op: "override", variable: variable.name, mode: mode.name, value: await describeValue(value2) });
         }
-        const roster = await localCollections();
-        const fresh = roster.find((collection) => collection.id === extension.id);
+        if (dryRun) {
+          return __spreadValues({
+            dryRun,
+            created: false,
+            source: creating ? context ? { id: context.id, name: context.name } : { key: source } : void 0,
+            name,
+            steps: report2
+          }, extension ? { extension: await describeExtension(extension) } : {});
+        }
+        if (creating) {
+          figma.commitUndo();
+          try {
+            extension = context && !context.remote ? context.extend(name) : await figma.variables.extendLibraryCollectionByKeyAsync(source, name);
+          } catch (error) {
+            const message = errorMessage(error);
+            if (/enterprise/i.test(message)) {
+              throw new Error(`variables.extend requires an Enterprise Figma plan; nothing was created (${message})`);
+            }
+            throw error;
+          }
+        } else if (planned.length > 0) {
+          figma.commitUndo();
+        }
+        for (const step2 of planned) {
+          if (step2.action === "removeAll") {
+            extension.removeOverridesForVariable(step2.variable);
+            continue;
+          }
+          const mode = resolveMode(extension.modes, step2.mode.name, "override mode");
+          if (step2.action === "remove") step2.variable.removeOverrideForMode(mode.modeId);
+          else step2.variable.setValueForMode(mode.modeId, step2.value);
+        }
+        const fresh = await figma.variables.getVariableCollectionByIdAsync(extension.id);
         if (!fresh || !fresh.isExtension) throw new Error("extended collection did not appear in the fresh collection roster");
-        return {
-          dryRun: false,
-          collection: { id: fresh.id, name: fresh.name, parentVariableCollectionId: fresh.parentVariableCollectionId, modes: fresh.modes },
-          overrides: fresh.variableOverrides
-        };
+        return { dryRun, created: creating, steps: report2, extension: await describeExtension(fresh) };
       }
     },
     {
       name: "variables.audit",
       summary: "Audit variable modes for missing values, mixed aliases, broken aliases and forbidden literals.",
-      agent: "Reads all local variables once. Set aliasOnly to semantic collection names and ignore to exact names or prefix* patterns. Library aliases are checked only when libraries: true; network failures are reported as unread, never as false broken aliases.",
+      agent: "Reads local variables in one batch and follows library aliases by default. Set aliasOnly to semantic collections and ignore to exact names or prefix* patterns. Network failures are reported as unread, never as false broken aliases.",
       mutates: false,
       params: {
-        collections: { type: "string[]", description: "Local collection ids or exact names. Empty means every local collection." },
-        aliasOnly: { type: "string[]", default: [], description: "Collection names or prefix* patterns whose variables must contain aliases." },
+        collections: { type: "string[]", description: "Collection ids or case-insensitive names. Empty means every local collection." },
+        aliasOnly: { type: "string[]", default: [], description: "Collection names or ids whose variables must contain aliases." },
         ignore: { type: "string[]", default: [], description: "Exact variable names or prefix* patterns to omit." },
-        libraries: { type: "boolean", default: false, description: "Resolve library alias ids one at a time within the time budget." },
-        budgetMs: { type: "number", default: 3e4, min: 1e3, max: 11e4, description: "Maximum time to start library reads." }
+        libraries: { type: "boolean", default: true, description: "Follow aliases into library collections and audit those collections too." },
+        singleMode: { type: "boolean", default: false, description: "Audit single-mode collections instead of skipping them." },
+        budgetMs: { type: "number", default: 6e4, min: 1e3, max: 11e4, description: "Maximum time to start library reads." }
       },
       run: auditVariables
     }
@@ -34901,8 +36603,8 @@ ${scripts}`, "");
         for (const node of nodes) {
           if (node.type === "TEXT") textNodes += 1;
           aliases(node.boundVariables, variables);
-          for (const styleId of [node.fillStyleId, node.strokeStyleId, node.textStyleId, node.effectStyleId, node.gridStyleId]) {
-            if (typeof styleId === "string" && styleId) styles.add(styleId);
+          for (const styleId2 of [node.fillStyleId, node.strokeStyleId, node.textStyleId, node.effectStyleId, node.gridStyleId]) {
+            if (typeof styleId2 === "string" && styleId2) styles.add(styleId2);
           }
           if (node.layoutMode && node.layoutMode !== "NONE") explicitLayouts += 1;
           if (Array.isArray(node.layoutGrids) && node.layoutGrids.length > 0) {
@@ -35065,6 +36767,15 @@ ${scripts}`, "");
     return Object.keys(out).length > 0 ? out : void 0;
   }
   var MAX_TEXT = 160;
+  function normalizeSaid(text6) {
+    return text6.replace(/\s+/g, " ").trim().toLowerCase();
+  }
+  function topFrameOf(node) {
+    var _a;
+    let cursor = node;
+    while (cursor && cursor.parent && cursor.parent.type !== "PAGE" && cursor.parent.type !== "DOCUMENT") cursor = cursor.parent;
+    return cursor && cursor !== node && ((_a = cursor.parent) == null ? void 0 : _a.type) === "PAGE" ? { id: cursor.id, name: cursor.name } : null;
+  }
   function summarizeNode(node, fullText = false) {
     var _a, _b, _c, _d;
     const summary = { id: node.id, name: node.name, type: node.type };
@@ -35317,7 +37028,9 @@ ${scripts}`, "");
       for (const [index2, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index2, shaders));
       out.strokeStyle = await paintStyleName(node, "strokeStyleId");
     }
-    return out.fills || out.strokes ? out : null;
+    const regions = regionFills(node);
+    if (regions) out.regions = summarizeRegions(regions);
+    return out.fills || out.strokes || out.regions ? out : null;
   }
   async function describeVariableModes(node, collections, withResolved) {
     var _a, _b;
@@ -35454,41 +37167,6 @@ ${scripts}`, "");
     }
     return summary;
   }
-  async function resolveWalkRoots(params) {
-    if (typeof params.nodeId === "string" && params.nodeId !== "") {
-      const found = await getNodeByIdTimed(params.nodeId);
-      if (!found || found.type === "DOCUMENT") throw new Error(`no node with id ${params.nodeId}`);
-      if (found.type === "PAGE") {
-        await found.loadAsync();
-        return { roots: [found], labels: [found.name] };
-      }
-      let page = found.parent;
-      while (page && page.type !== "PAGE") page = page.parent;
-      if (page) await page.loadAsync();
-      return { roots: [found], labels: [`${found.name} (subtree)`] };
-    }
-    if (params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "") {
-      const page = await resolvePage(params.pageId);
-      return { roots: [page], labels: [page.name] };
-    }
-    await loadAllPagesAsync();
-    const pages = figma.root.children.slice();
-    return { roots: pages, labels: pages.map((one) => one.name) };
-  }
-  async function resolvePage(pageId) {
-    if (typeof pageId !== "string" || pageId === "") return figma.currentPage;
-    const page = await figma.getNodeByIdAsync(pageId);
-    if (!page || page.type !== "PAGE") throw new Error(`no page with id ${pageId}`);
-    await page.loadAsync();
-    return page;
-  }
-  async function resolveScope(scope) {
-    if (scope === "document") {
-      await loadAllPagesAsync();
-      return figma.root;
-    }
-    return figma.currentPage;
-  }
   function readPropertyDefinitions(node) {
     var _a;
     try {
@@ -35620,10 +37298,15 @@ ${scripts}`, "");
     },
     {
       name: "node.find",
-      summary: "Search nodes by name substring and/or type within a page or the whole document.",
+      summary: "Search nodes by name substring, by the text they show, and/or type \u2014 within a page, the whole document, or one frame.",
+      agent: 'Designers name layers "Tag", "Text", "Title": a name search rarely finds the words on the canvas. Pass `text` to match what a TEXT layer actually says (case and spacing ignored) \u2014 it searches TEXT nodes through the type index, instances included, so it stays fast document-wide. Each text match carries `frame`, the top-level frame it sits in, which is how "Startups" on the desktop frame is told apart from "Startups" on the mobile one. `within` narrows any search to one frame or section.',
       mutates: false,
       params: {
         name: { type: "string", description: "Case-insensitive substring of the node name." },
+        text: {
+          type: "string",
+          description: 'Case-insensitive substring of what a TEXT layer says, whitespace collapsed. Implies types ["TEXT"].'
+        },
         types: {
           type: "string[]",
           description: 'Node types to keep, e.g. ["FRAME","INSTANCE"]. Omit for any type.'
@@ -35634,24 +37317,42 @@ ${scripts}`, "");
           enum: ["page", "document"],
           default: "page"
         },
+        within: {
+          type: "string",
+          description: "Search only inside this node (a frame, section or page id) instead of the scope."
+        },
         limit: { type: "number", description: "Max matches returned.", default: 50, min: 1, max: 500 }
       },
       async run(params) {
         var _a;
         const needle = typeof params.name === "string" ? params.name.toLowerCase() : null;
-        const types = (_a = params.types) != null ? _a : null;
-        const root = await resolveScope(params.scope);
-        const matches2 = types && types.length > 0 ? (await findAllByTypes(root, types)).filter(
-          (node) => !needle || node.name.toLowerCase().includes(needle)
-        ) : await findAllWithCriteria(
-          root,
-          (node) => !needle || node.name.toLowerCase().includes(needle)
-        );
+        const said = typeof params.text === "string" && params.text.trim() !== "" ? normalizeSaid(params.text) : null;
+        let types = (_a = params.types) != null ? _a : null;
+        if (said) {
+          if (types && !types.includes("TEXT")) {
+            throw new Error(`text searches TEXT layers, and types ${JSON.stringify(types)} leaves none \u2014 drop types or include "TEXT"`);
+          }
+          types = ["TEXT"];
+        }
+        let root;
+        if (typeof params.within === "string" && params.within !== "") {
+          const node = await figma.getNodeByIdAsync(params.within);
+          if (!node) throw new Error(`no node with id ${params.within}`);
+          let page = node;
+          while (page && page.type !== "PAGE") page = page.parent;
+          if (page && "loadAsync" in page) await page.loadAsync();
+          if (!("findAllWithCriteria" in node) && !("children" in node)) throw new Error(`${params.within} is a ${node.type}, which has nothing inside to search`);
+          root = node;
+        } else {
+          root = await resolveScope(params.scope);
+        }
+        const keep = (node) => (!needle || node.name.toLowerCase().includes(needle)) && (!said || node.type === "TEXT" && normalizeSaid(node.characters).includes(said));
+        const matches2 = types && types.length > 0 ? (await findAllByTypes(root, types)).filter(keep) : await findAllWithCriteria(root, (node) => keep(node));
         const limit = params.limit;
         return {
           total: matches2.length,
           truncated: matches2.length > limit,
-          nodes: matches2.slice(0, limit).map((node) => summarizeNode(node))
+          nodes: matches2.slice(0, limit).map((node) => said ? __spreadProps(__spreadValues({}, summarizeNode(node)), { frame: topFrameOf(node) }) : summarizeNode(node))
         };
       }
     },
@@ -35777,8 +37478,8 @@ ${scripts}`, "");
     },
     {
       name: "styles.list",
-      summary: "Local text, paint, effect and grid styles.",
-      agent: "paints: true shows per-stop bindings (a gradient binds per stop; its paint-level bound is null however tokenised). consumers: true says whether anything uses a style at all.",
+      summary: "Local text, paint, effect, grid and custom animation styles.",
+      agent: "paints: true shows per-stop bindings (a gradient binds per stop; its paint-level bound is null however tokenised). consumers: true says whether anything uses a style at all. A custom animation style comes back with its `animations` in the order they play \u2014 the same `style`/`props` pairs STYLE_MAKE takes back as `entries`.",
       mutates: false,
       params: {
         paints: {
@@ -35793,11 +37494,12 @@ ${scripts}`, "");
         }
       },
       async run(params) {
-        const [text6, paint, effect, grid] = await Promise.all([
+        const [text6, paint, effect, grid, animation] = await Promise.all([
           figma.getLocalTextStylesAsync(),
           figma.getLocalPaintStylesAsync(),
           figma.getLocalEffectStylesAsync(),
-          figma.getLocalGridStylesAsync()
+          figma.getLocalGridStylesAsync(),
+          figma.getLocalCustomAnimationStylesAsync()
         ]);
         const base = (style) => ({
           id: style.id,
@@ -35815,7 +37517,7 @@ ${scripts}`, "");
         }
         const consumerDetail = /* @__PURE__ */ new Map();
         if (params.consumers === true) {
-          for (const style of [...text6, ...paint, ...effect, ...grid]) {
+          for (const style of [...text6, ...paint, ...effect, ...grid, ...animation]) {
             try {
               const users = await style.getStyleConsumersAsync();
               consumerDetail.set(style.id, {
@@ -35829,9 +37531,10 @@ ${scripts}`, "");
         }
         const withConsumers = (style, row) => consumerDetail.has(style.id) ? __spreadProps(__spreadValues({}, row), { consumers: consumerDetail.get(style.id) }) : row;
         return {
-          text: text6.map((style) => __spreadProps(__spreadValues({}, base(style)), {
+          text: text6.map((style) => __spreadProps(__spreadValues(__spreadProps(__spreadValues({}, base(style)), {
             fontFamily: style.fontName.family,
-            fontStyle: style.fontName.style,
+            fontStyle: style.fontName.style
+          }), style.fontName.variationSettings ? { fontAxes: style.fontName.variationSettings } : {}), {
             fontSize: style.fontSize,
             lineHeight: style.lineHeight
           })),
@@ -35844,7 +37547,19 @@ ${scripts}`, "");
             }
           ),
           effect: effect.map((style) => __spreadProps(__spreadValues({}, base(style)), { effects: style.effects.map((e) => e.type) })),
-          grid: grid.map(base)
+          grid: grid.map(base),
+          animation: animation.map(
+            (style) => withConsumers(style, __spreadProps(__spreadValues({}, base(style)), {
+              /* What a custom animation style holds IS its entries, in order — a row with only a
+               * name says nothing about what the thing does, and the props are what a write takes
+               * back. */
+              animations: style.animationEntries.map((entry) => __spreadValues(__spreadValues({
+                id: entry.id,
+                style: entry.styleId,
+                name: entry.name
+              }, entry.duration === void 0 ? {} : { duration: entry.duration }), entry.props && Object.keys(entry.props).length > 0 ? { props: entry.props } : {}))
+            }))
+          )
         };
       }
     },
@@ -36127,8 +37842,12 @@ ${scripts}`, "");
               scanBoundMap(holder.boundVariables, site);
               scanPaints(holder.fills, site);
               scanPaints(holder.strokes, site);
+              const regions = regionFills(node);
+              if (regions) {
+                for (const one of regions) scanPaints(one.fills, (detail) => site(`regions[${one.region}] ${detail}`));
+              }
               const mixedBound = holder.boundVariables;
-              if (mixedBound) {
+              if (mixedBound && !regions) {
                 for (const prop of ["fills", "strokes"]) {
                   if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
                     ;
@@ -36367,8 +38086,12 @@ ${scripts}`, "");
               scanBoundMap(holder.boundVariables, "layers", label3);
               scanPaints(holder.fills, "layers", label3);
               scanPaints(holder.strokes, "layers", label3);
+              const regions = regionFills(node);
+              if (regions) {
+                for (const one of regions) scanPaints(one.fills, "layers", (detail) => label3(`regions[${one.region}] ${detail}`));
+              }
               const mixedBound = holder.boundVariables;
-              if (mixedBound) {
+              if (mixedBound && !regions) {
                 for (const prop of ["fills", "strokes"]) {
                   if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
                     ;
@@ -36503,17 +38226,17 @@ ${scripts}`, "");
           const parsed = withAlpha2(input);
           if (!parsed) return { color: input, error: "not a hex colour" };
           const { rgb, alpha } = parsed;
-          const hex = formatHex(rgb);
-          const exact = rungs.filter((rung) => rung.hex === hex && sameAlpha(rung.alpha, alpha));
+          const hex2 = formatHex(rgb);
+          const exact = rungs.filter((rung) => rung.hex === hex2 && sameAlpha(rung.alpha, alpha));
           const seen = new Set(exact.map((rung) => rung.token));
-          const near = rungs.filter((rung) => !(rung.hex === hex && sameAlpha(rung.alpha, alpha))).map((rung) => __spreadProps(__spreadValues({}, rung), { delta: distance(rgb, rung.rgb) })).sort((a, b) => a.delta - b.delta).slice(0, params.nearest);
+          const near = rungs.filter((rung) => !(rung.hex === hex2 && sameAlpha(rung.alpha, alpha))).map((rung) => __spreadProps(__spreadValues({}, rung), { delta: distance(rgb, rung.rgb) })).sort((a, b) => a.delta - b.delta).slice(0, params.nearest);
           const show = ({ token: token2, collection, mode, alpha: at }) => __spreadValues({
             token: token2,
             collection,
             mode
           }, at < 0.999 ? { alpha: Math.round(at * 1e3) / 1e3 } : {});
           return __spreadValues({
-            color: alpha < 0.999 ? `${hex} ${Math.round(alpha * 100)}%` : hex,
+            color: alpha < 0.999 ? `${hex2} ${Math.round(alpha * 100)}%` : hex2,
             exact: exact.map(show),
             /* The flag that stops a caller automating this. A colour does not determine a token:
              * one hex is routinely `accent/primary` AND `action/primary/background`, and picking
@@ -36738,15 +38461,15 @@ ${scripts}`, "");
           pages: pages.map((page) => page.name),
           total: findings.length,
           byRule
-        }, ignored.size > 0 ? { ignored: [...ignored].map((hex) => `#${hex}`) } : {}), {
+        }, ignored.size > 0 ? { ignored: [...ignored].map((hex2) => `#${hex2}`) } : {}), {
           findings: findings.slice(0, params.limit)
         });
       }
     },
     {
       name: "text.segments",
-      summary: "The styled runs of one TEXT node \u2014 ranges, characters, and per-run variable bindings.",
-      agent: "The X-ray for a binding no write seems to reach: shows which styled run owns it \u2014 or that none does.",
+      summary: "The styled runs of one TEXT node \u2014 ranges, characters, per-run variable bindings, and the variation axes of any variable font it uses.",
+      agent: "The X-ray for a binding no write seems to reach: shows which styled run owns it \u2014 or that none does. `fontAxes` names the tags each variable family here accepts, which are the keys a `fontName.variationSettings` write may use.",
       mutates: false,
       params: {
         nodeId: { type: "string", required: true, description: "A TEXT node id." }
@@ -36774,7 +38497,19 @@ ${scripts}`, "");
             })
           };
         });
-        return {
+        const families = /* @__PURE__ */ new Set();
+        if (text6.fontName === figma.mixed) {
+          try {
+            for (const font of text6.getRangeAllFontNames(0, text6.characters.length)) families.add(font.family);
+          } catch (e) {
+          }
+        } else families.add(text6.fontName.family);
+        const fontAxes = {};
+        for (const family of families) {
+          const axes = figma.getFontFamilyVariationAxes(family);
+          if (axes && axes.length > 0) fontAxes[family] = axes;
+        }
+        return __spreadValues({
           node: { id: text6.id, name: text6.name },
           length: text6.characters.length,
           characters: text6.characters.replace(/\n/g, "\\n"),
@@ -36782,7 +38517,7 @@ ${scripts}`, "");
           segments,
           // Sendable as it stands: this is `runs` in the shape NODE_SET takes.
           runs: styles
-        };
+        }, Object.keys(fontAxes).length > 0 ? { fontAxes } : {});
       }
     },
     {
@@ -37815,17 +39550,17 @@ ${optional.join("\n")}
     const css = asContainer ? raiseInstanceRoots(baseCss, context.instanceRoots) + (motion.css.trim() === "" ? "" : `
 
 ${motion.css}`) + variantCss : "";
-    const fields = [];
+    const fields2 = [];
     for (const [prop, seen] of component.values) {
       const type = component.types.get(prop);
-      if (type === "BOOLEAN") fields.push(`  ${prop}?: boolean`);
+      if (type === "BOOLEAN") fields2.push(`  ${prop}?: boolean`);
       else if (type === "VARIANT") {
-        fields.push(`  ${prop}?: ${[...seen].map((one) => JSON.stringify(one)).join(" | ")}`);
-      } else fields.push(`  ${prop}?: string`);
+        fields2.push(`  ${prop}?: ${[...seen].map((one) => JSON.stringify(one)).join(" | ")}`);
+      } else fields2.push(`  ${prop}?: string`);
     }
-    for (const prop of context.props.keys()) if (!component.values.has(prop)) fields.push(`  ${prop}?: string`);
-    const props = fields.length > 0 ? `
-${fields.join("\n")}
+    for (const prop of context.props.keys()) if (!component.values.has(prop)) fields2.push(`  ${prop}?: string`);
+    const props = fields2.length > 0 ? `
+${fields2.join("\n")}
 ` : "\n";
     const imports = [...context.used].filter((one) => one !== component.name);
     const variantProps2 = [...component.types.entries()].filter(([, type]) => type === "VARIANT").map(([prop]) => prop);
@@ -38450,7 +40185,7 @@ createRoot(document.getElementById('root')!).render(
             scope,
             index2,
             void 0,
-            `"${step2.set}" ${expectation} "${step2.from}" holds ${describeValue3(value2)}`
+            `"${step2.set}" ${expectation} "${step2.from}" holds ${describeValue2(value2)}`
           );
         }
         scope[step2.set] = value2;
@@ -38490,7 +40225,7 @@ createRoot(document.getElementById('root')!).render(
     return finish(report2, module, scope);
   }
   var MISSING = /* @__PURE__ */ Symbol("missing");
-  function describeValue3(value2) {
+  function describeValue2(value2) {
     var _a;
     if (Array.isArray(value2)) return `an array of ${value2.length}`;
     if (value2 === null) return "null";
@@ -38967,8 +40702,8 @@ createRoot(document.getElementById('root')!).render(
   function serializeBoundVars(bv) {
     const out = {};
     if (typeof bv !== "object" || bv === null) return out;
-    const fields = ["fontFamily", "fontStyle", "fontWeight", "fontSize", "letterSpacing", "lineHeight", "paragraphSpacing", "paragraphIndent"];
-    for (const field of fields) {
+    const fields2 = ["fontFamily", "fontStyle", "fontWeight", "fontSize", "letterSpacing", "lineHeight", "paragraphSpacing", "paragraphIndent"];
+    for (const field of fields2) {
       const raw = bv[field];
       const b = Array.isArray(raw) ? raw[0] : raw;
       if (typeof b === "object" && b !== null && typeof b.id === "string") {
@@ -39016,7 +40751,7 @@ createRoot(document.getElementById('root')!).render(
     return facts;
   }
   async function readGraph(includeLibraries = false, collectionMerges = []) {
-    var _a, _b;
+    var _a, _b, _c, _d;
     const [collections, variables, textStyles, effectStyles] = await Promise.all([
       figma.variables.getLocalVariableCollectionsAsync(),
       figma.variables.getLocalVariablesAsync(),
@@ -39024,7 +40759,36 @@ createRoot(document.getElementById('root')!).render(
       typeof figma.getLocalEffectStylesAsync === "function" ? figma.getLocalEffectStylesAsync() : Promise.resolve([])
     ]);
     const fontFacts = await probeFontFacts(textStyles);
-    const library = includeLibraries ? await readLibraryVariables().catch(() => null) : null;
+    let lastProgressAt = 0;
+    const onProgress = (done, total) => {
+      const now = Date.now();
+      if (done < total && done > 0 && now - lastProgressAt < 200) return;
+      lastProgressAt = now;
+      postToUi({ type: "TOKENS_PROGRESS", done, total });
+    };
+    const library = includeLibraries ? await readLibraryVariables({ onProgress }).catch(() => null) : null;
+    const aliasTargets = await readAliasTargets({
+      collections: [
+        ...collections.map((c) => ({ id: c.id, name: c.name, defaultModeId: c.defaultModeId, modes: [] })),
+        ...(_a = library == null ? void 0 : library.collections) != null ? _a : []
+      ],
+      variables: [
+        ...variables.map((v) => ({
+          id: v.id,
+          key: v.key,
+          name: v.name,
+          collectionId: v.variableCollectionId,
+          scopes: v.scopes,
+          resolvedType: v.resolvedType,
+          valuesByMode: v.valuesByMode
+        })),
+        ...(_b = library == null ? void 0 : library.variables) != null ? _b : []
+      ]
+    }).catch(() => ({ collections: [], variables: [] }));
+    const outside = {
+      collections: [...(_c = library == null ? void 0 : library.collections) != null ? _c : [], ...aliasTargets.collections],
+      variables: [...(_d = library == null ? void 0 : library.variables) != null ? _d : [], ...aliasTargets.variables]
+    };
     const libraryNote = includeLibraries ? void 0 : await libraryCollectionsNote();
     const graph = foldSplitThemeCollections({
       fileName: figma.root.name,
@@ -39042,7 +40806,7 @@ createRoot(document.getElementById('root')!).render(
           generated
         };
       }).concat(
-        ((_a = library == null ? void 0 : library.collections) != null ? _a : []).filter((entry) => !collections.some((local) => local.id === entry.id)).map((entry) => __spreadProps(__spreadValues({}, entry), { generated: false }))
+        outside.collections.filter((entry) => !collections.some((local) => local.id === entry.id)).map((entry) => __spreadProps(__spreadValues({}, entry), { generated: false }))
       ),
       variables: variables.map((v) => ({
         id: v.id,
@@ -39054,7 +40818,7 @@ createRoot(document.getElementById('root')!).render(
         // guessing the role from the token name.
         scopes: v.scopes
       })).concat(
-        ((_b = library == null ? void 0 : library.variables) != null ? _b : []).filter((entry) => !variables.some((local) => local.id === entry.id)).map((entry) => ({
+        outside.variables.filter((entry) => !variables.some((local) => local.id === entry.id)).map((entry) => ({
           id: entry.id,
           name: entry.name,
           collectionId: entry.collectionId,
@@ -39064,13 +40828,13 @@ createRoot(document.getElementById('root')!).render(
         }))
       ),
       textStyles: textStyles.map((t) => {
-        var _a2, _b2;
+        var _a2, _b2, _c2;
         return {
           id: t.id,
           name: t.name,
-          fontName: t.fontName ? { family: t.fontName.family, style: t.fontName.style } : null,
-          fontWeight: t.fontName ? (_a2 = fontFacts.get(fontKey(t.fontName))) == null ? void 0 : _a2.weight : void 0,
-          italic: t.fontName ? (_b2 = fontFacts.get(fontKey(t.fontName))) == null ? void 0 : _b2.italic : void 0,
+          fontName: (_a2 = writableFont(t.fontName)) != null ? _a2 : null,
+          fontWeight: t.fontName ? (_b2 = fontFacts.get(fontKey(t.fontName))) == null ? void 0 : _b2.weight : void 0,
+          italic: t.fontName ? (_c2 = fontFacts.get(fontKey(t.fontName))) == null ? void 0 : _c2.italic : void 0,
           fontSize: t.fontSize,
           lineHeight: t.lineHeight,
           letterSpacing: t.letterSpacing,
@@ -39104,7 +40868,7 @@ createRoot(document.getElementById('root')!).render(
       const available = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
       if (!available || available.length === 0) return void 0;
       const names = available.map((one) => one.name).join(", ");
-      return `${available.length} library variable collection(s) were NOT included (${names}) \u2014 turn on Settings \u2192 Tokens \u2192 Include library variables to export a theme this file consumes rather than owns`;
+      return `Values this file takes from enabled libraries (${names}) are already substituted into its tokens. Turn on Settings \u2192 Tokens \u2192 Include library variables only to export those libraries' own collections as well`;
     } catch (e) {
       return void 0;
     }
@@ -39221,6 +40985,7 @@ createRoot(document.getElementById('root')!).render(
     }
   }
   async function generateTypographyVariables(options) {
+    var _a;
     if (figma.editorType === "dev") throw new Error("Switch to Design mode \u2014 Dev Mode can't create variables.");
     const { graph } = await readGraph();
     const opts = normalizeExportOptions(options);
@@ -39276,11 +41041,11 @@ createRoot(document.getElementById('root')!).render(
         continue;
       }
       const field = b.field;
-      const before = style.fontName ? { family: style.fontName.family, style: style.fontName.style } : null;
+      const before = (_a = style.fontName) != null ? _a : null;
       try {
         style.setBoundVariable(field, variable);
         const after = style.fontName;
-        if (before && after && (after.family !== before.family || after.style !== before.style)) {
+        if (before && after && (after.family !== before.family || after.style !== before.style || JSON.stringify(after.variationSettings) !== JSON.stringify(before.variationSettings))) {
           style.setBoundVariable(field, null);
           try {
             style.fontName = before;
@@ -39408,10 +41173,16 @@ createRoot(document.getElementById('root')!).render(
     });
   });
   function postSelectionToUi() {
-    const selection = figma.currentPage.selection;
-    if (selection.length === 0) return;
-    const node = selection[0];
-    const top = topLevelAncestorOrNull(node);
+    let node;
+    let top;
+    try {
+      const selection = figma.currentPage.selection;
+      if (selection.length === 0) return;
+      node = selection[0];
+      top = topLevelAncestorOrNull(node);
+    } catch (e) {
+      return;
+    }
     if (!top) return;
     postToUi({
       type: "SELECTION_CHANGED",
@@ -39759,7 +41530,7 @@ createRoot(document.getElementById('root')!).render(
     if (node.type === "TEXT" || node.type === "TEXT_PATH") {
       props.text = node.characters;
       props.fontSize = node.fontSize === figma.mixed ? "mixed" : round15(node.fontSize);
-      props.fontName = node.fontName === figma.mixed ? "mixed" : { family: node.fontName.family, style: node.fontName.style };
+      props.fontName = node.fontName === figma.mixed ? "mixed" : writableFont(node.fontName);
       props.textAlign = node.textAlignHorizontal;
       if (node.textAlignVertical !== "TOP") props.verticalAlign = node.textAlignVertical;
       const t = node;
@@ -40053,7 +41824,7 @@ createRoot(document.getElementById('root')!).render(
     return plan;
   }
   async function handleUiMessage(msg) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y, _Z, __, _$;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y, _Z, __, _$, _aa, _ba, _ca;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
@@ -40091,12 +41862,12 @@ createRoot(document.getElementById('root')!).render(
         try {
           const stored = await figma.clientStorage.getAsync("exportOptions");
           const options = normalizeExportOptions(stored);
-          const zipBytes = figma.base64Decode(msg.zipBase64);
-          const result = await deliverPackage(zipBytes, {
+          const result = await deliverPackage(msg.files || {}, {
             endpoint: options.delivery.endpoint,
             secret: options.delivery.secret,
-            target: "folder",
-            route: { repo: "", branch: "", path: "", package: "" },
+            target: options.delivery.target,
+            route: options.delivery.route,
+            dryRun: (_e = msg.dryRun) != null ? _e : options.delivery.dryRun,
             onChange: false,
             onOpen: false
           });
@@ -40154,7 +41925,7 @@ createRoot(document.getElementById('root')!).render(
           if (settings.spectra.length === 0) {
             throw new Error("the palette is empty \u2014 add at least one color before generating");
           }
-          const options = __spreadValues(__spreadValues({}, DEFAULT_APPLY_OPTIONS), (_e = msg.applyOptions) != null ? _e : {});
+          const options = __spreadValues(__spreadValues({}, DEFAULT_APPLY_OPTIONS), (_f = msg.applyOptions) != null ? _f : {});
           const report2 = await applyPalette(generatePalette(settings), options);
           await figma.clientStorage.setAsync(PALETTE_SETTINGS_KEY, settings);
           const parts = [];
@@ -40190,7 +41961,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "REMAP_DIRECT_PREVIEW": {
         try {
-          const plan = await planDirectRemap(msg.from, msg.to, (_f = msg.depth) != null ? _f : "document");
+          const plan = await planDirectRemap(msg.from, msg.to, (_g = msg.depth) != null ? _g : "document");
           postToUi(__spreadProps(__spreadValues({
             type: "REMAP_DIRECT_PLAN"
           }, remapPlanView(plan)), {
@@ -40204,8 +41975,8 @@ createRoot(document.getElementById('root')!).render(
       }
       case "REMAP_DIRECT_APPLY": {
         try {
-          const plan = await planDirectRemap(msg.from, msg.to, (_g = msg.depth) != null ? _g : "document");
-          const options = __spreadProps(__spreadValues(__spreadValues({}, DEFAULT_REMAP_APPLY_OPTIONS), (_h = msg.applyOptions) != null ? _h : {}), {
+          const plan = await planDirectRemap(msg.from, msg.to, (_h = msg.depth) != null ? _h : "document");
+          const options = __spreadProps(__spreadValues(__spreadValues({}, DEFAULT_REMAP_APPLY_OPTIONS), (_i = msg.applyOptions) != null ? _i : {}), {
             rename: false,
             bind: false
           });
@@ -40232,7 +42003,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "REMAP_SCAN": {
         try {
-          const inventory = await readInventory((_i = msg.depth) != null ? _i : "document");
+          const inventory = await readInventory((_j = msg.depth) != null ? _j : "document");
           postToUi({
             type: "REMAP_INVENTORY",
             stats: inventory.stats,
@@ -40271,7 +42042,7 @@ createRoot(document.getElementById('root')!).render(
       case "REMAP_APPLY": {
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
-          const options = __spreadValues(__spreadValues({}, DEFAULT_REMAP_APPLY_OPTIONS), (_j = msg.applyOptions) != null ? _j : {});
+          const options = __spreadValues(__spreadValues({}, DEFAULT_REMAP_APPLY_OPTIONS), (_k = msg.applyOptions) != null ? _k : {});
           const audit = remapInventory ? auditContrast(plan, remapInventory.adjacency) : { findings: [], checked: 0, improved: 0 };
           const report2 = await applyRemap(
             plan,
@@ -40331,7 +42102,7 @@ createRoot(document.getElementById('root')!).render(
           }
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const progress2 = (label3) => postToUi({ type: "REMAP_PROGRESS", label: label3 });
-          const rebindOptions = { scope: (_k = msg.scope) != null ? _k : "document" };
+          const rebindOptions = { scope: (_l = msg.scope) != null ? _l : "document" };
           const report2 = msg.type === "REMAP_REBIND_APPLY" ? await applyRebind(plan, rebindOptions, progress2) : await previewRebind(plan, rebindOptions, progress2);
           if (msg.type === "REMAP_REBIND_APPLY") {
             remapInventory = null;
@@ -40417,7 +42188,7 @@ createRoot(document.getElementById('root')!).render(
         try {
           const { plan } = await planRemap(msg.source, msg.options, msg.overrides, msg.excluded);
           const mapping = buildMappingFile(plan, { file: figma.root.name, palette: msg.source.kind });
-          const settings = { snap: (_l = msg.snap) != null ? _l : 2, byName: (_m = msg.byName) != null ? _m : false, mode: (_n = msg.mode) != null ? _n : null };
+          const settings = { snap: (_m = msg.snap) != null ? _m : 2, byName: (_n = msg.byName) != null ? _n : false, mode: (_o = msg.mode) != null ? _o : null };
           let replaced = 0;
           let untouched = 0;
           const warnings = /* @__PURE__ */ new Set();
@@ -40455,7 +42226,8 @@ createRoot(document.getElementById('root')!).render(
           defaultModeId: collection.defaultModeId,
           modes: collection.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name }))
         })));
-        postToUi(__spreadValues({ type: "VARIABLE_COLLECTIONS" }, state));
+        const all = collections.map((collection) => ({ name: collection.name, modes: collection.modes.length }));
+        postToUi(__spreadProps(__spreadValues({ type: "VARIABLE_COLLECTIONS" }, state), { all }));
         break;
       }
       case "READ_VARIABLES": {
@@ -40473,7 +42245,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "SYNC_BREAKPOINT_FRAMES": {
         const snapshot = await readAllVariables();
-        const breakpointTokens = extractBreakpointTokens2(snapshot);
+        const breakpointTokens = extractBreakpointTokens(snapshot);
         const namedWidths = __spreadValues({ desktop: 1280, tablet: 768, mobile: 375 }, Object.fromEntries(breakpointTokens));
         let resized = 0;
         for (const node of figma.currentPage.children) {
@@ -40559,7 +42331,7 @@ createRoot(document.getElementById('root')!).render(
                 picked.length = 0;
                 break;
               }
-              picked.push(((_o = node.parent) == null ? void 0 : _o.type) === "COMPONENT_SET" ? node.parent : node);
+              picked.push(((_p = node.parent) == null ? void 0 : _p.type) === "COMPONENT_SET" ? node.parent : node);
             }
             if (picked.length > 0) {
               const built = (await Promise.all(picked.map((one2) => serializeNode(one2)))).filter(
@@ -40687,7 +42459,7 @@ createRoot(document.getElementById('root')!).render(
             tokensCss: tokens.css,
             // Code Connect addresses a node by URL, not by anything this plugin publishes itself —
             // both halves of that URL come from the live document, the same as everything else here.
-            fileKey: (_p = figma.fileKey) != null ? _p : void 0,
+            fileKey: (_q = figma.fileKey) != null ? _q : void 0,
             fileName: figma.root.name,
             // By master, not by name: the library emitted these exact components, and a screen
             // holding a DIFFERENT component of the same name must still build its own.
@@ -40727,7 +42499,7 @@ createRoot(document.getElementById('root')!).render(
         const tokensOn = previewOptions.modules.tokens;
         const previewThemeSets = previewOptions.targetOptions.framework === "bootstrap" && previewOptions.targetOptions.bootstrapFidelity === "theme" ? await collectThemableSets(sceneNodesById) : void 0;
         const snapshot = tokensOn ? await readAllVariables({ collectionMerges: previewOptions.themeMerges.groups }) : await readLocalVariables();
-        const previewBreakpointTokens = extractBreakpointTokens2(snapshot);
+        const previewBreakpointTokens = extractBreakpointTokens(snapshot);
         const { baseHtml, pages, partials, css, interactionsCss, interactionsJs, themeCss, transitionsCss, transitionsJs, fileNodeIds } = await emitDjangoProject(
           pageRoots,
           sceneNodesById,
@@ -40740,13 +42512,21 @@ createRoot(document.getElementById('root')!).render(
             breakpointTokens: previewBreakpointTokens
           }
         );
+        const regenAssets = await collectExportAssets(
+          pageRoots,
+          sceneNodesById,
+          (hash) => figma.getImageByHash(hash)
+        );
         const freshFiles = new Map(
           Object.entries(__spreadValues(__spreadValues({ "base.html": baseHtml }, pages), partials)).map(([path, content]) => [
             path,
             { nodeId: fileNodeIds[path], content }
           ])
         );
-        const existingFiles = new Map(Object.entries((_q = msg.existingFiles) != null ? _q : {}));
+        for (const asset of regenAssets) {
+          freshFiles.set(`static/img/${asset.filename}`, { nodeId: "", content: asset.content });
+        }
+        const existingFiles = new Map(Object.entries((_r = msg.existingFiles) != null ? _r : {}));
         const plan = planRegeneration(existingFiles, freshFiles);
         let tokensCss;
         let bootstrapTokensCss;
@@ -40770,7 +42550,8 @@ createRoot(document.getElementById('root')!).render(
           bootstrapTokensCss,
           themeCss,
           transitionsCss,
-          transitionsJs
+          transitionsJs,
+          assets: regenAssets
         });
         postToUi({ type: "DJANGO_PROJECT_PLAN", css, cssFile: msg.cssFile, plan, staticFiles });
         break;
@@ -40812,7 +42593,7 @@ createRoot(document.getElementById('root')!).render(
         break;
       }
       case "SCROLL_INTO_VIEW": {
-        const node = (_r = lastScanIndex.get(msg.nodeId)) != null ? _r : await figma.getNodeByIdAsync(msg.nodeId);
+        const node = (_s = lastScanIndex.get(msg.nodeId)) != null ? _s : await figma.getNodeByIdAsync(msg.nodeId);
         if (!node || !("visible" in node)) {
           refuse("SCROLL_INTO_VIEW", `no scene node with id ${msg.nodeId} \u2014 it may have been removed, or live on a page this session has not loaded`);
           break;
@@ -40906,7 +42687,7 @@ createRoot(document.getElementById('root')!).render(
           commands: UI_COMMANDS,
           file: figma.root.name,
           pages: figma.root.children.map((page) => ({ id: page.id, name: page.name })),
-          fileKey: (_s = figma.fileKey) != null ? _s : null
+          fileKey: (_t = figma.fileKey) != null ? _t : null
         }));
         break;
       }
@@ -40972,7 +42753,7 @@ createRoot(document.getElementById('root')!).render(
           }
           const parent = msg.parent && msg.parent !== "page" ? await figma.getNodeByIdAsync(msg.parent) : figma.currentPage;
           if (!parent || !("appendChild" in parent)) {
-            refuse("NODE_CREATE", `parent ${(_t = msg.parent) != null ? _t : "(page)"} is not a container`);
+            refuse("NODE_CREATE", `parent ${(_u = msg.parent) != null ? _u : "(page)"} is not a container`);
             break;
           }
           const dry = msg.dryRun === true;
@@ -41019,7 +42800,7 @@ createRoot(document.getElementById('root')!).render(
             }
             const plan = planProps(entry.props, `nodes[${index2}].props`);
             problems.push(...plan.problems);
-            if (plan.steps.length === 0) problems.push(`nodes[${index2}].props sets nothing`);
+            if (plan.steps.length === 0 && plan.problems.length === 0) problems.push(`nodes[${index2}].props sets nothing`);
             planned.push({ id: entry.node, steps: plan.steps });
           }
           if (problems.length > 0) {
@@ -41064,7 +42845,7 @@ createRoot(document.getElementById('root')!).render(
       case "NODE_QUERY": {
         try {
           const wantProps = msg.props === true;
-          const limit = Math.min(Math.max((_u = msg.limit) != null ? _u : 50, 1), 500);
+          const limit = Math.min(Math.max((_v = msg.limit) != null ? _v : 50, 1), 500);
           if (msg.nodeId) {
             const node = await figma.getNodeByIdAsync(msg.nodeId);
             if (!node || !("type" in node)) {
@@ -41246,20 +43027,20 @@ createRoot(document.getElementById('root')!).render(
             break;
           }
           if (as === "repeat") {
-            const spec = (_v = msg.repeat) != null ? _v : {};
-            const radial = String((_w = spec.type) != null ? _w : "LINEAR").toUpperCase() === "RADIAL";
+            const spec = (_w = msg.repeat) != null ? _w : {};
+            const radial = String((_x = spec.type) != null ? _x : "LINEAR").toUpperCase() === "RADIAL";
             const count = typeof spec.count === "number" ? spec.count : 3;
             if (!Number.isInteger(count) || count < 2) {
               refuse("NODE_GROUP", "repeat.count must be a whole number of at least 2");
               break;
             }
             const offset = typeof spec.offset === "number" ? spec.offset : radial ? 0 : 1;
-            const unit = String((_x = spec.unit) != null ? _x : radial ? "RELATIVE" : "RELATIVE").toUpperCase();
+            const unit = String((_y = spec.unit) != null ? _y : radial ? "RELATIVE" : "RELATIVE").toUpperCase();
             if (unit !== "RELATIVE" && unit !== "PIXELS") {
               refuse("NODE_GROUP", "repeat.unit must be RELATIVE or PIXELS");
               break;
             }
-            const axis = String((_y = spec.axis) != null ? _y : "HORIZONTAL").toUpperCase();
+            const axis = String((_z = spec.axis) != null ? _z : "HORIZONTAL").toUpperCase();
             if (!radial && axis !== "HORIZONTAL" && axis !== "VERTICAL") {
               refuse("NODE_GROUP", "repeat.axis must be HORIZONTAL or VERTICAL");
               break;
@@ -41557,7 +43338,7 @@ createRoot(document.getElementById('root')!).render(
                 preferred ? { preferredValues: preferred } : void 0
               );
               done.push({ added: full, type: entry.type });
-              for (const node of (_z = entry.bind) != null ? _z : []) bindings.push({ node, property: full, type: entry.type });
+              for (const node of (_A = entry.bind) != null ? _A : []) bindings.push({ node, property: full, type: entry.type });
             } catch (error) {
               done.push({ added: entry.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
             }
@@ -41581,7 +43362,7 @@ createRoot(document.getElementById('root')!).render(
               done.push({ removed: name, ok: false, error: noSuchProperty(owner, name) });
               continue;
             }
-            const wasSlot = ((_A = definitionsOf(owner)[key]) == null ? void 0 : _A.type) === "SLOT";
+            const wasSlot = ((_B = definitionsOf(owner)[key]) == null ? void 0 : _B.type) === "SLOT";
             try {
               owner.deleteComponentProperty(key);
               done.push(__spreadValues({ removed: key }, wasSlot ? { note: "the slot's own layer stays on the canvas" } : {}));
@@ -41613,7 +43394,7 @@ createRoot(document.getElementById('root')!).render(
             }
             try {
               const layer = node;
-              layer.componentPropertyReferences = __spreadProps(__spreadValues({}, (_B = layer.componentPropertyReferences) != null ? _B : {}), { [field]: entry.property });
+              layer.componentPropertyReferences = __spreadProps(__spreadValues({}, (_C = layer.componentPropertyReferences) != null ? _C : {}), { [field]: entry.property });
               done.push({ bound: entry.property, to: layer.name, drives: field });
             } catch (error) {
               done.push({ bound: entry.property, ok: false, error: String((error == null ? void 0 : error.message) || error) });
@@ -41698,6 +43479,16 @@ createRoot(document.getElementById('root')!).render(
                 name: scene.name,
                 ok: false,
                 error: `renders nothing: it sits outside ${clipped.by}, which clips its content. Turn off "Clip content" on that frame, or export the frame itself.`
+              });
+              continue;
+            }
+            if (video && ((_D = scene.parent) == null ? void 0 : _D.type) !== "PAGE") {
+              const top = scene.getTopLevelFrame();
+              reports.push({
+                node: id,
+                name: scene.name,
+                ok: false,
+                error: `a ${format} renders a top-level frame's whole animation, and this layer is nested` + (top ? ` \u2014 export "${top.name}" (${top.id}) instead` : " with no top-level frame above it")
               });
               continue;
             }
@@ -41814,7 +43605,7 @@ createRoot(document.getElementById('root')!).render(
               throw new Error(`entries[${index2}].props must be an object`);
             }
             const props = {};
-            for (const [prop, value2] of Object.entries((_C = raw.props) != null ? _C : {})) {
+            for (const [prop, value2] of Object.entries((_E = raw.props) != null ? _E : {})) {
               const alias = value2;
               if (typeof (alias == null ? void 0 : alias.variable) === "string" && alias.variable.trim()) {
                 const variable = await resolveVariableRef(alias.variable.trim());
@@ -41897,10 +43688,10 @@ createRoot(document.getElementById('root')!).render(
             const styles = await figma.getLocalCustomAnimationStylesAsync();
             const target = styles.find((style) => style.id === id);
             if (!target) throw new Error(`no local custom animation style has id "${id}"`);
-            const reference2 = after ? (_D = styles.find((style) => style.id === after)) != null ? _D : null : null;
+            const reference2 = after ? (_F = styles.find((style) => style.id === after)) != null ? _F : null : null;
             if (after && reference2 === null) throw new Error(`no local custom animation style has id "${after}"`);
             figma.moveLocalCustomAnimationStyleAfter(target, reference2);
-            postToUi({ type: "MOTION_STYLE_MOVED", id, after: (_E = reference2 == null ? void 0 : reference2.id) != null ? _E : null });
+            postToUi({ type: "MOTION_STYLE_MOVED", id, after: (_G = reference2 == null ? void 0 : reference2.id) != null ? _G : null });
           } else {
             figma.moveLocalCustomAnimationFolderAfter(folder, after);
             postToUi({ type: "MOTION_STYLE_FOLDER_MOVED", folder, after });
@@ -41938,14 +43729,17 @@ createRoot(document.getElementById('root')!).render(
           }));
           const used = /* @__PURE__ */ new Map();
           if (scope !== "none") {
-            const note = (id, shaderKind, node, properties) => {
+            const note = (id, shaderKind, node, properties, metadata) => {
               var _a2;
               if (typeof id !== "string" || id === "") return;
               if (kind !== "" && kind !== shaderKind) return;
-              const entry = (_a2 = used.get(id)) != null ? _a2 : { kind: shaderKind, nodes: [], keys: /* @__PURE__ */ new Set() };
+              const entry = (_a2 = used.get(id)) != null ? _a2 : { kind: shaderKind, nodes: [], keys: /* @__PURE__ */ new Set(), meta: {} };
               if (entry.nodes.length < 10) entry.nodes.push(`${node.name} (${node.id})`);
               if (properties && typeof properties === "object") {
                 for (const key of Object.keys(properties)) entry.keys.add(key);
+              }
+              if (metadata && typeof metadata === "object") {
+                Object.assign(entry.meta, metadata);
               }
               used.set(id, entry);
             };
@@ -41955,14 +43749,16 @@ createRoot(document.getElementById('root')!).render(
                 if (!Array.isArray(paints2)) continue;
                 for (const paint of paints2) {
                   if ((paint == null ? void 0 : paint.type) !== "SHADER") continue;
-                  note(paint.id, "fill", node, paint.properties);
+                  const paintShader = paint;
+                  note(paintShader.id, "fill", node, paintShader.properties, paintShader.propertyMetadata);
                 }
               }
               const effects = node.effects;
               if (Array.isArray(effects)) {
                 for (const effect of effects) {
                   if ((effect == null ? void 0 : effect.type) !== "SHADER") continue;
-                  note(effect.id, "effect", node, effect.properties);
+                  const effectShader = effect;
+                  note(effectShader.id, "effect", node, effectShader.properties, effectShader.propertyMetadata);
                 }
               }
               if ("children" in node) for (const child of node.children) visit(child);
@@ -41982,10 +43778,16 @@ createRoot(document.getElementById('root')!).render(
               imported: true,
               inUse: entry.nodes.length,
               usedBy: entry.nodes,
-              // Numbered, not named: the definitions live on the Shader object, and this file
-              // does not offer one for this id. `importShaderById` would fetch them — a write.
-              properties: [...entry.keys].join(" \xB7 "),
-              named: false
+              // Named from the metadata the applied shader carries (API 1.141); where a runtime
+              // supplies none, the ids are the whole answer and `named: false` says so —
+              // `importShaderById` would fetch the definitions, and that is a write.
+              properties: [...entry.keys].map((defId) => {
+                const definition = entry.meta[defId];
+                if (!definition) return defId;
+                const fallback = definition.defaultValue === void 0 ? "" : ` (=${typeof definition.defaultValue === "object" ? JSON.stringify(definition.defaultValue) : definition.defaultValue})`;
+                return `${defId} ${definition.name}: ${definition.type.toLowerCase()}${fallback}`;
+              }).join(" \xB7 "),
+              named: Object.keys(entry.meta).length > 0
             });
           }
           postToUi({ type: "SHADERS", total: shaders.length, shaders, scanned: scope });
@@ -42003,18 +43805,24 @@ createRoot(document.getElementById('root')!).render(
             break;
           }
           const query = typeof msg.query === "string" ? msg.query.trim().toLowerCase() : "";
-          const limit = Math.min(Math.max((_F = msg.limit) != null ? _F : 100, 1), 500);
+          const limit = Math.min(Math.max((_H = msg.limit) != null ? _H : 100, 1), 500);
           const styles = [];
           for (const kind of kinds) {
             for (const style of await localStyles(kind)) {
               if (query !== "" && !style.name.toLowerCase().includes(query)) continue;
-              styles.push(__spreadValues({
+              styles.push(__spreadValues(__spreadValues({
                 id: style.id,
                 key: style.key,
                 name: style.name,
                 kind,
                 holds: await describeStyle(style, describePaints, describeEffects, describeGrids)
-              }, style.description ? { description: style.description } : {}));
+              }, style.type === "CUSTOM_ANIMATION" ? {
+                animations: style.animationEntries.map((entry) => __spreadValues(__spreadValues({
+                  id: entry.id,
+                  style: entry.styleId,
+                  name: entry.name
+                }, entry.duration === void 0 ? {} : { duration: entry.duration }), entry.props && Object.keys(entry.props).length > 0 ? { props: entry.props } : {}))
+              } : {}), style.description ? { description: style.description } : {}));
             }
           }
           postToUi({
@@ -42031,8 +43839,12 @@ createRoot(document.getElementById('root')!).render(
       case "STYLE_MAKE": {
         try {
           const kind = typeof msg.as === "string" ? msg.as.trim().toLowerCase() : "";
+          if (kind === "animation") {
+            refuse("STYLE_MAKE", "custom animation styles are created and updated with MOTION_STYLE_SET");
+            break;
+          }
           if (!STYLE_KINDS.includes(kind)) {
-            refuse("STYLE_MAKE", `as must be one of: ${STYLE_KINDS.join(", ")}`);
+            refuse("STYLE_MAKE", `as must be one of: ${STYLE_KINDS.filter((one) => one !== "animation").join(", ")}`);
             break;
           }
           const name = typeof msg.name === "string" ? msg.name.trim() : "";
@@ -42049,18 +43861,18 @@ createRoot(document.getElementById('root')!).render(
             }
             source = node;
           }
-          const existing = (_G = (await localStyles(kind)).find((style2) => style2.name === name)) != null ? _G : null;
+          const existing = (_I = (await localStyles(kind)).find((style2) => style2.name === name)) != null ? _I : null;
           const style = existing != null ? existing : kind === "paint" ? figma.createPaintStyle() : kind === "text" ? figma.createTextStyle() : kind === "effect" ? figma.createEffectStyle() : figma.createGridStyle();
           style.name = name;
           if (typeof msg.description === "string") style.description = msg.description;
           if (kind === "paint") {
-            const paints2 = source ? (_H = source.fills) != null ? _H : [] : (await applyToScratch(msg.paints, "paints")).fills;
+            const paints2 = source ? (_J = source.fills) != null ? _J : [] : (await applyToScratch(msg.paints, "paints")).fills;
             style.paints = paints2;
           } else if (kind === "effect") {
-            const effects = source ? (_I = source.effects) != null ? _I : [] : (await applyToScratch(msg.effects, "effects")).effects;
+            const effects = source ? (_K = source.effects) != null ? _K : [] : (await applyToScratch(msg.effects, "effects")).effects;
             style.effects = effects;
           } else if (kind === "grid") {
-            const grids = source ? (_J = source.layoutGrids) != null ? _J : [] : (await applyToScratch(msg.grid, "grid")).grids;
+            const grids = source ? (_L = source.layoutGrids) != null ? _L : [] : (await applyToScratch(msg.grid, "grid")).grids;
             style.layoutGrids = grids;
           } else {
             const from = (source == null ? void 0 : source.type) === "TEXT" ? source : null;
@@ -42085,11 +43897,8 @@ createRoot(document.getElementById('root')!).render(
               if (typeof from.paragraphIndent === "number") text6.paragraphIndent = from.paragraphIndent;
             } else {
               const wanted = msg.text;
-              const font = wanted.fontName;
-              if (!font || typeof font.family !== "string" || typeof font.style !== "string") {
-                refuse("STYLE_MAKE", "text.fontName must be { family, style }");
-                break;
-              }
+              const font = planFont(wanted.fontName, "text.fontName", (message) => refuse("STYLE_MAKE", message));
+              if (!font) break;
               await figma.loadFontAsync(font);
               text6.fontName = font;
               if (typeof wanted.fontSize === "number") text6.fontSize = wanted.fontSize;
@@ -42146,6 +43955,55 @@ createRoot(document.getElementById('root')!).render(
         }
         break;
       }
+      case "STYLE_MOVE": {
+        try {
+          const kind = typeof msg.kind === "string" ? msg.kind.trim().toLowerCase() : "";
+          if (kind === "animation") {
+            refuse("STYLE_MOVE", "custom animation styles are reordered with MOTION_STYLE_MOVE");
+            break;
+          }
+          if (!STYLE_KINDS.includes(kind)) {
+            refuse("STYLE_MOVE", `kind must be one of: ${STYLE_KINDS.filter((one) => one !== "animation").join(", ")}`);
+            break;
+          }
+          const hasName = typeof msg.name === "string" && msg.name.trim() !== "";
+          const hasFolder = typeof msg.folder === "string" && msg.folder.trim() !== "";
+          if (hasName === hasFolder) {
+            refuse("STYLE_MOVE", "give name (a style to move) or folder (a folder to move) \u2014 exactly one");
+            break;
+          }
+          const MOVES = {
+            paint: [figma.moveLocalPaintStyleAfter, figma.moveLocalPaintFolderAfter],
+            text: [figma.moveLocalTextStyleAfter, figma.moveLocalTextFolderAfter],
+            effect: [figma.moveLocalEffectStyleAfter, figma.moveLocalEffectFolderAfter],
+            grid: [figma.moveLocalGridStyleAfter, figma.moveLocalGridFolderAfter]
+          };
+          const [moveStyle, moveFolder] = MOVES[kind];
+          if (hasFolder) {
+            const folder = msg.folder.trim();
+            const afterFolder = typeof msg.afterFolder === "string" && msg.afterFolder.trim() !== "" ? msg.afterFolder.trim() : null;
+            moveFolder.call(figma, folder, afterFolder);
+            figma.commitUndo();
+            postToUi({ type: "STYLE_MOVED", kind, folder, after: afterFolder });
+            break;
+          }
+          const style = await styleFor(msg.name, kind);
+          const reference2 = typeof msg.after === "string" && msg.after.trim() !== "" ? await styleFor(msg.after, kind) : null;
+          if (style.remote || (reference2 == null ? void 0 : reference2.remote)) {
+            refuse("STYLE_MOVE", `"${(style.remote ? style : reference2).name}" belongs to a library \u2014 only local styles have an order here`);
+            break;
+          }
+          ;
+          moveStyle.call(figma, style, reference2);
+          figma.commitUndo();
+          const order = (await localStyles(kind)).map((s) => s.name);
+          postToUi({ type: "STYLE_MOVED", kind, name: style.name, after: (_M = reference2 == null ? void 0 : reference2.name) != null ? _M : null, order });
+        } catch (error) {
+          const message = String((error == null ? void 0 : error.message) || error);
+          postToUi({ type: "CANVAS_ERROR", command: "STYLE_MOVE", message });
+        }
+        break;
+      }
       case "FLOW_LIST": {
         try {
           const page = msg.pageId ? await figma.getNodeByIdAsync(msg.pageId) : figma.currentPage;
@@ -42157,7 +44015,7 @@ createRoot(document.getElementById('root')!).render(
           const flows = [];
           for (const point2 of page.flowStartingPoints) {
             const node = await figma.getNodeByIdAsync(point2.nodeId).catch(() => null);
-            flows.push({ name: point2.name, node: point2.nodeId, frame: (_K = node == null ? void 0 : node.name) != null ? _K : "(missing)" });
+            flows.push({ name: point2.name, node: point2.nodeId, frame: (_N = node == null ? void 0 : node.name) != null ? _N : "(missing)" });
           }
           postToUi({ type: "FLOWS", page: { id: page.id, name: page.name }, flows });
         } catch (error) {
@@ -42187,7 +44045,7 @@ createRoot(document.getElementById('root')!).render(
               continue;
             }
             const node = await figma.getNodeByIdAsync(entry.node).catch(() => null);
-            if (!node || node.type !== "FRAME" || ((_L = node.parent) == null ? void 0 : _L.type) !== "PAGE") {
+            if (!node || node.type !== "FRAME" || ((_O = node.parent) == null ? void 0 : _O.type) !== "PAGE") {
               problems.push(`flows[${index2}]: ${entry.node} is not a top-level frame on this page`);
               continue;
             }
@@ -42350,7 +44208,7 @@ createRoot(document.getElementById('root')!).render(
             if (typeof msg.category === "string" && msg.category.trim() !== "") {
               const categories = await figma.annotations.getAnnotationCategoriesAsync();
               const wanted = msg.category.trim();
-              const found = (_M = categories.find((one) => one.id === wanted)) != null ? _M : categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase());
+              const found = (_P = categories.find((one) => one.id === wanted)) != null ? _P : categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase());
               if (!found) {
                 refuse("ANNOTATE", `no category "${wanted}" \u2014 this file has: ${categories.map((one) => one.label).join(", ") || "(none)"}`);
                 break;
@@ -42367,12 +44225,12 @@ createRoot(document.getElementById('root')!).render(
               continue;
             }
             try {
-              bag.annotations = clearing ? [] : [...(_N = bag.annotations) != null ? _N : [], annotation];
+              bag.annotations = clearing ? [] : [...(_Q = bag.annotations) != null ? _Q : [], annotation];
               rows.push({
                 node: node.id,
                 name: node.name,
                 ok: true,
-                annotations: await describeAnnotations((_O = bag.annotations) != null ? _O : [])
+                annotations: await describeAnnotations((_R = bag.annotations) != null ? _R : [])
               });
             } catch (error) {
               rows.push({ node: node.id, name: node.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
@@ -42454,7 +44312,7 @@ createRoot(document.getElementById('root')!).render(
       case "NODE_ROUNDTRIP": {
         try {
           const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id));
-          const depth = Math.min(Math.max((_P = msg.depth) != null ? _P : 3, 0), 12);
+          const depth = Math.min(Math.max((_S = msg.depth) != null ? _S : 3, 0), 12);
           const ignore = new Set((Array.isArray(msg.ignore) ? msg.ignore : []).map((one) => String(one)));
           const reports = [];
           for (const id of ids) {
@@ -42497,17 +44355,17 @@ createRoot(document.getElementById('root')!).render(
               reports.push({ node: id, name: original.name, ok: false, error: problems.join(" \xB7 ") || "the reading did not plan", dropped });
               continue;
             }
-            const parent = (_Q = original.parent) != null ? _Q : figma.currentPage;
+            const parent = (_T = original.parent) != null ? _T : figma.currentPage;
             const copy = await createNode(plan, parent, false);
             const made = await figma.getNodeByIdAsync(copy.id);
             if (!made || !("type" in made)) {
               reports.push({ node: id, name: original.name, ok: false, error: "the copy was not made", dropped });
               continue;
             }
-            const before = (_R = (await describeNode2(original, true)).props) != null ? _R : {};
-            const after = (_S = (await describeNode2(made, true)).props) != null ? _S : {};
+            const before = (_U = (await describeNode2(original, true)).props) != null ? _U : {};
+            const after = (_V = (await describeNode2(made, true)).props) != null ? _V : {};
             const { same, diverged } = compare(before, after, ignore);
-            const failed = (_T = copy.failures) != null ? _T : [];
+            const failed = (_W = copy.failures) != null ? _W : [];
             if (msg.keep !== true) made.remove();
             else figma.commitUndo();
             reports.push(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
@@ -42654,7 +44512,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "MODULE_RUN": {
         const entry = userModules.find((candidate) => candidate.id === msg.id);
-        const screen = (_U = entry == null ? void 0 : entry.module) == null ? void 0 : _U.screens[msg.screen];
+        const screen = (_X = entry == null ? void 0 : entry.module) == null ? void 0 : _X.screens[msg.screen];
         const block3 = screen == null ? void 0 : screen.blocks[msg.block];
         if (!(entry == null ? void 0 : entry.module) || !block3) {
           refuse("MODULE_RUN", `no block ${msg.block} on the ${msg.screen} screen of "${msg.id}"`);
@@ -42813,11 +44671,11 @@ createRoot(document.getElementById('root')!).render(
             );
           }
           const themeSets = modules2.templates && exportOptions.targetOptions.framework === "bootstrap" && exportOptions.targetOptions.bootstrapFidelity === "theme" ? await collectThemableSets(sceneNodesById) : void 0;
-          const breakpointTokens = extractBreakpointTokens2(snapshot);
+          const breakpointTokens = extractBreakpointTokens(snapshot);
           const targetLanguages = modules2.i18n ? parseLanguages(exportOptions.i18n.languages, exportOptions.i18n.sourceLanguage) : [];
           let startPageId;
           try {
-            startPageId = (_V = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _V.nodeId;
+            startPageId = (_Y = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _Y.nodeId;
           } catch (e) {
           }
           const [project, assets] = await Promise.all([
@@ -42883,7 +44741,7 @@ createRoot(document.getElementById('root')!).render(
           if (!project && motionExport.animation.js) files["static/js/animations.js"] = motionExport.animation.js;
           let tauriPageHrefs;
           if (exportOptions.targetOptions.platform === "tauri" && project) {
-            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_W = pageRoots[0]) == null ? void 0 : _W.id;
+            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_Z = pageRoots[0]) == null ? void 0 : _Z.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -42916,9 +44774,9 @@ createRoot(document.getElementById('root')!).render(
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_X = sceneNodesById.get(nodeId)) != null ? _X : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (__ = sceneNodesById.get(nodeId)) != null ? __ : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_Y = node.parent) == null ? void 0 : _Y.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((_$ = node.parent) == null ? void 0 : _$.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -42941,7 +44799,7 @@ createRoot(document.getElementById('root')!).render(
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((_Z = counts[finding.rule]) != null ? _Z : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_aa = counts[finding.rule]) != null ? _aa : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -42991,7 +44849,7 @@ createRoot(document.getElementById('root')!).render(
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (_$ = (__ = figma.currentUser) == null ? void 0 : __.name) != null ? _$ : "unknown";
+            exportedBy = (_ca = (_ba = figma.currentUser) == null ? void 0 : _ba.name) != null ? _ca : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readAllVariables, readLibraryVariables, resolveVariableValue } from './variables.ts'
+import { readAliasTargets, readAllVariables, readLibraryVariables, resolveVariableValue } from './variables.ts'
 
 /**
  * The sweep is network-bound by construction — one round trip per variable — so what is worth
@@ -96,6 +96,17 @@ test('resuming from nextOffset picks up exactly where the last call stopped', as
   const second = await readLibraryVariables({ offset: 4 })
 
   assert.deepEqual(second.variables.map((entry) => entry.key), ['c1-4', 'c1-5'])
+})
+
+test('progress knows the size of the whole sweep before the first import', async () => {
+  // The panel shows "N/M" through a read that runs past a minute; an M that grew as collections
+  // were reached would be a progress bar that moves backwards.
+  setFigma([palette('Colour', 'c1', 3), palette('Size', 's1', 2)])
+  const seen: [number, number][] = []
+
+  await readLibraryVariables({ onProgress: (done, total) => seen.push([done, total]) })
+
+  assert.deepEqual(seen, [[0, 5], [1, 5], [2, 5], [3, 5], [4, 5], [5, 5]])
 })
 
 test('a library service that refuses answers empty rather than throwing', async () => {
@@ -251,4 +262,60 @@ test('composed color variables resolve both channels to rendered RGBA', async (t
     value: { r: 1, g: 0.5, b: 0, a: 0.4 },
     resolvedType: 'COLOR',
   })
+})
+
+test('an alias onto a variable the read did not return is followed by id, chains included', async () => {
+  // The defect this exists for: a consumer file exported `var(--variableid-73e58…-411-1)` for every
+  // primitive, because its aliases pointed into a library the read never saw.
+  const remote = (id: string, value: unknown) => ({
+    id,
+    key: id,
+    name: `remote/${id}`,
+    variableCollectionId: 'VariableCollectionId:remote',
+    scopes: [],
+    resolvedType: 'COLOR',
+    valuesByMode: { r1: value },
+  })
+  const byId = new Map([
+    ['VariableID:a/1', remote('VariableID:a/1', { type: 'VARIABLE_ALIAS', id: 'VariableID:b/2' })],
+    ['VariableID:b/2', remote('VariableID:b/2', { r: 1, g: 1, b: 1, a: 1 })],
+  ])
+  ;(globalThis as { figma?: unknown }).figma = {
+    variables: {
+      getVariableByIdAsync: async (id: string) => byId.get(id) ?? null,
+      getVariableCollectionByIdAsync: async () => ({
+        id: 'VariableCollectionId:remote',
+        name: 'Colors',
+        defaultModeId: 'r1',
+        modes: [{ modeId: 'r1', name: 'Value' }],
+      }),
+    },
+  }
+
+  const found = await readAliasTargets({
+    collections: [{ id: 'VariableCollectionId:local', name: 'Primitives', defaultModeId: 'm1', modes: [] }],
+    variables: [
+      {
+        id: 'VariableID:local/1',
+        key: 'local1',
+        name: 'colors/d/0',
+        collectionId: 'VariableCollectionId:local',
+        scopes: [],
+        resolvedType: 'COLOR',
+        valuesByMode: { m1: { type: 'VARIABLE_ALIAS', id: 'VariableID:a/1' } },
+      },
+      {
+        id: 'VariableID:local/2',
+        key: 'local2',
+        name: 'colors/gone',
+        collectionId: 'VariableCollectionId:local',
+        scopes: [],
+        resolvedType: 'COLOR',
+        valuesByMode: { m1: { type: 'VARIABLE_ALIAS', id: 'VariableID:missing/9' } },
+      },
+    ],
+  })
+
+  assert.deepEqual(found.variables.map((entry) => entry.id), ['VariableID:a/1', 'VariableID:b/2'])
+  assert.deepEqual(found.collections.map((entry) => entry.name), ['Colors'])
 })

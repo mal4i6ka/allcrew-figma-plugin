@@ -11,6 +11,7 @@
 import type { DiffableLetterSpacing, DiffableLineHeight, DiffablePaint, DiffableTransform } from './types.ts'
 import type { DiffableShadowLayer, PropertyChange, RGBA, StateDiff } from './diff-properties.ts'
 import type { TriggerMechanism } from './triggers.ts'
+import { sourceColorCss, sourceColorOf } from '../../../tokens/color.ts'
 
 function round(value: number, decimals: number): number {
   const factor = 10 ** decimals
@@ -18,6 +19,9 @@ function round(value: number, decimals: number): number {
 }
 
 function rgbaToCss(color: RGBA): string {
+  const source = sourceColorOf(color)
+  const authored = source && sourceColorCss(source, color.a)
+  if (authored) return authored
   const to255 = (channel: number) => Math.round(channel * 255)
   return `rgba(${to255(color.r)}, ${to255(color.g)}, ${to255(color.b)}, ${round(color.a, 4)})`
 }

@@ -42,10 +42,25 @@
  *   FIGMA_TOKEN_FILE          default ~/.allcrew-channel/figma-token
  */
 
+import crypto from 'node:crypto'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import {
+  ACTIVITY_SCOPE,
+  OAUTH_APP_FILE,
+  authorizeUrl,
+  exchangeCode,
+  readOAuth,
+  readOAuthApp,
+  refreshGrant,
+  runOrgOp,
+  writeOAuth,
+  writeOAuthApp,
+} from './figma-org.mjs'
 
 const BASE = (process.env.ALLCREW_CHANNEL_AGENT_URL || 'http://127.0.0.1:8788').replace(/\/+$/, '')
 const SECRET_FILE =
@@ -71,8 +86,10 @@ const USAGE = `allcrew-channel — drive the open Figma file through the AllCrew
                                         run many ops in order, one round trip; "-" reads stdin
 
   allcrew-channel comments [-k <key|url>]  comment threads on a file      ┐ Figma REST API,
-  allcrew-channel versions [-k <key|url>]  named versions and autosaves   │ needs a personal
-  allcrew-channel activity [--since <d>]   who changed what (Enterprise)  ┘ access token
+  allcrew-channel versions [-k <key|url>]  named versions and autosaves   ┘ personal token
+
+  allcrew-channel auth [--refresh|--status] sign in for the organisation audit log ┐ OAuth,
+  allcrew-channel activity [--since <d>]    who did what, incl. access changes     ┘ Enterprise
 
   -f, --file <handle|name|*>  which connected file to ask. Optional when exactly one is
                               connected, required when more than one. "*" asks them all
@@ -201,9 +218,7 @@ async function figmaGet(path, token) {
     const detail = parsed?.err || parsed?.message || text.slice(0, 160)
     die(
       `Figma refused the token (HTTP ${response.status}): ${detail}\n` +
-        (path.startsWith('/v1/activity_logs')
-          ? `  The activity log is Enterprise-only and needs an *org admin* token, not a member's.`
-          : `  Either the token is wrong, or it does not have access to that file.`)
+        `  Either the token is wrong, it lacks the required scope, or it cannot access that file.`
     )
   }
   if (!response.ok) die(`Figma returned HTTP ${response.status}: ${text.slice(0, 200)}`)
@@ -326,13 +341,14 @@ async function cmdCall(argv) {
     process.stdout.write(JSON.stringify(body.results, null, 2) + '\n')
     return
   }
-  const restKey = body.fileKey || body.result?.fileKey || params.fileKey
-  const answeredBy = body.handle
+  // REST and the bridge's own ops (history, comments, org) have no plugin window to name; saying
+  // "answered by undefined" there read like a broken call.
+  const by = body.handle
     ? `${body.handle} (${body.file})`
-    : body.source === 'rest' && restKey
-      ? `Figma REST (${restKey})`
+    : body.source === 'rest'
+      ? `Figma REST${body.fileKey || body.result?.fileKey ? ` (${body.fileKey || body.result.fileKey})` : ''}`
       : 'the bridge'
-  process.stderr.write(`${op} — answered by ${answeredBy}\n`)
+  process.stderr.write(`${op} — answered by ${by}\n`)
   process.stdout.write(JSON.stringify(body.result, null, 2) + '\n')
 }
 
@@ -440,21 +456,162 @@ async function runVersions(args) {
   process.stdout.write(JSON.stringify(versions, null, 2) + '\n')
 }
 
+/**
+ * The audit log, which is the one command here that does NOT take the personal token.
+ *
+ * It used to, and could not have worked: `/v1/activity_logs` answers "OAuth token is not passed
+ * in the Bearer authorization header" to a `figd_` token, and answers "figd_ tokens must be
+ * passed via X-Figma-Token header" when the same token is offered as a Bearer. Both measured.
+ * The old error text sent people to re-mint a personal token with more scopes, which is a loop
+ * with no exit — scopes were never the problem, the token TYPE is.
+ */
 async function runActivity(args) {
-  const token = requireToken()
-  const since = flagValue(args, '--since', '')
-  const limit = Number(flagValue(args, '--limit', 100)) || 100
-  const query = new URLSearchParams()
-  if (since) {
-    const stamp = Date.parse(since)
-    if (Number.isNaN(stamp)) die(`--since wants a date: --since 2026-08-01`)
-    query.set('start_time', String(Math.floor(stamp / 1000)))
+  const grant = readOAuth()
+  if (grant.state === 'absent') {
+    die(
+      `the activity log needs an OAuth grant, not a personal access token.\n` +
+        `  A figd_ token is refused on both headers, whatever scopes it carries — this is not\n` +
+        `  something more permissions will fix.\n\n` +
+        `  Run:  allcrew-channel auth\n\n` +
+        `  Needs an Enterprise plan, an organisation admin account with 2FA, and a one-time\n` +
+        `  OAuth app registered at figma.com/developers/apps.\n` +
+        `  For "who touched this file", allcrew-channel versions works on any plan today.`
+    )
   }
-  query.set('limit', String(Math.min(1000, Math.max(1, limit))))
-  const data = await figmaGet(`/v1/activity_logs?${query}`, token)
-  const events = data.activity_logs || data.meta?.activity_logs || []
-  process.stderr.write(`${events.length} event${events.length === 1 ? '' : 's'}\n`)
-  process.stdout.write(JSON.stringify(events, null, 2) + '\n')
+  if (grant.state === 'expired') {
+    die(`the stored grant expired on ${new Date(grant.expiresAt).toISOString()} — run: allcrew-channel auth --refresh`)
+  }
+
+  const result = await runOrgOp(
+    'org.activity',
+    {
+      events: flagValue(args, '--events', undefined),
+      since: flagValue(args, '--since', undefined),
+      until: flagValue(args, '--until', undefined),
+      limit: Number(flagValue(args, '--limit', 100)) || 100,
+      all: args.includes('--all'),
+    },
+    { oauth: grant.accessToken }
+  )
+  process.stderr.write(
+    `${result.count} event${result.count === 1 ? '' : 's'} over ${result.pages} page${result.pages === 1 ? '' : 's'}` +
+      `${result.truncated ? ' (truncated — pass --all or narrow with --since)' : ''}\n`
+  )
+  process.stdout.write(JSON.stringify(result.events, null, 2) + '\n')
+}
+
+/**
+ * The OAuth sign-in, done once per machine.
+ *
+ * A loopback redirect rather than a pasted code: Figma matches `redirect_uri` EXACTLY against
+ * what the app registered, so the port is fixed and printed rather than chosen freely — a
+ * randomly-bound port would work exactly once, before the registration stopped matching it.
+ */
+async function runAuth(args) {
+  const app = readOAuthApp()
+  const clientId = flagValue(args, '--client-id', app.clientId)
+  const clientSecret = flagValue(args, '--client-secret', app.clientSecret)
+  const port = Number(flagValue(args, '--port', 7789)) || 7789
+  const redirectUri = flagValue(args, '--redirect', `http://127.0.0.1:${port}/callback`)
+
+  if (args.includes('--status')) {
+    const grant = readOAuth()
+    process.stdout.write(
+      JSON.stringify(
+        {
+          grant: grant.state,
+          expires_at: grant.expiresAt ? new Date(grant.expiresAt).toISOString() : null,
+          app: app.clientId ? app.source : 'not configured',
+          token_file: grant.source,
+        },
+        null,
+        2
+      ) + '\n'
+    )
+    return
+  }
+
+  if (!clientId || !clientSecret) {
+    die(
+      `no OAuth app configured.\n\n` +
+        `  1. figma.com/developers/apps → Create a new app\n` +
+        `  2. Add this exact redirect URL:  ${redirectUri}\n` +
+        `  3. Re-run with the credentials it gives you:\n\n` +
+        `       allcrew-channel auth --client-id <id> --client-secret <secret>\n\n` +
+        `  They are saved to ${OAUTH_APP_FILE()} (chmod 600) so this is a one-time step.\n` +
+        `  The app needs the ${ACTIVITY_SCOPE} scope, and only an organisation admin on an\n` +
+        `  Enterprise plan with 2FA enabled can authorise it.`
+    )
+  }
+  if (!app.clientId || app.clientId !== clientId || app.clientSecret !== clientSecret) {
+    writeOAuthApp({ clientId, clientSecret })
+  }
+
+  if (args.includes('--refresh')) {
+    const grant = readOAuth({ marginMs: 0 })
+    if (!grant.refreshToken) die('nothing to refresh — run `allcrew-channel auth` without --refresh first')
+    const next = await refreshGrant({ clientId, clientSecret, refreshToken: grant.refreshToken })
+    const file = writeOAuth({ ...next, scopes: [ACTIVITY_SCOPE] })
+    process.stderr.write(`refreshed — valid for ${Math.round(Number(next.expires_in || 0) / 86400)} days, stored in ${file}\n`)
+    return
+  }
+
+  const state = crypto.randomUUID()
+  const url = authorizeUrl({ clientId, redirectUri, state })
+
+  /* The server is started BEFORE the browser opens: Figma redirects immediately on an
+   * already-authorised session, and a listener started afterwards would miss the one request
+   * this whole flow exists to catch. */
+  const code = await new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const incoming = new URL(req.url, `http://127.0.0.1:${port}`)
+      if (!incoming.pathname.startsWith('/callback')) {
+        res.writeHead(404).end('not here')
+        return
+      }
+      const got = incoming.searchParams
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      if (got.get('state') !== state) {
+        res.end('<p>State mismatch — this response did not come from the request this tool made. Nothing was saved.</p>')
+        server.close()
+        reject(new Error('state mismatch — the callback did not match the request; nothing was stored'))
+        return
+      }
+      if (got.get('error')) {
+        res.end(`<p>Figma refused: ${got.get('error')}</p>`)
+        server.close()
+        reject(new Error(`Figma refused the authorisation: ${got.get('error')}`))
+        return
+      }
+      res.end('<p>Signed in. You can close this tab and return to the terminal.</p>')
+      server.close()
+      resolve(got.get('code'))
+    })
+    server.on('error', (err) =>
+      reject(
+        new Error(
+          `cannot listen on ${port} (${err.message}) — pass --port and register the matching redirect URL in the app`
+        )
+      )
+    )
+    server.listen(port, '127.0.0.1', () => {
+      process.stderr.write(`waiting for Figma on ${redirectUri}\n  ${url}\n`)
+      // Best-effort: on a headless machine the printed URL above is the whole interface.
+      const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
+      try {
+        spawn(opener, [url], { stdio: 'ignore', detached: true, shell: process.platform === 'win32' }).unref()
+      } catch {
+        /* printed above */
+      }
+    })
+  })
+
+  const grant = await exchangeCode({ clientId, clientSecret, redirectUri, code })
+  const file = writeOAuth({ ...grant, scopes: [ACTIVITY_SCOPE] })
+  process.stderr.write(
+    `signed in — valid for ${Math.round(Number(grant.expires_in || 0) / 86400)} days, stored in ${file}\n` +
+      `  allcrew-channel activity --since 2026-09-01\n`
+  )
 }
 
 /* ------------------------------------------------------------------- main */
@@ -476,6 +633,7 @@ const COMMANDS = {
   comments: runComments,
   versions: runVersions,
   activity: runActivity,
+  auth: runAuth,
 }
 const handler = COMMANDS[command]
 if (!handler) die(`unknown command "${command}"\n\n${USAGE}`)

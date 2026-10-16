@@ -800,6 +800,16 @@
   .theme-merge-actions { display: flex; align-items: center; gap: 9px; margin-top: 7px; }
   .theme-merge-actions .btn { min-height: 28px; padding: 6px 10px; font-size: 10.5px; }
   .theme-merge-empty { color: var(--faint); font-size: 10.5px; margin: 2px 0 0; }
+  /* Collection roles — one row per collection of the file, a role picked from a list. */
+  .role-editor { padding: 10px 2px 6px; border-top: .5px solid var(--border); }
+  .role-list { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; }
+  .role-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 1.1fr); gap: 8px; align-items: center; }
+  .role-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--brand); font-size: 11px; color: var(--text); }
+  .role-name small { color: var(--faint); margin-left: 6px; font-size: 10px; }
+  .role-row.gone .role-name { color: var(--faint); text-decoration: line-through; }
+  .role-row select { width: 100%; min-width: 0; padding: 6px 7px; border: .5px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--text); font-family: var(--brand); font-size: 11px; }
+  .role-row select:focus { outline: none; border-color: var(--accent); }
+  .role-row select.set { border-color: var(--accent); }
   .preset-row { display: flex; gap: 8px; align-items: stretch; padding: 11px 2px 6px; }
   #set-preset { flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 8px 10px; font-family: var(--mono); font-size: 11px; }
   #set-preset:focus { outline: none; border-color: var(--accent); }
@@ -816,6 +826,7 @@
   .deliver-status.ok { color: var(--ok); }
   .deliver-status.err { color: var(--err); }
   .deliver-status.warn { color: var(--warn); }
+  .deliver-status a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
   #view-settings .set-hint { color: var(--faint); font-size: 10.5px; line-height: 1.55; margin: 16px 2px 4px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.05); }
   #view-settings .set-hint code { font-family: var(--mono); background: var(--bg-2); padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
   #view-settings .file-pick { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--muted); font-size: 11px; padding: 9px 11px; background: var(--bg-2); border: 1px dashed var(--border-2); border-radius: var(--r-sm); }
@@ -2415,10 +2426,13 @@
             <p class="theme-merge-empty" id="theme-merge-empty">No collection merges configured.</p>
           </div>
         </div>
-        <div class="set-row">
-          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
-          <span class="set-text"><b>Collection roles</b><i><code>Mesure: spacing</code> &middot; classify a whole collection when its variables are unscoped</i></span>
-          <input id="set-collection-roles" class="set-input" type="text" placeholder="Name: role, &hellip;" spellcheck="false" aria-label="Collection to role mapping" />
+        <div class="role-editor">
+          <div class="theme-merge-intro">
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
+            <span class="set-text"><b>Collections in the export</b><i>What each collection of this file becomes in code &middot; <b>Hide</b> keeps a layer such as primitives out while its values still reach the tokens that use them &middot; <b>Separate file</b> exports a collection on its own (<code>one.css</code>, <code>business.css</code>) — collections sent apart keep the same token names, and each file says which tokens the others have that it lacks</i></span>
+          </div>
+          <div class="role-list" id="role-list"></div>
+          <p class="theme-merge-empty hidden" id="role-empty">Open a file with variables to set what each collection becomes.</p>
         </div>
         <label class="set-row" for="set-emit-modules">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
@@ -2437,7 +2451,7 @@
         </label>
         <label class="set-row" for="set-include-libraries">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5V5.5zM8 7h8M8 11h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <span class="set-text"><b>Include library variables</b><i>Slow (a network read per token) &middot; the only way to export a theme this file consumes rather than owns</i></span>
+          <span class="set-text"><b>Include library variables</b><i>Slow (a network read per token) &middot; also exports the enabled libraries&rsquo; own collections &middot; not needed for values this file takes from them &mdash; those are substituted anyway</i></span>
           <span class="switch"><input type="checkbox" id="set-include-libraries" /><span class="track"></span></span>
         </label>
         <label class="set-row" data-needs-target="django" for="set-emit-json">
@@ -2525,15 +2539,56 @@
           <label>Shared secret <code>x-allcrew-channel-secret</code></label>
           <input id="set-dlv-secret" type="password" spellcheck="false" autocomplete="off" placeholder="(must match the receiver)" aria-label="Delivery secret" />
         </div>
+        <div class="set-field">
+          <label>Target <code>where it lands</code></label>
+          <select id="set-dlv-target" aria-label="Delivery target">
+            <option value="folder">Folder</option>
+            <option value="git">Git branch</option>
+            <option value="pr">GitHub PR</option>
+            <option value="mr">GitLab MR</option>
+            <option value="npm">npm</option>
+          </select>
+        </div>
+        <div class="set-field" data-dlv-route="git pr mr">
+          <label>Repository <code>clone URL</code></label>
+          <input id="set-dlv-repo" type="text" spellcheck="false" autocomplete="off" placeholder="git@gitlab.example:team/site.git" aria-label="Delivery repository" />
+        </div>
+        <div class="set-field" data-dlv-route="git pr mr">
+          <label>Working branch</label>
+          <input id="set-dlv-branch" type="text" spellcheck="false" autocomplete="off" placeholder="allcrew/tokens" aria-label="Delivery branch" />
+        </div>
+        <div class="set-field" data-dlv-route="pr mr">
+          <label>Target branch <code>base</code></label>
+          <input id="set-dlv-base" type="text" spellcheck="false" autocomplete="off" placeholder="(the repo's default branch)" aria-label="Delivery base branch" />
+        </div>
+        <div class="set-field" data-dlv-route="mr">
+          <label>GitLab project <code>path or id</code></label>
+          <input id="set-dlv-project" type="text" spellcheck="false" autocomplete="off" placeholder="team/site" aria-label="GitLab project" />
+        </div>
+        <div class="set-field" data-dlv-route="folder git pr mr">
+          <label>Subdirectory</label>
+          <input id="set-dlv-path" type="text" spellcheck="false" autocomplete="off" placeholder="sites/site.example" aria-label="Delivery path" />
+        </div>
+        <div class="set-field" data-dlv-route="npm">
+          <label>Package name</label>
+          <input id="set-dlv-package" type="text" spellcheck="false" autocomplete="off" placeholder="@team/design-tokens" aria-label="npm package" />
+        </div>
+        <label class="set-row" for="set-dlv-dry-run">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v5m0 3h.01" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+          <span class="set-text"><b>Dry run</b><i>Ask what would change and write nothing &mdash; no commit, no push, no MR</i></span>
+          <span class="switch"><input type="checkbox" id="set-dlv-dry-run" /><span class="track"></span></span>
+        </label>
         <label class="set-row" data-needs-endpoint for="set-dlv-on-export">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="set-text"><b>Send after export</b><i>POST the package once it's built</i></span>
           <span class="switch"><input type="checkbox" id="set-dlv-on-export" /><span class="track"></span></span>
         </label>
         <div class="deliver-bar">
+          <button class="btn ghost" id="deliver-preview" type="button" disabled>Preview delivery</button>
           <button class="btn deliver" id="deliver-now" type="button" disabled>Deliver now</button>
           <span class="deliver-status" id="deliver-status">endpoint not set</span>
         </div>
+        <pre class="module-code hidden" id="dlv-plan"></pre>
 
         <div class="set-section">
           <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14M20 8a8 8 0 0 0-15.5-2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -3068,37 +3123,33 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             link.remove()
             URL.revokeObjectURL(url)
             setExportProgress(100, 'done')
-            return deliverZip(blob)
+            return deliverExport(files)
           })
       }
 
-      // REFORM phase 8: POST the built zip to the configured receiver (`allcrew-channel receive`).
-      // Runs after the download so a dead endpoint can never cost the user the export itself.
-      function deliverZip(blob) {
+      // Delivery uses the same per-file JSON contract for every export path. It runs after the
+      // download so an unavailable receiver can never cost the user the export itself.
+      function deliverExport(files) {
         var delivery = OPTIONS && OPTIONS.delivery
         if (!delivery || !delivery.onExport || !delivery.endpoint) return Promise.resolve()
         var el = document.getElementById('status')
         if (el) { el.textContent = 'Delivering to ' + delivery.endpoint + '…'; el.className = '' }
-        return fetch(delivery.endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/zip', 'X-AllCrew-Channel-Secret': delivery.secret || '' },
-          body: blob,
+        var payload = {}
+        Object.keys(files).forEach(function (path) {
+          var content = files[path]
+          payload[path] = typeof content === 'string' ? content : { base64: bytesToBase64(content) }
         })
-          .then(function (response) {
-            return response.text().then(function (text) {
-              var detail = ''
-              try {
-                var parsed = JSON.parse(text)
-                detail = parsed.error || (parsed.written != null ? parsed.written + ' file(s) applied' : '')
-              } catch (parseError) { /* non-JSON body — show the status code below */ }
-              if (!el) return
-              if (response.ok) { el.textContent = 'Delivered — ' + (detail || 'accepted'); el.className = 'ok' }
-              else { el.textContent = 'Delivery failed: ' + (detail || 'HTTP ' + response.status); el.className = 'err' }
-            })
-          })
-          .catch(function (error) {
-            if (el) { el.textContent = 'Delivery failed: ' + error.message; el.className = 'err' }
-          })
+        parent.postMessage({ pluginMessage: { type: 'DELIVER', files: payload } }, '*')
+        return Promise.resolve()
+      }
+
+      function bytesToBase64(bytes) {
+        var view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+        var binary = ''
+        for (var i = 0; i < view.length; i += 0x8000) {
+          binary += String.fromCharCode.apply(null, view.subarray(i, i + 0x8000))
+        }
+        return btoa(binary)
       }
 
       function escapeHtml(text) {
@@ -3638,6 +3689,115 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
       }
 
+      // ── Collection roles list ─────────────────────────────────────────────────────────────
+      // One row per collection of the file with a role picked from a list, instead of a
+      // free-text `Name: role` field nobody could fill without reading the source. Still stored
+      // as that string (OPTIONS.tokens.collectionRoles), so saved settings and the agent's
+      // plugin.call keep working. The two export roles are parsed by parseCollectionModes in
+      // src/tokens/engine.ts; the DESIGN.md ones by parseCollectionRoles (design-md/model.ts).
+      var ROLE_COLLECTIONS = []
+      var ROLE_CHOICES = [
+        { value: '', label: 'Export' },
+        { value: 'hidden', label: 'Hide from code' },
+        { value: 'breakpoints', label: 'Breakpoints → --bp-*' },
+        { value: 'product', label: 'Separate file → name.css' },
+      ]
+      var ROLE_DOC_CHOICES = [
+        ['spacing', 'Spacing'], ['radius', 'Radius'], ['size', 'Size'], ['border-width', 'Border width'],
+        ['font-family', 'Font family'], ['font-size', 'Font size'], ['font-weight', 'Font weight'],
+        ['line-height', 'Line height'], ['letter-spacing', 'Letter spacing'], ['paragraph', 'Paragraph spacing'],
+        ['surface', 'Surface color'], ['text', 'Text color'], ['border', 'Border color'], ['icon', 'Icon color'],
+        ['opacity', 'Opacity'], ['z-index', 'Z-index'], ['duration', 'Motion duration'], ['easing', 'Motion easing'],
+      ]
+
+      function parseRoleSetting(raw) {
+        var out = []
+        String(raw || '').split(/[,;\n]+/).forEach(function (pair) {
+          var at = pair.indexOf(pair.indexOf(':') !== -1 ? ':' : '=')
+          if (at === -1) return
+          var name = pair.slice(0, at).trim()
+          var role = pair.slice(at + 1).trim().toLowerCase()
+          if (role === 'hide') role = 'hidden'
+          if (role === 'breakpoint' || role === 'bp') role = 'breakpoints'
+          if (name && role) out.push({ name: name, role: role })
+        })
+        return out
+      }
+
+      function renderRoleList() {
+        var host = document.getElementById('role-list')
+        if (!host || !OPTIONS) return
+        var saved = parseRoleSetting(OPTIONS.tokens.collectionRoles)
+        var roleOf = {}
+        saved.forEach(function (entry) { roleOf[entry.name.toLowerCase()] = entry.role })
+        // A saved role for a collection this file does not have stays listed (struck through),
+        // so switching files never silently drops what was set for another one.
+        var rows = ROLE_COLLECTIONS.map(function (c) { return { name: c.name, modes: c.modes, gone: false } })
+        saved.forEach(function (entry) {
+          if (!rows.some(function (row) { return row.name.toLowerCase() === entry.name.toLowerCase() })) {
+            rows.push({ name: entry.name, modes: 0, gone: true })
+          }
+        })
+        document.getElementById('role-empty').classList.toggle('hidden', rows.length > 0)
+        host.innerHTML = ''
+        rows.forEach(function (row) {
+          var el = document.createElement('div')
+          el.className = 'role-row' + (row.gone ? ' gone' : '')
+          var name = document.createElement('span')
+          name.className = 'role-name'
+          name.title = row.gone ? row.name + ' — not in this file' : row.name
+          name.textContent = row.name
+          if (row.modes > 1) {
+            var modes = document.createElement('small')
+            modes.textContent = row.modes + ' modes'
+            name.appendChild(modes)
+          }
+          var select = document.createElement('select')
+          select.setAttribute('aria-label', 'What ' + row.name + ' becomes in the export')
+          ROLE_CHOICES.forEach(function (choice) {
+            var option = document.createElement('option')
+            option.value = choice.value
+            option.textContent = choice.value === '' && /^breakpoints$/i.test(row.name.trim()) ? 'Breakpoints → --bp-* (auto)' : choice.label
+            select.appendChild(option)
+          })
+          var docs = document.createElement('optgroup')
+          docs.label = 'Export, described in DESIGN.md as'
+          ROLE_DOC_CHOICES.forEach(function (choice) {
+            var option = document.createElement('option')
+            option.value = choice[0]
+            option.textContent = choice[1]
+            docs.appendChild(option)
+          })
+          select.appendChild(docs)
+          var current = roleOf[row.name.toLowerCase()] || ''
+          if (current && !select.querySelector('option[value="' + current + '"]')) {
+            var unknown = document.createElement('option')
+            unknown.value = current
+            unknown.textContent = current
+            select.appendChild(unknown)
+          }
+          select.value = current
+          select.classList.toggle('set', current !== '')
+          select.addEventListener('change', function () {
+            var next = parseRoleSetting(OPTIONS.tokens.collectionRoles).filter(function (entry) {
+              return entry.name.toLowerCase() !== row.name.toLowerCase()
+            })
+            if (select.value) next.push({ name: row.name, role: select.value })
+            OPTIONS.tokens.collectionRoles = next.map(function (entry) { return entry.name + ': ' + entry.role }).join(', ')
+            select.classList.toggle('set', select.value !== '')
+            afterSettingsChange()
+          })
+          el.appendChild(name)
+          el.appendChild(select)
+          host.appendChild(el)
+        })
+      }
+
+      // ── Theme collections table ──────────────────────────────────────────────────────────
+      // A file on the free Figma plan can only give each collection one mode, so a light/dark
+      // pair arrives as two separate collections. The table below lets the user declare that
+      // "Colors Light" and "Colors Dark" are really two modes of one exported structure; the
+      // sandbox folds them together (src/tokens/split-theme.ts) before the tokens are emitted.
       function themeMergeGroups() {
         if (!OPTIONS.themeMerges) OPTIONS.themeMerges = { groups: [] }
         if (!Array.isArray(OPTIONS.themeMerges.groups)) OPTIONS.themeMerges.groups = []
@@ -3755,7 +3915,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('set-flatten', 'checked', OPTIONS.tokens.flattenAliases)
         setControl('set-theme-attr', 'value', OPTIONS.tokens.themeAttribute)
         renderThemeMergeTable()
-        setControl('set-collection-roles', 'value', OPTIONS.tokens.collectionRoles || '')
+        renderRoleList()
         setControl('set-emit-json', 'checked', OPTIONS.tokens.emitJson)
         setControl('set-emit-scss', 'checked', OPTIONS.tokens.emitScss)
         setControl('set-emit-modules', 'checked', OPTIONS.tokens.emitModuleFiles)
@@ -3777,6 +3937,15 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('set-dlv-endpoint', 'value', OPTIONS.delivery.endpoint)
         setControl('set-dlv-secret', 'value', OPTIONS.delivery.secret)
         setControl('set-dlv-on-export', 'checked', OPTIONS.delivery.onExport)
+        var dlvRoute = OPTIONS.delivery.route || {}
+        setControl('set-dlv-target', 'value', OPTIONS.delivery.target || 'folder')
+        setControl('set-dlv-repo', 'value', dlvRoute.repo || '')
+        setControl('set-dlv-branch', 'value', dlvRoute.branch || '')
+        setControl('set-dlv-base', 'value', dlvRoute.base || '')
+        setControl('set-dlv-project', 'value', dlvRoute.project || '')
+        setControl('set-dlv-path', 'value', dlvRoute.path || '')
+        setControl('set-dlv-package', 'value', dlvRoute.package || '')
+        setControl('set-dlv-dry-run', 'checked', OPTIONS.delivery.dryRun !== false)
         var agentOpt = agentOptions() || { endpoint: '', secret: '', read: false, write: false, uiMirror: false }
         setControl('set-agent-endpoint', 'value', agentOpt.endpoint)
         setControl('set-agent-secret', 'value', agentOpt.secret)
@@ -3825,6 +3994,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             dStatus.className = 'deliver-status'
           }
         }
+        var dPreview = document.getElementById('deliver-preview')
+        if (dPreview) dPreview.disabled = !endpointSet
+        var dlvTarget = OPTIONS.delivery.target || 'folder'
+        Array.prototype.forEach.call(document.querySelectorAll('[data-dlv-route]'), function (row) {
+          row.classList.toggle('hidden', row.getAttribute('data-dlv-route').split(' ').indexOf(dlvTarget) === -1)
+        })
         // Agent listener: no bridge URL → nothing to allow; reads off → writes unreachable.
         var agentCfg = agentOptions() || {}
         var agentEndpointSet = (agentCfg.endpoint || '') !== ''
@@ -3898,7 +4073,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       bindSetting('set-inline', function (el) { OPTIONS.tokens.inlinePrimitives = el.checked })
       bindSetting('set-flatten', function (el) { OPTIONS.tokens.flattenAliases = el.checked })
       bindSetting('set-theme-attr', function (el) { OPTIONS.tokens.themeAttribute = el.value.trim() })
-      bindSetting('set-collection-roles', function (el) { OPTIONS.tokens.collectionRoles = el.value.trim() })
       bindSetting('set-emit-json', function (el) { OPTIONS.tokens.emitJson = el.checked })
       bindSetting('set-emit-scss', function (el) { OPTIONS.tokens.emitScss = el.checked })
       bindSetting('set-emit-modules', function (el) { OPTIONS.tokens.emitModuleFiles = el.checked })
@@ -3946,6 +4120,18 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       bindSetting('set-dlv-endpoint', function (el) { OPTIONS.delivery.endpoint = el.value.trim() })
       bindSetting('set-dlv-secret', function (el) { OPTIONS.delivery.secret = el.value })
       bindSetting('set-dlv-on-export', function (el) { OPTIONS.delivery.onExport = el.checked })
+      function deliveryRoute() {
+        if (!OPTIONS.delivery.route) OPTIONS.delivery.route = { repo: '', branch: '', base: '', path: '', package: '', project: '' }
+        return OPTIONS.delivery.route
+      }
+      bindSetting('set-dlv-target', function (el) { OPTIONS.delivery.target = el.value })
+      bindSetting('set-dlv-dry-run', function (el) { OPTIONS.delivery.dryRun = el.checked })
+      bindSetting('set-dlv-repo', function (el) { deliveryRoute().repo = el.value.trim() })
+      bindSetting('set-dlv-branch', function (el) { deliveryRoute().branch = el.value.trim() })
+      bindSetting('set-dlv-base', function (el) { deliveryRoute().base = el.value.trim() })
+      bindSetting('set-dlv-project', function (el) { deliveryRoute().project = el.value.trim() })
+      bindSetting('set-dlv-path', function (el) { deliveryRoute().path = el.value.trim() })
+      bindSetting('set-dlv-package', function (el) { deliveryRoute().package = el.value.trim() })
       bindSetting('set-agent-endpoint', function (el) { agentOptions().endpoint = el.value.trim(); mirrorConfigure(agentOptions()); agentApply() })
       bindSetting('set-agent-secret', function (el) { agentOptions().secret = el.value; mirrorConfigure(agentOptions()); agentApply() })
       bindSetting('set-agent-read', function (el) {
@@ -5239,14 +5425,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       })
       document.getElementById('dt-zip').addEventListener('click', function () {
         if (this.disabled) return
+        // The zip is the user's download; delivery sends the files themselves.
         var list = Object.keys(DT_FILES).map(function (n) { return { name: n, content: DT_FILES[n] } })
-        var zip = zipStore(list)
-        dtDownload('allcrew-channel-design-tokens.zip', zip, 'application/zip')
+        dtDownload('allcrew-channel-design-tokens.zip', zipStore(list), 'application/zip')
         var delivery = OPTIONS && OPTIONS.delivery
-        if (delivery && delivery.endpoint) {
-          var b64 = btoa(String.fromCharCode.apply(null, zip))
-          parent.postMessage({ pluginMessage: { type: 'DELIVER', zipBase64: b64 } }, '*')
-        }
+        if (delivery && delivery.endpoint) sendDelivery()
       })
       document.getElementById('dt-rescan').addEventListener('click', function () {
         parent.postMessage({ pluginMessage: { type: 'SCAN_TOKENS', docs: OPTIONS && OPTIONS.docs } }, '*')
@@ -5259,15 +5442,38 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         if (el) { el.textContent = OPTIONS.docs && OPTIONS.docs.componentPreviews ? 'Capturing component previews…' : 'Rebuilding package…'; el.className = '' }
         parent.postMessage({ pluginMessage: { type: 'SCAN_TOKENS', docs: OPTIONS.docs } }, '*')
       }
-      document.getElementById('deliver-now').addEventListener('click', function () {
-        if (this.disabled) return
+      function sendDelivery(dryRun) {
         var names = Object.keys(DT_FILES)
         if (names.length === 0) { parent.postMessage({ pluginMessage: { type: 'SCAN_TOKENS' } }, '*'); return }
-        var zip = zipStore(names.map(function (n) { return { name: n, content: DT_FILES[n] } }))
-        var b64 = btoa(String.fromCharCode.apply(null, zip))
+        var reads = dryRun === undefined ? !!(OPTIONS && OPTIONS.delivery && OPTIONS.delivery.dryRun) : dryRun
         var ds = document.getElementById('deliver-status')
-        ds.textContent = 'Delivering…'; ds.className = 'deliver-status'
-        parent.postMessage({ pluginMessage: { type: 'DELIVER', zipBase64: b64 } }, '*')
+        if (ds) { ds.textContent = reads ? 'Previewing…' : 'Delivering…'; ds.className = 'deliver-status' }
+        parent.postMessage({ pluginMessage: { type: 'DELIVER', files: DT_FILES, dryRun: dryRun } }, '*')
+      }
+      function renderDeliveryPlan(plan) {
+        var box = document.getElementById('dlv-plan')
+        if (!box) return
+        if (!plan || !plan.files || plan.files.length === 0) {
+          box.textContent = ''
+          box.classList.add('hidden')
+          return
+        }
+        var width = 0
+        plan.files.forEach(function (file) { if (file.path.length > width) width = file.path.length })
+        box.textContent = plan.files.map(function (file) {
+          var pad = file.path + new Array(Math.max(1, width - file.path.length + 2)).join(' ')
+          var counts = file.binary ? 'binary' : '+' + (file.added || 0) + ' / -' + (file.removed || 0)
+          return pad + ' ' + file.action + '  ' + counts
+        }).join('\n') + (plan.truncated ? '\n… truncated by the receiver' : '')
+        box.classList.remove('hidden')
+      }
+      document.getElementById('deliver-now').addEventListener('click', function () {
+        if (this.disabled) return
+        sendDelivery(false)
+      })
+      document.getElementById('deliver-preview').addEventListener('click', function () {
+        if (this.disabled) return
+        sendDelivery(true)
       })
       // ── end Design Tokens ────────────────────────────────────────────────────────────
       // ── Agent listener ───────────────────────────────────────────────────────────────
@@ -7915,6 +8121,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             elDt.textContent = bits.join(' · ') + (DT_SUMMARY.previewError ? ' · previews failed: ' + DT_SUMMARY.previewError : '')
             elDt.className = DT_SUMMARY.previewError ? 'err' : ''
           } else if (elDt) { elDt.textContent = ''; elDt.className = '' }
+        } else if (msg.type === 'TOKENS_PROGRESS') {
+          var elLib = document.getElementById('status')
+          if (elLib) { elLib.textContent = 'Reading library variables… ' + msg.done + '/' + msg.total; elLib.className = '' }
         } else if (msg.type === 'COMPONENT_PREVIEW_PROGRESS') {
           var elProg = document.getElementById('status')
           if (elProg) { elProg.textContent = 'Capturing component previews — ' + msg.done + '/' + msg.total + '…'; elProg.className = '' }
@@ -7922,11 +8131,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           var elDtErr = document.getElementById('status')
           if (elDtErr) { elDtErr.textContent = 'Scan error: ' + msg.message; elDtErr.className = 'err' }
         } else if (msg.type === 'DELIVERY_RESULT') {
-          var dlvTxt = msg.ok ? 'Delivered' : 'Delivery failed: ' + (msg.message || 'HTTP ' + msg.status)
+          var dlvTxt = msg.ok
+            ? (msg.detail || (msg.dryRun ? 'Dry run — nothing written' : 'Delivered'))
+            : 'Delivery failed: ' + (msg.message || 'HTTP ' + msg.status)
           var elDlv = document.getElementById('status')
           if (elDlv) { elDlv.textContent = dlvTxt; elDlv.className = msg.ok ? 'ok' : 'err' }
           var dsOk = document.getElementById('deliver-status')
-          if (dsOk) { dsOk.textContent = dlvTxt; dsOk.className = 'deliver-status ' + (msg.ok ? 'ok' : 'err') }
+          if (dsOk) {
+            dsOk.className = 'deliver-status ' + (msg.ok ? 'ok' : 'err')
+            dsOk.innerHTML = escapeHtml(dlvTxt) + (msg.url
+              ? ' · <a href="' + escapeHtml(msg.url) + '" target="_blank" rel="noreferrer">open</a>'
+              : '')
+          }
+          renderDeliveryPlan(msg.plan)
         } else if (msg.type === 'DELIVERY_ERROR') {
           var elDlvErr = document.getElementById('status')
           if (elDlvErr) { elDlvErr.textContent = 'Delivery error: ' + msg.message; elDlvErr.className = 'err' }
@@ -7995,6 +8212,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           THEME_COLLECTION_CANDIDATES = (msg.collections || []).slice().sort(function (a, b) {
             return a.name.localeCompare(b.name)
           })
+          ROLE_COLLECTIONS = (msg.all || []).slice()
+          renderRoleList()
           document.getElementById('theme-merge-editor').classList.toggle('hidden', !msg.singleModeOnly)
           renderThemeMergeTable()
         } else if (msg.type === 'USER_PRESETS') {

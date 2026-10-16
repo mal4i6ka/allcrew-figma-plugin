@@ -155,15 +155,32 @@ preferences (the choices persist per-user):
 | **Per-theme `.module.css`** | on | Whether to emit the per-theme module files alongside `tokens.css`. |
 | **CSS Modules `:global()`** | on | Wrap module-file selectors in `:global(…)` (valid CSS Modules) or leave them plain. |
 | **iOS & Android tokens** | off | Also emit the asset catalogue, `res/values{,-night}/colors.xml`, `Tokens.swift` and `Tokens.kt`. Off by default because a palette becomes one colorset *directory* per colour, which is noise in a package a web project unzips. |
-| **Include library variables** | off | Read the variables of every enabled **library**, not just the local ones. It is a network read per token — 44 s on a file with 213 of them — and the only way to export a theme this file *consumes* rather than owns. Left off, the export's summary names the library collections it skipped, so a package with no theme in it says so instead of looking complete. |
+| **Collections in the export** | Export | One row per variable collection of the open file, with a role picked from a list: **Export**, **Hide from code** (a primitive layer stays out while its values still reach the tokens that alias it), **Breakpoints → `--bp-*`**, **Separate file → `name.css`** (a parallel product collection gets its own stylesheet built from the shared base plus that collection), or a DESIGN.md role (spacing, radius, text colour, motion duration, …). Saved roles for collections the file does not have stay listed, struck through. |
+| **Include library variables** | off | Also export the enabled **libraries'** own collections. Not needed for values this file takes from a library: aliases into a library are resolved by id and substituted without it. It is a network read per token, and the panel reports progress while it runs. |
 | **Automatic update discovery** | off | Checks the latest GitHub Release at most once every 24 hours. A manual **Check now** action is always available. When a newer version exists, the plugin shows a quiet header banner with release and direct-download actions. |
 | **Browser UI mirror** | off | Publishes the exact live plugin panel through the paired loopback bridge, independently from Agent Listener read/write permissions. While enabled, the header browser icon opens the connected file in Chrome. |
 
 ### tokens.css shape
 
-Every **mode** becomes one self-contained block declaring **all** variables for
-that theme. The default theme also occupies `:root`, so an un-themed page still
-renders.
+Themes are the **modes of collections that have more than one**. With none, the
+stylesheet is a single `:root`. The default theme occupies `:root`, so an
+un-themed page still renders; every other theme block holds **only the values it
+changes**.
+
+Before anything is emitted the export is shaped for code:
+
+- collections reached only through an alias, and collections marked **Hide from
+  code**, are substituted into the tokens that use them and dropped;
+- variables whose name has a group or segment starting with `_` or `.` (Figma's
+  spelling for "not for consumers") are left out, while anything aliasing them
+  still resolves;
+- `--bp-*` come only from threshold variables (`breakpoint/<name>`, `bp/…`,
+  `min-width/…`), narrowest first — never from frame widths;
+- `TIMING` variables export as milliseconds, `EASING` variables as their
+  `cubic-bezier()` (or a sampled `linear()` for a spring), and a composed
+  colour (`{ color, opacity }`) as the flat colour it paints in each mode;
+- colours authored outside sRGB keep their space: `oklch()`, `oklab()` or
+  `color(display-p3 …)`.
 
 With **Inline primitives** on (the default), the raw scale is collapsed into the
 tokens that use it — no primitive variables in the output:
@@ -176,9 +193,9 @@ tokens that use it — no primitive variables in the output:
   --spacing-md: 8px;
 }
 
-/* add a "Dark" mode to the collection in Figma → a second full block appears */
+/* add a "Dark" mode to the collection in Figma → a second block appears */
 [data-theme-name="Dark"] {
-  /* …all variables again, dark values… */
+  /* …only the variables whose dark value differs… */
 }
 ```
 
@@ -210,8 +227,12 @@ Switch theme by setting the attribute on any ancestor:
 ### Per-theme `<theme>.module.css`
 
 The same theme blocks are also emitted one file per theme, named after the mode
-(`light.module.css`, `dark.module.css`, … — slugified), wrapped in `:global(…)`
-so they're valid in a CSS-Modules project (Next.js, etc.):
+(`light.module.css`, `dark.module.css`, … — slugified; `default.module.css` when
+the export is a single `:root`), wrapped in `:global(…)` so they're valid in a
+CSS-Modules project (Next.js, etc.). A collection marked **Separate file** gets
+its own `<name>.css`, and its modules are prefixed with it
+(`business-dark.module.css`); the export summary names the tokens one product
+file defines that another lacks.
 
 ```css
 /* light.module.css */
@@ -334,6 +355,16 @@ Two things worth knowing before troubleshooting a publish:
 cannot be built, so no mapping files are written at all and the export report names that as the
 reason — a half-written mapping pointing at a placeholder key would be worse than none.
 
+## Design-to-site fidelity check
+
+`npm run fidelity` compares Figma frames with the live (or local) pages built from them, matching
+by text rather than by markup: wrong type styles, displaced or re-wrapped text, sections that
+push everything below them, design text baked into images, and content missing from the page.
+It reads the design over REST (cached per file version) and shoots the page in system Chrome, so
+Figma does not need to be open. `npm run fidelity:deliver` turns a run into ticket drafts that
+carry the design's own spec, Figma comments pinned per section, and a CSS fix brief. Setup,
+findings and the project config format: [`docs/fidelity.md`](docs/fidelity.md).
+
 ## Automated delivery
 
 Reading variable **values** over REST is Enterprise-only, so on Organization the
@@ -350,10 +381,14 @@ does the git/npm/folder work.
 - **Shared secret** — sent as `x-allcrew-channel-secret`; must match the receiver. *(This is the
   only secret in the plugin — git/npm credentials never leave the receiver.)* **Pair** fills
   both fields from a receiver running on this machine; see *Secrets* below.
-- **Target** — `folder` / `git` (commit + push) / `pr` (branch + `gh pr`) / `npm` (publish),
-  plus the non-secret route (repo / branch / path / package).
-- **Triggers** — *Deliver now* (manual), *Auto-deliver on change* (re-scan every ~7s while
-  the plugin is open and push on real change), *Deliver on open*.
+- **Target** — `folder` / `git` (commit + push) / `pr` (branch + `gh pr create`) / `mr`
+  (branch + GitLab merge request) / `npm` (publish), plus the non-secret route (repo /
+  branch / base / project / path / package). Only the fields the chosen target uses are shown.
+- **Dry run** (on by default) — the receiver prepares the change in its work dir and answers
+  with a per-file plan (create / update / unchanged, lines added and removed, binary files
+  flagged, the diff) without writing, committing or pushing. **Preview** always asks for a
+  dry run; **Deliver now** follows the switch. A PR or MR result carries its link.
+- **Send after export** — every Django or token export is delivered once it is built.
 
 **Receiver side** (`server/receiver.mjs`) — a dependency-free Node script you run on any
 host; it executes the target using the host's own git / `gh` / `npm` auth:
@@ -381,9 +416,12 @@ Never bake one secret into the plugin for everyone: it is a key to every teammat
 that cannot be rotated without a rebuild.
 
 The plugin only ever HTTP-POSTs, so the receiver is portable: point the plugin's endpoint
-at wherever it runs (localhost, a Tailscale host, CI). The contract is one POST of
-`{ files, target, route, options, meta }`; the receiver verifies the secret, runs the
-target, and returns `{ ok, detail }`.
+at wherever it runs (localhost, a Tailscale host, CI). The contract is one JSON POST of
+`{ target, dryRun, route, files }`, where each file is UTF-8 text or `{ "base64": "…" }`
+for bytes; the receiver verifies the secret, checks every path and value before writing
+anything, runs the target and returns `{ ok, target, dryRun, detail, plan, url }`. See
+[`server/README.md`](server/README.md) for the full contract and the branch guards (`git`
+refuses the default branch; `pr`/`mr` refuse an existing, protected or base branch).
 
 > Fully hands-off (no designer either) would need the **Variables REST API** = Enterprise.
 > The transform is already shareable, so that upgrade is a small step if you ever take it.
@@ -399,6 +437,7 @@ The receiver uses only Node.js built-ins — no `npm install`. The host needs:
 | `folder` | Node.js only |
 | `git` | `git` + SSH key / credential helper for the repo |
 | `pr` | `git` + `gh` CLI authenticated (`gh auth login`) |
+| `mr` | `git` + `ALLCREW_CHANNEL_GITLAB_TOKEN` (API scope) |
 | `npm` | `node` + `npm login` (or `~/.npmrc` with token) |
 
 ---
@@ -411,7 +450,12 @@ The receiver uses only Node.js built-ins — no `npm install`. The host needs:
 | `ALLCREW_CHANNEL_SECRET_FILE` | no | `~/.allcrew-channel/receiver-secret` | Where a minted secret is stored |
 | `PORT` | no | `8787` | HTTP port |
 | `ALLCREW_CHANNEL_FOLDER_BASE` | for `folder` | — | Absolute base dir; `route.path` resolves under it |
-| `ALLCREW_CHANNEL_WORK_DIR` | no | `<tmp>/allcrew-channel-tokens` | Scratch dir for git clones |
+| `ALLCREW_CHANNEL_WORK_DIR` | no | `<tmp>/allcrew-channel-tokens` | Scratch dir for git clones and dry-run plans |
+| `ALLCREW_CHANNEL_MAX_BODY_MB` | no | `64` | Largest accepted delivery body |
+| `ALLCREW_CHANNEL_GITLAB_TOKEN` | for `mr` | — | GitLab token used to open merge requests and read protected-branch rules |
+| `ALLCREW_CHANNEL_GITLAB_API` | no | `https://gitlab.com/api/v4` | GitLab API root for self-hosted instances |
+| `ALLCREW_CHANNEL_GIT_AUTHOR_NAME` / `_EMAIL` | no | AllCrew defaults | Commit identity |
+| `ALLCREW_CHANNEL_ALLOW_DEFAULT_BRANCH_PUSH` | no | off | `1` lets the `git` target push to `main`/`master`/the remote default branch |
 
 ---
 
@@ -561,7 +605,7 @@ The receiver inherits credentials from the host environment — never from the p
 
 ```bash
 curl http://localhost:8787
-# {"ok":true,"service":"allcrew-channel-tokens-receiver"}
+# {"ok":true,"service":"allcrew-channel-tokens-receiver","targets":["folder","git","pr","mr","npm"],"capabilities":{…}}
 ```
 
 ---

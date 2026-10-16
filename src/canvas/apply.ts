@@ -11,14 +11,14 @@
  * look like in general.
  */
 
-import { parseHex } from '../tokens/color.ts'
 import { resolveCollection, resolveModes, resolveVariableRef } from '../agent/values.ts'
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
-import { describeLinks, gradientHandles, gradientTransform, measure, resolveRanges } from './props.ts'
+import { colourFromText, describeLinks, gradientHandles, gradientTransform, measure, resolveRanges, solidColourOf } from './props.ts'
 import { addressIn } from './overrides.ts'
 import { styleFor } from './styles.ts'
 import { resolveMotionStyleTarget } from './motion-styles.ts'
 import type {
+  FontSpec,
   GradientRef,
   ImageRef,
   PaintRef,
@@ -1093,9 +1093,10 @@ async function buildGradient(ref: GradientRef): Promise<GradientPaint> {
       })
       continue
     }
-    const rgb = parseHex(stop.color)
-    if (!rgb) throw new Error(`"${stop.color}" is not a colour`)
-    stops.push({ position: stop.at, color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha } })
+    const colour = colourFromText(stop.color)
+    if (!colour) throw new Error(`"${stop.color}" is not a colour`)
+    // An alpha written into the colour itself (`oklch(… / 0.5)`) counts unless `opacity` says otherwise.
+    stops.push({ position: stop.at, color: { ...colour, a: stop.opacity ?? colour.a } })
   }
 
   // Figma reads the stops in order; a caller listing them out of order means the same gradient.
@@ -1137,13 +1138,15 @@ async function buildImage(ref: ImageRef): Promise<ImagePaint> {
   }
 }
 
-function solid(hex: string, opacity?: number): SolidPaint {
-  const rgb = parseHex(hex)
-  if (!rgb) throw new Error(`"${hex}" is not a colour`)
+function solid(text: string, opacity?: number): SolidPaint {
+  const colour = colourFromText(text)
+  if (!colour) throw new Error(`"${text}" is not a colour`)
+  // A paint keeps alpha as its opacity; one written into the colour counts unless `opacity` is given.
+  const alpha = opacity ?? (colour.a < 1 ? colour.a : undefined)
   return {
     type: 'SOLID',
-    color: { r: rgb.r, g: rgb.g, b: rgb.b },
-    ...(opacity === undefined ? {} : { opacity }),
+    color: solidColourOf(colour),
+    ...(alpha === undefined ? {} : { opacity: alpha }),
   }
 }
 
@@ -1238,8 +1241,10 @@ export async function describeAnimation(value: unknown): Promise<string> {
   if (!Array.isArray(value) || value.length === 0) return 'none'
   const lines: string[] = []
   for (const style of value as AppliedAnimationStyle[]) {
+    // Where the style starts on the timeline is part of what was applied, for either kind.
+    const place = style.timelineOffset ? ` +${Math.round(style.timelineOffset * 1000) / 1000}s` : ''
     if (style.type === 'CUSTOM') {
-      lines.push(`${style.name || style.styleId} (custom)`)
+      lines.push(`${style.name || style.styleId} (custom)${place}`)
       continue
     }
     lines.push(await (async () => {
@@ -1270,7 +1275,7 @@ export async function describeAnimation(value: unknown): Promise<string> {
       // both halves, so it is asked for the word.
       const called = animationStyleWord(style.name) ?? animationStyleWord(style.styleId) ?? style.name ?? style.styleId
       const seconds = style.duration === undefined ? '' : ` ${Math.round(style.duration * 1000) / 1000}s`
-      return `${called}${seconds}${shown ? ` (${shown}${rest})` : ''}`
+      return `${called}${seconds}${place}${shown ? ` (${shown}${rest})` : ''}`
     })())
   }
   return lines.join(' · ')

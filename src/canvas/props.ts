@@ -25,7 +25,9 @@ import { parseHex } from '../tokens/color.ts'
 
 /* ------------------------------------------------------------------ vocabulary */
 
-/** A colour, a variable to bind, or a picture — and a list of them is a stack of layers. */
+/** A colour, a variable to bind, or a picture — and a list of them is a stack of layers. A
+ * colour is `"#RRGGBB"` or a CSS colour (`oklch()`, `oklab()`, `hsl()`, `color(display-p3 …)`),
+ * which Figma stores in the space it was written in. */
 export type PaintRef = SinglePaint | SinglePaint[] | null
 
 export type SinglePaint =
@@ -279,8 +281,12 @@ export interface LayoutProps {
   wrapGap?: number
   /** One number for all four, or [top, right, bottom, left]. */
   padding?: number | [number, number, number, number]
+  /** The three distributing values (`SPACE_BETWEEN`, `SPACE_AROUND`, `SPACE_EVENLY`) space the
+   * children out themselves and ignore `gap`. */
   primaryAxis?: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN' | 'SPACE_AROUND' | 'SPACE_EVENLY'
   counterAxis?: 'MIN' | 'CENTER' | 'MAX' | 'BASELINE'
+  /** Children spill onto a second line (or column) instead of shrinking. Works on both a
+   * `HORIZONTAL` and a `VERTICAL` layout. */
   wrap?: boolean
   sizing?: { horizontal?: SizingMode; vertical?: SizingMode }
   /** Later children behind earlier ones, which is how a stack of overlapping avatars is built. */
@@ -375,7 +381,10 @@ export interface NodeProps {
   effects?: EffectSpec[]
   /** Layout grids on a frame. `[]` removes them. */
   grid?: GridSpec[]
-  /** Figma Motion animation styles on this node. `null` or `[]` removes what it has. */
+  /**
+   * Animation styles on this node — Figma's own, or this file's custom ones. `null` or `[]`
+   * removes what it has.
+   */
   animation?: AnimationSpec | AnimationSpec[] | null
   /** How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest. */
   blendMode?: string
@@ -423,7 +432,8 @@ export interface NodeProps {
   textWrap?: 'AUTO' | 'BALANCE' | 'PRETTY'
   /** How the stroke's width varies along its length — a named profile, or points of your own. */
   strokeProfile?: 'UNIFORM' | 'WEDGE' | 'TAPER' | 'QUARTER_TAPER' | 'EYE' | 'MIRRORED_TAPER' | Array<{ at: number; width: number }> | null
-  /** Movement on a timeline: `[{ field: "opacity", from: 0, at: [{ time: 0, value: 0 }, …] }]`. */
+  /** Movement on a timeline: `[{ field: "opacity", from: 0, at: [{ time: 0, value: 0 }, …] }]`. A `time` of
+   * `"playhead"` is wherever the designer has the Motion timeline parked. */
   keyframes?: KeyframeTrack[]
   /** How long this node's timeline runs, in seconds. */
   timeline?: number
@@ -643,6 +653,66 @@ const FIGMA_TEXT_NAMES: Readonly<Record<string, string>> = {
   leadingTrim: 'leadingTrim',
 }
 
+/** An OpenType axis tag is four printable ASCII characters — `wght`, `slnt`, `opsz`. */
+const AXIS_TAG = /^[\x20-\x7E]{4}$/
+const FONT_KEYS = ['family', 'style', 'variationSettings']
+
+/**
+ * One font, checked the same way wherever it is written — on the layer, on a run, or into a
+ * text style.
+ *
+ * `style` may be absent: Figma then resolves the named instance closest to `variationSettings`,
+ * which is how a variable font is addressed when no named face sits where the design does. The
+ * axes are checked here rather than left to apply time, because Figma throws on a tag the family
+ * does not define, and a refusal naming the tag beats one naming the throw.
+ */
+export function planFont(value: unknown, where: string, fail: (message: string) => void): FontSpec | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || !('family' in value)) {
+    fail(`${where} must be { family, style?, variationSettings? }`)
+    return null
+  }
+  const family = value.family
+  if (typeof family !== 'string') {
+    fail(`${where}.family must be a string`)
+    return null
+  }
+  for (const key of Object.keys(value)) {
+    if (!FONT_KEYS.includes(key)) {
+      fail(`${where}: unknown key "${key}" — accepted: ${FONT_KEYS.join(', ')}`)
+      return null
+    }
+  }
+  const font: FontSpec = { family }
+  if ('style' in value && value.style !== undefined) {
+    if (typeof value.style !== 'string') {
+      fail(`${where}.style must be a string, or left out to let the axes name the face`)
+      return null
+    }
+    font.style = value.style
+  }
+  if ('variationSettings' in value && value.variationSettings !== undefined) {
+    const axes = value.variationSettings
+    if (typeof axes !== 'object' || axes === null || Array.isArray(axes)) {
+      fail(`${where}.variationSettings must be axis values by tag, like { wght: 550 }`)
+      return null
+    }
+    const settings: Record<string, number> = {}
+    for (const [tag, amount] of Object.entries(axes)) {
+      if (!AXIS_TAG.test(tag)) {
+        fail(`${where}.variationSettings: "${tag}" is not a four-letter axis tag like wght or slnt`)
+        return null
+      }
+      if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+        fail(`${where}.variationSettings.${tag} must be a number`)
+        return null
+      }
+      settings[tag] = amount
+    }
+    font.variationSettings = settings
+  }
+  return font
+}
+
 const LAYOUT_MODES = ['NONE', 'HORIZONTAL', 'VERTICAL', 'GRID']
 
 const LAYOUT_KEYS = [
@@ -669,29 +739,6 @@ const STROKE_CAP = ['NONE', 'ROUND', 'SQUARE', 'ARROW_LINES', 'ARROW_EQUILATERAL
 const STROKE_JOIN = ['MITER', 'BEVEL', 'ROUND']
 const SCALE_MODES = ['FILL', 'FIT', 'CROP', 'TILE']
 const GRADIENTS = ['LINEAR', 'RADIAL', 'ANGULAR', 'DIAMOND']
-
-function fontSpecOf(raw: unknown): FontSpec | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
-  const value = raw as { family?: unknown; style?: unknown; variationSettings?: unknown }
-  if (typeof value.family !== 'string' || value.family.trim() === '') return null
-  if (value.style !== undefined && (typeof value.style !== 'string' || value.style.trim() === '')) return null
-  let variationSettings: Record<string, number> | undefined
-  if (value.variationSettings !== undefined) {
-    if (!value.variationSettings || typeof value.variationSettings !== 'object' || Array.isArray(value.variationSettings)) {
-      return null
-    }
-    variationSettings = {}
-    for (const [axis, setting] of Object.entries(value.variationSettings as Record<string, unknown>)) {
-      if (!/^[A-Za-z0-9]{4}$/.test(axis) || typeof setting !== 'number' || !Number.isFinite(setting)) return null
-      variationSettings[axis] = setting
-    }
-  }
-  return {
-    family: value.family.trim(),
-    ...(typeof value.style === 'string' ? { style: value.style.trim() } : {}),
-    ...(variationSettings ? { variationSettings } : {}),
-  }
-}
 
 /** Top to bottom, because that is what Figma gives a designer who clicks "Linear". */
 const DEFAULT_GRADIENT_ANGLE = 90
@@ -826,6 +873,53 @@ const ORDER = [
 const KNOWN = new Set<string>(ORDER)
 
 /**
+ * The Plugin API's names for things this vocabulary calls something else.
+ *
+ * A caller who knows Figma reaches for `characters`, not `text` — and the refusal used to answer
+ * with all eighty accepted names, once per row, so fifty rows of `characters` came back as a wall
+ * the caller had to read to find the one word it needed. The rule stays: an unknown property is
+ * still refused, it is only told which name it meant.
+ */
+const FIGMA_NAMES: Record<string, string> = {
+  characters: 'text',
+  fills: 'fill',
+  strokes: 'stroke',
+  fillStyleId: 'fillStyle',
+  strokeStyleId: 'strokeStyle',
+  textStyleId: 'textStyle',
+  effectStyleId: 'effectStyle',
+  gridStyleId: 'gridStyle',
+  layoutGrids: 'grid',
+  layoutMode: 'layout.mode',
+  itemSpacing: 'layout.gap',
+  primaryAxisAlignItems: 'layout.primaryAxis',
+  counterAxisAlignItems: 'layout.counterAxis',
+  paddingLeft: 'layout.padding',
+  paddingRight: 'layout.padding',
+  paddingTop: 'layout.padding',
+  paddingBottom: 'layout.padding',
+  layoutSizingHorizontal: 'sizing.horizontal',
+  layoutSizingVertical: 'sizing.vertical',
+  layoutPositioning: 'absolute',
+  textAlignHorizontal: 'textAlign',
+  textAlignVertical: 'verticalAlign',
+  textAutoResize: 'autoResize',
+  textTruncation: 'truncate',
+  componentProperties: 'properties',
+  hyperlink: 'link',
+  reactions: 'links',
+  boundVariables: 'bind',
+  parentId: 'parent',
+}
+
+/** What to tell a caller about a key we do not know: the one it meant, or what there is. */
+function unknownProperty(where: string, key: string): string {
+  const meant = FIGMA_NAMES[key] ?? [...KNOWN].find((known) => known.toLowerCase() === key.toLowerCase())
+  if (meant !== undefined) return `${where}: unknown property "${key}" — here it is "${meant}"`
+  return `${where}: unknown property "${key}" — accepted: ${[...KNOWN].join(', ')}`
+}
+
+/**
  * Steps that cannot be applied until the node has its children.
  *
  * A node is created detached and filled in before anything is appended to it — which is right for
@@ -895,7 +989,7 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
   const props = raw as Record<string, unknown>
   for (const key of Object.keys(props)) {
     if (!KNOWN.has(key)) {
-      problems.push(`${where}: unknown property "${key}" — accepted: ${[...KNOWN].join(', ')}`)
+      problems.push(unknownProperty(where, key))
     }
   }
 
@@ -1091,12 +1185,8 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         break
       }
       case 'fontName': {
-        const font = fontSpecOf(props.fontName)
-        if (!font) {
-          fail('fontName must be { family, style?, variationSettings?: { wght: 550, ... } }')
-        } else {
-          steps.push({ step: 'font', font })
-        }
+        const font = planFont(props.fontName, 'fontName', fail)
+        if (font) steps.push({ step: 'font', font })
         break
       }
       case 'cornerRadius': {
@@ -2143,14 +2233,12 @@ function planRuns(raw: unknown, where: string, problems: string[]): PropStep | n
         bad = true
       }
     }
+    let font: FontSpec | null = null
     if (run.fontName !== undefined) {
-      const font = fontSpecOf(run.fontName)
-      if (!font) {
-        fail('fontName must be { family, style?, variationSettings?: { wght: 550, ... } }')
+      font = planFont(run.fontName, 'fontName', (message) => {
+        fail(message)
         bad = true
-      } else {
-        run.fontName = font
-      }
+      })
     }
     check('fontSize', typeof run.fontSize === 'number' && run.fontSize > 0, 'fontSize must be a number > 0')
     check(
@@ -2196,7 +2284,11 @@ function planRuns(raw: unknown, where: string, problems: string[]): PropStep | n
 
     // Copied rather than cast: the run carries the caller's own object, and normalising a paint
     // in place would rewrite the message that was handed to us.
-    runs.push({ ...(run as TextRun), ...(run.fill === undefined ? {} : { fill: normalisePaint(run.fill) as PaintRef }) })
+    runs.push({
+      ...(run as TextRun),
+      ...(font ? { fontName: font } : {}),
+      ...(run.fill === undefined ? {} : { fill: normalisePaint(run.fill) as PaintRef }),
+    })
   }
 
   return { step: 'runs', runs }
@@ -2252,12 +2344,13 @@ function pointOf(value: unknown, where: string, problems: string[]): { x: number
 /** A colour with its alpha, the way an effect takes one. */
 function colourOf(value: unknown, fallback: string, where: string, problems: string[]): RGBA | null {
   const hex = value === undefined ? fallback : value
-  if (typeof hex !== 'string' || !HEX.test(hex)) {
-    problems.push(`${where} must be a #RRGGBB colour`)
+  if (typeof hex !== 'string' || !isColourText(hex)) {
+    problems.push(`${where} must be a ${COLOUR_WORDS}`)
     return null
   }
-  const rgb = parseHex(hex)
-  return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b, a: 1 } : null
+  const colour = colourFromText(hex)
+  if (!colour) problems.push(`${where}: "${hex}" is not a colour Figma can read`)
+  return colour
 }
 
 function planEffects(raw: unknown, where: string, problems: string[]): PropStep | null {
@@ -2420,13 +2513,13 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
     if (typeof named?.variable === 'string' && named.variable.trim() !== '') {
       bind.push({ index: effects.length, field: 'color', variable: named.variable.trim() })
     } else if (spec.color !== undefined) {
-      if (typeof spec.color !== 'string' || !HEX.test(spec.color)) {
-        fail('color must be a #RRGGBB colour or { variable }')
+      if (typeof spec.color !== 'string' || !isColourText(spec.color)) {
+        fail(`color must be a ${COLOUR_WORDS}, or { variable }`)
         continue
       }
       hex = spec.color
     }
-    const rgb = parseHex(hex)
+    const rgb = colourFromText(hex)
     if (!rgb) {
       fail(`"${hex}" is not a colour`)
       continue
@@ -2449,7 +2542,7 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
 
     effects.push({
       type: kind === 'drop' ? 'DROP_SHADOW' : 'INNER_SHADOW',
-      color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha },
+      color: { ...rgb, a: alpha },
       offset: { x, y },
       radius,
       spread,
@@ -2554,8 +2647,18 @@ function planKeyframes(raw: unknown, where: string, problems: string[]): PropSte
     for (const [k, frame] of (one.at as unknown[]).entries()) {
       const spot = `${at}.at[${k}]`
       const asked = frame as { time?: unknown; value?: unknown; easing?: unknown; bezier?: unknown }
-      if (typeof asked?.time !== 'number' || !Number.isFinite(asked.time) || asked.time < 0) {
-        problems.push(`${spot}.time must be a number of seconds from the start`)
+      // "playhead" is wherever the designer has parked the timeline (Update 132) — the way a
+      // keyframe is placed by hand, and the one time a caller cannot know without asking.
+      let time = asked?.time
+      if (time === 'playhead') {
+        time = playheadPosition()
+        if (time === undefined) {
+          problems.push(`${spot}.time is "playhead", but no Motion timeline is open — there is no playhead to read`)
+          continue
+        }
+      }
+      if (typeof time !== 'number' || !Number.isFinite(time) || time < 0) {
+        problems.push(`${spot}.time must be a number of seconds from the start, or "playhead"`)
         continue
       }
       const value = valueOf(asked.value, `${spot}.value`)
@@ -2564,7 +2667,7 @@ function planKeyframes(raw: unknown, where: string, problems: string[]): PropSte
         ? null
         : buildEasing(asked as Record<string, unknown>, (message) => problems.push(`${spot}: ${message}`))
       keyframes.push({
-        timelinePosition: asked.time,
+        timelinePosition: time,
         value,
         ...(easing ? { easing } : {}),
       })
@@ -2579,6 +2682,14 @@ function planKeyframes(raw: unknown, where: string, problems: string[]): PropSte
   }
 
   return tracks.length > 0 ? { step: 'keyframes', tracks } : null
+}
+
+/** The Motion timeline's playhead in seconds, or `undefined` with no timeline open — and in the
+ * tests, which plan without a `figma` to ask. */
+function playheadPosition(): number | undefined {
+  if (typeof figma === 'undefined') return undefined
+  const position = (figma as { motion?: { playheadPosition?: number } }).motion?.playheadPosition
+  return typeof position === 'number' ? position : undefined
 }
 
 function planAnimation(raw: unknown, where: string, problems: string[]): PropStep | null {
@@ -2982,11 +3093,11 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
 
     const paint = (): { color?: RGBA } | null => {
       if (spec.color === undefined) return {}
-      if (typeof spec.color !== 'string' || !HEX.test(spec.color)) {
-        fail('color must be a #RRGGBB colour')
+      if (typeof spec.color !== 'string' || !isColourText(spec.color)) {
+        fail(`color must be a ${COLOUR_WORDS}`)
         return null
       }
-      const rgb = parseHex(spec.color)
+      const rgb = colourFromText(spec.color)
       if (!rgb) {
         fail(`"${spec.color}" is not a colour`)
         return null
@@ -2996,7 +3107,7 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
         fail('opacity must be between 0 and 1')
         return null
       }
-      return { color: { r: rgb.r, g: rgb.g, b: rgb.b, a: alpha } }
+      return { color: { ...rgb, a: alpha } }
     }
 
     if (spec.square !== undefined) {
@@ -3163,6 +3274,40 @@ function planLayout(raw: unknown, where: string, problems: string[]): { step: Pr
 }
 
 const HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
+/** CSS Color 4 functions Figma's own parser reads (`figma.util.rgba`, plugin API 1.142). */
+const CSS_COLOUR = /^(rgba?|hsla?|lab|lch|oklab|oklch|color)\(\s*[^()]*\)$/i
+
+/** A colour the vocabulary accepts: hex, or a CSS colour function like `oklch(70% 0.2 140)`. */
+function isColourText(text: string): boolean {
+  return HEX.test(text) || CSS_COLOUR.test(text.trim())
+}
+
+/**
+ * A colour string → the colour Figma stores. Hex stays on the pure path (and so under
+ * `node --test`); a CSS function goes through Figma's own parser, which also keeps the authored
+ * space as `sourceColor` — so an OKLCH or Display P3 colour lands as written, not flattened to
+ * sRGB. Null when the text is no colour, or when there is no Figma to ask.
+ */
+export function colourFromText(text: string): RGBA | null {
+  if (HEX.test(text)) {
+    const rgb = parseHex(text)
+    return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b, a: 1 } : null
+  }
+  if (!CSS_COLOUR.test(text.trim()) || typeof figma === 'undefined' || typeof figma.util?.rgba !== 'function') return null
+  try {
+    return figma.util.rgba(text.trim())
+  } catch {
+    return null
+  }
+}
+
+/** The colour channels a `SolidPaint` takes — no alpha, but the authored space kept. */
+export function solidColourOf(colour: RGBA): RGB {
+  const { a: _alpha, ...rgb } = colour
+  return rgb
+}
+
+const COLOUR_WORDS = '#RRGGBB colour or a CSS colour like oklch(70% 0.2 140)'
 
 /**
  * Which variable type each bindable field expects.
@@ -3386,7 +3531,7 @@ export function paintProblem(ref: unknown): string | null {
     return null
   }
   if (ref === null) return null
-  if (typeof ref === 'string') return HEX.test(ref) ? null : `"${ref}" is not a #RRGGBB colour`
+  if (typeof ref === 'string') return isColourText(ref) ? null : `"${ref}" is not a ${COLOUR_WORDS}`
   if (typeof ref !== 'object') return 'must be "#RRGGBB", { color }, { variable }, { image }, a list of those, or null'
 
   const entry = ref as {
@@ -3403,7 +3548,7 @@ export function paintProblem(ref: unknown): string | null {
   if (entry.image !== undefined) return imageProblem(entry)
   if (typeof entry.variable === 'string') return entry.variable === '' ? 'variable must be a name, id or library key' : null
   if (typeof entry.color === 'string') {
-    if (!HEX.test(entry.color)) return `"${entry.color}" is not a #RRGGBB colour`
+    if (!isColourText(entry.color)) return `"${entry.color}" is not a ${COLOUR_WORDS}`
     if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
       return 'opacity must be between 0 and 1'
     }
@@ -3445,7 +3590,7 @@ function gradientProblem(entry: Record<string, unknown>): string | null {
   }
   for (const [index, stop] of entry.stops.entries()) {
     if (typeof stop === 'string') {
-      if (!HEX.test(stop)) return `stops[${index}]: "${stop}" is not a #RRGGBB colour`
+      if (!isColourText(stop)) return `stops[${index}]: "${stop}" is not a ${COLOUR_WORDS}`
       continue
     }
     if (typeof stop !== 'object' || stop === null || Array.isArray(stop)) {
@@ -3458,7 +3603,7 @@ function gradientProblem(entry: Record<string, unknown>): string | null {
       if (typeof bound.variable !== 'string' || bound.variable === '') {
         return `stops[${index}].color must be "#RRGGBB" or { variable }`
       }
-    } else if (typeof one.color !== 'string' || !HEX.test(one.color)) {
+    } else if (typeof one.color !== 'string' || !isColourText(one.color)) {
       return `stops[${index}].color must be "#RRGGBB" or { variable }`
     }
     if (one.opacity !== undefined && (typeof one.opacity !== 'number' || one.opacity < 0 || one.opacity > 1)) {

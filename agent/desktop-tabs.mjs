@@ -4,7 +4,6 @@ import path from 'node:path'
 
 export function figmaSettingsPath(platform = process.platform, env = process.env, home = os.homedir()) {
   if (env.ALLCREW_CHANNEL_FIGMA_SETTINGS) return env.ALLCREW_CHANNEL_FIGMA_SETTINGS
-  if (env.ALTERY_FIGMA_SETTINGS) return env.ALTERY_FIGMA_SETTINGS
   if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'Figma', 'settings.json')
   if (platform === 'win32') return path.win32.join(env.APPDATA || path.win32.join(home, 'AppData', 'Roaming'), 'Figma', 'settings.json')
   return path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'Figma', 'settings.json')
@@ -97,38 +96,52 @@ export async function matchTab({ title, pages }, tabs, fetchPages) {
     : { key: null, via: null, ambiguous: true, candidates }
 }
 
+function historyFileKey(value) {
+  const text = String(value || '').trim()
+  const match = /figma\.com\/(?:file|design|proto|board|slides)\/([A-Za-z0-9]+)/.exec(text)
+  return match ? match[1] : text
+}
+
 export async function runRecentHistory(params, { tabs, listVersions, fileMeta, now = () => Date.now() }) {
-  const current = now()
-  const midnight = new Date(current)
+  const started = now()
+  const midnight = new Date(started)
   midnight.setHours(0, 0, 0, 0)
   const since = params.since === undefined ? midnight.getTime() : Date.parse(String(params.since))
   if (!Number.isFinite(since)) throw new Error('since must be an ISO date or date-time')
-  const budgetMs = Math.min(170_000, Math.max(1_000, Number(params.budgetMs) || 120_000))
+  const budgetMs = Math.min(170_000, Math.max(1_000, Number(params.budgetMs) || 60_000))
   const perFileLimit = Math.min(50, Math.max(1, Number(params.limit) || 50))
+  const recentCount = params.recent === undefined ? 15 : Math.max(0, Number(params.recent) || 0)
+  const source = Array.isArray(params.files) && params.files.length
+    ? params.files.map((ref) => ({ key: historyFileKey(ref), title: '', open: false }))
+    : [...(tabs?.open || []), ...(tabs?.recent || []).slice(0, recentCount)]
   const candidates = []
   const seen = new Set()
-  for (const entry of [...(tabs.open || []), ...(tabs.recent || [])]) {
-    if (seen.has(entry.key)) continue
+  for (const entry of source) {
+    if (!entry.key || seen.has(entry.key)) continue
     seen.add(entry.key)
     candidates.push(entry)
   }
   const touched = []
   const quiet = []
   const unavailable = []
+  const skipped = []
   let next = 0
-  let timedOut = false
   const authors = new Map()
   const worker = async () => {
     while (next < candidates.length) {
-      if (now() - current >= budgetMs) { timedOut = true; return }
       const candidate = candidates[next++]
+      if (now() - started >= budgetMs) {
+        skipped.push({ fileKey: candidate.key, name: candidate.title || candidate.key })
+        continue
+      }
       try {
         const [versions, meta] = await Promise.all([
           listVersions(candidate.key, { limit: perFileLimit }),
           fileMeta(candidate.key).catch(() => null),
         ])
-        const items = (Array.isArray(versions) ? versions : []).filter((version) => Date.parse(version.created_at || '') >= since)
-        const name = meta?.name || candidate.title || candidate.key
+        const listed = Array.isArray(versions) ? versions : []
+        const items = listed.filter((version) => Date.parse(version.created_at || '') >= since)
+        const name = meta?.file?.name || meta?.name || candidate.title || candidate.key
         if (items.length === 0) {
           quiet.push({ fileKey: candidate.key, name, open: candidate.open })
           continue
@@ -143,10 +156,17 @@ export async function runRecentHistory(params, { tabs, listVersions, fileMeta, n
           fileKey: candidate.key,
           name,
           open: candidate.open,
-          checkpoints: items.length,
+          checkpoints: items.map((version) => ({
+            id: version.id,
+            at: version.created_at,
+            author: version.user?.handle || null,
+            label: version.label || null,
+            autosave: !version.label,
+          })),
           named: items.filter((version) => Boolean(version.label)).length,
           authors: [...byAuthor.entries()].map(([author, checkpoints]) => ({ author, checkpoints })),
           latest: items[0]?.created_at || null,
+          truncated: listed.length >= perFileLimit && items.length === listed.length,
         })
       } catch (error) {
         unavailable.push({ fileKey: candidate.key, name: candidate.title || candidate.key, error: String(error?.message || error) })
@@ -158,13 +178,15 @@ export async function runRecentHistory(params, { tabs, listVersions, fileMeta, n
     since: new Date(since).toISOString(),
     scanned: touched.length + quiet.length + unavailable.length,
     totalCandidates: candidates.length,
-    timedOut,
+    timedOut: skipped.length > 0,
+    skipped,
     touched: touched.sort((a, b) => String(b.latest).localeCompare(String(a.latest))),
     quiet,
     unavailable,
     authors: [...authors.entries()]
       .map(([author, checkpoints]) => ({ author, checkpoints }))
       .sort((a, b) => b.checkpoints - a.checkpoints),
-    ms: now() - current,
+    limit: perFileLimit,
+    ms: now() - started,
   }
 }

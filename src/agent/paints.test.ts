@@ -157,14 +157,40 @@ test('a named shader gives its settings names, and the ids stay for the write ba
   assert.deepEqual(described.properties, [{ id: '11:22', name: 'Blur', type: 'NUMBER', value: 4.08 }])
 })
 
-test('applied shader metadata names settings without importing the shader', async () => {
+test('an applied shader names its own settings from propertyMetadata, with no catalogue at all', async () => {
   const described = await describeShader({
-    id: 'sh/1',
+    id: 'sh/3',
     properties: { '11:22': 4.08 },
-    propertyMetadata: { '11:22': { name: 'Blur', type: 'NUMBER' } },
+    propertyMetadata: {
+      '11:22': { name: 'Blur', type: 'NUMBER', defaultValue: 1, description: 'How soft the edge is' },
+    },
   })
   assert.equal(described.named, true)
-  assert.deepEqual(described.properties, [{ id: '11:22', name: 'Blur', type: 'NUMBER', value: 4.08 }])
+  assert.deepEqual(described.properties, [
+    { id: '11:22', name: 'Blur', type: 'NUMBER', default: 1, description: 'How soft the edge is', value: 4.08 },
+  ])
+})
+
+test("the layer's own metadata wins over the catalogue, which may be stale", async () => {
+  const catalogue = new Map([
+    [
+      'sh/1',
+      {
+        id: 'sh/1',
+        name: 'Aurora',
+        type: 'fill' as const,
+        imported: true,
+        propertyDefinitions: { '11:22': { name: 'Old name', type: 'NUMBER' as const } },
+      },
+    ],
+  ])
+  const described = await describeShader(
+    { id: 'sh/1', properties: { '11:22': 2, '33:44': 7 }, propertyMetadata: { '11:22': { name: 'Blur', type: 'NUMBER' } } },
+    catalogue as never
+  )
+  assert.equal(described.properties?.[0].name, 'Blur')
+  // An id the metadata skips still falls back to the catalogue — here it names nothing either.
+  assert.equal(described.properties?.[1].name, undefined)
 })
 
 test('a variable bound inside a shader setting is named where it sits', async () => {
@@ -256,4 +282,24 @@ test('one bound paint keeps the bare `fills` key it always had', async () => {
     { id: 'x', name: 'Swatch', type: 'RECTANGLE' }
   )
   assert.equal(bindings?.fills?.token, 'accent/primary')
+})
+
+test('a colour authored outside sRGB says so beside its hex projection', async () => {
+  const p3 = await describePaint({ type: 'SOLID', color: { r: 1, g: 0, b: 0, sourceColor: { space: 'DISPLAY_P3', r: 1, g: 0, b: 0 } } }, 0)
+  assert.equal(p3.color, '#FF0000')
+  assert.equal(p3.authored, 'color(display-p3 1 0 0)')
+
+  const gradient = await describePaint(
+    {
+      type: 'GRADIENT_LINEAR',
+      gradientTransform: [[1, 0, 0], [0, 1, 0]],
+      gradientStops: [
+        { position: 0, color: { r: 0.2, g: 0.4667, b: 0.6, a: 1, sourceColor: { space: 'HSL', h: 200, s: 0.5, l: 0.4 } } },
+        { position: 1, color: { r: 1, g: 1, b: 1, a: 1 } },
+      ],
+    },
+    0
+  )
+  assert.equal(gradient.stops?.[0].authored, 'hsl(200 50% 40%)')
+  assert.equal('authored' in (gradient.stops?.[1] ?? {}), false)
 })

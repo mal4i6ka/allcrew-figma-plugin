@@ -12,9 +12,9 @@
  * works.
  */
 
-export type StyleKind = 'paint' | 'text' | 'effect' | 'grid'
+export type StyleKind = 'paint' | 'text' | 'effect' | 'grid' | 'animation'
 
-export const STYLE_KINDS: readonly StyleKind[] = ['paint', 'text', 'effect', 'grid']
+export const STYLE_KINDS: readonly StyleKind[] = ['paint', 'text', 'effect', 'grid', 'animation']
 
 /** What Figma calls each kind, for the messages a caller reads. */
 const FIGMA_TYPE: Readonly<Record<StyleKind, string>> = {
@@ -22,6 +22,7 @@ const FIGMA_TYPE: Readonly<Record<StyleKind, string>> = {
   text: 'TEXT',
   effect: 'EFFECT',
   grid: 'GRID',
+  animation: 'CUSTOM_ANIMATION',
 }
 
 export const KIND_OF_TYPE: Readonly<Record<string, StyleKind>> = {
@@ -29,6 +30,7 @@ export const KIND_OF_TYPE: Readonly<Record<string, StyleKind>> = {
   TEXT: 'text',
   EFFECT: 'effect',
   GRID: 'grid',
+  CUSTOM_ANIMATION: 'animation',
 }
 
 export async function localStyles(kind: StyleKind): Promise<BaseStyle[]> {
@@ -39,6 +41,8 @@ export async function localStyles(kind: StyleKind): Promise<BaseStyle[]> {
       return figma.getLocalTextStylesAsync()
     case 'effect':
       return figma.getLocalEffectStylesAsync()
+    case 'animation':
+      return figma.getLocalCustomAnimationStylesAsync()
     default:
       return figma.getLocalGridStylesAsync()
   }
@@ -94,6 +98,14 @@ export async function describeStyle(
       return (await paints((style as PaintStyle).paints)) ?? 'none'
     case 'EFFECT':
       return effects((style as EffectStyle).effects)
+    case 'CUSTOM_ANIMATION':
+      // A custom animation style is its ordered list of Figma animations, which is the only
+      // thing it holds — the entries carry the settings each one was given.
+      return (
+        style.animationEntries
+          .map((entry) => `${entry.name}${entry.duration === undefined ? '' : ` ${entry.duration}s`}`)
+          .join(' → ') || 'no animations'
+      )
     case 'TEXT': {
       const text = style as TextStyle
       const height =
@@ -104,7 +116,15 @@ export async function describeStyle(
         text.letterSpacing.value === 0
           ? ''
           : ` · tracking ${Math.round(text.letterSpacing.value * 100) / 100}${text.letterSpacing.unit === 'PERCENT' ? '%' : ''}`
-      return `${text.fontName.family} ${text.fontName.style} ${text.fontSize}/${height}${spacing}`
+      // A variable font's axes are part of what the style holds: two styles on the same named
+      // instance can render at different weights, and a line that hid that would say they match.
+      const axes = text.fontName.variationSettings
+      const variations = axes
+        ? ` · ${Object.entries(axes)
+            .map(([tag, value]) => `${tag} ${value}`)
+            .join(' ')}`
+        : ''
+      return `${text.fontName.family} ${text.fontName.style} ${text.fontSize}/${height}${variations}${spacing}`
     }
     default:
       return grids((style as GridStyle).layoutGrids)

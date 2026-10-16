@@ -4,6 +4,7 @@ import {
   dependsOnPlacement,
   gradientHandles,
   gradientTransform,
+  colourFromText,
   movesToAnotherParent,
   paintProblem,
   planProps,
@@ -173,6 +174,15 @@ test('an unknown property is named, with the list of what was accepted', () => {
   // The whole accepted set, so a caller who guessed can see the one they meant.
   assert.match(plan.problems[0], /accepted: name, /)
   assert.match(plan.problems[0], /fontSize/)
+})
+
+test('a Figma API name is refused with the name it means here, not the whole list', () => {
+  const plan = planProps({ characters: 'Hello' })
+  assert.equal(plan.steps.length, 0)
+  assert.match(plan.problems[0], /unknown property "characters" — here it is "text"$/)
+  assert.match(planProps({ fills: '#000' }).problems[0], /here it is "fill"/)
+  // A wrong case is the same mistake.
+  assert.match(planProps({ FontSize: 12 }).problems[0], /here it is "fontSize"/)
 })
 
 test('a value of the wrong type is refused, and the rest of the object still plans', () => {
@@ -640,7 +650,7 @@ test('an effect field may name a variable, and the binding travels beside the ef
 
 test('a field that is neither a number nor a variable is refused', () => {
   assert.match(planProps({ effects: [{ shadow: 'drop', radius: 'big' }] }).problems[0], /radius must be a number or \{ variable \}/)
-  assert.match(planProps({ effects: [{ shadow: 'drop', color: 42 }] }).problems[0], /color must be a #RRGGBB colour or \{ variable \}/)
+  assert.match(planProps({ effects: [{ shadow: 'drop', color: 42 }] }).problems[0], /color must be a #RRGGBB colour or a CSS colour.*, or \{ variable \}/)
 })
 
 /* ------------------------------------------------------------------- network */
@@ -867,6 +877,21 @@ test('the second gap, the stacking order and the grid tracks all reach the layou
   assert.deepEqual(grid.layout, { mode: 'GRID', rows: 2, columns: 3, autoTracks: 'ROWS' })
 })
 
+test('the distributing primary-axis modes are accepted, and a vertical layout may wrap', () => {
+  for (const primaryAxis of ['SPACE_EVENLY', 'SPACE_AROUND'] as const) {
+    assert.deepEqual(stepsOf({ layout: { mode: 'HORIZONTAL', primaryAxis } })[0], {
+      step: 'layout',
+      layout: { mode: 'HORIZONTAL', primaryAxis },
+    })
+  }
+  // WRAP on a VERTICAL layout is Figma's since Plugin API 1.140 — nothing refuses it here.
+  assert.deepEqual(stepsOf({ layout: { mode: 'VERTICAL', wrap: true, wrapGap: 12 } })[0], {
+    step: 'layout',
+    layout: { mode: 'VERTICAL', wrap: true, wrapGap: 12 },
+  })
+  assert.match(planProps({ layout: { primaryAxis: 'SPACE_AROUND_ISH' } }).problems[0], /SPACE_AROUND, SPACE_EVENLY/)
+})
+
 test('a child may step out of the layout, and its x and y then mean something', () => {
   assert.deepEqual(stepsOf({ absolute: true }), [
     { step: 'assign', property: 'layoutPositioning', value: 'ABSOLUTE' },
@@ -940,6 +965,25 @@ test('a keyframe track is planned in our words and applied in Figma\'s', () => {
   })
 })
 
+test('a keyframe at "playhead" lands where the timeline is parked, and is refused with none open', () => {
+  const g = globalThis as { figma?: unknown }
+  const saved = g.figma
+  try {
+    g.figma = { motion: { playheadPosition: 1.25 } }
+    const [step] = stepsOf({ keyframes: [{ field: 'opacity', at: [{ time: 'playhead', value: 0 }] }] })
+    const frames = (step as { tracks: Array<{ track: { keyframes: Array<{ timelinePosition: number }> } }> }).tracks[0].track.keyframes
+    assert.equal(frames[0].timelinePosition, 1.25)
+
+    g.figma = { motion: {} }
+    assert.match(
+      planProps({ keyframes: [{ field: 'opacity', at: [{ time: 'playhead', value: 0 }] }] }).problems[0],
+      /no Motion timeline is open/
+    )
+  } finally {
+    g.figma = saved
+  }
+})
+
 test('a pair moves as a pair, and a refusal names all thirty fields', () => {
   const [step] = stepsOf({ keyframes: [{ field: 'move', at: [{ time: 0, value: { x: 0, y: 10 } }] }] })
   assert.equal((step as { tracks: Array<{ name: string }> }).tracks[0].name, 'TRANSLATION_XY')
@@ -949,4 +993,26 @@ test('a pair moves as a pair, and a refusal names all thirty fields', () => {
     planProps({ keyframes: [{ field: 'move', at: [{ time: 0, value: 5 }] }] }).problems[0],
     /must be \{ x, y \}/
   )
+})
+
+test('a CSS colour function is a colour; Figma parses it and keeps the authored space', () => {
+  assert.equal(paintProblem('oklch(70% 0.2 140)'), null)
+  assert.equal(paintProblem({ color: 'color(display-p3 1 0 0)', opacity: 0.5 }), null)
+  assert.equal(paintProblem({ gradient: 'LINEAR', stops: ['#FFF', 'hsl(200 50% 40%)'] }), null)
+  assert.match(paintProblem('oklch(70% 0.2 140') ?? '', /not a #RRGGBB colour or a CSS colour/)
+
+  assert.deepEqual(colourFromText('#ff0000'), { r: 1, g: 0, b: 0, a: 1 })
+  // Outside Figma there is no parser to ask, so a function is refused rather than guessed at.
+  assert.equal(colourFromText('oklch(70% 0.2 140)'), null)
+
+  const parsed = { r: 0.3, g: 0.73, b: 0.19, a: 0.5, sourceColor: { space: 'OKLCH', l: 0.7, c: 0.2, h: 140 } }
+  const global = globalThis as { figma?: unknown }
+  global.figma = { util: { rgba: (text: string) => { if (text !== 'oklch(0.7 0.2 140 / 0.5)') throw new Error('bad'); return parsed } } }
+  try {
+    assert.deepEqual(colourFromText(' oklch(0.7 0.2 140 / 0.5) '), parsed)
+    assert.equal(colourFromText('oklch(nonsense)'), null)
+    assert.deepEqual(planProps({ effects: [{ shadow: 'drop', color: 'oklch(0.7 0.2 140 / 0.5)' }] }).problems, [])
+  } finally {
+    delete global.figma
+  }
 })

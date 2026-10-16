@@ -57,6 +57,11 @@ export interface MotionTrack {
 
 export type MotionTimeline = Timeline
 
+/**
+ * One applied animation style. Figma's own carry their duration and settings; a custom one —
+ * `type: 'CUSTOM'` — names a style this file owns and carries only its timeline offset, because
+ * the animations and their timing live in the style itself.
+ */
 export type MotionAnimationStyle = AppliedAnimationStyle
 
 export interface MotionSnapshot {

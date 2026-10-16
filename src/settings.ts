@@ -75,10 +75,25 @@ export interface ExportI18nOptions {
   languages: string
 }
 
+/** Where a delivered package goes, without the credentials: the receiver owns those. The route
+ * stays flat so switching targets keeps values that are still useful to another target. */
+export interface ExportDeliveryRouteOptions {
+  repo: string
+  branch: string
+  base: string
+  path: string
+  package: string
+  project: string
+}
+
 export interface ExportDeliveryOptions {
   endpoint: string
   secret: string
   onExport: boolean
+  target: 'folder' | 'git' | 'pr' | 'mr' | 'npm'
+  route: ExportDeliveryRouteOptions
+  /** Default on: preview an unfamiliar destination before deliberately writing it. */
+  dryRun: boolean
 }
 
 /** Agent listener — the plugin's inbound channel for CLI agents (see agent/README.md).
@@ -259,7 +274,22 @@ function clonePackage(values: PackageFormingOptions): PackageFormingOptions {
   }
 }
 
-const DEFAULT_DELIVERY: ExportDeliveryOptions = { endpoint: '', secret: '', onExport: false }
+const DEFAULT_DELIVERY_ROUTE: ExportDeliveryRouteOptions = {
+  repo: '',
+  branch: '',
+  base: '',
+  path: '',
+  package: '',
+  project: '',
+}
+const DEFAULT_DELIVERY: ExportDeliveryOptions = {
+  endpoint: '',
+  secret: '',
+  onExport: false,
+  target: 'folder',
+  route: { ...DEFAULT_DELIVERY_ROUTE },
+  dryRun: true,
+}
 const DEFAULT_AGENT: ExportAgentOptions = {
   endpoint: 'http://127.0.0.1:8788',
   secret: '',
@@ -283,7 +313,7 @@ export const DEFAULT_UPDATES: UpdatePreferences = {
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
   dsTool: 'palette',
   scopeMode: 'page',
-  delivery: { ...DEFAULT_DELIVERY },
+  delivery: { ...DEFAULT_DELIVERY, route: { ...DEFAULT_DELIVERY_ROUTE } },
   agent: { ...DEFAULT_AGENT },
   lint: { ...DEFAULT_LINT },
   docs: { ...DEFAULT_DOCS },
@@ -429,12 +459,32 @@ export function parseLanguages(languages: string, sourceLanguage: string): strin
   return codes
 }
 
+function isDeliveryTarget(value: unknown): value is ExportDeliveryOptions['target'] {
+  return value === 'folder' || value === 'git' || value === 'pr' || value === 'mr' || value === 'npm'
+}
+
+function routeField(raw: Record<string, unknown>, key: keyof ExportDeliveryRouteOptions): string {
+  const value = raw[key]
+  return typeof value === 'string' ? value.trim() : DEFAULT_DELIVERY_ROUTE[key]
+}
+
 function normalizeDelivery(raw: unknown): ExportDeliveryOptions {
-  if (!isRecord(raw)) return { ...DEFAULT_DELIVERY }
+  if (!isRecord(raw)) return { ...DEFAULT_DELIVERY, route: { ...DEFAULT_DELIVERY_ROUTE } }
+  const route = isRecord(raw.route) ? raw.route : {}
   return {
     endpoint: typeof raw.endpoint === 'string' ? raw.endpoint.trim() : DEFAULT_DELIVERY.endpoint,
     secret: typeof raw.secret === 'string' ? raw.secret : DEFAULT_DELIVERY.secret,
     onExport: typeof raw.onExport === 'boolean' ? raw.onExport : DEFAULT_DELIVERY.onExport,
+    target: isDeliveryTarget(raw.target) ? raw.target : DEFAULT_DELIVERY.target,
+    route: {
+      repo: routeField(route, 'repo'),
+      branch: routeField(route, 'branch'),
+      base: routeField(route, 'base'),
+      path: routeField(route, 'path'),
+      package: routeField(route, 'package'),
+      project: routeField(route, 'project'),
+    },
+    dryRun: typeof raw.dryRun === 'boolean' ? raw.dryRun : DEFAULT_DELIVERY.dryRun,
   }
 }
 

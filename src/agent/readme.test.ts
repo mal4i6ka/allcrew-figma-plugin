@@ -25,6 +25,7 @@ import {
   HISTORY_MANIFEST,
   HISTORY_REFUSALS,
 } from '../../agent/bridge.mjs'
+import { ANALYTICS_MANIFEST, ORG_MANIFEST } from '../../agent/figma-org.mjs'
 
 const README = readFileSync(new URL('../../agent/README.md', import.meta.url), 'utf8')
 
@@ -44,10 +45,14 @@ test('every registered op has a row in the README', () => {
   )
 })
 
-/** Every op some registry actually stands behind. Three of them, on purpose: most live in the
+/** Every op some registry actually stands behind. Several, on purpose: most live in the
  * plugin's `ALL_OPS`; the comment and history READS live in the BRIDGE, because the Plugin API
- * has no comment surface and no way to render a past version, so the plugin cannot run them. */
-const BRIDGE_OPS = [...COMMENT_MANIFEST, ...HISTORY_MANIFEST].map((op) => op.name)
+ * has no comment surface and no way to render a past version, so the plugin cannot run them.
+ * The organisation ops are there for a stronger reason still — they are not about a file at all,
+ * so no open document could answer them however the plugin were written. */
+const BRIDGE_OPS = [...COMMENT_MANIFEST, ...HISTORY_MANIFEST, ...ORG_MANIFEST, ...ANALYTICS_MANIFEST].map(
+  (op) => op.name
+)
 /** Named ops that deliberately have no implementation. Listing them IS the feature: a refusal
  * nobody can find in the docs is a 404 with extra steps. */
 const REFUSED = [...Object.keys(COMMENT_REFUSALS), ...Object.keys(HISTORY_REFUSALS)]

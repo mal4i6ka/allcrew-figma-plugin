@@ -89,6 +89,47 @@ test('node.find without types keeps walking with the hand-rolled DFS', async () 
   )
 })
 
+test('node.find text matches what a layer says, through the TEXT index, inside instances too, and names its screen', async () => {
+  const page = { id: '0:1', name: 'Business', type: 'PAGE' } as Record<string, unknown>
+  const mobile = { id: '9:1', name: 'Business account / Mobile', type: 'FRAME', parent: page } as Record<string, unknown>
+  // The text sits inside an instance — the index answers it (measured live: 130 of 174 TEXT ids
+  // on a site frame were instance-held, the same set the walk found).
+  const card = { id: 'I9:4', name: 'Card', type: 'INSTANCE', parent: mobile } as Record<string, unknown>
+  const tag = { id: 'I9:4;1:2', name: 'Tag', type: 'TEXT', characters: 'Private limited\n companies', parent: card }
+  const other = { id: '9:3', name: 'Private limited companies', type: 'TEXT', characters: 'Limited companies', parent: mobile }
+  page.findAllWithCriteria = (criteria: { types: string[] }) => {
+    assert.deepEqual(criteria.types, ['TEXT'])
+    assert.equal((globalThis as Record<string, any>).figma.skipInvisibleInstanceChildren, true, 'invisible mirrors stay out')
+    return [tag, other]
+  }
+  setFigma({ currentPage: page, skipInvisibleInstanceChildren: false })
+
+  const op = OPS_BY_NAME.get('node.find')!
+  const result = (await op.run(validateParams(op.params, { text: 'PRIVATE limited companies' }))) as {
+    nodes: Array<{ id: string; frame: { name: string } | null }>
+  }
+  // The layer called "Tag" is found by its words; the one merely NAMED like them is not.
+  assert.deepEqual(result.nodes.map((n) => n.id), ['I9:4;1:2'])
+  assert.equal(result.nodes[0].frame?.name, 'Business account / Mobile')
+
+  await assert.rejects(op.run(validateParams(op.params, { text: 'x', types: ['FRAME'] })), /drop types or include "TEXT"/)
+})
+
+test('node.find within searches one frame instead of the page', async () => {
+  const inner = { id: '5:2', name: 'Title', type: 'TEXT', characters: 'Hi' }
+  let loaded = false
+  const page = { id: '0:9', type: 'PAGE', loadAsync: async () => { loaded = true } }
+  const frame = { id: '5:1', name: 'Hero', type: 'FRAME', parent: page, findAllWithCriteria: () => { assert.ok(loaded, 'searched before the page was loaded'); return [inner] } }
+  setFigma({
+    currentPage: { id: '0:1', findAllWithCriteria: () => assert.fail('searched the page') },
+    getNodeByIdAsync: async (id: string) => (id === '5:1' ? frame : null),
+    skipInvisibleInstanceChildren: false,
+  })
+  const op = OPS_BY_NAME.get('node.find')!
+  const result = (await op.run(validateParams(op.params, { within: '5:1', types: ['TEXT'] }))) as { nodes: Array<{ id: string }> }
+  assert.deepEqual(result.nodes.map((n) => n.id), ['5:2'])
+})
+
 test('components.list finds components and sets natively, still dropping variants and applying the name filter', async () => {
   const variant = { id: '1:3', key: 'keyC', name: 'Size=Small', type: 'COMPONENT', parent: null as unknown }
   const iconSet = {

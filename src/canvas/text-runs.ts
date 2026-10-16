@@ -13,6 +13,7 @@
  */
 
 import { describePaints } from './apply.ts'
+import type { FontSpec } from './props.ts'
 
 /** The fields a run can carry in the write vocabulary, under the names Figma gives them. */
 export const RUN_FIELDS = [
@@ -53,14 +54,7 @@ export async function styledRuns(node: TextLike): Promise<StyledRun[]> {
     const run: StyledRun = { from: segment.start as number, to: segment.end as number }
     const differs = (field: string, value: unknown) => JSON.stringify(bag[field]) !== JSON.stringify(value)
 
-    if (differs('fontName', segment.fontName)) {
-      const font = segment.fontName as FontName
-      run.fontName = {
-        family: font.family,
-        style: font.style,
-        ...(font.variationSettings ? { variationSettings: { ...font.variationSettings } } : {}),
-      }
-    }
+    if (differs('fontName', segment.fontName)) run.fontName = writableFont(segment.fontName)
     if (differs('fontSize', segment.fontSize)) run.fontSize = segment.fontSize
     if (differs('fills', segment.fills)) run.fill = await describePaints(segment.fills)
     if (differs('textDecoration', segment.textDecoration)) run.textDecoration = segment.textDecoration
@@ -75,6 +69,35 @@ export async function styledRuns(node: TextLike): Promise<StyledRun[]> {
     runs.push(run)
   }
   return runs
+}
+
+/**
+ * A font as the write takes it back: the pair Figma loads, plus — for a variable font — the axis
+ * values it is rendered at. Dropping `variationSettings` would read a 550-weight heading back as
+ * its named instance and write it back heavier or lighter than it was.
+ *
+ * A read always names both halves, so anything missing one is not a font this can report.
+ */
+export function writableFont(value: unknown): (FontSpec & { style: string }) | undefined {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('family' in value) ||
+    typeof value.family !== 'string' ||
+    !('style' in value) ||
+    typeof value.style !== 'string'
+  ) {
+    return undefined
+  }
+  const font: FontSpec & { style: string } = { family: value.family, style: value.style }
+  if ('variationSettings' in value && typeof value.variationSettings === 'object' && value.variationSettings !== null) {
+    const axes: Record<string, number> = {}
+    for (const [tag, amount] of Object.entries(value.variationSettings)) {
+      if (typeof amount === 'number') axes[tag] = amount
+    }
+    if (Object.keys(axes).length > 0) font.variationSettings = axes
+  }
+  return font
 }
 
 /** Leading and tracking as the write takes them: pixels as a number, a share as `"150%"`. */

@@ -128,7 +128,14 @@ function applyPadding(el: Container, padding: KitFrame['padding']): void {
   el.paddingLeft = l
 }
 
-const PRIMARY_ALIGN = { min: 'MIN', center: 'CENTER', max: 'MAX', 'space-between': 'SPACE_BETWEEN' } as const
+const PRIMARY_ALIGN = {
+  min: 'MIN',
+  center: 'CENTER',
+  max: 'MAX',
+  'space-between': 'SPACE_BETWEEN',
+  'space-evenly': 'SPACE_EVENLY',
+  'space-around': 'SPACE_AROUND',
+} as const
 const COUNTER_ALIGN = { min: 'MIN', center: 'CENTER', max: 'MAX' } as const
 
 function configureFrame(el: Container, node: KitFrame, ctx: BuildCtx): void {
