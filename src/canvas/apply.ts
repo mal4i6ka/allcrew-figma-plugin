@@ -13,11 +13,12 @@
 
 import { resolveCollection, resolveModes, resolveVariableRef } from '../agent/values.ts'
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
-import { colourFromText, describeLinks, gradientHandles, gradientTransform, measure, resolveRanges, solidColourOf } from './props.ts'
+import { colourFrom, describeLinks, gradientHandles, gradientTransform, measure, resolveRanges, solidColourOf } from './props.ts'
 import { addressIn } from './overrides.ts'
 import { styleFor } from './styles.ts'
 import { resolveMotionStyleTarget } from './motion-styles.ts'
 import type {
+  ColourInput,
   FontSpec,
   GradientRef,
   ImageRef,
@@ -1081,7 +1082,7 @@ async function buildGradient(ref: GradientRef): Promise<GradientPaint> {
     const stop = typeof entry === 'string' ? { at: spread === 0 ? 0 : index / spread, color: entry } : entry
     const alpha = stop.opacity ?? 1
 
-    if (typeof stop.color === 'object') {
+    if (typeof stop.color === 'object' && 'variable' in stop.color) {
       const variable = await resolveVariableRef(stop.color.variable)
       if (variable.resolvedType !== 'COLOR') {
         throw new Error(`"${variable.name}" is a ${variable.resolvedType} variable, not a colour`)
@@ -1093,8 +1094,8 @@ async function buildGradient(ref: GradientRef): Promise<GradientPaint> {
       })
       continue
     }
-    const colour = colourFromText(stop.color)
-    if (!colour) throw new Error(`"${stop.color}" is not a colour`)
+    const colour = colourFrom(stop.color)
+    if (!colour) throw new Error(`${JSON.stringify(stop.color)} is not a colour`)
     // An alpha written into the colour itself (`oklch(… / 0.5)`) counts unless `opacity` says otherwise.
     stops.push({ position: stop.at, color: { ...colour, a: stop.opacity ?? colour.a } })
   }
@@ -1138,9 +1139,9 @@ async function buildImage(ref: ImageRef): Promise<ImagePaint> {
   }
 }
 
-function solid(text: string, opacity?: number): SolidPaint {
-  const colour = colourFromText(text)
-  if (!colour) throw new Error(`"${text}" is not a colour`)
+function solid(input: ColourInput, opacity?: number): SolidPaint {
+  const colour = colourFrom(input)
+  if (!colour) throw new Error(`${JSON.stringify(input)} is not a colour`)
   // A paint keeps alpha as its opacity; one written into the colour counts unless `opacity` is given.
   const alpha = opacity ?? (colour.a < 1 ? colour.a : undefined)
   return {

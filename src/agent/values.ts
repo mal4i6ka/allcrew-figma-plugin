@@ -8,7 +8,7 @@
  */
 
 import { formatHex, parseHex, type Rgb } from '../tokens/color.ts'
-import { buildEasing } from '../canvas/props.ts'
+import { buildEasing, colourFrom } from '../canvas/props.ts'
 
 /* ------------------------------------------------------------------ colour */
 
@@ -19,12 +19,19 @@ export interface Rgba extends Rgb {
 const clamp01 = (value: number): number => (value < 0 ? 0 : value > 1 ? 1 : value)
 
 /**
- * Accepts `#RGB`, `#RRGGBB`, `#RRGGBBAA`, `"#RRGGBB 40%"` and the `{r,g,b,a}` floats Figma
- * itself returns. The `hex + percent` form exists because that is how an alpha token reads in
- * the variables panel — `alpha/black/40` is `#000000` at 40%, not `#00000066`.
+ * Accepts `#RGB`, `#RRGGBB`, `#RRGGBBAA`, `"#RRGGBB 40%"`, the `{r,g,b,a}` floats Figma itself
+ * returns, and — through Figma's own parser — a CSS colour (`oklch(…)`, `color(display-p3 …)`) or
+ * the API's `{ space, …channels, alpha? }` object. A variable holds plain RGBA, so those last two
+ * arrive as their projection into the document's profile. The `hex + percent` form exists because
+ * that is how an alpha token reads in the variables panel — `alpha/black/40` is `#000000` at 40%,
+ * not `#00000066`.
  */
 export function parseColor(input: unknown): Rgba | null {
   if (typeof input === 'object' && input !== null) {
+    if ('space' in input) {
+      const colour = colourFrom(input)
+      return colour ? { r: colour.r, g: colour.g, b: colour.b, a: colour.a } : null
+    }
     const raw = input as Record<string, unknown>
     if (['r', 'g', 'b'].every((key) => typeof raw[key] === 'number')) {
       return {
@@ -53,7 +60,9 @@ export function parseColor(input: unknown): Rgba | null {
     return { ...rgb, a: parseInt(hex.slice(6, 8), 16) / 255 }
   }
   const rgb = parseHex(text)
-  return rgb ? { ...rgb, a: 1 } : null
+  if (rgb) return { ...rgb, a: 1 }
+  const colour = colourFrom(text)
+  return colour ? { r: colour.r, g: colour.g, b: colour.b, a: colour.a } : null
 }
 
 /** `#RRGGBB`, plus the alpha as a percentage when it is not opaque — the variables-panel form. */

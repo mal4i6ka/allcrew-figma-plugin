@@ -690,7 +690,8 @@ export const WRITE_OPS: readonly OpDef[] = [
         description:
           'Array of { variable, mode?, value }. `variable` is an id or a name ("Colors/orange/500"). ' +
           '`mode` is a mode name, a mode id, or "*" for every mode; omitted means the collection default. ' +
-          '`value` is "#RRGGBB" / "#RRGGBBAA" / "#RRGGBB 40%" / a number / a boolean / { "alias": … }, ' +
+          '`value` is "#RRGGBB" / "#RRGGBBAA" / "#RRGGBB 40%" / a CSS colour such as "oklch(70% 0.2 140)" / ' +
+          '{ "space": "OKLCH", "l", "c", "h", "alpha"? } / a number / a boolean / { "alias": … }, ' +
           'or a composed COLOR { "color": "#RRGGBB" | { "alias": … }, ' +
           '"opacity": "40%" | 40 | { "alias": … } }; at least one composed field must be an alias. ' +
           'For FLOAT variables scoped OPACITY or COLOR_OPACITY, a string such as "40%" is accepted and stored as 40. ' +

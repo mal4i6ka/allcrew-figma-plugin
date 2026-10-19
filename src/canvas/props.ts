@@ -26,13 +26,19 @@ import { parseHex } from '../tokens/color.ts'
 /* ------------------------------------------------------------------ vocabulary */
 
 /** A colour, a variable to bind, or a picture — and a list of them is a stack of layers. A
- * colour is `"#RRGGBB"` or a CSS colour (`oklch()`, `oklab()`, `hsl()`, `color(display-p3 …)`),
- * which Figma stores in the space it was written in. */
+ * colour is `"#RRGGBB"`, a CSS colour (`oklch()`, `oklab()`, `hsl()`, `color(display-p3 …)`) or
+ * the API's own `{ space, …channels }` object, which Figma stores in the space it was written in. */
 export type PaintRef = SinglePaint | SinglePaint[] | null
+
+/** `ColorWithColorSpace` (plugin API 1.142) plus an optional `alpha`, sent as `alphaOverride`. */
+export type SpacedColour = ColorWithColorSpace & { alpha?: number }
+
+/** Every way the vocabulary takes a colour. */
+export type ColourInput = string | SpacedColour
 
 export type SinglePaint =
   | string
-  | { color: string; opacity?: number }
+  | { color: ColourInput; opacity?: number }
   | { variable: string }
   | ImageRef
   | GradientRef
@@ -131,7 +137,7 @@ export type FlowOperand = string | number | boolean | { variable: string } | Flo
 export interface GradientStop {
   /** 0 to 1. */
   at: number
-  color: string | { variable: string }
+  color: ColourInput | { variable: string }
   opacity?: number
 }
 
@@ -156,7 +162,7 @@ export interface ImageRef {
 export type EffectSpec =
   | {
       shadow: 'drop' | 'inner'
-      color?: string | { variable: string }
+      color?: ColourInput | { variable: string }
       opacity?: number
       offset?: [number | { variable: string }, number | { variable: string }]
       radius?: number | { variable: string }
@@ -176,9 +182,9 @@ export type EffectSpec =
   | {
       /** Film grain: one colour, two, or many. */
       noise: 'mono' | 'duo' | 'multi'
-      color?: string | { variable: string }
+      color?: ColourInput | { variable: string }
       /** `duo` only: the second colour. */
-      second?: string
+      second?: ColourInput
       /** Grain size in pixels. */
       size?: number
       /** 0 to 1. */
@@ -208,9 +214,9 @@ export type EffectSpec =
  * person says "12 columns, 16 apart, 24 in from each side".
  */
 export type GridSpec =
-  | { columns: number; gutter?: number; margin?: number; width?: number; align?: GridAlign; color?: string; opacity?: number; visible?: boolean }
-  | { rows: number; gutter?: number; margin?: number; height?: number; align?: GridAlign; color?: string; opacity?: number; visible?: boolean }
-  | { square: number; color?: string; opacity?: number; visible?: boolean }
+  | { columns: number; gutter?: number; margin?: number; width?: number; align?: GridAlign; color?: ColourInput; opacity?: number; visible?: boolean }
+  | { rows: number; gutter?: number; margin?: number; height?: number; align?: GridAlign; color?: ColourInput; opacity?: number; visible?: boolean }
+  | { square: number; color?: ColourInput; opacity?: number; visible?: boolean }
 
 export type GridAlign = 'MIN' | 'MAX' | 'CENTER' | 'STRETCH'
 
@@ -2343,13 +2349,13 @@ function pointOf(value: unknown, where: string, problems: string[]): { x: number
 
 /** A colour with its alpha, the way an effect takes one. */
 function colourOf(value: unknown, fallback: string, where: string, problems: string[]): RGBA | null {
-  const hex = value === undefined ? fallback : value
-  if (typeof hex !== 'string' || !isColourText(hex)) {
+  const input = value === undefined ? fallback : value
+  if (!isColourInput(input)) {
     problems.push(`${where} must be a ${COLOUR_WORDS}`)
     return null
   }
-  const colour = colourFromText(hex)
-  if (!colour) problems.push(`${where}: "${hex}" is not a colour Figma can read`)
+  const colour = colourFrom(input)
+  if (!colour) problems.push(`${where}: ${JSON.stringify(input)} is not a colour Figma can read`)
   return colour
 }
 
@@ -2508,20 +2514,20 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
       }
     }
 
-    let hex = '#000000'
+    let input: unknown = '#000000'
     const named = spec.color as { variable?: unknown } | undefined
     if (typeof named?.variable === 'string' && named.variable.trim() !== '') {
       bind.push({ index: effects.length, field: 'color', variable: named.variable.trim() })
     } else if (spec.color !== undefined) {
-      if (typeof spec.color !== 'string' || !isColourText(spec.color)) {
+      if (!isColourInput(spec.color)) {
         fail(`color must be a ${COLOUR_WORDS}, or { variable }`)
         continue
       }
-      hex = spec.color
+      input = spec.color
     }
-    const rgb = colourFromText(hex)
+    const rgb = colourFrom(input)
     if (!rgb) {
-      fail(`"${hex}" is not a colour`)
+      fail(`${JSON.stringify(input)} is not a colour`)
       continue
     }
     const alpha = spec.opacity === undefined ? 0.25 : spec.opacity
@@ -2550,7 +2556,7 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
       blendMode: 'NORMAL',
     } as Effect)
     summary.push(
-      `${kind} shadow ${hex}${alpha === 1 ? '' : ` @${alpha}`} ${x},${y} blur ${radius}${spread ? ` spread ${spread}` : ''}`
+      `${kind} shadow ${typeof input === 'string' ? input : JSON.stringify(input)}${alpha === 1 ? '' : ` @${alpha}`} ${x},${y} blur ${radius}${spread ? ` spread ${spread}` : ''}`
     )
   }
 
@@ -3093,13 +3099,13 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
 
     const paint = (): { color?: RGBA } | null => {
       if (spec.color === undefined) return {}
-      if (typeof spec.color !== 'string' || !isColourText(spec.color)) {
+      if (!isColourInput(spec.color)) {
         fail(`color must be a ${COLOUR_WORDS}`)
         return null
       }
-      const rgb = colourFromText(spec.color)
+      const rgb = colourFrom(spec.color)
       if (!rgb) {
-        fail(`"${spec.color}" is not a colour`)
+        fail(`${JSON.stringify(spec.color)} is not a colour`)
         return null
       }
       const alpha = spec.opacity === undefined ? 0.1 : spec.opacity
@@ -3277,25 +3283,64 @@ const HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
 /** CSS Color 4 functions Figma's own parser reads (`figma.util.rgba`, plugin API 1.142). */
 const CSS_COLOUR = /^(rgba?|hsla?|lab|lch|oklab|oklch|color)\(\s*[^()]*\)$/i
 
-/** A colour the vocabulary accepts: hex, or a CSS colour function like `oklch(70% 0.2 140)`. */
-function isColourText(text: string): boolean {
-  return HEX.test(text) || CSS_COLOUR.test(text.trim())
+/** The channels each `ColorWithColorSpace` space carries (plugin API 1.142). */
+const SPACE_CHANNELS: Readonly<Record<string, readonly [string, string, string]>> = {
+  SRGB: ['r', 'g', 'b'],
+  DISPLAY_P3: ['r', 'g', 'b'],
+  HSL: ['h', 's', 'l'],
+  HSB: ['h', 's', 'b'],
+  OKLAB: ['l', 'a', 'b'],
+  OKLCH: ['l', 'c', 'h'],
 }
 
 /**
- * A colour string → the colour Figma stores. Hex stays on the pure path (and so under
- * `node --test`); a CSS function goes through Figma's own parser, which also keeps the authored
- * space as `sourceColor` — so an OKLCH or Display P3 colour lands as written, not flattened to
- * sRGB. Null when the text is no colour, or when there is no Figma to ask.
+ * A `ColorWithColorSpace` as the API takes it — `{ space: 'OKLCH', l, c, h }` — plus an optional
+ * `alpha`, which the API itself has no field for and so travels as `alphaOverride`. Null when the
+ * value is not that shape.
  */
-export function colourFromText(text: string): RGBA | null {
-  if (HEX.test(text)) {
-    const rgb = parseHex(text)
+function spacedColour(value: unknown): { colour: ColorWithColorSpace; alpha?: number } | null {
+  if (typeof value !== 'object' || value === null || !('space' in value) || typeof value.space !== 'string') return null
+  const channels = SPACE_CHANNELS[value.space]
+  if (!channels) return null
+  const record: Record<string, unknown> = { ...value }
+  if (!channels.every((key) => typeof record[key] === 'number' && Number.isFinite(record[key]))) return null
+  const extra = Object.keys(record).filter((key) => key !== 'space' && key !== 'alpha' && !channels.includes(key))
+  if (extra.length > 0) return null
+  if (record.alpha !== undefined && (typeof record.alpha !== 'number' || record.alpha < 0 || record.alpha > 1)) return null
+  const [first, second, third] = channels
+  // Built field by field rather than cast: the union is discriminated on `space`, and the
+  // channel names were just checked against it.
+  const colour = { space: value.space, [first]: record[first], [second]: record[second], [third]: record[third] }
+  return { colour: colour as ColorWithColorSpace, ...(typeof record.alpha === 'number' ? { alpha: record.alpha } : {}) }
+}
+
+/**
+ * A colour the vocabulary accepts: hex, a CSS colour function like `oklch(70% 0.2 140)`, or the
+ * API's own `{ space, …channels, alpha? }` object.
+ */
+export function isColourInput(value: unknown): boolean {
+  if (typeof value === 'string') return HEX.test(value) || CSS_COLOUR.test(value.trim())
+  return spacedColour(value) !== null
+}
+
+/**
+ * A colour input → the colour Figma stores. Hex stays on the pure path (and so under
+ * `node --test`); a CSS function or a colour-space object goes through Figma's own parser, which
+ * also keeps the authored space as `sourceColor` — so an OKLCH or Display P3 colour lands as
+ * written, not flattened to sRGB. Null when the input is no colour, or when there is no Figma to
+ * ask.
+ */
+export function colourFrom(value: unknown): RGBA | null {
+  if (typeof value === 'string' && HEX.test(value)) {
+    const rgb = parseHex(value)
     return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b, a: 1 } : null
   }
-  if (!CSS_COLOUR.test(text.trim()) || typeof figma === 'undefined' || typeof figma.util?.rgba !== 'function') return null
+  if (typeof figma === 'undefined' || typeof figma.util?.rgba !== 'function') return null
   try {
-    return figma.util.rgba(text.trim())
+    if (typeof value === 'string') return CSS_COLOUR.test(value.trim()) ? figma.util.rgba(value.trim()) : null
+    const spaced = spacedColour(value)
+    if (!spaced) return null
+    return spaced.alpha === undefined ? figma.util.rgba(spaced.colour) : figma.util.rgba(spaced.colour, spaced.alpha)
   } catch {
     return null
   }
@@ -3307,7 +3352,7 @@ export function solidColourOf(colour: RGBA): RGB {
   return rgb
 }
 
-const COLOUR_WORDS = '#RRGGBB colour or a CSS colour like oklch(70% 0.2 140)'
+const COLOUR_WORDS = '#RRGGBB colour, a CSS colour like oklch(70% 0.2 140), or { space, …channels }'
 
 /**
  * Which variable type each bindable field expects.
@@ -3519,6 +3564,8 @@ export function normalisePaint(ref: unknown): unknown {
     const faded = /^(#[0-9a-fA-F]{6})\s*@\s*(\d*\.?\d+)$/.exec(ref.trim())
     if (faded) return { color: faded[1], opacity: Math.round(Number(faded[2]) * 1000) / 1000 }
   }
+  // The API's own colour object, given as a paint: a solid in that space.
+  if (typeof ref === 'object' && ref !== null && 'space' in ref) return { color: ref }
   return ref
 }
 
@@ -3531,7 +3578,7 @@ export function paintProblem(ref: unknown): string | null {
     return null
   }
   if (ref === null) return null
-  if (typeof ref === 'string') return isColourText(ref) ? null : `"${ref}" is not a ${COLOUR_WORDS}`
+  if (typeof ref === 'string') return isColourInput(ref) ? null : `"${ref}" is not a ${COLOUR_WORDS}`
   if (typeof ref !== 'object') return 'must be "#RRGGBB", { color }, { variable }, { image }, a list of those, or null'
 
   const entry = ref as {
@@ -3547,8 +3594,8 @@ export function paintProblem(ref: unknown): string | null {
   if (entry.gradient !== undefined) return gradientProblem(ref as Record<string, unknown>)
   if (entry.image !== undefined) return imageProblem(entry)
   if (typeof entry.variable === 'string') return entry.variable === '' ? 'variable must be a name, id or library key' : null
-  if (typeof entry.color === 'string') {
-    if (!isColourText(entry.color)) return `"${entry.color}" is not a ${COLOUR_WORDS}`
+  if (entry.color !== undefined) {
+    if (!isColourInput(entry.color)) return `${JSON.stringify(entry.color)} is not a ${COLOUR_WORDS}`
     if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
       return 'opacity must be between 0 and 1'
     }
@@ -3590,7 +3637,7 @@ function gradientProblem(entry: Record<string, unknown>): string | null {
   }
   for (const [index, stop] of entry.stops.entries()) {
     if (typeof stop === 'string') {
-      if (!isColourText(stop)) return `stops[${index}]: "${stop}" is not a ${COLOUR_WORDS}`
+      if (!isColourInput(stop)) return `stops[${index}]: "${stop}" is not a ${COLOUR_WORDS}`
       continue
     }
     if (typeof stop !== 'object' || stop === null || Array.isArray(stop)) {
@@ -3598,13 +3645,13 @@ function gradientProblem(entry: Record<string, unknown>): string | null {
     }
     const one = stop as { at?: unknown; color?: unknown; opacity?: unknown }
     if (typeof one.at !== 'number' || one.at < 0 || one.at > 1) return `stops[${index}].at must be between 0 and 1`
-    if (typeof one.color === 'object' && one.color !== null) {
+    if (typeof one.color === 'object' && one.color !== null && !('space' in one.color)) {
       const bound = one.color as { variable?: unknown }
       if (typeof bound.variable !== 'string' || bound.variable === '') {
-        return `stops[${index}].color must be "#RRGGBB" or { variable }`
+        return `stops[${index}].color must be a ${COLOUR_WORDS}, or { variable }`
       }
-    } else if (typeof one.color !== 'string' || !isColourText(one.color)) {
-      return `stops[${index}].color must be "#RRGGBB" or { variable }`
+    } else if (!isColourInput(one.color)) {
+      return `stops[${index}].color must be a ${COLOUR_WORDS}, or { variable }`
     }
     if (one.opacity !== undefined && (typeof one.opacity !== 'number' || one.opacity < 0 || one.opacity > 1)) {
       return `stops[${index}].opacity must be between 0 and 1`

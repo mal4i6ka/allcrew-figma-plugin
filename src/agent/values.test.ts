@@ -63,3 +63,17 @@ test('a mode resolves by name or by id, and "*" means all of them', () => {
 test('an unknown mode names the modes that do exist', () => {
   assert.throws(() => resolveModes(collection, 'Midnight'), /Light, Dark/)
 })
+
+test('a variable colour may be written as CSS or as the API colour object, flattened by Figma', (t) => {
+  const calls: unknown[][] = []
+  const global = globalThis as { figma?: unknown }
+  global.figma = { util: { rgba: (...args: unknown[]) => { calls.push(args); return { r: 1, g: 0.5, b: 0, a: 0.4, sourceColor: {} } } } }
+  t.after(() => {
+    delete global.figma
+  })
+  // The variable holds plain RGBA: the authored space is not carried into the value.
+  assert.deepEqual(parseColor('oklch(70% 0.2 50 / 0.4)'), { r: 1, g: 0.5, b: 0, a: 0.4 })
+  assert.deepEqual(parseColor({ space: 'OKLCH', l: 0.7, c: 0.2, h: 50, alpha: 0.4 }), { r: 1, g: 0.5, b: 0, a: 0.4 })
+  assert.deepEqual(calls, [['oklch(70% 0.2 50 / 0.4)'], [{ space: 'OKLCH', l: 0.7, c: 0.2, h: 50 }, 0.4]])
+  assert.equal(parseColor({ space: 'OKLCH', r: 1, g: 0, b: 0 }), null)
+})

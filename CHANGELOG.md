@@ -2,6 +2,13 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## Unreleased
+
+### Added
+
+- Colours may be given as Plugin API 1.142 `ColorWithColorSpace` objects — `{ "space": "OKLCH", "l": 0.7, "c": 0.2, "h": 140, "alpha"?: 0.5 }` — wherever the canvas vocabulary takes a colour (fills, strokes, gradient stops, shadows, noise, layout grids), with `alpha` passed to Figma as `alphaOverride`.
+- `variables.set` accepts CSS colour functions and colour-space objects for COLOR variables; Figma converts them to the RGBA a variable holds.
+
 ## 1.11.0 — 2026-10-16
 
 ### Added

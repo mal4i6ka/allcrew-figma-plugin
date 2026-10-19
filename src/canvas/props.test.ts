@@ -4,8 +4,9 @@ import {
   dependsOnPlacement,
   gradientHandles,
   gradientTransform,
-  colourFromText,
+  colourFrom,
   movesToAnotherParent,
+  normalisePaint,
   paintProblem,
   planProps,
 } from './props.ts'
@@ -650,7 +651,7 @@ test('an effect field may name a variable, and the binding travels beside the ef
 
 test('a field that is neither a number nor a variable is refused', () => {
   assert.match(planProps({ effects: [{ shadow: 'drop', radius: 'big' }] }).problems[0], /radius must be a number or \{ variable \}/)
-  assert.match(planProps({ effects: [{ shadow: 'drop', color: 42 }] }).problems[0], /color must be a #RRGGBB colour or a CSS colour.*, or \{ variable \}/)
+  assert.match(planProps({ effects: [{ shadow: 'drop', color: 42 }] }).problems[0], /color must be a #RRGGBB colour, a CSS colour.*, or \{ variable \}/)
 })
 
 /* ------------------------------------------------------------------- network */
@@ -999,19 +1000,45 @@ test('a CSS colour function is a colour; Figma parses it and keeps the authored 
   assert.equal(paintProblem('oklch(70% 0.2 140)'), null)
   assert.equal(paintProblem({ color: 'color(display-p3 1 0 0)', opacity: 0.5 }), null)
   assert.equal(paintProblem({ gradient: 'LINEAR', stops: ['#FFF', 'hsl(200 50% 40%)'] }), null)
-  assert.match(paintProblem('oklch(70% 0.2 140') ?? '', /not a #RRGGBB colour or a CSS colour/)
+  assert.match(paintProblem('oklch(70% 0.2 140') ?? '', /not a #RRGGBB colour, a CSS colour/)
 
-  assert.deepEqual(colourFromText('#ff0000'), { r: 1, g: 0, b: 0, a: 1 })
+  assert.deepEqual(colourFrom('#ff0000'), { r: 1, g: 0, b: 0, a: 1 })
   // Outside Figma there is no parser to ask, so a function is refused rather than guessed at.
-  assert.equal(colourFromText('oklch(70% 0.2 140)'), null)
+  assert.equal(colourFrom('oklch(70% 0.2 140)'), null)
 
   const parsed = { r: 0.3, g: 0.73, b: 0.19, a: 0.5, sourceColor: { space: 'OKLCH', l: 0.7, c: 0.2, h: 140 } }
   const global = globalThis as { figma?: unknown }
   global.figma = { util: { rgba: (text: string) => { if (text !== 'oklch(0.7 0.2 140 / 0.5)') throw new Error('bad'); return parsed } } }
   try {
-    assert.deepEqual(colourFromText(' oklch(0.7 0.2 140 / 0.5) '), parsed)
-    assert.equal(colourFromText('oklch(nonsense)'), null)
+    assert.deepEqual(colourFrom(' oklch(0.7 0.2 140 / 0.5) '), parsed)
+    assert.equal(colourFrom('oklch(nonsense)'), null)
     assert.deepEqual(planProps({ effects: [{ shadow: 'drop', color: 'oklch(0.7 0.2 140 / 0.5)' }] }).problems, [])
+  } finally {
+    delete global.figma
+  }
+})
+
+test('the API colour object is a colour too, and its alpha travels as alphaOverride', () => {
+  // Plugin API 1.142: figma.util.rgba takes ColorWithColorSpace and an alphaOverride.
+  const oklch = { space: 'OKLCH', l: 0.7, c: 0.2, h: 140 }
+  // A bare colour object is a paint once normalised, which is how every write reads it.
+  assert.equal(paintProblem(normalisePaint(oklch)), null)
+  assert.equal(planProps({ fill: oklch }).problems.length, 0)
+  assert.equal(paintProblem({ color: { space: 'DISPLAY_P3', r: 1, g: 0, b: 0, alpha: 0.5 } }), null)
+  assert.equal(paintProblem({ gradient: 'LINEAR', stops: [{ at: 0, color: oklch }, { at: 1, color: '#fff' }] }), null)
+  // Channels are checked against the space: an OKLCH colour has no `r`.
+  assert.match(paintProblem(normalisePaint({ space: 'OKLCH', r: 1, g: 0, b: 0 })) ?? '', /\{ space, …channels \}/)
+  assert.match(paintProblem(normalisePaint({ space: 'CMYK', c: 1, m: 0, y: 0 })) ?? '', /\{ space, …channels \}/)
+  assert.deepEqual(normalisePaint(oklch), { color: oklch })
+
+  const calls: unknown[][] = []
+  const global = globalThis as { figma?: unknown }
+  global.figma = { util: { rgba: (...args: unknown[]) => { calls.push(args); return { r: 1, g: 0, b: 0, a: 0.5 } } } }
+  try {
+    colourFrom({ space: 'DISPLAY_P3', r: 1, g: 0, b: 0, alpha: 0.5 })
+    colourFrom(oklch)
+    assert.deepEqual(calls, [[{ space: 'DISPLAY_P3', r: 1, g: 0, b: 0 }, 0.5], [oklch]])
+    assert.deepEqual(planProps({ grid: [{ columns: 12, color: oklch }] }).problems, [])
   } finally {
     delete global.figma
   }

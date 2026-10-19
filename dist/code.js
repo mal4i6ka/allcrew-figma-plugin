@@ -22722,13 +22722,13 @@ ${renderSections(sections)}
     return { x: value2[0], y: value2[1] };
   }
   function colourOf(value2, fallback, where, problems) {
-    const hex2 = value2 === void 0 ? fallback : value2;
-    if (typeof hex2 !== "string" || !isColourText(hex2)) {
+    const input = value2 === void 0 ? fallback : value2;
+    if (!isColourInput(input)) {
       problems.push(`${where} must be a ${COLOUR_WORDS}`);
       return null;
     }
-    const colour = colourFromText(hex2);
-    if (!colour) problems.push(`${where}: "${hex2}" is not a colour Figma can read`);
+    const colour = colourFrom(input);
+    if (!colour) problems.push(`${where}: ${JSON.stringify(input)} is not a colour Figma can read`);
     return colour;
   }
   function planEffects(raw, where, problems) {
@@ -22872,20 +22872,20 @@ ${renderSections(sections)}
           fail2(`unknown key "${unknownKey}" \u2014 accepted: shadow, color, opacity, offset, radius, spread, visible`);
         }
       }
-      let hex2 = "#000000";
+      let input = "#000000";
       const named = spec.color;
       if (typeof (named == null ? void 0 : named.variable) === "string" && named.variable.trim() !== "") {
         bind.push({ index: effects.length, field: "color", variable: named.variable.trim() });
       } else if (spec.color !== void 0) {
-        if (typeof spec.color !== "string" || !isColourText(spec.color)) {
+        if (!isColourInput(spec.color)) {
           fail2(`color must be a ${COLOUR_WORDS}, or { variable }`);
           continue;
         }
-        hex2 = spec.color;
+        input = spec.color;
       }
-      const rgb = colourFromText(hex2);
+      const rgb = colourFrom(input);
       if (!rgb) {
-        fail2(`"${hex2}" is not a colour`);
+        fail2(`${JSON.stringify(input)} is not a colour`);
         continue;
       }
       const alpha = spec.opacity === void 0 ? 0.25 : spec.opacity;
@@ -22913,7 +22913,7 @@ ${renderSections(sections)}
         blendMode: "NORMAL"
       });
       summary.push(
-        `${kind} shadow ${hex2}${alpha === 1 ? "" : ` @${alpha}`} ${x},${y} blur ${radius}${spread ? ` spread ${spread}` : ""}`
+        `${kind} shadow ${typeof input === "string" ? input : JSON.stringify(input)}${alpha === 1 ? "" : ` @${alpha}`} ${x},${y} blur ${radius}${spread ? ` spread ${spread}` : ""}`
       );
     }
     return { step: "effects", effects, bind, summary: summary.join(" \xB7 ") || "none" };
@@ -23370,13 +23370,13 @@ ${renderSections(sections)}
       const spec = entry;
       const paint = () => {
         if (spec.color === void 0) return {};
-        if (typeof spec.color !== "string" || !isColourText(spec.color)) {
+        if (!isColourInput(spec.color)) {
           fail2(`color must be a ${COLOUR_WORDS}`);
           return null;
         }
-        const rgb = colourFromText(spec.color);
+        const rgb = colourFrom(spec.color);
         if (!rgb) {
-          fail2(`"${spec.color}" is not a colour`);
+          fail2(`${JSON.stringify(spec.color)} is not a colour`);
           return null;
         }
         const alpha = spec.opacity === void 0 ? 0.1 : spec.opacity;
@@ -23529,18 +23529,43 @@ ${renderSections(sections)}
   }
   var HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
   var CSS_COLOUR = /^(rgba?|hsla?|lab|lch|oklab|oklch|color)\(\s*[^()]*\)$/i;
-  function isColourText(text6) {
-    return HEX.test(text6) || CSS_COLOUR.test(text6.trim());
+  var SPACE_CHANNELS = {
+    SRGB: ["r", "g", "b"],
+    DISPLAY_P3: ["r", "g", "b"],
+    HSL: ["h", "s", "l"],
+    HSB: ["h", "s", "b"],
+    OKLAB: ["l", "a", "b"],
+    OKLCH: ["l", "c", "h"]
+  };
+  function spacedColour(value2) {
+    if (typeof value2 !== "object" || value2 === null || !("space" in value2) || typeof value2.space !== "string") return null;
+    const channels = SPACE_CHANNELS[value2.space];
+    if (!channels) return null;
+    const record2 = __spreadValues({}, value2);
+    if (!channels.every((key) => typeof record2[key] === "number" && Number.isFinite(record2[key]))) return null;
+    const extra = Object.keys(record2).filter((key) => key !== "space" && key !== "alpha" && !channels.includes(key));
+    if (extra.length > 0) return null;
+    if (record2.alpha !== void 0 && (typeof record2.alpha !== "number" || record2.alpha < 0 || record2.alpha > 1)) return null;
+    const [first, second, third] = channels;
+    const colour = { space: value2.space, [first]: record2[first], [second]: record2[second], [third]: record2[third] };
+    return __spreadValues({ colour }, typeof record2.alpha === "number" ? { alpha: record2.alpha } : {});
   }
-  function colourFromText(text6) {
+  function isColourInput(value2) {
+    if (typeof value2 === "string") return HEX.test(value2) || CSS_COLOUR.test(value2.trim());
+    return spacedColour(value2) !== null;
+  }
+  function colourFrom(value2) {
     var _a;
-    if (HEX.test(text6)) {
-      const rgb = parseHex(text6);
+    if (typeof value2 === "string" && HEX.test(value2)) {
+      const rgb = parseHex(value2);
       return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b, a: 1 } : null;
     }
-    if (!CSS_COLOUR.test(text6.trim()) || typeof figma === "undefined" || typeof ((_a = figma.util) == null ? void 0 : _a.rgba) !== "function") return null;
+    if (typeof figma === "undefined" || typeof ((_a = figma.util) == null ? void 0 : _a.rgba) !== "function") return null;
     try {
-      return figma.util.rgba(text6.trim());
+      if (typeof value2 === "string") return CSS_COLOUR.test(value2.trim()) ? figma.util.rgba(value2.trim()) : null;
+      const spaced = spacedColour(value2);
+      if (!spaced) return null;
+      return spaced.alpha === void 0 ? figma.util.rgba(spaced.colour) : figma.util.rgba(spaced.colour, spaced.alpha);
     } catch (e) {
       return null;
     }
@@ -23549,7 +23574,7 @@ ${renderSections(sections)}
     const _a = colour, { a: _alpha } = _a, rgb = __objRest(_a, ["a"]);
     return rgb;
   }
-  var COLOUR_WORDS = "#RRGGBB colour or a CSS colour like oklch(70% 0.2 140)";
+  var COLOUR_WORDS = "#RRGGBB colour, a CSS colour like oklch(70% 0.2 140), or { space, \u2026channels }";
   var BINDABLE = {
     width: "FLOAT",
     height: "FLOAT",
@@ -23681,6 +23706,7 @@ ${renderSections(sections)}
       const faded = /^(#[0-9a-fA-F]{6})\s*@\s*(\d*\.?\d+)$/.exec(ref.trim());
       if (faded) return { color: faded[1], opacity: Math.round(Number(faded[2]) * 1e3) / 1e3 };
     }
+    if (typeof ref === "object" && ref !== null && "space" in ref) return { color: ref };
     return ref;
   }
   function paintProblem(ref) {
@@ -23692,15 +23718,15 @@ ${renderSections(sections)}
       return null;
     }
     if (ref === null) return null;
-    if (typeof ref === "string") return isColourText(ref) ? null : `"${ref}" is not a ${COLOUR_WORDS}`;
+    if (typeof ref === "string") return isColourInput(ref) ? null : `"${ref}" is not a ${COLOUR_WORDS}`;
     if (typeof ref !== "object") return 'must be "#RRGGBB", { color }, { variable }, { image }, a list of those, or null';
     const entry = ref;
     if (entry.shader !== void 0) return shaderProblem(ref);
     if (entry.gradient !== void 0) return gradientProblem(ref);
     if (entry.image !== void 0) return imageProblem(entry);
     if (typeof entry.variable === "string") return entry.variable === "" ? "variable must be a name, id or library key" : null;
-    if (typeof entry.color === "string") {
-      if (!isColourText(entry.color)) return `"${entry.color}" is not a ${COLOUR_WORDS}`;
+    if (entry.color !== void 0) {
+      if (!isColourInput(entry.color)) return `${JSON.stringify(entry.color)} is not a ${COLOUR_WORDS}`;
       if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
         return "opacity must be between 0 and 1";
       }
@@ -23739,7 +23765,7 @@ ${renderSections(sections)}
     }
     for (const [index2, stop] of entry.stops.entries()) {
       if (typeof stop === "string") {
-        if (!isColourText(stop)) return `stops[${index2}]: "${stop}" is not a ${COLOUR_WORDS}`;
+        if (!isColourInput(stop)) return `stops[${index2}]: "${stop}" is not a ${COLOUR_WORDS}`;
         continue;
       }
       if (typeof stop !== "object" || stop === null || Array.isArray(stop)) {
@@ -23747,13 +23773,13 @@ ${renderSections(sections)}
       }
       const one = stop;
       if (typeof one.at !== "number" || one.at < 0 || one.at > 1) return `stops[${index2}].at must be between 0 and 1`;
-      if (typeof one.color === "object" && one.color !== null) {
+      if (typeof one.color === "object" && one.color !== null && !("space" in one.color)) {
         const bound = one.color;
         if (typeof bound.variable !== "string" || bound.variable === "") {
-          return `stops[${index2}].color must be "#RRGGBB" or { variable }`;
+          return `stops[${index2}].color must be a ${COLOUR_WORDS}, or { variable }`;
         }
-      } else if (typeof one.color !== "string" || !isColourText(one.color)) {
-        return `stops[${index2}].color must be "#RRGGBB" or { variable }`;
+      } else if (!isColourInput(one.color)) {
+        return `stops[${index2}].color must be a ${COLOUR_WORDS}, or { variable }`;
       }
       if (one.opacity !== void 0 && (typeof one.opacity !== "number" || one.opacity < 0 || one.opacity > 1)) {
         return `stops[${index2}].opacity must be between 0 and 1`;
@@ -23801,6 +23827,10 @@ ${renderSections(sections)}
   var clamp013 = (value2) => value2 < 0 ? 0 : value2 > 1 ? 1 : value2;
   function parseColor2(input) {
     if (typeof input === "object" && input !== null) {
+      if ("space" in input) {
+        const colour2 = colourFrom(input);
+        return colour2 ? { r: colour2.r, g: colour2.g, b: colour2.b, a: colour2.a } : null;
+      }
       const raw = input;
       if (["r", "g", "b"].every((key) => typeof raw[key] === "number")) {
         return {
@@ -23827,7 +23857,9 @@ ${renderSections(sections)}
       return __spreadProps(__spreadValues({}, rgb2), { a: parseInt(hex2.slice(6, 8), 16) / 255 });
     }
     const rgb = parseHex(text6);
-    return rgb ? __spreadProps(__spreadValues({}, rgb), { a: 1 }) : null;
+    if (rgb) return __spreadProps(__spreadValues({}, rgb), { a: 1 });
+    const colour = colourFrom(text6);
+    return colour ? { r: colour.r, g: colour.g, b: colour.b, a: colour.a } : null;
   }
   function describeColor(color) {
     const hex2 = formatHex(color);
@@ -25456,7 +25488,7 @@ ${renderSections(sections)}
     for (const [index2, entry] of ref.stops.entries()) {
       const stop = typeof entry === "string" ? { at: spread === 0 ? 0 : index2 / spread, color: entry } : entry;
       const alpha = (_a = stop.opacity) != null ? _a : 1;
-      if (typeof stop.color === "object") {
+      if (typeof stop.color === "object" && "variable" in stop.color) {
         const variable = await resolveVariableRef(stop.color.variable);
         if (variable.resolvedType !== "COLOR") {
           throw new Error(`"${variable.name}" is a ${variable.resolvedType} variable, not a colour`);
@@ -25468,8 +25500,8 @@ ${renderSections(sections)}
         });
         continue;
       }
-      const colour = colourFromText(stop.color);
-      if (!colour) throw new Error(`"${stop.color}" is not a colour`);
+      const colour = colourFrom(stop.color);
+      if (!colour) throw new Error(`${JSON.stringify(stop.color)} is not a colour`);
       stops.push({ position: stop.at, color: __spreadProps(__spreadValues({}, colour), { a: (_b = stop.opacity) != null ? _b : colour.a }) });
     }
     stops.sort((left, right) => left.position - right.position);
@@ -25498,9 +25530,9 @@ ${renderSections(sections)}
       imageHash
     }, ref.opacity === void 0 ? {} : { opacity: ref.opacity });
   }
-  function solid4(text6, opacity) {
-    const colour = colourFromText(text6);
-    if (!colour) throw new Error(`"${text6}" is not a colour`);
+  function solid4(input, opacity) {
+    const colour = colourFrom(input);
+    if (!colour) throw new Error(`${JSON.stringify(input)} is not a colour`);
     const alpha = opacity != null ? opacity : colour.a < 1 ? colour.a : void 0;
     return __spreadValues({
       type: "SOLID",
@@ -31271,7 +31303,7 @@ ${scripts}`, "");
         updates: {
           type: "json",
           required: true,
-          description: 'Array of { variable, mode?, value }. `variable` is an id or a name ("Colors/orange/500"). `mode` is a mode name, a mode id, or "*" for every mode; omitted means the collection default. `value` is "#RRGGBB" / "#RRGGBBAA" / "#RRGGBB 40%" / a number / a boolean / { "alias": \u2026 }, or a composed COLOR { "color": "#RRGGBB" | { "alias": \u2026 }, "opacity": "40%" | 40 | { "alias": \u2026 } }; at least one composed field must be an alias. For FLOAT variables scoped OPACITY or COLOR_OPACITY, a string such as "40%" is accepted and stored as 40. An alias takes a local name or id, or a *library* variable key (40 hex chars).'
+          description: 'Array of { variable, mode?, value }. `variable` is an id or a name ("Colors/orange/500"). `mode` is a mode name, a mode id, or "*" for every mode; omitted means the collection default. `value` is "#RRGGBB" / "#RRGGBBAA" / "#RRGGBB 40%" / a CSS colour such as "oklch(70% 0.2 140)" / { "space": "OKLCH", "l", "c", "h", "alpha"? } / a number / a boolean / { "alias": \u2026 }, or a composed COLOR { "color": "#RRGGBB" | { "alias": \u2026 }, "opacity": "40%" | 40 | { "alias": \u2026 } }; at least one composed field must be an alias. For FLOAT variables scoped OPACITY or COLOR_OPACITY, a string such as "40%" is accepted and stored as 40. An alias takes a local name or id, or a *library* variable key (40 hex chars).'
         },
         dryRun: {
           type: "boolean",
