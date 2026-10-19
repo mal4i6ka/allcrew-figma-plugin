@@ -181,7 +181,9 @@ Before anything is emitted the export is shaped for code:
   colour (`{ color, opacity }`) as the flat colour it paints in each mode;
 - opacity tokens, which Figma holds as percentages, export as 0–1 fractions;
 - colours authored outside sRGB keep their space: `oklch()`, `oklab()` or
-  `color(display-p3 …)`.
+  `color(display-p3 …)`. Figma itself drops the authored space from a solid fill
+  or stroke whose opacity is below 100% (gradient stops keep it), so such a paint
+  exports as its sRGB projection.
 
 With **Inline primitives** on (the default), the raw scale is collapsed into the
 tokens that use it — no primitive variables in the output:

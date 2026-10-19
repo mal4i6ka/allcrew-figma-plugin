@@ -9,6 +9,10 @@ All notable changes to AllCrew Figma Workspace are documented here.
 - Colours may be given as Plugin API 1.142 `ColorWithColorSpace` objects — `{ "space": "OKLCH", "l": 0.7, "c": 0.2, "h": 140, "alpha"?: 0.5 }` — wherever the canvas vocabulary takes a colour (fills, strokes, gradient stops, shadows, noise, layout grids), with `alpha` passed to Figma as `alphaOverride`.
 - `variables.set` accepts CSS colour functions and colour-space objects for COLOR variables; Figma converts them to the RGBA a variable holds.
 
+### Known limitations
+
+- Figma does not keep a colour's authored space (`sourceColor`) on a solid fill or stroke whose opacity is below 1 — verified in a live file through both a hand-built `SolidPaint` and `figma.util.solidPaint`. Such paints read and export as their sRGB projection; gradient stops with alpha keep the space.
+
 ## 1.11.0 — 2026-10-16
 
 ### Added
