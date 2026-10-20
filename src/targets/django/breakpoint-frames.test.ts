@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { detectBreakpointGroups, mergeBreakpointVariants, emitBreakpointCss, type BreakpointGroup } from './breakpoint-frames.ts'
+import { detectBreakpointGroups, mergeBreakpointVariants, emitBreakpointCss, extractBreakpointTokens, generateBreakpointCollection, type BreakpointGroup } from './breakpoint-frames.ts'
+import { foldSplitThemeCollections } from '../../tokens/split-theme.ts'
 import { toClassName, type DjangoNodeSource } from './css-emitter.ts'
 import type { IrContainerNode, IrFlexLayout, IrNode } from './ir.ts'
 
@@ -158,4 +159,96 @@ test('a node introduced by the tablet frame and also present at mobile is splice
   const mobileBlock = css.slice(css.indexOf('@media (max-width: 767px)'))
   assert.match(tabletBlock, new RegExp(`\\.${asideClass}\\s*\\{[^}]*display: block`))
   assert.match(mobileBlock, new RegExp(`\\.${asideClass}\\s*\\{[^}]*display: block`))
+})
+
+/* ------------------------------------------- generator on a single-mode plan */
+
+/** A Figma that caps every collection at one mode, recording what the generator wrote. */
+function singleModeFigma(capModes: boolean) {
+  const collections: Array<Record<string, unknown>> = []
+  const variables: Array<{ id: string; name: string; collectionId: string; resolvedType: string; valuesByMode: Record<string, unknown> }> = []
+  let next = 0
+  const figma = {
+    variables: {
+      getLocalVariableCollectionsAsync: async () => collections.slice(),
+      createVariableCollection(name: string) {
+        const id = `c${next++}`
+        const data: Record<string, string> = {}
+        const collection = {
+          id,
+          name,
+          defaultModeId: `${id}:m0`,
+          modes: [{ modeId: `${id}:m0`, name: 'Mode 1' }],
+          renameMode(modeId: string, label: string) {
+            this.modes = this.modes.map((mode) => (mode.modeId === modeId ? { modeId, name: label } : mode))
+          },
+          addMode(label: string) {
+            if (capModes) throw new Error('in addMode: Limited to 1 modes only')
+            const modeId = `${id}:m${this.modes.length}`
+            this.modes = [...this.modes, { modeId, name: label }]
+            return modeId
+          },
+          setPluginData(key: string, value: string) { data[key] = value },
+          getPluginData(key: string) { return data[key] ?? '' },
+          remove() { collections.splice(collections.indexOf(collection), 1) },
+        }
+        collections.push(collection)
+        return collection
+      },
+      createVariable(name: string, collection: { id: string }, resolvedType: string) {
+        const variable = {
+          id: `v${next++}`,
+          name,
+          collectionId: collection.id,
+          resolvedType,
+          valuesByMode: {} as Record<string, unknown>,
+          description: '',
+          hiddenFromPublishing: false,
+          setValueForMode(modeId: string, value: unknown) { this.valuesByMode[modeId] = value },
+        }
+        variables.push(variable)
+        return variable
+      },
+    },
+  }
+  const snapshot = () => ({
+    collections: collections.map((c) => ({ id: c.id, name: c.name, defaultModeId: c.defaultModeId, modes: c.modes })),
+    variables: variables.filter((v) => collections.some((c) => c.id === v.collectionId)),
+  })
+  return { figma, snapshot, collections }
+}
+
+test('a single-mode plan gets one collection per breakpoint, and reads back as one collection', async (t) => {
+  const fake = singleModeFigma(true)
+  const global = globalThis as { figma?: unknown }
+  const previous = global.figma
+  global.figma = fake.figma
+  t.after(() => { global.figma = previous })
+
+  const result = await generateBreakpointCollection()
+  assert.equal(result.layout, 'split')
+  assert.deepEqual(result.collections, ['Breakpoints', 'Breakpoints-Tablet', 'Breakpoints-Mobile'])
+
+  // The same fold every reader runs: three single-mode collections become one with three modes.
+  const folded = foldSplitThemeCollections(fake.snapshot() as never)
+  const bp = (folded as { collections: Array<{ name: string; modes: unknown[] }> }).collections
+  assert.deepEqual(bp.map((c) => [c.name, c.modes.length]), [['Breakpoints', 3]])
+  assert.deepEqual(Object.fromEntries(extractBreakpointTokens(folded as never)), { desktop: 1440, tablet: 834, mobile: 390 })
+
+  // Regenerating replaces every collection the last run made — no stale companion is left.
+  await generateBreakpointCollection({ Desktop: 1280, Mobile: 375 })
+  assert.deepEqual(fake.collections.map((c) => c.name), ['Breakpoints', 'Breakpoints-Mobile'])
+})
+
+test('a plan with modes keeps the one-collection layout', async (t) => {
+  const fake = singleModeFigma(false)
+  const global = globalThis as { figma?: unknown }
+  const previous = global.figma
+  global.figma = fake.figma
+  t.after(() => { global.figma = previous })
+
+  const result = await generateBreakpointCollection()
+  assert.equal(result.layout, 'modes')
+  assert.deepEqual(result.collections, ['Breakpoints'])
+  assert.deepEqual(Object.fromEntries(extractBreakpointTokens(fake.snapshot() as never)), { desktop: 1440, tablet: 834, mobile: 390 })
 })

@@ -81,6 +81,8 @@
   }
   var DARK_COMPANION = /^(.+?)[ _-]dark$/i;
   var LIGHT_COLLECTION = /^(.+?)[ _-]light$/i;
+  var BREAKPOINTS = "breakpoints";
+  var BREAKPOINT_COMPANION = /^breakpoints[ _-](.+)$/i;
   var GENERIC_MODE_NAMES = ["mode 1", "mode", "value", "default"];
   var normalize = (name) => name.trim().toLowerCase();
   var isGenericModeName = (name) => name === "" || GENERIC_MODE_NAMES.indexOf(name.toLowerCase()) !== -1;
@@ -143,15 +145,16 @@
     return resolved;
   }
   function automaticMerges(snapshot, used) {
+    var _a, _b;
     const byName = new Map(snapshot.collections.map((collection) => [normalize(collection.name), collection]));
     const namesByCollection = variableNamesByCollection(snapshot);
     const resolved = [];
     const add2 = (name, light, dark) => {
-      var _a, _b;
+      var _a2, _b2;
       if (!light || !dark || light.id === dark.id || used.has(light.id) || used.has(dark.id)) return;
       if (!collectionsOverlap(light, dark, namesByCollection)) return;
-      const lightModeId = light.defaultModeId || ((_a = light.modes[0]) == null ? void 0 : _a.modeId);
-      const darkModeId = dark.defaultModeId || ((_b = dark.modes[0]) == null ? void 0 : _b.modeId);
+      const lightModeId = light.defaultModeId || ((_a2 = light.modes[0]) == null ? void 0 : _a2.modeId);
+      const darkModeId = dark.defaultModeId || ((_b2 = dark.modes[0]) == null ? void 0 : _b2.modeId);
       if (!lightModeId || !darkModeId) return;
       resolved.push({
         name,
@@ -172,6 +175,25 @@
       const match = DARK_COMPANION.exec(dark.name.trim());
       if (!match) continue;
       add2(match[1], byName.get(normalize(match[1])), dark);
+    }
+    for (const base of snapshot.collections) {
+      if (normalize(base.name) !== BREAKPOINTS || used.has(base.id)) continue;
+      const baseModeId = base.defaultModeId || ((_a = base.modes[0]) == null ? void 0 : _a.modeId);
+      if (!baseModeId) continue;
+      const modes = [{ collection: base, name: defaultModeNameOf(base, "Desktop"), modeId: baseModeId }];
+      const seen = /* @__PURE__ */ new Set([normalize(modes[0].name)]);
+      for (const companion of snapshot.collections) {
+        const match = BREAKPOINT_COMPANION.exec(companion.name.trim());
+        if (!match || used.has(companion.id) || !collectionsOverlap(base, companion, namesByCollection)) continue;
+        const modeId = companion.defaultModeId || ((_b = companion.modes[0]) == null ? void 0 : _b.modeId);
+        const name = defaultModeNameOf(companion, match[1].trim());
+        if (!modeId || seen.has(normalize(name))) continue;
+        seen.add(normalize(name));
+        modes.push({ collection: companion, name, modeId });
+      }
+      if (modes.length < 2) continue;
+      resolved.push({ name: base.name, modes });
+      for (const mode of modes) used.add(mode.collection.id);
     }
     return resolved;
   }
@@ -223,6 +245,7 @@
     return __spreadProps(__spreadValues({}, snapshot), { collections, variables: [...variablesOutsideMerges, ...mergedVariables] });
   }
   var darkCompanionName = (themeCollectionName) => `${themeCollectionName.trim()}-dark`;
+  var breakpointCompanionName = (step2) => `Breakpoints-${step2.trim()}`;
 
   // src/variables.ts
   function toCollectionEntry(collection) {
@@ -9962,37 +9985,57 @@ ${indent(`${selector} {
     if (existing && !isOurs) {
       return snapshotExistingCollection(existing);
     }
-    if (existing && isOurs) {
-      existing.remove();
+    for (const collection2 of collections) {
+      if (collection2.getPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY) !== "") collection2.remove();
     }
+    const stamp = (/* @__PURE__ */ new Date()).toISOString();
     const collection = figma.variables.createVariableCollection("Breakpoints");
-    const [first, ...rest] = steps;
-    collection.renameMode(collection.defaultModeId, first.mode);
-    const modeIds = [collection.defaultModeId];
-    for (const step2 of rest) {
-      modeIds.push(collection.addMode(step2.mode));
+    collection.setPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY, stamp);
+    collection.renameMode(collection.defaultModeId, steps[0].mode);
+    const placed = [
+      { collection, modeId: collection.defaultModeId, step: steps[0] }
+    ];
+    let layout = "modes";
+    for (const step2 of steps.slice(1)) {
+      if (layout === "modes") {
+        try {
+          placed.push({ collection, modeId: collection.addMode(step2.mode), step: step2 });
+          continue;
+        } catch (e) {
+          layout = "split";
+        }
+      }
+      const companion = figma.variables.createVariableCollection(breakpointCompanionName(step2.mode));
+      companion.setPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY, stamp);
+      companion.renameMode(companion.defaultModeId, step2.mode);
+      placed.push({ collection: companion, modeId: companion.defaultModeId, step: step2 });
     }
-    const widthVar = figma.variables.createVariable("Width", collection, "FLOAT");
-    widthVar.description = "Breakpoint viewport width (px) per mode. Generated by AllCrew Figma Workspace plugin.";
-    widthVar.hiddenFromPublishing = false;
-    for (let i = 0; i < steps.length; i++) {
-      widthVar.setValueForMode(modeIds[i], steps[i].width);
+    const variables = /* @__PURE__ */ new Map();
+    for (const { collection: holder, modeId, step: step2 } of placed) {
+      let pair2 = variables.get(holder);
+      if (!pair2) {
+        const width = figma.variables.createVariable("Width", holder, "FLOAT");
+        width.description = "Breakpoint viewport width (px) per mode. Generated by AllCrew Figma Workspace plugin.";
+        width.hiddenFromPublishing = false;
+        const label3 = figma.variables.createVariable("Layout", holder, "STRING");
+        label3.description = "Breakpoint layout label (mode name) per mode. Generated by AllCrew Figma Workspace plugin.";
+        label3.hiddenFromPublishing = false;
+        pair2 = { width, label: label3 };
+        variables.set(holder, pair2);
+      }
+      pair2.width.setValueForMode(modeId, step2.width);
+      pair2.label.setValueForMode(modeId, step2.mode);
     }
-    const layoutVar = figma.variables.createVariable("Layout", collection, "STRING");
-    layoutVar.description = "Breakpoint layout label (mode name) per mode. Generated by AllCrew Figma Workspace plugin.";
-    layoutVar.hiddenFromPublishing = false;
-    for (let i = 0; i < steps.length; i++) {
-      layoutVar.setValueForMode(modeIds[i], steps[i].mode);
-    }
-    collection.setPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY, (/* @__PURE__ */ new Date()).toISOString());
     const widths = {};
     for (const step2 of steps) widths[step2.mode] = step2.width;
     return {
       collectionName: collection.name,
       regenerated: Boolean(existing && isOurs),
       modes: steps.map((s) => s.mode),
-      variableName: widthVar.name,
-      widths
+      variableName: "Width",
+      widths,
+      layout,
+      collections: [...variables.keys()].map((holder) => holder.name)
     };
   }
   async function snapshotExistingCollection(collection) {
@@ -10014,7 +10057,9 @@ ${indent(`${selector} {
       regenerated: false,
       modes,
       variableName: "",
-      widths
+      widths,
+      layout: "modes",
+      collections: [collection.name]
     };
   }
 

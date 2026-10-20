@@ -19,6 +19,7 @@ import type { IrContainerNode, IrInstanceRefNode, IrLayout, IrNode } from './ir.
 import { matchLayers, type DiffableNode, type LayerMatchResult } from './smart-animate/index.ts'
 import { emitCss, layoutDeclarations, toClassName, type DjangoNodeSource } from './css-emitter.ts'
 import type { VariableSnapshot } from '../../variables.ts'
+import { breakpointCompanionName } from '../../tokens/split-theme.ts'
 
 /** Canonical widths for the named-breakpoint convention (`<slug>/desktop|tablet|mobile`).
  * Used as the fallback when no "Breakpoints" variable collection exists in the Figma file. */
@@ -609,13 +610,18 @@ export interface BreakpointStep {
   width: number
 }
 
-/** The result of a generate/regenerate pass — surfaced to the UI as a report. */
+/** The result of a generate/regenerate pass — surfaced to the UI as a report. `layout` says
+ * where the steps live: one collection with a mode each, or — when the plan caps a collection
+ * at one mode — `Breakpoints` plus a `Breakpoints-<step>` collection per further step, which
+ * every reader folds back into one collection (`foldSplitThemeCollections`). */
 export interface GenerateBreakpointResult {
   collectionName: string
   regenerated: boolean
   modes: string[]
   variableName: string
   widths: Record<string, number>
+  layout: 'modes' | 'split'
+  collections: string[]
 }
 
 /** Normalises an arbitrary { mode → width } map into the ordered, validated list of steps
@@ -642,16 +648,18 @@ export function planBreakpointSteps(
  * collection's mode to preview each viewport; the plugin reads the per-mode values to drive
  * frame resizing and media-query thresholds.
  *
- * Re-generation: if a "Breakpoints" collection already exists AND is marked with this
- * plugin's `BREAKPOINT_COLLECTION_PLUGIN_KEY` pluginData, it is removed first and a fresh
- * collection is created — so a designer can tweak the step widths in the UI and regenerate
- * without leaving stale modes/variables behind. A pre-existing "Breakpoints" collection that
- * is NOT plugin-marked (i.e. hand-authored by the designer) is left untouched and a new
- * collection is NOT created; the generator reports `regenerated: false` and returns the
- * existing collection's mode/width snapshot so the UI can show the conflict.
+ * A plan that caps a collection at one mode refuses the second `addMode`. The steps from there
+ * on go into `Breakpoints-<step>` companions, each a single-mode collection with the same
+ * `Width` / `Layout` variables — the same trick the palette generator uses for a dark theme —
+ * and the readers fold them back into one collection with a mode per step.
  *
- * Runs in the Figma plugin sandbox — calls `figma.variables.*` directly. Not unit-tested;
- * the pure planning step (`planBreakpointSteps`) is.
+ * Re-generation: if a "Breakpoints" collection already exists AND is marked with this
+ * plugin's `BREAKPOINT_COLLECTION_PLUGIN_KEY` pluginData, it — and every marked companion — is
+ * removed first and a fresh set is created, so a designer can tweak the step widths in the UI
+ * and regenerate without leaving stale modes/variables behind. A pre-existing "Breakpoints"
+ * collection that is NOT plugin-marked (i.e. hand-authored by the designer) is left untouched
+ * and nothing is created; the generator reports `regenerated: false` and returns the existing
+ * collection's mode/width snapshot so the UI can show the conflict.
  */
 export async function generateBreakpointCollection(
   breakpoints: Record<string, number> = DEFAULT_BREAKPOINTS,
@@ -672,42 +680,60 @@ export async function generateBreakpointCollection(
     return snapshotExistingCollection(existing)
   }
 
-  if (existing && isOurs) {
-    existing.remove()
+  // Everything a previous run made, companions included: a regenerate that switched layouts
+  // (or dropped a step) must not leave a stale `Breakpoints-Tablet` for the fold to pick up.
+  for (const collection of collections) {
+    if (collection.getPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY) !== '') collection.remove()
   }
 
-  // Create the collection + one mode per breakpoint step.
+  const stamp = new Date().toISOString()
   const collection = figma.variables.createVariableCollection('Breakpoints')
+  collection.setPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY, stamp)
   // The freshly-created collection has one default mode ("Mode 1" / "Default"); rename it
   // to the first step, then add the rest. Keeping the default mode preserves the collection's
   // defaultModeId so existing mode-bindings don't dangle after a regenerate.
-  const [first, ...rest] = steps
-  collection.renameMode(collection.defaultModeId, first.mode)
-  const modeIds: string[] = [collection.defaultModeId]
-  for (const step of rest) {
-    modeIds.push(collection.addMode(step.mode))
+  collection.renameMode(collection.defaultModeId, steps[0].mode)
+  const placed: Array<{ collection: VariableCollection; modeId: string; step: BreakpointStep }> = [
+    { collection, modeId: collection.defaultModeId, step: steps[0] },
+  ]
+  let layout: GenerateBreakpointResult['layout'] = 'modes'
+  for (const step of steps.slice(1)) {
+    if (layout === 'modes') {
+      try {
+        placed.push({ collection, modeId: collection.addMode(step.mode), step })
+        continue
+      } catch {
+        // "Limited to 1 modes only" — the plan's cap, not a bad step.
+        layout = 'split'
+      }
+    }
+    const companion = figma.variables.createVariableCollection(breakpointCompanionName(step.mode))
+    companion.setPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY, stamp)
+    companion.renameMode(companion.defaultModeId, step.mode)
+    placed.push({ collection: companion, modeId: companion.defaultModeId, step })
   }
 
   // FLOAT variable "Width" — the px viewport width per mode (the single source of truth the
-  // designer edits; extractBreakpointTokens reads it back keyed by mode name).
-  const widthVar = figma.variables.createVariable('Width', collection, 'FLOAT')
-  widthVar.description = 'Breakpoint viewport width (px) per mode. Generated by AllCrew Figma Workspace plugin.'
-  widthVar.hiddenFromPublishing = false
-  for (let i = 0; i < steps.length; i++) {
-    widthVar.setValueForMode(modeIds[i], steps[i].width)
+  // designer edits; extractBreakpointTokens reads it back keyed by mode name). STRING variable
+  // "Layout" — the mode name itself, for prototypes and variants that key off a label rather
+  // than a px width. In the split layout each companion carries its own pair under the same
+  // names, which is what the fold pairs them on.
+  const variables = new Map<VariableCollection, { width: Variable; label: Variable }>()
+  for (const { collection: holder, modeId, step } of placed) {
+    let pair = variables.get(holder)
+    if (!pair) {
+      const width = figma.variables.createVariable('Width', holder, 'FLOAT')
+      width.description = 'Breakpoint viewport width (px) per mode. Generated by AllCrew Figma Workspace plugin.'
+      width.hiddenFromPublishing = false
+      const label = figma.variables.createVariable('Layout', holder, 'STRING')
+      label.description = 'Breakpoint layout label (mode name) per mode. Generated by AllCrew Figma Workspace plugin.'
+      label.hiddenFromPublishing = false
+      pair = { width, label }
+      variables.set(holder, pair)
+    }
+    pair.width.setValueForMode(modeId, step.width)
+    pair.label.setValueForMode(modeId, step.mode)
   }
-
-  // STRING variable "Layout" — holds the mode name itself per mode (e.g. Desktop mode →
-  // "Desktop", Mobile mode → "Mobile"). Case-sensitive. Useful for conditional logic in
-  // prototypes / component variants that key off a string label rather than a px width.
-  const layoutVar = figma.variables.createVariable('Layout', collection, 'STRING')
-  layoutVar.description = 'Breakpoint layout label (mode name) per mode. Generated by AllCrew Figma Workspace plugin.'
-  layoutVar.hiddenFromPublishing = false
-  for (let i = 0; i < steps.length; i++) {
-    layoutVar.setValueForMode(modeIds[i], steps[i].mode)
-  }
-
-  collection.setPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY, new Date().toISOString())
 
   const widths: Record<string, number> = {}
   for (const step of steps) widths[step.mode] = step.width
@@ -716,8 +742,10 @@ export async function generateBreakpointCollection(
     collectionName: collection.name,
     regenerated: Boolean(existing && isOurs),
     modes: steps.map((s) => s.mode),
-    variableName: widthVar.name,
+    variableName: 'Width',
     widths,
+    layout,
+    collections: [...variables.keys()].map((holder) => holder.name),
   }
 }
 
@@ -747,5 +775,7 @@ async function snapshotExistingCollection(
     modes,
     variableName: '',
     widths,
+    layout: 'modes',
+    collections: [collection.name],
   }
 }

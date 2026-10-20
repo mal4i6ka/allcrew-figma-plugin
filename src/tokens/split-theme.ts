@@ -59,6 +59,8 @@ export interface CollectionMerge {
 
 const DARK_COMPANION = /^(.+?)[ _-]dark$/i
 const LIGHT_COLLECTION = /^(.+?)[ _-]light$/i
+const BREAKPOINTS = 'breakpoints'
+const BREAKPOINT_COMPANION = /^breakpoints[ _-](.+)$/i
 const GENERIC_MODE_NAMES = ['mode 1', 'mode', 'value', 'default']
 const normalize = (name: string): string => name.trim().toLowerCase()
 const isGenericModeName = (name: string): boolean =>
@@ -199,6 +201,29 @@ function automaticMerges(snapshot: SplitThemeSnapshot, used: Set<string>): Resol
     if (!match) continue
     add(match[1], byName.get(normalize(match[1])), dark)
   }
+
+  // Breakpoint generator on a single-mode plan: `Breakpoints` holds the first step and each
+  // further step lives in `Breakpoints-<step>` with the same variables → one `Breakpoints`
+  // collection with a mode per step, exactly what a paid-plan generator writes.
+  for (const base of snapshot.collections) {
+    if (normalize(base.name) !== BREAKPOINTS || used.has(base.id)) continue
+    const baseModeId = base.defaultModeId || base.modes[0]?.modeId
+    if (!baseModeId) continue
+    const modes: ResolvedMerge['modes'] = [{ collection: base, name: defaultModeNameOf(base, 'Desktop'), modeId: baseModeId }]
+    const seen = new Set([normalize(modes[0].name)])
+    for (const companion of snapshot.collections) {
+      const match = BREAKPOINT_COMPANION.exec(companion.name.trim())
+      if (!match || used.has(companion.id) || !collectionsOverlap(base, companion, namesByCollection)) continue
+      const modeId = companion.defaultModeId || companion.modes[0]?.modeId
+      const name = defaultModeNameOf(companion, match[1].trim())
+      if (!modeId || seen.has(normalize(name))) continue
+      seen.add(normalize(name))
+      modes.push({ collection: companion, name, modeId })
+    }
+    if (modes.length < 2) continue
+    resolved.push({ name: base.name, modes })
+    for (const mode of modes) used.add(mode.collection.id)
+  }
   return resolved
 }
 
@@ -287,6 +312,9 @@ export function foldSplitThemeCollections<
 }
 
 export const darkCompanionName = (themeCollectionName: string): string => `${themeCollectionName.trim()}-dark`
+
+/** Where the generator puts one breakpoint step when the plan allows a single mode. */
+export const breakpointCompanionName = (step: string): string => `Breakpoints-${step.trim()}`
 
 export function isDarkCompanionOf(name: string, base: string): boolean {
   const match = DARK_COMPANION.exec(name.trim())

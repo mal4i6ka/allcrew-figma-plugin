@@ -1858,7 +1858,7 @@
       <section class="card gen hidden" id="dt-genBpCard" data-ds-tool-screen="breakpoints" style="border-color:var(--border);background:var(--surface);">
         <div class="gen-row">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 5h16M4 12h16M4 19h16" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
-          <span class="gen-text"><b>Generate Breakpoint variables</b><i id="dt-genBpHint">No Breakpoints collection found. Create a modes-as-breakpoints collection (Desktop/Tablet/Mobile) with a Width variable per mode.</i></span>
+          <span class="gen-text"><b>Generate Breakpoint variables</b><i id="dt-genBpHint">No Breakpoints collection found. Create a modes-as-breakpoints collection (Desktop/Tablet/Mobile) with a Width variable per mode. On a plan limited to one mode, each further step goes into a linked <code>Breakpoints-&lt;step&gt;</code> collection that exports read as one.</i></span>
         </div>
         <button class="btn primary" id="dt-genBpBtn">Generate Breakpoints</button>
         <div class="gen-row" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
@@ -8497,6 +8497,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           var wKeys = Object.keys(msg.widths || {})
           var wNote = wKeys.length > 0 ? ' — ' + wKeys.map(function (k) { return k + '=' + msg.widths[k] }).join(', ') : ''
           var bpGenMsg = (msg.regenerated ? 'Re-generated: ' : 'Created: ') + msg.modes.join(', ') + wNote
+          // A single-mode plan: one collection per step, folded back into one on export.
+          if (msg.layout === 'split') {
+            bpGenMsg += ' · one mode per collection on this plan — ' + (msg.collections || []).join(', ') +
+              '; exports and frame sync read them as one Breakpoints collection'
+          }
           renderGenBpStatus(bpGenMsg, 'ok')
           document.getElementById('dt-genBpHint').className = ''
           document.getElementById('dt-genBpHint').textContent = bpGenMsg

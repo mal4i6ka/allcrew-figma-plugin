@@ -2,6 +2,12 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **Generate Breakpoints** now works on plans that cap a collection at one mode: the first step stays in `Breakpoints` and each further step goes into a linked single-mode `Breakpoints-<step>` collection with the same `Width`/`Layout` variables — the same layout the palette generator uses for a dark theme. Frame sync, Django breakpoints and the token export fold them back into one `Breakpoints` collection with a mode per step; regenerating replaces every collection the previous run made.
+
 ## 1.11.1 — 2026-10-19
 
 ### Added
