@@ -9981,12 +9981,12 @@ ${indent(`${selector} {
     }
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
     const existing = collections.find((c) => c.name.trim().toLowerCase() === "breakpoints");
-    const isOurs = existing && existing.getPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY) !== "";
+    const isOurs = existing && (existing.getPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY) !== "" || existing.variableIds.length === 0);
     if (existing && !isOurs) {
       return snapshotExistingCollection(existing);
     }
     for (const collection2 of collections) {
-      if (collection2.getPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY) !== "") collection2.remove();
+      if (collection2 === existing || collection2.getPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY) !== "") collection2.remove();
     }
     const stamp = (/* @__PURE__ */ new Date()).toISOString();
     const collection = figma.variables.createVariableCollection("Breakpoints");

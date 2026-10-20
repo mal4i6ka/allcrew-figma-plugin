@@ -671,8 +671,10 @@ export async function generateBreakpointCollection(
 
   const collections = await figma.variables.getLocalVariableCollectionsAsync()
   const existing = collections.find((c) => c.name.trim().toLowerCase() === 'breakpoints')
+  // An EMPTY collection holds nothing to clobber: it is what an earlier generator left behind
+  // when the plan refused its second mode before any variable or marker was written.
   const isOurs =
-    existing && existing.getPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY) !== ''
+    existing && (existing.getPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY) !== '' || existing.variableIds.length === 0)
 
   if (existing && !isOurs) {
     // Hand-authored collection — don't clobber it. Report what's there so the UI can guide
@@ -683,7 +685,7 @@ export async function generateBreakpointCollection(
   // Everything a previous run made, companions included: a regenerate that switched layouts
   // (or dropped a step) must not leave a stale `Breakpoints-Tablet` for the fold to pick up.
   for (const collection of collections) {
-    if (collection.getPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY) !== '') collection.remove()
+    if (collection === existing || collection.getPluginData(BREAKPOINT_COLLECTION_PLUGIN_KEY) !== '') collection.remove()
   }
 
   const stamp = new Date().toISOString()

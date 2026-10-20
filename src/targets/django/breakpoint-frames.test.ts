@@ -171,6 +171,7 @@ function singleModeFigma(capModes: boolean) {
   const figma = {
     variables: {
       getLocalVariableCollectionsAsync: async () => collections.slice(),
+      getVariableByIdAsync: async (id: string) => variables.find((v) => v.id === id) ?? null,
       createVariableCollection(name: string) {
         const id = `c${next++}`
         const data: Record<string, string> = {}
@@ -190,6 +191,7 @@ function singleModeFigma(capModes: boolean) {
           },
           setPluginData(key: string, value: string) { data[key] = value },
           getPluginData(key: string) { return data[key] ?? '' },
+          get variableIds() { return variables.filter((v) => v.collectionId === id).map((v) => v.id) },
           remove() { collections.splice(collections.indexOf(collection), 1) },
         }
         collections.push(collection)
@@ -238,6 +240,28 @@ test('a single-mode plan gets one collection per breakpoint, and reads back as o
   // Regenerating replaces every collection the last run made — no stale companion is left.
   await generateBreakpointCollection({ Desktop: 1280, Mobile: 375 })
   assert.deepEqual(fake.collections.map((c) => c.name), ['Breakpoints', 'Breakpoints-Mobile'])
+})
+
+test('an empty Breakpoints collection left by a failed run is replaced, a hand-made one is not', async (t) => {
+  const fake = singleModeFigma(true)
+  const global = globalThis as { figma?: unknown }
+  const previous = global.figma
+  global.figma = fake.figma
+  t.after(() => { global.figma = previous })
+
+  // What the old generator left when the plan refused its second mode: no marker, no variables.
+  fake.figma.variables.createVariableCollection('Breakpoints')
+  const result = await generateBreakpointCollection()
+  assert.equal(result.layout, 'split')
+  assert.deepEqual(fake.collections.map((c) => c.name), ['Breakpoints', 'Breakpoints-Tablet', 'Breakpoints-Mobile'])
+
+  // A designer's own collection — it has variables and no marker — is reported, not replaced.
+  for (const collection of [...fake.collections]) (collection as { remove(): void }).remove()
+  const own = fake.figma.variables.createVariableCollection('Breakpoints')
+  fake.figma.variables.createVariable('Width', own, 'FLOAT').setValueForMode(own.defaultModeId, 1200)
+  const kept = await generateBreakpointCollection()
+  assert.equal(kept.regenerated, false)
+  assert.deepEqual(fake.collections.map((c) => c.name), ['Breakpoints'])
 })
 
 test('a plan with modes keeps the one-collection layout', async (t) => {
