@@ -130,6 +130,7 @@ import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TE
 import { planFont, planProps } from './canvas/props.ts'
 import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
+import { fileKeyFrom } from './targets/react/code-connect.ts'
 import { componentName as reactComponentName } from './targets/react/jsx.ts'
 import type { MotionSnapshot } from './targets/django/motion/types.ts'
 import { exportVectorAsset } from './targets/django/assets.ts'
@@ -303,6 +304,7 @@ type PluginMessage =
       components?: unknown
       libraryComponents?: boolean
       limit?: number
+      fileUrl?: string
     }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
@@ -3205,6 +3207,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param components: component or component-set ids that come out alongside the screen — how you take the two icons a screen needs without emitting a page of four hundred
       // @agent param libraryComponents: whether the design-system components the screen instantiates are read out of the library file and emitted too — true by default, false to leave them as imports for a package you already have in code
       // @agent param pages: page ids whose components come out ALONGSIDE the screen — the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold
+      // @agent param fileUrl: the design file's Figma URL (or bare key) — what the Code Connect templates link to when this plugin cannot read figma.fileKey, which is everywhere except a private Organization plugin
       // @agent cost: reads the scope and every variable, like the Django emitter — narrow the scope to a frame
       try {
         // A page of components is a different shape from a screen, and it is asked for by naming
@@ -3406,9 +3409,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           libraryProps: library.props,
           componentNamesById: library.names,
           tokensCss: tokens.css,
-          // Code Connect addresses a node by URL, not by anything this plugin publishes itself —
-          // both halves of that URL come from the live document, the same as everything else here.
-          fileKey: figma.fileKey ?? undefined,
+          // Code Connect addresses a node by URL, and the key in it comes from the document when
+          // the plugin is granted `figma.fileKey`, else from the URL the caller passed — never
+          // guessed, because a template published against the wrong file maps nothing.
+          fileKey: figma.fileKey ?? fileKeyFrom(msg.fileUrl) ?? undefined,
           fileName: figma.root.name,
           // By master, not by name: the library emitted these exact components, and a screen
           // holding a DIFFERENT component of the same name must still build its own.

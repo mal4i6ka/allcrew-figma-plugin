@@ -185,6 +185,22 @@ marked `[writes to the document]` in its tool description), the 409 ambiguity re
 with the roster attached, and large results are still written to disk as paths rather than
 inlined.
 
+**Protocol.** The server speaks both MCP eras. A client that sends `initialize` negotiates one of
+`2024-11-05`, `2025-03-26`, `2025-06-18` or `2025-11-25` (an unknown version is answered with the
+newest of those, never echoed). A `2026-07-28` client calls `server/discover` and sends the
+per-request `_meta` that revision requires (`io.modelcontextprotocol/protocolVersion`,
+`…/clientCapabilities`); every result carries `resultType`. In both eras:
+
+- each tool has a `title` and **annotations** derived from the op itself — `readOnlyHint` for an op
+  that does not mutate, `destructiveHint` for one that deletes or irreversibly replaces
+  (`node.remove`, `variables.remove`, `style.remove`, `instance.detach`, `collections.update`,
+  `pages.update`, `modules.remove`, `comments.remove`, `codeconnect.publish`,
+  `codeconnect.unpublish`), `openWorldHint` for one that reaches Figma's servers;
+- results come as `structuredContent` as well as the JSON text older clients read;
+- `notifications/cancelled` aborts the in-flight bridge request. A write the plugin already
+  accepted may still complete — cancelling is not a rollback. No progress is invented: none is
+  sent until the bridge reports real progress.
+
 ---
 
 ## No Figma API token
@@ -440,9 +456,14 @@ allcrew-channel ops --json       # the same, machine-readable
 | `history.blame` | which checkpoint changed a node, and who made it. Bisects the version list, so it costs log2(N) renders instead of N |
 | `org.capabilities` | what this machine can see of the organisation, per surface, with the one remedy where it cannot — pass `fileKey` to make the library-analytics answer conclusive |
 | `org.activity` | the organisation audit log: who did what, including access granted and revoked. OAuth grant (`allcrew-channel auth`), Enterprise, org admin; `events`, `since`, `until`, `all` page through it with a ceiling |
-| `org.projects` / `org.files` | the project tree the audit log refers to by id, and when each file was last modified, stalest first. Personal token |
+| `org.projects` / `org.files` | the folder tree the audit log refers to by id (Figma's nested folders, v2 endpoints — `recursive`/`depth` walk subfolders within page, node and time ceilings, each folder with its `path`), and when each file was last modified, stalest first. A former project id is a folder id. Personal token with `folders:read` |
 | `library.actions` | weekly insertions and detachments of a library's components, styles or variables, by asset or by team — the detach rate is the finding. Personal token with `library_analytics:read` |
 | `library.usages` | where a library's assets are in use right now, by asset or by consuming file; a published asset with zero usages is a deprecation candidate |
+| `codeconnect.parse` | what the Code Connect templates in a repository say, as the official CLI parses them — component URL, name, source, label. Offline, no token |
+| `codeconnect.preview` | the snippet each template renders in Dev Mode, rendered by the official CLI against the real component. Needs a token |
+| `codeconnect.map` | which Figma components already have code: every template in `dir` (its `url=`/`source=`/`component=` header) plus the desktop Dev Mode MCP's `get_code_connect_map` for `nodeId` when Figma offers that tool — each entry names its `origin`, and `sources` says which source answered and why one did not |
+| `figma.mcp.tools` | the tools Figma's own **desktop** Dev Mode MCP server offers right now (it is read-only by Figma's design) |
+| `figma.mcp` | calls one of those tools with `arguments` — `get_design_context`, `get_metadata`, `get_variable_defs`, `get_screenshot`… — so an agent connected only to AllCrew reaches them; a large image comes back as a file path, and a tool's own refusal (no Dev Mode seat) comes back as an error, not as content |
 | `node.states` | what actually changes on hover, press or overlay: property-level deltas between the state variants, not a wall of CSS |
 | `frames.compare` | how the 375 frame differs from the 1440 one — matched layers with their deltas, plus what only exists on one side |
 | `motion.context` | keyframe tracks with easing (as a name and as a curve), the CSS/GSAP they compile to, which backend fits, and `playhead` — where the designer has the Motion timeline parked (a keyframe `time` may be `"playhead"`) — `target: "native"` drops that verdict and its files, which are a browser answer |
@@ -505,6 +526,16 @@ file is as visible as a layer moved in it. See "Annotating a design" below.
 | `comments.reply` | replies to a thread — and the honest answer to "mark it done", since nothing can tick it |
 | `comments.remove` | deletes a comment. Permanently, and only one the token's own user posted. Not an archive: Figma has none |
 | `comments.react` | adds or removes an emoji reaction — the lightest acknowledgement the API has, and explicitly not resolution |
+
+Two more change what Figma shows for a **component** rather than the document: the Code Connect
+mappings. They run the pinned official CLI (`@figma/code-connect` 2.0.2) on the repository
+directory you name and, like the comment writes, need the plugin's write gate. See "Code Connect"
+below.
+
+| Op | Does |
+|----|------|
+| `codeconnect.publish` | validates the repository's templates against Figma and, with `dryRun: false`, publishes them — a dry run by default; `force` overwrites mappings made in Code Connect UI |
+| `codeconnect.unpublish` | removes published mappings: those the templates in `dir` name, or one `node` URL + `label` |
 
 Params are a JSON argument, or `-` to read stdin:
 
@@ -749,7 +780,7 @@ writes code from the pixels while the file could have told it the token, the var
 transition.
 
 `guide.list` names the tasks (`file.bootstrap`, `product.fidelity`, `screen.build`, `mobile.app`,
-`system.extract`, `motion.implement`, `fidelity.check`, `document.write`, `component.repair`); `guide.get` hands one back with its
+`system.extract`, `motion.implement`, `fidelity.check`, `document.write`, `component.repair`, `library.reuse`); `guide.get` hands one back with its
 steps, the example params for each, what to verify when it is finished, and the traps the task
 has. Each step carries the op's *own* summary and guidance alongside it, so a playbook is one
 call rather than one plus five lookups.
@@ -1146,6 +1177,49 @@ token-holder reading comments over REST is doing what the Figma web app does.
 A personal token needs the **`file_comments:read`** scope to list and **`file_comments:write`**
 to post. Both are chosen when the token is created and cannot be added afterwards — and a missing
 scope arrives as the same 403 as an expired token, so the refusal names both possibilities.
+
+---
+
+## Code Connect, and Figma's own MCP server
+
+Code Connect is how Figma learns which component of a repository a design component *is*, so Dev
+Mode and the official MCP answer with `<Button type="Primary" />` and a real import. Since Code
+Connect 2 the only format is the **template file** — `<Component>.figma.ts` with
+`// url=` / `// source=` / `// component=` header lines and a default export built on
+`figma.selectedInstance`; the `figma.connect(...)` parser files of 1.x are refused. The React export
+writes templates (pass `fileUrl` to `EMIT_REACT`; the bridge fills in the file key from Figma
+Desktop's open tab when the caller does not).
+
+The bridge runs the official CLI rather than re-creating its protocol:
+
+```bash
+allcrew-channel call codeconnect.map '{"dir":"./web"}'          # what already has code
+allcrew-channel call codeconnect.parse '{"dir":"./web"}'        # offline, no token
+allcrew-channel call codeconnect.publish '{"dir":"./web"}'      # dry run: validate against Figma
+allcrew-channel call codeconnect.publish '{"dir":"./web","dryRun":false}'   # needs "Allow changes"
+```
+
+- The CLI version is pinned (`@figma/code-connect@2.0.2`, or the repository's own
+  `node_modules/.bin/figma` when installed), run with an argv array, never a shell string.
+- The token goes to the child as `FIGMA_ACCESS_TOKEN` only — never on argv — and is redacted from
+  the returned log. `DO_NOT_TRACK=1` is set unless you set it otherwise. `preview` and `publish`
+  need a token with **Code Connect: Write** + **File content: Read** (a PAT works, Professional
+  included; on Organization/Enterprise a **Figma CLI** plan token too); `parse` and `map` do not.
+- Answers are structured: `files`, `components`, `urls`, `errors`, the CLI's own JSON as `output`,
+  and the tail of its log.
+
+**Reuse before you build.** The official remote MCP is what can search a library
+(`search_design_system`, `get_libraries`) — the Plugin API cannot enumerate a published
+component library. The `library.reuse` playbook strings the two servers together: search with
+Figma's, check `codeconnect.map` for existing code, then insert or bind with AllCrew's typed ops by
+published key (`NODE_CREATE` `{ kind: "instance", of: <key> }`, `instance.swap` `to`, `node.bind`
+`variable`, `node.style` `style`).
+
+**Figma's desktop server, through the bridge.** When Figma Desktop runs its Dev Mode MCP server
+(`http://127.0.0.1:3845/mcp`, override with `ALLCREW_CHANNEL_FIGMA_MCP_URL`), `figma.mcp.tools`
+lists its tools and `figma.mcp` calls one. It is read-only by Figma's design and needs a seat with
+Dev Mode; without one Figma answers "make sure their paid Figma seat includes Dev Mode access",
+which comes back as a `figma_threw` error rather than as content.
 
 ---
 

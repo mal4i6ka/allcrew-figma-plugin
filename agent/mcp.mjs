@@ -47,10 +47,11 @@ const SECRET_FILE =
   process.env.ALLCREW_CHANNEL_AGENT_SECRET_FILE || path.join(os.homedir(), '.allcrew-channel', 'agent-secret')
 const DEFAULT_TARGET = process.env.ALLCREW_CHANNEL_AGENT_FILE || ''
 
-/** The MCP revision we answer with when a client does not pin one of its own. Kept old enough
- * that a client on an older revision still recognises it; a client that sends a newer one gets
- * it echoed back, which is what the spec asks for. */
-const PROTOCOL_VERSION = '2024-11-05'
+/** Initialization-based clients negotiate the newest legacy revision they understand. Modern
+ * clients use 2026-07-28 metadata independently on every request. */
+const LEGACY_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
+const MODERN_PROTOCOL_VERSION = '2026-07-28'
+const PROTOCOL_VERSION = LEGACY_PROTOCOL_VERSIONS[0]
 const SERVER_INFO = { name: 'allcrew-channel', version: '1.0.0' }
 
 /** Same order the bridge and the CLI resolve in, so none of the three needs configuring on a
@@ -73,13 +74,14 @@ function log(...args) {
 
 /** One request to the bridge. Never throws: a dead bridge or a rejected secret is an answer an
  * agent can act on, not a crash that takes the MCP session down with it. */
-async function bridge(method, route, body) {
+async function bridge(method, route, body, signal) {
   let response
   try {
     response = await fetch(BASE + route, {
       method,
       headers: { 'content-type': 'application/json', 'x-allcrew-channel-secret': SECRET },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(signal ? { signal } : {}),
     })
   } catch (err) {
     return {
@@ -163,8 +165,8 @@ function paramToSchema(spec) {
   }
 }
 
-/** One op → one tool. The description leads with the op's own summary and, where it has one,
- * the longer `agent` note, because that note is written for exactly this reader. */
+/** One op → one tool. Safety annotations deliberately use explicit false values: MCP defaults
+ * an omitted destructive hint to true, which would make an additive write look like deletion. */
 function opToTool(op) {
   const properties = {}
   const required = []
@@ -179,12 +181,25 @@ function opToTool(op) {
     .trim()
   return {
     name: toolName(op.name),
+    title: op.name
+      .split(/[._-]+/)
+      .filter(Boolean)
+      .map((word) => word[0].toUpperCase() + word.slice(1))
+      .join(' '),
     description: description || op.name,
+    annotations: {
+      readOnlyHint: op.mutates !== true,
+      destructiveHint: op.destructive === true,
+      idempotentHint: op.mutates !== true,
+      // REST ops reach Figma's servers; a bridge op that does too (a Code Connect publish) says so.
+      openWorldHint: op.source === 'rest' || op.openWorld === true,
+    },
     inputSchema: {
       type: 'object',
       properties,
       ...(required.length ? { required } : {}),
     },
+    ...(op.outputSchema && typeof op.outputSchema === 'object' ? { outputSchema: op.outputSchema } : {}),
   }
 }
 
@@ -195,12 +210,16 @@ function opToTool(op) {
 const META_TOOLS = [
   {
     name: 'allcrew_channel_status',
+    title: 'AllCrew Channel Status',
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description:
       'List the Figma files currently connected through the AllCrew Figma Workspace bridge and what each one allows (read / write). Call this first: the other tools act on one of these files.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'allcrew_channel_call',
+    title: 'Call AllCrew Operation',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     description:
       'Run any AllCrew Figma Workspace op by name against a connected Figma file — the universal doorway. Prefer the named tool for an op when one is listed; use this for ops not surfaced as their own tool (e.g. plugin.call, which runs a panel command). Discover ops from allcrew_channel_status → the per-op tools, or by calling plugin.commands through this.',
     inputSchema: {
@@ -216,6 +235,8 @@ const META_TOOLS = [
   },
   {
     name: 'allcrew_channel_batch',
+    title: 'Run AllCrew Operation Batch',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     description:
       'Run several ops against one Figma file in a single round trip, strictly in order. Use this whenever you are composing something — a screen is dozens of writes, and one call each means one poll wake-up, one undo entry for the designer and one timeout gamble each. Stops at the first failure unless continueOnError is set, and the answer says how far it got (`ran`, `of`, `failedAt`) so a half-applied batch is never ambiguous. Max 32 ops; send more as several batches.',
     inputSchema: {
@@ -249,8 +270,8 @@ const META_TOOLS = [
 /** Build the whole tool list: the two meta tools, then one typed tool per op the connected
  * files publish. Ops are unioned by name across files — two files may run different builds, and
  * the `target` argument decides which one a call lands on, so a single tool per name is right. */
-async function listTools() {
-  const result = await bridge('GET', '/ops')
+async function listTools(signal) {
+  const result = await bridge('GET', '/ops', undefined, signal)
   // Collect the ops first, then swap the name map in one synchronous step *after* the await —
   // so a tools/call that runs concurrently with a re-list still sees the previous map rather
   // than an empty one cleared at the top.
@@ -290,10 +311,18 @@ async function listTools() {
  * bridge's own message — including the roster on a 409 ambiguity refusal, which is the
  * actionable half of that answer — rather than as a protocol error, so the model reads the
  * reason and picks a target instead of seeing the call vanish. */
+function structuredResult(payload, isError = false) {
+  return {
+    content: [{ type: 'text', text: typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2) }],
+    structuredContent: payload,
+    ...(isError ? { isError: true } : {}),
+  }
+}
+
 function toResult(answer) {
-  if (!answer.ok) return { content: [{ type: 'text', text: answer.error }], isError: true }
+  if (!answer.ok) return structuredResult({ error: answer.error }, true)
   const body = answer.body
-  if (!body || body.ok === false) {
+  if (!body || (body.ok === false && !body.batch)) {
     let text = body?.error || `the op failed (HTTP ${answer.status})`
     /* The machine-readable half, spelled out for a model: `code` is what to branch on and
      * `retryable` is the branch it almost always wants. Without these a model reads English and
@@ -303,7 +332,16 @@ function toResult(answer) {
       text +=
         '\n\nConnected files:\n' + body.files.map((f) => `  ${f.handle}  ${f.file}`).join('\n') + '\n\nPass "target" to choose one.'
     }
-    return { content: [{ type: 'text', text }], isError: true }
+    return {
+      content: [{ type: 'text', text }],
+      structuredContent: {
+        error: body?.error || `the op failed (HTTP ${answer.status})`,
+        ...(body?.code ? { code: body.code } : {}),
+        ...(typeof body?.retryable === 'boolean' ? { retryable: body.retryable } : {}),
+        ...(Array.isArray(body?.files) ? { files: body.files } : {}),
+      },
+      isError: true,
+    }
   }
   /* A batch answers per call, a broadcast per file, a single call names the one that replied.
    * Either way the document that answered is part of the answer — a model that cannot see it
@@ -311,52 +349,62 @@ function toResult(answer) {
    * error even though the HTTP status is 200: the batch RAN, and something in it did not. */
   if (body.batch) {
     const payload = { batch: true, ran: body.ran, of: body.of, ...(body.failedAt !== undefined ? { failedAt: body.failedAt } : {}), results: body.results }
-    return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], ...(body.ok ? {} : { isError: true }) }
+    return structuredResult(payload, !body.ok)
   }
   const payload = body.broadcast
     ? { op: body.op, broadcast: true, count: body.count, results: body.results }
     : { op: body.op, file: body.file, handle: body.handle, result: body.result }
-  return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] }
+  return structuredResult(payload)
 }
 
-async function callTool(name, args) {
+async function callTool(name, args, signal) {
   const params = args && typeof args === 'object' ? { ...args } : {}
 
   if (name === 'allcrew_channel_status') {
-    const answer = await bridge('GET', '/status')
-    if (!answer.ok) return { content: [{ type: 'text', text: answer.error }], isError: true }
-    return { content: [{ type: 'text', text: JSON.stringify(answer.body, null, 2) }] }
+    const answer = await bridge('GET', '/status', undefined, signal)
+    if (!answer.ok) return structuredResult({ error: answer.error }, true)
+    return structuredResult(answer.body)
   }
 
   if (name === 'allcrew_channel_call') {
     const op = typeof params.op === 'string' ? params.op : ''
-    if (!op) return { content: [{ type: 'text', text: 'allcrew_channel_call needs an "op".' }], isError: true }
+    if (!op) return structuredResult({ error: 'allcrew_channel_call needs an "op".' }, true)
     const target = pickTarget(params.target)
     const fileKey = typeof params.fileKey === 'string' ? params.fileKey : ''
     return toResult(
-      await bridge('POST', '/call', {
-        op,
-        params: params.params || {},
-        ...(target ? { target } : {}),
-        ...(fileKey ? { fileKey } : {}),
-      })
+      await bridge(
+        'POST',
+        '/call',
+        {
+          op,
+          params: params.params || {},
+          ...(target ? { target } : {}),
+          ...(fileKey ? { fileKey } : {}),
+        },
+        signal
+      )
     )
   }
 
   if (name === 'allcrew_channel_batch') {
     const calls = Array.isArray(params.calls) ? params.calls : null
     if (!calls || calls.length === 0) {
-      return { content: [{ type: 'text', text: 'allcrew_channel_batch needs a non-empty "calls" array of { op, params }.' }], isError: true }
+      return structuredResult({ error: 'allcrew_channel_batch needs a non-empty "calls" array of { op, params }.' }, true)
     }
     const target = pickTarget(params.target)
     const fileKey = typeof params.fileKey === 'string' ? params.fileKey : ''
     return toResult(
-      await bridge('POST', '/calls', {
-        calls,
-        ...(params.continueOnError === true ? { continueOnError: true } : {}),
-        ...(target ? { target } : {}),
-        ...(fileKey ? { fileKey } : {}),
-      })
+      await bridge(
+        'POST',
+        '/calls',
+        {
+          calls,
+          ...(params.continueOnError === true ? { continueOnError: true } : {}),
+          ...(target ? { target } : {}),
+          ...(fileKey ? { fileKey } : {}),
+        },
+        signal
+      )
     )
   }
 
@@ -365,10 +413,10 @@ async function callTool(name, args) {
   // valid tool never fails purely on ordering.
   let op = toolToOp.get(name)
   if (!op) {
-    await listTools()
+    await listTools(signal)
     op = toolToOp.get(name)
   }
-  if (!op) return { content: [{ type: 'text', text: `unknown tool "${name}" — call tools/list again; the connected files may have changed.` }], isError: true }
+  if (!op) return structuredResult({ error: `unknown tool "${name}" — call tools/list again; the connected files may have changed.` }, true)
   const target = pickTarget(params.target)
   delete params.target
   // `fileKey` travels beside the params, not inside them: it addresses the FILE, the same slot
@@ -376,7 +424,7 @@ async function callTool(name, args) {
   const fileKey = typeof params.fileKey === 'string' ? params.fileKey : ''
   delete params.fileKey
   return toResult(
-    await bridge('POST', '/call', { op, params, ...(target ? { target } : {}), ...(fileKey ? { fileKey } : {}) })
+    await bridge('POST', '/call', { op, params, ...(target ? { target } : {}), ...(fileKey ? { fileKey } : {}) }, signal)
   )
 }
 
@@ -397,60 +445,135 @@ function send(message) {
     () => new Promise((resolve) => process.stdout.write(line, resolve)),
   )
 }
-function reply(id, result) {
-  send({ jsonrpc: '2.0', id, result })
+function response(id, result) {
+  return { jsonrpc: '2.0', id, result }
 }
-function fail(id, code, message) {
-  send({ jsonrpc: '2.0', id, error: { code, message } })
+function errorResponse(id, code, message, data) {
+  return { jsonrpc: '2.0', id, error: { code, message, ...(data === undefined ? {} : { data }) } }
+}
+
+function modernResult(result) {
+  return {
+    resultType: 'complete',
+    ...result,
+    _meta: {
+      ...(result?._meta || {}),
+      'io.modelcontextprotocol/serverInfo': SERVER_INFO,
+    },
+  }
 }
 
 export function initializeResult(clientVersion = PROTOCOL_VERSION) {
+  const protocolVersion = LEGACY_PROTOCOL_VERSIONS.includes(clientVersion) ? clientVersion : PROTOCOL_VERSION
   return {
-    protocolVersion: clientVersion,
+    protocolVersion,
     capabilities: { tools: { listChanged: true } },
     serverInfo: SERVER_INFO,
     instructions: fidelityInstructions(),
   }
 }
 
-let initialized = false
+export function discoverResult() {
+  return modernResult({
+    supportedVersions: [MODERN_PROTOCOL_VERSION],
+    capabilities: { tools: {} },
+    instructions: fidelityInstructions(),
+    ttlMs: 3_600_000,
+    cacheScope: 'private',
+  })
+}
 
-async function handle(message) {
-  if (message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
-    if (message.id !== undefined) fail(message.id ?? null, -32600, 'invalid request')
+const inFlight = new Map()
+const requestKey = (id) => `${typeof id}:${String(id)}`
+
+export async function handle(message, emit = send) {
+  if (!message || message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
+    if (message?.id !== undefined) emit(errorResponse(message.id ?? null, -32600, 'invalid request'))
     return
   }
   const { id, method, params } = message
   const isRequest = id !== undefined && id !== null
 
+  if (method === 'notifications/cancelled') {
+    const controller = inFlight.get(requestKey(params?.requestId))
+    if (controller) controller.abort(params?.reason)
+    return
+  }
+  if (method === 'notifications/initialized') return
+  if (!isRequest) return
+
+  const requestedVersion = params?._meta?.['io.modelcontextprotocol/protocolVersion']
+  const isModern = typeof requestedVersion === 'string'
+  if (isModern && requestedVersion !== MODERN_PROTOCOL_VERSION) {
+    if (isRequest) {
+      emit(
+        errorResponse(id, -32022, 'Unsupported protocol version', {
+          supported: [MODERN_PROTOCOL_VERSION],
+          requested: requestedVersion,
+        })
+      )
+    }
+    return
+  }
+  if (
+    isModern &&
+    (!params._meta['io.modelcontextprotocol/clientCapabilities'] ||
+      typeof params._meta['io.modelcontextprotocol/clientCapabilities'] !== 'object' ||
+      Array.isArray(params._meta['io.modelcontextprotocol/clientCapabilities']))
+  ) {
+    if (isRequest) emit(errorResponse(id, -32602, 'Modern requests require client capabilities in _meta'))
+    return
+  }
+
+  const reply = (result) => emit(response(id, isModern ? modernResult(result) : result))
+  const fail = (code, text, data) => emit(errorResponse(id, code, text, data))
+
   switch (method) {
     case 'initialize': {
-      initialized = true
+      if (isModern) {
+        if (isRequest) fail(-32601, 'method not found: initialize')
+        return
+      }
       const clientVersion = typeof params?.protocolVersion === 'string' ? params.protocolVersion : PROTOCOL_VERSION
-      reply(id, initializeResult(clientVersion))
+      reply(initializeResult(clientVersion))
       startRosterWatch()
       return
     }
-    case 'notifications/initialized':
-    case 'notifications/cancelled':
-      return // notifications: nothing to answer
+    case 'server/discover':
+      if (!isModern) {
+        if (isRequest) fail(-32601, 'method not found: server/discover')
+        return
+      }
+      emit(response(id, discoverResult()))
+      return
     case 'ping':
-      if (isRequest) reply(id, {})
+      if (isRequest) {
+        if (isModern) fail(-32601, 'method not found: ping')
+        else reply({})
+      }
       return
-    case 'tools/list': {
-      const tools = await listTools()
-      reply(id, { tools })
-      return
-    }
+    case 'tools/list':
     case 'tools/call': {
-      const toolCall = params || {}
-      const result = await callTool(toolCall.name, toolCall.arguments)
-      reply(id, result)
+      const controller = new AbortController()
+      inFlight.set(requestKey(id), controller)
+      try {
+        if (method === 'tools/list') {
+          const tools = await listTools(controller.signal)
+          if (!controller.signal.aborted) {
+            reply(isModern ? { tools, ttlMs: 0, cacheScope: 'private' } : { tools })
+          }
+        } else {
+          const toolCall = params || {}
+          const result = await callTool(toolCall.name, toolCall.arguments, controller.signal)
+          if (!controller.signal.aborted) reply(result)
+        }
+      } finally {
+        inFlight.delete(requestKey(id))
+      }
       return
     }
     default:
-      if (isRequest) fail(id, -32601, `method not found: ${method}`)
-      return
+      if (isRequest) fail(-32601, `method not found: ${method}`)
   }
 }
 

@@ -29,7 +29,7 @@ import { emitInteractions } from '../django/interactions.ts'
 import { emitNodeAnimationCss } from '../django/motion/css-emitter.ts'
 import type { MotionSnapshot } from '../django/motion/types.ts'
 import { toClassName as className } from '../django/css-emitter.ts'
-import { codeConnectFile, type CodeConnectProp } from './code-connect.ts'
+import { CODE_CONNECT_CONFIG, codeConnectFile, type CodeConnectProp } from './code-connect.ts'
 
 export interface ReactOutput {
   /** path → contents, ready to be written into a repository. */
@@ -89,12 +89,13 @@ export interface EmitReactOptions {
   /** What earlier runs already emitted, by master id — so an instance finds its own component. */
   componentNamesById?: ReadonlyMap<string, string>
   /**
-   * The design file's own key — `figma.fileKey`. Granted only to a private plugin on an
-   * Organization plan; `undefined` everywhere else.
+   * The design file's key — `figma.fileKey` where the plugin is granted it (a private plugin on
+   * an Organization plan), else the one parsed from the Figma file URL set in the React export
+   * settings.
    *
-   * Code Connect addresses a component by a node URL, not by anything this plugin can publish
-   * itself, and the URL cannot be built without the key. Without it `emitReact` writes no
-   * `.figma.tsx` files at all rather than a set that would half fail to publish.
+   * Code Connect addresses a component by a node URL, and the URL cannot be built without the
+   * key. Without it `emitReact` writes no `.figma.ts` templates at all rather than a set that
+   * would half fail to publish.
    */
   fileKey?: string
   /** The design file's own name — `figma.root.name`. Only cosmetic in the Code Connect URL, but
@@ -296,14 +297,14 @@ export async function emitReact(
   // The assets themselves, once, under a path a bundler serves as-is.
   for (const [, asset] of options.assetsByNodeId ?? []) files[`public/assets/${asset.filename}`] = asset.svg
 
-  // Every link below needs the file's own key — figma.fileKey exists only for a private plugin
-  // on an Organization plan, and a node URL cannot be built without it. A partial run (some
-  // components linked, others silently not) would read as a working Code Connect setup that
-  // fails to publish half the time — nothing is written until every link can be built the same way.
+  // Every link below needs the file's own key, and a node URL cannot be built without it. A
+  // partial run (some components linked, others silently not) would read as a working Code
+  // Connect setup that fails to publish half the time — nothing is written until every link can
+  // be built the same way.
   if (!options.fileKey && components.size > 0) {
     gaps.push(
-      'Code Connect files were not emitted for this export — figma.fileKey is only granted to a ' +
-        'private plugin on an Organization plan, and a node URL cannot be built without it'
+      'Code Connect templates were not emitted for this export — this plugin cannot read the ' +
+        "file's key here; paste the file's Figma URL into React export settings → Code Connect file URL"
     )
   }
   let connectFilesWritten = false
@@ -340,7 +341,7 @@ export async function emitReact(
             values: kind === 'variant' ? [...(component.values.get(prop) ?? [])] : undefined,
           })
         }
-        files[`src/components/${component.name}.figma.tsx`] = codeConnectFile({
+        files[`src/components/${component.name}.figma.ts`] = codeConnectFile({
           componentName: component.name,
           componentPath: `src/components/${component.name}.tsx`,
           nodeId: component.masterId,
@@ -390,16 +391,8 @@ export async function emitReact(
   }
 
   if (options.tokensCss) files['src/tokens.css'] = options.tokensCss
-  Object.assign(files, projectFiles(firstScreen, Boolean(options.tokensCss), fontsIn(files)))
-  // The include glob already matches `*.figma.tsx` alongside the component it names — Code
-  // Connect's own parser tells the two apart by the calls inside, not by a separate list here.
-  if (connectFilesWritten) {
-    files['figma.config.json'] = `${JSON.stringify(
-      { codeConnect: { parser: 'react', include: ['src/components/**/*.tsx'] } },
-      null,
-      2
-    )}\n`
-  }
+  Object.assign(files, projectFiles(firstScreen, Boolean(options.tokensCss), fontsIn(files), connectFilesWritten))
+  if (connectFilesWritten) files['figma.config.json'] = `${JSON.stringify(CODE_CONNECT_CONFIG, null, 2)}\n`
 
   // The screens import it, so it is emitted: a scaffold that does not compile because the
   // generator referred to a file it never wrote is a scaffold nobody runs.
@@ -760,7 +753,12 @@ export function useCopy(fallback: Copy = {}): (key: string) => string {
  * The first export shipped 98 files that no tool could open — no package.json, no tsconfig, no
  * entry point. It type-checked only because the person running it wrote those three by hand.
  */
-function projectFiles(screen: string | null, tokens: boolean, fonts: readonly string[]): Record<string, string> {
+function projectFiles(
+  screen: string | null,
+  tokens: boolean,
+  fonts: readonly string[],
+  codeConnect = false
+): Record<string, string> {
   const files: Record<string, string> = {
     // The browser's own 8px body margin made a 390-wide screen render at 374, and every row in it
     // wrapped a line early. A scaffold that needs a reset the developer has to guess is not one.
@@ -798,9 +796,15 @@ function projectFiles(screen: string | null, tokens: boolean, fonts: readonly st
           build: 'tsc --noEmit && vite build',
           preview: 'vite preview',
           typecheck: 'tsc --noEmit',
+          // The templates are typed against Figma's own `figma` module, not the app's; checking
+          // them is a second project, and publishing is a step a person takes on purpose.
+          ...(codeConnect
+            ? { 'figma:check': 'tsc --noEmit -p tsconfig.figma.json', 'figma:publish': 'figma connect publish' }
+            : {}),
         },
         dependencies: { react: '^18.3.1', 'react-dom': '^18.3.1' },
         devDependencies: {
+          ...(codeConnect ? { '@figma/code-connect': '^2.0.2' } : {}),
           '@types/react': '^18.3.12',
           '@types/react-dom': '^18.3.1',
           '@vitejs/plugin-react': '^4.3.3',
@@ -825,6 +829,9 @@ function projectFiles(screen: string | null, tokens: boolean, fonts: readonly st
           skipLibCheck: true,
         },
         include: ['src'],
+        // A template imports `figma`, a module only Code Connect's types declare; it is checked by
+        // tsconfig.figma.json instead, so the app's own build never needs those types.
+        ...(codeConnect ? { exclude: ['src/**/*.figma.ts'] } : {}),
       },
       null,
       2
@@ -847,6 +854,20 @@ function projectFiles(screen: string | null, tokens: boolean, fonts: readonly st
       (tokens ? `import './tokens.css'\n` : '') +
       `import { ${screen} } from './screens/${screen}'\n\n` +
       `createRoot(document.getElementById('root')!).render(\n  <StrictMode>\n    <${screen} />\n  </StrictMode>\n)\n`
+  }
+  if (codeConnect) {
+    // Code Connect's documented setup: its `figma-types` entry declares the `figma` module the
+    // templates import, kept to this second project so the app never sees it.
+    files['tsconfig.figma.json'] = `${JSON.stringify(
+      {
+        extends: './tsconfig.json',
+        compilerOptions: { types: ['@figma/code-connect/figma-types'] },
+        include: ['src/**/*.figma.ts'],
+        exclude: [],
+      },
+      null,
+      2
+    )}\n`
   }
   return files
 }

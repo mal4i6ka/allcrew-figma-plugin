@@ -1566,6 +1566,7 @@ export const WRITE_OPS: readonly OpDef[] = [
     agent:
       'Refuses while consumers exist. publishStatus in the report is the half this file cannot see: CURRENT means other files may consume it through the library.',
     mutates: true,
+    destructive: true,
     params: {
       styles: {
         type: 'string[]',
@@ -2541,6 +2542,7 @@ export const WRITE_OPS: readonly OpDef[] = [
     agent:
       'Bindings survive a detach — the dependency turns class A for variables.rebind to reach. Nested foreign instances surface as new top-level ones: expect onion rounds.',
     mutates: true,
+    destructive: true,
     params: {
       nodes: { type: 'string[]', required: true, description: 'Instance node ids to detach.' },
       dryRun: { type: 'boolean', default: false, description: 'Report what would be detached without touching anything.' },
@@ -2604,6 +2606,7 @@ export const WRITE_OPS: readonly OpDef[] = [
     agent:
       "Refuses while anything references the variable — a binding, a gradient stop, a style paint or another variable's alias. Zero references here still says nothing about other files.",
     mutates: true,
+    destructive: true,
     params: {
       variables: {
         type: 'string[]',

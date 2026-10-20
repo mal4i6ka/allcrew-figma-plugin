@@ -34,6 +34,8 @@ test('release packaging stages the bridge and MCP through the self-contained bun
 test('the fingerprint covers every local import transitively without duplicates', () => {
   const files = sourceSetFiles(ENTRY)
   assert.ok(files.some(({ file }) => file.endsWith('/agent/source-set.mjs')))
+  assert.ok(files.some(({ file }) => file.endsWith('/agent/code-connect.mjs')))
+  assert.ok(files.some(({ file }) => file.endsWith('/agent/figma-desktop-mcp.mjs')))
   assert.equal(new Set(files.map(({ file }) => file)).size, files.length)
   assert.equal(typeof sourceSetFingerprint(ENTRY), 'string')
   assert.equal(sourceSetFingerprint(ENTRY).length, 8)

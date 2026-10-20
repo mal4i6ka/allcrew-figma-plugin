@@ -89,6 +89,12 @@ import {
   readOAuth,
   runOrgOp,
 } from './figma-org.mjs'
+import { CODE_CONNECT_MANIFEST, CODE_CONNECT_OPS, runCodeConnectOp } from './code-connect.mjs'
+import {
+  FIGMA_DESKTOP_MCP_MANIFEST,
+  FIGMA_DESKTOP_MCP_OPS,
+  FigmaDesktopMcpClient,
+} from './figma-desktop-mcp.mjs'
 
 /**
  * Logical source-set fingerprint. A repository run hashes bridge.mjs plus every local import;
@@ -956,6 +962,7 @@ export const COMMENT_MANIFEST = [
     name: 'comments.remove',
     summary: 'Delete a comment — permanently, and only one of your own.',
     mutates: true,
+    destructive: true,
     agent:
       'Figma allows deleting only comments the token\'s own user posted, and there is no undo: this is not "archive", ' +
       'it is gone. Deleting a ROOT comment takes its replies with it. Use it to clean up notes this agent left, not ' +
@@ -2252,6 +2259,25 @@ async function fileKeyForPlugin(plugin) {
   return found.key || null
 }
 
+/** EMIT_REACT needs a file identity to write Code Connect URLs, but public plugins cannot read
+ * `figma.fileKey`. The bridge may already know it from the addressed desktop tab; fill only the
+ * missing value so an explicit repository/file choice always wins. */
+export function withDiscoveredFileUrl(op, params, fileKey) {
+  if (
+    op !== 'plugin.call' ||
+    !fileKey ||
+    !params ||
+    typeof params !== 'object' ||
+    params.command !== 'EMIT_REACT'
+  ) {
+    return params
+  }
+  const commandParams =
+    params.params && typeof params.params === 'object' && !Array.isArray(params.params) ? params.params : {}
+  if (Object.hasOwn(commandParams, 'fileUrl')) return params
+  return { ...params, params: { ...commandParams, fileUrl: fileKey } }
+}
+
 
 /**
  * A history op, gated like a read and costed out loud.
@@ -2449,14 +2475,118 @@ async function runOrg(op, body) {
   }
 }
 
+function bridgePlugin(body) {
+  const online = roster()
+  const addressed = body.target ? resolveTarget(body.target) : null
+  if (addressed?.error) return { error: addressed.error, candidates: addressed.candidates || [] }
+  return { plugin: addressed?.plugin || (online.length === 1 ? online[0] : null) }
+}
+
+function bridgeGate(body, { mutates, op }) {
+  const found = bridgePlugin(body)
+  if (found.error) {
+    return { code: 409, body: fail('ambiguous_target', found.error, { files: found.candidates }) }
+  }
+  const plugin = found.plugin
+  if (mutates && !plugin) {
+    return {
+      code: 503,
+      body: fail(
+        'no_plugin',
+        `"${op}" changes remote Figma state, so it needs the designer present: open the plugin and enable "Allow changes".`
+      ),
+    }
+  }
+  const gate = mutates ? 'write' : 'read'
+  if (plugin && plugin.gates?.[gate] !== true) {
+    return {
+      code: 400,
+      body: fail('gate_closed', `${gate === 'write' ? 'writes' : 'reads'} are off — enable "Allow ${gate === 'write' ? 'changes' : 'reads'}" in the plugin`),
+    }
+  }
+  return null
+}
+
+async function runCodeConnect(op, body) {
+  const params = body.params && typeof body.params === 'object' ? body.params : {}
+  const spec = CODE_CONNECT_MANIFEST.find((entry) => entry.name === op)
+  const wrong = checkParams(spec, params)
+  if (wrong.length > 0) return { code: 400, body: { ...fail('param_invalid', wrong.join('; '), { problems: wrong }), op } }
+  const mutates = op === 'codeconnect.unpublish' || (op === 'codeconnect.publish' && params.dryRun === false)
+  const refused = bridgeGate(body, { mutates, op })
+  if (refused) return refused
+  try {
+    const result = await runCodeConnectOp(op, params, { token: figmaToken() })
+    return { code: result?.ok === false ? 400 : 200, body: { ok: result?.ok !== false, op, source: 'bridge', result } }
+  } catch (error) {
+    const message = error?.message || String(error)
+    const code = /dir is|required|not a directory|does not contain/.test(message) ? 'param_invalid' : 'figma_threw'
+    return { code: 400, body: { ...fail(code, message), op, source: 'bridge' } }
+  }
+}
+
+function mcpFileEnvelopes(value, sequence = { value: 0 }) {
+  if (Array.isArray(value)) return value.map((entry) => mcpFileEnvelopes(entry, sequence))
+  if (!value || typeof value !== 'object') return value
+  if (value.type === 'image' && typeof value.data === 'string' && value.data.length > 128 * 1024) {
+    sequence.value += 1
+    const mime = typeof value.mimeType === 'string' ? value.mimeType : 'image/png'
+    const extension = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png'
+    return {
+      __allcrewChannelFile: {
+        name: `figma-mcp-${sequence.value}.${extension}`,
+        mime,
+        encoding: 'base64',
+        data: value.data,
+      },
+    }
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, mcpFileEnvelopes(entry, sequence)]))
+}
+
+async function runDesktopMcp(op, body) {
+  const params = body.params && typeof body.params === 'object' ? body.params : {}
+  const spec = FIGMA_DESKTOP_MCP_MANIFEST.find((entry) => entry.name === op)
+  const wrong = checkParams(spec, params)
+  if (wrong.length > 0) return { code: 400, body: { ...fail('param_invalid', wrong.join('; '), { problems: wrong }), op } }
+  const refused = bridgeGate(body, { mutates: false, op })
+  if (refused) return refused
+  try {
+    const client = new FigmaDesktopMcpClient()
+    const raw = op === 'figma.mcp.tools' ? await client.tools() : await client.call(params.tool, params.arguments || {})
+    // A tool that refused answers inside a successful JSON-RPC reply (`isError`), with the reason as
+    // text — "your seat lacks Dev Mode" is a refusal, and reporting it as `ok: true` would let an
+    // agent read the refusal text as the design it asked for.
+    if (raw && typeof raw === 'object' && raw.isError === true) {
+      const reason = Array.isArray(raw.content)
+        ? raw.content.filter((part) => part?.type === 'text').map((part) => part.text).join('\n')
+        : ''
+      return {
+        code: 400,
+        body: { ...fail('figma_threw', reason || `Figma desktop MCP tool "${params.tool}" failed`), op, source: 'bridge' },
+      }
+    }
+    const written = []
+    const dir = path.join(FILES_DIR, `figma-mcp-${crypto.randomUUID().slice(0, 8)}`)
+    const result = materialiseFiles(mcpFileEnvelopes(raw), dir, written)
+    if (written.length > 0) sweepRuns()
+    return { code: 200, body: { ok: true, op, source: 'bridge', result } }
+  } catch (error) {
+    return { code: 400, body: { ...fail('figma_threw', error?.message || String(error)), op, source: 'bridge' } }
+  }
+}
+
 /**
  * One op against one file, from body to answer. The whole of `POST /call`, factored out so the
  * batch route runs exactly the same path — a batch that took a different route to the same op
  * would be a second implementation of the gate, the schema check and the REST fallback.
  */
-async function runCall(body) {
+export async function runCall(body) {
   const op = typeof body.op === 'string' ? body.op : ''
   if (!op) return { code: 400, body: fail('bad_request', 'missing "op"') }
+
+  if (CODE_CONNECT_OPS.includes(op)) return runCodeConnect(op, body)
+  if (FIGMA_DESKTOP_MCP_OPS.includes(op)) return runDesktopMcp(op, body)
 
   /* Comments come first, and never reach the plugin: the Plugin API has no comment surface at
    * all, so these are the one class of op the bridge answers itself whether or not a file is
@@ -2572,7 +2702,10 @@ async function runCall(body) {
     }
   }
 
-  const answer = await dispatch(plugin, op, body.params)
+  const discoveredFileKey =
+    op === 'plugin.call' && body.params?.command === 'EMIT_REACT' ? await fileKeyForPlugin(plugin) : null
+  const params = withDiscoveredFileUrl(op, body.params, discoveredFileKey)
+  const answer = await dispatch(plugin, op, params)
   /* The answer always names the file it came from. An agent that cannot see which document
    * replied cannot tell a right answer from a right-looking one. */
   return {
@@ -2820,6 +2953,8 @@ const ROUTES = {
       ...HISTORY_MANIFEST.map((op) => ({ ...op, source: 'rest' })),
       ...ORG_MANIFEST.map((op) => ({ ...op, source: 'rest' })),
       ...ANALYTICS_MANIFEST.map((op) => ({ ...op, source: 'rest' })),
+      ...CODE_CONNECT_MANIFEST.map((op) => ({ ...op, source: 'bridge' })),
+      ...FIGMA_DESKTOP_MCP_MANIFEST.map((op) => ({ ...op, source: 'bridge' })),
     ]
     const target = url.searchParams.get('target')
     if (target) {

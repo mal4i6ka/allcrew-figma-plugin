@@ -324,6 +324,56 @@ export const GUIDES: readonly Guide[] = [
   },
 
   {
+    id: 'library.reuse',
+    title: 'Reuse the design system before building',
+    goal: 'Use an existing library component, code implementation, variable or style instead of creating a duplicate.',
+    when: 'Before creating a component-shaped layer or implementing a design-system component in code.',
+    steps: [
+      {
+        op: 'components.list',
+        why: 'Confirms the component vocabulary and published keys already visible to this file before any insertion.',
+        params: { scope: 'document', limit: 100 },
+      },
+      {
+        op: 'plugin.commands',
+        why: 'Confirms NODE_CREATE is available and documents its current instance `of` and placement parameters.',
+        params: { command: 'NODE_CREATE' },
+      },
+      {
+        op: 'plugin.call',
+        why: 'Inserts an instance by naming the chosen published component key as the node’s `of` — NODE_CREATE imports it from the library.',
+        params: { command: 'NODE_CREATE', params: { nodes: [{ kind: 'instance', of: '<library component key>' }] } },
+      },
+      {
+        op: 'instance.swap',
+        why: 'Repoints an existing instance to the chosen published component key while preserving and reporting overrides.',
+        params: { nodes: ['1:2'], to: '<library component key>' },
+      },
+      {
+        op: 'node.bind',
+        why: 'Binds the reused layer to a published variable key instead of copying the library value as a literal.',
+        params: { bindings: [{ node: '1:2', field: 'fill', variable: '<library variable key>' }] },
+      },
+      {
+        op: 'node.style',
+        why: 'Applies a published style key directly, preserving the upstream library relationship.',
+        params: { assignments: [{ node: '1:2', field: 'text', style: '<library style key>' }] },
+      },
+    ],
+    checks: [
+      'The official remote Figma MCP was asked to search_design_system/get_libraries before a new component was considered.',
+      'The bridge codeconnect.map result was checked for an existing source/component mapping before implementation.',
+      'Inserted or swapped instances report the selected published component key, not a newly drawn imitation.',
+      'Variables and styles remain library-bound; no returned library value was copied into a literal.',
+    ],
+    notes: [
+      'The first two discovery calls are external to the plugin op registry: use the official remote Figma MCP search_design_system/get_libraries, then call the AllCrew bridge op codeconnect.map with the repository dir. Only after both searches miss should you build a new component.',
+      'NODE_CREATE is a panel command reached through plugin.call, not a standalone op. An instance node is { kind: "instance", of: <component id or published key> }; `props` sits beside `of`, not around it.',
+      'instance.swap takes the published component key in `to`; node.bind takes a published variable key in each binding’s `variable`; node.style takes a published style key in each assignment’s `style`.',
+    ],
+  },
+
+  {
     id: 'motion.implement',
     title: 'Implement motion',
     goal: 'The animations a file already describes, in a backend that suits the target.',

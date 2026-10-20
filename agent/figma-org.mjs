@@ -55,6 +55,8 @@ export const FIGMA_WWW = (process.env.ALLCREW_CHANNEL_FIGMA_WWW || 'https://www.
 /** The one scope the activity log accepts. Figma rejects a token carrying anything else. */
 export const ACTIVITY_SCOPE = 'org:activity_log_read'
 export const ANALYTICS_SCOPE = 'library_analytics:read'
+export const FOLDERS_SCOPE = 'folders:read'
+export const FOLDER_METADATA_SCOPE = 'folder_metadata:read'
 
 /* ------------------------------------------------------------------ credentials */
 
@@ -176,10 +178,11 @@ export async function exchangeCode({ clientId, clientSecret, redirectUri, code, 
   })
 }
 
-/** Refresh answers a new access token and no refresh token — the old one stays valid. */
+/** Refresh answers a new access token and may omit the refresh token — preserve the old one. */
 export async function refreshGrant({ clientId, clientSecret, refreshToken, fetchImpl = fetch }) {
-  const next = await oauthPost('/v1/oauth/refresh', { clientId, clientSecret, fetchImpl }, {
+  const next = await oauthPost('/v1/oauth/token', { clientId, clientSecret, fetchImpl }, {
     refresh_token: refreshToken,
+    grant_type: 'refresh_token',
   })
   return { ...next, refresh_token: next.refresh_token || refreshToken }
 }
@@ -340,26 +343,41 @@ export const ORG_MANIFEST = [
   },
   {
     name: 'org.projects',
-    summary: 'The projects (folders) in a team — the inventory the audit log refers to by id.',
+    summary: 'The folders in a team, including a bounded nested-folder inventory.',
     mutates: false,
     agent:
-      'Takes the personal token, so it works on any paid plan. An activity log names projects and files by id; ' +
-      'this is what turns those ids into names. `teamId` comes out of a team URL: figma.com/files/team/<id>/… ',
+      'The released op name is retained, but Figma now calls projects folders and project ids are folder ids. ' +
+      'Takes the personal token with folders:read; this scope is unavailable to public OAuth apps. `teamId` ' +
+      'comes out of a team URL: figma.com/files/team/<id>/… . By default only top-level folders are returned; ' +
+      'pass `recursive` or `depth` to include subfolders. Every folder has a `path` suitable for display.',
     params: {
-      teamId: { type: 'string', required: true, description: 'The team id, from a figma.com/files/team/<id> URL.' },
+      teamId: { type: 'string', description: 'The team id, from a figma.com/files/team/<id> URL. The legacy `team` alias is also accepted.' },
+      team: { type: 'string', description: 'Legacy alias for `teamId`.' },
+      recursive: { type: 'boolean', default: false, description: 'Traverse nested folders. Defaults to depth 5 unless `depth` is supplied.' },
+      depth: { type: 'number', default: 1, min: 1, max: 5, description: 'Folder levels to return, including the top level.' },
+      maxPages: { type: 'number', default: 100, min: 1, max: 500, description: 'Ceiling for folder-list requests, including any cursor pages.' },
+      maxNodes: { type: 'number', default: 1000, min: 1, max: 10000, description: 'Maximum folders returned before `truncated` is set.' },
+      timeoutMs: { type: 'number', default: 5000, min: 100, max: 30000, description: 'Traversal time budget before `truncated` is set.' },
     },
   },
   {
     name: 'org.files',
-    summary: 'The files in a project, with when each was last modified.',
+    summary: 'The files in a folder, optionally including files from nested folders.',
     mutates: false,
     agent:
-      'The breadth answer to "what is there and when was it last touched" — one call per project, no plugin and ' +
-      'no Enterprise. It does NOT say who touched it: that is history.versions per file, or org.activity across ' +
-      'the organisation. `branch_data` is included when a file has branches, which is where edits hide.',
+      'The released `projectId` parameter still works because Figma renamed projects to folders without changing ' +
+      'their ids; `folderId` is the current spelling. The result keeps the stalest-first summary. By default it ' +
+      'lists direct files only; pass `recursive` or `depth` to walk subfolders within bounded request, node, and time budgets.',
     params: {
-      projectId: { type: 'string', required: true, description: 'The project id, from org.projects.' },
-      branches: { type: 'boolean', default: false, description: 'Ask Figma to include branch metadata for files that have branches.' },
+      folderId: { type: 'string', description: 'The folder id, from org.projects. `projectId` and `project` remain accepted.' },
+      projectId: { type: 'string', description: 'Backwards-compatible alias for `folderId`.' },
+      project: { type: 'string', description: 'Legacy alias for `folderId`.' },
+      branches: { type: 'boolean', default: false, description: 'Include branch metadata for main files with branches.' },
+      recursive: { type: 'boolean', default: false, description: 'Include files in nested folders. Defaults to depth 5 unless `depth` is supplied.' },
+      depth: { type: 'number', default: 1, min: 1, max: 5, description: 'Folder levels whose files are returned, including the requested folder.' },
+      maxPages: { type: 'number', default: 100, min: 1, max: 500, description: 'Ceiling for file/folder-list requests, including cursor pages.' },
+      maxNodes: { type: 'number', default: 1000, min: 1, max: 10000, description: 'Maximum files returned before `truncated` is set.' },
+      timeoutMs: { type: 'number', default: 5000, min: 100, max: 30000, description: 'Traversal time budget before `truncated` is set.' },
     },
   },
 ]
@@ -522,23 +540,110 @@ export async function runOrgOp(op, params = {}, { pat, oauth, get, now = () => D
   }
 
   if (op === 'org.projects') {
-    const teamId = String(params.teamId || '').trim()
-    if (!teamId) throw new Error('org.projects needs teamId — take it from a figma.com/files/team/<id> URL')
-    const answer = await fetchJson(`/v1/teams/${encodeURIComponent(teamId)}/projects`)
-    return { teamId, name: answer?.name || null, projects: answer?.projects || [] }
+    const teamId = String(params.teamId || params.team || '').trim()
+    if (!teamId) throw new Error('org.projects needs teamId (or team) — take it from a figma.com/files/team/<id> URL')
+    const depth = folderDepth(params)
+    const budget = folderBudget(params, now, fetchJson)
+    try {
+      const first = await collectFolderPages(
+        `/v2/teams/${encodeURIComponent(teamId)}/folders`,
+        'folders',
+        budget
+      )
+      const folders = []
+      const queue = first.rows.map((folder) => ({ folder, level: 1, path: String(folder.name || '') }))
+      let teamName = first.name
+      while (queue.length) {
+        if (timeBudgetExceeded(budget)) break
+        const current = queue.shift()
+        folders.push({ ...current.folder, path: current.path, depth: current.level })
+        budget.nodes += 1
+        if (budget.nodes >= budget.maxNodes) {
+          if (queue.length || current.level < depth) budget.truncated = true
+          break
+        }
+        if (current.level >= depth) continue
+        const childPage = await collectFolderPages(
+          `/v2/folders/${encodeURIComponent(current.folder.id)}/folders`,
+          'folders',
+          budget
+        )
+        for (const child of childPage.rows) {
+          queue.push({
+            folder: child,
+            level: current.level + 1,
+            path: `${current.path}/${String(child.name || '')}`,
+          })
+        }
+      }
+      return {
+        teamId,
+        name: teamName || null,
+        projects: folders,
+        folders,
+        count: folders.length,
+        depth,
+        pages: budget.pages,
+        truncated: budget.truncated,
+        ...(budget.truncated ? { note: folderTruncationNote(budget) } : {}),
+      }
+    } catch (err) {
+      throw decorateFolderScopeError(err)
+    }
   }
 
   if (op === 'org.files') {
-    const projectId = String(params.projectId || '').trim()
-    if (!projectId) throw new Error('org.files needs projectId — call org.projects first')
-    const route = `/v1/projects/${encodeURIComponent(projectId)}/files${params.branches === true ? '?branch_data=true' : ''}`
-    const answer = await fetchJson(route)
-    const files = answer?.files || []
+    const folderId = String(params.folderId || params.projectId || params.project || '').trim()
+    if (!folderId) throw new Error('org.files needs folderId (projectId still works) — call org.projects first')
+    const depth = folderDepth(params)
+    const budget = folderBudget(params, now, fetchJson)
+    const branchQuery = params.branches === true ? '?branch_data=true' : ''
+    const files = []
+    const folders = [{ id: folderId, path: null, level: 1 }]
+    let rootName = null
+    try {
+      while (folders.length) {
+        if (timeBudgetExceeded(budget)) break
+        const current = folders.shift()
+        const page = await collectFolderPages(
+          `/v2/folders/${encodeURIComponent(current.id)}/files${branchQuery}`,
+          'files',
+          budget
+        )
+        const folderName = page.name || current.id
+        const folderPath = current.path || folderName
+        if (current.level === 1) rootName = page.name || null
+        for (const file of page.rows) {
+          if (timeBudgetExceeded(budget) || budget.nodes >= budget.maxNodes) {
+            budget.truncated = true
+            break
+          }
+          files.push({ ...file, folder_id: current.id, folder_path: folderPath })
+          budget.nodes += 1
+        }
+        if (budget.truncated || current.level >= depth) continue
+        const childPage = await collectFolderPages(
+          `/v2/folders/${encodeURIComponent(current.id)}/folders`,
+          'folders',
+          budget
+        )
+        for (const child of childPage.rows) {
+          folders.push({ id: child.id, path: `${folderPath}/${String(child.name || '')}`, level: current.level + 1 })
+        }
+      }
+    } catch (err) {
+      throw decorateFolderScopeError(err)
+    }
     return {
-      projectId,
-      name: answer?.name || null,
+      folderId,
+      projectId: folderId,
+      name: rootName,
       count: files.length,
       files,
+      depth,
+      pages: budget.pages,
+      truncated: budget.truncated,
+      ...(budget.truncated ? { note: folderTruncationNote(budget) } : {}),
       /* The question behind "what is there" is almost always "what is stale", and the payload
        * already carries the answer — sorting it here saves the caller a second pass. */
       stalest: [...files]
@@ -553,6 +658,91 @@ export async function runOrgOp(op, params = {}, { pat, oauth, get, now = () => D
   throw new Error(`"${op}" is not an organisation op`)
 }
 
+function folderDepth(params) {
+  if (params.depth !== undefined) return clamp(params.depth, 1, 5, 1)
+  return params.recursive === true ? 5 : 1
+}
+
+function folderBudget(params, now, get) {
+  const startedAt = now()
+  return {
+    now,
+    get,
+    startedAt,
+    timeoutMs: clamp(params.timeoutMs, 100, 30000, 5000),
+    maxPages: clamp(params.maxPages, 1, 500, 100),
+    maxNodes: clamp(params.maxNodes, 1, 10000, 1000),
+    pages: 0,
+    nodes: 0,
+    truncated: false,
+    reason: null,
+  }
+}
+
+function timeBudgetExceeded(budget) {
+  if (budget.now() - budget.startedAt < budget.timeoutMs) return false
+  budget.truncated = true
+  budget.reason = 'time budget'
+  return true
+}
+
+function budgetExceeded(budget) {
+  if (budget.pages >= budget.maxPages) {
+    budget.truncated = true
+    budget.reason = 'page ceiling'
+    return true
+  }
+  if (budget.now() - budget.startedAt >= budget.timeoutMs) {
+    budget.truncated = true
+    budget.reason = 'time budget'
+    return true
+  }
+  return false
+}
+
+/** Folder endpoints are currently single-page, but cursor handling keeps the bounded contract
+ * honest if the service pages a large team in the future. */
+async function collectFolderPages(route, key, budget) {
+  const rows = []
+  let cursor = null
+  let name = null
+  do {
+    if (budgetExceeded(budget)) break
+    const url = cursor ? `${route}${route.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}` : route
+    const answer = await budget.get(url)
+    budget.pages += 1
+    if (name === null && answer?.name) name = answer.name
+    if (Array.isArray(answer?.[key])) rows.push(...answer[key])
+    const next = answer?.cursor || answer?.next_page_cursor || answer?.pagination?.next_page || null
+    const more = Boolean(answer?.next_page) && Boolean(next)
+    if (!more) break
+    cursor = next
+    if (budget.pages >= budget.maxPages) {
+      budget.truncated = true
+      budget.reason = 'page ceiling'
+      break
+    }
+  } while (true)
+  return { rows, name }
+}
+
+function folderTruncationNote(budget) {
+  return `folder traversal stopped at its ${budget.reason || 'node budget'} (${budget.pages} requests, ${budget.nodes} results)`
+}
+
+function decorateFolderScopeError(err) {
+  const scopes = scopesFromRefusal(err && (err.figmaMessage || err.message))
+  if (!scopes || scopes.includes(FOLDERS_SCOPE)) return err
+  const next = new Error(
+    `${err.message}\n\nThe token is valid but cannot enumerate folders without "${FOLDERS_SCOPE}". ` +
+      `Re-mint the personal access token with "${FOLDERS_SCOPE}" ticked; "${FOLDER_METADATA_SCOPE}" only permits ` +
+      `GET /v2/folders/:id/meta and cannot list folders or files. Public OAuth apps cannot use ${FOLDERS_SCOPE}. ` +
+      `Present scopes: ${scopes.join(', ')}.`
+  )
+  next.status = err.status
+  next.scopes = scopes
+  return next
+}
 async function analytics(op, params, { fetchJson }) {
   const kind = op === 'library.actions' ? 'actions' : 'usages'
   const asset = String(params.asset || 'component')
@@ -692,14 +882,16 @@ async function capabilities({ pat, oauth, fetchJson, now, fileKey }) {
   surfaces.push({
     surface: 'folder tree',
     ops: ['org.projects', 'org.files'],
-    reachable: scopedFor('folders:read'),
-    needs: 'personal access token with folders:read',
+    reachable: scopedFor(FOLDERS_SCOPE),
+    needs: `personal access token with ${FOLDERS_SCOPE}`,
     remedy: pat
-      ? Array.isArray(scopes) && !scopes.includes('folders:read')
-        ? 're-mint the personal token with "folders:read" ticked'
+      ? Array.isArray(scopes) && !scopes.includes(FOLDERS_SCOPE)
+        ? `re-mint the personal token with "${FOLDERS_SCOPE}" ticked`
         : null
       : 'put a token in ~/.allcrew-channel/figma-token',
-    answers: 'what projects and files exist, and when each was last modified',
+    metadataReachable: scopedFor(FOLDER_METADATA_SCOPE),
+    metadataNeeds: `${FOLDER_METADATA_SCOPE} only covers lightweight /v2/folders/:id/meta reads`,
+    answers: 'what folders and files exist, and when each file was last modified',
   })
 
   return {

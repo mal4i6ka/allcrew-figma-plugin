@@ -22,20 +22,30 @@ Core extraction and generation run inside Figma. Optional Delivery and Agent Lis
 
 ## AllCrew vs. the official Figma MCP server
 
-The tools overlap, but they optimize for different workflows. Figma recommends its remote MCP server for broad official access. AllCrew is a development-plugin workspace for explicit, open-file automation and repository artifacts.
+The two are complementary, and AllCrew is built to be used alongside Figma's own server rather than
+instead of it. Figma's remote MCP is hosted, broad and OAuth-based; AllCrew is a development-plugin
+workspace for explicit, open-file automation under the designer's read/write gates, and for
+repository-grade artifacts.
 
 | Capability | Official Figma MCP | AllCrew Figma Workspace |
 |---|---|---|
-| Structured components, variables, layout context | Yes | Yes |
-| Generate code from selected frames | Yes | Yes, plus packaged project exports |
-| Write native Figma content | Remote MCP beta | Open plugin session with **Allow writes** |
-| Open-file, observable operation log | Not the primary model | Yes |
-| Design-token / Django / React / Tauri packages | Not its focus | Yes |
-| Custom declarative plugin screens | No | Yes, through AllCrew SDK modules |
-| Hosted service required | Remote is preferred; desktop also exists | No AllCrew service; loopback bridge |
-| Distribution | Official remote/desktop MCP | GitHub development-plugin release |
+| Structured components, variables, layout, motion context | Yes | Yes, plus variable-font axes, shaders, vector regions, history |
+| Generate code from selected frames | Yes, React/Tailwind-shaped by default | Packaged token / Django / React / Tauri / iOS / Android exports |
+| Write to the canvas | Remote: `use_figma` (arbitrary Plugin API JS), file creation, code-to-canvas, assets | Typed, schema-checked ops in the open file, behind **Allow changes**, one undo step each |
+| Find library components and styles | `search_design_system`, `get_libraries` (remote) | Imports by published key; uses Figma's search for discovery (`library.reuse` playbook) |
+| Code Connect | Reads/writes mappings (`get_code_connect_map`, `add_code_connect_map`, …) | Emits Code Connect 2 templates; runs the official CLI (`codeconnect.*`); reads Figma's map |
+| FigJam, Slides, Specs, generative plugins, shaders, Weave | Yes | Not in scope |
+| Open-file, observable operation log; history, comments, org analytics | Not the primary model | Yes |
+| Declarative in-workspace screens | Hosted generative plugins (different model) | AllCrew SDK modules |
+| Hosted service / plan | Remote, OAuth, catalog clients, per-seat rate limits; desktop server is read-only | No AllCrew service; loopback bridge; works on any plan |
 
-Official capability references: [Figma MCP guide](https://help.figma.com/hc/en-us/articles/32132100833559) and [Codex setup](https://help.figma.com/hc/en-us/articles/39888629089175-Codex-and-Figma-Set-up-the-MCP-server).
+AllCrew also relays Figma's **desktop** Dev Mode MCP server through the bridge (`figma.mcp`), so an
+agent connected only to AllCrew can still call `get_design_context` or `get_metadata` when Figma
+Desktop runs that server and the seat includes Dev Mode.
+
+Official references: [Figma MCP server](https://developers.figma.com/docs/figma-mcp-server/),
+[tools](https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/) and
+[limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/).
 
 ## Install from a GitHub Release
 
@@ -328,20 +338,36 @@ those queries apply on a real phone.
 ## React export & Code Connect
 
 The React target writes a component per Figma component set, and beside each one a
-`<Component>.figma.tsx` — the Code Connect mapping that tells Figma *this* is the code for that
+`<Component>.figma.ts` — a Code Connect **template** that tells Figma *this* is the code for that
 design component. From then on Dev Mode and Figma's official MCP answer with
 `<Button type="Primary" …>` and a real import, instead of anonymous markup a developer has to
-recognise. A root `figma.config.json` ships with them, so the repository is publishable as it
-lands:
+recognise. Code Connect 2 accepts only template files (the `figma.connect(...)` parser files of
+1.x are refused by its CLI), and the export writes nothing else:
 
-```bash
-npx figma connect publish --token <token>
-```
+- a parserless `figma.config.json` (`include: src/components/**/*.figma.ts`, label `React`,
+  language `jsx`);
+- `@figma/code-connect` ^2.0.2 in devDependencies, with `npm run figma:check` (templates typed
+  against Code Connect's own `figma-types` in `tsconfig.figma.json`, kept out of the app build)
+  and `npm run figma:publish`.
 
 Props are not guessed: the same variant/text/boolean definitions the component's own union types
-come from become `figma.enum` / `figma.string` / `figma.boolean`, with the Figma property names
-verbatim — `Button-lable` and `Meduim` are mapped as spelled, because that is what the file
-contains. A component with no properties still gets a file with an empty `props`.
+come from are read with `getEnum` / `getString` / `getBoolean` on `figma.selectedInstance`, with
+the Figma property names verbatim — `Button-lable` and `Meduim` are mapped as spelled, because that
+is what the file contains — and rendered through `figma.helpers.react.renderProp`. Each template's
+`id` is derived from the node id, so renaming a component or re-exporting keeps the published
+mapping.
+
+**The file key.** A template addresses its component by node URL, and the URL needs the file's
+key, which only a private Organization plugin can read (`figma.fileKey`). Everywhere else pass the
+file's Figma link as `fileUrl` to `EMIT_REACT`; through the bridge it is filled in automatically
+from Figma Desktop's open tab when the bridge can match one. Without a key no templates are
+written at all and the export report says how to provide one — a mapping pointing at a guessed
+key would map nothing.
+
+**Publishing from an agent.** The bridge runs the pinned official CLI on the repository
+directory — `codeconnect.parse` and `codeconnect.map` offline, `codeconnect.preview` and
+`codeconnect.publish` (a dry run unless `dryRun: false`, which needs the plugin's write gate) with
+a token. See the Code Connect ops in [`agent/README.md`](agent/README.md).
 
 Two things worth knowing before troubleshooting a publish:
 
@@ -349,14 +375,11 @@ Two things worth knowing before troubleshooting a publish:
   (`?node-id=819-95512` — a dash, not the colon Figma stores), so `publishStatus: UNPUBLISHED`
   publishes fine. Publishing only matters for the MCP route, where `add_code_connect_map` refuses
   with "Published component not found".
-- **The token must be the right category.** `file_code_connect:write` is not among the scopes a
-  personal access token can carry — a PAT answers `403 Invalid scope(s)`, and a plan token of the
-  REST API category has those endpoints switched off. It takes a plan access token of the
-  **Figma CLI** category (figma.com/developers/tokens → Figma CLI tab; organization admin, 2FA).
-
-`figma.fileKey` is granted only to a private plugin on an Organization plan. Without it a node URL
-cannot be built, so no mapping files are written at all and the export report names that as the
-reason — a half-written mapping pointing at a placeholder key would be worse than none.
+- **The token.** A personal access token with the **Code Connect: Write** and **File content:
+  Read** scopes works, Professional plan included (one library and one framework there); on
+  Organization/Enterprise a plan token of the **Figma CLI** category works too. A REST-category
+  plan token cannot publish. The CLI reads `FIGMA_ACCESS_TOKEN`; the bridge passes it the same
+  token it uses for REST (`$FIGMA_TOKEN`, else `~/.allcrew-channel/figma-token`).
 
 ## Design-to-site fidelity check
 

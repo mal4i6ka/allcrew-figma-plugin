@@ -44,6 +44,9 @@ export interface OpDef {
   summary: string
   /** True when the op writes to the document. Gated separately from reads — see `authorize`. */
   mutates: boolean
+  /** True only when a successful write can delete data or irreversibly sever a relationship.
+   * Kept separate from `mutates` so clients do not warn equally for additive writes. */
+  destructive?: boolean
   /** For an op that is a doorway rather than an action — `plugin.call`, which runs whichever
    * plugin command it was handed. Consulted by `authorize` with the RAW params (before
    * validation, since the decision is what gate to demand and validation errors are the op's
@@ -63,6 +66,7 @@ export interface OpManifestEntry {
   name: string
   summary: string
   mutates: boolean
+  destructive?: boolean
   agent?: string
   params: Record<string, ParamSpec>
 }
@@ -73,6 +77,7 @@ export function toManifest(ops: readonly OpDef[]): OpManifestEntry[] {
     summary: op.summary,
     ...(op.agent ? { agent: op.agent } : {}),
     mutates: op.mutates,
+    ...(op.destructive ? { destructive: true } : {}),
     params: { ...op.params },
   }))
 }

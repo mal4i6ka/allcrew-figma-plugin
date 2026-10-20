@@ -44,6 +44,7 @@ export const REMOVE_OPS: readonly OpDef[] = [
     agent:
       'The one write whose mistake cannot be read back — there is no `before` on a node that no longer exists, so read the nodes first (node.get) and delete by id, never by a name you assumed. A COMPONENT or COMPONENT_SET is refused without force: true, because its instances live elsewhere in the file and would break where nobody is looking. Deleting a page is never allowed. One call is one undo step.',
     mutates: true,
+    destructive: true,
     params: {
       nodes: { type: 'string[]', required: true, description: 'Node ids to delete.' },
       force: {

@@ -2,6 +2,29 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## Unreleased
+
+### Added
+
+- Code Connect ops answered by the bridge, running the pinned official CLI (`@figma/code-connect` 2.0.2) on a repository directory: `codeconnect.parse` and `codeconnect.map` (offline), `codeconnect.preview`, `codeconnect.publish` (a dry run unless `dryRun: false`) and `codeconnect.unpublish`. Publishing needs the plugin's write gate; the token reaches the CLI only as `FIGMA_ACCESS_TOKEN` and is redacted from the log.
+- `codeconnect.map` reports which Figma components already have code — from the repository's templates and, where Figma offers it, the desktop Dev Mode MCP's `get_code_connect_map`.
+- `figma.mcp.tools` / `figma.mcp` relay Figma's own desktop Dev Mode MCP server (`ALLCREW_CHANNEL_FIGMA_MCP_URL`, default `http://127.0.0.1:3845/mcp`), so an agent connected only to AllCrew can call `get_design_context`, `get_metadata`, `get_variable_defs` or `get_screenshot`. A tool's own refusal comes back as an error.
+- `library.reuse` playbook: search with the official MCP (`search_design_system`), check `codeconnect.map`, then insert or bind by published key with AllCrew's typed ops.
+- The MCP server speaks the 2026-07-28 revision (`server/discover`, per-request `_meta`, `resultType`) alongside the `initialize` era (2024-11-05 through 2025-11-25, negotiated rather than echoed); tools carry `title` and `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`, results carry `structuredContent`, and `notifications/cancelled` aborts the in-flight bridge request.
+- `org.projects` / `org.files` walk nested folders (`recursive`, `depth`, page/node/time ceilings, folder `path`).
+- `EMIT_REACT` takes `fileUrl`; through the bridge it is filled in from Figma Desktop's open tab when omitted.
+
+### Changed
+
+- `org.projects` / `org.files` use Figma's folder v2 endpoints (`/v2/teams/:id/folders`, `/v2/folders/:id/folders|files`) instead of the deprecated v1 project routes; they need `folders:read`.
+- OAuth refresh uses `POST /v1/oauth/token` with a refresh-token grant instead of `/v1/oauth/refresh`.
+
+### Fixed
+
+- The React export's Code Connect output works with Code Connect 2: it writes `<Component>.figma.ts` template files (stable node-derived `id`, props read through `figma.selectedInstance` and rendered with `figma.helpers.react.renderProp`), a parserless `figma.config.json`, `@figma/code-connect` in devDependencies and a separate `tsconfig.figma.json`. The retired `figma.connect(...)` parser files it wrote before are refused by the 2.x CLI.
+- Code Connect templates are written outside private Organization plugins too: the file key comes from `fileUrl` when `figma.fileKey` is unavailable, and the export report says how to provide it otherwise.
+- The Code Connect docs no longer say a personal access token cannot publish: per Figma's current docs a PAT with Code Connect: Write and File content: Read works, Professional plan included.
+
 ## 1.11.2 — 2026-10-20
 
 ### Fixed

@@ -32,6 +32,29 @@ test('an op turns into a tool with a sanitised name and a target it did not decl
   assert.equal(tool.inputSchema.properties.target.type, 'string')
 })
 
+test('tool annotations expose safety without treating additive writes as destructive', () => {
+  const read = opToTool({ name: 'node.get', summary: 'one node', mutates: false, params: {} })
+  assert.deepEqual(read.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  })
+
+  const additive = opToTool({ name: 'node.create', summary: 'create one node', mutates: true, params: {} })
+  assert.equal(additive.annotations.readOnlyHint, false)
+  assert.equal(additive.annotations.destructiveHint, false)
+
+  const removal = opToTool({
+    name: 'node.remove',
+    summary: 'remove nodes',
+    mutates: true,
+    destructive: true,
+    params: {},
+  })
+  assert.equal(removal.annotations.destructiveHint, true)
+})
+
 test('a mutating op is flagged as one in the tool description, and carries no `required` when it has no required params', () => {
   const tool = opToTool({ name: 'board.render', summary: 'draw a board', mutates: true, params: {} })
   assert.match(tool.description, /writes to the document/)
@@ -44,6 +67,12 @@ test('a successful single answer names the file that replied', () => {
   const payload = JSON.parse(result.content[0].text)
   assert.equal(payload.handle, 'mobile')
   assert.deepEqual(payload.result, { name: 'Mobile DS' })
+  assert.deepEqual(result.structuredContent, {
+    op: 'document.info',
+    file: 'Mobile DS',
+    handle: 'mobile',
+    result: { name: 'Mobile DS' },
+  })
 })
 
 test('a broadcast answer keeps every file’s reply', () => {
@@ -51,6 +80,7 @@ test('a broadcast answer keeps every file’s reply', () => {
   const payload = JSON.parse(result.content[0].text)
   assert.equal(payload.broadcast, true)
   assert.equal(payload.count, 2)
+  assert.deepEqual(result.structuredContent.results, [{ handle: 'a' }, { handle: 'b' }])
 })
 
 test('a 409 ambiguity refusal becomes an error that carries the roster and the way out', () => {
@@ -59,12 +89,15 @@ test('a 409 ambiguity refusal becomes an error that carries the roster and the w
   assert.match(result.content[0].text, /more than one file/)
   assert.match(result.content[0].text, /a\s+A/)
   assert.match(result.content[0].text, /Pass "target"/)
+  assert.equal(result.structuredContent.error, 'more than one file connected')
+  assert.deepEqual(result.structuredContent.files, [{ handle: 'a', file: 'A' }, { handle: 'b', file: 'B' }])
 })
 
 test('an unreachable bridge is an error the model can act on, not a crash', () => {
   const result = toResult({ ok: false, error: 'cannot reach the AllCrew Figma Workspace bridge' })
   assert.equal(result.isError, true)
   assert.match(result.content[0].text, /cannot reach the AllCrew Figma Workspace bridge/)
+  assert.match(result.structuredContent.error, /cannot reach the AllCrew Figma Workspace bridge/)
 })
 
 test('the meta tools are always present, needing no connected plugin', () => {

@@ -515,6 +515,7 @@ export const ADMIN_OPS: readonly OpDef[] = [
     agent:
       'The whole batch is validated before the first write. Default and last modes cannot be removed; destructive mode or collection removal requires force: true and dryRun reports the loss first.',
     mutates: true,
+    destructive: true,
     params: {
       collections: {
         type: 'json', required: true,
@@ -586,6 +587,7 @@ export const ADMIN_OPS: readonly OpDef[] = [
     agent:
       'Applies renames, then removals, then moves. A page with layers requires force: true; dryRun reports its layer and component counts. The last page is never removable.',
     mutates: true,
+    destructive: true,
     params: {
       pages: { type: 'json', required: true, description: 'Array of { page, newName?, index?, remove? }; page is an id or exact name.' },
       force: { type: 'boolean', default: false, description: 'Allow removing pages that contain layers.' },

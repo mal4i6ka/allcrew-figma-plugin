@@ -92,6 +92,7 @@ export const MODULE_OPS: readonly OpDef[] = [
     name: 'modules.remove',
     summary: 'Remove an installed module and all of its persisted state.',
     mutates: true,
+    destructive: true,
     agent: 'Removal is irreversible and deletes the module state. Export first when the file or non-secret state may be needed again.',
     params: { id: { type: 'string', required: true, description: 'Exact module id to remove.' } },
     async run(params) {

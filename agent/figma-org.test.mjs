@@ -43,7 +43,7 @@ test('activity logs take the Bearer header and nothing else; every other route t
   assert.deepEqual(headerFor('/v1/activity_logs?limit=1', { pat: PAT, oauth: OAUTH }), {
     Authorization: `Bearer ${OAUTH}`,
   })
-  assert.deepEqual(headerFor('/v1/projects/9/files', { pat: PAT, oauth: OAUTH }), { 'X-Figma-Token': PAT })
+  assert.deepEqual(headerFor('/v2/folders/9/files', { pat: PAT, oauth: OAUTH }), { 'X-Figma-Token': PAT })
 })
 
 test('a personal token alone cannot reach the activity log — the header is withheld rather than tried', () => {
@@ -215,25 +215,113 @@ test('without `all` exactly one page is fetched, however much more there is', as
 
 /* -------------------------------------------------------------- the inventory */
 
-test('org.files sorts the stalest to the top, because that is the question behind the question', async () => {
+test('org.files uses the v2 folder route and keeps the backwards-compatible projectId spelling', async () => {
+  const routes = []
   const result = await runOrgOp(
     'org.files',
-    { projectId: '77' },
+    { projectId: '77', branches: true },
     {
       pat: PAT,
-      get: () => ({
-        name: 'Design System',
-        files: [
-          { key: 'a', name: 'Fresh', last_modified: '2026-09-30T10:00:00Z' },
-          { key: 'b', name: 'Forgotten', last_modified: '2024-02-01T10:00:00Z' },
-          { key: 'c', name: 'Middling', last_modified: '2026-01-15T10:00:00Z' },
-        ],
-      }),
+      get: (route) => {
+        routes.push(route)
+        return {
+          name: 'Design System',
+          files: [
+            { key: 'a', name: 'Fresh', last_modified: '2026-09-30T10:00:00Z' },
+            { key: 'b', name: 'Forgotten', last_modified: '2024-02-01T10:00:00Z' },
+            { key: 'c', name: 'Middling', last_modified: '2026-01-15T10:00:00Z' },
+          ],
+        }
+      },
     }
   )
+  assert.deepEqual(routes, ['/v2/folders/77/files?branch_data=true'])
+  assert.equal(result.folderId, '77')
+  assert.equal(result.projectId, '77')
   assert.equal(result.count, 3)
+  assert.equal(result.files[0].folder_path, 'Design System')
   assert.equal(result.stalest[0].name, 'Forgotten')
   assert.equal(result.stalest[2].name, 'Fresh')
+})
+
+test('org.projects traverses nested folders to a bounded depth and includes display paths', async () => {
+  const routes = []
+  const answers = new Map([
+    ['/v2/teams/T/folders', { name: 'Product', folders: [{ id: 'A', name: 'Apps', parent_folder_id: null }] }],
+    ['/v2/folders/A/folders', { name: 'Apps', folders: [{ id: 'B', name: 'Mobile', parent_folder_id: 'A' }] }],
+    ['/v2/folders/B/folders', { name: 'Mobile', folders: [{ id: 'C', name: 'Archive', parent_folder_id: 'B' }] }],
+  ])
+  const result = await runOrgOp(
+    'org.projects',
+    { team: 'T', depth: 2 },
+    {
+      pat: PAT,
+      get: (route) => {
+        routes.push(route)
+        return answers.get(route) || assert.fail(`unexpected route ${route}`)
+      },
+    }
+  )
+  assert.deepEqual(routes, ['/v2/teams/T/folders', '/v2/folders/A/folders'])
+  assert.deepEqual(result.folders.map(({ id, path, depth }) => ({ id, path, depth })), [
+    { id: 'A', path: 'Apps', depth: 1 },
+    { id: 'B', path: 'Apps/Mobile', depth: 2 },
+  ])
+  assert.equal(result.truncated, false)
+})
+
+test('org.files recursively lists nested folders and sorts the combined stale-file summary', async () => {
+  const answers = new Map([
+    ['/v2/folders/A/files', { name: 'Apps', files: [{ key: 'new', name: 'Current', last_modified: '2026-01-01' }] }],
+    ['/v2/folders/A/folders', { name: 'Apps', folders: [{ id: 'B', name: 'Archive' }] }],
+    ['/v2/folders/B/files', { name: 'Archive', files: [{ key: 'old', name: 'Old', last_modified: '2020-01-01' }] }],
+    ['/v2/folders/B/folders', { name: 'Archive', folders: [] }],
+  ])
+  const result = await runOrgOp('org.files', { folderId: 'A', recursive: true }, {
+    pat: PAT,
+    get: (route) => answers.get(route) || assert.fail(`unexpected route ${route}`),
+  })
+  assert.equal(result.count, 2)
+  assert.equal(result.files[1].folder_path, 'Apps/Archive')
+  assert.equal(result.stalest[0].key, 'old')
+})
+
+test('folder cursor pagination stops at maxPages and marks the answer truncated', async () => {
+  const result = await runOrgOp('org.projects', { teamId: 'T', maxPages: 2 }, {
+    pat: PAT,
+    get: (route) => {
+      const cursor = new URL(`https://api.figma.test${route}`).searchParams.get('cursor')
+      if (!cursor) return { name: 'Team', folders: [{ id: '1', name: 'One' }], cursor: 'next', next_page: true }
+      return { name: 'Team', folders: [{ id: '2', name: 'Two' }], cursor: 'still-more', next_page: true }
+    },
+  })
+  assert.equal(result.pages, 2)
+  assert.equal(result.truncated, true)
+  assert.deepEqual(result.folders.map((folder) => folder.id), ['1', '2'])
+  assert.match(result.note, /page ceiling/)
+})
+
+test('folder scope refusal names the v2 enumeration scope and distinguishes metadata-only access', async () => {
+  await assert.rejects(
+    () => runOrgOp('org.projects', { teamId: 'T' }, {
+      pat: PAT,
+      get: () => {
+        const message =
+          'Figma REST 403 — Invalid scope: ["file_content:read", "folder_metadata:read"]. ' +
+          'This endpoint requires the folders:read scope.'
+        const err = new Error(message)
+        err.status = 403
+        err.figmaMessage = message
+        throw err
+      },
+    }),
+    (err) => {
+      assert.match(err.message, /"folders:read"/)
+      assert.match(err.message, /folder_metadata:read.*only permits/)
+      assert.match(err.message, /Public OAuth apps cannot use folders:read/)
+      return true
+    }
+  )
 })
 
 /* ------------------------------------------------------------ capabilities */
@@ -335,16 +423,27 @@ test('client credentials go as HTTP Basic, not in the body — the other way ans
   assert.doesNotMatch(seen.init.body, /client_secret/)
 })
 
-test('a refresh keeps the refresh token, which Figma does not send back', async () => {
+test('a refresh uses the token endpoint and refresh_token grant while preserving an omitted replacement token', async () => {
+  let seen = null
   const grant = await refreshGrant({
     clientId: 'cid',
     clientSecret: 'sec',
     refreshToken: 'R',
-    fetchImpl: async () => ({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ access_token: 'T2', expires_in: 7776000 }),
-    }),
+    fetchImpl: async (url, init) => {
+      seen = { url, init }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ access_token: 'T2', expires_in: 7776000 }),
+      }
+    },
+  })
+  assert.match(seen.url, /\/v1\/oauth\/token$/)
+  assert.equal(seen.init.method, 'POST')
+  assert.equal(seen.init.headers.Authorization, `Basic ${Buffer.from('cid:sec').toString('base64')}`)
+  assert.deepEqual(Object.fromEntries(new URLSearchParams(seen.init.body)), {
+    refresh_token: 'R',
+    grant_type: 'refresh_token',
   })
   assert.equal(grant.access_token, 'T2')
   assert.equal(grant.refresh_token, 'R')
