@@ -2,6 +2,14 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.14.0 — 2026-10-28
+
+### Added
+
+- Settings → Documentation → **On the canvas** lays the package's Markdown (DESIGN.md, COMPONENTS.md, ICONS.md, README.md) out on a `Docs` page, one frame per document, on every export and every design-token zip. Headings, native bulleted and numbered lists, tables, code, quotes and component previews are drawn as ordinary layers. Index entries jump to their section, and links between documents jump to the other frame. A re-export refreshes the same frames in place. Figma Specs would be the natural home, but a plugin cannot create or fill one yet: neither the typings nor the October 2026 beta build expose a spec node.
+- Command `DOCS_TO_CANVAS` does the same for an agent. Given no files, it builds the design-token package from the saved settings first.
+- `node.probe` takes `figma` or `figma.<namespace>` to list what the running Figma build's API has, typings or not.
+
 ## 1.13.0 — 2026-10-27
 
 ### Added

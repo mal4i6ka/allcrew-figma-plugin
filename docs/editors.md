@@ -82,6 +82,19 @@ A code layer built this way runs the code the design system exports: tokens as C
 
 Measured on 2026-10-27, with the "Altery Onboarding" frame of a real file (42 exported files): the import created layer `700:5686`, and `get_design_context` on it lists exactly the exported sources. Locally the project installs and `vite build` succeeds. Figma's own preview is only checked by opening the layer.
 
+## Specs (open beta, October 2026)
+
+A spec is a Markdown container on a Figma or FigJam canvas, made by dropping a `.md` file or pressing D. A plugin cannot make one. Neither the 1.142 typings nor the beta build's `figma` object has a constructor or node type for it (`node.probe {nodeId: "figma"}` lists every `create*`, and none is a spec). Dropping a file also needs Specs enabled on the account: without it, Figma answers "File format not recognized".
+
+So the package's documents go onto the canvas as ordinary layers (Settings → Documentation → On the canvas, or `DOCS_TO_CANVAS`):
+
+- **Layout:** one frame per root-level `.md`, on a `Docs` page in Design or on the board in FigJam. Each frame is found again by plugin data `allcrewDoc` and refreshed in place, keeping its id and position.
+- **Elements:** lists are native Figma lists, and tables are auto-layout grids. Component previews referenced by COMPONENTS.md are drawn as images.
+- **Links:** an `#anchor` link jumps to its heading. A NODE link cannot target a text layer, so each heading is a frame around its text. A link to `COMPONENTS.md` jumps to that document's frame.
+- **Limits:** a document stops after 600 blocks and a table after 100 rows, and the frame says where the rest is. An icon library's COMPONENTS.md runs to thousands of entries.
+
+Once Figma exposes specs to plugins, the same blocks can fill a spec instead.
+
 ## Measured live
 
 These were measured in real FigJam, Slides and Buzz files through the channel. Each one is handled in the code. They are listed here because the typings say nothing about them.

@@ -20,6 +20,28 @@ function need(feature: string, what: string): void {
 
 const brief = (node: BaseNode) => ({ id: node.id, name: node.name, type: node.type })
 
+/** The names on `figma` or one of its namespaces — methods and properties, nothing read or called:
+ * a getter like `currentPage` or `root` is not a question about what the build supports. */
+function apiSurface(path: string): { methods: string[]; properties: string[] } {
+  let at: unknown = figma
+  for (const key of path.split('.').slice(1)) {
+    at = at && typeof at === 'object' ? (at as Record<string, unknown>)[key] : undefined
+    if (!at || typeof at !== 'object') throw new Error(`${path} is not an object in this Figma build`)
+  }
+  const methods: string[] = []
+  const properties: string[] = []
+  const seen = new Set<string>()
+  for (let level = at as object | null; level && level !== Object.prototype; level = Object.getPrototypeOf(level)) {
+    for (const key of Object.getOwnPropertyNames(level)) {
+      if (seen.has(key) || key === 'constructor') continue
+      seen.add(key)
+      const descriptor = Object.getOwnPropertyDescriptor(level, key)
+      ;(descriptor && typeof descriptor.value === 'function' ? methods : properties).push(key)
+    }
+  }
+  return { methods: methods.sort(), properties: properties.sort() }
+}
+
 function gridOf(rows: ReadonlyArray<ReadonlyArray<SceneNode>>, buzz: boolean) {
   return rows.map((row) =>
     row.map((node) => ({
@@ -338,9 +360,17 @@ export const EDITOR_OPS: readonly OpDef[] = [
       'Walks the object and its prototypes, names each method, and reads each property — a value when it is plain ' +
       'or small, its kind otherwise, the error when the getter throws. Read-only: no method is called.',
     mutates: false,
-    params: { nodeId: { type: 'string', required: true, description: 'The node to look inside.' } },
+    params: {
+      nodeId: {
+        type: 'string',
+        required: true,
+        description: 'The node to look inside — or `figma` / `figma.<namespace>` for the API object itself, to see what a newer Figma build has that the typings do not.',
+      },
+    },
     async run(params) {
-      const node = await resolveSceneNode(String(params.nodeId))
+      const id = String(params.nodeId)
+      if (id === 'figma' || id.startsWith('figma.')) return { api: id, ...apiSurface(id) }
+      const node = await resolveSceneNode(id)
       const methods: string[] = []
       const properties: Record<string, unknown> = {}
       const seen = new Set<string>()

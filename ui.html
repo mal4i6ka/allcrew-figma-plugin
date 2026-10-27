@@ -2391,6 +2391,11 @@
           <span class="set-text"><b>Preview budget, MB</b><i>Images land in the repo &middot; components past the budget ship without one</i></span>
           <input id="set-doc-budget" class="set-input" type="number" min="1" max="512" step="1" aria-label="Preview budget in megabytes" />
         </div>
+        <label class="set-row" for="set-doc-canvas">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M7 8h10M7 12h10M7 16h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span class="set-text"><b>On the canvas</b><i>Every export lays these docs out on a <code>Docs</code> page &middot; refreshed in place</i></span>
+          <span class="switch"><input type="checkbox" id="set-doc-canvas" /><span class="track"></span></span>
+        </label>
 
         <div class="set-section">
           <svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M15.536 11.293a1 1 0 0 0 0 1.414l2.376 2.377a1 1 0 0 0 1.414 0l2.377-2.377a1 1 0 0 0 0-1.414l-2.377-2.376a1 1 0 0 0-1.414 0zM2.297 11.293a1 1 0 0 0 0 1.414l2.377 2.377a1 1 0 0 0 1.414 0l2.377-2.377a1 1 0 0 0 0-1.414L6.088 8.917a1 1 0 0 0-1.414 0zM8.917 4.674a1 1 0 0 0 0 1.414l2.376 2.377a1 1 0 0 0 1.414 0l2.377-2.377a1 1 0 0 0 0-1.414l-2.377-2.376a1 1 0 0 0-1.414 0zM8.917 17.912a1 1 0 0 0 0 1.415l2.376 2.376a1 1 0 0 0 1.414 0l2.377-2.376a1 1 0 0 0 0-1.415l-2.377-2.376a1 1 0 0 0-1.414 0z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -3931,6 +3936,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('set-doc-components', 'checked', docsOpt.componentDocs)
         setControl('set-doc-previews', 'checked', docsOpt.componentPreviews)
         setControl('set-doc-budget', 'value', docsOpt.previewBudgetMb || 8)
+        setControl('set-doc-canvas', 'checked', !!docsOpt.onCanvas)
         setControl('set-wrap-translate', 'checked', OPTIONS.i18n.wrapTranslate)
         setControl('set-source-lang', 'value', OPTIONS.i18n.sourceLanguage)
         setControl('set-languages', 'value', OPTIONS.i18n.languages || '')
@@ -4113,6 +4119,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         OPTIONS.docs.previewBudgetMb = isFinite(mb) ? Math.min(512, Math.max(1, mb)) : 8
         el.value = OPTIONS.docs.previewBudgetMb
         if (OPTIONS.docs.componentPreviews) rescanTokensForDocs()
+      })
+      // Not a rebuild: the package is the same, only where its documents also go changes.
+      bindSetting('set-doc-canvas', function (el) {
+        OPTIONS.docs = OPTIONS.docs || {}
+        OPTIONS.docs.onCanvas = el.checked
       })
       bindSetting('set-wrap-translate', function (el) { OPTIONS.i18n.wrapTranslate = el.checked })
       bindSetting('set-source-lang', function (el) { OPTIONS.i18n.sourceLanguage = el.value.trim() })
@@ -5428,6 +5439,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         // The zip is the user's download; delivery sends the files themselves.
         var list = Object.keys(DT_FILES).map(function (n) { return { name: n, content: DT_FILES[n] } })
         dtDownload('allcrew-channel-design-tokens.zip', zipStore(list), 'application/zip')
+        if (OPTIONS && OPTIONS.docs && OPTIONS.docs.onCanvas && mirrorOwnsSideEffects()) {
+          parent.postMessage({ pluginMessage: { type: 'DOCS_TO_CANVAS', files: DT_FILES } }, '*')
+        }
         var delivery = OPTIONS && OPTIONS.delivery
         if (delivery && delivery.endpoint) sendDelivery()
       })
@@ -8182,6 +8196,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         } else if (msg.type === 'TOKENS_ERROR') {
           var elDtErr = document.getElementById('status')
           if (elDtErr) { elDtErr.textContent = 'Scan error: ' + msg.message; elDtErr.className = 'err' }
+        } else if (msg.type === 'DOCS_PLACED') {
+          var elDocs = document.getElementById('status')
+          if (elDocs) {
+            var omitted = (msg.docs || []).filter(function (d) { return d.omitted > 0 })
+            elDocs.textContent = 'On the canvas, page “' + msg.page.name + '”: ' + (msg.docs || []).map(function (d) { return d.name }).join(', ') +
+              (omitted.length ? ' · ' + omitted.map(function (d) { return d.name + ' cut at ' + d.blocks + ' blocks' }).join(', ') : '')
+            elDocs.className = 'ok'
+          }
+        } else if (msg.type === 'DOCS_ERROR') {
+          var elDocsErr = document.getElementById('status')
+          if (elDocsErr) { elDocsErr.textContent = 'Docs not placed on the canvas: ' + msg.message; elDocsErr.className = 'err' }
         } else if (msg.type === 'DELIVERY_RESULT') {
           var dlvTxt = msg.ok
             ? (msg.detail || (msg.dryRun ? 'Dry run — nothing written' : 'Delivered'))

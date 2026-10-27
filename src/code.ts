@@ -157,6 +157,7 @@ import { createNode, planCreate, type CreatePlan, type CreateSpec } from './canv
 import { styledRuns, writableFont } from './canvas/text-runs.ts'
 import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
+import { docNames, placeDocs, type PlacedDocs } from './canvas/docs.ts'
 import { addressIn, readOverrides } from './canvas/overrides.ts'
 import { readKeyframes } from './canvas/keyframes.ts'
 import { readPaintsForWrite } from './canvas/paint-reader.ts'
@@ -346,6 +347,7 @@ type PluginMessage =
     }
   | { type: 'GENERATE_TYPOGRAPHY' }
   | { type: 'DELIVER'; files: Record<string, string | { base64: string }>; dryRun?: boolean }
+  | { type: 'DOCS_TO_CANVAS'; files?: Record<string, string | Uint8Array | { base64: string }> }
   // DS Tools target messages
   | { type: 'PREVIEW_PALETTE'; settings: unknown }
   | { type: 'SUGGEST_SPECTRUM'; settings: unknown }
@@ -2747,6 +2749,75 @@ function refuse(command: PluginMessage['type'], reason: string): void {
  * a case that ships without one is treated as a write.
  */
 /**
+ * The design-token package — tokens, DESIGN.md, COMPONENTS.md and the previews — built from the
+ * saved settings, with whatever the caller overrides for this one build.
+ */
+async function buildTokenPackage(flags: {
+  docs?: { componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }
+  tokens?: { includeLibraries?: boolean; emitNative?: boolean }
+}) {
+  const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)
+  const saved = normalizeExportOptions(stored)
+  // The call's own flags win over the saved ones: an agent asking for a native package must
+  // not depend on what the designer last toggled in a UI it cannot see.
+  const options = {
+    ...saved,
+    tokens: {
+      ...saved.tokens,
+      ...(flags.tokens?.includeLibraries === undefined ? {} : { includeLibraries: flags.tokens.includeLibraries }),
+      ...(flags.tokens?.emitNative === undefined ? {} : { emitNative: flags.tokens.emitNative }),
+    },
+  }
+  const { graph, libraryNote } = await readGraph(
+    options.tokens.includeLibraries,
+    options.themeMerges.groups
+  )
+  // Component configuration (description + doc link + props) is design intent that exists
+  // nowhere in the token tree — collect it BEFORE building the package so DESIGN.md can
+  // point at it, then ship COMPONENTS.md and the previews alongside the tokens.
+  // The UI sends its live values so a package built right after a toggle reflects it —
+  // stored options can still be one save behind.
+  const docsOptions = { ...options.docs, ...(flags.docs ?? {}) }
+  const componentDocs = docsOptions.componentDocs
+    ? await collectComponentDocs(docsOptions.componentPreviews, docsOptions.previewBudgetMb)
+    : { docs: [], files: {} }
+  // `buildDesignTokens` writes COMPONENTS.md (it owns the token model the descriptions
+  // resolve against); the previews are binary and travel separately.
+  const artifacts = buildDesignTokens(graph, options, undefined, componentDocs.docs, readRenameMap())
+  for (const path of Object.keys(componentDocs.files)) artifacts.files[path] = componentDocs.files[path]
+  artifacts.summary.componentCount = componentDocs.docs.length
+  artifacts.summary.previewCount = Object.keys(componentDocs.files).length
+  // Previews asked for but none produced is a silent failure otherwise — surface the reason.
+  if (docsOptions.componentPreviews && Object.keys(componentDocs.files).length === 0) {
+    const reason = componentDocs.docs.find((doc) => doc.previewError)?.previewError
+    artifacts.summary.previewError = reason ?? 'no components found to capture'
+  }
+  if (libraryNote) {
+    const existing = Array.isArray(artifacts.summary.notes) ? artifacts.summary.notes : []
+    artifacts.summary.notes = [...existing, libraryNote]
+  }
+  return { artifacts, options }
+}
+
+/**
+ * A package's documents onto the canvas: the Markdown at its root, with the images it names. The
+ * bytes arrive however the caller had them — the export's own `Uint8Array`, or base64 from an
+ * agent, whose JSON cannot carry bytes.
+ */
+async function docsToCanvas(files: Readonly<Record<string, unknown>>): Promise<PlacedDocs> {
+  const images: Record<string, Uint8Array> = {}
+  for (const [path, contents] of Object.entries(files)) {
+    if (!/\.(png|jpe?g|gif|webp)$/i.test(path)) continue
+    if (contents instanceof Uint8Array) images[path] = contents
+    else if (contents && typeof (contents as { base64?: unknown }).base64 === 'string') {
+      images[path] = figma.base64Decode((contents as { base64: string }).base64)
+    }
+  }
+  const docs = docNames(files).map((name) => ({ name, markdown: files[name] as string }))
+  return placeDocs(docs, images)
+}
+
+/**
  * The nodes a Dev Mode command works on: the ids it was given, or what the designer has selected.
  *
  * Selection as the fallback is the point of these commands — a designer marks the frame they are
@@ -2833,49 +2904,22 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param docs: what goes into the documentation half — { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide
       // @agent param tokens: overrides for this one build — { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide
       try {
-        const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)
-        const saved = normalizeExportOptions(stored)
-        // The call's own flags win over the saved ones: an agent asking for a native package must
-        // not depend on what the designer last toggled in a UI it cannot see.
-        const options = {
-          ...saved,
-          tokens: {
-            ...saved.tokens,
-            ...(msg.tokens?.includeLibraries === undefined ? {} : { includeLibraries: msg.tokens.includeLibraries }),
-            ...(msg.tokens?.emitNative === undefined ? {} : { emitNative: msg.tokens.emitNative }),
-          },
-        }
-        const { graph, libraryNote } = await readGraph(
-          options.tokens.includeLibraries,
-          options.themeMerges.groups
-        )
-        // Component configuration (description + doc link + props) is design intent that exists
-        // nowhere in the token tree — collect it BEFORE building the package so DESIGN.md can
-        // point at it, then ship COMPONENTS.md and the previews alongside the tokens.
-        // The UI sends its live values so a package built right after a toggle reflects it —
-        // stored options can still be one save behind.
-        const docsOptions = { ...options.docs, ...(msg.docs ?? {}) }
-        const componentDocs = docsOptions.componentDocs
-          ? await collectComponentDocs(docsOptions.componentPreviews, docsOptions.previewBudgetMb)
-          : { docs: [], files: {} }
-        // `buildDesignTokens` writes COMPONENTS.md (it owns the token model the descriptions
-        // resolve against); the previews are binary and travel separately.
-        const artifacts = buildDesignTokens(graph, options, undefined, componentDocs.docs, readRenameMap())
-        for (const path of Object.keys(componentDocs.files)) artifacts.files[path] = componentDocs.files[path]
-        artifacts.summary.componentCount = componentDocs.docs.length
-        artifacts.summary.previewCount = Object.keys(componentDocs.files).length
-        // Previews asked for but none produced is a silent failure otherwise — surface the reason.
-        if (docsOptions.componentPreviews && Object.keys(componentDocs.files).length === 0) {
-          const reason = componentDocs.docs.find((doc) => doc.previewError)?.previewError
-          artifacts.summary.previewError = reason ?? 'no components found to capture'
-        }
-        if (libraryNote) {
-          const existing = Array.isArray(artifacts.summary.notes) ? artifacts.summary.notes : []
-          artifacts.summary.notes = [...existing, libraryNote]
-        }
+        const { artifacts, options } = await buildTokenPackage(msg)
         postToUi({ type: 'TOKENS_RESULT', summary: artifacts.summary, files: artifacts.files, options })
       } catch (err) {
         postToUi({ type: 'TOKENS_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'DOCS_TO_CANVAS': {
+      // @agent write: lay a package's Markdown (DESIGN.md, COMPONENTS.md, ICONS.md, …) out on the canvas — one frame per document on the Docs page (FigJam: this board), refreshed in place when it is already there
+      // @agent param files: the package as `{ 'DESIGN.md': 'markdown', 'previews/button.png': { base64 } }` — the Markdown at its root becomes frames, the images it references are drawn in. Omitted, the design-token package is built from the saved settings (as SCAN_TOKENS would) and its documents are placed
+      try {
+        const files = msg.files && Object.keys(msg.files).length > 0 ? msg.files : (await buildTokenPackage({})).artifacts.files
+        const placed = await docsToCanvas(files)
+        postToUi({ type: 'DOCS_PLACED', ...placed })
+      } catch (err) {
+        postToUi({ type: 'DOCS_ERROR', message: String((err as Error)?.message || err) })
       }
       break
     }
@@ -6991,6 +7035,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             `${Object.keys(files).length} file(s), scope: ${scope.mode}`
           )
         } catch (error) { console.warn('[export] saveVersionHistoryAsync skipped', error) }
+
+        // The documents onto the canvas too, when the designer asked for it. Like the audit above,
+        // a canvas that refuses must not sink the package: the files still ship, the reason shows.
+        if (exportOptions.docs.onCanvas) {
+          postToUi({ type: 'EXPORT_PROGRESS', stage: 'docs', percent: 97 })
+          try {
+            postToUi({ type: 'DOCS_PLACED', ...(await docsToCanvas(files)) })
+          } catch (error) {
+            postToUi({ type: 'DOCS_ERROR', message: String((error as Error)?.message || error) })
+          }
+        }
 
         postToUi({ type: 'EXPORT_PROGRESS', stage: 'done', percent: 100 })
         postToUi({ type: 'FILES_READY', files, manualAssets })

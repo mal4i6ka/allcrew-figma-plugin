@@ -1418,6 +1418,17 @@ curl -s "$BASE/call" -H "x-allcrew-channel-secret: $SECRET" \
   leaves are the *strings* `var(--text-primary)`, which type-check in Swift and resolve to
   nothing.
 
+**The documents go onto the canvas with `DOCS_TO_CANVAS`.** Without `files` it builds the token
+package from the saved settings and places its Markdown on the `Docs` page (in FigJam, on the
+board), one frame per document, refreshing the frames already there. Pass `files` to place a
+package you already hold, with images as `{ base64 }`. Figma Specs cannot be created by a plugin
+yet, so these are ordinary layers; the frame of a document is found by plugin data `allcrewDoc`.
+
+```bash
+curl -s "$BASE/call" -H "x-allcrew-channel-secret: $SECRET" \
+  -d '{"op":"plugin.call","params":{"command":"DOCS_TO_CANVAS","params":{},"timeoutMs":300000}}'
+```
+
 Sandbox state is shared with the panel, so multi-step features follow the panel's order:
 `REMAP_SCAN` → `REMAP_PREVIEW` → `REMAP_APPLY` / `REMAP_BOARD`.
 

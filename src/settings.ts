@@ -147,6 +147,9 @@ export interface ExportDocsOptions {
   /** Megabytes of preview images one export may ship. `previews/` lands in the repository next to
    * DESIGN.md, so the ceiling is a repo-hygiene decision, not a technical one — hence a knob. */
   previewBudgetMb: number
+  /** Also lay the package's Markdown out on the canvas — a `Docs` page with one frame per
+   * document, refreshed in place on every export. Off by default: it writes into the file. */
+  onCanvas: boolean
 }
 
 export interface ThemeMergeModeOptions {
@@ -300,7 +303,7 @@ const DEFAULT_AGENT: ExportAgentOptions = {
 export const DEFAULT_LINT: ExportLintOptions = { maxNestingDepth: 8 }
 /** Descriptions are cheap to read, so they are on; previews cost an export per component, so the
  * team opts in. */
-export const DEFAULT_DOCS: ExportDocsOptions = { componentDocs: true, componentPreviews: false, previewBudgetMb: 8 }
+export const DEFAULT_DOCS: ExportDocsOptions = { componentDocs: true, componentPreviews: false, previewBudgetMb: 8, onCanvas: false }
 export const DEFAULT_THEME_MERGES: ExportThemeMergesOptions = { groups: [] }
 export const DEFAULT_UPDATES: UpdatePreferences = {
   automatic: false,
@@ -509,6 +512,7 @@ function normalizeDocs(raw: unknown): ExportDocsOptions {
       typeof raw.previewBudgetMb === 'number' && Number.isFinite(raw.previewBudgetMb)
         ? Math.min(512, Math.max(1, Math.round(raw.previewBudgetMb)))
         : DEFAULT_DOCS.previewBudgetMb,
+    onCanvas: raw.onCanvas === true,
   }
 }
 

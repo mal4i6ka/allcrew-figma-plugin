@@ -8,6 +8,9 @@ test('documentation defaults: contracts on, previews opt-in', () => {
   assert.equal(options.docs.componentDocs, true)
   assert.equal(options.docs.componentPreviews, false)
   assert.equal(options.docs.previewBudgetMb, 8)
+  // Writing into the file is opted into, never a default.
+  assert.equal(options.docs.onCanvas, false)
+  assert.equal(normalizeExportOptions({ docs: { onCanvas: 'yes' } }).docs.onCanvas, false)
 })
 
 test('the preview budget is clamped to something a repository can hold', () => {
@@ -52,10 +55,10 @@ test('choosing a preset preserves file-specific theme rows', () => {
 test('choosing a preset does not reset the documentation settings', () => {
   // Like `lint` and `delivery`: a team's docs policy is theirs, not part of a package preset.
   const options = normalizeExportOptions({
-    docs: { componentDocs: false, componentPreviews: true, previewBudgetMb: 32 },
+    docs: { componentDocs: false, componentPreviews: true, previewBudgetMb: 32, onCanvas: true },
   })
   const applied = applyPreset(options, 'design-tokens')
-  assert.deepEqual(applied.docs, { componentDocs: false, componentPreviews: true, previewBudgetMb: 32 })
+  assert.deepEqual(applied.docs, { componentDocs: false, componentPreviews: true, previewBudgetMb: 32, onCanvas: true })
 })
 
 test('browser UI mirroring is explicit, normalized and preserved across presets', () => {
