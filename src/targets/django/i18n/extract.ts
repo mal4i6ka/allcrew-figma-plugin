@@ -20,6 +20,7 @@
  */
 
 import { findAllWithCriteria } from '../../../utils/tree.ts'
+import { checkpoint } from '../../../utils/budget.ts'
 import { TEXT_SEGMENT_FIELDS, splitTextParagraphs, type TextStyleSegment } from '../text-styles.ts'
 import { getAnnotation } from './annotation.ts'
 import { resolveKey } from './keys.ts'
@@ -116,6 +117,7 @@ export async function extractStrings(root: BaseNode, options: ExtractStringsOpti
   const catalog = new Map<string, ExtractedEntry>()
 
   for (const node of textNodes) {
+    await checkpoint()
     const nodeEntries = await extractNodeEntries(node, sourceLocale)
     if (nodeEntries.length === 0) continue
 

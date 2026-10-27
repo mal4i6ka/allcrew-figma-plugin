@@ -30,7 +30,7 @@
 
 import type { LintFinding, LintRule } from './index.ts'
 import { resolveVariableValue } from '../../../variables.ts'
-import { yieldToHost } from '../../../utils/tree.ts'
+import { checkpoint, pauseDue } from '../../../utils/budget.ts'
 
 export type LintFixStatus = 'fixed' | 'skipped' | 'failed'
 
@@ -446,9 +446,9 @@ async function loadColorCandidates(ctx: FixContext): Promise<ColorCandidate[]> {
     const [variable, library] = sources[i]
     const candidate = await toColorCandidate(variable, library, ctx)
     if (candidate) pool.push(candidate)
-    if ((i + 1) % 100 === 0) {
+    if (pauseDue()) {
       ctx.progress?.(`preparing token matches… ${i + 1}/${sources.length}`)
-      await yieldToHost()
+      await checkpoint()
     }
   }
   ctx.colorCandidates = pool
@@ -519,18 +519,18 @@ async function loadLibraryColorVariables(ctx: FixContext): Promise<Variable[]> {
         const candidates = (await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key)).filter(
           (candidate) => candidate.resolvedType === 'COLOR'
         )
-        // Chunked: importing a full design system is thousands of round-trips — surface progress
-        // and yield between chunks so the plugin doesn't look frozen for minutes.
-        for (let i = 0; i < candidates.length; i += 50) {
-          const chunk = candidates.slice(i, i + 50)
+        // Keep imports bounded: a library may expose thousands of tokens, and fifty concurrent
+        // sandbox round-trips creates enough retained promises to destabilize a large fix.
+        for (let i = 0; i < candidates.length; i += 4) {
+          const batch = candidates.slice(i, i + 4)
           const results = await Promise.all(
-            chunk.map((candidate) => figma.variables.importVariableByKeyAsync(candidate.key).catch(() => null))
+            batch.map((candidate) => figma.variables.importVariableByKeyAsync(candidate.key).catch(() => null))
           )
           for (const variable of results) if (variable) imported.push(variable)
           ctx.progress?.(
-            `importing "${collection.name}" tokens… ${Math.min(i + 50, candidates.length)}/${candidates.length}`
+            `importing "${collection.name}" tokens… ${Math.min(i + 4, candidates.length)}/${candidates.length}`
           )
-          await yieldToHost()
+          await checkpoint()
         }
       } catch {
         /* unreadable collection — keep matching against the others */

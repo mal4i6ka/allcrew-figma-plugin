@@ -16,9 +16,10 @@ function parseStoredGates(entry: unknown): StoredGates | null {
 }
 
 /**
- * Development and public plugins do not receive `figma.fileKey`. A file name is not an identity:
- * two unrelated files named "Untitled" must never share an agent grant. Without a stable key the
- * listener always starts closed and consent lasts only for the current plugin session.
+ * Grants are keyed by a stable file identity: `figma.fileKey` where Figma gives one, otherwise the
+ * id the plugin stamps into the document on the first grant (see `fileIdentity` in `code.ts`). A
+ * file name is never the key: two unrelated files named "Untitled" must never share an agent
+ * grant. Without any key the listener starts closed and consent lasts only for this session.
  */
 export function storedGatesFor(storage: unknown, fileKey: string | null | undefined): StoredGates {
   if (!fileKey || !storage || typeof storage !== 'object') return { ...CLOSED_GATES }

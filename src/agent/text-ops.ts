@@ -23,6 +23,7 @@
  */
 
 import type { OpDef } from './protocol.ts'
+import { openSweep, resolveSweepRoots, SWEEP_PARAMS } from './sweep.ts'
 
 /** Frames whose insides are a picture, not copy — the names this file uses for them. */
 const ILLUSTRATION_NAMES = ['Img', 'Img_hero', 'Interface', 'Calculator', 'World', 'Points']
@@ -62,7 +63,8 @@ export const TEXT_OPS: readonly OpDef[] = [
       'as an SVG overlay and must NOT be duplicated into the copy deck. Compare `content` against the strings a ' +
       'build exports and the difference is the localization gap, computed from the design rather than from a ' +
       "copy of the design's conventions kept somewhere else. `illustrations` extends the name list; " +
-      '`includeHidden` adds layers the designer switched off.',
+      '`includeHidden` adds layers the designer switched off. Rows and `counts` describe this call\'s page and are ' +
+      'paged by `limit`; on `complete: false`, call again with the same params plus `cursor`.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'Frame, section or page-level frame to inventory.' },
@@ -80,74 +82,77 @@ export const TEXT_OPS: readonly OpDef[] = [
         description: 'Report only copy, only drawn text, or both.',
       },
       limit: { type: 'number', default: 500, min: 1, max: 5000, description: 'Maximum rows reported.' },
+      ...SWEEP_PARAMS,
     },
     async run(params) {
-      const root = await figma.getNodeByIdAsync(String(params.nodeId))
-      if (!root) throw new Error(`no node with id ${String(params.nodeId)}`)
-      if (root.type === 'DOCUMENT') throw new Error('give a frame or a page-level node, not the document')
-
       const extra = (params.illustrations as string[] | undefined) ?? []
       const includeHidden = params.includeHidden === true
       const wanted = String(params.role ?? 'all')
       const limit = params.limit as number
-
+      let rootNode: BaseNode | null = null
+      const sweep = await openSweep({
+        op: 'text.inventory',
+        params,
+        roots: async () => {
+          const resolved = await resolveSweepRoots({ nodeId: params.nodeId })
+          rootNode = resolved.roots[0] ?? null
+          return resolved
+        },
+        state: () => ({
+          root: rootNode
+            ? { id: rootNode.id, name: rootNode.name, type: rootNode.type }
+            : { id: String(params.nodeId), name: '', type: 'UNKNOWN' },
+        }),
+        skipInstanceChildren: false,
+        includeRoots: true,
+        // Hidden layers inside instances exist for this read only when Figma is told not to
+        // skip them — the one inventory that asks for them must see them.
+        invisibleInstanceChildren: includeHidden,
+      })
       const rows: TextRow[] = []
-      let scanned = 0
-      let truncated = false
 
-      const stack: Array<{ node: BaseNode; path: string; bakedIn: string | null }> = [
-        { node: root, path: root.name, bakedIn: isIllustration(root.name, extra) ? root.name : null },
-      ]
-      while (stack.length > 0) {
-        const current = stack.pop()!
-        const node = current.node
-        scanned += 1
-        const visible = (node as SceneNode).visible !== false
-        if (!visible && !includeHidden) continue
+      await sweep.walk(async (node) => {
+        // `swept.nodes` is the resumable running total; rows below belong only to this call.
+        if (node.type !== 'TEXT') return
 
-        if (node.type === 'TEXT') {
-          const text = node as TextNode
-          const role: TextRow['role'] = current.bakedIn ? 'baked' : 'content'
-          if (wanted === 'all' || wanted === role) {
-            if (rows.length >= limit) {
-              truncated = true
-            } else {
-              const style = text.textStyleId
-                ? await figma.getStyleByIdAsync(String(text.textStyleId))
-                : null
-              rows.push({
-                id: text.id,
-                name: text.name,
-                path: current.path,
-                // Newlines escaped: a paragraph mark in the middle of a report reads as a broken row.
-                characters: text.characters.replace(/\n/g, '\\n'),
-                length: text.characters.length,
-                role,
-                ...(current.bakedIn ? { bakedIn: current.bakedIn } : {}),
-                ...(style ? { style: style.name } : {}),
-                visible,
-              })
-            }
-          }
+        const names: string[] = []
+        let walk: BaseNode | null = node
+        let visible = true
+        let bakedIn: string | null = null
+        while (walk && walk.type !== 'DOCUMENT') {
+          names.unshift(walk.name)
+          if ('visible' in walk && walk.visible === false) visible = false
+          if (isIllustration(walk.name, extra)) bakedIn = walk.name
+          if (walk.id === String(params.nodeId)) break
+          walk = walk.parent
         }
+        if (!visible && !includeHidden) return
+        const role: TextRow['role'] = bakedIn ? 'baked' : 'content'
+        if (wanted !== 'all' && wanted !== role) return
 
-        if ('children' in node) {
-          for (const child of (node as BaseNode & ChildrenMixin).children) {
-            stack.push({
-              node: child,
-              path: `${current.path}/${child.name}`,
-              // Once inside an illustration, always inside it: depth changes nothing.
-              bakedIn: current.bakedIn ?? (isIllustration(child.name, extra) ? child.name : null),
-            })
-          }
-        }
-      }
+        const text = node as TextNode
+        const style = text.textStyleId ? await figma.getStyleByIdAsync(String(text.textStyleId)) : null
+        rows.push({
+          id: text.id,
+          name: text.name,
+          path: names.join('/'),
+          characters: text.characters.replace(/\n/g, '\\n'),
+          length: text.characters.length,
+          role,
+          ...(bakedIn ? { bakedIn } : {}),
+          ...(style ? { style: style.name } : {}),
+          visible,
+        })
+        if (rows.length >= limit) return 'stop'
+      })
 
+      const report = sweep.report()
       const content = rows.filter((row) => row.role === 'content')
       return {
-        node: { id: root.id, name: root.name, type: root.type },
-        scanned,
-        truncated,
+        ...report,
+        node: sweep.state.root,
+        ...(report.complete ? { scanned: report.swept.nodes } : { scannedSoFar: report.swept.nodes }),
+        truncated: !report.complete,
         counts: {
           total: rows.length,
           content: content.length,

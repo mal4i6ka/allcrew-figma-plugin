@@ -23,7 +23,7 @@
 import type { RenameMap } from '../../tokens/engine.ts'
 import { deltaE } from '../../tokens/remap/match.ts'
 import type { RemapEntry, RemapPlan } from '../../tokens/remap/plan.ts'
-import { yieldToHost } from '../../utils/tree.ts'
+import { checkpoint, holdSkipInvisible, pauseDue } from '../../utils/budget.ts'
 import {
   hexOf,
   isGradient,
@@ -453,7 +453,11 @@ export async function scopeRoots(scope: RemapScope): Promise<readonly SceneNode[
   if (scope === 'selection') return figma.currentPage.selection
   if (scope === 'page') return figma.currentPage.children
   const roots: SceneNode[] = []
-  for (const page of figma.root.children) roots.push(...page.children)
+  for (const page of figma.root.children) {
+    if (pauseDue()) await checkpoint()
+    await page.loadAsync()
+    roots.push(...page.children)
+  }
   return roots
 }
 
@@ -610,7 +614,7 @@ async function applyCanvas(
   const context: CanvasContext = { targets, bindTo, snapshot, report, loader, dry }
   const roots = await scopeRoots(options.scope)
 
-  figma.skipInvisibleInstanceChildren = true
+  const releaseSkipInvisible = holdSkipInvisible()
   try {
     const stack: SceneNode[] = [...roots]
     let visited = 0
@@ -629,13 +633,13 @@ async function applyCanvas(
 
       if ('children' in node) for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i])
 
-      if (visited % 200 === 0) {
+      if (pauseDue()) {
         progress?.(dry ? `sizing the undo… ${report.paints} places` : `repainting… ${report.paints} places`)
-        await yieldToHost()
+        await checkpoint()
       }
     }
   } finally {
-    figma.skipInvisibleInstanceChildren = false
+    releaseSkipInvisible()
   }
 
   if (report.instanceOverrides > 0) {
@@ -788,9 +792,10 @@ export async function applyRemap(
       report.failed++
       warnings.push(`${entry.site.name}: ${String((error as Error).message)}`)
     }
-    if (++written % 100 === 0) {
+    written++
+    if (pauseDue()) {
       progress?.(`writing values… ${written}/${valueTargets.length}`)
-      await yieldToHost()
+      await checkpoint()
     }
   }
 
@@ -999,9 +1004,10 @@ async function revertPaints(
       warnings.push(`${scene.name}: ${String((error as Error).message)}`)
     }
 
-    if (++handled % 100 === 0) {
+    handled++
+    if (pauseDue()) {
       progress?.(`restoring layers… ${handled}/${byNode.size}`)
-      await yieldToHost()
+      await checkpoint()
     }
   }
   return restored
@@ -1056,9 +1062,9 @@ export async function revertRemap(progress?: (label: string) => void): Promise<R
     } catch (error) {
       warnings.push(`${variable.name}: ${String((error as Error).message)}`)
     }
-    if ((index + 1) % 100 === 0) {
+    if (pauseDue()) {
       progress?.(`restoring values… ${index + 1}/${snapshot.values.length}`)
-      await yieldToHost()
+      await checkpoint()
     }
   }
 

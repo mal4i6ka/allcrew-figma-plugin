@@ -45,5 +45,6 @@ test('a node type NODE_CREATE cannot make says so rather than half-trying', () =
   assert.equal(kindOf('FRAME'), 'frame')
   assert.equal(kindOf('TEXT_PATH'), 'textPath')
   assert.equal(kindOf('GROUP'), null)
-  assert.equal(kindOf('SLICE'), null)
+  assert.equal(kindOf('SLICE'), 'slice')
+  assert.equal(kindOf('BOOLEAN_OPERATION'), null)
 })

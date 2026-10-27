@@ -93,6 +93,31 @@ function makeNode(id: string, type: string, overrides: Partial<FakeNode> = {}): 
   return node
 }
 
+/* --------------------------------------------------------- node.screenshot */
+
+test('node.screenshot downscales before exportAsync and reports the scale actually used', async () => {
+  const node = makeNode('0:shot', 'FRAME', { name: 'Large Preview', width: 2000, height: 2000 })
+  let renderedScale = 0
+  node.exportAsync = async (settings) => {
+    renderedScale = settings.constraint.value
+    return new Uint8Array([1, 2, 3])
+  }
+  setFigma({ getNodeByIdAsync: async () => node })
+
+  const op = OPS_BY_NAME.get('node.screenshot')!
+  const params = validateParams(op.params, { nodeId: node.id, scale: 2 })
+  const result = (await op.run(params)) as {
+    scale: number
+    requestedScale?: number
+    downscaled?: boolean
+  }
+
+  assert.equal(result.requestedScale, 2)
+  assert.equal(result.downscaled, true)
+  assert.equal(result.scale, renderedScale)
+  assert.ok(result.scale < 2)
+})
+
 /* -------------------------------------------------------------- image.plate */
 
 test('image.plate renders the node with every descendant hidden and names the file by format', async () => {
@@ -255,18 +280,18 @@ test('image.fills: budgetMs returns whatever it reached instead of waiting out e
       timedOut: boolean
       images: Array<{ hash: string }>
       failed: Array<{ hash: string; error: string }>
+      nextOffset?: number
+      remaining?: number
     }
 
     assert.equal(result.timedOut, true)
     assert.equal(result.count, 1)
     assert.equal(result.images[0].hash, 'hash-slow')
-    assert.deepEqual(
-      result.failed.map((f) => f.hash).sort(),
-      ['hash-a', 'hash-b']
-    )
-    assert.ok(result.failed.every((f) => /budget exhausted/.test(f.error)))
-    // The two later fills were never even asked for — the budget check stops the loop before
-    // `getImageByHash` runs, not after a wasted fetch.
+    assert.deepEqual(result.failed, [])
+    assert.equal(result.nextOffset, 1)
+    assert.equal(result.remaining, 2)
+    // The two later fills were never even asked for — the run-aware stop check stops the loop
+    // before `getImageByHash` runs, and nextOffset resumes from the first untouched fill.
     assert.deepEqual(requestedHashes, ['hash-slow'])
   } finally {
     globalThis.Date = RealDate

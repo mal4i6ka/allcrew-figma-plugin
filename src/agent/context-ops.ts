@@ -20,7 +20,6 @@ import { emitDjango } from '../targets/django/index.ts'
 import { imageStaticPath } from '../targets/django/html-emitter.ts'
 import { pickBackend, type MotionTrigger } from '../targets/django/motion/backend.ts'
 import { motionCurve } from '../targets/django/easing/index.ts'
-import { noteLoad } from './loading.ts'
 import { readMotionData } from '../targets/django/motion/beta-adapter.ts'
 import { emitMotionExportArtifacts, type MotionExportNode } from '../targets/django/motion/export-assets.ts'
 import { buildPreviewDocument } from '../targets/django/motion/preview.ts'
@@ -32,13 +31,17 @@ import { emitBreakpointCss, type BreakpointGroup } from '../targets/django/break
 import { detectImageFillFormat, isVideoAssetPath, primaryDesignerSetting, type DesignerExportSetting } from '../targets/django/assets.ts'
 import { resolveExportSettings, type ExportMarkedInstanceNode } from '../utils/graphics.ts'
 import { imageAlpha, imageDimensions } from './image-dimensions.ts'
-import { findAllWithCriteria, yieldToHost } from '../utils/tree.ts'
+import { walkSceneNodes } from '../utils/tree.ts'
+import { checkpoint, enforceDeadline } from '../utils/budget.ts'
 import { exportPlate } from '../canvas/plate.ts'
+import { fileUrlPath } from '../canvas/board.ts'
 import { readLocalVariables } from '../variables.ts'
 import { binaryFile, slugify, textFile } from './files.ts'
 import { shadersFor } from './ops.ts'
 import { describePaint, describeShader, type PaintSummary, type ShaderSummary } from './paints.ts'
 import type { OpDef } from './protocol.ts'
+import { ExportGuard, fitScaleToPixels, MAX_REPLY_RAW_BYTES } from './export-guard.ts'
+import { openSweep, resolveSweepRoots, SWEEP_PARAMS } from './sweep.ts'
 import {
   collectContextAssets,
   collectTokens,
@@ -121,6 +124,9 @@ export const CONTEXT_OPS: readonly OpDef[] = [
   {
     name: 'node.screenshot',
     summary: 'Render a node to PNG — the one way an agent can check what it actually drew.',
+    agent:
+      'Oversized screenshots are downscaled before exportAsync so the sandbox and the 3 MiB reply hop stay safe; ' +
+      '`scale` in the answer is the scale actually rendered and `requestedScale` is present when it changed.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'Layer to render.' },
@@ -128,13 +134,14 @@ export const CONTEXT_OPS: readonly OpDef[] = [
     },
     async run(params) {
       const node = await resolveSceneNode(params.nodeId)
-      const scale = params.scale as number
-      const bytes = await screenshot(node, scale)
+      const requestedScale = params.scale as number
+      const shot = await screenshot(node, requestedScale)
       return {
         node: { id: node.id, name: node.name, type: node.type, width: node.width, height: node.height },
-        scale,
-        bytes: bytes.length,
-        file: binaryFile(`${slugify(node.name)}.png`, 'image/png', bytes),
+        scale: shot.scale,
+        ...(shot.downscaled ? { requestedScale, downscaled: true } : {}),
+        bytes: shot.bytes.length,
+        file: binaryFile(`${slugify(node.name)}.png`, 'image/png', shot.bytes),
       }
     },
   },
@@ -148,7 +155,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       'pixels, because exportAsync has no "skip children" switch. image.fills answers this without touching the ' +
       'canvas at all when the photo is a plain paint (getImageByHash, no render), but its subtree walk can outrun a ' +
       "large file's budget; reach for image.plate once a walk already has nodeId and the photo just needs to come " +
-      'back clean. Reach for node.screenshot/NODE_EXPORT instead when the overlay is actually wanted in the picture. ' +
+      'back clean. Oversized plates are downscaled before exportAsync; the answer reports the scale actually used. ' +
       'Costs a fleeting clone — created, hidden, exported, deleted — the document is back to itself once this returns.',
     mutates: true,
     params: {
@@ -158,13 +165,19 @@ export const CONTEXT_OPS: readonly OpDef[] = [
     },
     async run(params) {
       const node = await resolveSceneNode(params.nodeId)
-      const scale = params.scale as number
+      const requestedScale = params.scale as number
       const format = params.format as 'PNG' | 'JPG'
-      const bytes = await exportPlate(node, { format, constraint: { type: 'SCALE', value: scale } })
+      const fitted = fitScaleToPixels(node, requestedScale, Math.floor(MAX_REPLY_RAW_BYTES / 5))
+      const bytes = await exportPlate(node, {
+        format,
+        constraint: { type: 'SCALE', value: fitted.scale },
+        maxPixels: Math.floor(MAX_REPLY_RAW_BYTES / 5),
+      })
       const ext = format === 'JPG' ? 'jpg' : 'png'
       return {
         node: { id: node.id, name: node.name, type: node.type, width: node.width, height: node.height },
-        scale,
+        scale: fitted.scale,
+        ...(fitted.downscaled ? { requestedScale, downscaled: true } : {}),
         format,
         bytes: bytes.length,
         file: binaryFile(`${slugify(node.name)}.${ext}`, format === 'JPG' ? 'image/jpeg' : 'image/png', bytes),
@@ -177,56 +190,57 @@ export const CONTEXT_OPS: readonly OpDef[] = [
     summary: 'The original files behind a subtree’s image fills — the photo itself, not a render with text baked over it.',
     agent:
       'A render (node.screenshot, NODE_EXPORT, image.plate) flattens overlays and text into the pixels; this hands ' +
-      'back the uploaded source of each IMAGE paint under the node, deduplicated by hash, largest first. Read-only: ' +
-      'no export settings on the node, no write gate — `figma.getImageByHash` is a read. Pin one exact fill with ' +
-      '`imageHash` (add `paintIndex` when the same hash paints more than one slot on the same node) instead of ' +
-      "guessing it out of a ranked list; `self: true` skips the subtree walk when the node's own fills are already " +
-      'known to be the answer. On a large subtree the walk and the byte fetches can outrun `budgetMs` (default ' +
-      "60 s, capped at 170 s to fit inside the bridge's own deadline) — the call always answers within it, with " +
-      'whatever it reached in `images[]` and the rest named in `failed[]` alongside `timedOut: true`, never left ' +
-      'hanging.',
+      'back the uploaded source of each IMAGE paint under the node, deduplicated by hash, largest first. A large ' +
+      'subtree is swept in resumable slices: on `complete: false`, call again with the same params plus `cursor`. ' +
+      'Byte fetching is paged separately; when `nextOffset` is present, repeat the call with that offset. The byte ' +
+      'budget is clamped below the 3 MiB transport ceiling. Pin one fill with `imageHash`, or use `self: true`.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'Subtree to search for image fills.' },
       limit: { type: 'number', default: 20, min: 1, max: 100, description: 'How many distinct images to hand back.' },
+      offset: {
+        type: 'number',
+        default: 0,
+        min: 0,
+        max: 10000,
+        description: 'Skip this many ranked fills. Use nextOffset to resume byte fetching.',
+      },
+      budgetBytes: {
+        type: 'number',
+        default: MAX_REPLY_RAW_BYTES,
+        min: 100_000,
+        max: 12_000_000,
+        description: 'Raw image bytes allowed in one reply; clamped to the transport-safe ceiling.',
+      },
       minSide: {
         type: 'number',
         default: 64,
         min: 0,
         description: 'Skip images whose longer side is below this many pixels — icons and textures, not photos.',
       },
-      imageHash: {
-        type: 'string',
-        description: 'Only this image hash — narrows the whole subtree walk down to one exact fill.',
-      },
-      paintIndex: {
-        type: 'number',
-        min: 0,
-        description: "Only a paint sitting at this index in its node's own fill stack.",
-      },
-      self: {
-        type: 'boolean',
-        default: false,
-        description: "Check only nodeId's own fills — skip the subtree walk entirely.",
-      },
+      imageHash: { type: 'string', description: 'Only this image hash.' },
+      paintIndex: { type: 'number', min: 0, description: "Only this index in a node's own fill stack." },
+      self: { type: 'boolean', default: false, description: "Check only nodeId's own fills." },
+      ...SWEEP_PARAMS,
       budgetMs: {
         type: 'number',
         default: 60000,
         min: 1000,
         max: 170000,
-        description: 'Total time the walk plus every byte fetch together may take before the call returns whatever it has.',
+        description: 'Time for this sweep/fetch slice; the active agent-run deadline is also enforced.',
       },
       imageMs: {
         type: 'number',
         default: 15000,
         min: 1000,
         max: 170000,
-        description: 'Per-image deadline for one getBytesAsync — shortened further when budgetMs is close to running out.',
+        description: 'Per-image getBytesAsync deadline, shortened when the call deadline is close.',
       },
     },
     async run(params) {
       const root = await resolveSceneNode(params.nodeId)
       const limit = params.limit as number
+      const offset = params.offset as number
       const minSide = params.minSide as number
       const imageHash = params.imageHash as string | undefined
       const paintIndex = params.paintIndex as number | undefined
@@ -235,50 +249,10 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       const imageMs = params.imageMs as number
       const start = Date.now()
       const deadlineAt = start + budgetMs
+      type Hit = { node: SceneNode; paintIndex: number; scaleMode: string }
+      type State = { hits: Map<string, Hit> }
 
-      // A read that does not come back is worse than one that says it failed: every fetch
-      // below is raced against a deadline and reported per image.
-      const raceDeadline = <T,>(work: Promise<T>, what: string, ms: number): Promise<T> =>
-        new Promise<T>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms)
-          work.then(
-            (value) => {
-              clearTimeout(timer)
-              resolve(value)
-            },
-            (error) => {
-              clearTimeout(timer)
-              reject(error)
-            },
-          )
-        })
-
-      /* Image data belongs to a loaded page: with dynamic page loading, an image on a page the
-       * designer has not opened is a promise that never settles. Load it first - but under the
-       * call's own budget, because on a cold 200k-node page that load alone ran past three
-       * minutes and killed the call before a single byte was read. A lost race is not a lost
-       * page: Figma keeps loading it, so the retry this error asks for is the fast one. */
-      let page: BaseNode | null = root
-      while (page && page.type !== 'PAGE') page = page.parent
-      if (page) {
-        const loadStarted = Date.now()
-        try {
-          await raceDeadline((page as PageNode).loadAsync(), `loading page "${page.name}"`, budgetMs)
-        } catch {
-          throw new Error(
-            `"${page.name}" was still loading after ${budgetMs} ms — Figma keeps loading it in the ` +
-              'background, so calling again usually answers at once. Raise budgetMs to wait here instead.'
-          )
-        }
-        noteLoad(page.name, Date.now() - loadStarted)
-      }
-
-      // One entry per distinct image: the same photo is often the fill of a frame and of the
-      // rectangle inside it, and the caller wants the file once. `imageHash`/`paintIndex`
-      // filter right here, before dedup, so a caller pinning one exact fill gets that one back
-      // instead of whichever node the walk happened to reach first.
-      const hits = new Map<string, { node: SceneNode; paintIndex: number; scaleMode: string }>()
-      const record = (node: SceneNode): void => {
+      const record = (hits: Map<string, Hit>, node: SceneNode): void => {
         if (node.visible === false) return
         const fills = (node as GeometryMixin).fills
         if (!Array.isArray(fills)) return
@@ -286,67 +260,110 @@ export const CONTEXT_OPS: readonly OpDef[] = [
           if (paint.type !== 'IMAGE' || !paint.imageHash || paint.visible === false) return
           if (paintIndex !== undefined && index !== paintIndex) return
           if (imageHash !== undefined && paint.imageHash !== imageHash) return
-          if (!hits.has(paint.imageHash)) hits.set(paint.imageHash, { node, paintIndex: index, scaleMode: paint.scaleMode })
+          if (!hits.has(paint.imageHash)) {
+            hits.set(paint.imageHash, { node, paintIndex: index, scaleMode: paint.scaleMode })
+          }
         })
       }
 
-      record(root)
-      let timedOut = false
-      if (!self && 'children' in root) {
-        // Iterative preorder DFS, the same order `findAllWithCriteria` walks in, but with its
-        // own deadline on top of the node-count yield cadence — a subtree small enough to never
-        // hit a yield can still sit on a ~200k-node live file long enough to outrun the whole
-        // call's own budget.
-        let visited = 0
-        const stack: SceneNode[] = [...root.children]
-        while (stack.length > 0) {
-          if (Date.now() > deadlineAt) {
-            timedOut = true
-            break
-          }
-          const node = stack.pop() as SceneNode
-          record(node)
-          if ('children' in node) for (const child of node.children) stack.push(child)
-          if (++visited % 500 === 0) await yieldToHost()
+      let state: State
+      let sweepReport: {
+        complete: boolean
+        cursor?: string
+        stoppedOn?: 'budget' | 'limit'
+        swept: { nodes: number; roots: { done: number; of: number }; calls: number }
+      }
+      if (self) {
+        state = { hits: new Map() }
+        record(state.hits, root)
+        sweepReport = { complete: true, swept: { nodes: 1, roots: { done: 1, of: 1 }, calls: 1 } }
+      } else {
+        const sweep = await openSweep<State>({
+          op: 'image.fills',
+          params,
+          roots: () => resolveSweepRoots(params),
+          state: () => ({ hits: new Map() }),
+          includeRoots: true,
+        })
+        state = sweep.state
+        await sweep.walk((node) => record(state.hits, node))
+        sweepReport = sweep.report()
+      }
+
+      if (!sweepReport.complete) {
+        return {
+          node: { id: root.id, name: root.name, type: root.type },
+          ...sweepReport,
+          note: 'Collection is incomplete; call image.fills again with the same params plus cursor.',
         }
       }
 
-      // `getSizeAsync` is not consulted: on a live file it never settled, for any image. The
-      // fills are ranked by the area of the layer they paint — the section photo is the big
-      // node, the thumbnails are the small ones — bytes are fetched for the top `limit` only,
-      // and pixel dimensions are read off the file header.
-      const ranked = [...hits.entries()].sort(
+      const raceDeadline = <T,>(work: Promise<T>, what: string, ms: number): Promise<T> =>
+        new Promise<T>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms)
+          work.then(
+            (value) => { clearTimeout(timer); resolve(value) },
+            (error) => { clearTimeout(timer); reject(error) },
+          )
+        })
+
+      const ranked = [...state.hits.entries()].sort(
         ([, a], [, b]) => b.node.width * b.node.height - a.node.width * a.node.height,
       )
       const failures: Array<{ node: string; hash: string; error: string }> = []
-      let skipped = 0
       const images: Array<Record<string, unknown>> = []
-      let index = 0
-      for (; index < ranked.length && images.length < limit; index++) {
-        if (Date.now() > deadlineAt) {
-          timedOut = true
+      const guard = new ExportGuard({ budgetBytes: params.budgetBytes as number, reserveMs: 2_000 })
+      let skipped = 0
+      let index = offset
+      let stoppedOn: 'bytes' | 'deadline' | 'cancelled' | 'time' | null = null
+
+      while (index < ranked.length && images.length < limit) {
+        if (Date.now() >= deadlineAt) {
+          stoppedOn = 'time'
+          break
+        }
+        const gate = await guard.beforeRender(index)
+        if (!gate.include) {
+          stoppedOn = gate.stoppedOn ?? 'time'
           break
         }
         const [hash, hit] = ranked[index]
         const image = figma.getImageByHash(hash)
-        if (!image) continue
+        if (!image) {
+          failures.push({ node: hit.node.id, hash, error: 'image hash is no longer available' })
+          index += 1
+          continue
+        }
         let bytes: Uint8Array
         try {
           const perImageMs = Math.max(1, Math.min(imageMs, deadlineAt - Date.now()))
           bytes = await raceDeadline(image.getBytesAsync(), `getBytesAsync ${hit.node.name}`, perImageMs)
         } catch (error) {
           failures.push({ node: hit.node.id, hash, error: String(error) })
+          index += 1
           continue
         }
         const format = detectImageFillFormat(bytes)
         const { width, height } = imageDimensions(bytes)
-        /* Photograph or cut-out figure: the one bit that decides how the picture is PLACED, and
-         * the Plugin API states it nowhere. The bytes are already here, so it costs a header
-         * read - see `imageAlpha` for what "alpha" does and does not promise. */
-        const alpha = imageAlpha(bytes)
         if (width && height && Math.max(width, height) < minSide) {
           skipped += 1
+          index += 1
           continue
+        }
+        const admitted = guard.admit(bytes.length, index)
+        if (!admitted.include) {
+          stoppedOn = 'bytes'
+          if (admitted.firstItemTooLarge) {
+            failures.push({
+              node: hit.node.id,
+              hash,
+              error:
+                `source is ${bytes.length} bytes, too large for one transport-safe reply; ` +
+                'use image.plate to render a smaller copy',
+            })
+            index += 1
+          }
+          break
         }
         images.push({
           node: { id: hit.node.id, name: hit.node.name, type: hit.node.type, width: hit.node.width, height: hit.node.height },
@@ -357,35 +374,28 @@ export const CONTEXT_OPS: readonly OpDef[] = [
           height,
           bytes: bytes.length,
           format,
-          alpha,
+          alpha: imageAlpha(bytes),
           file: binaryFile(
             `${slugify(hit.node.name)}-${hash.slice(0, 8)}.${format}`,
             format === 'jpg' ? 'image/jpeg' : `image/${format}`,
             bytes,
           ),
         })
-      }
-      if (timedOut) {
-        // Whatever the loop above never got to: named explicitly rather than folded into the
-        // same `truncated` count a `limit` cutoff produces — a caller retrying one hash out of
-        // `failed[]` is a different next step than a caller simply raising `limit`.
-        for (; index < ranked.length; index++) {
-          const [hash, hit] = ranked[index]
-          failures.push({ node: hit.node.id, hash, error: `budget exhausted (${budgetMs} ms) before this image was fetched` })
-        }
+        index += 1
       }
 
-      const truncated = Math.max(0, ranked.length - images.length - failures.length - skipped)
+      const more = index < ranked.length
       return {
         node: { id: root.id, name: root.name, type: root.type },
+        ...sweepReport,
         count: images.length,
-        truncated,
         skippedSmall: skipped,
-        /** Images Figma would not hand over in time, or never reached because the budget ran
-         * out first — named, so the caller can retry (a narrower `imageHash`/`self`) or fall
-         * back (image.plate) instead of assuming the subtree simply has nothing left. */
         failed: failures,
-        timedOut,
+        timedOut: stoppedOn === 'time' || stoppedOn === 'deadline' || stoppedOn === 'cancelled',
+        ...(stoppedOn ? { stoppedOn } : {}),
+        ...(offset > 0 ? { offset } : {}),
+        ...(more ? { remaining: ranked.length - index, nextOffset: index } : {}),
+        bytes: guard.spent,
         elapsedMs: Date.now() - start,
         images,
       }
@@ -402,8 +412,16 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       nodeId: { type: 'string', description: 'One node to reveal (legacy shorthand for nodes: [nodeId]).' },
       nodes: { type: 'string[]', description: 'Node ids to select together where they share a page.' },
       select: { type: 'boolean', default: true, description: 'Also select visible-page nodes, not just scroll to them.' },
+      zoom: {
+        type: 'number',
+        description:
+          'Hold this zoom (1 = 100%) centred on the nodes instead of fitting them — a detail at 400% rather than a whole screen shrunk to fit.',
+      },
     },
     async run(params) {
+      if (params.zoom !== undefined && (typeof params.zoom !== 'number' || !(params.zoom > 0) || params.zoom > 256)) {
+        throw new Error('zoom must be a number above 0 and at most 256 — 1 is 100%')
+      }
       const ids = [
         ...(Array.isArray(params.nodes)
           ? (params.nodes as unknown[]).filter((id): id is string => typeof id === 'string' && id !== '')
@@ -426,7 +444,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
           result: {
             node: { id: node.id, name: node.name, type: node.type },
             page: { id: page.id, name: (page as PageNode).name },
-            url: fileKey ? `https://www.figma.com/design/${fileKey}/${anchor}` : null,
+            url: fileKey ? `https://www.figma.com/${fileUrlPath(figma.editorType)}/${fileKey}/${anchor}` : null,
             deepLinkSuffix: anchor,
           },
         }
@@ -438,6 +456,13 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       const visible = rows.filter((row) => row.page.id === visiblePage.id)
       if (params.select !== false) figma.currentPage.selection = visible.map((row) => row.node)
       figma.viewport.scrollAndZoomIntoView(visible.map((row) => row.node))
+      if (typeof params.zoom === 'number') {
+        // Fit first and then hold the zoom: the fit has already put the nodes' centre in the
+        // middle of the window, which is where a zoom should be anchored.
+        const centre = figma.viewport.center
+        figma.viewport.zoom = params.zoom
+        figma.viewport.center = centre
+      }
 
       const elsewhere = new Map<string, { page: { id: string; name: string }; nodes: unknown[] }>()
       for (const row of rows.filter((candidate) => candidate.page.id !== visiblePage.id)) {
@@ -454,6 +479,10 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         selected: params.select === false ? [] : visible.map((row) => row.result.node),
         elsewhere: [...elsewhere.values()],
         nodes: rows.map((row) => row.result),
+        viewport: {
+          zoom: Math.round(figma.viewport.zoom * 1000) / 1000,
+          center: { x: Math.round(figma.viewport.center.x), y: Math.round(figma.viewport.center.y) },
+        },
       }
     },
   },
@@ -462,12 +491,11 @@ export const CONTEXT_OPS: readonly OpDef[] = [
     name: 'design.context',
     summary: 'Reference HTML + CSS + PNG for a node, with the tokens it binds — implement from this.',
     agent:
-      'Answers with file paths, not payloads — open them. The token usage table says which variables ' +
-      "actually carry the subtree. `assets[]` names every raster/vector/video/poster the emitted HTML+CSS " +
-      'actually references — `filename` is exactly the path the markup asks for, and `nodeId` is the id to ' +
-      'hand straight to NODE_EXPORT to produce it; no need to reverse-engineer one from the other. An entry ' +
-      "with `exportable: false` names a video Figma's export API already refused — NODE_EXPORT will fail on " +
-      "that nodeId the same way, so don't retry it.",
+      'Answers with file paths, not payloads — open them. The token usage table says which variables actually carry ' +
+      'the subtree. Oversized reference PNGs are downscaled before exportAsync; `screenshotScale` is the actual scale. ' +
+      '`assets[]` names every raster/vector/video/poster the emitted HTML+CSS references — `filename` is exactly the ' +
+      'path the markup asks for, and `nodeId` goes straight to NODE_EXPORT. An entry with `exportable: false` names ' +
+      "a video Figma's export API already refused, so do not retry it.",
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'Frame or component to describe.' },
@@ -518,13 +546,15 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       const interactions = await clock.time('interactions', () => emitInteractions(irNodes, sceneNodesById))
 
       const slug = slugify(root.name)
+      let screenshotScale: { scale: number; downscaled: boolean } | null = null
       const files: unknown[] = [
         textFile(`${slug}.html`, 'text/html', html),
         textFile(`${slug}.css`, 'text/css', css),
       ]
       if (params.screenshot !== false) {
-        const png = await clock.time('screenshot', () => screenshot(root, params.scale as number))
-        files.push(binaryFile(`${slug}.png`, 'image/png', png))
+        const shot = await clock.time('screenshot', () => screenshot(root, params.scale as number))
+        files.push(binaryFile(`${slug}.png`, 'image/png', shot.bytes))
+        screenshotScale = shot
       }
       const assets = await clock.time('assets', () => collectContextAssets(irNodes, sceneNodesById))
 
@@ -534,6 +564,14 @@ export const CONTEXT_OPS: readonly OpDef[] = [
         tokens: tokens.usage,
         ms: clock.report(),
         files,
+        ...(screenshotScale
+          ? {
+              screenshotScale: screenshotScale.scale,
+              ...(screenshotScale.downscaled
+                ? { requestedScreenshotScale: params.scale as number, screenshotDownscaled: true }
+                : {}),
+            }
+          : {}),
         assets,
         // Only when there is anything to link — a node with no hover/press/overlay behaviour
         // emits an empty string, and an empty stylesheet is not a file worth a caller opening.
@@ -896,11 +934,13 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       if (first) layers.push(first)
       if (withChildren && 'children' in root) {
         const queue: SceneNode[] = [...(root.children as readonly SceneNode[])]
-        while (queue.length > 0 && layers.length < limit) {
-          const node = queue.shift() as SceneNode
+        let cursor = 0
+        while (cursor < queue.length && layers.length < limit) {
+          const node = queue[cursor++] as SceneNode
           const described = await describeLayer(node)
           if (described) layers.push(described)
           if ('children' in node) queue.push(...(node.children as readonly SceneNode[]))
+          await checkpoint()
         }
       }
 
@@ -996,20 +1036,20 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       // because that is the question a dry run is asked.
       const namedOnCanvas = new Set<string>()
       if (dryRun) {
-        const note = (entry: unknown) => {
-          const one = entry as { type?: string; id?: unknown; propertyMetadata?: unknown }
-          if (one?.type !== 'SHADER' || typeof one.id !== 'string') return
-          if (one.propertyMetadata && Object.keys(one.propertyMetadata).length > 0) namedOnCanvas.add(one.id)
-        }
-        const visit = (node: SceneNode) => {
-          for (const field of ['fills', 'strokes', 'effects'] as const) {
-            const bag = (node as unknown as Record<string, unknown>)[field]
-            if (Array.isArray(bag)) for (const entry of bag) note(entry)
+        await enforceDeadline(async () => {
+          const note = (entry: unknown) => {
+            const one = entry as { type?: string; id?: unknown; propertyMetadata?: unknown }
+            if (one?.type !== 'SHADER' || typeof one.id !== 'string') return
+            if (one.propertyMetadata && Object.keys(one.propertyMetadata).length > 0) namedOnCanvas.add(one.id)
           }
-          if ('children' in node) for (const child of node.children) visit(child)
-        }
-        await figma.currentPage.loadAsync()
-        for (const node of figma.currentPage.children) visit(node)
+          await figma.currentPage.loadAsync()
+          await walkSceneNodes(figma.currentPage, (node) => {
+            for (const field of ['fills', 'strokes', 'effects'] as const) {
+              const bag = (node as unknown as Record<string, unknown>)[field]
+              if (Array.isArray(bag)) for (const entry of bag) note(entry)
+            }
+          }, { includeRoot: false })
+        })
       }
 
       const results: Array<Record<string, unknown>> = []

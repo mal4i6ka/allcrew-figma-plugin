@@ -9,6 +9,7 @@
 import { isExportedGraphic } from '../../../utils/graphics.ts'
 import { isBootstrapComponentName, wantsVariantProp, VARIANT_PROP_NAMES } from '../bootstrap/components.ts'
 import { regionFills } from '../../../utils/vector-regions.ts'
+import { checkpoint, pauseDue } from '../../../utils/budget.ts'
 
 /** Default `excessive-nesting` threshold; overridable per team via Settings → lint.maxNestingDepth. */
 export const DEFAULT_MAX_NESTING_DEPTH = 8
@@ -244,29 +245,42 @@ async function instanceOfExportedComponent(instance: InstanceNode, cache: Map<st
   return flagged
 }
 
-/** Same walk and output order as `lintScope`, but yields to the host thread periodically —
- * plugin code runs on Figma's main thread, and a sync walk over a large page freezes the app. */
+/**
+ * One node of the runtime lint: its own findings go into `findings`, and the answer says whether
+ * its subtree is linted at all — a designer-marked graphic, or an instance of an export-marked
+ * component, is an asset whose insides are art. The unit a resumable sweep (`lint.colors`) and
+ * `lintScopeAsync` below both walk with.
+ */
+export async function lintNodeAsync(
+  node: SceneNode,
+  depth: number,
+  findings: LintFinding[],
+  exportedMainCache: Map<string, boolean>,
+  maxDepth: number = DEFAULT_MAX_NESTING_DEPTH
+): Promise<boolean> {
+  if (isExportedGraphic(node)) return false
+  if (node.type === 'INSTANCE' && (await instanceOfExportedComponent(node, exportedMainCache))) return false
+  checkNodeShallow(node, depth, findings, maxDepth)
+  return true
+}
+
+/** Same walk and output order as `lintScope`, but checkpointed — plugin code runs on Figma's
+ * main thread, and a sync walk over a large page freezes the app. */
 export async function lintScopeAsync(roots: readonly SceneNode[], options: LintOptions = {}): Promise<LintFinding[]> {
   const maxDepth = options.maxNestingDepth ?? DEFAULT_MAX_NESTING_DEPTH
-  const YIELD_EVERY = 500
   const findings: LintFinding[] = []
-  let visited = 0
   const exportedMainCache = new Map<string, boolean>()
   const stack: Array<{ node: SceneNode; depth: number }> = []
   for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], depth: 0 })
   while (stack.length > 0) {
     const { node, depth } = stack.pop()!
-    // Skip designer-marked graphics and their subtrees — they export as a single asset.
-    if (isExportedGraphic(node)) continue
-    if (node.type === 'INSTANCE' && (await instanceOfExportedComponent(node, exportedMainCache))) continue
-    checkNodeShallow(node, depth, findings, maxDepth)
-    if (hasChildren(node)) {
+    if ((await lintNodeAsync(node, depth, findings, exportedMainCache, maxDepth)) && hasChildren(node)) {
       const childDepth = startsNewTemplateFile(node) ? 0 : depth + 1
       for (let i = node.children.length - 1; i >= 0; i--) {
         stack.push({ node: node.children[i], depth: childDepth })
       }
     }
-    if (++visited % YIELD_EVERY === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    if (pauseDue()) await checkpoint()
   }
   return findings
 }

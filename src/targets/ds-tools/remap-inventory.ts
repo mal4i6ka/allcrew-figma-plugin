@@ -24,7 +24,8 @@
 
 import type { AdjacencyPair } from '../../tokens/remap/audit.ts'
 import type { ColorSite } from '../../tokens/remap/plan.ts'
-import { loadAllPagesAsync, yieldToHost } from '../../utils/tree.ts'
+import { loadAllPagesAsync } from '../../utils/tree.ts'
+import { checkpoint, holdSkipInvisible, pauseDue } from '../../utils/budget.ts'
 
 export interface ModeInfo {
   id: string
@@ -346,7 +347,7 @@ async function walkDocument(
 
   const pages = depth === 'page' ? [figma.currentPage] : figma.root.children
 
-  figma.skipInvisibleInstanceChildren = true
+  const releaseSkipInvisible = holdSkipInvisible()
   try {
     for (const page of pages) {
       progress?.(`reading ${page.name}…`)
@@ -420,9 +421,9 @@ async function walkDocument(
         for (const ref of strokes) if (!isLooseSite(ref)) noteVariable(ref)
 
         if (isInstance) {
-          if (walk.nodes % 500 === 0) {
+          if (pauseDue()) {
             progress?.(`reading ${page.name}… ${walk.nodes} nodes`)
-            await yieldToHost()
+            await checkpoint()
           }
           continue
         }
@@ -443,14 +444,14 @@ async function walkDocument(
           for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], behind: passes })
         }
 
-        if (walk.nodes % 500 === 0) {
+        if (pauseDue()) {
           progress?.(`reading ${page.name}… ${walk.nodes} nodes`)
-          await yieldToHost()
+          await checkpoint()
         }
       }
     }
   } finally {
-    figma.skipInvisibleInstanceChildren = false
+    releaseSkipInvisible()
   }
 
   return walk

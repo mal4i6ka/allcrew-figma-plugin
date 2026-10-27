@@ -12,6 +12,8 @@
  * `withoutChildren` flag (code.ts) — one clone/hide/delete implementation, not two.
  */
 
+import { DEFAULT_MAX_EXPORT_PIXELS, fitConstraintToPixels, type ExportConstraint } from '../agent/export-guard.ts'
+
 export interface PlateSettings {
   format: 'PNG' | 'JPG'
   constraint: ExportSettingsConstraints
@@ -21,6 +23,8 @@ export interface PlateSettings {
   contentsOnly?: boolean
   useAbsoluteBounds?: boolean
   colorProfile?: string
+  /** Pixel ceiling checked before cloning/exporting. Oversized rasters are reduced to fit. */
+  maxPixels?: number
 }
 
 function hasChildren(node: SceneNode): node is SceneNode & ChildrenMixin {
@@ -51,6 +55,11 @@ function hideDescendants(node: SceneNode): void {
  * before this returns, on the success path and on the throw path alike.
  */
 export async function exportPlate(node: SceneNode, settings: PlateSettings): Promise<Uint8Array> {
+  const fitted = fitConstraintToPixels(
+    node,
+    settings.constraint as ExportConstraint,
+    settings.maxPixels ?? DEFAULT_MAX_EXPORT_PIXELS
+  )
   const page = pageOf(node)
   if (!page) throw new Error(`"${node.name}" is not on a page — nothing to clone onto`)
 
@@ -77,7 +86,7 @@ export async function exportPlate(node: SceneNode, settings: PlateSettings): Pro
     hideDescendants(clone)
     return await clone.exportAsync({
       format: settings.format,
-      constraint: settings.constraint,
+      constraint: fitted.constraint,
       ...(settings.contentsOnly === undefined ? {} : { contentsOnly: settings.contentsOnly }),
       ...(settings.useAbsoluteBounds === undefined ? {} : { useAbsoluteBounds: settings.useAbsoluteBounds }),
       ...(settings.colorProfile === undefined ? {} : { colorProfile: settings.colorProfile }),

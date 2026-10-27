@@ -17,6 +17,10 @@ const point = (value: { x: number; y: number } | undefined): [number, number] | 
 
 const round = (value: number): number => Math.round(value * 100) / 100
 
+/** One number while the grain is square, `[x, y]` once it is stretched — what `size` takes back. */
+const grainWords = (size: number, vector?: { x: number; y: number }): number | [number, number] =>
+  vector && round(vector.x) !== round(vector.y) ? [round(vector.x), round(vector.y)] : round(size)
+
 /** `#RRGGBB` — or the authored `oklch(…)`/P3/HSL form when Figma kept one, which the write
  * vocabulary takes back as is, so a read-then-write does not flatten it to sRGB. */
 function colourWords(colour: { r: number; g: number; b: number; a: number }): string {
@@ -81,6 +85,7 @@ export async function readEffects(value: unknown): Promise<unknown[] | null> {
           color: { r: number; g: number; b: number; a: number }
           secondaryColor?: { r: number; g: number; b: number; a: number }
           noiseSize: number
+          noiseSizeVector?: { x: number; y: number }
           density: number
           opacity?: number
         }
@@ -89,7 +94,7 @@ export async function readEffects(value: unknown): Promise<unknown[] | null> {
           noise: kinds[one.noiseType] ?? one.noiseType,
           color: colourWords(one.color),
           ...(one.secondaryColor ? { second: colourWords(one.secondaryColor) } : {}),
-          size: round(one.noiseSize),
+          size: grainWords(one.noiseSize, one.noiseSizeVector),
           density: round(one.density),
           ...(one.opacity !== undefined ? { opacity: round(one.opacity) } : {}),
 
@@ -99,8 +104,8 @@ export async function readEffects(value: unknown): Promise<unknown[] | null> {
       }
 
       case 'TEXTURE': {
-        const one = effect as unknown as { radius: number; noiseSize: number; clipToShape: boolean }
-        out.push({ texture: round(one.radius), size: round(one.noiseSize), ...(one.clipToShape ? {} : { clip: false }), ...hidden })
+        const one = effect as unknown as { radius: number; noiseSize: number; noiseSizeVector?: { x: number; y: number }; clipToShape: boolean }
+        out.push({ texture: round(one.radius), size: grainWords(one.noiseSize, one.noiseSizeVector), ...(one.clipToShape ? {} : { clip: false }), ...hidden })
         break
       }
 

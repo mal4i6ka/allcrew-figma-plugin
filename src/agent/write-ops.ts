@@ -25,9 +25,11 @@ import {
   resolveVariable,
   resolveVariableRef,
 } from './values.ts'
-import { loadAllPagesAsync, walkSceneNodes } from '../utils/tree.ts'
+import { walkSceneNodes } from '../utils/tree.ts'
+import { checkpoint, enforceDeadline, pauseDue } from '../utils/budget.ts'
 import { REMOVE_OPS } from './remove-ops.ts'
 import { regionFills, writeRegionFills, paintAliasId, type RegionPaints } from '../utils/vector-regions.ts'
+import { resolveWalkRoots } from './scope.ts'
 
 /* ------------------------------------------------------------------ report */
 
@@ -1732,56 +1734,34 @@ export const WRITE_OPS: readonly OpDef[] = [
         errors: string[]
       }> = []
       const pairByFromId = new Map<string, number>()
-      for (const [index, raw] of rows.entries()) {
-        const entry = record(raw, `map[${index}]`)
-        const from = await resolveVariableRef(entry.from)
-        const to = await resolveVariableRef(entry.to)
-        if (from.resolvedType !== to.resolvedType) {
-          throw new Error(`map[${index}]: "${from.name}" is ${from.resolvedType} but "${to.name}" is ${to.resolvedType}`)
+      await enforceDeadline(async () => {
+        for (const [index, raw] of rows.entries()) {
+          await checkpoint()
+          const entry = record(raw, `map[${index}]`)
+          const from = await resolveVariableRef(entry.from)
+          const to = await resolveVariableRef(entry.to)
+          if (from.resolvedType !== to.resolvedType) {
+            throw new Error(`map[${index}]: "${from.name}" is ${from.resolvedType} but "${to.name}" is ${to.resolvedType}`)
+          }
+          if (from.id === to.id) throw new Error(`map[${index}]: "${from.name}" maps to itself`)
+          if (pairByFromId.has(from.id)) throw new Error(`map[${index}]: "${from.name}" appears twice as a source`)
+          pairByFromId.set(from.id, pairs.length)
+          pairs.push({ from, to, matched: 0, rebound: 0, failed: 0, overrides: 0, inherited: 0, errors: [] })
         }
-        if (from.id === to.id) throw new Error(`map[${index}]: "${from.name}" maps to itself`)
-        if (pairByFromId.has(from.id)) throw new Error(`map[${index}]: "${from.name}" appears twice as a source`)
-        pairByFromId.set(from.id, pairs.length)
-        pairs.push({ from, to, matched: 0, rebound: 0, failed: 0, overrides: 0, inherited: 0, errors: [] })
-      }
+      })
 
-      if (!dryRun) figma.commitUndo()
 
-      /* Scope resolution is duplicated from the read registry on purpose: importing ops.ts here
-       * would make the write registry depend on the read one, and the cycle costs more than
-       * twenty lines ever will. */
-      let roots: BaseNode[]
-      let labels: string[]
-      if (typeof params.nodeId === 'string' && params.nodeId !== '') {
-        const found = await figma.getNodeByIdAsync(params.nodeId)
-        if (!found || found.type === 'DOCUMENT') throw new Error(`no node with id ${params.nodeId}`)
-        if (found.type === 'PAGE') {
-          await (found as PageNode).loadAsync()
-        } else {
-          let page: BaseNode | null = found.parent
-          while (page && page.type !== 'PAGE') page = page.parent
-          if (page) await (page as PageNode).loadAsync()
+      const { roots, labels } = await enforceDeadline(async () => {
+        if (
+          (typeof params.nodeId === 'string' && params.nodeId !== '') ||
+          params.scope === 'page' ||
+          (typeof params.pageId === 'string' && params.pageId !== '')
+        ) {
+          return resolveWalkRoots(params)
         }
-        roots = [found]
-        labels = [found.type === 'PAGE' ? found.name : `${found.name} (subtree)`]
-      } else if (params.scope === 'page' || (typeof params.pageId === 'string' && params.pageId !== '')) {
-        // Mirrors resolveWalkRoots: an explicit pageId IS the scope — never a silent document walk.
-        let page: PageNode
-        if (typeof params.pageId === 'string' && params.pageId !== '') {
-          const found = await figma.getNodeByIdAsync(params.pageId)
-          if (!found || found.type !== 'PAGE') throw new Error(`no page with id ${params.pageId}`)
-          page = found as PageNode
-        } else {
-          page = figma.currentPage
-        }
-        await page.loadAsync()
-        roots = [page]
-        labels = [page.name]
-      } else {
-        await loadAllPagesAsync()
-        roots = figma.root.children.slice()
-        labels = roots.map((one) => one.name)
-      }
+        const pages = figma.root.children.slice()
+        return { roots: pages as BaseNode[], labels: pages.map((page) => page.name) }
+      })
 
       const aliasTo = (to: Variable) => ({ type: 'VARIABLE_ALIAS' as const, id: to.id })
       /* Text rebinds are collected during the walk and executed after it: the range calls need
@@ -1797,6 +1777,7 @@ export const WRITE_OPS: readonly OpDef[] = [
        * migrated in the styles pass below. */
       const styled = (value: unknown) => value !== undefined && value !== ''
       const writeErrors: string[] = []
+      const writeJobs: Array<() => void> = []
 
       /* A sublayer inside an instance reports the binding it EFFECTIVELY has, whether that came
        * from its main or from an override on this instance. The two must not be treated alike:
@@ -1893,17 +1874,19 @@ export const WRITE_OPS: readonly OpDef[] = [
                 textJobs.push({ node, field })
               } else {
                 const at = pairByFromId.get((value[0] as { id?: string })?.id ?? '') as number
-                try {
-                  ;(node as unknown as { setBoundVariable: (f: string, v: Variable) => void }).setBoundVariable(
-                    field,
-                    pairs[at].to
-                  )
-                  pairs[at].rebound += hits
-                } catch (err) {
-                  pairs[at].failed += hits
-                  const message = `${field}: ${String((err as Error)?.message || err)}`
-                  if (pairs[at].errors.length < 3 && !pairs[at].errors.includes(message)) pairs[at].errors.push(message)
-                }
+                writeJobs.push(() => {
+                  try {
+                    ;(node as unknown as { setBoundVariable: (f: string, v: Variable) => void }).setBoundVariable(
+                      field,
+                      pairs[at].to
+                    )
+                    pairs[at].rebound += hits
+                  } catch (err) {
+                    pairs[at].failed += hits
+                    const message = `${field}: ${String((err as Error)?.message || err)}`
+                    if (pairs[at].errors.length < 3 && !pairs[at].errors.includes(message)) pairs[at].errors.push(message)
+                  }
+                })
               }
               continue
             }
@@ -1912,17 +1895,19 @@ export const WRITE_OPS: readonly OpDef[] = [
             const pair = pairs[at]
             pair.matched += 1
             if (dryRun) continue
-            try {
-              ;(node as unknown as { setBoundVariable: (f: string, v: Variable) => void }).setBoundVariable(
-                field,
-                pair.to
-              )
-              pair.rebound += 1
-            } catch (err) {
-              pair.failed += 1
-              const message = `${field}: ${String((err as Error)?.message || err)}`
-              if (pair.errors.length < 3 && !pair.errors.includes(message)) pair.errors.push(message)
-            }
+            writeJobs.push(() => {
+              try {
+                ;(node as unknown as { setBoundVariable: (f: string, v: Variable) => void }).setBoundVariable(
+                  field,
+                  pair.to
+                )
+                pair.rebound += 1
+              } catch (err) {
+                pair.failed += 1
+                const message = `${field}: ${String((err as Error)?.message || err)}`
+                if (pair.errors.length < 3 && !pair.errors.includes(message)) pair.errors.push(message)
+              }
+            })
           }
         }
 
@@ -1981,12 +1966,15 @@ export const WRITE_OPS: readonly OpDef[] = [
             }
           })
           if (next && !dryRun) {
-            try {
-              ;(holder as Record<string, unknown>)[prop] = next
-            } catch (err) {
-              const message = `${node.name} (${node.id}) ${prop}: ${String((err as Error)?.message || err)}`
-              if (writeErrors.length < 5) writeErrors.push(message)
-            }
+            const replacement = next
+            writeJobs.push(() => {
+              try {
+                holder[prop] = replacement
+              } catch (err) {
+                const message = `${node.name} (${node.id}) ${prop}: ${String((err as Error)?.message || err)}`
+                if (writeErrors.length < 5) writeErrors.push(message)
+              }
+            })
           }
         }
 
@@ -2020,12 +2008,15 @@ export const WRITE_OPS: readonly OpDef[] = [
             }
           })
           if (nextGrids && !dryRun) {
-            try {
-              ;(holder as Record<string, unknown>).layoutGrids = nextGrids
-            } catch (err) {
-              const message = `${node.name} (${node.id}) layoutGrids: ${String((err as Error)?.message || err)}`
-              if (writeErrors.length < 5) writeErrors.push(message)
-            }
+            const replacement = nextGrids
+            writeJobs.push(() => {
+              try {
+                holder.layoutGrids = replacement
+              } catch (err) {
+                const message = `${node.name} (${node.id}) layoutGrids: ${String((err as Error)?.message || err)}`
+                if (writeErrors.length < 5) writeErrors.push(message)
+              }
+            })
           }
         }
 
@@ -2062,12 +2053,15 @@ export const WRITE_OPS: readonly OpDef[] = [
             }
           })
           if (nextEffects && !dryRun) {
-            try {
-              ;(holder as Record<string, unknown>).effects = nextEffects
-            } catch (err) {
-              const message = `${node.name} (${node.id}) effects: ${String((err as Error)?.message || err)}`
-              if (writeErrors.length < 5) writeErrors.push(message)
-            }
+            const replacement = nextEffects
+            writeJobs.push(() => {
+              try {
+                holder.effects = replacement
+              } catch (err) {
+                const message = `${node.name} (${node.id}) effects: ${String((err as Error)?.message || err)}`
+                if (writeErrors.length < 5) writeErrors.push(message)
+              }
+            })
           }
         }
       }
@@ -2079,10 +2073,14 @@ export const WRITE_OPS: readonly OpDef[] = [
        * after a migration names them. */
       const tWalk = Date.now()
       let visited = 0
-      for (const root of roots) {
-        const walked = await walkSceneNodes(root, migrateNode, { skipInstanceChildren: !wantOverrides })
-        visited += walked.visited
-      }
+      await enforceDeadline(async () => {
+        for (const root of roots) {
+          await checkpoint()
+          if (root.type === 'PAGE') await (root as PageNode).loadAsync()
+          const walked = await walkSceneNodes(root, migrateNode, { skipInstanceChildren: !wantOverrides })
+          visited += walked.visited
+        }
+      })
       const walkMs = Date.now() - tWalk
 
       /* Overrides are classified after the walk, in one async pass: each job needs the main's
@@ -2105,47 +2103,118 @@ export const WRITE_OPS: readonly OpDef[] = [
         },
       }
       const mainSideByNode = new Map<string, Record<string, unknown> | null>()
-      for (const job of overrideJobs) {
-        let main = mainSideByNode.get(job.node.id)
-        if (main === undefined) {
-          main = await resolveMainSide(job.node, lookups)
-          mainSideByNode.set(job.node.id, main)
-        }
-        if (!isOwnOverride(job.aliasId, mainAliasFor(main, job))) {
-          pairs[job.at].inherited += 1
-          continue
-        }
-        pairs[job.at].overrides += 1
-        if (dryRun) continue
-        try {
-          if (job.prop !== undefined && job.index !== undefined) {
-            const holder = job.node as unknown as Record<string, unknown>
-            const paints = holder[job.prop]
-            if (!Array.isArray(paints)) throw new Error(`${job.prop} is not an array any more`)
-            const next = (paints as Paint[]).slice()
-            next[job.index] = figma.variables.setBoundVariableForPaint(
-              next[job.index] as SolidPaint,
-              'color',
-              pairs[job.at].to
-            )
-            holder[job.prop] = next
-          } else {
-            ;(job.node as unknown as { setBoundVariable: (f: string, v: Variable) => void }).setBoundVariable(
-              job.field,
-              pairs[job.at].to
-            )
+      await enforceDeadline(async () => {
+        for (const job of overrideJobs) {
+          await checkpoint()
+          let main = mainSideByNode.get(job.node.id)
+          if (main === undefined) {
+            main = await resolveMainSide(job.node, lookups)
+            mainSideByNode.set(job.node.id, main)
           }
-          pairs[job.at].rebound += 1
-        } catch (err) {
-          pairs[job.at].failed += 1
-          const message = `override ${job.field}: ${String((err as Error)?.message || err)}`
-          if (pairs[job.at].errors.length < 3 && !pairs[job.at].errors.includes(message)) {
-            pairs[job.at].errors.push(message)
+          if (!isOwnOverride(job.aliasId, mainAliasFor(main, job))) {
+            pairs[job.at].inherited += 1
+            continue
           }
+          pairs[job.at].overrides += 1
+          if (dryRun) continue
+          writeJobs.push(() => {
+            try {
+              if (job.prop !== undefined && job.index !== undefined) {
+                const holder = job.node as unknown as Record<string, unknown>
+                const paints = holder[job.prop]
+                if (!Array.isArray(paints)) throw new Error(`${job.prop} is not an array any more`)
+                const next = (paints as Paint[]).slice()
+                next[job.index] = figma.variables.setBoundVariableForPaint(
+                  next[job.index] as SolidPaint,
+                  'color',
+                  pairs[job.at].to
+                )
+                holder[job.prop] = next
+              } else {
+                ;(job.node as unknown as { setBoundVariable: (f: string, v: Variable) => void }).setBoundVariable(
+                  job.field,
+                  pairs[job.at].to
+                )
+              }
+              pairs[job.at].rebound += 1
+            } catch (err) {
+              pairs[job.at].failed += 1
+              const message = `override ${job.field}: ${String((err as Error)?.message || err)}`
+              if (pairs[job.at].errors.length < 3 && !pairs[job.at].errors.includes(message)) {
+                pairs[job.at].errors.push(message)
+              }
+            }
+          })
+        }
+      })
+
+      let stylesScanned = 0
+      await enforceDeadline(async () => {
+        if (params.styles !== false) {
+          const paintStyles = await figma.getLocalPaintStylesAsync()
+        stylesScanned = paintStyles.length
+        for (const style of paintStyles) {
+          await checkpoint()
+          const paints = style.paints
+          let next: Paint[] | null = null
+          paints.forEach((paint, index) => {
+            const paintAt = pairByFromId.get(
+              (paint as { boundVariables?: { color?: { id?: string } } }).boundVariables?.color?.id ?? ''
+            )
+            if (paintAt !== undefined && paint.type === 'SOLID') {
+              pairs[paintAt].matched += 1
+              if (!dryRun) {
+                next = next ?? paints.slice()
+                next[index] = figma.variables.setBoundVariableForPaint(next[index] as SolidPaint, 'color', pairs[paintAt].to)
+                pairs[paintAt].rebound += 1
+              }
+            }
+            const stops = (paint as GradientPaint).gradientStops
+            if (Array.isArray(stops)) {
+              let newStops: ColorStop[] | null = null
+              stops.forEach((stop, stopIndex) => {
+                const stopAt = pairByFromId.get(stop.boundVariables?.color?.id ?? '')
+                if (stopAt === undefined) return
+                pairs[stopAt].matched += 1
+                if (dryRun) return
+                newStops = newStops ?? stops.slice()
+                ;(newStops as ColorStop[])[stopIndex] = {
+                  position: stop.position,
+                  color: stop.color,
+                  boundVariables: { color: aliasTo(pairs[stopAt].to) },
+                } as ColorStop
+                pairs[stopAt].rebound += 1
+              })
+              if (newStops) {
+                next = next ?? paints.slice()
+                next[index] = { ...(paint as GradientPaint), gradientStops: newStops } as GradientPaint
+              }
+            }
+          })
+          if (next && !dryRun) {
+            const replacement = next
+            writeJobs.push(() => {
+              try {
+                style.paints = replacement
+              } catch (err) {
+                const message = `style "${style.name}": ${String((err as Error)?.message || err)}`
+                if (writeErrors.length < 5) writeErrors.push(message)
+              }
+            })
+          }
+        }
+      }
+      })
+      if (!dryRun) {
+        figma.commitUndo()
+        for (const write of writeJobs) {
+          if (pauseDue()) await checkpoint()
+          write()
         }
       }
 
       for (const job of textJobs) {
+        if (pauseDue()) await checkpoint()
         try {
           const text = job.node as TextNode
           await loadTextFonts(text)
@@ -2223,6 +2292,7 @@ export const WRITE_OPS: readonly OpDef[] = [
       }
 
       for (const node of textFillJobs) {
+        if (pauseDue()) await checkpoint()
         try {
           const text = node as TextNode
           await loadTextFonts(text)
@@ -2253,6 +2323,7 @@ export const WRITE_OPS: readonly OpDef[] = [
       }
 
       for (const node of regionJobs) {
+        if (pauseDue()) await checkpoint()
         const regions = regionFills(node) ?? []
         const next = new Map<number, Paint[]>()
         const counted: number[] = []
@@ -2280,57 +2351,6 @@ export const WRITE_OPS: readonly OpDef[] = [
         }
       }
 
-      let stylesScanned = 0
-      if (params.styles !== false) {
-        const paintStyles = await figma.getLocalPaintStylesAsync()
-        stylesScanned = paintStyles.length
-        for (const style of paintStyles) {
-          const paints = style.paints
-          let next: Paint[] | null = null
-          paints.forEach((paint, index) => {
-            const paintAt = pairByFromId.get(
-              (paint as { boundVariables?: { color?: { id?: string } } }).boundVariables?.color?.id ?? ''
-            )
-            if (paintAt !== undefined && paint.type === 'SOLID') {
-              pairs[paintAt].matched += 1
-              if (!dryRun) {
-                next = next ?? paints.slice()
-                next[index] = figma.variables.setBoundVariableForPaint(next[index] as SolidPaint, 'color', pairs[paintAt].to)
-                pairs[paintAt].rebound += 1
-              }
-            }
-            const stops = (paint as GradientPaint).gradientStops
-            if (Array.isArray(stops)) {
-              let newStops: ColorStop[] | null = null
-              stops.forEach((stop, stopIndex) => {
-                const stopAt = pairByFromId.get(stop.boundVariables?.color?.id ?? '')
-                if (stopAt === undefined) return
-                pairs[stopAt].matched += 1
-                if (dryRun) return
-                newStops = newStops ?? stops.slice()
-                ;(newStops as ColorStop[])[stopIndex] = {
-                  position: stop.position,
-                  color: stop.color,
-                  boundVariables: { color: aliasTo(pairs[stopAt].to) },
-                } as ColorStop
-                pairs[stopAt].rebound += 1
-              })
-              if (newStops) {
-                next = next ?? paints.slice()
-                next[index] = { ...(paint as GradientPaint), gradientStops: newStops } as GradientPaint
-              }
-            }
-          })
-          if (next && !dryRun) {
-            try {
-              style.paints = next
-            } catch (err) {
-              const message = `style "${style.name}": ${String((err as Error)?.message || err)}`
-              if (writeErrors.length < 5) writeErrors.push(message)
-            }
-          }
-        }
-      }
 
       return {
         dryRun,
@@ -2631,15 +2651,16 @@ export const WRITE_OPS: readonly OpDef[] = [
       )
       if (refs.length === 0) throw new Error('"variables" must be a non-empty array of ids or names')
       const dryRun = params.dryRun === true
-      if (!dryRun) figma.commitUndo()
 
       const targets = new Map<string, Variable>()
-      for (const ref of refs) {
-        const variable = await resolveVariableRef(ref)
-        if (variable.remote) throw new Error(`"${variable.name}" is a library variable — it cannot be deleted from here`)
-        targets.set(variable.id, variable)
-      }
-
+      await enforceDeadline(async () => {
+        for (const ref of refs) {
+          await checkpoint()
+          const variable = await resolveVariableRef(ref)
+          if (variable.remote) throw new Error(`"${variable.name}" is a library variable — it cannot be deleted from here`)
+          targets.set(variable.id, variable)
+        }
+      })
       /* There is no consumer API for variables (styles have one, variables do not), so the guard
        * IS the walk: canvas bindings, paint stops, style paints, and aliases inside other local
        * variables. Zero here still says nothing about OTHER files — that caveat never goes away. */
@@ -2663,31 +2684,39 @@ export const WRITE_OPS: readonly OpDef[] = [
        * away. Measured on AllCrew Figma Workspace: the counting call killed the plugin every time, a
        * single attempt was enough, and there was nothing to report when it did. */
       const counting = params.force !== true
-      if (counting) await loadAllPagesAsync()
-      for (const page of counting ? figma.root.children : []) {
-        await walkSceneNodes(page, (node) => {
-          const holder = node as unknown as Record<string, unknown>
-          const bound = holder.boundVariables as Record<string, unknown> | undefined
-          if (bound) {
-            for (const [field, value] of Object.entries(bound)) {
-              if (field === 'fills' || field === 'strokes') continue
-              if (Array.isArray(value)) value.forEach((entry) => note((entry as { id?: string })?.id))
-              else note((value as { id?: string })?.id)
+      if (counting) {
+        await enforceDeadline(async () => {
+          for (const page of figma.root.children) {
+            await checkpoint()
+            await page.loadAsync()
+            await walkSceneNodes(page, (node) => {
+              const holder = node as unknown as Record<string, unknown>
+              const bound = holder.boundVariables as Record<string, unknown> | undefined
+              if (bound) {
+                for (const [field, value] of Object.entries(bound)) {
+                  if (field === 'fills' || field === 'strokes') continue
+                  if (Array.isArray(value)) value.forEach((entry) => note((entry as { id?: string })?.id))
+                  else note((value as { id?: string })?.id)
+                }
+              }
+              scanPaints(holder.fills)
+              scanPaints(holder.strokes)
+            })
+          }
+          for (const style of await figma.getLocalPaintStylesAsync()) {
+            if (pauseDue()) await checkpoint()
+            scanPaints(style.paints)
+          }
+          for (const variable of await figma.variables.getLocalVariablesAsync()) {
+            if (pauseDue()) await checkpoint()
+            for (const value of Object.values(variable.valuesByMode ?? {})) {
+              const alias = value as { type?: string; id?: string }
+              if (alias?.type === 'VARIABLE_ALIAS') note(alias.id)
             }
           }
-          scanPaints(holder.fills)
-          scanPaints(holder.strokes)
         })
       }
-      if (counting) {
-        for (const style of await figma.getLocalPaintStylesAsync()) scanPaints(style.paints)
-        for (const variable of await figma.variables.getLocalVariablesAsync()) {
-          for (const value of Object.values(variable.valuesByMode ?? {})) {
-            const alias = value as { type?: string; id?: string }
-            if (alias?.type === 'VARIABLE_ALIAS') note(alias.id)
-          }
-        }
-      }
+      if (!dryRun) figma.commitUndo()
 
       const results = []
       for (const variable of targets.values()) {

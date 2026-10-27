@@ -2,6 +2,37 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.13.0 — 2026-10-27
+
+### Added
+
+- The plugin runs in FigJam, Figma Slides and Figma Buzz as well as Design and Dev Mode (`editorType` names all five; new permissions `activeusers`, `fileusers`). `docs/editors.md` compares the Plugin API across editors.
+- FigJam nodes in the one vocabulary: `NODE_CREATE` kinds `sticky`, `shapeWithText`, `connector`, `codeBlock`, `table`, `linkPreview`, `gif`; properties `wide`, `authorVisible`, `shapeType`, `connector`, `code`, `codeLanguage`, `table`, `stuckTo`. Text on a sticky, shape or connector takes the same `text`, `fontSize`, `fontName` and `runs` as a text layer.
+- Slides: kinds `slide` and `slideRow` placed with `at: [row, column]`; properties `skipped` and `transition`.
+- Buzz: kind `asset` and property `assetType`.
+- `EMIT_REACT` takes `codeLayer: true` to pack the React export as a Figma code layer, and `agent/code-layer.mjs` archives it for Figma's MCP `send_code_to_figma`. A frame becomes a code layer that runs the design system's exported code. See `docs/editors.md`.
+- `node.probe`: every property and method a node actually has, for node types the typings do not describe yet (Figma's code layers read as `CODE_INSTANCE`).
+- Ops `editor.capabilities`, `canvas.grid`, `canvas.arrange`, `buzz.content`, `buzz.content.set`, `buzz.resize`, `figjam.board`, `figjam.timer`.
+- Plugin API coverage, read and written in one vocabulary:
+  - **Grid layouts:** `rowGap`, `columnGap`, `rowSizes` / `columnSizes` (`240`, `"1fr"`, `"hug"`), `positioning`, `moveRows` / `moveColumns`. A child takes `gridCell` and `gridAlign` on both axes.
+  - **Keyframes:** fill, stroke and effect fields (`fill`, `stroke[1]`, `effect[1].color`). `at: null` removes one track and `keyframes: []` clears them all.
+  - **Text runs:** `textStyle`, `fillStyle`, lists, indentation, paragraph spacing and `decoration`. `decoration` is how an underline is drawn, and it also works on a whole text layer.
+  - **Figma Draw:** `textStart`, `repeat` on an existing transform group, pattern fills, and stretched grain `size: [x, y]`.
+  - **Commands:** `SELECTION_COLORS`, `FILE_THUMBNAIL` / `FILE_THUMBNAIL_SET`, `UNDO`, `ANNOTATION_CATEGORIES` / `ANNOTATION_CATEGORY_SET`. `PAGE_CREATE divider: true` makes page dividers.
+  - **Other:** the `slice` kind, `reset` on slots, `slotViolations`, and a `zoom` parameter on `node.focus`.
+- Extended variable collections are exported. A local root takes the extension's modes as themes ("Brand B Light"); a library root keeps the extension as a collection of its own.
+- Long reads answer to a time and cancellation budget. The bridge tells the plugin how long it will still wait. A call nobody waits for any more is withdrawn and stops at its next checkpoint, and document-wide reads resume from a `cursor`. Renders that would not fit the reply are refused before export.
+- Hover tips in the panel stay inside the window: they flip above the trigger and shift sideways at the edges.
+
+### Fixed
+
+- Image, video, gradient and stacked paints are read in the shape the write takes, so they survive `NODE_ROUNDTRIP` instead of being dropped. A bound paint keeps its opacity. Layout grids are read as the array `grid` takes rather than as a sentence.
+- Reads in FigJam and Slides no longer wait tens of seconds on dev resources. Writing a library variable by name uses the variables already met while reading instead of searching every enabled library, which took minutes for a Slides theme.
+- The React export renders a screen that takes props with its mock, the data Figma showed. Before, `main.tsx` rendered it bare: every field was empty and `tsc` failed.
+- The agent listener's read and write grants survive a plugin reload in development plugins too. They are stored per file, under an id the first grant stamps into the document, so the listener does not have to be switched on and writes granted again after every update.
+- Commands that make components or styles refuse outside Figma Design by naming the editor, instead of failing on a missing constructor.
+- `node.focus` links to `/board/`, `/slides/` or `/buzz/` for files that are not design files.
+
 ## 1.12.0 — 2026-10-21
 
 ### Added

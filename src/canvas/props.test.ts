@@ -7,7 +7,9 @@ import {
   colourFrom,
   movesToAnotherParent,
   normalisePaint,
+  formatGridTrack,
   paintProblem,
+  parseGridTrack,
   planProps,
 } from './props.ts'
 import { planCreate, NODE_KINDS } from './create.ts'
@@ -295,6 +297,17 @@ test('the kinds are the ones the applier knows how to make', () => {
       'star',
       'polygon',
       'textPath',
+      'slice',
+      'sticky',
+      'shapeWithText',
+      'connector',
+      'codeBlock',
+      'table',
+      'linkPreview',
+      'gif',
+      'slide',
+      'slideRow',
+      'asset',
     ]
   )
 })
@@ -926,7 +939,54 @@ test('a grid child says how many tracks it covers and how it sits in them', () =
   assert.match(planProps({ gridAlign: 'TOP' }).problems[0], /MIN, CENTER, MAX, AUTO/)
 })
 
-test('an unknown layout key lists the whole set, which is now thirteen words', () => {
+test('a grid track is pixels, a fraction or hug — and reads back in the same words', () => {
+  assert.deepEqual(parseGridTrack(240), { type: 'FIXED', value: 240 })
+  assert.deepEqual(parseGridTrack('240px'), { type: 'FIXED', value: 240 })
+  assert.deepEqual(parseGridTrack('1fr'), { type: 'FLEX', value: 1 })
+  assert.deepEqual(parseGridTrack('2.5fr'), { type: 'FLEX', value: 2.5 })
+  assert.deepEqual(parseGridTrack('hug'), { type: 'HUG' })
+  // The API's own spelling is taken too: a caller who copied it from the docs is not wrong.
+  assert.deepEqual(parseGridTrack({ type: 'FLEX', value: 3 }), { type: 'FLEX', value: 3 })
+  for (const bad of [-1, '0fr', 'wide', null, { type: 'FIXED' }]) assert.equal(parseGridTrack(bad), null)
+  for (const word of [240, '1fr', 'hug'] as const) assert.deepEqual(formatGridTrack(parseGridTrack(word)!), word)
+})
+
+test('a grid layout carries its own two gaps, a size per track, and how it places children', () => {
+  const [step] = stepsOf({
+    layout: { mode: 'GRID', rows: 2, columns: 3, rowGap: 8, columnGap: 16, columnSizes: ['1fr', 240, 'hug'], positioning: 'MANUAL' },
+  })
+  assert.deepEqual(step, {
+    step: 'layout',
+    layout: { mode: 'GRID', rows: 2, columns: 3, rowGap: 8, columnGap: 16, columnSizes: ['1fr', 240, 'hug'], positioning: 'MANUAL' },
+  })
+  // A size list that disagrees with the count is a typo or a forgotten count — never guessed.
+  assert.match(planProps({ layout: { columns: 2, columnSizes: ['1fr'] } }).problems[0], /1 track\(s\) but columns is 2/)
+  assert.match(planProps({ layout: { rowSizes: ['wide'] } }).problems[0], /rowSizes\[0\]/)
+  assert.match(planProps({ layout: { positioning: 'AUTO' } }).problems[0], /MANUAL or ROW_AUTO_FLOW/)
+})
+
+test('tracks move by index, counted before the move', () => {
+  const [step] = stepsOf({ layout: { moveRows: { from: [2], to: 0 }, moveColumns: { from: [0, 1], to: 3 } } })
+  assert.deepEqual(step, { step: 'layout', layout: { moveRows: { from: [2], to: 0 }, moveColumns: { from: [0, 1], to: 3 } } })
+  assert.match(planProps({ layout: { moveRows: { from: [], to: 1 } } }).problems[0], /moveRows must be/)
+  assert.match(planProps({ layout: { moveColumns: { from: [1], to: -1 } } }).problems[0], /moveColumns must be/)
+})
+
+test('a grid child names its cell and both alignments, and waits for its parent to do so', () => {
+  const cell = stepsOf({ gridCell: { row: 1, column: 2 } })
+  assert.deepEqual(cell, [{ step: 'gridCell', row: 1, column: 2 }])
+  assert.equal(dependsOnPlacement(cell[0]), true)
+  assert.deepEqual(stepsOf({ gridAlign: { horizontal: 'MAX', vertical: 'CENTER' } }), [
+    { step: 'assign', property: 'gridChildHorizontalAlign', value: 'MAX' },
+    { step: 'assign', property: 'gridChildVerticalAlign', value: 'CENTER' },
+  ])
+  const [horizontal] = stepsOf({ gridAlign: { horizontal: 'CENTER' } })
+  assert.equal(dependsOnPlacement(horizontal), true)
+  assert.match(planProps({ gridCell: { row: 1 } }).problems[0], /gridCell must be \{ row, column \}/)
+  assert.match(planProps({ gridAlign: { left: 'MIN' } }).problems[0], /not left/)
+})
+
+test('an unknown layout key lists the whole set', () => {
   const problem = planProps({ layout: { spacing: 4 } }).problems[0]
   assert.match(problem, /unknown key "spacing"/)
   assert.match(problem, /mode, gap, wrapGap, padding/)
@@ -954,6 +1014,7 @@ test('a keyframe track is planned in our words and applied in Figma\'s', () => {
     tracks: [
       {
         name: 'TRANSLATION_Y',
+        field: { type: 'PROPERTY', name: 'TRANSLATION_Y' },
         track: {
           keyframes: [
             { timelinePosition: 0, value: { type: 'FLOAT', value: 40 } },
@@ -994,6 +1055,51 @@ test('a pair moves as a pair, and a refusal names all thirty fields', () => {
     planProps({ keyframes: [{ field: 'move', at: [{ time: 0, value: 5 }] }] }).problems[0],
     /must be \{ x, y \}/
   )
+})
+
+test('a track comes off with at: null, and every track with [] or null', () => {
+  assert.deepEqual(stepsOf({ keyframes: [{ field: 'x', at: null }] }), [
+    { step: 'keyframes', tracks: [{ name: 'TRANSLATION_X', field: { type: 'PROPERTY', name: 'TRANSLATION_X' }, track: null }] },
+  ])
+  assert.deepEqual(stepsOf({ keyframes: [] }), [{ step: 'keyframes', tracks: [], clear: true }])
+  assert.deepEqual(stepsOf({ keyframes: null }), [{ step: 'keyframes', tracks: [], clear: true }])
+})
+
+test('a fill and a shadow animate in the words they were built with', () => {
+  const [step] = stepsOf({
+    keyframes: [
+      { field: 'fill', from: '#000000', at: [{ time: 0.3, value: '#FF0000 @0.5' }] },
+      { field: 'effect.radius', at: [{ time: 0, value: 4 }, { time: 0.2, value: 24 }] },
+    ],
+  })
+  const tracks = (step as { tracks: Array<{ name: string; field: unknown; track: { keyframes: Array<{ value: unknown }>; baseValue?: unknown } }> }).tracks
+  assert.deepEqual(tracks[0].field, { type: 'INDEXED_ITEM', collection: 'fills', index: 0 })
+  assert.deepEqual(tracks[0].track.keyframes[0].value, { type: 'COLOR', value: { r: 1, g: 0, b: 0, a: 0.5 } })
+  assert.deepEqual(tracks[0].track.baseValue, { type: 'COLOR', value: { r: 0, g: 0, b: 0, a: 1 } })
+  assert.deepEqual(tracks[1].field, { type: 'INDEXED_ITEM', collection: 'effects', index: 0, field: 'RADIUS' })
+  assert.match(planProps({ keyframes: [{ field: 'fill', at: [{ time: 0, value: 5 }] }] }).problems[0], /must be a colour/)
+  assert.match(planProps({ keyframes: [{ field: 'effect.wobble', at: [{ time: 0, value: 5 }] }] }).problems[0], /effect\[n\]\.<x\|y\|radius/)
+})
+
+test('text on a path says where it starts, in the pair NODE_CREATE takes as `at`', () => {
+  assert.deepEqual(stepsOf({ textStart: [2, 0.5] }), [{ step: 'textStart', segment: 2, position: 0.5 }])
+  for (const bad of [[0], [-1, 0.5], [1.5, 0.5], [0, 2], 'start']) {
+    assert.match(planProps({ textStart: bad }).problems[0], /textStart must be \[segment, position\]/)
+  }
+})
+
+test('a run can be a list, a heading style, or a paragraph with its own spacing', () => {
+  const [step] = stepsOf({
+    runs: [
+      { match: 'Intro', textStyle: 'Heading/H3' },
+      { from: 6, to: 30, list: 'UNORDERED', indent: 1, listSpacing: 4 },
+      { from: 30, to: 40, paragraphSpacing: 12, paragraphIndent: 16, fillStyle: 'Text/Muted' },
+    ],
+  })
+  assert.equal((step as { runs: unknown[] }).runs.length, 3)
+  assert.match(planProps({ runs: [{ from: 0, to: 2, list: 'BULLETS' }] }).problems[0], /ORDERED, UNORDERED, NONE/)
+  assert.match(planProps({ runs: [{ from: 0, to: 2, indent: -1 }] }).problems[0], /indent must be/)
+  assert.match(planProps({ runs: [{ from: 0, to: 2, textStyle: '' }] }).problems[0], /textStyle must be/)
 })
 
 test('a CSS colour function is a colour; Figma parses it and keeps the authored space', () => {

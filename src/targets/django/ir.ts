@@ -7,6 +7,7 @@
  */
 
 import { resolveExportSettings, type ExportMarkedInstanceNode } from '../../utils/graphics.ts'
+import { checkpoint } from '../../utils/budget.ts'
 import { needsSvg, ellipseArcPath, isDefaultArc } from './geometry.ts'
 import { rgbaToCss } from './tokens.ts'
 import { transitionToCssTiming } from './smart-animate/easing-adapter.ts'
@@ -1490,13 +1491,12 @@ function groupMasks(children: readonly SerializedChild[]): IrNode[] {
 }
 
 async function serializeChildren(node: ChildrenMixin, isGridParent: boolean): Promise<IrNode[]> {
-  const serialized = await Promise.all(
-    node.children.map(async (child): Promise<SerializedChild | null> => {
-      const ir = await serializeNode(child, isGridParent)
-      return ir ? { live: child, ir } : null
-    })
-  )
-  return groupMasks(serialized.filter((child): child is SerializedChild => child !== null))
+  const serialized: SerializedChild[] = []
+  for (const child of node.children) {
+    const ir = await serializeNode(child, isGridParent)
+    if (ir) serialized.push({ live: child, ir })
+  }
+  return groupMasks(serialized)
 }
 
 export async function serializeFrame(node: FrameNode, isGridChild = false): Promise<IrContainerNode> {
@@ -1859,6 +1859,7 @@ const SHAPE_TYPES = new Set<string>([
  * dropped — with a warning, never silently.
  */
 export async function serializeNode(node: SceneNode, isGridChild = false): Promise<IrNode | null> {
+  await checkpoint()
   // A node deleted mid-export reports `removed === true`; reading any other property then throws
   // ("The node with id … does not exist"). Bail before touching `visible`/`type`/anything else so
   // one stale entry in a children array can't abort the whole export (docs M6, RemovedNode guard).

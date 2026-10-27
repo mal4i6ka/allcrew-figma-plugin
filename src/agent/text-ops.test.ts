@@ -4,6 +4,7 @@ import './ops.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { OPS_BY_NAME } from './ops.ts'
+import { resetSweeps } from './sweep.ts'
 
 interface FakeNode {
   id: string
@@ -13,16 +14,20 @@ interface FakeNode {
   visible?: boolean
   textStyleId?: string
   children?: FakeNode[]
+  parent?: FakeNode
 }
 
 function setFigma(root: FakeNode) {
+  resetSweeps()
   const index = new Map<string, FakeNode>()
-  const walk = (node: FakeNode) => {
+  const walk = (node: FakeNode, parent?: FakeNode) => {
+    node.parent = parent
     index.set(node.id, node)
-    for (const child of node.children ?? []) walk(child)
+    for (const child of node.children ?? []) walk(child, node)
   }
   walk(root)
   ;(globalThis as { figma?: unknown }).figma = {
+    skipInvisibleInstanceChildren: false,
     getNodeByIdAsync: async (id: string) => index.get(id) ?? null,
     getStyleByIdAsync: async (id: string) => ({ name: `style:${id}` }),
   }
@@ -59,6 +64,8 @@ const SCREEN: FakeNode = {
 async function inventory(params: Record<string, unknown>) {
   const op = OPS_BY_NAME.get('text.inventory')!
   return (await op.run(params)) as {
+    complete: boolean
+    cursor?: string
     counts: { total: number; content: number; baked: number; distinct: number }
     texts: Array<{ id: string; role: string; bakedIn?: string; path: string; characters: string }>
   }
@@ -107,4 +114,19 @@ test('an extra illustration name moves its text out of the copy deck', async () 
   })
 
   assert.equal(result.texts.some((row) => row.characters === 'Open account'), true)
+})
+
+test('limit stops text.inventory and its cursor resumes after the last returned row', async () => {
+  setFigma(SCREEN)
+  const params = { nodeId: '1:1', limit: 2, includeHidden: false, role: 'all' }
+  let result = await inventory(params)
+  assert.equal(result.complete, false)
+  assert.equal(result.texts.length, 2)
+  const ids = result.texts.map((row) => row.id)
+  while (!result.complete) {
+    result = await inventory({ ...params, cursor: result.cursor })
+    ids.push(...result.texts.map((row) => row.id))
+  }
+  assert.deepEqual(ids, ['1:2', '1:4', '1:6', '1:8'])
+  assert.equal(new Set(ids).size, ids.length, 'a resumed page must not repeat its boundary row')
 })

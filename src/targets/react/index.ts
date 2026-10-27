@@ -391,7 +391,8 @@ export async function emitReact(
   }
 
   if (options.tokensCss) files['src/tokens.css'] = options.tokensCss
-  Object.assign(files, projectFiles(firstScreen, Boolean(options.tokensCss), fontsIn(files), connectFilesWritten))
+  const withMock = firstScreen !== null && `src/screens/${firstScreen}.mock.ts` in files
+  Object.assign(files, projectFiles(firstScreen, Boolean(options.tokensCss), fontsIn(files), connectFilesWritten, withMock))
   if (connectFilesWritten) files['figma.config.json'] = `${JSON.stringify(CODE_CONNECT_CONFIG, null, 2)}\n`
 
   // The screens import it, so it is emitted: a scaffold that does not compile because the
@@ -757,7 +758,9 @@ function projectFiles(
   screen: string | null,
   tokens: boolean,
   fonts: readonly string[],
-  codeConnect = false
+  codeConnect = false,
+  /** The screen takes props, and the mock beside it holds what Figma showed. */
+  mock = false
 ): Record<string, string> {
   const files: Record<string, string> = {
     // The browser's own 8px body margin made a 390-wide screen render at 374, and every row in it
@@ -852,8 +855,11 @@ function projectFiles(
       `import { StrictMode } from 'react'\nimport { createRoot } from 'react-dom/client'\n` +
       `import './global.css'\n` +
       (tokens ? `import './tokens.css'\n` : '') +
-      `import { ${screen} } from './screens/${screen}'\n\n` +
-      `createRoot(document.getElementById('root')!).render(\n  <StrictMode>\n    <${screen} />\n  </StrictMode>\n)\n`
+      `import { ${screen} } from './screens/${screen}'\n` +
+      // A screen with props rendered bare showed every field empty and failed `tsc`: it is
+      // rendered with what Figma showed, which is what the mock is for.
+      (mock ? `import { ${screen.charAt(0).toLowerCase()}${screen.slice(1)}Mock } from './screens/${screen}.mock'\n` : '') +
+      `\ncreateRoot(document.getElementById('root')!).render(\n  <StrictMode>\n    <${screen}${mock ? ` {...${screen.charAt(0).toLowerCase()}${screen.slice(1)}Mock}` : ''} />\n  </StrictMode>\n)\n`
   }
   if (codeConnect) {
     // Code Connect's documented setup: its `figma-types` entry declares the `figma` module the

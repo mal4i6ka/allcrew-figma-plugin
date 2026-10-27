@@ -13,9 +13,22 @@
 
 import { resolveCollection, resolveModes, resolveVariableRef } from '../agent/values.ts'
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
-import { colourFrom, describeLinks, gradientHandles, gradientTransform, measure, resolveRanges, solidColourOf } from './props.ts'
+import {
+  colourFrom,
+  describeLinks,
+  formatGridTrack,
+  gradientHandles,
+  gradientTransform,
+  measure,
+  parseGridTrack,
+  repeatWords,
+  resolveRanges,
+  solidColourOf,
+} from './props.ts'
 import { addressIn } from './overrides.ts'
 import { styleFor } from './styles.ts'
+import { decorationWords, planDecoration } from './decoration.ts'
+import { connectorWords, pageIdOf, tableWords, transitionWords, type SlideTransitionValue } from './board.ts'
 import { resolveMotionStyleTarget } from './motion-styles.ts'
 import type {
   ColourInput,
@@ -27,8 +40,10 @@ import type {
   PlannedCondition,
   PlannedOperand,
   PropStep,
+  RepeatModifierInput,
   ShaderRef,
   TextRun,
+  VideoRef,
 } from './props.ts'
 
 export interface AppliedProp {
@@ -42,6 +57,62 @@ export interface AppliedProp {
 export interface ApplyReport {
   applied: AppliedProp[]
   failed: number
+}
+
+/** The GRID half of a frame — typed here because the installed typings lag the runtime in places. */
+interface GridFrame {
+  gridRowCount: number
+  gridColumnCount: number
+  gridAutoTracks: 'NONE' | 'ROWS'
+  gridRowGap: number
+  gridColumnGap: number
+  gridRowSizes: Array<{ type: 'FIXED' | 'FLEX' | 'HUG'; value?: number }>
+  gridColumnSizes: Array<{ type: 'FIXED' | 'FLEX' | 'HUG'; value?: number }>
+  gridItemsPositioning: 'MANUAL' | 'ROW_AUTO_FLOW'
+  reorderRows(options: { fromIndices: number[]; insertionIndex: number }): unknown
+  reorderColumns(options: { fromIndices: number[]; insertionIndex: number }): unknown
+}
+
+/**
+ * Every manual track a node holds, as the field that addresses it — what "take them all off"
+ * has to walk. Paints and effects are keyed by index under their collection, the rest by name;
+ * `properties` (component-property tracks) are left alone, since nothing here writes them.
+ */
+function manualTrackFields(tracks: Record<string, unknown> | undefined): Array<{ name: string; field: unknown }> {
+  const out: Array<{ name: string; field: unknown }> = []
+  if (!tracks) return out
+  for (const [key, value] of Object.entries(tracks)) {
+    if (value === undefined || value === null) continue
+    if (key === 'fills' || key === 'strokes') {
+      for (const index of Object.keys(value as object)) {
+        out.push({ name: `${key}[${index}]`, field: { type: 'INDEXED_ITEM', collection: key, index: Number(index) } })
+      }
+    } else if (key === 'effects') {
+      for (const [index, fields] of Object.entries(value as Record<string, Record<string, unknown>>)) {
+        for (const field of Object.keys(fields ?? {})) {
+          if (field === 'properties') continue
+          out.push({ name: `effects[${index}].${field}`, field: { type: 'INDEXED_ITEM', collection: 'effects', index: Number(index), field } })
+        }
+      }
+    } else if (key !== 'properties') {
+      out.push({ name: key, field: { type: 'PROPERTY', name: key } })
+    }
+  }
+  return out
+}
+
+/** What a grid looked like before a layout step touched it, in the words the step takes. */
+function gridBefore(frame: FrameNode): Record<string, unknown> {
+  const grid = frame as unknown as Partial<GridFrame>
+  return {
+    rows: grid.gridRowCount,
+    columns: grid.gridColumnCount,
+    rowGap: grid.gridRowGap,
+    columnGap: grid.gridColumnGap,
+    ...(grid.gridRowSizes ? { rowSizes: grid.gridRowSizes.map(formatGridTrack) } : {}),
+    ...(grid.gridColumnSizes ? { columnSizes: grid.gridColumnSizes.map(formatGridTrack) } : {}),
+    positioning: grid.gridItemsPositioning,
+  }
 }
 
 /**
@@ -103,6 +174,12 @@ const propertyOf = (step: PropStep): string => {
 async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise<AppliedProp> {
   const bag = node as unknown as Record<string, unknown>
 
+  // A sticky, a FigJam shape and a connector carry their words on a text sublayer, not on
+  // themselves — so the text half of the vocabulary is walked onto that sublayer, and `text`,
+  // `fontSize` or `runs` on a sticky mean what they mean on a text layer.
+  const sublayer = textSublayerFor(node, step)
+  if (sublayer) return applyStep(sublayer, step, dry)
+
   switch (step.step) {
     case 'assign': {
       if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
@@ -110,7 +187,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       // Text properties refuse to move until the font is loaded, whatever they are — a size
       // change on a text node whose font is unavailable throws the same way characters do.
       if (isText(node) && TEXT_PROPERTIES.includes(step.property)) await loadNodeFont(node)
-      if (!dry) bag[step.property] = step.value
+      if (!dry) await withNamedFont(() => (bag[step.property] = step.value))
       return { property: step.property, before, after: step.value }
     }
 
@@ -164,7 +241,12 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const height = step.height ?? node.height
       // resizeWithoutConstraints, not resize: a caller asking for a size means that size, not
       // that size plus whatever the children's constraints do to it.
-      if (!dry) (node as FrameNode).resizeWithoutConstraints(width, height)
+      // A FigJam shape has only `resize`; it has no constraints to leave out anyway.
+      const sized = node as unknown as { resizeWithoutConstraints?: (w: number, h: number) => void; resize: (w: number, h: number) => void }
+      if (!dry) {
+        if (typeof sized.resizeWithoutConstraints === 'function') sized.resizeWithoutConstraints(width, height)
+        else sized.resize(width, height)
+      }
       // Read back, because an auto-layout frame is not obliged to keep it: asking a hugging
       // frame for 260 leaves it at 157, and a report that said 260 would be a report of the
       // request rather than of the result.
@@ -209,6 +291,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         mode: frame.layoutMode,
         gap: frame.itemSpacing,
         padding: [frame.paddingTop, frame.paddingRight, frame.paddingBottom, frame.paddingLeft],
+        ...(frame.layoutMode === 'GRID' ? gridBefore(frame) : {}),
       }
       const layout = step.layout
       if (!dry) {
@@ -230,23 +313,178 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         if (layout.wrapGap !== undefined) frame.counterAxisSpacing = layout.wrapGap
         if (layout.reverseZ !== undefined) frame.itemReverseZIndex = layout.reverseZ
         if (layout.strokesInLayout !== undefined) frame.strokesIncludedInLayout = layout.strokesInLayout
-        const grid = frame as FrameNode & { gridRowCount?: number; gridColumnCount?: number; gridAutoTracks?: string }
+        const grid = frame as unknown as GridFrame
         if (layout.rows !== undefined) grid.gridRowCount = layout.rows
         if (layout.columns !== undefined) grid.gridColumnCount = layout.columns
         if (layout.autoTracks !== undefined) grid.gridAutoTracks = layout.autoTracks
+        // Moves are counted against the order before them, so they run before the sizes — which
+        // describe the grid as it should END, track by track.
+        if (layout.moveRows) grid.reorderRows({ fromIndices: layout.moveRows.from, insertionIndex: layout.moveRows.to })
+        if (layout.moveColumns) {
+          grid.reorderColumns({ fromIndices: layout.moveColumns.from, insertionIndex: layout.moveColumns.to })
+        }
+        if (layout.rowSizes) grid.gridRowSizes = layout.rowSizes.map((one) => parseGridTrack(one)!)
+        if (layout.columnSizes) grid.gridColumnSizes = layout.columnSizes.map((one) => parseGridTrack(one)!)
+        if (layout.rowGap !== undefined) grid.gridRowGap = layout.rowGap
+        if (layout.columnGap !== undefined) grid.gridColumnGap = layout.columnGap
+        if (layout.positioning !== undefined) grid.gridItemsPositioning = layout.positioning
       }
       return { property: 'layout', before, after: layout }
+    }
+
+    case 'repeat': {
+      if (node.type !== 'TRANSFORM_GROUP') {
+        throw new Error(`a ${node.type} cannot repeat — NODE_GROUP as "repeat" makes the transform group that can`)
+      }
+      const group = node as unknown as { transformModifiers: unknown[]; children: readonly SceneNode[] }
+      const before = group.transformModifiers.map((one) => repeatWords(one as Record<string, unknown>))
+      // One modifier per child, the way `transformGroup` takes them; a single spec means all of them.
+      const list = Array.isArray(step.modifiers) ? step.modifiers : group.children.map(() => step.modifiers as RepeatModifierInput)
+      if (list.length !== group.children.length) {
+        throw new Error(`repeat names ${list.length} modifier(s) for ${group.children.length} child(ren) — one each, or a single one for all`)
+      }
+      if (!dry) group.transformModifiers = list as never
+      return { property: 'repeat', before, after: list.map((one) => repeatWords(one as unknown as Record<string, unknown>)) }
+    }
+
+    case 'decoration': {
+      if (!isText(node)) throw new Error(`only text has an underline to draw, not a ${node.type}`)
+      await loadNodeFont(node)
+      const target = node as unknown as Record<string, unknown>
+      const before = decorationWords(target)
+      if (!dry) for (const [property, value] of Object.entries(step.values)) target[property] = value
+      return { property: 'decoration', before, after: decorationWords({ ...target, ...step.values }) }
+    }
+
+    case 'connector': {
+      if (node.type !== 'CONNECTOR') throw new Error(`only a CONNECTOR joins two things, not a ${node.type}`)
+      const before = connectorWords(bag, pageIdOf(node))
+      const { labelFills, ...values } = step.values
+      if (!dry) {
+        for (const [property, value] of Object.entries(values)) bag[property] = value
+        if (labelFills) node.textBackground.fills = labelFills
+      }
+      return { property: 'connector', before, after: dry ? 'would be set' : connectorWords(bag, pageIdOf(node)) }
+    }
+
+    case 'table': {
+      if (node.type !== 'TABLE') throw new Error(`only a TABLE has rows and cells, not a ${node.type}`)
+      const before = tableWords(node)
+      if (dry) return { property: 'table', before, after: 'would be set' }
+      const { rows, columns, cells, columnWidths, rowHeights, moveRows, moveColumns } = step.table
+      // Grown or cut at the end, the way a person adds a row: what is already in the table stays
+      // where it was.
+      while (rows !== undefined && node.numRows < rows) node.insertRow(node.numRows)
+      while (rows !== undefined && node.numRows > rows) node.removeRow(node.numRows - 1)
+      while (columns !== undefined && node.numColumns < columns) node.insertColumn(node.numColumns)
+      while (columns !== undefined && node.numColumns > columns) node.removeColumn(node.numColumns - 1)
+      for (const [from, to] of moveRows ?? []) node.moveRow(from, to)
+      for (const [from, to] of moveColumns ?? []) node.moveColumn(from, to)
+      if (cells) {
+        for (const [row, line] of cells.entries()) {
+          for (const [column, words] of line.entries()) {
+            if (words === null || row >= node.numRows || column >= node.numColumns) continue
+            const text = node.cellAt(row, column).text
+            const font = text.fontName
+            if (font !== figma.mixed) await figma.loadFontAsync(font)
+            else await loadNodeFont(text as unknown as TextNode)
+            text.characters = words
+          }
+        }
+      }
+      for (const [column, width] of (columnWidths ?? []).entries()) {
+        if (typeof width === 'number' && column < node.numColumns) node.resizeColumn(column, width)
+      }
+      for (const [row, height] of (rowHeights ?? []).entries()) {
+        if (typeof height === 'number' && row < node.numRows) node.resizeRow(row, height)
+      }
+      return { property: 'table', before, after: tableWords(node) }
+    }
+
+    case 'transition': {
+      if (node.type !== 'SLIDE') throw new Error(`only a SLIDE has a transition, not a ${node.type}`)
+      const slide = node as unknown as {
+        getSlideTransition(): SlideTransitionValue
+        setSlideTransition(value: SlideTransitionValue): void
+      }
+      const before = transitionWords(slide.getSlideTransition())
+      if (!dry) slide.setSlideTransition(step.transition)
+      return { property: 'transition', before, after: transitionWords(step.transition) ?? 'NONE' }
+    }
+
+    case 'stuckTo': {
+      const stickable = node as unknown as { stuckTo?: SceneNode | null }
+      if (!('stuckTo' in node)) throw new Error(`a ${node.type} cannot be stuck to anything`)
+      const before = stickable.stuckTo?.id ?? null
+      let target: SceneNode | null = null
+      if (step.target !== null) {
+        const found = await figma.getNodeByIdAsync(step.target)
+        if (!found || !('visible' in found)) throw new Error(`${step.target} is not a layer to stick to`)
+        target = found as SceneNode
+      }
+      if (!dry) stickable.stuckTo = target
+      return { property: 'stuckTo', before, after: step.target }
+    }
+
+    case 'assetType': {
+      const buzz = (figma as unknown as { buzz?: BuzzAPI }).buzz
+      if (figma.editorType !== 'buzz' || !buzz) {
+        throw new Error(`assetType is a Figma Buzz property — this file is open in ${figma.editorType}`)
+      }
+      const before = buzz.getBuzzAssetTypeForNode(node)
+      if (!dry) buzz.setBuzzAssetTypeForNode(node, step.assetType as BuzzAssetType)
+      return { property: 'assetType', before, after: step.assetType }
+    }
+
+    case 'textStart': {
+      if (node.type !== 'TEXT_PATH') throw new Error(`a ${node.type} has no path for text to start on — only a TEXT_PATH does`)
+      const path = node as unknown as { textPathStartData: { segment: number; position: number } }
+      const before = [path.textPathStartData.segment, path.textPathStartData.position]
+      if (!dry) path.textPathStartData = { segment: step.segment, position: step.position }
+      return { property: 'textStart', before, after: [step.segment, step.position] }
+    }
+
+    case 'gridCell': {
+      const child = node as unknown as {
+        gridRowAnchorIndex?: number
+        gridColumnAnchorIndex?: number
+        setGridChildPosition?: (row: number, column: number) => void
+      }
+      const parent = node.parent as unknown as { layoutMode?: string } | null
+      if (parent?.layoutMode !== 'GRID' || typeof child.setGridChildPosition !== 'function') {
+        throw new Error('gridCell needs a parent with a GRID layout')
+      }
+      const before = { row: child.gridRowAnchorIndex, column: child.gridColumnAnchorIndex }
+      if (!dry) child.setGridChildPosition(step.row, step.column)
+      return { property: 'gridCell', before, after: { row: step.row, column: step.column } }
     }
 
     case 'paint': {
       if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
       const before = await describePaints(bag[step.property])
       const paints = await buildPaints(step.ref)
-      if (!dry) bag[step.property] = paints
+      if (!dry) {
+        // A pattern can only go on through the async setter, which waits for its source node to
+        // load; everything else takes the plain assignment it always did.
+        const setter = step.property === 'fills' ? 'setFillsAsync' : 'setStrokesAsync'
+        if (paints.some((paint) => paint.type === 'PATTERN')) {
+          if (typeof bag[setter] !== 'function') throw new Error(`a ${node.type} cannot take a pattern ${step.property === 'fills' ? 'fill' : 'stroke'}`)
+          await (bag[setter] as (paints: Paint[]) => Promise<void>).call(node, paints)
+        } else bag[step.property] = paints
+      }
       return { property: step.property, before, after: await describePaints(paints) }
     }
 
     case 'reset': {
+      // A slot inside an instance resets to what the component's slot holds — the same gesture
+      // as resetting an instance, one level in, and the one way back after a slot was filled.
+      if (node.type === 'SLOT') {
+        const slot = node as unknown as { resetSlot?: () => void; children?: readonly SceneNode[] }
+        if (typeof slot.resetSlot !== 'function') throw new Error('this Figma cannot reset a slot')
+        const before = `${slot.children?.length ?? 0} child(ren)`
+        if (!dry) slot.resetSlot()
+        return { property: 'reset', before, after: "whatever the component's slot holds" }
+      }
       const instance = asInstance(node, 'overrides to reset')
       let before: string | null = null
       try {
@@ -537,9 +775,18 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         // no point setting it.
         if (run.fontName) await figma.loadFontAsync(run.fontName)
         const paints = run.fill === undefined ? null : await buildPaints(run.fill)
+        // Styles resolved once per run, before any range: a name that matches nothing is the
+        // run's problem, and the rest of the runs still go on.
+        const textStyle = run.textStyle ? ((await styleFor(run.textStyle, 'text')) as TextStyle) : null
+        const fillStyle = run.fillStyle ? await styleFor(run.fillStyle, 'paint') : null
+        // A text style brings its own font, which has to be loaded before it can be applied.
+        if (textStyle) await figma.loadFontAsync(textStyle.fontName)
 
         for (const [from, to] of ranges) {
           if (dry) continue
+          // The style first, so every field the run names after it is an override of the style.
+          if (textStyle) await node.setRangeTextStyleIdAsync(from, to, textStyle.id)
+          if (fillStyle) await node.setRangeFillStyleIdAsync(from, to, fillStyle.id)
           if (run.fontName) node.setRangeFontName(from, to, run.fontName)
           if (run.fontSize !== undefined) node.setRangeFontSize(from, to, run.fontSize)
           if (paints) node.setRangeFills(from, to, paints)
@@ -554,6 +801,29 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           }
           if (run.link !== undefined) {
             node.setRangeHyperlink(from, to, run.link === null ? null : { type: 'URL', value: run.link })
+          }
+          // Paragraph-level fields: Figma widens the range to the whole paragraphs it touches.
+          const paragraphs = node as unknown as {
+            setRangeListOptions?: (a: number, b: number, v: { type: string }) => void
+            setRangeIndentation?: (a: number, b: number, v: number) => void
+            setRangeListSpacing?: (a: number, b: number, v: number) => void
+            setRangeParagraphSpacing?: (a: number, b: number, v: number) => void
+            setRangeParagraphIndent?: (a: number, b: number, v: number) => void
+          }
+          if (run.list) paragraphs.setRangeListOptions?.(from, to, { type: run.list })
+          if (run.indent !== undefined) paragraphs.setRangeIndentation?.(from, to, run.indent)
+          if (run.listSpacing !== undefined) paragraphs.setRangeListSpacing?.(from, to, run.listSpacing)
+          if (run.paragraphSpacing !== undefined) paragraphs.setRangeParagraphSpacing?.(from, to, run.paragraphSpacing)
+          if (run.paragraphIndent !== undefined) paragraphs.setRangeParagraphIndent?.(from, to, run.paragraphIndent)
+          if (run.decoration !== undefined) {
+            const planned = planDecoration(run.decoration)
+            if ('values' in planned) {
+              const ranged = node as unknown as Record<string, (a: number, b: number, v: unknown) => void>
+              for (const [property, value] of Object.entries(planned.values)) {
+                const setter = `setRange${property[0].toUpperCase()}${property.slice(1)}`
+                if (typeof ranged[setter] === 'function') ranged[setter].call(node, from, to, value)
+              }
+            }
           }
         }
         // What was styled, in the words of the text rather than in indices.
@@ -694,27 +964,47 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     case 'keyframes': {
       const motion = node as unknown as {
         applyManualKeyframeTrack?: (field: unknown, track: unknown) => void
+        removeManualKeyframeTrack?: (field: unknown) => void
         manualKeyframeTracks?: Record<string, unknown>
       }
       if (typeof motion.applyManualKeyframeTrack !== 'function') {
         throw new Error(`a ${node.type} cannot be animated on a timeline`)
       }
+      const existing = manualTrackFields(motion.manualKeyframeTracks)
+      const before = `${existing.length} track(s)`
       const applied: string[] = []
       const failures: string[] = []
+      const remove = (name: string, field: unknown) => {
+        if (typeof motion.removeManualKeyframeTrack !== 'function') throw new Error('this Figma cannot remove a keyframe track')
+        if (!dry) motion.removeManualKeyframeTrack(field)
+        applied.push(`-${name}`)
+      }
+      if (step.clear) {
+        for (const one of existing) {
+          try {
+            remove(one.name, one.field)
+          } catch (error) {
+            failures.push(`${one.name}: ${String((error as Error)?.message || error)}`)
+          }
+        }
+      }
       for (const one of step.tracks) {
         try {
           // Per track, not per node: a `width` track Figma refuses on a hugging frame should not
           // take the opacity track down with it.
-          if (!dry) motion.applyManualKeyframeTrack({ type: 'PROPERTY', name: one.name }, one.track)
-          applied.push(one.name)
+          if (one.track === null) remove(one.name, one.field)
+          else {
+            if (!dry) motion.applyManualKeyframeTrack(one.field, one.track)
+            applied.push(one.name)
+          }
         } catch (error) {
           failures.push(`${one.name}: ${String((error as Error)?.message || error)}`)
         }
       }
       return {
         property: 'keyframes',
-        before: `${Object.keys(motion.manualKeyframeTracks ?? {}).length} track(s)`,
-        after: applied.join(', '),
+        before,
+        after: applied.join(', ') || 'none',
         ...(failures.length > 0 ? { error: failures.join(' · ') } : {}),
       }
     }
@@ -936,6 +1226,14 @@ function describeRun(run: TextRun): string {
   if (run.letterSpacing !== undefined) parts.push(`tracking ${run.letterSpacing}`)
   if (run.lineHeight !== undefined) parts.push(`leading ${run.lineHeight}`)
   if (run.link !== undefined) parts.push(run.link === null ? 'unlinked' : 'linked')
+  if (run.textStyle) parts.push(`style "${run.textStyle}"`)
+  if (run.fillStyle) parts.push(`fill style "${run.fillStyle}"`)
+  if (run.list) parts.push(run.list === 'NONE' ? 'no list' : run.list === 'ORDERED' ? 'numbered' : 'bulleted')
+  if (run.indent !== undefined) parts.push(`level ${run.indent}`)
+  if (run.listSpacing !== undefined) parts.push(`list spacing ${run.listSpacing}`)
+  if (run.paragraphSpacing !== undefined) parts.push(`paragraph spacing ${run.paragraphSpacing}`)
+  if (run.paragraphIndent !== undefined) parts.push(`first-line indent ${run.paragraphIndent}`)
+  if (run.decoration !== undefined) parts.push(`decoration ${JSON.stringify(run.decoration)}`)
   return parts.join(' ')
 }
 
@@ -954,6 +1252,55 @@ const STYLE_SETTERS: Readonly<Record<string, string>> = {
  * its own documentation says so — but it is a different `type`, so every guard written as
  * `type !== 'TEXT'` refused the very node `createTextPath` had just handed back.
  */
+/**
+ * A write that Figma refused for want of a font it named — a FigJam code block keeps its font to
+ * itself (no `fontName` to load from) and says which one only in the refusal. The font it names is
+ * loaded and the write tried once more; any other refusal is passed on as it was.
+ */
+async function withNamedFont(write: () => unknown): Promise<void> {
+  try {
+    write()
+  } catch (error) {
+    const message = String((error as Error)?.message || error)
+    const named = /loadFontAsync\(\{\s*family:\s*"([^"]+)",\s*style:\s*"([^"]+)"\s*\}\)/.exec(message)
+    if (!named) throw error
+    await figma.loadFontAsync({ family: named[1], style: named[2] })
+    write()
+  }
+}
+
+const SUBLAYER_STEPS = new Set(['text', 'font', 'lineHeight', 'letterSpacing', 'runs', 'decoration'])
+
+/**
+ * The text sublayer of a FigJam node, standing in as a text node for one step — or null when the
+ * step is not about text, or the node is its own text.
+ *
+ * Wrapped rather than handed over: the sublayer has no `type`, and every text step asks for one
+ * before it will touch anything. Methods are bound to the real sublayer, since Figma's host objects
+ * refuse to be called with a stand-in as `this`.
+ */
+function textSublayerFor(node: SceneNode, step: PropStep): SceneNode | null {
+  if (node.type !== 'STICKY' && node.type !== 'SHAPE_WITH_TEXT' && node.type !== 'CONNECTOR') return null
+  const text = (node as unknown as { text: Record<string, unknown> }).text
+  const wanted = SUBLAYER_STEPS.has(step.step)
+    || (step.step === 'assign' && !(step.property in node) && step.property in text)
+  if (!wanted) return null
+  return new Proxy(text, {
+    get(target, key) {
+      if (key === 'type') return 'TEXT'
+      if (key === 'parent') return node
+      const value = Reflect.get(target, key)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+    set(target, key, value) {
+      return Reflect.set(target, key, value)
+    },
+    has(target, key) {
+      return key === 'type' || Reflect.has(target, key)
+    },
+  }) as unknown as SceneNode
+}
+
 function isText(node: SceneNode): node is TextNode {
   return node.type === 'TEXT' || node.type === 'TEXT_PATH'
 }
@@ -1032,13 +1379,35 @@ async function buildPaints(ref: PaintRef): Promise<Paint[]> {
   if ('shader' in ref) return [await buildShader(ref)]
   if ('gradient' in ref) return [await buildGradient(ref)]
   if ('image' in ref) return [await buildImage(ref)]
+  if ('video' in ref) return [await buildVideo(ref)]
+  if ('pattern' in ref) {
+    const source = await figma.getNodeByIdAsync(ref.pattern)
+    if (!source || source.type === 'PAGE' || source.type === 'DOCUMENT') throw new Error(`no node ${ref.pattern} to tile`)
+    return [
+      {
+        type: 'PATTERN',
+        sourceNodeId: source.id,
+        tileType: ref.tile ?? 'RECTANGULAR',
+        scalingFactor: ref.scale ?? 1,
+        spacing: { x: ref.spacing?.[0] ?? 0, y: ref.spacing?.[1] ?? 0 },
+        horizontalAlignment: ref.align ?? 'START',
+        ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+      } as PatternPaint,
+    ]
+  }
   if ('variable' in ref) {
     const variable = await resolveVariableRef(ref.variable)
     if (variable.resolvedType !== 'COLOR') {
       throw new Error(`"${variable.name}" is a ${variable.resolvedType} variable, not a colour`)
     }
     // Bound rather than painted: the point of naming a variable is that the layer follows it.
-    const base: SolidPaint = { type: 'SOLID', color: { r: 0, g: 0, b: 0 } }
+    // The paint's own opacity is not the token's and survives the binding — a 40% scrim of
+    // `surface/inverse` is still a 40% scrim.
+    const base: SolidPaint = {
+      type: 'SOLID',
+      color: { r: 0, g: 0, b: 0 },
+      ...(typeof ref.opacity === 'number' ? { opacity: ref.opacity } : {}),
+    }
     return [figma.variables.setBoundVariableForPaint(base, 'color', variable)]
   }
   return [solid(ref.color, ref.opacity)]
@@ -1137,6 +1506,17 @@ async function buildImage(ref: ImageRef): Promise<ImagePaint> {
     imageHash,
     ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
   }
+}
+
+async function buildVideo(ref: VideoRef): Promise<VideoPaint> {
+  const { hash, bytes } = ref.video
+  const videoHash = hash ?? (await figma.createVideoAsync(figma.base64Decode(bytes as string))).hash
+  return {
+    type: 'VIDEO',
+    scaleMode: ref.scaleMode ?? 'FILL',
+    videoHash,
+    ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+  } as VideoPaint
 }
 
 function solid(input: ColourInput, opacity?: number): SolidPaint {

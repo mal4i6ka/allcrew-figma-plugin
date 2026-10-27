@@ -39,7 +39,23 @@ const KIND_OF: Readonly<Record<string, string>> = {
   VECTOR: 'vector',
   STAR: 'star',
   POLYGON: 'polygon',
+  SLICE: 'slice',
+  STICKY: 'sticky',
+  SHAPE_WITH_TEXT: 'shapeWithText',
+  CONNECTOR: 'connector',
+  CODE_BLOCK: 'codeBlock',
+  TABLE: 'table',
+  SLIDE: 'slide',
+  SLIDE_ROW: 'slideRow',
 }
+
+/**
+ * Nodes whose size is not theirs to be told: a sticky has two widths and picks by `wide`, a
+ * connector stretches between what it joins, a table and a code block grow with their content, and
+ * a slide is the size of its deck — Figma answers "Cannot resize slide nodes".
+ * Sending the size back would be refused for a reading that is perfectly true.
+ */
+const SIZED_BY_CONTENT = new Set(['STICKY', 'CONNECTOR', 'CODE_BLOCK', 'TABLE', 'SLIDE_ROW', 'SLIDE'])
 
 export const kindOf = (type: string): string | null => KIND_OF[type] ?? null
 
@@ -65,6 +81,15 @@ const NOT_PROPERTIES = new Set([
   'annotations',
   // A slot is a fact about the component, not a value this instance can be told.
   'slots',
+  // Which limits a slot's content breaks: a verdict about the children, not a property.
+  'slotViolations',
+  // What kind of live element a slide holds — a poll, an embed — which no write can change.
+  'interactive',
+  // Who made a sticky or a stamp, what a link unfurled into, a widget's own state: facts about
+  // the node that no property write can set.
+  'author',
+  'preview',
+  'widget',
 ])
 
 /**
@@ -168,9 +193,18 @@ export function specFrom(
   /** For an instance: the component to make. The reading names it, but a name is not an id. */
   of?: string | null
 ): { spec: CreateSpec; dropped: RoundTripFinding[]; notValues: string[] } | null {
-  const kind = kindOf(String(reading.type))
+  // A Buzz asset is a FRAME by type and something else by nature: only an asset can carry a
+  // format, so a frame that has one is made as one.
+  const kind = reading.type === 'FRAME' && (reading.props as Record<string, unknown> | undefined)?.assetType
+    ? 'asset'
+    : kindOf(String(reading.type))
   if (!kind) return null
-  const { props, dropped, notValues } = sendable((reading.props ?? {}) as Record<string, unknown>)
+  const readProps = { ...((reading.props ?? {}) as Record<string, unknown>) }
+  if (SIZED_BY_CONTENT.has(String(reading.type))) {
+    delete readProps.width
+    delete readProps.height
+  }
+  const { props, dropped, notValues } = sendable(readProps)
   if (kind === 'instance' && !of) {
     return { spec: { kind: 'instance', props }, dropped: [...dropped, { property: '(instance)', why: 'the main component is unavailable, so the copy cannot be made' }], notValues }
   }

@@ -416,31 +416,65 @@ function readBody(req) {
   })
 }
 
+/**
+ * What a plugin is handed: each request with the time the bridge will still wait for it
+ * (`budgetMs`), measured now rather than when it was queued. The sandbox sets its own deadline
+ * from that, so a long op answers while someone is still listening instead of after.
+ */
+function outgoing(plugin) {
+  const now = Date.now()
+  return plugin.queue
+    .splice(0, plugin.queue.length)
+    .map(({ id, op, params, expiresAt }) => ({ id, op, params, budgetMs: Math.max(0, expiresAt - now) }))
+}
+
 /** Hands everything queued for one plugin to its live socket, falling back to a parked poll. */
 function flush(plugin) {
-  if (plugin.queue.length === 0) return
+  if (plugin.queue.length === 0 && plugin.cancels.length === 0) return
   if (plugin.ws && !plugin.ws.closed) {
-    plugin.ws.sendJson({ type: 'requests', requests: plugin.queue.splice(0, plugin.queue.length) })
+    if (plugin.cancels.length > 0) plugin.ws.sendJson({ type: 'cancel', cancels: plugin.cancels.splice(0, plugin.cancels.length) })
+    if (plugin.queue.length > 0) plugin.ws.sendJson({ type: 'requests', requests: outgoing(plugin) })
     return
   }
   if (!plugin.poller) return
   const { res, timer } = plugin.poller
   plugin.poller = null
   clearTimeout(timer)
-  send(res, 200, { requests: plugin.queue.splice(0, plugin.queue.length) })
+  send(res, 200, { requests: outgoing(plugin), cancels: plugin.cancels.splice(0, plugin.cancels.length) })
+}
+
+/**
+ * Tells a plugin to stop working on a call nobody is waiting for any more. A request still in
+ * the queue is simply dropped; one already handed over is cancelled in the sandbox, which stops
+ * it at its next checkpoint. Without this an abandoned sweep ran to the end for nobody — and the
+ * agent's retry started a second one beside it.
+ */
+function withdraw(plugin, id, reason) {
+  const queued = plugin.queue.findIndex((item) => item.id === id)
+  if (queued >= 0) {
+    plugin.queue.splice(queued, 1)
+    return
+  }
+  plugin.cancels.push({ id, reason })
+  flush(plugin)
 }
 
 /** Fails every in-flight call for one plugin — used when it disappears mid-request. `code` is
  * the caller's cue: `disconnected` and `reconnected` and `listener_off` are three different
  * things that used to be three different sentences and one indistinguishable status. */
 function failPending(plugin, reason, code) {
+  const queued = new Set(plugin.queue.map((item) => item.id))
   for (const [id, entry] of pending) {
     if (entry.session !== plugin.session) continue
     clearTimeout(entry.timer)
     entry.resolve(fail(code || 'disconnected', reason))
     pending.delete(id)
+    // A window that is still there (a reconnect, a listener switched off) keeps running what it
+    // was handed unless it is told otherwise.
+    if (!queued.has(id)) plugin.cancels.push({ id, reason })
   }
   plugin.queue.length = 0
+  flush(plugin)
 }
 
 /* ------------------------------------------------------------------- files */
@@ -500,14 +534,39 @@ function materialiseFiles(value, dir, written) {
 }
 
 /**
+ * Aborts when the HTTP caller's connection closes before its answer was sent — an MCP client
+ * that cancelled, a CLI that was interrupted. `close` also fires after a normal response, which
+ * is why it only counts while the response is unfinished.
+ */
+function callerSignal(res) {
+  const controller = new AbortController()
+  res.on('close', () => {
+    if (!res.writableFinished) controller.abort()
+  })
+  return controller.signal
+}
+
+/**
  * Queues one op for one plugin and resolves when it answers. Everything above this — single
  * call, broadcast — is just a different way of choosing which plugins to hand it to.
+ *
+ * `signal` is the caller's own connection: when it closes first, the call is withdrawn from the
+ * plugin instead of left running for nobody.
  */
-function dispatch(plugin, op, params) {
+function dispatch(plugin, op, params, signal) {
   return new Promise((resolve) => {
     const id = crypto.randomUUID()
+    const abandon = () => {
+      if (!pending.has(id)) return
+      clearTimeout(timer)
+      pending.delete(id)
+      withdraw(plugin, id, 'the caller went away')
+      resolve(fail('disconnected', 'the caller closed the connection before the answer arrived'))
+    }
     const timer = setTimeout(() => {
       pending.delete(id)
+      signal?.removeEventListener('abort', abandon)
+      withdraw(plugin, id, `the bridge stopped waiting after ${CALL_TIMEOUT_MS / 1000}s`)
       // Name the knob: a caller that asked for a longer `timeoutMs` (plugin.call allows up to
       // 600s) otherwise reads this as the plugin hanging, when it is this bridge giving up first.
       resolve(
@@ -519,13 +578,25 @@ function dispatch(plugin, op, params) {
             'load continues after this call dies, so the same call often answers at once on a retry' +
             (CALL_TIMEOUT_MS >= CLIENT_CEILING_MS
               ? ' — raising it further will not help: a plain fetch client gives up at ' +
-                `${CLIENT_CEILING_MS / 1000}s. Narrow the scope, or use the op's own paging (limit/offset/budgetMs).`
+                `${CLIENT_CEILING_MS / 1000}s. Narrow the scope, or use the op's own paging (cursor/limit/offset/budgetMs).`
               : ' — raise it with ALLCREW_CHANNEL_AGENT_CALL_TIMEOUT_MS, or narrow the scope')
         )
       )
     }, CALL_TIMEOUT_MS)
-    pending.set(id, { resolve, timer, op, session: plugin.session, startedAt: Date.now() })
-    plugin.queue.push({ id, op, params: params ?? {} })
+    const startedAt = Date.now()
+    pending.set(id, {
+      resolve: (answer) => {
+        signal?.removeEventListener('abort', abandon)
+        resolve(answer)
+      },
+      timer,
+      op,
+      session: plugin.session,
+      startedAt,
+    })
+    if (signal?.aborted) return abandon()
+    signal?.addEventListener('abort', abandon, { once: true })
+    plugin.queue.push({ id, op, params: params ?? {}, expiresAt: startedAt + CALL_TIMEOUT_MS })
     flush(plugin)
   })
 }
@@ -2580,8 +2651,10 @@ async function runDesktopMcp(op, body) {
  * One op against one file, from body to answer. The whole of `POST /call`, factored out so the
  * batch route runs exactly the same path — a batch that took a different route to the same op
  * would be a second implementation of the gate, the schema check and the REST fallback.
+ *
+ * `signal` aborts when the caller's connection closes; the plugin is then told to stop.
  */
-export async function runCall(body) {
+export async function runCall(body, signal) {
   const op = typeof body.op === 'string' ? body.op : ''
   if (!op) return { code: 400, body: fail('bad_request', 'missing "op"') }
 
@@ -2666,7 +2739,7 @@ export async function runCall(body) {
       online.map(async (plugin) => ({
         file: plugin.file,
         handle: plugin.handle,
-        ...(await dispatch(plugin, op, body.params)),
+        ...(await dispatch(plugin, op, body.params, signal)),
       }))
     )
     return {
@@ -2705,7 +2778,7 @@ export async function runCall(body) {
   const discoveredFileKey =
     op === 'plugin.call' && body.params?.command === 'EMIT_REACT' ? await fileKeyForPlugin(plugin) : null
   const params = withDiscoveredFileUrl(op, body.params, discoveredFileKey)
-  const answer = await dispatch(plugin, op, params)
+  const answer = await dispatch(plugin, op, params, signal)
   /* The answer always names the file it came from. An agent that cannot see which document
    * replied cannot tell a right answer from a right-looking one. */
   return {
@@ -3007,7 +3080,7 @@ const ROUTES = {
     return null
   },
 
-  'POST /call': async (req) => runCall(await readBody(req)),
+  'POST /call': async (req, res) => runCall(await readBody(req), callerSignal(res)),
 
   /**
    * A batch: many ops, one round trip.
@@ -3016,18 +3089,17 @@ const ROUTES = {
    * postMessage→postMessage→HTTP crossing, gave the designer its own ⌘Z entry, and staked its
    * own 180-second bet. Thirty node writes were thirty of each.
    *
-   * Run STRICTLY IN ORDER, one at a time. Not an optimisation left on the table: the sandbox
-   * does not serialize `handleAgentRequest`, so a parallel batch interleaves inside the plugin,
-   * and the module-level state the ops share (`loading.ts`'s pending list, `ui-post.ts`'s
-   * recorders) is then attributed to whichever call happens to finish first. A batch that builds
-   * a screen also means its order.
+   * Run STRICTLY IN ORDER, one at a time: a batch that builds a screen means its order. (The
+   * plugin also queues calls per file now, so a parallel batch would no longer interleave inside
+   * the sandbox — but it would still race on order, and stop-at-first-failure needs order.)
    *
    * Stops at the first failure unless `continueOnError` is set. A batch that keeps writing after
    * step three refused leaves a half-built screen nobody asked for, and the answer always says
    * how far it got.
    */
-  'POST /calls': async (req) => {
+  'POST /calls': async (req, res) => {
     const body = await readBody(req)
+    const signal = callerSignal(res)
     const calls = Array.isArray(body.calls) ? body.calls : null
     if (!calls) return { code: 400, body: fail('bad_request', 'missing "calls" — an array of { op, params }') }
     if (calls.length === 0) return { code: 400, body: fail('bad_request', '"calls" is empty') }
@@ -3041,12 +3113,17 @@ const ROUTES = {
     const results = []
     let failed = null
     for (const entry of calls) {
+      // A caller that hung up mid-batch wants none of the rest run on its behalf.
+      if (signal.aborted) break
       // Target and fileKey default to the batch's own, so a caller names the file once.
-      const answer = await runCall({
-        target: body.target,
-        fileKey: body.fileKey,
-        ...(entry && typeof entry === 'object' ? entry : {}),
-      })
+      const answer = await runCall(
+        {
+          target: body.target,
+          fileKey: body.fileKey,
+          ...(entry && typeof entry === 'object' ? entry : {}),
+        },
+        signal
+      )
       results.push({ op: (entry && entry.op) || null, ...answer.body })
       if (!answer.body.ok) {
         failed = results.length - 1
@@ -3304,6 +3381,8 @@ const ROUTES = {
       poller: null,
       ws: null,
       queue: [],
+      /** Requests the bridge stopped waiting for, to be withdrawn in the sandbox. */
+      cancels: [],
     }
     plugins.set(session, plugin)
     console.log(
@@ -3334,8 +3413,8 @@ const ROUTES = {
       plugin.poller = null
     }
 
-    if (plugin.queue.length > 0) {
-      return { code: 200, body: { requests: plugin.queue.splice(0, plugin.queue.length) } }
+    if (plugin.queue.length > 0 || plugin.cancels.length > 0) {
+      return { code: 200, body: { requests: outgoing(plugin), cancels: plugin.cancels.splice(0, plugin.cancels.length) } }
     }
 
     const timer = setTimeout(() => {

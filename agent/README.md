@@ -7,7 +7,7 @@ It is MCP-shaped without being MCP: there is no server to register, no client li
 nothing to keep in sync but the op names. If a tool can run a shell command, it can drive
 Figma.
 
-**Reads and writes, gated separately.** Most ops only look; twenty-eight of them change the
+**Reads and writes, gated separately.** Most ops only look; thirty-two of them change the
 document or plugin-managed module storage and sit behind their own switch, which reads never imply.
 
 ---
@@ -419,18 +419,23 @@ allcrew-channel ops --json       # the same, machine-readable
 | `page.frames` | top-level frames, sections and components on a page |
 | `page.warm` | loads a page on purpose and reports what it cost — the wait moved to where you chose it, instead of arriving inside the first read that touched a cold page |
 | `node.get` | one node by id — geometry, auto-layout, text, instance bindings, children |
-| `node.find` | search by name substring, node type and/or `text` — what a TEXT layer actually says, case and spacing ignored — per page or whole document; `within` narrows any search to one frame or section, and every text match names its top-level `frame` |
+| `node.find` | search by name substring, node type and/or `text` — what a TEXT layer actually says, case and spacing ignored — per page or whole document; `within` narrows any search to one frame or section, and every text match names its top-level `frame`. Up to `limit` matches per call; `cursor` continues |
 | `selection.get` | what the designer has selected right now |
-| `components.list` | local components and sets, with property/variant definitions, descriptions and documentation links |
+| `components.list` | local components and sets, with property/variant definitions, descriptions and documentation links — page by page through the type index, `limit` per call, `cursor` continues |
 | `component.api` | one component as an API: axes with options and defaults, the variant that isolates each option, what it changes (with the token behind each value), and which layer every boolean/text/swap property drives |
-| `component.instances` | without a target: a document-wide inventory of every component copy — page, containing frame path, nested status, override count and jump link, plus unused local components (counted only at document scope, sets reported as one). With `nodeId`/`name`, one component, set, variant or instance's copies broken down `byPage`, `byVariant`, `nested`/`placed`. `scope`/`pageId` narrow the walk; `budgetMs` returns a partial answer marked `timedOut` instead of hitting the bridge ceiling |
-| `component.orphans` | orphan instances grouped by dead master — a local main that was deleted (unparented, on no page) or a missing one — ranked by affected copies, each group with up to three ranked `restoreFrom` candidates; `detached: true` adds frames detached from a main that is also gone. `scope`, `pageId`, `nodeId`, `limit` and `budgetMs` bound the walk |
-| `styles.list` | local text, paint, effect, grid and custom animation styles — an animation style comes back with the animations it plays, in order |
+| `component.instances` | without a target: a document-wide inventory of every component copy — page, containing frame path, nested status, override count and jump link, plus unused local components (counted only at document scope, sets reported as one). With `nodeId`/`name`, one component, set, variant or instance's copies broken down `byPage`, `byVariant`, `nested`/`placed`. `scope`/`pageId` narrow the walk; a big file sweeps over several calls (`cursor`) and only the completing call carries the counts |
+| `component.orphans` | orphan instances grouped by dead master — a local main that was deleted (unparented, on no page) or a missing one — ranked by affected copies, each group with up to three ranked `restoreFrom` candidates; `detached: true` adds frames detached from a main that is also gone. `scope`, `pageId`, `nodeId` and `limit` bound the walk; `cursor` continues a sweep |
+| `styles.list` | local text, paint, effect, grid and custom animation styles — an animation style comes back with the animations it plays, in order; `consumers: true` pages its per-style document searches with `offset`/`nextOffset` |
 | `variables.get` | collections, modes and values, with each token's description, scopes and per-platform `codeSyntax` |
-| `flow.map` | prototype graph of a page: starting points and every reaction edge, each carrying the navigation kind and its transition (duration, easing, curve) |
+| `flow.map` | prototype graph of a page: starting points and every reaction edge, each carrying the navigation kind and its transition (duration, easing, curve); a heavy page sweeps over several calls (`cursor`) |
 | `node.focus` | selects one node or a same-page batch and scrolls the designer to it; cross-page nodes return grouped under `elsewhere` with one-line jump links |
+| `editor.capabilities` | which editor the file is open in (Design, Dev Mode, FigJam, Slides, Buzz) and which features exist there — an op used in the wrong editor refuses by naming the right one |
+| `canvas.grid` | Slides or Buzz: the deck or canvas as rows of slides/assets, each with its transition, skip flag or Buzz format, plus the focused item and the view |
+| `buzz.content` | Buzz: an asset's text and media fields — the parts of a templated post meant to change |
+| `node.probe` | every property and method a node really has, with the plain values — for node types Figma ships before the typings describe them (code layers read as `CODE_INSTANCE`). Calls no method |
+| `figjam.board` | FigJam: who is on the board, the timer, and what is stuck to a node |
 | `node.screenshot` | renders a node to PNG — how an agent checks what it actually drew |
-| `image.fills` | the uploaded files behind a subtree's image fills, on a time budget it always answers within |
+| `image.fills` | the uploaded files behind a subtree's image fills — a byte-budgeted reply that hands back `nextOffset`/`cursor` instead of outgrowing the channel |
 | `export.settings` | the export marks a designer set on a subtree — format, constraint, suffix and the svg flags, with each marked node's box in pixels and as a share of the root. The only read that reports them: `node.get` and `design.ir` both drop `exportSettings`, so before this op the marks were reachable only over REST |
 | `export.run` | renders nodes by THEIR OWN export rows — a node with 1x/2x/3x rows comes back as three files, each named with its own suffix |
 | `text.inventory` | every TEXT node of a subtree, split into `content` (copy that must reach the CMS and the translation file) and `baked` (text drawn inside an illustration — `img/*`, `Img`, `Interface`, `Calculator` — which ships as pixels or an SVG overlay). The rule lives here rather than in each consumer, so a fresh checkout on another machine gets the same verdict |
@@ -480,7 +485,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `modules.inspect` | one installed module&rsquo;s declarative file and current state, with secret fields redacted |
 | `modules.export` | a transferable module file, optionally with non-secret state |
 
-Twenty-eight **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
+Thirty-two **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
 table is checked against the registry by a test — an op that ships without a row here fails the
 build rather than going quietly undocumented, which is how the count used to read "five".)
 
@@ -514,6 +519,10 @@ build rather than going quietly undocumented, which is how the count used to rea
 | `modules.install` | validates and installs or upgrades a declarative module, migrating compatible state and refusing implicit downgrades |
 | `modules.configure` | enables or disables a module and atomically updates its declared state fields |
 | `modules.remove` | removes a module and its persisted state; export first when it may be needed again |
+| `canvas.arrange` | Slides or Buzz: replaces the grid (rows of ids — how a deck is reordered), moves nodes to `[row, column]`, inserts a row, focuses a slide or asset, switches between grid and single view |
+| `buzz.content.set` | Buzz: fills an asset's text fields and swaps its images or videos by hash, by field index or node id |
+| `buzz.resize` | Buzz: Smart Resize to new dimensions — the content re-laid, not stretched — and optionally records the new asset format |
+| `figjam.timer` | FigJam: starts, pauses, resumes or stops the board timer — shared, so everyone on the board sees it |
 
 Four more write into the file's **comments** rather than into the document. They are the only
 ops the bridge answers itself — the Plugin API has no comment surface, so these go out over
@@ -684,12 +693,46 @@ silence: *the load continues in the background — call again and it usually ans
 One limit worth knowing, because it bit hard: while Figma is loading a page, **nothing in the
 sandbox gets a turn** — the plugin's own `budgetMs` timers cannot fire either. The bridge's
 ceiling is the only guard that still works there, and its timeout message now says so rather
-than advising a longer wait.
+than advising a longer wait. Sweeps (below) respect it from the other side: they never start a
+cold page with less than 30 s left once a call has done some work.
 
 **A page can be warmed on purpose.** `page.warm` loads one page and reports what it cost, so the
 forty seconds are paid under a name that explains them instead of inside a working call that then
 dies at the ceiling with nothing. `document.info` marks every page `warm: true|false` — the order
 of work is the only lever a caller has over a cost it cannot avoid, and now it can see the map.
+
+**Mass operations finish instead of falling over.** A document-wide read on a real
+design-system file used to do one of three things: freeze the editor (a synchronous walk), run
+past the 180 s ceiling and answer nobody (and keep running), or — once the agent retried —
+run twice side by side until the sandbox aborted. Four mechanisms, one each:
+
+- *One call at a time.* The plugin queues agent calls per file instead of interleaving them at
+  every `await`. A retry waits behind the call it repeats; it no longer doubles the work.
+- *A deadline below the bridge's.* Every request carries `budgetMs` — how long the bridge will
+  still wait — and the plugin answers before that: every long loop goes through `checkpoint()`
+  (`src/utils/budget.ts`), which yields the main thread on a 40 ms slice and stops a read that
+  ran out of time with `timeout` and a message saying how to continue. An op's own `budgetMs`
+  is clamped to what the call has left. Writes are never stopped half way; their read-only
+  phase (a reference count, a scope walk) is, before anything is written.
+- *Cancellation.* A call the bridge stops waiting for — its own timeout, a client that hung up,
+  a window that reconnected — is withdrawn from the plugin (`cancel` over the socket, `cancels`
+  on the poll), and the run stops at its next checkpoint.
+- *Sweeps.* Every op that walks a page or the document parks its position and its accumulated
+  state in the plugin when its time is nearly up and answers `complete: false` with a `cursor`
+  (`src/agent/sweep.ts`). The same call with that `cursor` resumes exactly there — no node twice,
+  none skipped, a node deleted in between ends only its own branch — and pages load one at a
+  time as the sweep reaches them, never all up front. Listing ops (`node.find`,
+  `components.list`, `lint.colors`, `text.inventory`, `image.fills`) return `limit` rows per call;
+  counting ops (`variables.usage`, `variables.external`, `instances.external`,
+  `component.instances`, `component.orphans`, `flow.map`) answer progress only until the call that
+  completes, which carries the whole result. A parked sweep lives as long as the plugin window,
+  and 15 minutes without use.
+
+Exports got the same treatment: `NODE_EXPORT`, `export.run`, `assets.export` and `image.fills`
+stop BEFORE a reply would outgrow the 3 MiB channel (base64 growth counted) and hand back
+`nextOffset`, a render above 40 megapixels is refused before `exportAsync` rather than allowed to
+take the sandbox down, and `node.screenshot`, `image.plate` and the `design.context` preview
+downscale to fit and say which scale they used.
 
 **`assets.export` says which assets are cut-outs.** With `alpha: true` every raster asset carries
 `none` / `alpha` / `unknown`, read from the paint's uploaded SOURCE — never from the exported PNG,
@@ -1236,11 +1279,10 @@ echo '{"calls":[…],"continueOnError":true}' | allcrew-channel batch -
 
 Through MCP the same thing is the `allcrew_channel_batch` tool. Two properties worth knowing:
 
-**Strictly in order, one at a time.** Not an optimisation left on the table. The sandbox does
-not serialize `handleAgentRequest`, so a parallel batch interleaves inside the plugin and the
-module state the ops share — `loading.ts`'s page timings, `ui-post.ts`'s reply recorders — is
-attributed to whichever call happens to finish first. A batch that builds a screen also means
-its order.
+**Strictly in order, one at a time.** The plugin itself now runs calls one at a time per file,
+so this is no longer what keeps the module state the ops share (`loading.ts`'s page timings,
+`ui-post.ts`'s reply recorders) attributed to the right call — but a batch that builds a screen
+also means its order, and running it in order keeps that true.
 
 **Stops at the first failure** unless `continueOnError` is set, and the answer always says how
 far it got: `ran`, `of`, `failedAt`. A batch that keeps writing after step three refused leaves

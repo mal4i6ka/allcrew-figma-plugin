@@ -6,7 +6,10 @@
   "ui": "dist/ui.html",
   "editorType": [
     "figma",
-    "dev"
+    "dev",
+    "figjam",
+    "slides",
+    "buzz"
   ],
   "capabilities": [
     "inspect",
@@ -21,7 +24,9 @@
   },
   "permissions": [
     "currentuser",
-    "teamlibrary"
+    "teamlibrary",
+    "activeusers",
+    "fileusers"
   ],
   "relaunchButtons": [
     {

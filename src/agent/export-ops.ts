@@ -20,6 +20,8 @@
 
 import { binaryFile, slugify, textFile } from './files.ts'
 import type { OpDef } from './protocol.ts'
+import { ExportGuard, MAX_REPLY_RAW_BYTES, pixelRefusal, type ExportConstraint } from './export-guard.ts'
+import { checkpoint } from '../utils/budget.ts'
 
 /** One row of Figma's export panel, flattened — every field the Plugin API exposes. */
 export interface SettingSummary {
@@ -224,24 +226,43 @@ export const EXPORT_OPS: readonly OpDef[] = [
     summary: "Render nodes by THEIR OWN export settings — the designer's format, density and suffix, not the caller's guess.",
     agent:
       'The companion to export.settings: that one says what the designer asked for, this one produces it. A node with ' +
-      'three rows comes back as three files, each named with its own suffix, so a 1x/2x/3x set arrives in one call. ' +
-      'Nodes with no settings are reported, not silently skipped. Use NODE_EXPORT instead when the caller — not the ' +
-      'file — decides the format.',
+      'three rows comes back as three files, each named with its own suffix. Replies are capped below the transport ' +
+      'ceiling and renders stop one at a time; when `nextOffset` is present, call again with that offset. Raster rows ' +
+      'above maxPixels are refused before exportAsync with a hint to lower the designer’s scale.',
     mutates: false,
     params: {
       nodes: { type: 'string[]', required: true, description: 'Node ids to render by their own export rows.' },
       format: { type: 'string', enum: [...FORMATS], description: 'Only render rows of this format.' },
-      budgetBytes: { type: 'number', default: 8_000_000, min: 100_000, max: 12_000_000, description: 'Stop once the answer reaches this size.' },
+      offset: { type: 'number', default: 0, min: 0, max: 10000, description: 'Skip this many matching export rows; resume with nextOffset.' },
+      budgetBytes: {
+        type: 'number',
+        default: MAX_REPLY_RAW_BYTES,
+        min: 100_000,
+        max: 12_000_000,
+        description: 'Raw file bytes in one reply; clamped to the transport-safe ceiling.',
+      },
+      maxPixels: {
+        type: 'number',
+        default: 40_000_000,
+        min: 250_000,
+        max: 60_000_000,
+        description: 'Refuse a raster row above this output-pixel count before exportAsync.',
+      },
     },
     async run(params) {
       const ids = (params.nodes as string[]) ?? []
       const wanted = typeof params.format === 'string' ? params.format.toUpperCase() : null
-      const budget = params.budgetBytes as number
+      const offset = params.offset as number
+      const guard = new ExportGuard({
+        budgetBytes: params.budgetBytes as number,
+        maxPixels: params.maxPixels as number,
+      })
       const files: unknown[] = []
       const reports: Array<Record<string, unknown>> = []
-      let spent = 0
+      const jobs: Array<{ node: SceneNode; setting: ExportSettings; row: number; summary: SettingSummary }> = []
 
       for (const id of ids) {
+        await checkpoint()
         let node: SceneNode
         try {
           node = await resolveScene(id)
@@ -253,36 +274,121 @@ export const EXPORT_OPS: readonly OpDef[] = [
           reports.push({ node: id, name: node.name, ok: false, error: 'no export settings on this node' })
           continue
         }
-        for (const [index, setting] of [...node.exportSettings].entries()) {
+        for (const [row, setting] of [...node.exportSettings].entries()) {
           const summary = summarize(setting)
-          if (wanted && summary.format !== wanted) continue
-          if (spent >= budget) {
-            reports.push({ node: id, name: node.name, row: index, ok: false, error: 'budget spent before this row' })
-            continue
-          }
-          try {
-            const stem = `${slugify(node.name)}${summary.suffix ? slugify(summary.suffix) : ''}`
-            if (summary.format === 'SVG') {
-              const svg = await node.exportAsync({ ...(setting as object), format: 'SVG_STRING' } as ExportSettingsSVGString)
-              spent += svg.length
-              const name = `${stem}.svg`
-              files.push(textFile(name, 'image/svg+xml', svg))
-              reports.push({ node: id, name: node.name, row: index, ok: true, file: name, bytes: svg.length, settings: summary })
-              continue
-            }
-            const bytes = await node.exportAsync(setting)
-            spent += bytes.length
-            const ext = summary.format.toLowerCase()
-            const mime = summary.format === 'JPG' ? 'image/jpeg' : summary.format === 'PDF' ? 'application/pdf' : 'image/png'
-            const name = `${stem}.${ext}`
-            files.push(binaryFile(name, mime, bytes))
-            reports.push({ node: id, name: node.name, row: index, ok: true, file: name, bytes: bytes.length, settings: summary })
-          } catch (error) {
-            reports.push({ node: id, name: node.name, row: index, ok: false, error: String((error as Error)?.message || error) })
-          }
+          if (!wanted || summary.format === wanted) jobs.push({ node, setting, row, summary })
         }
       }
-      return { files, nodes: reports, bytes: spent, budgetSpent: spent >= budget }
+
+      let jobOffset = offset
+      let stoppedOn: string | null = null
+      while (jobOffset < jobs.length) {
+        const job = jobs[jobOffset]
+        const gate = await guard.beforeRender(jobOffset)
+        if (!gate.include) {
+          stoppedOn = gate.stoppedOn ?? 'bytes'
+          break
+        }
+        if (job.summary.format === 'PNG' || job.summary.format === 'JPG') {
+          const constraint = (job.summary.constraint ?? { type: 'SCALE', value: 1 }) as ExportConstraint
+          const pixels = pixelRefusal(job.node, constraint, guard.maxPixels)
+          if (pixels.error) {
+            reports.push({
+              node: job.node.id,
+              name: job.node.name,
+              row: job.row,
+              ok: false,
+              error: pixels.error,
+              settings: job.summary,
+            })
+            jobOffset += 1
+            continue
+          }
+          const preflight = guard.preflightRaster(pixels.render, jobOffset)
+          if (!preflight.include) {
+            stoppedOn = 'bytes'
+            if (preflight.firstItemTooLarge) {
+              reports.push({
+                node: job.node.id,
+                name: job.node.name,
+                row: job.row,
+                ok: false,
+                error:
+                  'the estimated raster cannot fit one transport-safe reply; lower its export scale or use WIDTH/HEIGHT',
+                settings: job.summary,
+              })
+              jobOffset += 1
+            }
+            break
+          }
+        }
+        try {
+          const stem = `${slugify(job.node.name)}${job.summary.suffix ? slugify(job.summary.suffix) : ''}`
+          const data =
+            job.summary.format === 'SVG'
+              ? await job.node.exportAsync({
+                  ...(job.setting as object),
+                  format: 'SVG_STRING',
+                } as ExportSettingsSVGString)
+              : await job.node.exportAsync(job.setting)
+          const size = typeof data === 'string' ? data.length : data.length
+          const admitted = guard.admit(size, jobOffset)
+          if (!admitted.include) {
+            stoppedOn = 'bytes'
+            if (admitted.firstItemTooLarge) {
+              reports.push({
+                node: job.node.id,
+                name: job.node.name,
+                row: job.row,
+                ok: false,
+                error:
+                  `this row is ${size} bytes, too large for one transport-safe reply; ` +
+                  'lower its export scale or use a WIDTH/HEIGHT constraint',
+                settings: job.summary,
+              })
+              jobOffset += 1
+            }
+            break
+          }
+          const ext = job.summary.format.toLowerCase()
+          const name = `${stem}.${ext}`
+          if (typeof data === 'string') {
+            files.push(textFile(name, 'image/svg+xml', data))
+          } else {
+            const mime = job.summary.format === 'JPG' ? 'image/jpeg' : job.summary.format === 'PDF' ? 'application/pdf' : 'image/png'
+            files.push(binaryFile(name, mime, data))
+          }
+          reports.push({
+            node: job.node.id,
+            name: job.node.name,
+            row: job.row,
+            ok: true,
+            file: name,
+            bytes: size,
+            settings: job.summary,
+          })
+          jobOffset += 1
+        } catch (error) {
+          reports.push({
+            node: job.node.id,
+            name: job.node.name,
+            row: job.row,
+            ok: false,
+            error: String((error as Error)?.message || error),
+          })
+          jobOffset += 1
+        }
+      }
+
+      return {
+        files,
+        nodes: reports,
+        bytes: guard.spent,
+        budgetBytes: guard.budgetBytes,
+        ...(offset > 0 ? { offset } : {}),
+        ...(stoppedOn ? { stoppedOn } : {}),
+        ...(jobOffset < jobs.length ? { remaining: jobs.length - jobOffset, nextOffset: jobOffset } : {}),
+      }
     },
   },
 
@@ -359,9 +465,8 @@ export const EXPORT_OPS: readonly OpDef[] = [
   },
 ]
 
-/** What the sandbox→bridge hop carries in one answer. Measured, not documented: a 2592×1360
- *  PNG (3.5 MB) is refused, and the refusal names this number. */
-const HOP_BYTES = 3 * 1024 * 1024
+/** Raw file bytes that stay below the 3 MiB JSON hop after base64 and envelope overhead. */
+const HOP_BYTES = MAX_REPLY_RAW_BYTES
 
 /** Bytes per megapixel of a photographic PNG — from the renders this channel actually produced
  *  (1296×580 @2x = 3.5 MP → 3.5 MB; a flat UI frame lands well under it). An estimate, and

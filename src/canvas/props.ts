@@ -22,6 +22,21 @@
  */
 
 import { parseHex } from '../tokens/color.ts'
+import { EFFECT_KEYFRAME_WORDS, keyframeColour, parseIndexedField } from './keyframe-fields.ts'
+import {
+  BUZZ_ASSET_TYPES,
+  CODE_LANGUAGES,
+  planConnector,
+  planTable,
+  planTransition,
+  SHAPE_TYPES,
+  type ConnectorSpec,
+  type ConnectorValues,
+  type SlideTransitionValue,
+  type TableSpec,
+  type TransitionSpec,
+} from './board.ts'
+import { planDecoration, type DecorationSpec, type DecorationValues } from './decoration.ts'
 
 /* ------------------------------------------------------------------ vocabulary */
 
@@ -39,8 +54,10 @@ export type ColourInput = string | SpacedColour
 export type SinglePaint =
   | string
   | { color: ColourInput; opacity?: number }
-  | { variable: string }
+  | { variable: string; opacity?: number }
   | ImageRef
+  | VideoRef
+  | PatternRef
   | GradientRef
   | ShaderRef
 
@@ -154,6 +171,37 @@ export interface ImageRef {
 }
 
 /**
+ * A moving picture: one already in this document by its hash, or MP4/MOV/WebM sent as base64
+ * bytes (Figma's `createVideoAsync` takes nothing else — no URL). Uploading needs a paid team;
+ * a Starter file can keep and move the video it has but not add one.
+ */
+/**
+ * A node tiled across the layer — Figma Draw's pattern fill. `pattern` is the id of the node
+ * whose picture repeats; it stays live, so editing that node edits every tile.
+ */
+export interface PatternRef {
+  pattern: string
+  /** `RECTANGULAR` (the default), or the two hexagonal packings. */
+  tile?: 'RECTANGULAR' | 'HORIZONTAL_HEXAGONAL' | 'VERTICAL_HEXAGONAL'
+  /** How large each tile is against the source node: 1 is its own size. */
+  scale?: number
+  /** The gap between tiles, `[x, y]`, as a fraction of a tile. */
+  spacing?: [number, number]
+  /** Where a row of tiles is anchored across the layer. */
+  align?: 'START' | 'CENTER' | 'END'
+  opacity?: number
+}
+
+export const PATTERN_TILES = ['RECTANGULAR', 'HORIZONTAL_HEXAGONAL', 'VERTICAL_HEXAGONAL']
+export const PATTERN_ALIGN = ['START', 'CENTER', 'END']
+
+export interface VideoRef {
+  video: { hash?: string; bytes?: string }
+  scaleMode?: 'FILL' | 'FIT' | 'CROP' | 'TILE'
+  opacity?: number
+}
+
+/**
  * A shadow or a blur, in the terms the panel uses rather than Figma's five-field objects.
  *
  * Any of the numbers, and the colour, may name a variable instead — which is how an elevation
@@ -185,8 +233,8 @@ export type EffectSpec =
       color?: ColourInput | { variable: string }
       /** `duo` only: the second colour. */
       second?: ColourInput
-      /** Grain size in pixels. */
-      size?: number
+      /** Grain size in pixels — or `[x, y]` for grain stretched one way. */
+      size?: number | [number, number]
       /** 0 to 1. */
       density?: number
         /** `multi` only. */
@@ -194,7 +242,7 @@ export type EffectSpec =
       visible?: boolean
     }
   /** A blurred grain over the layer. The number is the blur radius; `size` is the grain. */
-  | { texture: number; size?: number; clip?: boolean; visible?: boolean }
+  | { texture: number; size?: number | [number, number]; clip?: boolean; visible?: boolean }
   /** Frosted glass. The number is the blur radius. */
   | {
       glass: number
@@ -304,9 +352,86 @@ export interface LayoutProps {
   columns?: number
   /** GRID only: whether a row is added when the children outgrow the grid. */
   autoTracks?: 'NONE' | 'ROWS'
+  /** GRID only: a grid has two gaps of its own — between rows and between columns. `gap` is the
+   * flow layouts' one and a grid ignores it. */
+  rowGap?: number
+  columnGap?: number
+  /** GRID only: one entry per track — a number of pixels, `"1fr"` for a share of what is left
+   * (CSS `fr`), `"hug"` to fit the content. A count that disagrees with `rows` is refused. */
+  rowSizes?: GridTrack[]
+  columnSizes?: GridTrack[]
+  /** GRID only: `MANUAL` keeps each child in the cell its `gridCell` names; `ROW_AUTO_FLOW`
+   * pours the children into cells in reading order. */
+  positioning?: 'MANUAL' | 'ROW_AUTO_FLOW'
+  /** GRID only, and a move rather than a state: the tracks to lift and the index to drop them
+   * at, counted against the order BEFORE the move. Children travel with their tracks. */
+  moveRows?: TrackMove
+  moveColumns?: TrackMove
+}
+
+export interface RepeatSpec {
+  type?: 'LINEAR' | 'RADIAL'
+  count?: number
+  offset?: number
+  unit?: 'RELATIVE' | 'PIXELS'
+  axis?: 'HORIZONTAL' | 'VERTICAL'
+}
+
+/** Figma's repeat modifier, as `transformGroup` and `transformModifiers` take it. */
+export type RepeatModifierInput =
+  | { type: 'REPEAT'; repeatType: 'LINEAR'; count: number; unitType: 'RELATIVE' | 'PIXELS'; offset: number; axis: 'HORIZONTAL' | 'VERTICAL' }
+  | { type: 'REPEAT'; repeatType: 'RADIAL'; count: number; unitType: 'RELATIVE' | 'PIXELS'; offset: number }
+
+/**
+ * A repeat in the words a person uses, into the modifier Figma stores. Defaults are the ones
+ * `NODE_GROUP` always used: three copies, a linear repeat one child-width apart, a radial one
+ * with its copies at the centre's own distance.
+ */
+export function repeatModifier(raw: unknown): { modifier: RepeatModifierInput } | { problem: string } {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { problem: 'must be { type, count, offset, unit, axis }' }
+  const spec = raw as Record<string, unknown>
+  const known = ['type', 'count', 'offset', 'unit', 'axis']
+  const extra = Object.keys(spec).filter((key) => !known.includes(key))
+  if (extra.length > 0) return { problem: `takes ${known.join(', ')} — not ${extra.join(', ')}` }
+  const kind = String(spec.type ?? 'LINEAR').toUpperCase()
+  if (kind !== 'LINEAR' && kind !== 'RADIAL') return { problem: 'type must be LINEAR or RADIAL' }
+  const radial = kind === 'RADIAL'
+  const count = spec.count === undefined ? 3 : spec.count
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 2) return { problem: 'count must be a whole number of at least 2' }
+  const offset = spec.offset === undefined ? (radial ? 0 : 1) : spec.offset
+  if (typeof offset !== 'number' || !Number.isFinite(offset)) return { problem: 'offset must be a number — a distance, not an angle' }
+  const unit = String(spec.unit ?? 'RELATIVE').toUpperCase()
+  if (unit !== 'RELATIVE' && unit !== 'PIXELS') return { problem: 'unit must be RELATIVE or PIXELS' }
+  // A radial repeat goes round; an `axis` beside it is ignored, as it always was.
+  if (radial) return { modifier: { type: 'REPEAT', repeatType: 'RADIAL', count, unitType: unit, offset } }
+  const axis = String(spec.axis ?? 'HORIZONTAL').toUpperCase()
+  if (axis !== 'HORIZONTAL' && axis !== 'VERTICAL') return { problem: 'axis must be HORIZONTAL or VERTICAL' }
+  return { modifier: { type: 'REPEAT', repeatType: 'LINEAR', count, unitType: unit, offset, axis } }
+}
+
+/** The other way: a stored modifier in the words `repeat` takes, defaults left out. */
+export function repeatWords(modifier: Record<string, unknown>): RepeatSpec {
+  const radial = modifier.repeatType === 'RADIAL'
+  return {
+    type: radial ? 'RADIAL' : 'LINEAR',
+    count: modifier.count as number,
+    offset: Math.round((modifier.offset as number) * 1000) / 1000,
+    ...(modifier.unitType === 'PIXELS' ? { unit: 'PIXELS' as const } : {}),
+    ...(!radial && modifier.axis === 'VERTICAL' ? { axis: 'VERTICAL' as const } : {}),
+  }
+}
+
+/** A grid track: pixels, a fraction of the free space (`"2fr"`), or `"hug"`. */
+export type GridTrack = number | string
+
+export interface TrackMove {
+  from: number[]
+  to: number
 }
 
 export type SizingMode = 'FIXED' | 'HUG' | 'FILL'
+
+export type GridAlignWord = 'MIN' | 'CENTER' | 'MAX' | 'AUTO'
 
 export interface FontSpec {
   family: string
@@ -358,10 +483,28 @@ export interface NodeProps {
   /** A height the layout may not exceed; the content then scrolls or clips. */
   maxHeight?: number | null
 
+  /** TRANSFORM_GROUP only (Figma Draw's repeat): `{ type: LINEAR|RADIAL, count, offset, unit:
+   * RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }`, applied to every child — or a list, one per
+   * child. `offset` is a distance, also for a radial repeat, which spaces its copies by itself. */
+  repeat?: RepeatSpec | RepeatSpec[]
+
+  /** TEXT only: how the underline or strikethrough is drawn — `{ style: SOLID|WAVY|DOTTED, offset,
+   * thickness, color, skipInk }`. Offset and thickness take pixels, `"10%"` of the font size or
+   * `"AUTO"`; color takes a colour or `"AUTO"`. `textDecoration` still says whether there is one. */
+  decoration?: DecorationSpec
+
+  /** TEXT_PATH only: where on the outline the text starts — `[segment, position]`, the position
+   * 0 to 1 along that segment. The same pair `NODE_CREATE` takes as `at`. */
+  textStart?: [number, number]
+
   /** GRID only: how many tracks this child covers. */
   gridSpan?: { rows?: number; columns?: number }
-  /** GRID only: how the child sits in its cell. */
-  gridAlign?: 'MIN' | 'CENTER' | 'MAX' | 'AUTO'
+  /** GRID only: how the child sits in its cell — one word for the vertical axis, or
+   * `{ horizontal, vertical }` for both. */
+  gridAlign?: GridAlignWord | { horizontal?: GridAlignWord; vertical?: GridAlignWord }
+  /** GRID only: the cell the child's top-left corner sits in, counted from 0. Meaningful when the
+   * grid's `positioning` is `MANUAL`; an auto-flowing grid places its children itself. */
+  gridCell?: { row: number; column: number }
 
   /** Auto-layout: direction, spacing, padding, alignment and how each axis is sized. */
   layout?: LayoutProps
@@ -439,8 +582,10 @@ export interface NodeProps {
   /** How the stroke's width varies along its length — a named profile, or points of your own. */
   strokeProfile?: 'UNIFORM' | 'WEDGE' | 'TAPER' | 'QUARTER_TAPER' | 'EYE' | 'MIRRORED_TAPER' | Array<{ at: number; width: number }> | null
   /** Movement on a timeline: `[{ field: "opacity", from: 0, at: [{ time: 0, value: 0 }, …] }]`. A `time` of
-   * `"playhead"` is wherever the designer has the Motion timeline parked. */
-  keyframes?: KeyframeTrack[]
+   * `"playhead"` is wherever the designer has the Motion timeline parked. `field` is a property
+   * (`x`, `gap`…), a paint's colour (`fill`, `stroke[1]`) or an effect's setting (`effect.radius`,
+   * `effect[1].color`). `at: null` takes that track off; `[]` or `null` takes them all off. */
+  keyframes?: KeyframeTrack[] | null
   /** How long this node's timeline runs, in seconds. */
   timeline?: number
   /** INSTANCE only: what the designer changed INSIDE it — `[{ at: "<child id within the instance>", props }]`. */
@@ -449,7 +594,7 @@ export interface NodeProps {
   properties?: Record<string, string | boolean>
   /** INSTANCE only: the component to become — an id or a published key. */
   swap?: string
-  /** INSTANCE only: throw away every override first. */
+  /** INSTANCE: throw away every override first. SLOT: put back the content the component's slot ships with. */
   reset?: boolean
   /** Prototype links out of this node. An empty array removes the ones it has. */
   links?: FlowLink[]
@@ -484,6 +629,28 @@ export interface NodeProps {
   parent?: string
   /** Where among the parent's children it sits; 0 is first. */
   index?: number
+  /** FigJam SHAPE_WITH_TEXT: which shape — SQUARE, DIAMOND, ENG_DATABASE, SPEECH_BUBBLE… */
+  shapeType?: (typeof SHAPE_TYPES)[number]
+  /** FigJam CODE_BLOCK: the code itself. */
+  code?: string
+  /** FigJam CODE_BLOCK: which language it is highlighted as — TYPESCRIPT, PYTHON, SQL… */
+  codeLanguage?: string
+  /** FigJam STICKY: the wide rectangle rather than the square. */
+  wide?: boolean
+  /** FigJam STICKY: whether the author's name shows on it. */
+  authorVisible?: boolean
+  /** FigJam CONNECTOR: what it joins — `{ start, end, line, startCap, endCap }`; an end is a node id, `{ node, magnet }`, `{ node, at: [x, y] }` or a canvas point `[x, y]`. */
+  connector?: ConnectorSpec
+  /** FigJam TABLE: `{ rows, columns, cells, columnWidths, rowHeights }` — `null` in cells leaves one alone. */
+  table?: TableSpec
+  /** Slides SLIDE: left out of the presentation, still in the deck. */
+  skipped?: boolean
+  /** Slides SLIDE: how it arrives — a style word, or `{ style, duration, curve, after }`. */
+  transition?: TransitionSpec
+  /** FigJam: the node this one is stuck to (a sticky on a frame, a stamp on a sticky); `null` peels it off. */
+  stuckTo?: string | null
+  /** Buzz: what the asset is for — INSTA_STORY, YOUTUBE_THUMBNAIL, CUSTOM… */
+  assetType?: (typeof BUZZ_ASSET_TYPES)[number]
 }
 
 export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
@@ -504,14 +671,16 @@ export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
  * `x`, `gap`. The words here are ours, and the map to Figma's is one place, below.
  */
 export interface KeyframeTrack {
-  /** What moves: opacity, x, y, rotation, scale, width, height, cornerRadius, gap, padding… */
+  /** What moves: opacity, x, y, rotation, scale, width, height, cornerRadius, gap, padding… — or
+   * `fill`, `stroke[n]`, `effect[n].radius|x|y|spread|color|opacity|…` for a paint or an effect. */
   field: string
   /** The value before the first keyframe. Without it the node's own value stands. */
-  from?: number | { x: number; y: number }
-  /** The keyframes themselves, in seconds along the timeline. */
-  at: Array<{
+  from?: number | { x: number; y: number } | string
+  /** The keyframes themselves, in seconds along the timeline. `null` takes the track off. */
+  at: null | Array<{
     time: number
-    value: number | { x: number; y: number }
+    /** A number, `{ x, y }` for `move`/`scale`, or a colour for `fill`, `stroke` and `*.color`. */
+    value: number | { x: number; y: number } | string
     /** `EASE_OUT`, `GENTLE`, `LINEAR`… the same words a prototype link takes. */
     easing?: string
     /** A curve of your own: [x1, y1, x2, y2]. */
@@ -534,6 +703,23 @@ export interface TextRun {
   lineHeight?: number | 'AUTO' | `${number}%`
   /** A URL, or null to remove the link. */
   link?: string | null
+  /** A text style by name or id — a heading level inside a paragraph. Applied before the other
+   * fields, so anything else the run says overrides the style the way it does in the panel. */
+  textStyle?: string
+  /** A paint style by name or id for these characters. */
+  fillStyle?: string
+  /** These paragraphs as a bulleted (`UNORDERED`) or numbered (`ORDERED`) list, or not (`NONE`). */
+  list?: 'ORDERED' | 'UNORDERED' | 'NONE'
+  /** How deep in the list these paragraphs sit — 0 is the outermost level. */
+  indent?: number
+  /** Space between list items, in pixels. */
+  listSpacing?: number
+  /** Space after each of these paragraphs, in pixels. */
+  paragraphSpacing?: number
+  /** First-line indent of these paragraphs, in pixels. */
+  paragraphIndent?: number
+  /** How these characters' underline or strikethrough is drawn — the same object as on the node. */
+  decoration?: DecorationSpec
 }
 
 /**
@@ -628,8 +814,17 @@ export type PropStep =
   | { step: 'properties'; properties: Record<string, string | boolean> }
   | { step: 'overrides'; overrides: Array<{ at: string; steps: PropStep[] }> }
   | { step: 'strokeProfile'; profile: unknown }
-  | { step: 'keyframes'; tracks: Array<{ name: string; track: unknown }> }
+  | { step: 'keyframes'; tracks: Array<{ name: string; field: unknown; track: unknown | null }>; clear?: boolean }
   | { step: 'timeline'; seconds: number }
+  | { step: 'gridCell'; row: number; column: number }
+  | { step: 'textStart'; segment: number; position: number }
+  | { step: 'decoration'; values: DecorationValues }
+  | { step: 'connector'; values: ConnectorValues }
+  | { step: 'table'; table: TableSpec }
+  | { step: 'transition'; transition: SlideTransitionValue }
+  | { step: 'assetType'; assetType: string }
+  | { step: 'stuckTo'; target: string | null }
+  | { step: 'repeat'; modifiers: RepeatModifierInput | RepeatModifierInput[] }
   | { step: 'links'; links: PlannedLink[]; destinations: string[] }
   | { step: 'data'; data: Record<string, string | null> }
 
@@ -735,7 +930,49 @@ const LAYOUT_KEYS = [
   'rows',
   'columns',
   'autoTracks',
+  'rowGap',
+  'columnGap',
+  'rowSizes',
+  'columnSizes',
+  'positioning',
+  'moveRows',
+  'moveColumns',
 ]
+
+/**
+ * `"1fr"`, `"hug"` or a pixel count, into what Figma stores. Null when it is none of those.
+ *
+ * The object form `{ type, value }` is taken too, because that is the API's own spelling and a
+ * caller who copied it out of the docs should not be told it is wrong.
+ */
+export function parseGridTrack(raw: unknown): { type: 'FIXED' | 'FLEX' | 'HUG'; value?: number } | null {
+  if (typeof raw === 'number') return Number.isFinite(raw) && raw >= 0 ? { type: 'FIXED', value: raw } : null
+  if (typeof raw === 'string') {
+    const text = raw.trim().toLowerCase()
+    if (text === 'hug' || text === 'auto') return { type: 'HUG' }
+    const fr = /^(\d+(?:\.\d+)?)fr$/.exec(text)
+    if (fr) return Number(fr[1]) > 0 ? { type: 'FLEX', value: Number(fr[1]) } : null
+    const px = /^(\d+(?:\.\d+)?)(px)?$/.exec(text)
+    if (px) return { type: 'FIXED', value: Number(px[1]) }
+    return null
+  }
+  if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+    const { type, value } = raw as { type?: unknown; value?: unknown }
+    if (type === 'HUG') return { type: 'HUG' }
+    if ((type === 'FIXED' || type === 'FLEX') && (value === undefined || typeof value === 'number')) {
+      if (type === 'FIXED' && typeof value !== 'number') return null
+      return value === undefined ? { type } : { type, value }
+    }
+  }
+  return null
+}
+
+/** The other way: what a read prints for a track, in the words `parseGridTrack` takes back. */
+export function formatGridTrack(track: { type: string; value?: number }): GridTrack {
+  if (track.type === 'HUG') return 'hug'
+  if (track.type === 'FLEX') return `${track.value ?? 1}fr`
+  return Math.round((track.value ?? 0) * 100) / 100
+}
 const PRIMARY_AXIS = ['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN', 'SPACE_AROUND', 'SPACE_EVENLY']
 const COUNTER_AXIS = ['MIN', 'CENTER', 'MAX', 'BASELINE']
 const SIZING = ['FIXED', 'HUG', 'FILL']
@@ -807,6 +1044,23 @@ const ORDER = [
   'maxHeight',
   'gridSpan',
   'gridAlign',
+  'gridCell',
+  'textStart',
+  'repeat',
+  'decoration',
+  // The kind of shape before its size and its text: a new shape type brings its own proportions.
+  'shapeType',
+  'wide',
+  'authorVisible',
+  'codeLanguage',
+  'code',
+  'connector',
+  'table',
+  'skipped',
+  'transition',
+  'stuckTo',
+  // Before the size: an asset type is a format, and a format comes with dimensions.
+  'assetType',
   'x',
   'y',
   'rotation',
@@ -916,6 +1170,11 @@ const FIGMA_NAMES: Record<string, string> = {
   reactions: 'links',
   boundVariables: 'bind',
   parentId: 'parent',
+  isWideWidth: 'wide',
+  isSkippedSlide: 'skipped',
+  connectorStart: 'connector.start',
+  connectorEnd: 'connector.end',
+  connectorLineType: 'connector.line',
 }
 
 /** What to tell a caller about a key we do not know: the one it meant, or what there is. */
@@ -944,6 +1203,7 @@ const PLACED = [
   'gridRowSpan',
   'gridColumnSpan',
   'gridChildVerticalAlign',
+  'gridChildHorizontalAlign',
 ]
 
 /**
@@ -979,6 +1239,8 @@ export function dependsOnPlacement(step: PropStep): boolean {
   // where `figma.create*` leaves it, the step answered "only a top-level frame has one" about a
   // node that was about to be inside exactly that.
   if (step.step === 'timeline') return true
+  // A cell is a place in the parent's grid; a detached node has no grid to be placed in.
+  if (step.step === 'gridCell') return true
   return step.step === 'assign' && PLACED.includes(step.property)
 }
 
@@ -1017,6 +1279,7 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
     return value
   }
 
+  let labelLast: PropStep | null = null
   for (const key of ORDER) {
     if (!(key in props)) continue
     switch (key) {
@@ -1107,8 +1370,139 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
       case 'gridAlign': {
         const allowed = ['MIN', 'CENTER', 'MAX', 'AUTO']
         const value = props.gridAlign
-        if (typeof value !== 'string' || !allowed.includes(value)) fail(`gridAlign must be one of: ${allowed.join(', ')}`)
-        else steps.push({ step: 'assign', property: 'gridChildVerticalAlign', value })
+        // One word is the vertical axis, as it always was; the object names either axis.
+        if (typeof value === 'string') {
+          if (!allowed.includes(value)) fail(`gridAlign must be one of: ${allowed.join(', ')}`)
+          else steps.push({ step: 'assign', property: 'gridChildVerticalAlign', value })
+          break
+        }
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+          fail(`gridAlign must be one of ${allowed.join(', ')} or { horizontal, vertical }`)
+          break
+        }
+        const axes = value as Record<string, unknown>
+        const unknown = Object.keys(axes).filter((axis) => axis !== 'horizontal' && axis !== 'vertical')
+        if (unknown.length > 0) {
+          fail(`gridAlign takes horizontal and vertical — not ${unknown.join(', ')}`)
+          break
+        }
+        for (const axis of ['horizontal', 'vertical'] as const) {
+          const word = axes[axis]
+          if (word === undefined) continue
+          if (typeof word !== 'string' || !allowed.includes(word)) fail(`gridAlign.${axis} must be one of: ${allowed.join(', ')}`)
+          else {
+            const property = axis === 'horizontal' ? 'gridChildHorizontalAlign' : 'gridChildVerticalAlign'
+            steps.push({ step: 'assign', property, value: word })
+          }
+        }
+        break
+      }
+      case 'repeat': {
+        const asked = props.repeat
+        const list = Array.isArray(asked) ? asked : [asked]
+        if (list.length === 0) {
+          fail('repeat must be { type, count, offset, unit, axis } or a list of them')
+          break
+        }
+        const modifiers: RepeatModifierInput[] = []
+        for (const [index, one] of list.entries()) {
+          const read = repeatModifier(one)
+          if ('problem' in read) fail(`repeat${Array.isArray(asked) ? `[${index}]` : ''} ${read.problem}`)
+          else modifiers.push(read.modifier)
+        }
+        if (modifiers.length === list.length) steps.push({ step: 'repeat', modifiers: Array.isArray(asked) ? modifiers : modifiers[0] })
+        break
+      }
+      case 'decoration': {
+        const planned = planDecoration(props.decoration)
+        if ('problem' in planned) fail(`decoration ${planned.problem}`)
+        else steps.push({ step: 'decoration', values: planned.values })
+        break
+      }
+      case 'shapeType': {
+        const value = String(props.shapeType).toUpperCase()
+        if (!(SHAPE_TYPES as readonly string[]).includes(value)) fail(`shapeType must be one of: ${SHAPE_TYPES.join(', ')}`)
+        else steps.push({ step: 'assign', property: 'shapeType', value })
+        break
+      }
+      case 'codeLanguage': {
+        const value = String(props.codeLanguage).toUpperCase()
+        if (!/^[A-Z_+#]+$/.test(value)) fail(`codeLanguage must be a language word: ${CODE_LANGUAGES.join(', ')}`)
+        else steps.push({ step: 'assign', property: 'codeLanguage', value })
+        break
+      }
+      case 'code': {
+        if (typeof props.code !== 'string') fail('code must be a string')
+        else steps.push({ step: 'assign', property: 'code', value: props.code })
+        break
+      }
+      case 'wide':
+      case 'authorVisible':
+      case 'skipped': {
+        if (typeof props[key] !== 'boolean') fail(`${key} must be true or false`)
+        else {
+          const property = key === 'wide' ? 'isWideWidth' : key === 'skipped' ? 'isSkippedSlide' : key
+          steps.push({ step: 'assign', property, value: props[key] as boolean })
+        }
+        break
+      }
+      case 'connector': {
+        const planned = planConnector(props.connector)
+        if ('problem' in planned) fail(`connector ${planned.problem}`)
+        else {
+          // The label's background goes last: writing the connector's words resets it, so set
+          // beside the ends it was applied, reported, and gone (measured live).
+          const { labelFills, ...ends } = planned.values
+          if (Object.keys(ends).length > 0) steps.push({ step: 'connector', values: ends })
+          if (labelFills) labelLast = { step: 'connector', values: { labelFills } }
+        }
+        break
+      }
+      case 'table': {
+        const planned = planTable(props.table)
+        if ('problem' in planned) fail(`table ${planned.problem}`)
+        else steps.push({ step: 'table', table: planned.value })
+        break
+      }
+      case 'transition': {
+        const planned = planTransition(props.transition)
+        if ('problem' in planned) fail(`transition ${planned.problem}`)
+        else steps.push({ step: 'transition', transition: planned.value })
+        break
+      }
+      case 'stuckTo': {
+        const target = props.stuckTo
+        if (target !== null && (typeof target !== 'string' || target === '')) fail('stuckTo must be a node id, or null to peel it off')
+        else steps.push({ step: 'stuckTo', target })
+        break
+      }
+      case 'assetType': {
+        const value = String(props.assetType).toUpperCase()
+        if (!(BUZZ_ASSET_TYPES as readonly string[]).includes(value)) fail(`assetType must be one of: ${BUZZ_ASSET_TYPES.join(', ')}`)
+        else steps.push({ step: 'assetType', assetType: value })
+        break
+      }
+      case 'textStart': {
+        const at = props.textStart
+        if (
+          !Array.isArray(at) ||
+          at.length !== 2 ||
+          !Number.isInteger(at[0]) ||
+          (at[0] as number) < 0 ||
+          typeof at[1] !== 'number' ||
+          at[1] < 0 ||
+          at[1] > 1
+        ) {
+          fail('textStart must be [segment, position] — a segment index and a position from 0 to 1 along it')
+        } else steps.push({ step: 'textStart', segment: at[0] as number, position: at[1] })
+        break
+      }
+      case 'gridCell': {
+        const cell = props.gridCell as { row?: unknown; column?: unknown } | null
+        const index = (n: unknown) => typeof n === 'number' && Number.isInteger(n) && n >= 0
+        if (typeof cell !== 'object' || cell === null || !index(cell.row) || !index(cell.column)) {
+          fail('gridCell must be { row, column }, each a whole number counted from 0')
+        } else steps.push({ step: 'gridCell', row: cell.row as number, column: cell.column as number })
         break
       }
       case 'strokeWeight': {
@@ -1545,6 +1939,7 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
     if (fit.horizontal || fit.vertical) steps.push(fit)
   }
 
+  if (labelLast) steps.push(labelLast)
   return { steps, problems }
 }
 
@@ -2186,7 +2581,17 @@ const RUN_KEYS = [
   'letterSpacing',
   'lineHeight',
   'link',
+  'textStyle',
+  'fillStyle',
+  'list',
+  'indent',
+  'listSpacing',
+  'paragraphSpacing',
+  'paragraphIndent',
+  'decoration',
 ]
+
+const LIST_TYPES = ['ORDERED', 'UNORDERED', 'NONE']
 
 /** Validates the shape of each run; which characters it covers is decided against the text
  * itself, at apply time, by {@link resolveRanges}. */
@@ -2273,6 +2678,21 @@ function planRuns(raw: unknown, where: string, problems: string[]): PropStep | n
       `textWrap must be one of: ${BLEND_FREE_ENUMS.textWrap.join(', ')}`
     )
     check('link', typeof run.link === 'string' || run.link === null, 'link must be a URL, or null to remove one')
+    for (const key of ['textStyle', 'fillStyle'] as const) {
+      check(key, typeof run[key] === 'string' && (run[key] as string).trim() !== '', `${key} must be a style name or id`)
+    }
+    check('list', typeof run.list === 'string' && LIST_TYPES.includes(run.list), `list must be one of: ${LIST_TYPES.join(', ')}`)
+    if (run.decoration !== undefined) {
+      const planned = planDecoration(run.decoration)
+      if ('problem' in planned) {
+        fail(`decoration ${planned.problem}`)
+        bad = true
+      }
+    }
+    check('indent', typeof run.indent === 'number' && Number.isInteger(run.indent) && run.indent >= 0, 'indent must be a whole number >= 0')
+    for (const key of ['listSpacing', 'paragraphSpacing', 'paragraphIndent'] as const) {
+      check(key, typeof run[key] === 'number' && Number.isFinite(run[key]) && (run[key] as number) >= 0, `${key} must be a number of pixels >= 0`)
+    }
     if (run.fill !== undefined) {
       const problem = paintProblem(normalisePaint(run.fill))
       if (problem) {
@@ -2458,12 +2878,17 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
       if (!colour) continue
       const second = noiseType === 'DUOTONE' ? colourOf(spec.second, '#FFFFFF', `${at}.second`, problems) : null
       if (noiseType === 'DUOTONE' && !second) continue
+      const grain = grainSize(spec.size)
+      if (!grain) {
+        fail('size must be a number of pixels, or [x, y] for grain stretched one way')
+        continue
+      }
       effects.push({
         type: 'NOISE',
         noiseType,
         color: colour,
         ...(second ? { secondaryColor: second } : {}),
-        noiseSize: typeof spec.size === 'number' ? spec.size : 1,
+        ...grain,
         density: typeof spec.density === 'number' ? spec.density : 0.5,
         ...(noiseType === 'MULTITONE' ? { opacity: typeof spec.opacity === 'number' ? spec.opacity : 1 } : {}),
         visible: spec.visible !== false,
@@ -2473,10 +2898,15 @@ function planEffects(raw: unknown, where: string, problems: string[]): PropStep 
     }
 
     if (typeof spec.texture === 'number') {
+      const grain = grainSize(spec.size)
+      if (!grain) {
+        fail('size must be a number of pixels, or [x, y] for grain stretched one way')
+        continue
+      }
       effects.push({
         type: 'TEXTURE',
         radius: spec.texture,
-        noiseSize: typeof spec.size === 'number' ? spec.size : 1,
+        ...grain,
         clipToShape: spec.clip !== false,
         visible: spec.visible !== false,
       } as unknown as Effect)
@@ -2613,34 +3043,57 @@ const KEYFRAME_FIELDS: Readonly<Record<string, string>> = {
 const VECTOR_FIELDS = ['TRANSLATION_XY', 'SCALE_XY']
 
 function planKeyframes(raw: unknown, where: string, problems: string[]): PropStep | null {
+  // `null` and `[]` take every manual track off, the way they do for links and effects.
+  if (raw === null || (Array.isArray(raw) && raw.length === 0)) return { step: 'keyframes', tracks: [], clear: true }
   if (!Array.isArray(raw)) {
     problems.push(`${where} must be an array of { field, at } tracks`)
     return null
   }
 
-  const tracks: Array<{ name: string; track: unknown }> = []
+  const tracks: Array<{ name: string; field: unknown; track: unknown | null }> = []
   for (const [index, entry] of raw.entries()) {
     const at = `${where}[${index}]`
     const one = entry as { field?: unknown; from?: unknown; at?: unknown }
-    const field = typeof one?.field === 'string' ? KEYFRAME_FIELDS[one.field.trim()] : undefined
-    if (!field) {
-      problems.push(`${at}.field must be one of: ${Object.keys(KEYFRAME_FIELDS).join(', ')}`)
+    const word = typeof one?.field === 'string' ? one.field.trim() : ''
+    const property = KEYFRAME_FIELDS[word]
+    const indexed = property ? null : parseIndexedField(word)
+    if (!property && !indexed) {
+      problems.push(
+        `${at}.field must be one of: ${Object.keys(KEYFRAME_FIELDS).join(', ')} — or fill, stroke[n], ` +
+          `effect[n].<${EFFECT_KEYFRAME_WORDS.join('|')}>`
+      )
+      continue
+    }
+    const name = property ?? word
+    const field = property ? { type: 'PROPERTY', name: property } : indexed!.field
+    // `at: null` is the track coming off — the one thing a write could not say until now, so a
+    // track once added stayed until someone opened the timeline by hand.
+    if (one.at === null) {
+      tracks.push({ name, field, track: null })
       continue
     }
     if (!Array.isArray(one.at) || one.at.length === 0) {
-      problems.push(`${at}.at must be a non-empty array of { time, value }`)
+      problems.push(`${at}.at must be a non-empty array of { time, value } — or null to take the track off`)
       continue
     }
 
-    const wantsVector = VECTOR_FIELDS.includes(field)
+    const kind = property ? (VECTOR_FIELDS.includes(property) ? 'VECTOR' : 'FLOAT') : indexed!.value
     const valueOf = (value: unknown, at: string): unknown | null => {
-      if (wantsVector) {
+      if (kind === 'VECTOR') {
         const pair = value as { x?: unknown; y?: unknown }
         if (typeof pair?.x !== 'number' || typeof pair?.y !== 'number') {
-          problems.push(`${at} must be { x, y } — ${field} moves in two directions at once`)
+          problems.push(`${at} must be { x, y } — ${name} moves in two directions at once`)
           return null
         }
         return { type: 'VECTOR', value: { x: pair.x, y: pair.y } }
+      }
+      if (kind === 'COLOR') {
+        const colour = keyframeColour(value, colourFrom)
+        if (!colour) {
+          problems.push(`${at} must be a colour — "#RRGGBB", "#RRGGBB @0.5" or a CSS colour`)
+          return null
+        }
+        return { type: 'COLOR', value: colour }
       }
       if (typeof value !== 'number' || !Number.isFinite(value)) {
         problems.push(`${at} must be a number`)
@@ -2681,10 +3134,7 @@ function planKeyframes(raw: unknown, where: string, problems: string[]): PropSte
     if (keyframes.length === 0) continue
 
     const base = one.from === undefined ? null : valueOf(one.from, `${at}.from`)
-    tracks.push({
-      name: field,
-      track: { keyframes, ...(base ? { baseValue: base } : {}) },
-    })
+    tracks.push({ name, field, track: { keyframes, ...(base ? { baseValue: base } : {}) } })
   }
 
   return tracks.length > 0 ? { step: 'keyframes', tracks } : null
@@ -3079,6 +3529,38 @@ const GRID_ALIGN = ['MIN', 'MAX', 'CENTER', 'STRETCH']
  * where "24 in from each side" is an alignment of STRETCH and an offset. So `margin` sets that,
  * and naming a `width` instead pins the columns and lets the margins fall where they will.
  */
+/**
+ * Layout grids in the shape `grid` takes — what a read hands back. They used to read as one line,
+ * `"1 column(s) stretch gutter 168 margin 168"`, which the write refuses: every Slides slide carries
+ * two such grids, so no slide could be copied from its reading. Only what differs from the write's
+ * own defaults is said.
+ */
+export function gridSpecsOf(value: unknown): GridSpec[] {
+  if (!Array.isArray(value)) return []
+  const round = (n: number) => Math.round(n * 1000) / 1000
+  const hex = (c: RGB) =>
+    `#${[c.r, c.g, c.b].map((n) => Math.round(n * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`
+  const tint = (grid: { color?: RGBA; visible?: boolean }) => ({
+    ...(grid.color ? { color: hex(grid.color) } : {}),
+    ...(grid.color && round(grid.color.a) !== 0.1 ? { opacity: round(grid.color.a) } : {}),
+    ...(grid.visible === false ? { visible: false } : {}),
+  })
+  return (value as LayoutGrid[]).map((grid): GridSpec => {
+    if (grid.pattern === 'GRID') return { square: grid.sectionSize, ...tint(grid) }
+    const lines = grid as RowsColsLayoutGrid
+    const vertical = lines.pattern === 'COLUMNS'
+    // A section size only means something when the sections do not stretch.
+    const size = lines.alignment !== 'STRETCH' && typeof lines.sectionSize === 'number' ? lines.sectionSize : undefined
+    const defaultAlign = size === undefined ? 'STRETCH' : 'MIN'
+    const out: Record<string, unknown> = vertical ? { columns: lines.count } : { rows: lines.count }
+    if (lines.gutterSize) out.gutter = round(lines.gutterSize)
+    if (lines.offset && lines.alignment !== 'CENTER') out.margin = round(lines.offset)
+    if (size !== undefined) out[vertical ? 'width' : 'height'] = round(size)
+    if (lines.alignment !== defaultAlign) out.align = lines.alignment
+    return { ...out, ...tint(lines) } as GridSpec
+  })
+}
+
 function planGrids(raw: unknown, where: string, problems: string[]): PropStep | null {
   if (!Array.isArray(raw)) {
     problems.push(`${where} must be an array of grids — [] removes them`)
@@ -3255,6 +3737,48 @@ function planLayout(raw: unknown, where: string, problems: string[]): { step: Pr
     if (value.autoTracks !== 'NONE' && value.autoTracks !== 'ROWS') fail('autoTracks must be NONE or ROWS')
     else layout.autoTracks = value.autoTracks
   }
+  for (const gap of ['rowGap', 'columnGap'] as const) {
+    if (value[gap] === undefined) continue
+    const amount = value[gap]
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) fail(`${gap} must be a number >= 0`)
+    else layout[gap] = amount
+  }
+  for (const [key, axis] of [['rowSizes', 'rows'], ['columnSizes', 'columns']] as const) {
+    if (value[key] === undefined) continue
+    const list = value[key]
+    if (!Array.isArray(list) || list.length === 0) {
+      fail(`${key} must be a non-empty list of tracks — pixels, "1fr" or "hug"`)
+      continue
+    }
+    const bad = list.findIndex((one) => parseGridTrack(one) === null)
+    if (bad !== -1) {
+      fail(`${key}[${bad}] must be a number of pixels, "<n>fr" or "hug" — got ${JSON.stringify(list[bad])}`)
+      continue
+    }
+    // Figma sizes the tracks that exist; a list longer or shorter than the count was either a
+    // typo or a count the caller meant to change, and guessing which is how a grid loses a row.
+    const count = layout[axis]
+    if (count !== undefined && count !== list.length) {
+      fail(`${key} has ${list.length} track(s) but ${axis} is ${count}`)
+      continue
+    }
+    layout[key] = list as GridTrack[]
+  }
+  if (value.positioning !== undefined) {
+    if (value.positioning !== 'MANUAL' && value.positioning !== 'ROW_AUTO_FLOW') {
+      fail('positioning must be MANUAL or ROW_AUTO_FLOW')
+    } else layout.positioning = value.positioning
+  }
+  for (const key of ['moveRows', 'moveColumns'] as const) {
+    if (value[key] === undefined) continue
+    const move = value[key] as { from?: unknown; to?: unknown } | null
+    const from = move && typeof move === 'object' ? move.from : undefined
+    const to = move && typeof move === 'object' ? move.to : undefined
+    const index = (n: unknown) => typeof n === 'number' && Number.isInteger(n) && n >= 0
+    if (!Array.isArray(from) || from.length === 0 || !from.every(index) || !index(to)) {
+      fail(`${key} must be { from: [track indices], to: insertion index }`)
+    } else layout[key] = { from: from as number[], to: to as number }
+  }
   if (value.sizing !== undefined) {
     if (typeof value.sizing !== 'object' || value.sizing === null) fail('sizing must be { horizontal, vertical }')
     else {
@@ -3277,6 +3801,24 @@ function planLayout(raw: unknown, where: string, problems: string[]): { step: Pr
   const saysMore = Object.keys(layout).some((key) => key !== 'sizing')
   const { sizing: _sizing, ...rest } = layout
   return { step: saysMore ? { step: 'layout', layout: rest } : null, layout }
+}
+
+/**
+ * A grain size: one number for both axes, or `[x, y]` for grain stretched one way (plugin API
+ * 1.127). Figma insists `noiseSize` equal the vector's x, so both are written from the same pair.
+ */
+export function grainSize(raw: unknown): { noiseSize: number; noiseSizeVector?: { x: number; y: number } } | null {
+  if (raw === undefined) return { noiseSize: 1 }
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return { noiseSize: raw }
+  if (
+    Array.isArray(raw) &&
+    raw.length === 2 &&
+    raw.every((one) => typeof one === 'number' && Number.isFinite(one) && one > 0)
+  ) {
+    const [x, y] = raw as [number, number]
+    return x === y ? { noiseSize: x } : { noiseSize: x, noiseSizeVector: { x, y } }
+  }
+  return null
 }
 
 const HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
@@ -3526,6 +4068,39 @@ export function gradientTransform(
   ]
 }
 
+/**
+ * The two handles back out of a stored matrix — `gradientTransform` run in reverse.
+ *
+ * The matrix maps the layer into the gradient's unit space, so each handle is the layer point the
+ * matrix sends to a known place: a linear gradient's start goes to (0, 0) and its end to (1, 0);
+ * a centred one's centre goes to (0.5, 0.5) and its edge to (1, 0.5). Solving the 2×2 for those
+ * two points gives the handles for ANY invertible matrix, including one a designer dragged by
+ * hand. `skewed` says the matrix was not a rotation-and-scale — an elliptical radial, a sheared
+ * linear — which two handles cannot describe, so a copy built from them will differ and should.
+ */
+export function gradientEnds(
+  transform: readonly (readonly number[])[],
+  kind: string = 'LINEAR'
+): { from: [number, number]; to: [number, number]; skewed: boolean } | null {
+  const [[a, b, tx], [c, d, ty]] = transform
+  const det = a * d - b * c
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-9) return null
+  const centred = normaliseEnum(kind) !== 'LINEAR'
+  const solve = (gx: number, gy: number): [number, number] => {
+    const rx = gx - tx
+    const ry = gy - ty
+    const x = (d * rx - b * ry) / det
+    const y = (-c * rx + a * ry) / det
+    const tidy = (n: number) => Math.round(n * 10000) / 10000 + 0
+    return [tidy(x), tidy(y)]
+  }
+  const from = centred ? solve(0.5, 0.5) : solve(0, 0)
+  const to = centred ? solve(1, 0.5) : solve(1, 0)
+  const scale = Math.hypot(a, b) || 1
+  const skewed = Math.abs(c + b) / scale > 1e-3 || Math.abs(d - a) / scale > 1e-3
+  return { from, to, skewed }
+}
+
 /** Null when the reference is usable, else why not. A list is a stack of layers, checked one by one. */
 /**
  * The shorthand a READ prints, turned into the shape a write takes.
@@ -3586,6 +4161,7 @@ export function paintProblem(ref: unknown): string | null {
     opacity?: unknown
     variable?: unknown
     image?: unknown
+    video?: unknown
     scaleMode?: unknown
     gradient?: unknown
     shader?: unknown
@@ -3593,7 +4169,15 @@ export function paintProblem(ref: unknown): string | null {
   if (entry.shader !== undefined) return shaderProblem(ref as Record<string, unknown>)
   if (entry.gradient !== undefined) return gradientProblem(ref as Record<string, unknown>)
   if (entry.image !== undefined) return imageProblem(entry)
-  if (typeof entry.variable === 'string') return entry.variable === '' ? 'variable must be a name, id or library key' : null
+  if (entry.video !== undefined) return videoProblem(entry)
+  if ((entry as { pattern?: unknown }).pattern !== undefined) return patternProblem(ref as Record<string, unknown>)
+  if (typeof entry.variable === 'string') {
+    if (entry.variable === '') return 'variable must be a name, id or library key'
+    if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
+      return 'opacity must be between 0 and 1'
+    }
+    return null
+  }
   if (entry.color !== undefined) {
     if (!isColourInput(entry.color)) return `${JSON.stringify(entry.color)} is not a ${COLOUR_WORDS}`
     if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
@@ -3670,6 +4254,51 @@ function gradientProblem(entry: Record<string, unknown>): string | null {
   }
   if ((entry.from === undefined) !== (entry.to === undefined)) return 'from and to travel together'
   if (entry.angle !== undefined && entry.from !== undefined) return 'name either an angle or from/to, not both'
+  if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
+    return 'opacity must be between 0 and 1'
+  }
+  return null
+}
+
+function patternProblem(entry: Record<string, unknown>): string | null {
+  const known = ['pattern', 'tile', 'scale', 'spacing', 'align', 'opacity']
+  const extra = Object.keys(entry).filter((key) => !known.includes(key))
+  if (extra.length > 0) return `a pattern takes ${known.join(', ')} — not ${extra.join(', ')}`
+  if (typeof entry.pattern !== 'string' || entry.pattern.trim() === '') return 'pattern must be the id of the node to tile'
+  if (entry.tile !== undefined && (typeof entry.tile !== 'string' || !PATTERN_TILES.includes(entry.tile))) {
+    return `tile must be one of: ${PATTERN_TILES.join(', ')}`
+  }
+  if (entry.scale !== undefined && (typeof entry.scale !== 'number' || !(entry.scale > 0))) return 'scale must be a number above 0'
+  if (
+    entry.spacing !== undefined &&
+    !(Array.isArray(entry.spacing) && entry.spacing.length === 2 && entry.spacing.every((n) => typeof n === 'number' && Number.isFinite(n)))
+  ) {
+    return 'spacing must be [x, y]'
+  }
+  if (entry.align !== undefined && (typeof entry.align !== 'string' || !PATTERN_ALIGN.includes(entry.align))) {
+    return `align must be one of: ${PATTERN_ALIGN.join(', ')}`
+  }
+  if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
+    return 'opacity must be between 0 and 1'
+  }
+  return null
+}
+
+function videoProblem(entry: { video?: unknown; scaleMode?: unknown; opacity?: unknown }): string | null {
+  const video = entry.video
+  if (typeof video !== 'object' || video === null || Array.isArray(video)) {
+    return 'video must be { hash } or { bytes } — bytes being base64 MP4, MOV or WebM'
+  }
+  const source = video as { hash?: unknown; bytes?: unknown; url?: unknown }
+  if (source.url !== undefined) return 'video cannot come from a url — Figma takes the bytes only; send { bytes } as base64'
+  const named = ['hash', 'bytes'].filter((key) => source[key as 'hash'] !== undefined)
+  if (named.length !== 1) return named.length === 0 ? 'video must name hash or bytes' : 'video names hash and bytes — pick one'
+  if (typeof source[named[0] as 'hash'] !== 'string' || source[named[0] as 'hash'] === '') {
+    return `video.${named[0]} must be a non-empty string`
+  }
+  if (entry.scaleMode !== undefined && (typeof entry.scaleMode !== 'string' || !SCALE_MODES.includes(entry.scaleMode))) {
+    return `scaleMode must be one of: ${SCALE_MODES.join(', ')}`
+  }
   if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
     return 'opacity must be between 0 and 1'
   }

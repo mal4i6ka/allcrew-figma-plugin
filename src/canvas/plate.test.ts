@@ -28,6 +28,8 @@ interface FakeNode {
   visible: boolean
   x: number
   y: number
+  width: number
+  height: number
   removed: boolean
   children: FakeNode[]
   parent: FakeNode | null
@@ -55,6 +57,8 @@ function makeNode(id: string, name: string, type: string): FakeNode {
     visible: true,
     x: 0,
     y: 0,
+    width: 10,
+    height: 10,
     removed: false,
     children: [],
     parent: null,
@@ -173,6 +177,21 @@ test('exportPlate exports a clone with every descendant hidden, restores its pos
   assert.equal(clone.removed, true)
 
   assert.equal(commits, 1)
+})
+
+test('exportPlate downscales an oversized raster before exportAsync', async () => {
+  const { card, calls } = makeTree()
+  card.width = 1000
+  card.height = 1000
+  setFigma({ commitUndo: () => {} })
+
+  await exportPlate(card as unknown as SceneNode, {
+    format: 'PNG',
+    constraint: { type: 'SCALE', value: 2 },
+    maxPixels: 1_000_000,
+  })
+
+  assert.deepEqual(calls[0].settings.constraint, { type: 'SCALE', value: 1 })
 })
 
 test('exportPlate deletes the clone even when exportAsync throws', async () => {

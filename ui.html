@@ -5568,10 +5568,29 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
       function agentHandleRequests(requests) {
         for (var i = 0; i < requests.length; i++) {
+          // budgetMs: how long the bridge will still wait, as it handed this over. The sandbox
+          // answers inside it instead of working on for a caller that has already given up.
           parent.postMessage({ pluginMessage: {
-            type: 'AGENT_REQUEST', id: requests[i].id, op: requests[i].op, params: requests[i].params
+            type: 'AGENT_REQUEST', id: requests[i].id, op: requests[i].op, params: requests[i].params,
+            budgetMs: requests[i].budgetMs
           } }, '*')
         }
+      }
+
+      // The bridge stopped waiting for these (its timeout, or its caller went away). Without
+      // this the sandbox would finish every abandoned call for nobody, and an agent's retry
+      // would start a second copy of a slow sweep next to the first.
+      function agentHandleCancels(cancels) {
+        if (!cancels || !cancels.length) return
+        var ids = []
+        var reason = 'the bridge stopped waiting'
+        for (var i = 0; i < cancels.length; i++) {
+          if (cancels[i] && typeof cancels[i].id === 'string') {
+            ids.push(cancels[i].id)
+            if (typeof cancels[i].reason === 'string') reason = cancels[i].reason
+          }
+        }
+        if (ids.length) parent.postMessage({ pluginMessage: { type: 'AGENT_CANCEL', ids: ids, reason: reason } }, '*')
       }
 
       function agentScheduleSocket(generation) {
@@ -5606,6 +5625,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           try {
             var message = JSON.parse(event.data)
             if (message && message.type === 'requests') agentHandleRequests(message.requests || [])
+            else if (message && message.type === 'cancel') agentHandleCancels(message.cancels || [])
           } catch (error) {
             socket.close(1007, 'invalid bridge message')
           }
@@ -5761,6 +5781,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           .then(function (data) {
             if (generation !== AGENT.generation) return
             if (data === null) { if (AGENT.hello) agentHandshake(AGENT.hello); return }
+            agentHandleCancels(data.cancels || [])
             agentHandleRequests(data.requests || [])
             agentPoll(generation)
           })
@@ -6123,6 +6144,33 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           'whose catalog value and rendered value disagree is a file that has not taken the',
           'update — say so and point at Assets → Libraries, rather than re-publishing.',
           '',
+          '## Mass reads finish: follow the cursor',
+          '',
+          'Every op that walks a page or the whole document is a sweep. A call works until its',
+          'time is nearly up, then answers `complete: false` with a `cursor`; the same call with',
+          'that `cursor` resumes exactly where it stopped — nothing visited twice, nothing',
+          'skipped — and pages are loaded one at a time as the sweep reaches them. Loop until',
+          '`complete: true`:',
+          '',
+          '- Listing ops (`node.find`, `components.list`, `lint.colors`, `text.inventory`,',
+          '  `image.fills`) return up to `limit` rows per call; keep what each call returns.',
+          '- Counting ops (`variables.usage`, `variables.external`, `instances.external`,',
+          '  `component.instances`, `component.orphans`, `flow.map`) answer progress only until',
+          '  the call that completes, which carries the whole result.',
+          '- Keep every other param identical; only `cursor` and `budgetMs` may change. A cursor',
+          '  lives in the plugin window: after a reopen, or 15 minutes unused, start over.',
+          '',
+          'Exports page with `offset`/`nextOffset` (`NODE_EXPORT`, `export.run`, `assets.export`,',
+          '`image.fills`): a reply stops before it would outgrow the 3 MiB channel, and a render',
+          'too big for the sandbox is refused — or a screenshot downscaled, saying so — before',
+          'it is made.',
+          '',
+          'The plugin runs one call at a time per file and answers before the bridge stops',
+          'waiting; a call the bridge gives up on is cancelled inside the plugin. Never fire',
+          'parallel copies of a slow call or retry it in a loop — they only queue behind each',
+          'other. A `timeout` saying the plugin stopped the op itself means the plugin is',
+          'healthy: narrow the call or continue it with its cursor.',
+          '',
           '## When the channel misbehaves',
           '',
           'A plugin session can wedge: every op touching the team-library import path',
@@ -6140,11 +6188,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           'the whole fix. Prefer `pageId` chunking over document scans right after heavy write',
           'campaigns.',
           '',
-          'One class of document scan is no longer in that category: `components.list`, and',
-          '`node.find` when `types` is given, search Figma\'s own type index instead of walking',
-          'every node, so a document-wide inventory answers on a file where the walk used to run',
-          'past three minutes and return nothing. `node.find` WITHOUT `types` still walks — name',
-          'the types you want.',
+          'Sweeps are what keeps document scans out of that category: each call is bounded, and',
+          'a cancelled or abandoned call stops instead of running on beside its retry.',
+          '`components.list`, and `node.find` when `types` is given, search Figma\'s own type',
+          'index page by page instead of walking every node — the fastest sweep there is.',
+          '`node.find` WITHOUT `types` walks every node: it still finishes, over more calls —',
+          'name the types you want.',
           '',
           '## When the file disagrees with you',
           '',

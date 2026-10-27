@@ -13,7 +13,8 @@
 
 import type { ParsedSwatch } from '../../tokens/remap/input.ts'
 import { swatchesFromNamedColors } from '../../tokens/remap/sources.ts'
-import { findAllWithCriteria, yieldToHost } from '../../utils/tree.ts'
+import { findAllWithCriteria } from '../../utils/tree.ts'
+import { checkpoint, pauseDue } from '../../utils/budget.ts'
 import { hexOf, isGradient, paintsOf, withAlpha } from './remap-inventory.ts'
 
 export interface SourceResult {
@@ -99,12 +100,6 @@ const isAlias = (value: VariableValue): value is VariableAlias =>
 const isRgb = (value: VariableValue): value is RGB | RGBA =>
   typeof value === 'object' && value !== null && 'r' in value && 'g' in value && 'b' in value
 
-/**
- * Importing a published design system is thousands of round-trips, and doing them without
- * coming up for air is how a plugin gets killed rather than merely slowed — the same reason
- * the linter chunks its own library reads.
- */
-const IMPORT_CHUNK = 50
 
 /**
  * Follows an alias chain to the color at its end.
@@ -180,9 +175,9 @@ export async function swatchesFromLibrary(
   let unresolved = 0
 
   for (const [index, candidate] of colors.entries()) {
-    if (index % IMPORT_CHUNK === 0) {
+    if (pauseDue()) {
       progress?.(`importing library colors… ${index}/${colors.length}`)
-      await yieldToHost()
+      await checkpoint()
     }
     const variable = await figma.variables.importVariableByKeyAsync(candidate.key).catch(() => null)
     if (!variable) continue

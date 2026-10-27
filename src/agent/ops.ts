@@ -14,8 +14,8 @@
  * their subtree is readable, and node lookup goes through `getNodeByIdAsync`.
  */
 
-import { lintScopeAsync, type LintFinding } from '../targets/django/lint/index.ts'
-import { findAllByTypes, findAllWithCriteria, loadAllPagesAsync, walkSceneNodes } from '../utils/tree.ts'
+import { lintNodeAsync, type LintFinding } from '../targets/django/lint/index.ts'
+import { walkSceneNodes } from '../utils/tree.ts'
 import { readAllVariables, readLocalVariables, resolveVariableValue } from '../variables.ts'
 import { describeColor, type Rgba } from './values.ts'
 import { formatHex, parseHex, type Rgb } from '../tokens/color.ts'
@@ -46,11 +46,14 @@ import { TOKENS_OPS } from './tokens-ops.ts'
 import { WRITE_OPS } from './write-ops.ts'
 import { PLUGIN_OPS } from './plugin-ops.ts'
 import { MODULE_OPS } from './module-ops.ts'
+import { EDITOR_OPS } from './editor-ops.ts'
 import { COMPONENT_READ_OPS, COMPONENT_WRITE_OPS } from './component-ops.ts'
 import { ADMIN_OPS } from './admin-ops.ts'
 import { DESIGN_EVIDENCE_OPS } from './design-evidence.ts'
 import { regionFills, summarizeRegions, type RegionSummary } from '../utils/vector-regions.ts'
-import { resolvePage, resolveScope, resolveWalkRoots } from './scope.ts'
+import { pageOf, resolvePage } from './scope.ts'
+import { openSweep, resolveSweepRoots, SWEEP_PARAMS } from './sweep.ts'
+import { checkpoint, stopReason } from '../utils/budget.ts'
 
 /* ------------------------------------------------------------- serializers */
 
@@ -1035,7 +1038,8 @@ export const READ_OPS: readonly OpDef[] = [
       'match what a TEXT layer actually says (case and spacing ignored) — it searches TEXT nodes through the type index, ' +
       'instances included, so it stays fast document-wide. Each text match carries `frame`, the top-level frame it sits in, which is how ' +
       '"Startups" on the desktop frame is told apart from "Startups" on the mobile one. `within` narrows any search to one ' +
-      'frame or section.',
+      'frame or section. Each call returns up to `limit` matches; while `complete` is false, call again with the same ' +
+      'params plus the `cursor` it handed back for the next ones — a document-wide search pages instead of timing out.',
     mutates: false,
     params: {
       name: { type: 'string', description: 'Case-insensitive substring of the node name.' },
@@ -1058,7 +1062,14 @@ export const READ_OPS: readonly OpDef[] = [
         type: 'string',
         description: 'Search only inside this node (a frame, section or page id) instead of the scope.',
       },
-      limit: { type: 'number', description: 'Max matches returned.', default: 50, min: 1, max: 500 },
+      limit: {
+        type: 'number',
+        description: 'Max matches returned by this call; the `cursor` continues after the last one.',
+        default: 50,
+        min: 1,
+        max: 500,
+      },
+      ...SWEEP_PARAMS,
     },
     async run(params) {
       const needle = typeof params.name === 'string' ? params.name.toLowerCase() : null
@@ -1070,39 +1081,43 @@ export const READ_OPS: readonly OpDef[] = [
         }
         types = ['TEXT']
       }
-      let root: BaseNode
-      if (typeof params.within === 'string' && params.within !== '') {
-        const node = await figma.getNodeByIdAsync(params.within)
-        if (!node) throw new Error(`no node with id ${params.within}`)
-        // Load its page first. A probe on a never-opened page (16.10) found the index and the
-        // walk already complete without it, but dynamic-page loading is documented as required
-        // before reading a page's subtree, and one loadAsync is cheap next to a wrong answer.
-        let page: BaseNode | null = node
-        while (page && page.type !== 'PAGE') page = page.parent
-        if (page && 'loadAsync' in page) await (page as PageNode).loadAsync()
-        if (!('findAllWithCriteria' in node) && !('children' in node)) throw new Error(`${params.within} is a ${node.type}, which has nothing inside to search`)
-        root = node
-      } else {
-        root = await resolveScope(params.scope as string)
-      }
-      // A type list lets the native, index-backed search do the walk; without one it has nothing
-      // to narrow by, so the hand-rolled DFS (which can filter on name alone) takes over.
-      const keep = (node: SceneNode) =>
-        (!needle || node.name.toLowerCase().includes(needle)) &&
-        (!said || (node.type === 'TEXT' && normalizeSaid((node as TextNode).characters).includes(said)))
+      // A type list lets the native, index-backed search do the walk, one page at a time; without
+      // one it has nothing to narrow by, so the walk (which can filter on name alone) takes over.
       // Text goes through the index too. It does reach inside instances: measured live on a
       // 1440px site frame, index and walk returned the same 174 TEXT ids (130 inside instances)
-      // in 2 ms against 350 ms — see findAllByTypes. A "1 of 29" report that once moved text to
-      // the walk compared a TEXT-typed search with an untyped one matching 7 non-TEXT layers too.
-      const matches =
-        types && types.length > 0
-          ? (await findAllByTypes<SceneNode>(root, types)).filter(keep)
-          : await findAllWithCriteria(root, (node): node is SceneNode => keep(node as SceneNode))
+      // in 2 ms against 350 ms — see findAllByTypes.
+      const sweep = await openSweep({
+        op: 'node.find',
+        params,
+        roots: async () => {
+          if (typeof params.within !== 'string' || params.within === '') return resolveSweepRoots({ scope: params.scope })
+          const node = await getNodeByIdTimed(params.within)
+          if (!node) throw new Error(`no node with id ${params.within}`)
+          if (!('findAllWithCriteria' in node) && !('children' in node)) throw new Error(`${params.within} is a ${node.type}, which has nothing inside to search`)
+          return { roots: [node], labels: [`${node.name} (subtree)`] }
+        },
+        state: () => ({ matched: 0 }),
+        ...(types && types.length > 0 ? { types } : {}),
+        // The node searched within is the scope, not a match — as it always was.
+        includeRoots: false,
+      })
       const limit = params.limit as number
+      const nodes: unknown[] = []
+      // Per node, inside the sweep: reading `.characters` is a host call, and a synchronous
+      // filter over every TEXT node of a document is the walk with no checkpoints in it.
+      await sweep.walk((node) => {
+        if (needle && !node.name.toLowerCase().includes(needle)) return
+        if (said && !(node.type === 'TEXT' && normalizeSaid(node.characters).includes(said))) return
+        nodes.push(said ? { ...summarizeNode(node), frame: topFrameOf(node) } : summarizeNode(node))
+        sweep.state.matched += 1
+        return nodes.length >= limit ? 'stop' : undefined
+      })
+      const report = sweep.report()
       return {
-        total: matches.length,
-        truncated: matches.length > limit,
-        nodes: matches.slice(0, limit).map((node) => (said ? { ...summarizeNode(node), frame: topFrameOf(node) } : summarizeNode(node))),
+        ...report,
+        /** Matches across every call of this search so far; the total once `complete`. */
+        matched: sweep.state.matched,
+        nodes,
       }
     },
   },
@@ -1140,12 +1155,20 @@ export const READ_OPS: readonly OpDef[] = [
     name: 'components.list',
     summary: 'Local components and component sets with their property/variant definitions.',
     agent:
-      'Variant property names and values are exact — use them verbatim, with each component\'s own description and links.',
+      'Variant property names and values are exact — use them verbatim, with each component\'s own description and links. ' +
+      'Each call returns up to `limit` components, page by page through the file; while `complete` is false, call ' +
+      'again with the same params plus `cursor`.',
     mutates: false,
     params: {
       scope: { type: 'string', description: 'Where to look.', enum: ['page', 'document'], default: 'document' },
       name: { type: 'string', description: 'Case-insensitive substring of the component name.' },
-      limit: { type: 'number', description: 'Max components returned.', default: 100, min: 1, max: 500 },
+      limit: {
+        type: 'number',
+        description: 'Max components returned by this call; the `cursor` continues after the last one.',
+        default: 100,
+        min: 1,
+        max: 500,
+      },
       publishStatus: {
         type: 'boolean',
         default: false,
@@ -1153,21 +1176,28 @@ export const READ_OPS: readonly OpDef[] = [
           'Also report UNPUBLISHED / CURRENT / CHANGED per component. One extra call each, so ' +
           'off unless you are asking what consumers of this library can actually see.',
       },
+      ...SWEEP_PARAMS,
     },
     async run(params) {
       const needle = typeof params.name === 'string' ? params.name.toLowerCase() : null
-      const root = await resolveScope(params.scope as string)
-      const found = (
-        await findAllByTypes<ComponentNode | ComponentSetNode>(root, ['COMPONENT', 'COMPONENT_SET'])
-      ).filter((node) => {
-        if (needle && !node.name.toLowerCase().includes(needle)) return false
-        // A variant inside a set is reachable through its parent — listing both is noise.
-        return !(node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET')
+      /* The type index, one page at a time as the sweep reaches it — not every page of a fifty-
+       * page library loaded before the first component is read. */
+      const sweep = await openSweep({
+        op: 'components.list',
+        params,
+        roots: () => resolveSweepRoots({ scope: params.scope }),
+        state: () => ({ matched: 0 }),
+        types: ['COMPONENT', 'COMPONENT_SET'],
       })
       const limit = params.limit as number
       const wantStatus = params.publishStatus === true
-      const components = []
-      for (const node of found.slice(0, limit)) {
+      const components: unknown[] = []
+      await sweep.walk(async (found) => {
+        const node = found as ComponentNode | ComponentSetNode
+        if (needle && !node.name.toLowerCase().includes(needle)) return
+        // A variant inside a set is reachable through its parent — listing both is noise.
+        if (node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET') return
+        sweep.state.matched += 1
         components.push({
           id: node.id,
           key: node.key,
@@ -1196,8 +1226,9 @@ export const READ_OPS: readonly OpDef[] = [
               : undefined,
           ...(wantStatus ? { publishStatus: await publishStatusOf(node) } : {}),
         })
-      }
-      return { total: found.length, truncated: found.length > limit, components }
+        return components.length >= limit ? 'stop' : undefined
+      })
+      return { ...sweep.report(), matched: sweep.state.matched, components }
     },
   },
 
@@ -1267,7 +1298,9 @@ export const READ_OPS: readonly OpDef[] = [
     summary: 'Local text, paint, effect, grid and custom animation styles.',
     agent:
       'paints: true shows per-stop bindings (a gradient binds per stop; its paint-level bound is null however tokenised). consumers: true says whether anything uses a style at all. ' +
-      'A custom animation style comes back with its `animations` in the order they play — the same `style`/`props` pairs STYLE_MAKE takes back as `entries`.',
+      'A custom animation style comes back with its `animations` in the order they play — the same `style`/`props` pairs STYLE_MAKE takes back as `entries`. ' +
+      'Consumer lookups are one document search per style, so they page: when `consumersComplete` is false, call again with ' +
+      '`offset: nextOffset` for the next styles\' consumers.',
     mutates: false,
     params: {
       paints: {
@@ -1288,6 +1321,20 @@ export const READ_OPS: readonly OpDef[] = [
           'consumes and a style the whole product depends on look the same in every other field. ' +
           'One extra document walk per style, so off by default.',
       },
+      offset: {
+        type: 'number',
+        default: 0,
+        min: 0,
+        description: 'With consumers: start the consumer lookups at this style — the `nextOffset` a previous answer handed back.',
+      },
+      consumerLimit: {
+        type: 'number',
+        default: 50,
+        min: 0,
+        max: 1000,
+        description: 'With consumers: layers listed per style; the count is always complete.',
+      },
+      budgetMs: SWEEP_PARAMS.budgetMs,
     },
     async run(params) {
       const [text, paint, effect, grid, animation] = await Promise.all([
@@ -1315,18 +1362,29 @@ export const READ_OPS: readonly OpDef[] = [
         }
       }
 
+      /* One `getStyleConsumersAsync` is a search of the whole document, so a library with three
+       * hundred styles is three hundred searches: they run in style order until the time is
+       * nearly up, and the answer says where to pick up. */
       const consumerDetail = new Map<string, unknown>()
+      const all: BaseStyle[] = [...text, ...paint, ...effect, ...grid, ...animation]
+      const from = Math.min(params.offset as number, all.length)
+      let next = from
       if (params.consumers === true) {
-        for (const style of [...text, ...paint, ...effect, ...grid, ...animation]) {
+        const until = typeof params.budgetMs === 'number' ? Date.now() + params.budgetMs : Infinity
+        const shown = params.consumerLimit as number
+        for (; next < all.length; next++) {
+          if (next > from && (Date.now() >= until || stopReason(3000) !== null)) break
+          const style = all[next]
           try {
             const users = await style.getStyleConsumersAsync()
             consumerDetail.set(style.id, {
               count: users.length,
-              nodes: users.map((user) => ({ id: user.node.id, name: user.node.name, fields: user.fields })),
+              nodes: users.slice(0, shown).map((user) => ({ id: user.node.id, name: user.node.name, fields: user.fields })),
             })
           } catch (err) {
             consumerDetail.set(style.id, { error: String((err as Error)?.message || err) })
           }
+          await checkpoint()
         }
       }
 
@@ -1334,24 +1392,31 @@ export const READ_OPS: readonly OpDef[] = [
         consumerDetail.has(style.id) ? { ...row, consumers: consumerDetail.get(style.id) } : row
 
       return {
-        text: text.map((style) => ({
-          ...base(style),
-          fontFamily: style.fontName.family,
-          fontStyle: style.fontName.style,
-          // Only a variable font has these, and without them two styles on the same named
-          // instance read as identical while rendering at different weights.
-          ...(style.fontName.variationSettings ? { fontAxes: style.fontName.variationSettings } : {}),
-          fontSize: style.fontSize,
-          lineHeight: style.lineHeight,
-        })),
+        ...(params.consumers === true
+          ? next < all.length
+            ? { consumersComplete: false, consumersFrom: from, nextOffset: next }
+            : { consumersComplete: true, consumersFrom: from }
+          : {}),
+        text: text.map((style) =>
+          withConsumers(style, {
+            ...base(style),
+            fontFamily: style.fontName.family,
+            fontStyle: style.fontName.style,
+            // Only a variable font has these, and without them two styles on the same named
+            // instance read as identical while rendering at different weights.
+            ...(style.fontName.variationSettings ? { fontAxes: style.fontName.variationSettings } : {}),
+            fontSize: style.fontSize,
+            lineHeight: style.lineHeight,
+          })
+        ),
         paint: paint.map((style) =>
           withConsumers(style, {
             ...base(style),
             paints: paintDetail.get(style.id) ?? style.paints.map((one) => one.type),
           })
         ),
-        effect: effect.map((style) => ({ ...base(style), effects: style.effects.map((e) => e.type) })),
-        grid: grid.map(base),
+        effect: effect.map((style) => withConsumers(style, { ...base(style), effects: style.effects.map((e) => e.type) })),
+        grid: grid.map((style) => withConsumers(style, base(style))),
         animation: animation.map((style) =>
           withConsumers(style, {
             ...base(style),
@@ -1499,38 +1564,36 @@ export const READ_OPS: readonly OpDef[] = [
     name: 'instances.external',
     summary: 'Which foreign components are instantiated here, and how many external bindings each drags in.',
     agent:
-      'Class B of a migration: bindings inside foreign components have no local main to fix — swap or detach the instances, then rebind.',
+      'Class B of a migration: bindings inside foreign components have no local main to fix — swap or detach the instances, then rebind. ' +
+      'A whole document is swept over several calls: while `complete` is false the answer is progress only — call again ' +
+      'with the same params plus `cursor`; the call that completes carries the full table.',
     mutates: false,
     params: {
       scope: { type: 'string', default: 'document', enum: ['page', 'document'], description: 'Where to look.' },
       pageId: { type: 'string', description: 'Which page to walk — giving it implies scope: "page". Defaults to the current page when scope is "page".' },
       nodeId: { type: 'string', description: 'Walk just this subtree. Overrides scope and pageId.' },
       limit: { type: 'number', default: 5, min: 0, max: 100, description: 'Sample instances listed per component; counts are complete.' },
+      ...SWEEP_PARAMS,
     },
     async run(params) {
       /* The other half of the dependency story. `variables.external` counts bindings but cannot
        * say which ones are fixable by a rebind: a binding inside an instance of a FOREIGN
        * component has no local main to fix — the dependency is the component itself, and the
        * only cures are swapping it or detaching it. This op produces that decision table. */
-      const tLoad = Date.now()
-      const { roots, labels } = await resolveWalkRoots(params)
-      const loadMs = Date.now() - tLoad
-
-      const tWalk = Date.now()
-      const tops: InstanceNode[] = []
-      let visited = 0
-      for (const root of roots) {
-        const walked = await walkSceneNodes(root, (node, insideInstance) => {
-          if (!insideInstance && node.type === 'INSTANCE') tops.push(node as InstanceNode)
-        })
-        visited += walked.visited
-      }
-
-      const groups = new Map<
-        string,
-        { main: string | null; key: string | null; instances: Array<{ id: string; name: string }>; idCounts: Map<string, number> }
-      >()
-      for (const instance of tops) {
+      type Group = { main: string | null; key: string | null; count: number; sample: Array<{ id: string; name: string }>; idCounts: Map<string, number> }
+      const sweep = await openSweep({
+        op: 'instances.external',
+        params,
+        roots: () => resolveSweepRoots(params),
+        state: () => ({ groups: new Map<string, Group>() }),
+      })
+      const limit = params.limit as number
+      /* One pass. A top-level instance is resolved where the sweep meets it and its insides are
+       * counted then and there; the sweep never descends into it itself, because everything
+       * below a top-level instance belongs to that instance's row (a nested copy included). */
+      await sweep.walk(async (node) => {
+        if (node.type !== 'INSTANCE') return
+        const instance = node as InstanceNode
         let main: ComponentNode | null = null
         try {
           main = await instance.getMainComponentAsync()
@@ -1539,18 +1602,20 @@ export const READ_OPS: readonly OpDef[] = [
         }
         /* A local main means every binding below is class A — fixed at the main by a rebind.
          * Only foreign (and unresolvable) mains belong in this table. */
-        if (main && !main.remote) continue
+        if (main && !main.remote) return 'skip'
         const groupKey = main ? main.key : `unresolved:${instance.name}`
-        let group = groups.get(groupKey)
+        let group = sweep.state.groups.get(groupKey)
         if (!group) {
-          group = { main: main?.name ?? null, key: main?.key ?? null, instances: [], idCounts: new Map() }
-          groups.set(groupKey, group)
+          group = { main: main?.name ?? null, key: main?.key ?? null, count: 0, sample: [], idCounts: new Map() }
+          sweep.state.groups.set(groupKey, group)
         }
-        group.instances.push({ id: instance.id, name: instance.name })
-        await walkSceneNodes(instance, (node) => {
-          const holder = node as unknown as Record<string, unknown>
+        const into = group
+        into.count += 1
+        if (into.sample.length < limit) into.sample.push({ id: instance.id, name: instance.name })
+        await walkSceneNodes(instance, (inner) => {
+          const holder = inner as unknown as Record<string, unknown>
           const push = (id: unknown) => {
-            if (typeof id === 'string') group.idCounts.set(id, (group.idCounts.get(id) ?? 0) + 1)
+            if (typeof id === 'string') into.idCounts.set(id, (into.idCounts.get(id) ?? 0) + 1)
           }
           const bound = holder.boundVariables as Record<string, unknown> | undefined
           if (bound) {
@@ -1571,10 +1636,14 @@ export const READ_OPS: readonly OpDef[] = [
             }
           }
         })
+        return 'skip'
+      })
+      const report = sweep.report()
+      if (!report.complete) {
+        return { ...report, walked: { pages: sweep.labels }, note: 'partial sweep — call again with the same params plus `cursor`' }
       }
-      const walkMs = Date.now() - tWalk
 
-      const tResolve = Date.now()
+      const groups = sweep.state.groups
       const distinct = new Set<string>()
       for (const group of groups.values()) for (const id of group.idCounts.keys()) distinct.add(id)
       const remoteCollection = new Map<string, string>()
@@ -1587,8 +1656,8 @@ export const READ_OPS: readonly OpDef[] = [
           collectionNames.set(variable.variableCollectionId, collection ? collection.name : variable.variableCollectionId)
         }
         remoteCollection.set(id, collectionNames.get(variable.variableCollectionId) as string)
+        await checkpoint()
       }
-      const resolveMs = Date.now() - tResolve
 
       const out = [...groups.values()]
         .map((group) => {
@@ -1604,17 +1673,17 @@ export const READ_OPS: readonly OpDef[] = [
           return {
             main: group.main,
             key: group.key,
-            instances: group.instances.length,
+            instances: group.count,
             externalBindings: bindings,
             collections: [...collections].sort(),
-            sample: group.instances.slice(0, params.limit as number),
+            sample: group.sample,
           }
         })
         .sort((a, b) => b.externalBindings - a.externalBindings)
 
       return {
-        walked: { pages: labels, nodes: visited },
-        ms: { load: loadMs, walk: walkMs, resolve: resolveMs },
+        ...report,
+        walked: { pages: sweep.labels, nodes: report.swept.nodes },
         foreignComponents: out.length,
         foreignInstances: out.reduce((sum, group) => sum + group.instances, 0),
         groups: out,
@@ -1626,7 +1695,9 @@ export const READ_OPS: readonly OpDef[] = [
     name: 'variables.external',
     summary: 'Which variables this file binds to that it does not own — the dependency a library inherits.',
     agent:
-      'The self-containment audit. A collection listed here but absent from enabledLibraryCollections is a dependency with no live subscription — resolvable, never updatable.',
+      'The self-containment audit. A collection listed here but absent from enabledLibraryCollections is a dependency with no live subscription — resolvable, never updatable. ' +
+      'A whole document is swept over several calls: while `complete` is false the answer is progress only — call again ' +
+      'with the same params plus `cursor`; the call that completes carries the full audit.',
     mutates: false,
     params: {
       scope: {
@@ -1656,6 +1727,7 @@ export const READ_OPS: readonly OpDef[] = [
 
       styles: { type: 'boolean', default: true, description: 'Also check local styles for external bindings.' },
       limit: { type: 'number', default: 10, min: 0, max: 200, description: 'Sites listed per variable; counts are complete.' },
+      ...SWEEP_PARAMS,
     },
     async run(params) {
       /* The question this answers is not "which libraries are enabled" — that is
@@ -1668,8 +1740,17 @@ export const READ_OPS: readonly OpDef[] = [
        * every node; on a 22k-node page that is hundreds of thousands of awaits and it took the
        * plugin's connection down with it. Collecting ids is pure synchronous work, and the number
        * of DISTINCT ids is small — a few dozen — so the resolution that actually costs anything
-       * happens once per variable instead of once per reference. */
-      const seen = new Map<string, { count: number; sites: unknown[] }>()
+       * happens once per variable instead of once per reference. And the walk itself is a sweep:
+       * the ids it collects are parked with its position between calls, so a document finishes
+       * across as many calls as it takes. */
+      const sweep = await openSweep({
+        op: 'variables.external',
+        params,
+        roots: () => resolveSweepRoots(params),
+        state: () => ({ seen: new Map<string, { count: number; sites: unknown[] }>(), insideInstances: 0 }),
+        skipInstanceChildren: params.instances === 'shallow',
+      })
+      const seen = sweep.state.seen
       const cap = params.limit as number
 
       const consider = (id: unknown, site: () => unknown) => {
@@ -1707,47 +1788,41 @@ export const READ_OPS: readonly OpDef[] = [
         })
       }
 
-      const tLoad = Date.now()
-      const { roots, labels } = await resolveWalkRoots(params)
-      const loadMs = Date.now() - tLoad
-
-      const tWalk = Date.now()
-      let visited = 0
-      let insideInstances = 0
-      for (const root of roots) {
-        const walked = await walkSceneNodes(
-          root,
-          (node) => {
-            const holder = node as unknown as Record<string, unknown>
-            const site = (detail: string) => ({ id: node.id, name: node.name, type: node.type, field: detail })
-            scanBoundMap(holder.boundVariables, site)
-            scanPaints(holder.fills, site)
-            scanPaints(holder.strokes, site)
-            /* Mixed-fill TEXT: paints are the mixed sentinel, invisible to scanPaints — the
-             * segment aliases in boundVariables are the only view of those bindings. */
-            /* A vector painted per region is the other mixed case: the paints sit on the network's
-             * regions, and reading them there names the region a fix has to address. */
-            const regions = regionFills(node)
-            if (regions) {
-              for (const one of regions) scanPaints(one.fills, (detail) => site(`regions[${one.region}] ${detail}`))
+      await sweep.walk((node, insideInstance) => {
+        if (insideInstance) sweep.state.insideInstances += 1
+        const holder = node as unknown as Record<string, unknown>
+        const site = (detail: string) => ({ id: node.id, name: node.name, type: node.type, field: detail })
+        scanBoundMap(holder.boundVariables, site)
+        scanPaints(holder.fills, site)
+        scanPaints(holder.strokes, site)
+        /* Mixed-fill TEXT: paints are the mixed sentinel, invisible to scanPaints — the
+         * segment aliases in boundVariables are the only view of those bindings. */
+        /* A vector painted per region is the other mixed case: the paints sit on the network's
+         * regions, and reading them there names the region a fix has to address. */
+        const regions = regionFills(node)
+        if (regions) {
+          for (const one of regions) scanPaints(one.fills, (detail) => site(`regions[${one.region}] ${detail}`))
+        }
+        const mixedBound = holder.boundVariables as Record<string, unknown> | undefined
+        if (mixedBound && !regions) {
+          for (const prop of ['fills', 'strokes'] as const) {
+            if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
+              ;(mixedBound[prop] as unknown[]).forEach((entry, index) =>
+                consider((entry as { id?: string })?.id, () => site(`${prop}[${index}] (segment)`))
+              )
             }
-            const mixedBound = holder.boundVariables as Record<string, unknown> | undefined
-            if (mixedBound && !regions) {
-              for (const prop of ['fills', 'strokes'] as const) {
-                if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
-                  ;(mixedBound[prop] as unknown[]).forEach((entry, index) =>
-                    consider((entry as { id?: string })?.id, () => site(`${prop}[${index}] (segment)`))
-                  )
-                }
-              }
-            }
-          },
-          { skipInstanceChildren: params.instances === 'shallow' }
-        )
-        visited += walked.visited
-        insideInstances += walked.insideInstances
+          }
+        }
+      })
+      const report = sweep.report()
+      if (!report.complete) {
+        return {
+          ...report,
+          scope: params.scope ?? 'document',
+          walked: { pages: sweep.labels },
+          note: 'partial sweep — call again with the same params plus `cursor`',
+        }
       }
-      const walkMs = Date.now() - tWalk
 
       if (params.styles !== false) {
         const [text, paint, effect, grid] = await Promise.all([
@@ -1781,7 +1856,6 @@ export const READ_OPS: readonly OpDef[] = [
       }
 
       /* Pass two: one lookup per distinct id. */
-      const tResolve = Date.now()
       const collectionNames = new Map<string, string>()
       const collectionModes = new Map<string, ReadonlyArray<{ modeId: string; name: string }>>()
       const found = new Map<
@@ -1840,12 +1914,11 @@ export const READ_OPS: readonly OpDef[] = [
 
       const enabled = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync().catch(() => [])
       const groups = [...byCollection.values()].sort((a, b) => b.bindings - a.bindings)
-      const resolveMs = Date.now() - tResolve
 
       return {
+        ...report,
         scope: params.scope ?? 'document',
-        walked: { pages: labels, nodes: visited, insideInstances },
-        ms: { load: loadMs, walk: walkMs, resolve: resolveMs },
+        walked: { pages: sweep.labels, nodes: report.swept.nodes, insideInstances: sweep.state.insideInstances },
         selfContained: groups.length === 0,
         distinctVariablesSeen: seen.size,
         externalCollections: groups.length,
@@ -1864,7 +1937,9 @@ export const READ_OPS: readonly OpDef[] = [
     name: 'variables.usage',
     summary: 'How many things actually use each token — layers, styles and gradient stops, counted.',
     agent:
-      'Layers, styles and aliases are counted separately — a token nothing paints may still hold the ramp up via aliases. Zero covers THIS file only.',
+      'Layers, styles and aliases are counted separately — a token nothing paints may still hold the ramp up via aliases. Zero covers THIS file only. ' +
+      'A whole document is swept over several calls: while `complete` is false the answer is progress only — call again ' +
+      'with the same params plus `cursor`; the call that completes carries every count.',
     mutates: false,
     params: {
       variables: {
@@ -1904,9 +1979,8 @@ export const READ_OPS: readonly OpDef[] = [
         description:
           'Where to walk. Unlike `lint.colors` this defaults to `document`, because a page-scoped ' +
           'usage count answers a question nobody asked: "unused on this page" reads as "unused" and ' +
-          'is the one wrong conclusion that gets a token deleted. Beware the cost: a whole document ' +
-          'can outrun the bridge call timeout — raise ALLCREW_CHANNEL_AGENT_CALL_TIMEOUT_MS, or pass pageId ' +
-          'and sum the pages.',
+          'is the one wrong conclusion that gets a token deleted. A whole document is swept over ' +
+          'as many calls as it takes — follow `cursor` until `complete` is true.',
       },
       styles: {
         type: 'boolean',
@@ -1917,6 +1991,7 @@ export const READ_OPS: readonly OpDef[] = [
           'unused while the whole library depends on it.',
       },
       limit: { type: 'number', default: 20, min: 0, max: 500, description: 'Consumers listed per token; counts are always complete.' },
+      ...SWEEP_PARAMS,
     },
     async run(params) {
       const snapshot = await readLocalVariables()
@@ -1942,21 +2017,35 @@ export const READ_OPS: readonly OpDef[] = [
       )
       if (asked.length > 0 && tracked.length === 0) throw new Error(`no local variable matched: ${asked.join(', ')}`)
 
-      const byId = new Map(
-        tracked.map((entry) => [
-          entry.id,
-          {
-            entry,
-            layers: [] as unknown[],
-            styles: [] as unknown[],
-            aliases: [] as unknown[],
-            layerCount: 0,
-            styleCount: 0,
-            aliasCount: 0,
-          },
-        ])
-      )
-      const note = (id: unknown, where: 'layers' | 'styles' | 'aliases', what: unknown) => {
+      /* The counts are what a sweep parks between calls: the walk resumes where it stopped and
+       * keeps adding to the same buckets, so the completing call's numbers cover the whole scope. */
+      const sweep = await openSweep({
+        op: 'variables.usage',
+        params,
+        roots: () => resolveSweepRoots(params),
+        state: () => ({
+          byId: new Map(
+            tracked.map((entry) => [
+              entry.id,
+              {
+                entry,
+                layers: [] as unknown[],
+                styles: [] as unknown[],
+                aliases: [] as unknown[],
+                layerCount: 0,
+                styleCount: 0,
+                aliasCount: 0,
+              },
+            ])
+          ),
+          insideInstances: 0,
+        }),
+        skipInstanceChildren: params.instances === 'shallow',
+      })
+      const byId = sweep.state.byId
+      /* `what` is built only while the list has room: past `limit` a site is a count, and building
+       * a label for each of a hundred thousand of them is allocation for nothing. */
+      const note = (id: unknown, where: 'layers' | 'styles' | 'aliases', what: () => unknown) => {
         if (typeof id !== 'string') return
         const bucket = byId.get(id)
         if (!bucket) return
@@ -1964,7 +2053,7 @@ export const READ_OPS: readonly OpDef[] = [
         else if (where === 'styles') bucket.styleCount += 1
         else bucket.aliasCount += 1
         const list = bucket[where]
-        if (list.length < (params.limit as number)) list.push(what)
+        if (list.length < (params.limit as number)) list.push(what())
       }
 
       /* A primitive is usually referenced by no layer at all: the semantic token aliases it and
@@ -1973,11 +2062,11 @@ export const READ_OPS: readonly OpDef[] = [
        * alias counts as a use, and is counted separately, because it is a different kind of use:
        * a rung nothing aliases and nothing paints is genuinely free, one that a live semantic
        * token points at is load-bearing however few layers name it. */
-      for (const entry of snapshot.variables) {
+      if (!sweep.resumed) for (const entry of snapshot.variables) {
         for (const value of Object.values(entry.valuesByMode ?? {})) {
           const alias = value as { type?: string; id?: string }
           if (alias?.type === 'VARIABLE_ALIAS' && alias.id) {
-            note(alias.id, 'aliases', { token: entry.name, collection: entry.collectionId })
+            note(alias.id, 'aliases', () => ({ token: entry.name, collection: entry.collectionId }))
           }
         }
       }
@@ -1989,11 +2078,11 @@ export const READ_OPS: readonly OpDef[] = [
         if (!Array.isArray(paints)) return
         paints.forEach((paint: any, index: number) => {
           const direct = paint?.boundVariables?.color?.id
-          if (direct) note(direct, where, label(`paint[${index}]`))
+          if (direct) note(direct, where, () => label(`paint[${index}]`))
           if (Array.isArray(paint?.gradientStops)) {
             paint.gradientStops.forEach((stop: any) => {
               const id = stop?.boundVariables?.color?.id
-              if (id) note(id, where, label(`paint[${index}] stop p${Math.round(stop.position * 100)}`))
+              if (id) note(id, where, () => label(`paint[${index}] stop p${Math.round(stop.position * 100)}`))
             })
           }
         })
@@ -2009,57 +2098,51 @@ export const READ_OPS: readonly OpDef[] = [
            * node-level map is empty and the paint view is the only one. */
           if (field === 'fills' || field === 'strokes') continue
           if (Array.isArray(value)) {
-            value.forEach((alias: any, index: number) => note(alias?.id, where, label(`${field}[${index}]`)))
+            value.forEach((alias: any, index: number) => note(alias?.id, where, () => label(`${field}[${index}]`)))
           } else {
-            note((value as { id?: string })?.id, where, label(field))
+            note((value as { id?: string })?.id, where, () => label(field))
           }
         }
       }
 
-      const tLoad = Date.now()
-      const { roots, labels } = await resolveWalkRoots(params)
-      const loadMs = Date.now() - tLoad
-
-      const tWalk = Date.now()
-      let visited = 0
-      let insideInstances = 0
-      for (const root of roots) {
-        const walked = await walkSceneNodes(
-          root,
-          (node) => {
-            const holder = node as unknown as Record<string, unknown>
-            const label = (detail: string) => ({ id: node.id, name: node.name, type: node.type, field: detail })
-            scanBoundMap(holder.boundVariables, 'layers', label)
-            /* Paint-level and stop-level bindings sit outside `boundVariables`, so they have to be
-             * read separately — and on an instance sublayer they are the ONLY place the inherited
-             * binding shows up. */
-            scanPaints(holder.fills, 'layers', label)
-            scanPaints(holder.strokes, 'layers', label)
-            /* Mixed-fill TEXT is the one case the paint pass cannot see (node.fills is the mixed
-             * sentinel, not an array) — there the per-segment aliases in boundVariables are the
-             * only view, and skipping them wholesale blinded the audit to bound text colours. */
-            /* …and a vector painted per region keeps its paints on the network's regions. */
-            const regions = regionFills(node)
-            if (regions) {
-              for (const one of regions) scanPaints(one.fills, 'layers', (detail) => label(`regions[${one.region}] ${detail}`))
+      await sweep.walk((node, insideInstance) => {
+        if (insideInstance) sweep.state.insideInstances += 1
+        const holder = node as unknown as Record<string, unknown>
+        const label = (detail: string) => ({ id: node.id, name: node.name, type: node.type, field: detail })
+        scanBoundMap(holder.boundVariables, 'layers', label)
+        /* Paint-level and stop-level bindings sit outside `boundVariables`, so they have to be
+         * read separately — and on an instance sublayer they are the ONLY place the inherited
+         * binding shows up. */
+        scanPaints(holder.fills, 'layers', label)
+        scanPaints(holder.strokes, 'layers', label)
+        /* Mixed-fill TEXT is the one case the paint pass cannot see (node.fills is the mixed
+         * sentinel, not an array) — there the per-segment aliases in boundVariables are the
+         * only view, and skipping them wholesale blinded the audit to bound text colours. */
+        /* …and a vector painted per region keeps its paints on the network's regions. */
+        const regions = regionFills(node)
+        if (regions) {
+          for (const one of regions) scanPaints(one.fills, 'layers', (detail) => label(`regions[${one.region}] ${detail}`))
+        }
+        const mixedBound = holder.boundVariables as Record<string, unknown> | undefined
+        if (mixedBound && !regions) {
+          for (const prop of ['fills', 'strokes'] as const) {
+            if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
+              ;(mixedBound[prop] as unknown[]).forEach((entry, index) =>
+                note((entry as { id?: string })?.id, 'layers', () => label(`${prop}[${index}] (segment)`))
+              )
             }
-            const mixedBound = holder.boundVariables as Record<string, unknown> | undefined
-            if (mixedBound && !regions) {
-              for (const prop of ['fills', 'strokes'] as const) {
-                if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
-                  ;(mixedBound[prop] as unknown[]).forEach((entry, index) =>
-                    note((entry as { id?: string })?.id, 'layers', label(`${prop}[${index}] (segment)`))
-                  )
-                }
-              }
-            }
-          },
-          { skipInstanceChildren: params.instances === 'shallow' }
-        )
-        visited += walked.visited
-        insideInstances += walked.insideInstances
+          }
+        }
+      })
+      const report = sweep.report()
+      if (!report.complete) {
+        return {
+          ...report,
+          scope: params.scope ?? 'document',
+          walked: { pages: sweep.labels },
+          note: 'partial sweep — call again with the same params plus `cursor`',
+        }
       }
-      const walkMs = Date.now() - tWalk
 
       let styleCount = 0
       if (params.styles !== false) {
@@ -2109,11 +2192,9 @@ export const READ_OPS: readonly OpDef[] = [
         )
 
       return {
+        ...report,
         scope: params.scope ?? 'document',
-        // Named, so a page-by-page sweep can be added up without the caller having to remember
-        // which slice each answer covered.
-        walked: { pages: labels, nodes: visited, insideInstances, styles: styleCount },
-        ms: { load: loadMs, walk: walkMs },
+        walked: { pages: sweep.labels, nodes: report.swept.nodes, insideInstances: sweep.state.insideInstances, styles: styleCount },
         tokens: results.length,
         unused: results.filter((row) => !row.used).length,
         /* Said out loud because the number invites the wrong conclusion. Zero here means "nothing
@@ -2244,21 +2325,20 @@ export const READ_OPS: readonly OpDef[] = [
       'An edge carries the navigation kind and the transition it animates with - duration, the easing Figma ' +
       'named, and `curve`: the same easing as numbers (bezier control points, or a spring\'s damping ratio, ' +
       'stiffness and solved settle time). Build the transition from `curve`, not from the CSS string beside ' +
-      'it - `PUSH` from the right at 300ms is a native navigation transition, and the numbers for it are here.',
+      'it - `PUSH` from the right at 300ms is a native navigation transition, and the numbers for it are here. ' +
+      'A heavy page is swept over several calls: while `complete` is false call again with the same params plus `cursor`; ' +
+      'the completing call carries the whole graph.',
     mutates: false,
     params: {
       pageId: { type: 'string', description: 'Page id. Defaults to the page the designer is on.' },
+      ...SWEEP_PARAMS,
     },
     async run(params) {
-      const page = await resolvePage(params.pageId)
-      const named = new Map<string, string>()
-      for (const node of page.children) named.set(node.id, node.name)
-
       /* An edge used to be five strings. The navigation KIND and the transition were already
        * computed by `summarizeReactions` below and dropped on the floor - and they are the half a
        * build needs: "PUSH from the RIGHT, 0.3s, EASE_OUT" is a SwiftUI `NavigationTransition` or
        * a Compose `AnimatedContentTransitionScope`, while "ON_HOVER → that node" is only a graph. */
-      const edges: Array<{
+      type Edge = {
         from: string
         fromName: string
         to: string
@@ -2267,18 +2347,39 @@ export const READ_OPS: readonly OpDef[] = [
         action: string
         navigation?: string
         transition?: unknown
-      }> = []
-      const withReactions = await findAllWithCriteria(
-        page,
-        (node): node is SceneNode => 'reactions' in node || 'getReactionsAsync' in node
-      )
-      for (const node of withReactions) {
+      }
+      let started: BaseNode | null = null
+      const sweep = await openSweep({
+        op: 'flow.map',
+        params,
+        roots: async () => {
+          const roots = await resolveSweepRoots({ scope: 'page', pageId: params.pageId })
+          started = roots.roots[0]
+          return roots
+        },
+        // The page is pinned on the first call: "the page the designer is on" may be another one
+        // by the time a resumed call arrives.
+        state: () => ({ pageId: started!.id, edges: [] as Edge[] }),
+      })
+      const found = await figma.getNodeByIdAsync(sweep.state.pageId)
+      if (!found || found.type !== 'PAGE') {
+        throw new Error(`the page this flow.map started on (${sweep.state.pageId}) is gone — start over without cursor`)
+      }
+      // Loaded before its children are read: the sweep would load it too, but only once it walks.
+      const page = found
+      await page.loadAsync()
+      const named = new Map<string, string>()
+      for (const node of page.children) named.set(node.id, node.name)
+
+      // One reaction read per node, inside the sweep — never the whole page collected first.
+      await sweep.walk(async (node) => {
+        if (!('reactions' in node) && !('getReactionsAsync' in node)) return
         const anyNode = node as any
         const raw =
           typeof anyNode.getReactionsAsync === 'function' ? await anyNode.getReactionsAsync() : anyNode.reactions
         for (const reaction of await summarizeReactions(raw, async (id) => named.get(id) ?? null)) {
           if (!reaction.destinationId) continue
-          edges.push({
+          sweep.state.edges.push({
             from: node.id,
             fromName: node.name,
             to: reaction.destinationId,
@@ -2289,9 +2390,18 @@ export const READ_OPS: readonly OpDef[] = [
             ...(reaction.transition ? { transition: reaction.transition } : {}),
           })
         }
+      })
+      const report = sweep.report()
+      if (!report.complete) {
+        return {
+          ...report,
+          page: { id: page.id, name: page.name },
+          note: 'partial sweep — call again with the same params plus `cursor`',
+        }
       }
 
       return {
+        ...report,
         page: { id: page.id, name: page.name },
         // `flowStartingPoints` is the designer's own declaration of where a flow begins —
         // better ground truth than guessing from in-degree.
@@ -2302,7 +2412,7 @@ export const READ_OPS: readonly OpDef[] = [
         frames: page.children
           .filter((node) => node.type === 'FRAME')
           .map((node) => ({ id: node.id, name: node.name })),
-        edges,
+        edges: sweep.state.edges,
       }
     },
   },
@@ -2460,7 +2570,9 @@ export const READ_OPS: readonly OpDef[] = [
     name: 'lint.colors',
     summary: 'Layers painted with a raw colour instead of a variable — exactly what a recolor cannot reach.',
     agent:
-      'Findings carry value and paintIndex — node.bind\'s exact arguments. ignore takes brand hexes out of the debt count, and the report names them back.',
+      'Findings carry value and paintIndex — node.bind\'s exact arguments. ignore takes brand hexes out of the debt count, and the report names them back. ' +
+      'Each call returns up to `limit` findings; while `complete` is false, call again with the same params plus `cursor` ' +
+      'for the next ones. `matched`/`byRule` count every finding so far and are the totals once `complete`.',
     mutates: false,
     params: {
       pageId: { type: 'string', description: 'Which page to walk — giving it implies scope: "page". Defaults to the current page when scope is "page".' },
@@ -2468,9 +2580,9 @@ export const READ_OPS: readonly OpDef[] = [
         type: 'string',
         default: 'page',
         enum: ['page', 'document'],
-        description: 'Where to look. `document` walks every page and is slow on a big file.',
+        description: 'Where to look. `document` walks every page, over as many calls as it takes.',
       },
-      limit: { type: 'number', default: 300, min: 1, max: 5000, description: 'Cap on findings returned.' },
+      limit: { type: 'number', default: 300, min: 1, max: 5000, description: 'Findings returned by this call; the `cursor` continues after them.' },
       ignore: {
         type: 'string[]',
         description:
@@ -2479,6 +2591,7 @@ export const READ_OPS: readonly OpDef[] = [
           'should not be counted as debt. Without this the totals stay permanently non-zero and ' +
           'stop working as a health number. Case-insensitive; alpha is ignored.',
       },
+      ...SWEEP_PARAMS,
     },
     async run(params) {
       /* Compared on the six hex digits only. A brand colour is that colour whether or not the
@@ -2493,15 +2606,19 @@ export const READ_OPS: readonly OpDef[] = [
        * scope:"document" — a declared param that gets silently ignored is how one stray field
        * used to buy the most expensive walk in the file. */
       const wantsPage = typeof params.pageId === 'string' && params.pageId !== ''
-      const pages: PageNode[] =
-        params.scope === 'document' && !wantsPage
-          ? (await loadAllPagesAsync(), figma.root.children.slice())
-          : [await resolvePage(params.pageId)]
-
-      const findings: Array<LintFinding & { page: string }> = []
-      for (const page of pages) {
-        const roots = page.children.filter((node): node is SceneNode => 'visible' in node)
-        for (const finding of await lintScopeAsync(roots)) {
+      const sweep = await openSweep({
+        op: 'lint.colors',
+        params,
+        roots: () => resolveSweepRoots({ scope: wantsPage ? 'page' : params.scope, pageId: params.pageId }),
+        state: () => ({ matched: 0, byRule: {} as Record<string, number>, exportedMains: new Map<string, boolean>() }),
+      })
+      const limit = params.limit as number
+      const findings: Array<LintFinding & { page: string | undefined }> = []
+      await sweep.walk(async (node) => {
+        const found: LintFinding[] = []
+        // An export-marked graphic (or an instance of one) is art: neither it nor its insides.
+        if (!(await lintNodeAsync(node, 0, found, sweep.state.exportedMains))) return 'skip'
+        for (const finding of found) {
           if (finding.rule !== 'unbound-fill' && finding.rule !== 'unbound-stroke') continue
           if (
             ignored.size > 0 &&
@@ -2510,22 +2627,25 @@ export const READ_OPS: readonly OpDef[] = [
           ) {
             continue
           }
-          findings.push({ ...finding, page: page.name })
+          sweep.state.matched += 1
+          sweep.state.byRule[finding.rule] = (sweep.state.byRule[finding.rule] ?? 0) + 1
+          // Every finding of a node stays together: the slice may overshoot `limit` by one node's
+          // worth rather than split a node across two calls.
+          findings.push({ ...finding, page: pageOf(node)?.name })
         }
-      }
-
-      const byRule: Record<string, number> = {}
-      for (const finding of findings) byRule[finding.rule] = (byRule[finding.rule] ?? 0) + 1
+        return findings.length >= limit ? 'stop' : undefined
+      })
       return {
+        ...sweep.report(),
         // The scope that actually ran, not the one passed — pageId may have narrowed it.
         scope: wantsPage ? 'page' : params.scope,
-        pages: pages.map((page) => page.name),
-        total: findings.length,
-        byRule,
+        pages: sweep.labels,
+        matched: sweep.state.matched,
+        byRule: sweep.state.byRule,
         // Named back, so a total that dropped is explained by the answer itself rather than by
         // remembering what was passed in. A filter nobody can see is a filter that misleads.
         ...(ignored.size > 0 ? { ignored: [...ignored].map((hex) => `#${hex}`) } : {}),
-        findings: findings.slice(0, params.limit as number),
+        findings,
       }
     },
   },
@@ -2702,6 +2822,7 @@ export const ALL_OPS: readonly OpDef[] = [
   ...ADMIN_OPS,
   ...WRITE_OPS,
   ...MODULE_OPS,
+  ...EDITOR_OPS,
   ...PLUGIN_OPS,
 ]
 

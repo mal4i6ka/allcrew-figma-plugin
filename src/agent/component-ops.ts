@@ -41,20 +41,14 @@
  */
 
 import { componentFor } from '../canvas/components.ts'
-import type { OpDef, ParamSpec } from './protocol.ts'
-import { findAllByTypes, loadAllPagesAsync, yieldToHost } from '../utils/tree.ts'
-import { pageOf, resolveWalkRoots } from './scope.ts'
+import { ParamError, type OpDef, type ParamSpec } from './protocol.ts'
+import { findAllByTypes } from '../utils/tree.ts'
+import { checkpoint, enforceDeadline } from '../utils/budget.ts'
+import { pageOf } from './scope.ts'
+import { openSweep, resolveSweepRoots, SWEEP_PARAMS, type Sweep, type SweepReport } from './sweep.ts'
 
 /* ------------------------------------------------------------------ basics */
 
-/** Yield to the host (and check the clock) every this many instances resolved. */
-const CHECK_EVERY = 200
-
-/** Clamp a caller's budget to something the bridge's own 170 s ceiling can still return inside. */
-function budgetOf(params: Record<string, unknown>, fallback: number): number {
-  const asked = typeof params.budgetMs === 'number' ? params.budgetMs : fallback
-  return Math.max(1000, Math.min(asked, 170_000))
-}
 
 
 /** `?node-id=1-23` — the suffix `node.focus` hands back, so a row can be jumped to directly. */
@@ -781,37 +775,51 @@ async function repoint(
 
 /* -------------------------------------------------------------- the census */
 
-interface Census {
-  instances: InstanceNode[]
-  mains: Map<string, MainFacts>
-  timedOut: boolean
-  walked: number
+type CensusGroup = {
+  facts: MainFacts
+  rows: InstanceRow[]
+  total: number
+  nested: number
+  variants: Map<string, number>
+  pages: Map<string, number>
 }
 
-/** Every instance under the requested scope, with its main resolved once per instance (there is
- * no batch form) and the clock checked every {@link CHECK_EVERY} so a huge file answers partially
- * instead of dying at the bridge ceiling with nothing. */
-async function census(roots: BaseNode[], deadline: number): Promise<Census> {
-  const found: InstanceNode[] = []
-  for (const root of roots) {
-    found.push(...(await findAllByTypes<InstanceNode>(root, ['INSTANCE'], { includeRoot: true })))
-  }
+type DetachedRow = {
+  id: string
+  name: string
+  page: string | null
+  was: string
+  origin: 'local' | 'library'
+  verified: boolean
+  link: string
+}
 
-  const mains = new Map<string, MainFacts>()
-  let timedOut = false
-  let walked = 0
-  for (const instance of found) {
-    if (walked > 0 && walked % CHECK_EVERY === 0) {
-      await yieldToHost()
-      if (Date.now() > deadline) {
-        timedOut = true
-        break
-      }
-    }
-    mains.set(instance.id, await readMain(instance))
-    walked += 1
+type SweepPhase = 'targets' | 'instances' | 'unused' | 'detached'
+
+function phaseCursor(params: Record<string, unknown>): { phase: SweepPhase | null; cursor?: string } {
+  if (typeof params.cursor !== 'string' || params.cursor === '') return { phase: null }
+  const split = params.cursor.indexOf(':')
+  const phase = params.cursor.slice(0, split) as SweepPhase
+  if (split < 1 || !['targets', 'instances', 'unused', 'detached'].includes(phase)) {
+    throw new ParamError('cursor is not a component census cursor; start over without it')
   }
-  return { instances: timedOut ? found.slice(0, walked) : found, mains, timedOut, walked }
+  return { phase, cursor: params.cursor.slice(split + 1) }
+}
+
+function paramsForPhase(params: Record<string, unknown>, cursor?: string): Record<string, unknown> {
+  return { ...params, cursor }
+}
+
+function reportForPhase(report: SweepReport, phase: SweepPhase): SweepReport {
+  return report.cursor ? { ...report, cursor: `${phase}:${report.cursor}` } : report
+}
+
+function unfinished(report: SweepReport, labels: readonly string[], phase: SweepPhase): Record<string, unknown> {
+  return {
+    ...reportForPhase(report, phase),
+    scope: { pages: labels },
+    note: 'The sweep is not complete; call again with the same params plus `cursor`.',
+  }
 }
 
 function countBy<T>(rows: readonly T[], key: (row: T) => string | null): Array<{ name: string; count: number }> {
@@ -824,40 +832,25 @@ function countBy<T>(rows: readonly T[], key: (row: T) => string | null): Array<{
   return [...counts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count)
 }
 
-/** Which component the census is being asked about — `null` means "all of them", the inventory. */
-async function resolveTargets(params: Record<string, unknown>): Promise<Set<string> | null> {
+async function targetIds(params: Record<string, unknown>): Promise<Set<string>> {
   const ids = new Set<string>()
-  if (typeof params.nodeId === 'string' && params.nodeId !== '') {
-    const node = await figma.getNodeByIdAsync(params.nodeId)
-    if (!node) throw new Error(`no node with id ${params.nodeId}`)
-    if (node.type === 'INSTANCE') {
-      const facts = await readMain(node)
-      ids.add(facts.identity)
-      if (facts.id) ids.add(facts.id)
-    } else if (node.type === 'COMPONENT_SET') {
-      ids.add(node.id)
-      for (const child of node.children) ids.add(child.id)
-    } else if (node.type === 'COMPONENT') {
-      const parent = node.parent
-      if (params.exact !== true && parent && parent.type === 'COMPONENT_SET') ids.add(parent.id)
-      ids.add(node.id)
-    } else {
-      throw new Error(`${node.name} is a ${node.type} — name a component, a set, a variant or an instance`)
-    }
+  if (typeof params.nodeId !== 'string' || params.nodeId === '') return ids
+  const node = await figma.getNodeByIdAsync(params.nodeId)
+  if (!node) throw new Error(`no node with id ${params.nodeId}`)
+  if (node.type === 'INSTANCE') {
+    const facts = await readMain(node)
+    ids.add(facts.identity)
+    if (facts.id) ids.add(facts.id)
+  } else if (node.type === 'COMPONENT_SET') {
+    ids.add(node.id)
+    for (const child of node.children) ids.add(child.id)
+  } else if (node.type === 'COMPONENT') {
+    if (params.exact !== true && node.parent?.type === 'COMPONENT_SET') ids.add(node.parent.id)
+    ids.add(node.id)
+  } else {
+    throw new Error(`${node.name} is a ${node.type} — name a component, a set, a variant or an instance`)
   }
-  if (typeof params.name === 'string' && params.name !== '') {
-    await loadAllPagesAsync()
-    const needle = params.name.toLowerCase()
-    const found = await findAllByTypes<ComponentNode | ComponentSetNode>(figma.root, ['COMPONENT', 'COMPONENT_SET'])
-    const matches = found.filter((node) => node.name.toLowerCase().includes(needle))
-    if (matches.length === 0) throw new Error(`no component matches "${params.name}"`)
-    for (const node of matches) {
-      const parent = node.parent
-      if (node.type === 'COMPONENT' && params.exact !== true && parent && parent.type === 'COMPONENT_SET') ids.add(parent.id)
-      ids.add(node.id)
-    }
-  }
-  return ids.size > 0 ? ids : null
+  return ids
 }
 
 /* ------------------------------------------------------------------- reads */
@@ -871,10 +864,10 @@ export const COMPONENT_READ_OPS: readonly OpDef[] = [
       'set, a variant, or any instance of one) it answers for that component: total copies, the ' +
       'split by page and by variant, and a row per copy with its frame path, its override count ' +
       'and a `link` to hand to `node.focus`. With NO target it inverts into an inventory — every ' +
-      'component ranked by how many copies it has, plus `unused`, the ones nothing instantiates, ' +
-      'which is the list a library cleanup starts from. `nested: true` also lists copies that sit ' +
-      'inside other copies (they are override mirrors, counted separately either way). Copies ' +
-      'whose main is gone are counted as `orphans` here and detailed by `component.orphans`.',
+      'component ranked by how many copies it has, plus `unused`, the ones nothing instantiates. ' +
+      'On `complete: false`, call again with the same params plus `cursor`; only the completing ' +
+      'call contains aggregates. The target lookup, instance census, and unused inventory are ' +
+      'separate cursor phases so no page-loading pass is silently skipped.',
     mutates: false,
     params: {
       nodeId: {
@@ -894,54 +887,142 @@ export const COMPONENT_READ_OPS: readonly OpDef[] = [
       components: { type: 'number', default: 40, min: 1, max: 500, description: 'Components listed in inventory mode.' },
       nested: { type: 'boolean', default: false, description: 'Also list copies nested inside other copies. They are always counted.' },
       unused: { type: 'boolean', default: true, description: 'Inventory mode: also list components nothing instantiates.' },
-      budgetMs: { type: 'number', default: 60000, min: 1000, max: 170000, description: 'Answer within this, partially if need be.' },
+      ...SWEEP_PARAMS,
     },
     async run(params) {
       const started = Date.now()
-      const deadline = started + budgetOf(params, 60_000)
-      const wantNested = params.nested === true
-      const limit = params.limit as number
+      const incoming = phaseCursor(params)
+      let phase = incoming.phase
+      let cursor = incoming.cursor
+      let targets: Set<string> | null = null
 
-      /* The scope params address WHERE THE COPIES ARE; `nodeId` here addresses WHICH COMPONENT,
-       * so the walk roots are resolved from scope/pageId alone. */
-      const { roots, labels } = await resolveWalkRoots({ scope: params.scope, pageId: params.pageId })
-      const { instances, mains, timedOut, walked } = await census(roots, deadline)
-      const targets = await resolveTargets(params)
-
-      const groups = new Map<
-        string,
-        {
-          facts: MainFacts
-          rows: InstanceRow[]
-          total: number
-          nested: number
-          variants: Map<string, number>
-          pages: Map<string, number>
+      if (phase === null || phase === 'targets') {
+        const ids = await targetIds(params)
+        if (typeof params.name === 'string' && params.name !== '') {
+          const targetSweep = await openSweep({
+            op: 'component.instances:targets',
+            params: paramsForPhase(params, phase === 'targets' ? cursor : undefined),
+            roots: () => resolveSweepRoots({ scope: params.scope, pageId: params.pageId }),
+            state: () => ({ ids }),
+            types: ['COMPONENT', 'COMPONENT_SET'],
+          })
+          const needle = params.name.toLowerCase()
+          await targetSweep.walk((node) => {
+            if (node.name.toLowerCase().includes(needle)) {
+              if (node.type === 'COMPONENT' && params.exact !== true && node.parent?.type === 'COMPONENT_SET') {
+                targetSweep.state.ids.add(node.parent.id)
+              }
+              targetSweep.state.ids.add(node.id)
+            }
+          })
+          const report = targetSweep.report()
+          if (!report.complete) return unfinished(report, targetSweep.labels, 'targets')
+          if (targetSweep.state.ids.size === 0) throw new Error(`no component matches "${params.name}"`)
+          targets = targetSweep.state.ids
+        } else {
+          targets = ids.size > 0 ? ids : null
         }
-      >()
-      let orphans = 0
-      for (const instance of instances) {
-        const facts = mains.get(instance.id)
-        if (!facts) continue
-        if (facts.status !== 'live') orphans += 1
-        if (targets && !targets.has(facts.identity) && !(facts.id && targets.has(facts.id))) continue
-        let group = groups.get(facts.identity)
-        if (!group) {
-          group = { facts, rows: [], total: 0, nested: 0, variants: new Map(), pages: new Map() }
-          groups.set(facts.identity, group)
-        }
-        group.total += 1
-        if (facts.name) group.variants.set(facts.name, (group.variants.get(facts.name) ?? 0) + 1)
-        const row = describeInstance(instance)
-        if (row.nested) group.nested += 1
-        /* Counted off every copy, never off `rows`: the rows stop at `limit` and a per-page
-         * count taken from them would silently report 2 copies on a page that holds 20. */
-        if (row.page) group.pages.set(row.page, (group.pages.get(row.page) ?? 0) + 1)
-        if ((wantNested || !row.nested) && group.rows.length < limit) group.rows.push(row)
+        phase = null
+        cursor = undefined
       }
 
-      const inventory = targets === null
-      const ranked = [...groups.values()].sort((a, b) => b.total - a.total)
+      type State = {
+        targets: Set<string> | null
+        groups: Map<string, CensusGroup>
+        used: Set<string>
+        walked: number
+        orphans: number
+        unused: Array<{ id: string; name: string; type: string; link: string }>
+      }
+
+      let state: State
+      let labels: readonly string[]
+      let report: SweepReport
+      if (phase === 'unused') {
+        const unusedSweep = await openSweep<State>({
+          op: 'component.instances:unused',
+          params: paramsForPhase(params, cursor),
+          roots: () => resolveSweepRoots({}),
+          state: () => {
+            throw new Error('unused sweep state is missing')
+          },
+          types: ['COMPONENT', 'COMPONENT_SET'],
+        })
+        state = unusedSweep.state
+        labels = unusedSweep.labels
+        await unusedSweep.walk((node) => {
+          if (state.used.has(node.id)) return
+          if (node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET') return
+          if (node.type === 'COMPONENT_SET' && node.children.some((child) => state.used.has(child.id))) return
+          state.unused.push({ id: node.id, name: node.name, type: node.type, link: deepLink(node.id) })
+        })
+        report = unusedSweep.report()
+        if (!report.complete) return unfinished(report, labels, 'unused')
+      } else {
+        const instanceSweep = await openSweep<State>({
+          op: 'component.instances:instances',
+          params: paramsForPhase(params, phase === 'instances' ? cursor : undefined),
+          roots: () => resolveSweepRoots({ scope: params.scope, pageId: params.pageId }),
+          state: () => ({
+            targets,
+            groups: new Map(),
+            used: new Set(),
+            walked: 0,
+            orphans: 0,
+            unused: [],
+          }),
+          types: ['INSTANCE'],
+          includeRoots: true,
+        })
+        state = instanceSweep.state
+        labels = instanceSweep.labels
+        await instanceSweep.walk(async (node) => {
+          const instance = node as InstanceNode
+          const facts = await readMain(instance)
+          state.walked += 1
+          if (facts.id) state.used.add(facts.id)
+          if (facts.setId) state.used.add(facts.setId)
+          if (facts.status !== 'live') state.orphans += 1
+          if (state.targets && !state.targets.has(facts.identity) && !(facts.id && state.targets.has(facts.id))) return
+          let group = state.groups.get(facts.identity)
+          if (!group) {
+            group = { facts, rows: [], total: 0, nested: 0, variants: new Map(), pages: new Map() }
+            state.groups.set(facts.identity, group)
+          }
+          group.total += 1
+          if (facts.name) group.variants.set(facts.name, (group.variants.get(facts.name) ?? 0) + 1)
+          const row = describeInstance(instance)
+          if (row.nested) group.nested += 1
+          if (row.page) group.pages.set(row.page, (group.pages.get(row.page) ?? 0) + 1)
+          if ((params.nested === true || !row.nested) && group.rows.length < (params.limit as number)) group.rows.push(row)
+        })
+        report = instanceSweep.report()
+        if (!report.complete) return unfinished(report, labels, 'instances')
+
+        const inventory = state.targets === null
+        const pageScope = params.scope === 'page' || (typeof params.pageId === 'string' && params.pageId !== '')
+        if (inventory && params.unused !== false && !pageScope) {
+          const unusedSweep = await openSweep<State>({
+            op: 'component.instances:unused',
+            params: paramsForPhase(params),
+            roots: () => resolveSweepRoots({}),
+            state: () => state,
+            types: ['COMPONENT', 'COMPONENT_SET'],
+          })
+          labels = unusedSweep.labels
+          await unusedSweep.walk((node) => {
+            if (state.used.has(node.id)) return
+            if (node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET') return
+            if (node.type === 'COMPONENT_SET' && node.children.some((child) => state.used.has(child.id))) return
+            state.unused.push({ id: node.id, name: node.name, type: node.type, link: deepLink(node.id) })
+          })
+          report = unusedSweep.report()
+          if (!report.complete) return unfinished(report, labels, 'unused')
+        }
+      }
+
+      const inventory = state.targets === null
+      const ranked = [...state.groups.values()].sort((a, b) => b.total - a.total)
       const shown = inventory ? ranked.slice(0, params.components as number) : ranked
       const components = shown.map((group) => {
         const id = group.facts.setId ?? group.facts.id
@@ -960,47 +1041,24 @@ export const COMPONENT_READ_OPS: readonly OpDef[] = [
           byPage: [...group.pages.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
           byVariant: [...group.variants.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
           rows: group.rows,
-          truncated: group.rows.length < (wantNested ? group.total : group.total - group.nested),
+          truncated: group.rows.length < (params.nested === true ? group.total : group.total - group.nested),
         }
       })
-
-      /* Unused is a document-scope answer only: a component with no copies ON THIS PAGE is not
-       * an unused component, and reporting it as one is how a cleanup deletes something in use. */
-      const pageScope = params.scope === 'page' || (typeof params.pageId === 'string' && params.pageId !== '')
-      let unused: Array<{ id: string; name: string; type: string; link: string }> | undefined
-      if (inventory && params.unused !== false && !pageScope && !timedOut) {
-        await loadAllPagesAsync()
-        const all = await findAllByTypes<ComponentNode | ComponentSetNode>(figma.root, ['COMPONENT', 'COMPONENT_SET'])
-        const used = new Set<string>()
-        for (const facts of mains.values()) {
-          if (facts.id) used.add(facts.id)
-          if (facts.setId) used.add(facts.setId)
-        }
-        unused = all
-          .filter((node) => {
-            if (used.has(node.id)) return false
-            // A variant is used when its set is: report the set, never each variant of it.
-            if (node.type === 'COMPONENT') return !(node.parent && node.parent.type === 'COMPONENT_SET')
-            return !node.children.some((child) => used.has(child.id))
-          })
-          .map((node) => ({ id: node.id, name: node.name, type: node.type, link: deepLink(node.id) }))
-      }
-
+      const hasUnused = inventory && params.unused !== false && !(params.scope === 'page' || params.pageId)
       return {
+        ...report,
         mode: inventory ? 'inventory' : 'component',
         scope: { pages: labels },
-        walked: { instances: walked, of: instances.length },
+        walked: { instances: state.walked, of: state.walked },
         totals: {
-          instances: walked,
-          components: groups.size,
-          orphans,
-          ...(inventory ? { listed: components.length, unused: unused ? unused.length : null } : {}),
+          instances: state.walked,
+          components: state.groups.size,
+          orphans: state.orphans,
+          ...(inventory ? { listed: components.length, unused: hasUnused ? state.unused.length : null } : {}),
         },
         components,
-        ...(unused ? { unused } : {}),
-        /** Jump to any row with `node.focus`, or paste its `link` after the file URL. */
+        ...(hasUnused ? { unused: state.unused } : {}),
         focusWith: 'node.focus',
-        timedOut,
         ms: Date.now() - started,
       }
     },
@@ -1010,19 +1068,10 @@ export const COMPONENT_READ_OPS: readonly OpDef[] = [
     name: 'component.orphans',
     summary: 'Copies whose main component is gone — grouped by the master that died, with a source to rebuild it from.',
     agent:
-      'Deleting a main in Figma does not break its instances: they keep rendering and keep their ' +
-      'overrides, pointing at a component that has no page and no way back — which is why every ' +
-      'other read reports them as ordinary instances. This is the op that finds them. `deleted` ' +
-      'means the main is still in the file but unparented (a local main somebody deleted); ' +
-      '`missing` means Figma would not hand the main over at all (a library component deleted ' +
-      'upstream, or a library this file cannot reach) — and a `missing` group is keyed by NAME, ' +
-      'because an unresolvable main has no id to key on. Each group ranks its copies as rebuild ' +
-      'sources — most structure, fewest overrides first — and `component.restore` takes the id of ' +
-      'one of them. `detached` lists frames that were instances once (Figma remembers what they ' +
-      'were detached from) whose main is also gone: those cannot be relinked, only rebuilt from. ' +
-      'A frame detached from a LIBRARY component carries only a key, and whether that component ' +
-      'still exists is a question only the other file can answer — those rows come back ' +
-      '`verified: false` and are counted apart, never as casualties they may not be.',
+      'Finds deleted or missing mains and ranks their surviving copies as restore sources. Detached ' +
+      'frames are a second cursor phase so that pass is never silently omitted near a deadline. On ' +
+      '`complete: false`, call again with the same params plus `cursor`; only the completing call ' +
+      'contains groups and totals.',
     mutates: false,
     params: {
       scope: { type: 'string', default: 'document', enum: ['page', 'document'], description: 'Where to look.' },
@@ -1030,31 +1079,80 @@ export const COMPONENT_READ_OPS: readonly OpDef[] = [
       nodeId: { type: 'string', description: 'Walk just this subtree. Overrides scope and pageId.' },
       limit: { type: 'number', default: 20, min: 0, max: 500, description: 'Instance rows listed per dead main; counts are complete.' },
       detached: { type: 'boolean', default: true, description: 'Also report detached frames whose original main is gone.' },
-      budgetMs: { type: 'number', default: 60000, min: 1000, max: 170000, description: 'Answer within this, partially if need be.' },
+      ...SWEEP_PARAMS,
     },
     async run(params) {
       const started = Date.now()
-      const deadline = started + budgetOf(params, 60_000)
-      const { roots, labels } = await resolveWalkRoots(params)
-      const { instances, mains, timedOut, walked } = await census(roots, deadline)
+      const incoming = phaseCursor(params)
+      type State = {
+        walked: number
+        groups: Map<string, { facts: MainFacts; rows: Array<InstanceRow & { children: number }> }>
+        detached: DetachedRow[]
+      }
+      let state: State
+      let labels: readonly string[]
+      let report: SweepReport
 
-      const groups = new Map<string, { facts: MainFacts; rows: Array<InstanceRow & { children: number }> }>()
-      for (const instance of instances) {
-        const facts = mains.get(instance.id)
-        if (!facts || facts.status === 'live') continue
-        let group = groups.get(facts.identity)
-        if (!group) {
-          group = { facts, rows: [] }
-          groups.set(facts.identity, group)
+      if (incoming.phase === 'detached') {
+        const detachedSweep = await openSweep<State>({
+          op: 'component.orphans:detached',
+          params: paramsForPhase(params, incoming.cursor),
+          roots: () => resolveSweepRoots(params),
+          state: () => {
+            throw new Error('detached sweep state is missing')
+          },
+          types: ['FRAME'],
+          includeRoots: true,
+        })
+        state = detachedSweep.state
+        labels = detachedSweep.labels
+        await walkDetached(detachedSweep, state)
+        report = detachedSweep.report()
+        if (!report.complete) return unfinished(report, labels, 'detached')
+      } else {
+        const instanceSweep = await openSweep<State>({
+          op: 'component.orphans:instances',
+          params: paramsForPhase(params, incoming.phase === 'instances' ? incoming.cursor : undefined),
+          roots: () => resolveSweepRoots(params),
+          state: () => ({ walked: 0, groups: new Map(), detached: [] }),
+          types: ['INSTANCE'],
+          includeRoots: true,
+        })
+        state = instanceSweep.state
+        labels = instanceSweep.labels
+        await instanceSweep.walk(async (node) => {
+          const instance = node as InstanceNode
+          const facts = await readMain(instance)
+          state.walked += 1
+          if (facts.status === 'live') return
+          let group = state.groups.get(facts.identity)
+          if (!group) {
+            group = { facts, rows: [] }
+            state.groups.set(facts.identity, group)
+          }
+          group.rows.push({ ...describeInstance(instance), children: instance.children.length })
+        })
+        report = instanceSweep.report()
+        if (!report.complete) return unfinished(report, labels, 'instances')
+
+        if (params.detached !== false) {
+          const detachedSweep = await openSweep<State>({
+            op: 'component.orphans:detached',
+            params: paramsForPhase(params),
+            roots: () => resolveSweepRoots(params),
+            state: () => state,
+            types: ['FRAME'],
+            includeRoots: true,
+          })
+          labels = detachedSweep.labels
+          await walkDetached(detachedSweep, state)
+          report = detachedSweep.report()
+          if (!report.complete) return unfinished(report, labels, 'detached')
         }
-        group.rows.push({ ...describeInstance(instance), children: instance.children.length })
       }
 
-      const out = [...groups.values()]
+      const groups = [...state.groups.values()]
         .map((group) => {
-          /* Rebuild sources ranked by how much structure they still carry, then by how little
-           * of it is an override: a restore bakes the source's own state into the new main, so
-           * the least-overridden rich copy is the closest thing to the component as authored. */
           const ranked = [...group.rows].sort((a, b) => b.children - a.children || a.overrides - b.overrides)
           return {
             main: {
@@ -1083,59 +1181,51 @@ export const COMPONENT_READ_OPS: readonly OpDef[] = [
           }
         })
         .sort((a, b) => b.instances - a.instances)
-
-      let detached:
-        | Array<{ id: string; name: string; page: string | null; was: string; origin: 'local' | 'library'; verified: boolean; link: string }>
-        | undefined
-      if (params.detached !== false && !timedOut) {
-        detached = []
-        for (const root of roots) {
-          for (const frame of await findAllByTypes<FrameNode>(root, ['FRAME'])) {
-            if (!('detachedInfo' in frame)) break // this runtime has no detachedInfo at all
-            const info = frame.detachedInfo
-            if (!info) continue
-            const id = 'componentId' in info ? info.componentId : null
-            /* Only the ones whose origin is ALSO gone: a frame detached from a component that
-             * still exists is a designer's decision, not a casualty. A LIBRARY origin carries a
-             * key and no id — whether that component still exists is a question only the other
-             * file can answer, and importing 50 keys to find out is a network call per frame. So
-             * it is reported with `verified: false` rather than counted as a casualty it may not
-             * be: measured on a live file, 55 of 55 detached frames were key-only. */
-            if (id) {
-              const main = await figma.getNodeByIdAsync(id)
-              if (main && pageOf(main) !== null) continue
-            }
-            detached.push({
-              id: frame.id,
-              name: frame.name,
-              page: pageOf(frame)?.name ?? null,
-              was: id ?? ('componentKey' in info ? info.componentKey : 'unknown'),
-              origin: id ? 'local' : 'library',
-              verified: id !== null,
-              link: deepLink(frame.id),
-            })
-          }
-        }
-      }
-
+      const detached = params.detached === false ? undefined : state.detached
       return {
+        ...report,
         scope: { pages: labels },
-        walked: { instances: walked, of: instances.length },
+        walked: { instances: state.walked, of: state.walked },
         totals: {
-          deadMains: out.length,
-          orphanInstances: out.reduce((sum, group) => sum + group.instances, 0),
+          deadMains: groups.length,
+          orphanInstances: groups.reduce((sum, group) => sum + group.instances, 0),
           detachedFrames: detached ? detached.filter((row) => row.verified).length : null,
           detachedUnverified: detached ? detached.filter((row) => !row.verified).length : null,
         },
-        groups: out,
+        groups,
         ...(detached ? { detached } : {}),
         next: 'component.restore — rebuild the main from one of `restoreFrom` and relink the rest',
-        timedOut,
         ms: Date.now() - started,
       }
     },
   },
 ]
+
+async function walkDetached(
+  sweep: Sweep<{ detached: DetachedRow[] }>,
+  state: { detached: DetachedRow[] }
+): Promise<void> {
+  await sweep.walk(async (node) => {
+    const frame = node as FrameNode
+    if (!('detachedInfo' in frame)) return
+    const info = frame.detachedInfo
+    if (!info) return
+    const id = 'componentId' in info ? info.componentId : null
+    if (id) {
+      const main = await figma.getNodeByIdAsync(id)
+      if (main && pageOf(main) !== null) return
+    }
+    state.detached.push({
+      id: frame.id,
+      name: frame.name,
+      page: pageOf(frame)?.name ?? null,
+      was: id ?? ('componentKey' in info ? info.componentKey : 'unknown'),
+      origin: id ? 'local' : 'library',
+      verified: id !== null,
+      link: deepLink(frame.id),
+    })
+  })
+}
 
 /* ------------------------------------------------------------------ writes */
 
@@ -1259,23 +1349,34 @@ export const COMPONENT_WRITE_OPS: readonly OpDef[] = [
       /* Siblings: every orphan pointing at the same dead main. `name` matching is the fallback
        * for a main Figma will not resolve at all, and it is reported per row rather than assumed
        * — repointing a copy that merely shares a name would be a silent mistake. */
-      const siblings: Array<{ instance: InstanceNode; matchedBy: 'main' | 'name' }> = []
-      if (params.relink === false) {
-        siblings.push({ instance: source, matchedBy: matchBy })
-      } else {
-        await loadAllPagesAsync()
-        for (const candidate of await findAllByTypes<InstanceNode>(figma.root, ['INSTANCE'])) {
-          const theirs = await readMain(candidate)
-          if (theirs.status === 'live') continue
-          if (matchBy === 'main') {
-            const sameId = theirs.id !== null && theirs.id === facts.id
-            const sameKey = theirs.key !== null && theirs.key === facts.key
-            if (sameId || sameKey) siblings.push({ instance: candidate, matchedBy: 'main' })
-          } else if ((theirs.name ?? candidate.name) === (facts.name ?? source.name)) {
-            siblings.push({ instance: candidate, matchedBy: 'name' })
+      const siblings = await enforceDeadline(async () => {
+        const found: Array<{ instance: InstanceNode; matchedBy: 'main' | 'name' }> = []
+        await checkpoint()
+        if (params.relink === false) {
+          found.push({ instance: source, matchedBy: matchBy })
+          return found
+        }
+        /* Collection is a read-only, all-or-nothing phase. Pages are loaded one at a time and
+         * every candidate checks the enforced run deadline; mutation starts only after this
+         * function returns with the complete sibling set. */
+        for (const candidatePage of figma.root.children) {
+          await checkpoint()
+          await candidatePage.loadAsync()
+          for (const candidate of await findAllByTypes<InstanceNode>(candidatePage, ['INSTANCE'])) {
+            await checkpoint()
+            const theirs = await readMain(candidate)
+            if (theirs.status === 'live') continue
+            if (matchBy === 'main') {
+              const sameId = theirs.id !== null && theirs.id === facts.id
+              const sameKey = theirs.key !== null && theirs.key === facts.key
+              if (sameId || sameKey) found.push({ instance: candidate, matchedBy: 'main' })
+            } else if ((theirs.name ?? candidate.name) === (facts.name ?? source.name)) {
+              found.push({ instance: candidate, matchedBy: 'name' })
+            }
           }
         }
-      }
+        return found
+      })
 
       const fallback = freeSpot(page)
       const spot = {
@@ -1298,6 +1399,9 @@ export const COMPONENT_WRITE_OPS: readonly OpDef[] = [
         }
       }
 
+      if (figma.editorType && figma.editorType !== 'figma') {
+        throw new Error(`component.restore makes a component, which only Figma Design can — this file is open in ${figma.editorType}`)
+      }
       figma.commitUndo()
       /* Clone → detach → componentise. The clone is what keeps the source copy intact while it
        * becomes the new main's geometry; detaching is what makes it a plain frame Figma will

@@ -20,6 +20,7 @@ import { findAllWithCriteria } from '../utils/tree.ts'
 import { getNodeByIdTimed } from './loading.ts'
 import { readLocalVariables } from '../variables.ts'
 import type { IrNode } from '../targets/django/ir.ts'
+import { fitScaleToPixels, MAX_REPLY_RAW_BYTES } from './export-guard.ts'
 
 /* ----------------------------------------------------------------- helpers */
 
@@ -112,9 +113,18 @@ export async function collectTokens(nodes: Iterable<SceneNode>): Promise<TokenRe
   }
 }
 
-
-export async function screenshot(node: SceneNode, scale: number): Promise<Uint8Array> {
-  return node.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: scale } })
+/**
+ * A screenshot is one binary file in one reply. Five bytes per output pixel leaves room above
+ * RGBA for PNG filters/stream overhead before base64; keeping the render below that bound means
+ * a detailed, poorly-compressing PNG still cannot strand a response above the iframe cap.
+ */
+export async function screenshot(
+  node: SceneNode,
+  scale: number
+): Promise<{ bytes: Uint8Array; scale: number; downscaled: boolean }> {
+  const fitted = fitScaleToPixels(node, scale, Math.floor(MAX_REPLY_RAW_BYTES / 5))
+  const bytes = await node.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: fitted.scale } })
+  return { bytes, scale: fitted.scale, downscaled: fitted.downscaled }
 }
 
 /** One asset the emitted HTML/CSS actually references — named so a caller can hand `nodeId`

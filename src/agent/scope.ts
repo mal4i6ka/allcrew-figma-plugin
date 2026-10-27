@@ -57,12 +57,3 @@ export async function resolvePage(pageId?: unknown): Promise<PageNode> {
   await page.loadAsync()
   return page
 }
-
-/** Resolves the search root for the `scope` param shared by `node.find` / `components.list`. */
-export async function resolveScope(scope: string): Promise<BaseNode> {
-  if (scope === 'document') {
-    await loadAllPagesAsync()
-    return figma.root
-  }
-  return figma.currentPage
-}

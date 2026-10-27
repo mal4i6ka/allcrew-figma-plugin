@@ -12,7 +12,8 @@
  * three-colour heading to say nothing new.
  */
 
-import { describePaints } from './apply.ts'
+import { decorationWords } from './decoration.ts'
+import { readPaintsForWrite } from './paint-reader.ts'
 import type { FontSpec } from './props.ts'
 
 /** The fields a run can carry in the write vocabulary, under the names Figma gives them. */
@@ -26,6 +27,18 @@ export const RUN_FIELDS = [
   'letterSpacing',
   'lineHeight',
   'hyperlink',
+  'textStyleId',
+  'fillStyleId',
+  'listOptions',
+  'indentation',
+  'listSpacing',
+  'paragraphSpacing',
+  'paragraphIndent',
+  'textDecorationStyle',
+  'textDecorationOffset',
+  'textDecorationThickness',
+  'textDecorationColor',
+  'textDecorationSkipInk',
 ] as const
 
 type TextLike = TextNode | TextPathNode
@@ -56,7 +69,12 @@ export async function styledRuns(node: TextLike): Promise<StyledRun[]> {
 
     if (differs('fontName', segment.fontName)) run.fontName = writableFont(segment.fontName)
     if (differs('fontSize', segment.fontSize)) run.fontSize = segment.fontSize
-    if (differs('fills', segment.fills)) run.fill = await describePaints(segment.fills)
+    if (differs('fills', segment.fills)) {
+      run.fill = await readPaintsForWrite(
+        segment.fills,
+        async (id) => (await figma.variables.getVariableByIdAsync(id).catch(() => null))?.name ?? null
+      )
+    }
     if (differs('textDecoration', segment.textDecoration)) run.textDecoration = segment.textDecoration
     if (differs('textCase', segment.textCase)) run.textCase = segment.textCase
     if (differs('textWrapStyle', segment.textWrapStyle)) run.textWrap = segment.textWrapStyle
@@ -65,6 +83,23 @@ export async function styledRuns(node: TextLike): Promise<StyledRun[]> {
     if (differs('hyperlink', segment.hyperlink)) {
       const link = segment.hyperlink as { value?: string } | null
       run.link = link?.value ?? null
+    }
+    // A style on part of the text, by the name a write looks it up by. An empty id is "no
+    // style" — the run left the node's style — and has no word to be sent back with.
+    for (const [field, word] of [['textStyleId', 'textStyle'], ['fillStyleId', 'fillStyle']] as const) {
+      const id = segment[field]
+      if (typeof id === 'string' && id !== '' && differs(field, id)) {
+        run[word] = (await figma.getStyleByIdAsync(id).catch(() => null))?.name ?? id
+      }
+    }
+    // The look of the line, when this run draws it differently from the node it sits in.
+    const decoration = decorationWords(segment)
+    if (decoration && JSON.stringify(decoration) !== JSON.stringify(decorationWords(bag))) run.decoration = decoration
+    const list = (segment.listOptions as { type?: string } | undefined)?.type
+    if (list && list !== 'NONE') run.list = list
+    if (typeof segment.indentation === 'number' && segment.indentation > 0) run.indent = segment.indentation
+    for (const field of ['listSpacing', 'paragraphSpacing', 'paragraphIndent'] as const) {
+      if (typeof segment[field] === 'number' && differs(field, segment[field])) run[field] = segment[field]
     }
     runs.push(run)
   }

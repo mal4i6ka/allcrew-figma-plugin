@@ -570,6 +570,10 @@ export async function applyPalette(palette: Palette, options: PaletteApplyOption
   if (figma.editorType === 'dev') {
     throw new Error("Switch to Design mode — Dev Mode can't create variables or draw on the canvas.")
   }
+  // The swatches are components, and only Figma Design makes components.
+  if (options.canvas && figma.editorType !== 'figma') {
+    throw new Error(`The swatch sheet is made of components, which only Figma Design can create — this file is open in ${figma.editorType}. Turn the canvas half off to write just the variables.`)
+  }
   if (palette.spectra.length === 0) throw new Error('Add at least one spectrum before generating.')
 
   // Ramp advisories are already on screen in the panel, carrying their own fix buttons — the

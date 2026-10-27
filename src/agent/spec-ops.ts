@@ -24,7 +24,7 @@ import { variableNameResolver } from './bound-tokens.ts'
 import { isPlatform, unitProfile } from './platform.ts'
 import { indexSceneNodes, resolveSceneNode } from './subtree.ts'
 import { serializeNode } from '../targets/django/ir.ts'
-import { sleep } from '../utils/tree.ts'
+import { sleep } from '../utils/budget.ts'
 import {
   anchorOf,
   ANCHOR_POINTS,

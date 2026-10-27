@@ -5,6 +5,11 @@ import { isFileEnvelope, FILE_ENVELOPE } from './files.ts'
 
 const envelope = (value: unknown) => (value as Record<string, { name: string; data: string; mime: string }>)[FILE_ENVELOPE]
 
+test('the default spill budget leaves room under the 3 MiB transport cap', () => {
+  assert.ok(DEFAULT_DIGEST_BUDGET.maxBytes < 3 * 1024 * 1024)
+  assert.ok(3 * 1024 * 1024 - DEFAULT_DIGEST_BUDGET.maxBytes >= 400_000)
+})
+
 test('a small reply crosses unchanged', () => {
   const digest = digestReplies([{ type: 'PALETTE_APPLIED', report: { created: 4, updated: 0 } }])
   assert.deepEqual(digest.replies, [{ type: 'PALETTE_APPLIED', report: { created: 4, updated: 0 } }])

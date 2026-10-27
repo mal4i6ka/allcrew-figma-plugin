@@ -24,7 +24,8 @@ export interface DigestBudget {
   maxBytes: number
 }
 
-export const DEFAULT_DIGEST_BUDGET: DigestBudget = { keep: 400, maxFiles: 60, maxBytes: 4_000_000 }
+/** Leaves ~445 KiB under the iframe's 3 MiB JSON cap for envelopes and inline reply fields. */
+export const DEFAULT_DIGEST_BUDGET: DigestBudget = { keep: 400, maxFiles: 60, maxBytes: 2_700_000 }
 
 export interface DigestResult {
   replies: unknown[]
@@ -41,7 +42,7 @@ const MAX_KEYS = 24
 
 /** Channel traffic, not a command's answer — an agent's own request/response never belongs in
  * the digest of what the command did. */
-const CHANNEL_TYPES = ['AGENT_REQUEST', 'AGENT_RESPONSE', 'AGENT_GATES', 'AGENT_ACTIVITY']
+const CHANNEL_TYPES = ['AGENT_REQUEST', 'AGENT_CANCEL', 'AGENT_RESPONSE', 'AGENT_GATES', 'AGENT_ACTIVITY']
 
 export function digestReplies(
   replies: readonly unknown[],

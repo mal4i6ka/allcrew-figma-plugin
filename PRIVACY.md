@@ -20,7 +20,7 @@ The repository owner does not receive these transfers. Retention and deletion at
 
 ## Local credentials and settings
 
-Plugin settings, including the update-discovery preference, last successful update check, and panel dimensions, are stored with `figma.clientStorage`. Pairing secrets and Figma tokens are stored on the user's machine under `~/.allcrew-channel/` unless the user overrides those paths. Secrets are not included in release archives or generated design packages.
+Agent read/write grants are stored with `figma.clientStorage` per file. In files without a Figma file key, the first grant writes a random identifier (no personal data) into the document's plugin data so the grant can be found again. Plugin settings, including the update-discovery preference, last successful update check, and panel dimensions, are stored with `figma.clientStorage`. Pairing secrets and Figma tokens are stored on the user's machine under `~/.allcrew-channel/` unless the user overrides those paths. Secrets are not included in release archives or generated design packages.
 
 Development-plugin installs do not have a stable Figma file key. Agent read/write grants therefore last only for the current plugin session and are not restored by file name.
 

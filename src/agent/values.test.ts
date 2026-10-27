@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { describeColor, parseColor, resolveModes } from './values.ts'
+import { describeColor, parseColor, rememberVariable, resolveModes, resolveVariable } from './values.ts'
 
 /* ------------------------------------------------------------------ colour */
 
@@ -76,4 +76,35 @@ test('a variable colour may be written as CSS or as the API colour object, flatt
   assert.deepEqual(parseColor({ space: 'OKLCH', l: 0.7, c: 0.2, h: 50, alpha: 0.4 }), { r: 1, g: 0.5, b: 0, a: 0.4 })
   assert.deepEqual(calls, [['oklch(70% 0.2 50 / 0.4)'], [{ space: 'OKLCH', l: 0.7, c: 0.2, h: 50 }, 0.4]])
   assert.equal(parseColor({ space: 'OKLCH', r: 1, g: 0, b: 0 }), null)
+})
+
+test('a library variable already read off a layer is found by name without searching the libraries', async () => {
+  const global = globalThis as { figma?: unknown }
+  const previous = global.figma
+  let librarySearches = 0
+  const white = { id: 'VariableID:abc/1:2', name: 'White', remote: true }
+  global.figma = {
+    variables: {
+      getLocalVariablesAsync: async () => [],
+      getLocalVariableCollectionsAsync: async () => [],
+      getVariableByIdAsync: async (id: string) => (id === white.id ? white : null),
+    },
+    teamLibrary: {
+      getAvailableLibraryVariableCollectionsAsync: async () => {
+        librarySearches++
+        return []
+      },
+    },
+  }
+  try {
+    rememberVariable(white)
+    assert.equal(await resolveVariable('White'), white)
+    assert.equal(librarySearches, 0)
+    // The same name met with a second id is no longer a shortcut — it would be a guess.
+    rememberVariable({ id: 'VariableID:def/1:3', name: 'White', remote: true })
+    await assert.rejects(resolveVariable('White'), /no variable named "White"/)
+    assert.equal(librarySearches, 1)
+  } finally {
+    global.figma = previous
+  }
 })

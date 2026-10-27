@@ -1,7 +1,13 @@
 /**
  * Async tree traversal helpers for `documentAccess: "dynamic-page"` manifests, where
  * pages must be loaded on demand before their subtree can be read.
+ *
+ * Every loop here goes through `checkpoint()` (see `budget.ts`): it yields the main thread on a
+ * time slice and stops the walk when the agent run it belongs to was cancelled or ran out of
+ * time. A walk that cannot be stopped is a walk that outlives the call that asked for it.
  */
+
+import { checkpoint, holdSkipInvisible, pauseDue } from './budget.ts'
 
 export async function loadAllPagesAsync(): Promise<void> {
   /* Not Promise.all: on a 50-page file that fires 50 parallel loads at once, which is exactly
@@ -11,6 +17,9 @@ export async function loadAllPagesAsync(): Promise<void> {
   const pages = figma.root.children.slice()
   const BATCH = 4
   for (let start = 0; start < pages.length; start += BATCH) {
+    // Between batches, not inside one: a page load cannot be interrupted, but the next four
+    // need not start once the run that wanted them has been cancelled or ran out of time.
+    await checkpoint()
     await Promise.all(
       pages.slice(start, start + BATCH).map(async (page) => {
         try {
@@ -40,30 +49,12 @@ export interface FindAllWithCriteriaOptions {
   includeRoot?: boolean
 }
 
-/** Plugin code runs on Figma's main thread — a long synchronous walk freezes the whole app.
- * Yield to the host every this many visited nodes so large pages stay responsive. */
-const YIELD_EVERY = 500
-
-/**
- * Waits `ms` and resolves. The executor form is deliberate: the plugin sandbox is pinned to
- * ES2020 (see `tsconfig.json`), so `Promise.withResolvers` does not exist there, and raising the
- * whole target to shorten one helper would be trading a real constraint for a style preference.
- */
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/** Hand the main thread back for one turn. */
-export function yieldToHost(): Promise<void> {
-  return sleep(0)
-}
-
 export async function findAllWithCriteria<T extends SceneNode>(
   root: BaseNode,
   predicate: (node: SceneNode) => node is T,
   opts?: FindAllWithCriteriaOptions
 ): Promise<T[]> {
-  figma.skipInvisibleInstanceChildren = true
+  const release = holdSkipInvisible()
   try {
     const results: T[] = []
 
@@ -71,8 +62,8 @@ export async function findAllWithCriteria<T extends SceneNode>(
       results.push(root)
     }
 
-    // Iterative preorder DFS (same visit order as the recursive version) with periodic yields.
-    let visited = 0
+    // Iterative preorder DFS (same visit order as the recursive version); `checkpoint` yields
+    // on a time slice and stops the walk when its run is cancelled or out of time.
     const stack: BaseNode[] = [root]
     while (stack.length > 0) {
       const node = stack.pop()!
@@ -80,12 +71,12 @@ export async function findAllWithCriteria<T extends SceneNode>(
         for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i])
       }
       if (node !== root && predicate(node as SceneNode)) results.push(node as T)
-      if (++visited % YIELD_EVERY === 0) await yieldToHost()
+      if (pauseDue()) await checkpoint()
     }
 
     return results
   } finally {
-    figma.skipInvisibleInstanceChildren = false
+    release()
   }
 }
 
@@ -134,7 +125,10 @@ export async function findAllByTypes<T extends SceneNode = SceneNode>(
   if (native) {
     // Same flag, same reason as the DFS path: a search that walks into instances by default
     // would count (and pay for) every override mirror, which no caller of this helper wants.
-    figma.skipInvisibleInstanceChildren = true
+    // The native call itself is one blocking host call — it cannot yield part way, which is
+    // why document-wide callers shard it per page (see `sweep.ts`).
+    await checkpoint()
+    const release = holdSkipInvisible()
     try {
       const found = native({ types: types as NodeType[] }).filter(isSceneNode) as T[]
       if (opts?.includeRoot && isSceneNode(root) && types.includes(root.type)) {
@@ -142,7 +136,7 @@ export async function findAllByTypes<T extends SceneNode = SceneNode>(
       }
       return found
     } finally {
-      figma.skipInvisibleInstanceChildren = false
+      release()
     }
   }
   const typeSet = new Set(types)
@@ -158,15 +152,13 @@ export interface WalkOptions {
 }
 
 /**
- * Preorder walk that hands each scene node to a visitor, with the same yield cadence as
+ * Preorder walk that hands each scene node to a visitor, with the same checkpoint cadence as
  * `findAllWithCriteria`.
  *
  * This exists because "collect everything, then scan" puts the expensive half outside the
- * yields: the walk yields every {@link YIELD_EVERY} nodes, and then a tight loop reads
- * `boundVariables` / `fills` / `strokes` on tens of thousands of nodes with no yield at all —
- * on Figma's main thread, which that comment above warns about. Property getters are the real
- * cost of any scan (each one crosses the sandbox boundary and materialises fresh objects), so
- * the yields have to cover the visitor, not just the traversal.
+ * checkpoints: property getters are the real cost of any scan (each one crosses the sandbox
+ * boundary and materialises fresh objects), so the checkpoints have to cover the visitor, not
+ * just the traversal.
  *
  * Returns how many nodes were visited and how many of those sat inside instances — the second
  * number, measured on a deep walk, is exactly what a `skipInstanceChildren` walk would save.
@@ -176,11 +168,10 @@ export async function walkSceneNodes(
   visit: (node: SceneNode, insideInstance: boolean) => void,
   opts?: WalkOptions
 ): Promise<{ visited: number; insideInstances: number }> {
-  figma.skipInvisibleInstanceChildren = true
+  const release = holdSkipInvisible()
   try {
     let visited = 0
     let insideInstances = 0
-    let steps = 0
     const stack: Array<[BaseNode, boolean]> = [[root, false]]
     while (stack.length > 0) {
       const [node, inInstance] = stack.pop()!
@@ -193,11 +184,11 @@ export async function walkSceneNodes(
         const below = inInstance || node.type === 'INSTANCE'
         for (let i = node.children.length - 1; i >= 0; i--) stack.push([node.children[i], below])
       }
-      if (++steps % YIELD_EVERY === 0) await yieldToHost()
+      if (pauseDue()) await checkpoint()
     }
     return { visited, insideInstances }
   } finally {
-    figma.skipInvisibleInstanceChildren = false
+    release()
   }
 }
 

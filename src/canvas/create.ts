@@ -12,6 +12,7 @@
  */
 
 import { applyProps, type AppliedProp } from './apply.ts'
+import { editorProblem, gridPlace } from './board.ts'
 import { componentFor } from './components.ts'
 import { dependsOnChildren, dependsOnPlacement, movesToAnotherParent, planProps, type PropStep } from './props.ts'
 
@@ -29,17 +30,57 @@ export const NODE_KINDS = [
   'star',
   'polygon',
   'textPath',
+  'slice',
+  // FigJam
+  'sticky',
+  'shapeWithText',
+  'connector',
+  'codeBlock',
+  'table',
+  'linkPreview',
+  'gif',
+  // Figma Slides
+  'slide',
+  'slideRow',
+  // Figma Buzz
+  'asset',
 ] as const
+
+/** The editor a kind can only be made in — the rest are made anywhere a canvas is. */
+const KIND_FEATURE: Partial<Record<NodeKind, string>> = {
+  component: 'components.create',
+  sticky: 'stickies',
+  shapeWithText: 'shapesWithText',
+  connector: 'connectors',
+  codeBlock: 'codeBlocks',
+  table: 'tables',
+  linkPreview: 'linkPreviews',
+  gif: 'gifs',
+  slide: 'slides',
+  slideRow: 'slides',
+  asset: 'buzz',
+}
+
+/** Why this kind cannot be made in this editor, or null. Pure, so the refusal is testable. */
+export function kindProblem(kind: NodeKind, editor: string): string | null {
+  const feature = KIND_FEATURE[kind]
+  return feature ? editorProblem(feature, editor, kind) : null
+}
+
+/** Kinds whose `at` is a place on the Slides or Buzz grid, `[row, column]`. */
+const GRID_PLACED: readonly string[] = ['slide', 'slideRow', 'asset']
 
 export type NodeKind = (typeof NODE_KINDS)[number]
 
 export interface CreateSpec {
   kind: NodeKind
   /** For `instance`: the component to instantiate — an id, or a published component key.
-   *  For `svg`: the markup itself. For `textPath`: the VECTOR the text will follow. */
+   *  For `svg`: the markup itself. For `textPath`: the VECTOR the text will follow.
+   *  For `linkPreview`: the URL. For `gif`: the image hash. For `asset`: optionally a component. */
   of?: string
-  /** `textPath` only: [segment, position] — where on the outline the text starts. */
-  at?: [number, number]
+  /** `textPath`: [segment, position] — where on the outline the text starts.
+   *  `slide`, `asset`: [row, column] on the grid; `slideRow`: [row]. */
+  at?: [number, number] | [number]
   props?: unknown
   children?: unknown
 }
@@ -63,8 +104,9 @@ export interface CreatedNode {
 export interface CreatePlan {
   kind: NodeKind
   of?: string
-  /** `textPath` only: which segment of the vector the text starts on, and how far along it. */
-  at?: [number, number]
+  /** `textPath`: which segment of the vector the text starts on, and how far along it.
+   *  `slide`, `slideRow`, `asset`: the row and column on the grid. */
+  at?: [number, number] | [number]
   steps: PropStep[]
   children: CreatePlan[]
 }
@@ -115,6 +157,20 @@ export function planCreate(raw: unknown, where: string, problems: string[]): Cre
       }
     }
   }
+  if ((kind === 'linkPreview' || kind === 'gif') && (typeof spec.of !== 'string' || spec.of === '')) {
+    problems.push(`${where}.of must be ${kind === 'gif' ? 'the image hash of the GIF' : 'the URL to preview'}`)
+    return null
+  }
+  if (GRID_PLACED.includes(kind) && spec.at !== undefined) {
+    const place = gridPlace(spec.at)
+    if (!place || (kind === 'slideRow' && place.column !== undefined)) {
+      problems.push(`${where}.at must be ${kind === 'slideRow' ? '[row]' : '[row, column]'} — whole numbers from 0`)
+      return null
+    }
+  } else if (spec.at !== undefined && kind !== 'textPath') {
+    problems.push(`${where}.at is for textPath, slide, slideRow and asset — not ${kind}`)
+    return null
+  }
   for (const key of Object.keys(spec)) {
     if (!['kind', 'of', 'props', 'children', 'at'].includes(key)) {
       problems.push(`${where}: unknown key "${key}" — accepted: kind, of, props, children, at`)
@@ -138,7 +194,7 @@ export function planCreate(raw: unknown, where: string, problems: string[]): Cre
   return {
     kind: kind as NodeKind,
     ...(typeof spec.of === 'string' ? { of: spec.of } : {}),
-    ...(Array.isArray(spec.at) ? { at: spec.at as [number, number] } : {}),
+    ...(Array.isArray(spec.at) ? { at: spec.at as [number, number] | [number] } : {}),
     steps: plan.steps,
     children,
   }
@@ -191,7 +247,10 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
   // that named a parent quietly built the node somewhere else, and the FILL that followed
   // failed with "FILL can only be set on children of auto-layout frames".
   const moves = plan.steps.some(movesToAnotherParent)
-  if (!moves && node.parent !== fallbackParent) {
+  // A slide or a Buzz asset is put on its grid by the call that made it; appending it to the page
+  // would lift it out of the deck. Inside a row the caller named, it goes where it was told.
+  const gridded = GRID_PLACED.includes(plan.kind) && fallbackParent.type === 'PAGE'
+  if (!moves && !gridded && node.parent !== fallbackParent) {
     fallbackParent.appendChild(node)
   }
 
@@ -216,6 +275,9 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
 }
 
 async function make(plan: CreatePlan): Promise<SceneNode> {
+  const refusal = kindProblem(plan.kind, figma.editorType)
+  if (refusal) throw new Error(refusal)
+  const [row, column] = plan.at ?? []
   switch (plan.kind) {
     case 'frame':
       return figma.createFrame()
@@ -244,6 +306,10 @@ async function make(plan: CreatePlan): Promise<SceneNode> {
       return figma.createStar()
     case 'polygon':
       return figma.createPolygon()
+    // An export area and nothing else: no fill, no children, only a box and the export rows
+    // export.configure gives it — how a designer marks "ship this region" across several layers.
+    case 'slice':
+      return figma.createSlice()
     case 'svg':
       // Figma parses the markup itself and hands back a frame of real vector layers — which is
       // how an icon gets onto the canvas without anyone hand-writing a path.
@@ -255,7 +321,7 @@ async function make(plan: CreatePlan): Promise<SceneNode> {
       }
       // `createTextPath` CHANGES the type of the node it is given, so the returned object is the
       // one to keep — the original handle now describes something that no longer exists.
-      const [segment, position] = plan.at ?? [0, 0]
+      const [segment, position] = (plan.at ?? [0, 0]) as [number, number]
       const path = figma.createTextPath(outline, segment, position)
       const font = path.fontName
       if (font !== figma.mixed) await figma.loadFontAsync(font as FontName)
@@ -265,7 +331,52 @@ async function make(plan: CreatePlan): Promise<SceneNode> {
       const target = await componentFor(plan.of!)
       return target.createInstance()
     }
+    case 'sticky':
+      return withSublayerFont(figma.createSticky())
+    case 'shapeWithText':
+      return withSublayerFont(figma.createShapeWithText())
+    case 'connector':
+      return withSublayerFont(figma.createConnector())
+    case 'codeBlock':
+      return figma.createCodeBlock()
+    case 'table': {
+      // The size comes from `props.table`, which grows or cuts it after; Figma's default is 2×2.
+      const table = figma.createTable()
+      await figma.loadFontAsync(table.cellAt(0, 0).text.fontName as FontName)
+      return table
+    }
+    case 'linkPreview':
+      return (await figma.createLinkPreviewAsync(plan.of!)) as SceneNode
+    case 'gif':
+      return figma.createGif(plan.of!)
+    case 'slide':
+      return figma.createSlide(row, column)
+    case 'slideRow':
+      return figma.createSlideRow(row)
+    case 'asset': {
+      const buzz = figma.buzz
+      if (plan.of) {
+        const target = await componentFor(plan.of)
+        return buzz.createInstance(target, row ?? 0, column)
+      }
+      return buzz.createFrame(row, column)
+    }
   }
+}
+
+/** A new sticky's words are in the editor's default font, which has to be in memory before any
+ * text step can touch them. */
+async function withSublayerFont<T extends StickyNode | ShapeWithTextNode | ConnectorNode>(node: T): Promise<T> {
+  const font = node.text.fontName
+  // A new connector has no words and so no font at all — `{ family: "" }`, which cannot be loaded.
+  // It is given the board's own default, Inter Medium, the font a new sticky already carries.
+  if (font !== figma.mixed && font.family !== '') await figma.loadFontAsync(font)
+  else if (font !== figma.mixed) {
+    const fallback = { family: 'Inter', style: 'Medium' }
+    await figma.loadFontAsync(fallback)
+    node.text.fontName = fallback
+  }
+  return node
 }
 
 const nameFrom = (plan: CreatePlan): string | null => {

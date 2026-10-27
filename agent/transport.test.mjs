@@ -115,7 +115,7 @@ test.after(() => {
  * exercised without killing the connection.
  */
 function fakePlugin({ file = 'Test File', ops = [], gates = { read: true, write: true }, handle }) {
-  const plugin = { session: null, handle: null, stopped: false, seen: [] }
+  const plugin = { session: null, handle: null, stopped: false, seen: [], cancels: [] }
 
   plugin.connect = async () => {
     const hello = await api('POST', '/plugin/hello', {
@@ -136,6 +136,7 @@ function fakePlugin({ file = 'Test File', ops = [], gates = { read: true, write:
         } catch { return }
         if (plugin.stopped) return
         if (poll.status === 409) return // the bridge forgot us; a real iframe re-handshakes
+        for (const cancel of poll.body?.cancels || []) plugin.cancels.push(cancel)
         for (const request of poll.body?.requests || []) {
           plugin.seen.push(request)
           const answer = await handle(request)
@@ -617,6 +618,64 @@ test('a plugin that answers nothing at all times out with the timeout code', asy
     assert.equal(answer.body.retryable, true)
     // The message names the knob, because raising it is sometimes the right move.
     assert.match(answer.body.error, /ALLCREW_CHANNEL_AGENT_CALL_TIMEOUT_MS|bridge ceiling/)
+  } finally {
+    await plugin.stop()
+  }
+})
+
+/** Polls `check` until it holds or ~2 s pass — for effects that land on the plugin's next poll. */
+async function eventually(check) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (check()) return true
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  return check()
+}
+
+test('a request reaches the plugin carrying how long the bridge will still wait for it', async () => {
+  const plugin = await fakePlugin({ ops: ECHO_OPS, handle: async () => ({ ok: true, result: null }) }).connect()
+  try {
+    const answer = await api('POST', '/call', { op: 'document.info' })
+    assert.equal(answer.status, 200)
+    const [request] = plugin.seen
+    // The sandbox sets its own deadline from this; the bridge's ceiling here is 5 s.
+    assert.equal(typeof request.budgetMs, 'number')
+    assert.ok(request.budgetMs > 0 && request.budgetMs <= 5000, `budgetMs ${request.budgetMs}`)
+  } finally {
+    await plugin.stop()
+  }
+})
+
+test('a call the bridge stops waiting for is withdrawn from the plugin, not left running', async () => {
+  const plugin = await fakePlugin({ ops: ECHO_OPS, handle: async () => null }).connect()
+  try {
+    const answer = await api('POST', '/call', { op: 'document.info' })
+    assert.equal(answer.body.code, 'timeout')
+    const [request] = plugin.seen
+    assert.ok(await eventually(() => plugin.cancels.some((cancel) => cancel.id === request.id)), 'no cancel reached the plugin')
+    assert.match(plugin.cancels.find((cancel) => cancel.id === request.id).reason, /stopped waiting/)
+  } finally {
+    await plugin.stop()
+  }
+})
+
+test('a caller that hangs up mid-call has that call withdrawn from the plugin', async () => {
+  let arrived = null
+  const plugin = await fakePlugin({ ops: ECHO_OPS, handle: async (request) => { arrived = request; return null } }).connect()
+  try {
+    const controller = new AbortController()
+    const call = fetch(base() + '/call', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-allcrew-channel-secret': SECRET },
+      body: JSON.stringify({ op: 'document.info' }),
+      signal: controller.signal,
+    }).catch((error) => error)
+    assert.ok(await eventually(() => arrived !== null), 'the request never reached the plugin')
+    controller.abort()
+    await call
+    // Well inside the 5 s ceiling: the withdrawal follows the hang-up, not the timeout.
+    assert.ok(await eventually(() => plugin.cancels.some((cancel) => cancel.id === arrived.id)), 'no cancel reached the plugin')
+    assert.match(plugin.cancels.find((cancel) => cancel.id === arrived.id).reason, /caller went away/)
   } finally {
     await plugin.stop()
   }

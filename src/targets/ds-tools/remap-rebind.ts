@@ -19,7 +19,7 @@
 
 import type { RemapPlan } from '../../tokens/remap/plan.ts'
 import { describeRebind, emptyCounts, rebindTargets, sameRgba, type RebindCounts } from '../../tokens/remap/rebind.ts'
-import { loadAllPagesAsync, yieldToHost } from '../../utils/tree.ts'
+import { checkpoint, holdSkipInvisible, pauseDue } from '../../utils/budget.ts'
 import { isGradient } from './remap-inventory.ts'
 import { scopeRoots, type RemapScope } from './remap-apply.ts'
 
@@ -160,9 +160,10 @@ export async function scanRebind(
   const keys = new Set([...byVariable.values()].map((target) => target.key))
   let fetched = 0
   for (const key of keys) {
-    if (++fetched % 25 === 0) {
+    fetched++
+    if (pauseDue()) {
       progress?.(`importing library tokens… ${fetched}/${keys.size}`)
-      await yieldToHost()
+      await checkpoint()
     }
     const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null)
     if (variable) {
@@ -212,8 +213,8 @@ export async function scanRebind(
 
   const planBySite = new Map(plan.entries.map((entry) => [entry.site.id, entry]))
 
-  for (const [index, variable] of wholeFile ? locals.entries() : ([] as Array<[number, Variable]>)) {
-    if (index % 50 === 0) await yieldToHost()
+  for (const variable of wholeFile ? locals : []) {
+    if (pauseDue()) await checkpoint()
     for (const [modeId, value] of Object.entries(variable.valuesByMode)) {
       if (isAliasValue(value)) {
         const decision = rebindOf(value.id)
@@ -320,7 +321,6 @@ export async function scanRebind(
 
   /* ---- canvas ---- */
 
-  if (wholeFile) await loadAllPagesAsync()
   const overridden = new Map<string, Set<string>>()
 
   const noteOverrides = (instance: InstanceNode): void => {
@@ -412,19 +412,27 @@ export async function scanRebind(
     }
   }
 
-  figma.skipInvisibleInstanceChildren = true
+  const releaseSkipInvisible = holdSkipInvisible()
   try {
     let visited = 0
-    const rootSets: Array<{ label: string; roots: readonly SceneNode[] }> = wholeFile
-      ? figma.root.children.map((page) => ({ label: page.name, roots: page.children }))
-      : [{ label: options.scope, roots: await scopeRoots(options.scope) }]
+    const rootSets: Array<{ label: string; roots: readonly SceneNode[] }> = []
+    if (wholeFile) {
+      for (const page of figma.root.children) {
+        if (pauseDue()) await checkpoint()
+        await page.loadAsync()
+        rootSets.push({ label: page.name, roots: page.children })
+      }
+    } else {
+      rootSets.push({ label: options.scope, roots: await scopeRoots(options.scope) })
+    }
     for (const { label, roots } of rootSets) {
       progress?.(`scanning ${label}…`)
       const stack: Array<{ node: SceneNode; inInstance: boolean }> = []
       for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], inInstance: false })
       while (stack.length > 0) {
         const { node, inInstance } = stack.pop() as { node: SceneNode; inInstance: boolean }
-        if (++visited % 400 === 0) await yieldToHost()
+        visited++
+        if (pauseDue()) await checkpoint()
         const isInstance = node.type === 'INSTANCE'
         if (isInstance) noteOverrides(node as InstanceNode)
         // The instance's own fills are as inherited as its children's: gate the root by its
@@ -442,7 +450,7 @@ export async function scanRebind(
       }
     }
   } finally {
-    figma.skipInvisibleInstanceChildren = false
+    releaseSkipInvisible()
   }
 
   return { ops, counts, warnings }
@@ -509,9 +517,9 @@ async function executeOps(ops: readonly RebindOp[], undo: boolean, progress?: Pr
   }
 
   for (const [index, op] of ops.entries()) {
-    if (index % 25 === 0) {
+    if (pauseDue()) {
       progress?.(`${undo ? 'restoring' : 'rebinding'}… ${index}/${ops.length}`)
-      await yieldToHost()
+      await checkpoint()
     }
 
     if (op.kind === 'variable') {

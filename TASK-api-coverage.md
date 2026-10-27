@@ -35,7 +35,7 @@ node agent/api-coverage.mjs --releases 1.107.0
 
 | API | членов | не тронуто | что именно |
 | --- | ---: | ---: | --- |
-| AnnotationsAPI | 3 | 2 | addAnnotationCategoryAsync, getAnnotationCategoryByIdAsync |
+| AnnotationsAPI | 3 | 0 | — |
 | BuzzAPI | 7 | 7 | createFrame, createInstance, getBuzzAssetTypeForNode, getMediaContent, getTextContent, setBuzzAssetTypeForNode, smartResize |
 | ClientStorageAPI | 4 | 2 | deleteAsync, keysAsync |
 | CodegenAPI | 6 | 2 | callback, refresh |
@@ -44,20 +44,20 @@ node agent/api-coverage.mjs --releases 1.107.0
 | MotionAPI | 3 | 0 | — |
 | ParametersAPI | 3 | 3 | off, on, once |
 | PaymentsAPI | 6 | 6 | getPluginPaymentTokenAsync, getUserFirstRanSecondsAgo, initiateCheckoutAsync, requestCheckout, setPaymentStatusInDevelopment, status |
-| PluginAPI | 141 | 41 | buzz, callback, closePlugin, createBooleanOperation, createCanvasRow, createCodeBlock, createConnector, createGif … |
+| PluginAPI | 141 | 34 | buzz, callback, closePlugin, createBooleanOperation, createCanvasRow, createCodeBlock, createConnector, createGif … |
 | TeamLibraryAPI | 2 | 0 | — |
 | TextReviewAPI | 3 | 3 | isEnabled, requestToBeDisabledAsync, requestToBeEnabledAsync |
 | TimerAPI | 7 | 7 | pause, remaining, resume, start, state, stop, total |
 | UIAPI | 11 | 2 | getPosition, reposition |
 | UtilAPI | 7 | 1 | alphaOverride |
 | VariablesAPI | 27 | 5 | createVariableAliasByIdAsync, getLocalVariableCollections, getLocalVariables, getVariableById, getVariableCollectionById |
-| ViewportAPI | 6 | 3 | canvasView, slidesView, zoom |
+| ViewportAPI | 6 | 2 | canvasView, slidesView |
 
 ## Релизы, от свежего к старому (с 1.107.0)
 
-### 1.142.0 — 2026-10-16  (+8, не тронуто 2)
+### 1.142.0 — 2026-10-16  (+8, не тронуто 1)
 
-ColorWithColorSpace, UtilAPI.alphaOverride
+UtilAPI.alphaOverride
 
 ### 1.141.0 — 2026-10-05  (+2, не тронуто 0)
 
@@ -91,17 +91,17 @@ NonResizableTextMixin.getRangeTextWrapStyle, SublayerDimensionsMixin, TextWrapSt
 
 VideoExportConstraint, VideoExportScale
 
-### 1.130.0 — 2026-06-24  (+98, не тронуто 13)
+### 1.130.0 — 2026-06-24  (+98, не тронуто 12)
 
-Animations, AvailableAnimationStylePropValue, ComponentPropKeyframeBindings, ComponentPropKeyframeTracks, EffectKeyframeBindings, EffectKeyframeFieldName, EffectManualKeyframeTracks, ManualKeyframeTrack.keyframeOperation, ManualKeyframeTracks, MotionNodeMixin.removeManualKeyframeTrack, PaintKeyframeBinding, PaintManualKeyframeTrack, ShaderPropertyValue
+Animations, AvailableAnimationStylePropValue, ComponentPropKeyframeBindings, ComponentPropKeyframeTracks, EffectKeyframeBindings, EffectKeyframeFieldName, EffectManualKeyframeTracks, ManualKeyframeTrack.keyframeOperation, ManualKeyframeTracks, PaintKeyframeBinding, PaintManualKeyframeTrack, ShaderPropertyValue
 
-### 1.128.0 — 2026-06-03  (+2, не тронуто 1)
+### 1.128.0 — 2026-06-03  (+2, не тронуто 0)
 
-SlotNode.limitViolations
+всё тронуто
 
-### 1.127.0 — 2026-05-22  (+12, не тронуто 7)
+### 1.127.0 — 2026-05-22  (+12, не тронуто 0)
 
-GridLayoutMixin.reorderColumns, GridLayoutMixin.reorderRows, GridTrackReorderOptions, GridTrackReorderOptions.fromIndices, GridTrackReorderOptions.insertionIndex, NoiseEffectBase.noiseSizeVector, TextureEffect.noiseSizeVector
+всё тронуто
 
 ### 1.126.0 — 2026-05-13  (+2, не тронуто 0)
 
@@ -111,21 +111,21 @@ GridLayoutMixin.reorderColumns, GridLayoutMixin.reorderRows, GridTrackReorderOpt
 
 PluginAPI.createAutoLayout
 
-### 1.124.0 — 2026-03-26  (+3, не тронуто 1)
+### 1.124.0 — 2026-03-26  (+3, не тронуто 0)
 
-SlotNode.resetSlot
+всё тронуто
 
-### 1.123.0 — 2026-01-26  (+51, не тронуто 6)
+### 1.123.0 — 2026-01-26  (+51, не тронуто 4)
 
-BrushStrokeProperties, MinimalFillsMixin.setFillsAsync, MinimalStrokesMixin.setStrokesAsync, TextPathNode.textPathStartData, TransformGroupNode.transformModifiers, VariableWidthStrokeProperties
+BrushStrokeProperties, MinimalFillsMixin.setFillsAsync, MinimalStrokesMixin.setStrokesAsync, VariableWidthStrokeProperties
 
-### 1.122.0 — 2026-01-14  (+1, не тронуто 1)
+### 1.122.0 — 2026-01-14  (+1, не тронуто 0)
 
-ExtendedVariableCollection.rootVariableCollectionId
+всё тронуто
 
-### 1.121.0 — 2025-11-20  (+14, не тронуто 1)
+### 1.121.0 — 2025-11-20  (+14, не тронуто 0)
 
-Variable.valuesByModeForCollectionAsync
+всё тронуто
 
 ### 1.120.0 — 2025-11-19  (+1, не тронуто 0)
 
@@ -143,9 +143,9 @@ FontStyle
 
 всё тронуто
 
-### 1.115.0 — 2025-07-08  (+19, не тронуто 4)
+### 1.115.0 — 2025-07-08  (+19, не тронуто 2)
 
-GridChildrenMixin.gridChildHorizontalAlign, GridChildrenMixin.setGridChildPosition, GridLayoutMixin.appendChildAt, UIAPI.getPosition
+GridLayoutMixin.appendChildAt, UIAPI.getPosition
 
 ### 1.114.0 — 2025-06-13  (+1, не тронуто 0)
 
@@ -155,13 +155,13 @@ GridChildrenMixin.gridChildHorizontalAlign, GridChildrenMixin.setGridChildPositi
 
 всё тронуто
 
-### 1.111.0 — 2025-05-07  (+89, не тронуто 17)
+### 1.111.0 — 2025-05-07  (+89, не тронуто 16)
 
-BaseNonResizableTextMixin.Pick, BaseNonResizableTextMixin.getRangeBoundVariable, BaseNonResizableTextMixin.getRangeFillStyleId, BaseNonResizableTextMixin.getRangeFills, BaseNonResizableTextMixin.getRangeFontSize, BaseNonResizableTextMixin.getRangeFontWeight, BaseNonResizableTextMixin.getRangeHyperlink, BaseNonResizableTextMixin.getRangeLetterSpacing, BaseNonResizableTextMixin.getRangeOpenTypeFeatures, BaseNonResizableTextMixin.getRangeTextCase, BaseNonResizableTextMixin.getRangeTextStyleId, BaseNonResizableTextMixin.setRangeFillStyleId, BaseNonResizableTextMixin.setRangeFillStyleIdAsync, BaseNonResizableTextMixin.setRangeTextStyleId, NoiseEffect, NonResizableTextPathMixin, TextPathNode.handleMirroring
+BaseNonResizableTextMixin.Pick, BaseNonResizableTextMixin.getRangeBoundVariable, BaseNonResizableTextMixin.getRangeFillStyleId, BaseNonResizableTextMixin.getRangeFills, BaseNonResizableTextMixin.getRangeFontSize, BaseNonResizableTextMixin.getRangeFontWeight, BaseNonResizableTextMixin.getRangeHyperlink, BaseNonResizableTextMixin.getRangeLetterSpacing, BaseNonResizableTextMixin.getRangeOpenTypeFeatures, BaseNonResizableTextMixin.getRangeTextCase, BaseNonResizableTextMixin.getRangeTextStyleId, BaseNonResizableTextMixin.setRangeFillStyleId, BaseNonResizableTextMixin.setRangeTextStyleId, NoiseEffect, NonResizableTextPathMixin, TextPathNode.handleMirroring
 
-### 1.110.0 — 2025-04-17  (+15, не тронуто 6)
+### 1.110.0 — 2025-04-17  (+15, не тронуто 0)
 
-AnnotationCategory.isPreset, AnnotationCategory.setColor, AnnotationCategory.setLabel, AnnotationCategoryColor, AnnotationsAPI.addAnnotationCategoryAsync, AnnotationsAPI.getAnnotationCategoryByIdAsync
+всё тронуто
 
 ### 1.108.0 — 2025-02-26  (+24, не тронуто 12)
 
@@ -190,14 +190,18 @@ InteractiveSlideElementNode, InteractiveSlideElementNode.interactiveSlideElement
 (`on`/`off`/`once`) для плагина-генератора, а узловые методы живут в `DevResourcesMixin` и
 покрыты.
 
-### 2. Расширяемые коллекции переменных — 1.121–1.122, не тронуты
+### 2. Расширяемые коллекции переменных — ЗАКРЫТО
 
 `VariableCollection.extend`, `ExtendedVariableCollection.*`, `Variable.removeOverrideForMode`,
-`valuesByModeForCollectionAsync`, `VariablesAPI.extendLibraryCollectionByKeyAsync`.
+`VariablesAPI.extendLibraryCollectionByKeyAsync` — пишутся через `collections.update`.
 
-Почему важно: это ровно та боль, которая уже есть в файле — `content/strong` приходит из чужой
-библиотеки, 78 из 135 переменных в One не опубликованы. Расширение библиотечной коллекции —
-механизм, которым это чинится, и канал о нём не знает.
+Оставалось чтение, и там была настоящая дыра: у переменной `variableCollectionId` указывает на
+**корень**, поэтому расширение попадало в снапшот коллекцией с режимами и без единой переменной —
+и целый бренд молча пропадал из `tokens.emit`. Теперь `readLocalVariables` берёт значения через
+`valuesByModeForCollectionAsync` (на старом хосте — `variableOverrides` поверх родительских) и
+сворачивает их (`src/tokens/extensions.ts`): при локальном корне режимы расширения становятся ещё
+режимами корня — «Brand B Light», «Brand B Dark», то есть темами тех же токенов; при библиотечном
+корне расширение остаётся своей коллекцией и несёт унаследованные переменные.
 
 ### 3. Ручные ключевые кадры — ЗАКРЫТО
 
@@ -211,21 +215,42 @@ InteractiveSlideElementNode, InteractiveSlideElementNode.interactiveSlideElement
 Проверено: три дорожки записаны через канал, прочитаны обратно один в один, узел проходит
 прогон. GIF показывает движение.
 
+Дописано позже — два разрыва, которые «закрыто» не замечало:
+
+- **Дорожку нельзя было снять.** `removeManualKeyframeTrack` не звался ни разу: `at: null` снимает
+  одну дорожку, `keyframes: []` или `null` — все.
+- **Краски и эффекты не анимировались.** Индексные поля (`INDEXED_ITEM`) не читались и не
+  писались — а «тень растёт при наведении» и «цвет меняется» и есть самые частые анимации.
+  Теперь `field` берёт `fill`, `stroke[1]`, `effect.radius`, `effect[1].color` — слова после точки
+  те же, которыми эффект строится (`x`, `y`, `radius`, `spread`, `color`, `second`, `opacity`,
+  `density`, `startRadius`, у стекла `depth`, `refraction`, `dispersion`, `lightAngle`,
+  `lightIntensity`). Значение цвета — `"#RRGGBB"`, `"#RRGGBB @0.5"` или CSS-цвет; чтение отдаёт
+  ту же строку.
+
+`ManualKeyframeTrack.keyframeOperation` (SET/OFFSET/SCALE) осознанно не читается: это поле
+сводного `animations`, где лежат и дорожки от стилей анимации, а ручные дорожки всегда
+абсолютные — для round-trip оно ничего не меняет.
+
 ### 4. Figma Draw — переменная ширина ЗАКРЫТА
 
 `strokeProfile` — именованный профиль (`TAPER`, `WEDGE`, `EYE`…) или собственные точки
 `[{ at, width }]`. Проверено: линия, тонкая по краям и толстая в середине, записана, прочитана и
 пройдена прогоном начисто.
 
-Остаются `transformModifiers` у `TransformGroupNode`, `textPathStartData` и асинхронные
-`setFillsAsync` / `setStrokesAsync` — они не про вид экрана, а про удобство редактирования.
+Дописано позже: `repeat` читает и перенастраивает `transformModifiers` у существующей
+TRANSFORM_GROUP (раньше её можно было только создать через `NODE_GROUP as: "repeat"`; разбор теперь
+один на оба места — `repeatModifier`), `textStart: [сегмент, позиция]` читает и двигает
+`textPathStartData` у текста на пути (без него копия начинала текст там, где начинается контур).
+`setFillsAsync` / `setStrokesAsync` зовутся для узора — см. пункт 5.
 
 ### 5. Эффекты 2025 года — ЗАКРЫТО
 
 Шум (моно/дуо/мульти), текстура, стекло и прогрессивное размытие — все в словаре, и
 **список эффектов теперь читается массивом**, а не прозой: половина дизайна экрана это его тени.
 
-Осталcя `PatternPaint` — заливка узором из другого узла; она про иллюстрации, не про экраны.
+`PatternPaint` — заливка узором из другого узла — тоже в словаре: `{ pattern: "<id>", tile,
+scale, spacing: [x, y], align }`, пишется через `setFillsAsync` / `setStrokesAsync` (единственный
+путь, который ждёт загрузки исходного узла), читается в той же форме.
 
 Две находки на холсте: `blendMode` у шума есть в типизациях и отвергается рантаймом (второй такой
 случай за сезон), а полупрозрачная краска читалась как `"#FFFFFF @0.1"` и не принималась назад —
@@ -247,15 +272,87 @@ InteractiveSlideElementNode, InteractiveSlideElementNode.interactiveSlideElement
 прочитанное отправлено обратно как `NODE_CREATE`, копия сверена с оригиналом посвойственно —
 13 из 13 совпали, вместе с `runs`.
 
-### 7. Гриды — 1.115, 1.127
+Дописано позже: из ~25 полей `getStyledTextSegments` диапазоны знали 9. Добавлены `textStyle` и
+`fillStyle` на части текста (`setRangeTextStyleIdAsync` / `setRangeFillStyleIdAsync` — подзаголовок
+внутри абзаца), списки `list: ORDERED|UNORDERED|NONE` и `indent` (уровень вложенности),
+`listSpacing`, `paragraphSpacing`, `paragraphIndent` — в обе стороны. И `decoration: { style:
+SOLID|WAVY|DOTTED, offset, thickness, color, skipInk }` — как нарисовано подчёркивание; этого не
+было даже на уровне узла, так что волнистая цветная ссылка копировалась прямой и чёрной. Теперь
+оно есть и на узле, и в диапазоне; по умолчанию Figma не печатается вовсе.
 
-`setGridChildPosition`, `appendChildAt`, `gridChildHorizontalAlign`, `reorderRows`,
-`reorderColumns`.
+`openTypeFeatures` осознанно не читается: в Plugin API оно только для чтения, и прогон получил бы
+«прочитано, но не пишется» на каждом тексте с капителью.
 
-### 8. Осознанно отложено
+### 7. Гриды — ЗАКРЫТО
+
+Чтение печатало только число дорожек, поэтому копия грида `1fr 240px` возвращалась равными
+дорожками с гэпом потока — другой раскладкой, похожей на исходную. Теперь в `layout`:
+`rowGap` / `columnGap` (у грида свои два гэпа), `rowSizes` / `columnSizes` (число — пиксели,
+`"1fr"` — доля, `"hug"` — по содержимому; длина обязана совпасть с `rows`/`columns`),
+`positioning` (`MANUAL` / `ROW_AUTO_FLOW`) и действия `moveRows` / `moveColumns`
+(`reorderRows`/`reorderColumns`: `{ from: [индексы], to }`, счёт по порядку ДО перестановки). У
+ребёнка — `gridCell: { row, column }` (`setGridChildPosition`, ждёт, пока узел окажется в
+родителе; читается только в MANUAL-гриде — в авто-потоке ячейку выбрал грид) и
+`gridAlign: { horizontal, vertical }` (одно слово — по-прежнему вертикаль).
+
+`appendChildAt` не нужен отдельно: «добавить ребёнка, затем `gridCell`» — то же самое.
+
+### 8. Краски в форме записи — ЗАКРЫТО
+
+Чтение `fill`/`stroke` шло через `describePaints` — строку для отчёта: `image:3f9a… FILL`,
+`gradient:linear #FFF → #000`, две краски через ` + `. Ни одну из них запись не принимала, так что
+**каждая картинка, каждый градиент и каждый стек красок выпадал из прогона** как `dropped`;
+экран из пункта 6 прошёл, потому что был на сплошных цветах.
+
+Теперь (`src/canvas/paint-reader.ts`) обычный случай остаётся той же короткой строкой, а остальное
+выходит объектом записи: `{ gradient, from, to, stops }` — ручки восстанавливаются из матрицы
+обратным к `gradientTransform` преобразованием (`gradientEnds`, с флагом `skewed` для
+эллиптического/скошенного, который двумя ручками не описать); `{ image: { hash }, scaleMode }`;
+`{ video: { hash } }`; список — для стека. Связанная краска с прозрачностью — `{ variable,
+opacity }`, и запись теперь эту прозрачность сохраняет (раньше молча теряла). То же — у
+заливки диапазона текста и в `SELECTION_COLORS`.
+
+Видео пишется: `{ video: { hash } }` или `{ video: { bytes } }` через `createVideoAsync` (URL Figma
+не принимает; загрузка — только в платной команде).
+
+### 9. Остальное по свежим релизам — ЗАКРЫТО
+
+- **Шум и текстура, 1.127** — `size: [x, y]` для вытянутого зерна (`noiseSizeVector`), в обе
+  стороны.
+- **Слоты, 1.124 / 1.128** — `reset: true` на SLOT зовёт `resetSlot`; чтение говорит
+  `slotViolations` (`BELOW_MIN`, `ABOVE_MAX`, `HAS_NON_PREFERRED`), прогон считает это вердиктом,
+  а не свойством.
+- **Категории аннотаций, 1.110** — `ANNOTATION_CATEGORIES` и `ANNOTATION_CATEGORY_SET`
+  (add / edit — `setLabel`, `setColor` / remove; пресеты не удаляются).
+- **Страницы-разделители** — `PAGE_CREATE divider: true` (`createPageDivider`), `PAGE_LIST`
+  помечает их `divider: true`.
+- **`SELECTION_COLORS`** (`getSelectionColors`), **`FILE_THUMBNAIL`** / **`FILE_THUMBNAIL_SET`**
+  (обложка файла), **`UNDO`** (`triggerUndo` — каждая запись канала закрывает свой шаг отмены,
+  так что это ровно «отмени мою последнюю запись», если дизайнер с тех пор ничего не делал).
+- **`NODE_CREATE kind: "slice"`** (`createSlice`) — область экспорта; строки экспорта ей даёт
+  `export.configure`.
+- **`node.focus zoom`** — держать масштаб (`viewport.zoom`) с центром на узлах; ответ называет
+  итоговый вьюпорт.
+
+**Ложные пробелы отчёта** — сигнал «слово с точкой» их не видит, но вызов есть:
+`setFillsAsync` / `setStrokesAsync` (зовутся как `bag[setter]`), `VideoExportConstraint` /
+`VideoExportScale` (`NODE_EXPORT` строит их для MP4/GIF/WEBM), `BrushStrokeProperties` /
+`VariableWidthStrokeProperties` (типы за `brush` и `strokeProfile`),
+`UtilAPI.alphaOverride` (позиционный аргумент `figma.util.rgba(colour, alpha)`),
+`PluginAPI.targetNode` (имя параметра `moveLocal*StyleAfter`), `getRangeTextWrapStyle`
+(читается через `getStyledTextSegments(['textWrapStyle'])`, пишется `setRangeTextWrapStyle`),
+синхронные `getLocal*Styles` / `getStyleById` / `getFileThumbnailNode` /
+`getLocalCustomAnimationStyles` (используются Async-версии).
+
+**Не наш редактор:** `SublayerDimensionsMixin` (подпись коннектора FigJam), `getCanvasGrid` /
+`setCanvasGrid` / `createCanvasRow` / `moveNodesToCoord` (только Slides и Buzz), `createSticky`,
+`createConnector`, `createShapeWithText`, `createCodeBlock`, `createTable`, `createGif`,
+`createLinkPreviewAsync` (FigJam), `createNodeFromJSXAsync` (виджеты).
+
+### 10. Осознанно отложено
 
 - **Slides** (1.108) и **Buzz** (1.119) — другие редакторы, к экранам отношения не имеют.
-  В интервью названы, но на цель не работают; берём после первых семи.
+  В интервью названы, но на цель не работают.
 - **PaymentsAPI**, **TimerAPI**, **TextReviewAPI**, **ParametersAPI**, **ConstantsAPI** — не наш
   сценарий вообще.
 - **`PluginAPI.createAutoLayout`**, **`createBooleanOperation`** и прочие удобные конструкторы —
@@ -318,3 +415,23 @@ node agent/allcrew-channel.mjs call plugin.call '{"command":"NODE_ROUNDTRIP","pa
 Условие остановки — конъюнкция: пункты 1–7 закрыты **и** любой экран читается через канал так,
 что прочитанное можно отправить обратно и получить то же самое. Второе проверяется не глазами:
 нужен прогон «прочитать экран → создать по прочитанному → сравнить», и его пока нет.
+
+## 11. Редакторы: FigJam, Slides, Buzz — ЗАКРЫТО
+
+Манифест называет все пять редакторов (`figma`, `dev`, `figjam`, `slides`, `buzz`) и просит
+`activeusers` и `fileusers`. Сравнение API по редакторам — `docs/editors.md`. Итог:
+все 45 членов typings с пометкой «only available in …» достигнуты из `src/`.
+
+- FigJam: `sticky`, `shapeWithText`, `connector`, `codeBlock`, `table`, `linkPreview`, `gif` в
+  `NODE_CREATE`; свойства `wide`, `authorVisible`, `shapeType`, `connector`, `code`,
+  `codeLanguage`, `table`, `stuckTo`; текст стикера/фигуры/коннектора пишется теми же `text`,
+  `fontSize`, `fontName`, `runs` через подслой. `figjam.board`, `figjam.timer`.
+- Slides: `slide`, `slideRow` (`at: [row, column]`); `skipped`, `transition`. `canvas.grid`,
+  `canvas.arrange` (сетка, перенос, новый ряд, фокус, вид).
+- Buzz: `asset` (`at`, `of` — компонент); `assetType`. `buzz.content`, `buzz.content.set`,
+  `buzz.resize` (smartResize).
+- Design-only команды (компоненты, стили) в других редакторах отказывают с именем нужного
+  редактора, а не падают на «not a function». `editor.capabilities` — что можно здесь.
+- Осознанно нет: запись состояния чужого виджета (API разрешает только самому виджету),
+  `rescale` (есть `width`/`height`), запись `authorName` (подделка авторства).
+

@@ -10,6 +10,7 @@ import {
 } from './ops.ts'
 import { imagePlacement } from './paints.ts'
 import { validateParams } from './protocol.ts'
+import { resetSweeps } from './sweep.ts'
 
 /* -------------------------------------------------------------- registry */
 
@@ -47,41 +48,48 @@ function setFigma(mock: Record<string, unknown>) {
   ;(globalThis as { figma?: unknown }).figma = mock
 }
 
+/** A loaded-on-demand page, the way the sweep meets one under dynamic-page access. */
+function page(id: string, children: unknown[] = [], extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const self: Record<string, unknown> = { id, name: `Page ${id}`, type: 'PAGE', children, loadAsync: async () => {}, ...extra }
+  for (const child of children) (child as Record<string, unknown>).parent ??= self
+  return self
+}
+
+test.beforeEach(() => resetSweeps())
+
 test('node.find searches by native type when types is given, and stays post-filtered by name', async () => {
   const header = { id: '2:1', name: 'Header', type: 'FRAME' }
   const footer = { id: '2:2', name: 'Footer', type: 'FRAME' }
-  const currentPage = {
-    id: '0:1',
-    name: 'Page 1',
+  const currentPage = page('0:1', [], {
     findAllWithCriteria(criteria: { types: string[] }) {
       assert.deepEqual(criteria.types, ['FRAME'])
       return [header, footer]
     },
-  }
+  })
   setFigma({ currentPage, skipInvisibleInstanceChildren: false })
 
   const op = OPS_BY_NAME.get('node.find')!
   const params = validateParams(op.params, { types: ['FRAME'], name: 'head' })
-  const result = (await op.run(params)) as { total: number; truncated: boolean; nodes: Array<{ id: string }> }
+  const result = (await op.run(params)) as { matched: number; complete: boolean; nodes: Array<{ id: string }> }
 
   // The native path returns every FRAME; the name substring is the same post-filter the old
   // hand-rolled DFS applied, so only the header survives despite the mock returning both.
-  assert.equal(result.total, 1)
-  assert.equal(result.truncated, false)
+  assert.equal(result.complete, true)
+  assert.equal(result.matched, 1)
   assert.deepEqual(
     result.nodes.map((n) => n.id),
     ['2:1']
   )
 })
 
-test('node.find without types keeps walking with the hand-rolled DFS', async () => {
+test('node.find without types keeps walking the tree', async () => {
   const title = { id: '2:3', name: 'Title', type: 'TEXT', children: [] }
-  const currentPage = { id: '0:1', name: 'Page 1', type: 'PAGE', children: [title] }
+  const currentPage = page('0:1', [title])
   setFigma({ currentPage, skipInvisibleInstanceChildren: false })
 
   const op = OPS_BY_NAME.get('node.find')!
   const params = validateParams(op.params, { name: 'title' })
-  const result = (await op.run(params)) as { total: number; nodes: Array<{ id: string }> }
+  const result = (await op.run(params)) as { nodes: Array<{ id: string }> }
 
   assert.deepEqual(
     result.nodes.map((n) => n.id),
@@ -89,8 +97,92 @@ test('node.find without types keeps walking with the hand-rolled DFS', async () 
   )
 })
 
+test('a document-wide node.find pages by limit: each call carries on after the last match, none twice', async () => {
+  const frames = (prefix: string, count: number) =>
+    Array.from({ length: count }, (_, index) => ({ id: `${prefix}:${index}`, name: `Card ${prefix}${index}`, type: 'FRAME', children: [] }))
+  const loads: string[] = []
+  const one = page('1', frames('a', 3), { loadAsync: async () => { loads.push('1') } })
+  const two = page('2', frames('b', 2), { loadAsync: async () => { loads.push('2') } })
+  setFigma({ root: { children: [one, two] }, currentPage: one, skipInvisibleInstanceChildren: false })
+
+  const op = OPS_BY_NAME.get('node.find')!
+  const seen: string[] = []
+  let cursor: string | undefined
+  let calls = 0
+  for (;;) {
+    calls += 1
+    const result = (await op.run(
+      validateParams(op.params, { name: 'card', scope: 'document', limit: 2, ...(cursor ? { cursor } : {}) })
+    )) as { complete: boolean; cursor?: string; matched: number; nodes: Array<{ id: string }> }
+    assert.ok(result.nodes.length <= 2)
+    seen.push(...result.nodes.map((node) => node.id))
+    // The first page is all one call needs; the second is not loaded until the sweep gets there.
+    if (calls === 1) assert.deepEqual(loads, ['1'])
+    if (result.complete) {
+      assert.equal(result.matched, 5)
+      break
+    }
+    cursor = result.cursor
+    assert.ok(calls < 10)
+  }
+  assert.deepEqual(seen, ['a:0', 'a:1', 'a:2', 'b:0', 'b:1'])
+})
+
+test('variables.usage over several budget-limited calls reports counts only once, complete, with nothing counted twice', async () => {
+  // Six layers bound to one token over two pages; every node's binding read costs 400 ms of a 1 s slice.
+  const realNow = Date.now
+  let clock = 1_000_000
+  const bound = (id: string) => {
+    const node = { id, name: id, type: 'RECTANGLE', children: [] }
+    Object.defineProperty(node, 'boundVariables', {
+      get() {
+        clock += 400
+        return { width: { type: 'VARIABLE_ALIAS', id: 'V:1' } }
+      },
+    })
+    return node
+  }
+  const one = page('1', [bound('a'), bound('b'), bound('c')])
+  const two = page('2', [bound('d'), bound('e'), bound('f')])
+  setFigma({
+    root: { children: [one, two] },
+    currentPage: one,
+    skipInvisibleInstanceChildren: false,
+    variables: {
+      getLocalVariableCollectionsAsync: async () => [{ id: 'C:1', name: 'Tokens', defaultModeId: 'm', modes: [{ modeId: 'm', name: 'Mode' }] }],
+      getLocalVariablesAsync: async () => [
+        { id: 'V:1', key: 'k1', name: 'space/m', variableCollectionId: 'C:1', scopes: [], resolvedType: 'FLOAT', valuesByMode: { m: 8 } },
+      ],
+    },
+  })
+  Date.now = () => clock
+  try {
+    const op = OPS_BY_NAME.get('variables.usage')!
+    let cursor: string | undefined
+    const answers: Array<Record<string, unknown>> = []
+    for (let call = 0; call < 20; call++) {
+      const answer = (await op.run(
+        validateParams(op.params, { styles: false, budgetMs: 1000, ...(cursor ? { cursor } : {}) })
+      )) as Record<string, unknown>
+      answers.push(answer)
+      if (answer.complete) break
+      cursor = answer.cursor as string
+    }
+    const last = answers.at(-1)!
+    assert.ok(answers.length > 2, 'expected the walk to span several calls')
+    // Partial answers carry progress only — no counts that could be mistaken for the total.
+    assert.ok(answers.slice(0, -1).every((answer) => answer.complete === false && !('results' in answer)))
+    assert.equal(last.complete, true)
+    const [row] = last.results as Array<{ token: string; layers: number }>
+    assert.equal(row.token, 'space/m')
+    assert.equal(row.layers, 6)
+  } finally {
+    Date.now = realNow
+  }
+})
+
 test('node.find text matches what a layer says, through the TEXT index, inside instances too, and names its screen', async () => {
-  const page = { id: '0:1', name: 'Business', type: 'PAGE' } as Record<string, unknown>
+  const page = { id: '0:1', name: 'Business', type: 'PAGE', loadAsync: async () => {} } as Record<string, unknown>
   const mobile = { id: '9:1', name: 'Business account / Mobile', type: 'FRAME', parent: page } as Record<string, unknown>
   // The text sits inside an instance — the index answers it (measured live: 130 of 174 TEXT ids
   // on a site frame were instance-held, the same set the walk found).
@@ -153,27 +245,27 @@ test('components.list finds components and sets natively, still dropping variant
     documentationLinks: [],
     componentPropertyDefinitions: {},
   }
-  const page1 = { id: 'page1', name: 'Page 1', loadAsync: async () => {} }
-  const root = {
-    children: [page1],
+  const page1 = page('page1', [], {
     findAllWithCriteria(criteria: { types: string[] }) {
       assert.deepEqual(criteria.types, ['COMPONENT', 'COMPONENT_SET'])
       // The variant is reachable through `iconSet.children` too — the native call returning it
       // directly is exactly the case the "reachable through its parent" post-filter must catch.
       return [button, iconSet, variant]
     },
-  }
+  })
+  const root = { children: [page1] }
   setFigma({ root, skipInvisibleInstanceChildren: false })
 
   const op = OPS_BY_NAME.get('components.list')!
   const params = validateParams(op.params, {})
   const result = (await op.run(params)) as {
-    total: number
-    truncated: boolean
+    matched: number
+    complete: boolean
     components: Array<{ id: string; variants?: Array<{ id: string }> }>
   }
 
-  assert.equal(result.total, 2)
+  assert.equal(result.complete, true)
+  assert.equal(result.matched, 2)
   assert.deepEqual(
     result.components.map((c) => c.id),
     ['1:1', '1:2']
@@ -206,19 +298,16 @@ test('a component set Figma refuses to describe costs its own properties, not th
     documentationLinks: [],
     componentPropertyDefinitions: { Size: { type: 'VARIANT', variantOptions: ['S'] } },
   }
-  const root = {
-    children: [{ id: 'page1', name: 'Page 1', loadAsync: async () => {} }],
-    findAllWithCriteria: () => [broken, healthy],
-  }
+  const root = { children: [page('page1', [], { findAllWithCriteria: () => [broken, healthy] })] }
   setFigma({ root, skipInvisibleInstanceChildren: false })
 
   const op = OPS_BY_NAME.get('components.list')!
   const result = (await op.run(validateParams(op.params, {}))) as {
-    total: number
+    matched: number
     components: Array<{ id: string; properties?: unknown; propertiesError?: string }>
   }
 
-  assert.equal(result.total, 2)
+  assert.equal(result.matched, 2)
   assert.deepEqual(
     result.components.map((component) => component.id),
     ['1:9', '1:1']
@@ -599,15 +688,12 @@ test('a flow edge carries the navigation kind and the timing, not only the two n
     ],
   }
   const screen = { id: '2:1', name: 'Sheet', type: 'FRAME' }
-  const currentPage = {
-    id: '0:1',
-    name: 'Page 1',
-    children: [screen, button],
-    flowStartingPoints: [],
-    findAllWithCriteria: () => [button],
-    findAll: () => [button],
-  }
-  setFigma({ currentPage, skipInvisibleInstanceChildren: false })
+  const currentPage = page('0:1', [screen, button], { flowStartingPoints: [] })
+  setFigma({
+    currentPage,
+    getNodeByIdAsync: async (id: string) => (id === '0:1' ? currentPage : null),
+    skipInvisibleInstanceChildren: false,
+  })
 
   const op = OPS_BY_NAME.get('flow.map')!
   const result = (await op.run(validateParams(op.params, {}))) as {

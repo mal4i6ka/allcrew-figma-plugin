@@ -154,6 +154,14 @@ export async function resolveVariable(ref: unknown): Promise<Variable> {
       if (match) return match
     }
   }
+  // A library variable this session has already read off a layer is in the file — no need to ask
+  // every enabled library for it. Measured live in Slides: a deck's theme library answered the
+  // search below in minutes, for `var:White` that the slide being copied was bound to all along.
+  const seen = SEEN_REMOTE.get(ref)
+  if (seen) {
+    const variable = await figma.variables.getVariableByIdAsync(seen).catch(() => null)
+    if (variable) return variable
+  }
   // Nothing local answers to the name. It may still be a variable this file USES from a library:
   // a node bound to the 3.0 collection reads back as `spacing/m`, which exists nowhere locally, so
   // sending that reading back was refused for a token the file plainly holds. The libraries are
@@ -161,6 +169,20 @@ export async function resolveVariable(ref: unknown): Promise<Variable> {
   const fromLibrary = await libraryVariable(ref)
   if (fromLibrary) return fromLibrary
   throw new Error(`no variable named "${ref}"`)
+}
+
+/** Library variables met while reading, by name → id; a name met twice with two ids is dropped. */
+const SEEN_REMOTE = new Map<string, string>()
+const AMBIGUOUS = new Set<string>()
+
+/** Called by a read that has resolved a bound variable, so a write of the same name finds it. */
+export function rememberVariable(variable: { id: string; name: string; remote: boolean }): void {
+  if (!variable.remote || AMBIGUOUS.has(variable.name)) return
+  const known = SEEN_REMOTE.get(variable.name)
+  if (known && known !== variable.id) {
+    SEEN_REMOTE.delete(variable.name)
+    AMBIGUOUS.add(variable.name)
+  } else SEEN_REMOTE.set(variable.name, variable.id)
 }
 
 /** A variable of that name in an enabled library, imported so it can be bound here. */

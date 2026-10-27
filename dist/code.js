@@ -247,6 +247,56 @@
   var darkCompanionName = (themeCollectionName) => `${themeCollectionName.trim()}-dark`;
   var breakpointCompanionName = (step2) => `Breakpoints-${step2.trim()}`;
 
+  // src/tokens/extensions.ts
+  function foldExtensions(snapshot, extensions) {
+    if (extensions.length === 0) return snapshot;
+    const extensionIds = new Set(extensions.map((extension) => extension.id));
+    let collections = snapshot.collections.filter((collection) => !extensionIds.has(collection.id));
+    let variables = snapshot.variables;
+    const added = [];
+    for (const extension of extensions) {
+      if (extension.modes.length === 0) continue;
+      const root = collections.find((collection) => collection.id === extension.rootId);
+      if (!root) {
+        collections = [
+          ...collections,
+          {
+            id: extension.id,
+            name: extension.name,
+            defaultModeId: extension.modes[0].modeId,
+            modes: extension.modes.map(({ modeId, name }) => ({ modeId, name }))
+          }
+        ];
+        for (const variable of extension.variables) {
+          const values = extension.values[variable.id];
+          if (!values || Object.keys(values).length === 0) continue;
+          added.push(__spreadProps(__spreadValues({}, variable), { collectionId: extension.id, valuesByMode: __spreadValues({}, values) }));
+        }
+        continue;
+      }
+      const single2 = root.modes.length === 1;
+      const modes = extension.modes.map(({ modeId, name }) => ({
+        modeId,
+        name: single2 ? extension.name : `${extension.name} ${name}`
+      }));
+      collections = collections.map(
+        (collection) => collection.id === root.id ? __spreadProps(__spreadValues({}, collection), { modes: [...collection.modes, ...modes] }) : collection
+      );
+      variables = variables.map((variable) => {
+        var _a, _b;
+        if (variable.collectionId !== root.id) return variable;
+        const values = (_a = extension.values[variable.id]) != null ? _a : {};
+        const valuesByMode = __spreadValues({}, variable.valuesByMode);
+        for (const mode of extension.modes) {
+          const value2 = (_b = values[mode.modeId]) != null ? _b : variable.valuesByMode[mode.parentModeId];
+          if (value2 !== void 0) valuesByMode[mode.modeId] = value2;
+        }
+        return __spreadProps(__spreadValues({}, variable), { valuesByMode });
+      });
+    }
+    return __spreadProps(__spreadValues({}, snapshot), { collections, variables: [...variables, ...added] });
+  }
+
   // src/variables.ts
   function toCollectionEntry(collection) {
     return {
@@ -270,10 +320,49 @@
   async function readLocalVariables() {
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
     const variables = await figma.variables.getLocalVariablesAsync();
-    return {
+    const snapshot = {
       collections: collections.map(toCollectionEntry),
       variables: variables.map(toVariableEntry)
     };
+    return foldExtensions(snapshot, await readExtensions(collections));
+  }
+  async function readExtensions(collections) {
+    var _a, _b;
+    const out = [];
+    for (const collection of collections) {
+      const extension = collection;
+      if (extension.isExtension !== true) continue;
+      try {
+        const values = {};
+        const entries = [];
+        for (const id of extension.variableIds) {
+          const variable = await figma.variables.getVariableByIdAsync(id);
+          if (!variable) continue;
+          entries.push(toVariableEntry(variable));
+          if (typeof variable.valuesByModeForCollectionAsync === "function") {
+            values[id] = await variable.valuesByModeForCollectionAsync(extension);
+          } else {
+            const own = (_b = (_a = extension.variableOverrides) == null ? void 0 : _a[id]) != null ? _b : {};
+            values[id] = Object.fromEntries(
+              extension.modes.map((mode) => {
+                var _a2;
+                return [mode.modeId, (_a2 = own[mode.modeId]) != null ? _a2 : variable.valuesByMode[mode.parentModeId]];
+              }).filter(([, value2]) => value2 !== void 0)
+            );
+          }
+        }
+        out.push({
+          id: extension.id,
+          name: extension.name,
+          rootId: extension.rootVariableCollectionId,
+          modes: extension.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name, parentModeId: mode.parentModeId })),
+          values,
+          variables: entries
+        });
+      } catch (e) {
+      }
+    }
+    return out;
   }
   function aliasIdsOf(value2, into) {
     if (typeof value2 !== "object" || value2 === null) return;
@@ -478,19 +567,19 @@
   // src/tokens/color.ts
   var clamp01 = (value2) => value2 < 0 ? 0 : value2 > 1 ? 1 : value2;
   function parseHex(input) {
-    const hex2 = input.trim().replace(/^#/, "");
-    if (/^[0-9a-fA-F]{3}$/.test(hex2)) {
+    const hex4 = input.trim().replace(/^#/, "");
+    if (/^[0-9a-fA-F]{3}$/.test(hex4)) {
       return {
-        r: parseInt(hex2[0] + hex2[0], 16) / 255,
-        g: parseInt(hex2[1] + hex2[1], 16) / 255,
-        b: parseInt(hex2[2] + hex2[2], 16) / 255
+        r: parseInt(hex4[0] + hex4[0], 16) / 255,
+        g: parseInt(hex4[1] + hex4[1], 16) / 255,
+        b: parseInt(hex4[2] + hex4[2], 16) / 255
       };
     }
-    if (/^[0-9a-fA-F]{6}$/.test(hex2)) {
+    if (/^[0-9a-fA-F]{6}$/.test(hex4)) {
       return {
-        r: parseInt(hex2.slice(0, 2), 16) / 255,
-        g: parseInt(hex2.slice(2, 4), 16) / 255,
-        b: parseInt(hex2.slice(4, 6), 16) / 255
+        r: parseInt(hex4.slice(0, 2), 16) / 255,
+        g: parseInt(hex4.slice(2, 4), 16) / 255,
+        b: parseInt(hex4.slice(4, 6), 16) / 255
       };
     }
     return null;
@@ -574,8 +663,8 @@
       b: clamp01(linearToSrgb(linear.b))
     };
   }
-  var hexToOklch = (hex2) => {
-    const rgb = parseHex(hex2);
+  var hexToOklch = (hex4) => {
+    const rgb = parseHex(hex4);
     return rgb ? rgbToOklch(rgb) : null;
   };
   var oklchToHex = (color) => formatHex(oklchToRgb(color));
@@ -652,8 +741,8 @@
   function toDtcgPath(figmaName) {
     return figmaName.split("/").map(kebabSegment);
   }
-  function channelToHex2(channel) {
-    return Math.round(channel * 255).toString(16).padStart(2, "0");
+  function channelToHex2(channel2) {
+    return Math.round(channel2 * 255).toString(16).padStart(2, "0");
   }
   function rgbaToCss(color) {
     const alpha = "a" in color ? color.a : 1;
@@ -663,7 +752,7 @@
     if (alpha === 1) {
       return `#${channelToHex2(color.r)}${channelToHex2(color.g)}${channelToHex2(color.b)}`;
     }
-    const to255 = (channel) => Math.round(channel * 255);
+    const to255 = (channel2) => Math.round(channel2 * 255);
     return `rgb(${to255(color.r)} ${to255(color.g)} ${to255(color.b)} / ${+alpha.toFixed(4)})`;
   }
   var MOTION_DURATION_PREFIX = "motion/duration/";
@@ -962,9 +1051,9 @@
   function parseColor(value2) {
     if (typeof value2 !== "string") return null;
     const text6 = value2.trim();
-    const hex2 = /^#([0-9a-f]{3,8})$/i.exec(text6);
-    if (hex2) {
-      const digits = hex2[1];
+    const hex4 = /^#([0-9a-f]{3,8})$/i.exec(text6);
+    if (hex4) {
+      const digits = hex4[1];
       const expand = (pair2) => parseInt(pair2.length === 1 ? pair2 + pair2 : pair2, 16);
       if (digits.length === 3 || digits.length === 4) {
         return {
@@ -988,13 +1077,13 @@
     if (!rgb) return null;
     const parts = rgb[1].split(/[,/\s]+/).filter((part) => part !== "");
     if (parts.length < 3) return null;
-    const channel = (raw) => {
+    const channel2 = (raw) => {
       const n = raw.endsWith("%") ? Number(raw.slice(0, -1)) / 100 * 255 : Number(raw);
       return Number.isFinite(n) ? Math.max(0, Math.min(255, Math.round(n))) : NaN;
     };
-    const r = channel(parts[0]);
-    const g = channel(parts[1]);
-    const b = channel(parts[2]);
+    const r = channel2(parts[0]);
+    const g = channel2(parts[1]);
+    const b = channel2(parts[2]);
     if ([r, g, b].some((n) => Number.isNaN(n))) return null;
     const alpha = parts[3] === void 0 ? 1 : Number(parts[3].endsWith("%") ? Number(parts[3].slice(0, -1)) / 100 : parts[3]);
     return { r, g, b, a: Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1 };
@@ -1232,8 +1321,8 @@ ${sharedLines.join("\n")}
     const authored = source && sourceColorCss(source, a);
     if (authored) return authored;
     const toByte = (n) => Math.max(0, Math.min(255, Math.round(n * 255)));
-    const hex2 = [toByte(r), toByte(g), toByte(b)].map((n) => n.toString(16).padStart(2, "0")).join("");
-    if (a >= 1) return "#" + hex2;
+    const hex4 = [toByte(r), toByte(g), toByte(b)].map((n) => n.toString(16).padStart(2, "0")).join("");
+    if (a >= 1) return "#" + hex4;
     return `rgba(${toByte(r)}, ${toByte(g)}, ${toByte(b)}, ${Number(a.toFixed(3))})`;
   }
   function figmaTypeToW3C(type, value2) {
@@ -2890,9 +2979,9 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     { bsVar: "--bs-border-radius-xl", candidates: ["radius-xl", "corner-radius-xl", "border-radius-xl"] }
   ];
   function cssColorToRgbTriplet(value2) {
-    const hex2 = value2.match(/^#([0-9a-f]{6})$/i);
-    if (hex2) {
-      const n = parseInt(hex2[1], 16);
+    const hex4 = value2.match(/^#([0-9a-f]{6})$/i);
+    if (hex4) {
+      const n = parseInt(hex4[1], 16);
       return `${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255}`;
     }
     const rgb = value2.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
@@ -3078,8 +3167,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   }
 
   // src/targets/django/generate/metrics.ts
-  function hexToRgb(hex2) {
-    const h = hex2.replace("#", "").trim();
+  function hexToRgb(hex4) {
+    const h = hex4.replace("#", "").trim();
     const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
     const n = parseInt(full, 16);
     return { r: (n >> 16 & 255) / 255, g: (n >> 8 & 255) / 255, b: (n & 255) / 255 };
@@ -5493,6 +5582,98 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     }
   }
 
+  // src/utils/budget.ts
+  function sleep(ms) {
+    return new Promise((resolve2) => setTimeout(resolve2, ms));
+  }
+  var SLICE_MS = 40;
+  var RunStopped = class extends Error {
+    constructor(reason, message) {
+      super(message);
+      this.name = "RunStopped";
+      this.reason = reason;
+    }
+  };
+  var current = null;
+  var lastYield = Date.now();
+  var panelCommands = 0;
+  function currentRun() {
+    return current;
+  }
+  function setCurrentRun(run) {
+    current = run;
+    lastYield = Date.now();
+  }
+  async function asPanelCommand(fn) {
+    panelCommands += 1;
+    try {
+      return await fn();
+    } finally {
+      panelCommands -= 1;
+    }
+  }
+  function stoppable(run) {
+    return run !== null && run.enforce && panelCommands === 0;
+  }
+  function timeLeft() {
+    return current ? current.deadline - Date.now() : Infinity;
+  }
+  function stopReason(reserveMs = 0) {
+    if (!stoppable(current)) return null;
+    if (current.cancelled) return "cancelled";
+    return Date.now() + reserveMs >= current.deadline ? "deadline" : null;
+  }
+  function stopped(run, reason) {
+    const seconds2 = Math.round((Date.now() - run.startedAt) / 1e3);
+    return new RunStopped(
+      reason,
+      reason === "cancelled" ? `${run.op} was cancelled after ${seconds2}s (${run.cancelled}) \u2014 the plugin stopped it itself and is free again` : `${run.op} ran out of its ${seconds2}s time budget before finishing \u2014 the plugin stopped it itself so the file stays responsive. Narrow the call (pageId, nodeId, a smaller limit) or continue it with the \`cursor\` it hands back where the op supports one`
+    );
+  }
+  function pauseDue() {
+    const now = Date.now();
+    const run = current;
+    if (stoppable(run) && (run.cancelled || now >= run.deadline)) return true;
+    return now - lastYield >= SLICE_MS;
+  }
+  async function checkpoint() {
+    const now = Date.now();
+    const run = current;
+    if (stoppable(run)) {
+      if (run.cancelled) throw stopped(run, "cancelled");
+      if (now >= run.deadline) throw stopped(run, "deadline");
+    }
+    if (now - lastYield >= SLICE_MS) {
+      await sleep(0);
+      lastYield = Date.now();
+    }
+  }
+  async function enforceDeadline(fn) {
+    const run = current;
+    if (!run) return fn();
+    const before = run.enforce;
+    run.enforce = true;
+    try {
+      return await fn();
+    } finally {
+      run.enforce = before;
+    }
+  }
+  var skipHolders = 0;
+  var skipBefore = false;
+  function holdSkipInvisible() {
+    if (skipHolders === 0) skipBefore = figma.skipInvisibleInstanceChildren === true;
+    skipHolders += 1;
+    figma.skipInvisibleInstanceChildren = true;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      skipHolders -= 1;
+      if (skipHolders === 0) figma.skipInvisibleInstanceChildren = skipBefore;
+    };
+  }
+
   // src/targets/django/geometry.ts
   var TWO_PI = Math.PI * 2;
   function approx(a, b) {
@@ -6333,8 +6514,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     const out = [];
     let i = 0;
     while (i < children.length) {
-      const { live, ir } = children[i];
-      if (!isMaskNode(live)) {
+      const { live: live2, ir } = children[i];
+      if (!isMaskNode(live2)) {
         out.push(ir);
         i++;
         continue;
@@ -6345,20 +6526,19 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
         masked.push(children[j].ir);
         j++;
       }
-      const wrapper = buildMaskWrapper(live, ir, masked);
+      const wrapper = buildMaskWrapper(live2, ir, masked);
       if (wrapper) out.push(wrapper);
       i = j;
     }
     return out;
   }
   async function serializeChildren(node, isGridParent) {
-    const serialized = await Promise.all(
-      node.children.map(async (child) => {
-        const ir = await serializeNode(child, isGridParent);
-        return ir ? { live: child, ir } : null;
-      })
-    );
-    return groupMasks(serialized.filter((child) => child !== null));
+    const serialized = [];
+    for (const child of node.children) {
+      const ir = await serializeNode(child, isGridParent);
+      if (ir) serialized.push({ live: child, ir });
+    }
+    return groupMasks(serialized);
   }
   async function serializeFrame(node, isGridChild = false) {
     const { layout, warnings } = normalizeLayout(node);
@@ -6574,6 +6754,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     "CONNECTOR"
   ]);
   async function serializeNode(node, isGridChild = false) {
+    await checkpoint();
     if (node.removed) return null;
     if (node.visible === false) return null;
     const exportSettings = await resolveExportSettings(node);
@@ -6761,10 +6942,10 @@ ${body}
         var _a, _b, _c;
         if (partIndex > 0) paragraphs.push({ runs: [], listType: "NONE", listDepth: 0 });
         if (part.length === 0) return;
-        const current = paragraphs[paragraphs.length - 1];
-        current.listType = (_b = (_a = segment.listOptions) == null ? void 0 : _a.type) != null ? _b : "NONE";
-        current.listDepth = (_c = segment.indentation) != null ? _c : 0;
-        current.runs.push({ segment: __spreadProps(__spreadValues({}, segment), { characters: part }), index: index2 });
+        const current2 = paragraphs[paragraphs.length - 1];
+        current2.listType = (_b = (_a = segment.listOptions) == null ? void 0 : _a.type) != null ? _b : "NONE";
+        current2.listDepth = (_c = segment.indentation) != null ? _c : 0;
+        current2.runs.push({ segment: __spreadProps(__spreadValues({}, segment), { characters: part }), index: index2 });
       });
     });
     return paragraphs;
@@ -7543,19 +7724,19 @@ ${body}
   function splitRadiusComponents(value2) {
     const parts = [];
     let depth = 0;
-    let current = "";
+    let current2 = "";
     for (const char of value2) {
       if (char === "(") depth++;
       else if (char === ")") depth--;
       if (depth === 0 && (/\s/.test(char) || char === "/")) {
-        if (current) parts.push(current);
-        current = "";
+        if (current2) parts.push(current2);
+        current2 = "";
         if (char === "/") parts.push("/");
         continue;
       }
-      current += char;
+      current2 += char;
     }
-    if (current) parts.push(current);
+    if (current2) parts.push(current2);
     return parts;
   }
   function scaleBorderRadius(value2, smoothing) {
@@ -9299,7 +9480,7 @@ ${indent2}</${tag}>`;
     const source = sourceColorOf(color);
     const authored = source && sourceColorCss(source, color.a);
     if (authored) return authored;
-    const to255 = (channel) => Math.round(channel * 255);
+    const to255 = (channel2) => Math.round(channel2 * 255);
     return `rgba(${to255(color.r)}, ${to255(color.g)}, ${to255(color.b)}, ${round5(color.a, 4)})`;
   }
   var BLEND_MODE_CSS = {
@@ -11054,6 +11235,7 @@ ${mediaCss}`;
     const pages = figma.root.children.slice();
     const BATCH = 4;
     for (let start = 0; start < pages.length; start += BATCH) {
+      await checkpoint();
       await Promise.all(
         pages.slice(start, start + BATCH).map(async (page) => {
           try {
@@ -11070,21 +11252,13 @@ ${mediaCss}`;
     }
     await ((_a = figma.loadAllPagesAsync) == null ? void 0 : _a.call(figma));
   }
-  var YIELD_EVERY = 500;
-  function sleep(ms) {
-    return new Promise((resolve2) => setTimeout(resolve2, ms));
-  }
-  function yieldToHost() {
-    return sleep(0);
-  }
   async function findAllWithCriteria(root, predicate, opts) {
-    figma.skipInvisibleInstanceChildren = true;
+    const release = holdSkipInvisible();
     try {
       const results = [];
       if ((opts == null ? void 0 : opts.includeRoot) && isSceneNode(root) && predicate(root)) {
         results.push(root);
       }
-      let visited = 0;
       const stack = [root];
       while (stack.length > 0) {
         const node = stack.pop();
@@ -11092,11 +11266,11 @@ ${mediaCss}`;
           for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
         }
         if (node !== root && predicate(node)) results.push(node);
-        if (++visited % YIELD_EVERY === 0) await yieldToHost();
+        if (pauseDue()) await checkpoint();
       }
       return results;
     } finally {
-      figma.skipInvisibleInstanceChildren = false;
+      release();
     }
   }
   function nativeFindAllWithCriteria(root) {
@@ -11107,7 +11281,8 @@ ${mediaCss}`;
   async function findAllByTypes(root, types, opts) {
     const native = nativeFindAllWithCriteria(root);
     if (native) {
-      figma.skipInvisibleInstanceChildren = true;
+      await checkpoint();
+      const release = holdSkipInvisible();
       try {
         const found = native({ types }).filter(isSceneNode);
         if ((opts == null ? void 0 : opts.includeRoot) && isSceneNode(root) && types.includes(root.type)) {
@@ -11115,18 +11290,17 @@ ${mediaCss}`;
         }
         return found;
       } finally {
-        figma.skipInvisibleInstanceChildren = false;
+        release();
       }
     }
     const typeSet = new Set(types);
     return findAllWithCriteria(root, (node) => typeSet.has(node.type), opts);
   }
   async function walkSceneNodes(root, visit, opts) {
-    figma.skipInvisibleInstanceChildren = true;
+    const release = holdSkipInvisible();
     try {
       let visited = 0;
       let insideInstances = 0;
-      let steps = 0;
       const stack = [[root, false]];
       while (stack.length > 0) {
         const [node, inInstance] = stack.pop();
@@ -11139,20 +11313,20 @@ ${mediaCss}`;
           const below = inInstance || node.type === "INSTANCE";
           for (let i = node.children.length - 1; i >= 0; i--) stack.push([node.children[i], below]);
         }
-        if (++steps % YIELD_EVERY === 0) await yieldToHost();
+        if (pauseDue()) await checkpoint();
       }
       return { visited, insideInstances };
     } finally {
-      figma.skipInvisibleInstanceChildren = false;
+      release();
     }
   }
   function topLevelAncestorOrNull(node) {
-    let current = node;
+    let current2 = node;
     try {
       while (true) {
-        const parent = current.parent;
-        if (!parent || parent.type === "PAGE" || parent.type === "DOCUMENT") return current;
-        current = parent;
+        const parent = current2.parent;
+        if (!parent || parent.type === "PAGE" || parent.type === "DOCUMENT") return current2;
+        current2 = parent;
       }
     } catch (e) {
       return null;
@@ -11164,6 +11338,131 @@ ${mediaCss}`;
   function isSceneNode(node) {
     return node.type !== "DOCUMENT" && node.type !== "PAGE";
   }
+
+  // src/agent/export-guard.ts
+  var TRANSPORT_REPLY_CAP = 3 * 1024 * 1024;
+  var REPLY_ENVELOPE_RESERVE = 128 * 1024;
+  var MAX_REPLY_RAW_BYTES = Math.floor((TRANSPORT_REPLY_CAP - REPLY_ENVELOPE_RESERVE) * 3 / 4);
+  var DEFAULT_MAX_EXPORT_PIXELS = 4e7;
+  var DEFAULT_EXPORT_RESERVE_MS = 5e3;
+  var MIN_RASTER_BYTES_PER_PIXEL = 0.05;
+  function clampReplyBudget(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return MAX_REPLY_RAW_BYTES;
+    return Math.min(Math.floor(bytes), MAX_REPLY_RAW_BYTES);
+  }
+  function renderPixels(node, constraint) {
+    const width = Math.max(0, Number(node.width) || 0);
+    const height = Math.max(0, Number(node.height) || 0);
+    const value2 = Math.max(0, Number(constraint.value) || 0);
+    const scale = constraint.type === "WIDTH" ? width > 0 ? value2 / width : 0 : constraint.type === "HEIGHT" ? height > 0 ? value2 / height : 0 : value2;
+    const outputWidth = Math.max(0, Math.round(width * scale));
+    const outputHeight = Math.max(0, Math.round(height * scale));
+    return { width: outputWidth, height: outputHeight, pixels: outputWidth * outputHeight, scale };
+  }
+  function pixelRefusal(node, constraint, maxPixels = DEFAULT_MAX_EXPORT_PIXELS) {
+    const render = renderPixels(node, constraint);
+    if (render.pixels <= maxPixels) return { render };
+    return {
+      render,
+      error: `${render.width}\xD7${render.height} is ${(render.pixels / 1e6).toFixed(1)} megapixels, above the ${(maxPixels / 1e6).toFixed(1)} MP safety limit. Lower scale or use a WIDTH/HEIGHT constraint.`
+    };
+  }
+  function fitScaleToPixels(node, requestedScale, maxPixels = DEFAULT_MAX_EXPORT_PIXELS) {
+    const requested = renderPixels(node, { type: "SCALE", value: requestedScale });
+    if (requested.pixels <= maxPixels || requested.pixels === 0) {
+      return { scale: requestedScale, downscaled: false, render: requested };
+    }
+    const scale = requestedScale * Math.sqrt(maxPixels / requested.pixels);
+    const render = renderPixels(node, { type: "SCALE", value: scale });
+    return { scale, downscaled: true, render };
+  }
+  function fitConstraintToPixels(node, constraint, maxPixels = DEFAULT_MAX_EXPORT_PIXELS) {
+    const requested = renderPixels(node, constraint);
+    if (requested.pixels <= maxPixels || requested.pixels === 0) {
+      return { constraint, downscaled: false, render: requested };
+    }
+    const fitted = {
+      type: constraint.type,
+      value: constraint.value * Math.sqrt(maxPixels / requested.pixels)
+    };
+    return { constraint: fitted, downscaled: true, render: renderPixels(node, fitted) };
+  }
+  var ExportGuard = class {
+    /** `transport: false` for budgets that never travel in an agent reply (a zip the panel
+     * builds); everything else is clamped below the reply cap. */
+    constructor(options = {}) {
+      this.used = 0;
+      this.accepted = 0;
+      this.stopped = null;
+      var _a;
+      this.budgetBytes = options.transport === false && Number.isFinite(options.budgetBytes) && options.budgetBytes > 0 ? Math.floor(options.budgetBytes) : clampReplyBudget(options.budgetBytes);
+      this.maxPixels = Number.isFinite(options.maxPixels) && options.maxPixels > 0 ? Math.floor(options.maxPixels) : DEFAULT_MAX_EXPORT_PIXELS;
+      this.reserveMs = (_a = options.reserveMs) != null ? _a : DEFAULT_EXPORT_RESERVE_MS;
+    }
+    get spent() {
+      return this.used;
+    }
+    get count() {
+      return this.accepted;
+    }
+    get stop() {
+      return this.stopped;
+    }
+    get remaining() {
+      return Math.max(0, this.budgetBytes - this.used);
+    }
+    async beforeRender(offset) {
+      if (this.stopped) return { include: false, stoppedOn: this.stopped, nextOffset: offset };
+      if (this.remaining === 0) {
+        this.stopped = "bytes";
+        return { include: false, stoppedOn: "bytes", nextOffset: offset };
+      }
+      const before = stopReason(this.reserveMs);
+      if (before) {
+        this.stopped = before;
+        return { include: false, stoppedOn: before, nextOffset: offset };
+      }
+      await checkpoint();
+      const after = stopReason(this.reserveMs);
+      if (after) {
+        this.stopped = after;
+        return { include: false, stoppedOn: after, nextOffset: offset };
+      }
+      return { include: true };
+    }
+    /**
+     * A pre-render admission for raster exporters: a render that could not fit what is left even
+     * at {@link MIN_RASTER_BYTES_PER_PIXEL} is refused before `exportAsync`, instead of rendered
+     * only to be discarded.
+     */
+    preflightRaster(render, offset) {
+      if (this.stopped) return { include: false, stoppedOn: this.stopped, nextOffset: offset };
+      if (Math.ceil(render.pixels * MIN_RASTER_BYTES_PER_PIXEL) > this.remaining) {
+        this.stopped = "bytes";
+        return __spreadValues({
+          include: false,
+          stoppedOn: "bytes",
+          nextOffset: offset
+        }, this.accepted === 0 ? { firstItemTooLarge: true } : {});
+      }
+      return { include: true };
+    }
+    admit(bytes, offset) {
+      const size = Math.max(0, Math.floor(bytes));
+      if (this.stopped) return { include: false, stoppedOn: this.stopped, nextOffset: offset };
+      if (size > this.remaining) {
+        this.stopped = "bytes";
+        return __spreadValues({
+          include: false,
+          stoppedOn: "bytes",
+          nextOffset: offset
+        }, this.accepted === 0 ? { firstItemTooLarge: true } : {});
+      }
+      this.used += size;
+      this.accepted += 1;
+      return { include: true };
+    }
+  };
 
   // src/canvas/plate.ts
   function hasChildren2(node) {
@@ -11183,6 +11482,12 @@ ${mediaCss}`;
     }
   }
   async function exportPlate(node, settings) {
+    var _a;
+    const fitted = fitConstraintToPixels(
+      node,
+      settings.constraint,
+      (_a = settings.maxPixels) != null ? _a : DEFAULT_MAX_EXPORT_PIXELS
+    );
     const page = pageOf(node);
     if (!page) throw new Error(`"${node.name}" is not on a page \u2014 nothing to clone onto`);
     figma.commitUndo();
@@ -11195,7 +11500,7 @@ ${mediaCss}`;
       hideDescendants(clone2);
       return await clone2.exportAsync(__spreadValues(__spreadValues(__spreadValues({
         format: settings.format,
-        constraint: settings.constraint
+        constraint: fitted.constraint
       }, settings.contentsOnly === void 0 ? {} : { contentsOnly: settings.contentsOnly }), settings.useAbsoluteBounds === void 0 ? {} : { useAbsoluteBounds: settings.useAbsoluteBounds }), settings.colorProfile === void 0 ? {} : { colorProfile: settings.colorProfile }));
     } finally {
       if (!clone2.removed) clone2.remove();
@@ -11357,6 +11662,7 @@ ${mediaCss}`;
     const textNodes = await findAllWithCriteria(root, isTextNode);
     const catalog = /* @__PURE__ */ new Map();
     for (const node of textNodes) {
+      await checkpoint();
       const nodeEntries = await extractNodeEntries(node, sourceLocale);
       if (nodeEntries.length === 0) continue;
       const ref = reference(node);
@@ -11888,7 +12194,7 @@ ${mediaCss}`;
   async function tokeniseInlineSvg(svg, source) {
     var _a, _b;
     const byColor = /* @__PURE__ */ new Map();
-    const channel = (value2) => Math.round(value2 * 255).toString(16).padStart(2, "0");
+    const channel2 = (value2) => Math.round(value2 * 255).toString(16).padStart(2, "0");
     for (const prop of ["fills", "strokes"]) {
       const paints2 = source[prop];
       if (!Array.isArray(paints2)) continue;
@@ -11899,16 +12205,16 @@ ${mediaCss}`;
         const variable = await figma.variables.getVariableByIdAsync(aliasId);
         if (!variable) continue;
         const solid6 = paint;
-        const hex2 = `#${channel(solid6.color.r)}${channel(solid6.color.g)}${channel(solid6.color.b)}`.toLowerCase();
-        const known = byColor.get(hex2);
-        byColor.set(hex2, known === void 0 ? variable.name : known === variable.name ? known : null);
+        const hex4 = `#${channel2(solid6.color.r)}${channel2(solid6.color.g)}${channel2(solid6.color.b)}`.toLowerCase();
+        const known = byColor.get(hex4);
+        byColor.set(hex4, known === void 0 ? variable.name : known === variable.name ? known : null);
       }
     }
     if (byColor.size === 0) return svg;
-    return svg.replace(/\b(fill|stroke)="(#[0-9a-fA-F]{6})"/g, (whole, attribute, hex2) => {
-      const token2 = byColor.get(hex2.toLowerCase());
+    return svg.replace(/\b(fill|stroke)="(#[0-9a-fA-F]{6})"/g, (whole, attribute, hex4) => {
+      const token2 = byColor.get(hex4.toLowerCase());
       if (!token2) return whole;
-      return `${attribute}="var(${toCssVarName(token2)}, ${hex2})"`;
+      return `${attribute}="var(${toCssVarName(token2)}, ${hex4})"`;
     });
   }
   async function annotateVectorLeaves(nodes, sceneNodesById, inlineThresholdBytes = DEFAULT_VECTOR_INLINE_THRESHOLD_BYTES) {
@@ -12700,8 +13006,8 @@ ${mediaCss}`;
     var _a;
     return Boolean((_a = paint.boundVariables) == null ? void 0 : _a.color);
   }
-  function channelToHex3(channel) {
-    return Math.round(channel * 255).toString(16).padStart(2, "0");
+  function channelToHex3(channel2) {
+    return Math.round(channel2 * 255).toString(16).padStart(2, "0");
   }
   function paintDetail(paint, index2) {
     const detail = {
@@ -12824,27 +13130,28 @@ ${mediaCss}`;
     cache.set(main.id, flagged);
     return flagged;
   }
+  async function lintNodeAsync(node, depth, findings, exportedMainCache, maxDepth = DEFAULT_MAX_NESTING_DEPTH) {
+    if (isExportedGraphic(node)) return false;
+    if (node.type === "INSTANCE" && await instanceOfExportedComponent(node, exportedMainCache)) return false;
+    checkNodeShallow(node, depth, findings, maxDepth);
+    return true;
+  }
   async function lintScopeAsync(roots, options = {}) {
     var _a;
     const maxDepth = (_a = options.maxNestingDepth) != null ? _a : DEFAULT_MAX_NESTING_DEPTH;
-    const YIELD_EVERY2 = 500;
     const findings = [];
-    let visited = 0;
     const exportedMainCache = /* @__PURE__ */ new Map();
     const stack = [];
     for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], depth: 0 });
     while (stack.length > 0) {
       const { node, depth } = stack.pop();
-      if (isExportedGraphic(node)) continue;
-      if (node.type === "INSTANCE" && await instanceOfExportedComponent(node, exportedMainCache)) continue;
-      checkNodeShallow(node, depth, findings, maxDepth);
-      if (hasChildren3(node)) {
+      if (await lintNodeAsync(node, depth, findings, exportedMainCache, maxDepth) && hasChildren3(node)) {
         const childDepth = startsNewTemplateFile(node) ? 0 : depth + 1;
         for (let i = node.children.length - 1; i >= 0; i--) {
           stack.push({ node: node.children[i], depth: childDepth });
         }
       }
-      if (++visited % YIELD_EVERY2 === 0) await new Promise((resolve2) => setTimeout(resolve2, 0));
+      if (pauseDue()) await checkpoint();
     }
     return findings;
   }
@@ -12865,10 +13172,10 @@ ${mediaCss}`;
     };
   }
   function enclosingInstance(node) {
-    let current = node.parent;
-    while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
-      if (current.type === "INSTANCE") return current;
-      current = current.parent;
+    let current2 = node.parent;
+    while (current2 && current2.type !== "PAGE" && current2.type !== "DOCUMENT") {
+      if (current2.type === "INSTANCE") return current2;
+      current2 = current2.parent;
     }
     return null;
   }
@@ -12911,15 +13218,15 @@ ${mediaCss}`;
   }
   var SNAP_DELTA_E = 2;
   var SNAP_ALPHA_EPSILON = 0.01;
-  function channelToHex4(channel) {
-    return Math.round(channel * 255).toString(16).padStart(2, "0");
+  function channelToHex4(channel2) {
+    return Math.round(channel2 * 255).toString(16).padStart(2, "0");
   }
   function cssHex(color) {
     return `#${channelToHex4(color.r)}${channelToHex4(color.g)}${channelToHex4(color.b)}`;
   }
   function autoVariableName(color) {
-    const hex2 = `${channelToHex4(color.r)}${channelToHex4(color.g)}${channelToHex4(color.b)}`;
-    return color.a >= 1 ? `auto/${hex2}` : `auto/${hex2}-a${Math.round(color.a * 100)}`;
+    const hex4 = `${channelToHex4(color.r)}${channelToHex4(color.g)}${channelToHex4(color.b)}`;
+    return color.a >= 1 ? `auto/${hex4}` : `auto/${hex4}-a${Math.round(color.a * 100)}`;
   }
   function sortedIndices(rects, axis) {
     return rects.map((_, i) => i).sort((a, b) => rects[a][axis] - rects[b][axis]);
@@ -13070,9 +13377,9 @@ ${mediaCss}`;
       const [variable, library] = sources[i];
       const candidate = await toColorCandidate(variable, library, ctx);
       if (candidate) pool.push(candidate);
-      if ((i + 1) % 100 === 0) {
+      if (pauseDue()) {
         (_a = ctx.progress) == null ? void 0 : _a.call(ctx, `preparing token matches\u2026 ${i + 1}/${sources.length}`);
-        await yieldToHost();
+        await checkpoint();
       }
     }
     ctx.colorCandidates = pool;
@@ -13117,17 +13424,17 @@ ${mediaCss}`;
           const candidates = (await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key)).filter(
             (candidate) => candidate.resolvedType === "COLOR"
           );
-          for (let i = 0; i < candidates.length; i += 50) {
-            const chunk = candidates.slice(i, i + 50);
+          for (let i = 0; i < candidates.length; i += 4) {
+            const batch = candidates.slice(i, i + 4);
             const results = await Promise.all(
-              chunk.map((candidate) => figma.variables.importVariableByKeyAsync(candidate.key).catch(() => null))
+              batch.map((candidate) => figma.variables.importVariableByKeyAsync(candidate.key).catch(() => null))
             );
             for (const variable of results) if (variable) imported.push(variable);
             (_b = ctx.progress) == null ? void 0 : _b.call(
               ctx,
-              `importing "${collection.name}" tokens\u2026 ${Math.min(i + 50, candidates.length)}/${candidates.length}`
+              `importing "${collection.name}" tokens\u2026 ${Math.min(i + 4, candidates.length)}/${candidates.length}`
             );
-            await yieldToHost();
+            await checkpoint();
           }
         } catch (e) {
         }
@@ -13473,52 +13780,52 @@ ${mediaCss}`;
   }
   function indexPath(ancestor, descendant) {
     const path = [];
-    let current = descendant;
-    while (current && current !== ancestor) {
-      const parent = current.parent;
+    let current2 = descendant;
+    while (current2 && current2 !== ancestor) {
+      const parent = current2.parent;
       if (!parent || !("children" in parent)) break;
-      path.push(parent.children.indexOf(current));
-      current = parent;
+      path.push(parent.children.indexOf(current2));
+      current2 = parent;
     }
     return path.reverse();
   }
   function nodeAtPath(root, path) {
-    let current = root;
+    let current2 = root;
     for (const index2 of path) {
-      if (!("children" in current)) return null;
-      const next = current.children[index2];
+      if (!("children" in current2)) return null;
+      const next = current2.children[index2];
       if (!next) return null;
-      current = next;
+      current2 = next;
     }
-    return current;
+    return current2;
   }
   function unwrapRedundantAncestors(node) {
     let removed = 0;
-    let current = node.parent;
-    while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
-      if (current.type === "INSTANCE" || current.type === "COMPONENT" || current.type === "COMPONENT_SET") break;
-      const parent = current.parent;
+    let current2 = node.parent;
+    while (current2 && current2.type !== "PAGE" && current2.type !== "DOCUMENT") {
+      if (current2.type === "INSTANCE" || current2.type === "COMPONENT" || current2.type === "COMPONENT_SET") break;
+      const parent = current2.parent;
       try {
-        if (isFlattenableWrapper(current)) {
-          if (isRedundantWrapper(current)) unwrapWrapper(current);
-          else if (isDissolvableWrapper(current)) dissolveWrapper(current);
-          else mergeAutoLayoutWrapper(current);
+        if (isFlattenableWrapper(current2)) {
+          if (isRedundantWrapper(current2)) unwrapWrapper(current2);
+          else if (isDissolvableWrapper(current2)) dissolveWrapper(current2);
+          else mergeAutoLayoutWrapper(current2);
           removed++;
         }
       } catch (e) {
       }
-      current = parent;
+      current2 = parent;
     }
     return removed;
   }
   function canUnwrapNesting(node) {
     const instance = enclosingInstance(node);
     if (instance) return countRedundantAncestorsWithin(node, instance) > 0;
-    let current = node.parent;
-    while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
-      if (current.type === "INSTANCE" || current.type === "COMPONENT" || current.type === "COMPONENT_SET") break;
-      if (isFlattenableWrapper(current)) return true;
-      current = current.parent;
+    let current2 = node.parent;
+    while (current2 && current2.type !== "PAGE" && current2.type !== "DOCUMENT") {
+      if (current2.type === "INSTANCE" || current2.type === "COMPONENT" || current2.type === "COMPONENT_SET") break;
+      if (isFlattenableWrapper(current2)) return true;
+      current2 = current2.parent;
     }
     return false;
   }
@@ -13570,10 +13877,10 @@ ${mediaCss}`;
   }
   function countRedundantAncestorsWithin(node, boundary) {
     let count = 0;
-    let current = node.parent;
-    while (current && current !== boundary && "children" in current) {
-      if (isFlattenableWrapper(current)) count++;
-      current = current.parent;
+    let current2 = node.parent;
+    while (current2 && current2 !== boundary && "children" in current2) {
+      if (isFlattenableWrapper(current2)) count++;
+      current2 = current2.parent;
     }
     return count;
   }
@@ -15226,10 +15533,10 @@ These are the only breakpoints. CSS custom properties do not work inside a media
       const nearDuplicates = [];
       for (let index2 = 1; index2 < ordered.length; index2++) {
         const previous = ordered[index2 - 1];
-        const current = ordered[index2];
-        if (current.px - previous.px < 0.5) {
+        const current2 = ordered[index2];
+        if (current2.px - previous.px < 0.5) {
           nearDuplicates.push(
-            `\`--${previous.entry.slug}\` (${previous.entry.value}) vs \`--${current.entry.slug}\` (${current.entry.value})`
+            `\`--${previous.entry.slug}\` (${previous.entry.value}) vs \`--${current2.entry.slug}\` (${current2.entry.value})`
           );
         }
       }
@@ -16867,8 +17174,8 @@ ${scrollGuards}` : project.css;
       }
     };
   }
-  var rgbOf = (hex2) => {
-    const rgb = parseHex(hex2);
+  var rgbOf = (hex4) => {
+    const rgb = parseHex(hex4);
     return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b } : { r: 0.5, g: 0.5, b: 0.5 };
   };
   var variablePath = (spectrum, swatch) => `${spectrum.label}/${swatch.name}`;
@@ -17005,13 +17312,13 @@ ${scrollGuards}` : project.css;
     await figma.loadFontAsync(first);
     return { body: first };
   }
-  var solid2 = (hex2) => ({ type: "SOLID", color: rgbOf(hex2) });
-  function label(text6, fonts, size, hex2) {
+  var solid2 = (hex4) => ({ type: "SOLID", color: rgbOf(hex4) });
+  function label(text6, fonts, size, hex4) {
     const node = figma.createText();
     node.fontName = fonts.body;
     node.fontSize = size;
     node.characters = text6;
-    node.fills = [solid2(hex2)];
+    node.fills = [solid2(hex4)];
     return node;
   }
   function autoLayout(name, direction, gap) {
@@ -17053,9 +17360,9 @@ ${scrollGuards}` : project.css;
     step2.textAutoResize = "HEIGHT";
     step2.resize(44, LABEL_SIZE * 1.4);
     labelRow.appendChild(step2);
-    const hex2 = label("#000000", fonts, LABEL_SIZE, "#1A1A1A");
-    hex2.name = PART.hex;
-    labelRow.appendChild(hex2);
+    const hex4 = label("#000000", fonts, LABEL_SIZE, "#1A1A1A");
+    hex4.name = PART.hex;
+    labelRow.appendChild(hex4);
     component.appendChild(labelRow);
     const markRow = autoLayout(PART.mark, "HORIZONTAL", 0);
     markRow.primaryAxisSizingMode = "FIXED";
@@ -17082,8 +17389,8 @@ ${scrollGuards}` : project.css;
     }
     const step2 = findPart(instance, PART.step);
     if (step2 && step2.type === "TEXT") step2.characters = String(swatch.step);
-    const hex2 = findPart(instance, PART.hex);
-    if (hex2 && hex2.type === "TEXT") hex2.characters = swatch.hex;
+    const hex4 = findPart(instance, PART.hex);
+    if (hex4 && hex4.type === "TEXT") hex4.characters = swatch.hex;
     const mark = findPart(instance, PART.mark);
     if (mark) mark.visible = markName !== null;
     const markText = findPart(instance, PART.markName);
@@ -17187,6 +17494,9 @@ ${scrollGuards}` : project.css;
     if (figma.editorType === "dev") {
       throw new Error("Switch to Design mode \u2014 Dev Mode can't create variables or draw on the canvas.");
     }
+    if (options.canvas && figma.editorType !== "figma") {
+      throw new Error(`The swatch sheet is made of components, which only Figma Design can create \u2014 this file is open in ${figma.editorType}. Turn the canvas half off to write just the variables.`);
+    }
     if (palette.spectra.length === 0) throw new Error("Add at least one spectrum before generating.");
     const warnings = palette.warnings.map((warning) => ({ message: warning.message }));
     for (const spectrum of palette.spectra) {
@@ -17239,7 +17549,7 @@ ${scrollGuards}` : project.css;
   var MAX_NODES = 2e5;
   var siteId = (variableId, modeId) => `${variableId}|${modeId}`;
   var styleSiteId = (styleId2, property, index2, stop) => `style:${styleId2}#${property}:${index2}${stop === void 0 ? "" : `.${stop}`}`;
-  var looseSiteId = (hex2, alpha) => `loose:${hex2}:${alpha.toFixed(3)}`;
+  var looseSiteId = (hex4, alpha) => `loose:${hex4}:${alpha.toFixed(3)}`;
   var isLooseSite = (id) => id.slice(0, 6) === "loose:";
   var isAlias = (value2) => typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
   var isRgb = (value2) => typeof value2 === "object" && value2 !== null && "r" in value2 && "g" in value2 && "b" in value2;
@@ -17250,7 +17560,7 @@ ${scrollGuards}` : project.css;
     a: "a" in color ? color.a : 1
   });
   var hexOf = (color) => "#" + [color.r, color.g, color.b].map(
-    (channel) => Math.round(Math.min(1, Math.max(0, channel)) * 255).toString(16).toUpperCase().padStart(2, "0")
+    (channel2) => Math.round(Math.min(1, Math.max(0, channel2)) * 255).toString(16).toUpperCase().padStart(2, "0")
   ).join("");
   var GRADIENTS = ["GRADIENT_LINEAR", "GRADIENT_RADIAL", "GRADIENT_ANGULAR", "GRADIENT_DIAMOND"];
   var isGradient = (paint) => GRADIENTS.indexOf(paint.type) !== -1;
@@ -17274,11 +17584,11 @@ ${scrollGuards}` : project.css;
     return Array.isArray(bound == null ? void 0 : bound[property]) ? bound[property] : [];
   };
   function noteLoose(walk3, color) {
-    const hex2 = hexOf(color);
-    const id = looseSiteId(hex2, color.a);
+    const hex4 = hexOf(color);
+    const id = looseSiteId(hex4, color.a);
     const existing = walk3.loose.get(id);
     if (existing) existing.count++;
-    else if (walk3.loose.size < MAX_LOOSE_COLORS) walk3.loose.set(id, { hex: hex2, alpha: color.a, rgba: color, count: 1 });
+    else if (walk3.loose.size < MAX_LOOSE_COLORS) walk3.loose.set(id, { hex: hex4, alpha: color.a, rgba: color, count: 1 });
     else walk3.looseDropped++;
     walk3.loosePlaces++;
     return id;
@@ -17338,7 +17648,7 @@ ${scrollGuards}` : project.css;
       return refs;
     };
     const pages = depth === "page" ? [figma.currentPage] : figma.root.children;
-    figma.skipInvisibleInstanceChildren = true;
+    const releaseSkipInvisible = holdSkipInvisible();
     try {
       for (const page of pages) {
         progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026`);
@@ -17388,9 +17698,9 @@ ${scrollGuards}` : project.css;
           for (const ref of fills) if (!isLooseSite(ref)) noteVariable(ref);
           for (const ref of strokes) if (!isLooseSite(ref)) noteVariable(ref);
           if (isInstance) {
-            if (walk3.nodes % 500 === 0) {
+            if (pauseDue()) {
               progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk3.nodes} nodes`);
-              await yieldToHost();
+              await checkpoint();
             }
             continue;
           }
@@ -17405,14 +17715,14 @@ ${scrollGuards}` : project.css;
             const passes = fills.length > 0 ? fills : behind;
             for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], behind: passes });
           }
-          if (walk3.nodes % 500 === 0) {
+          if (pauseDue()) {
             progress2 == null ? void 0 : progress2(`reading ${page.name}\u2026 ${walk3.nodes} nodes`);
-            await yieldToHost();
+            await checkpoint();
           }
         }
       }
     } finally {
-      figma.skipInvisibleInstanceChildren = false;
+      releaseSkipInvisible();
     }
     return walk3;
   }
@@ -18064,7 +18374,7 @@ ${scrollGuards}` : project.css;
       let previous = new Array(width).fill(0);
       const picks = [];
       for (const stop of run) {
-        const current = new Array(width).fill(Infinity);
+        const current2 = new Array(width).fill(Infinity);
         const pick = new Array(width).fill(-1);
         let bestBefore = Infinity;
         let bestAt = -1;
@@ -18073,11 +18383,11 @@ ${scrollGuards}` : project.css;
             bestBefore = previous[p];
             bestAt = p;
           }
-          current[p] = bestBefore + Math.abs(target[positions[p]].l - stop.l);
+          current2[p] = bestBefore + Math.abs(target[positions[p]].l - stop.l);
           pick[p] = bestAt;
         }
         picks.push(pick);
-        previous = current;
+        previous = current2;
       }
       let at2 = 0;
       for (let p = 1; p < width; p++) if (previous[p] < previous[at2]) at2 = p;
@@ -18369,7 +18679,11 @@ ${scrollGuards}` : project.css;
     if (scope === "selection") return figma.currentPage.selection;
     if (scope === "page") return figma.currentPage.children;
     const roots = [];
-    for (const page of figma.root.children) roots.push(...page.children);
+    for (const page of figma.root.children) {
+      if (pauseDue()) await checkpoint();
+      await page.loadAsync();
+      roots.push(...page.children);
+    }
     return roots;
   }
   var COLOR_FIELDS = ["fills", "strokes", "effects"];
@@ -18482,7 +18796,7 @@ ${scrollGuards}` : project.css;
     }
     const context = { targets, bindTo, snapshot, report: report2, loader, dry };
     const roots = await scopeRoots(options.scope);
-    figma.skipInvisibleInstanceChildren = true;
+    const releaseSkipInvisible = holdSkipInvisible();
     try {
       const stack = [...roots];
       let visited = 0;
@@ -18497,13 +18811,13 @@ ${scrollGuards}` : project.css;
         rewritePaints(node, "strokes", context);
         rewriteEffects(node, context);
         if ("children" in node) for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
-        if (visited % 200 === 0) {
+        if (pauseDue()) {
           progress2 == null ? void 0 : progress2(dry ? `sizing the undo\u2026 ${report2.paints} places` : `repainting\u2026 ${report2.paints} places`);
-          await yieldToHost();
+          await checkpoint();
         }
       }
     } finally {
-      figma.skipInvisibleInstanceChildren = false;
+      releaseSkipInvisible();
     }
     if (report2.instanceOverrides > 0) {
       report2.warnings.push(
@@ -18565,9 +18879,9 @@ ${scrollGuards}` : project.css;
       if (!address) continue;
       const variable = await loader.variable(address.variableId);
       if (!variable) continue;
-      const current = variable.valuesByMode[address.modeId];
-      if (current === void 0 || typeof current !== "object" || !("r" in current)) continue;
-      snapshot.values.push({ v: address.variableId, m: address.modeId, c: channelsOf(current) });
+      const current2 = variable.valuesByMode[address.modeId];
+      if (current2 === void 0 || typeof current2 !== "object" || !("r" in current2)) continue;
+      snapshot.values.push({ v: address.variableId, m: address.modeId, c: channelsOf(current2) });
     }
     for (const rename of renames) {
       const address = splitSiteId(rename.siteId);
@@ -18607,9 +18921,10 @@ ${scrollGuards}` : project.css;
         report2.failed++;
         warnings.push(`${entry.site.name}: ${String(error.message)}`);
       }
-      if (++written % 100 === 0) {
+      written++;
+      if (pauseDue()) {
         progress2 == null ? void 0 : progress2(`writing values\u2026 ${written}/${valueTargets.length}`);
-        await yieldToHost();
+        await checkpoint();
       }
     }
     if (renames.length > 0) {
@@ -18657,24 +18972,24 @@ ${scrollGuards}` : project.css;
     for (const variable of variables) byName.set(variable.name, variable);
     const report2 = { restored: 0, blocked: [], warnings: [] };
     const remaining = __spreadValues({}, map);
-    for (const [original, current] of parked) {
-      const variable = byName.get(current);
+    for (const [original, current2] of parked) {
+      const variable = byName.get(current2);
       if (!variable) {
-        report2.blocked.push(`${current} is not in this file any more`);
+        report2.blocked.push(`${current2} is not in this file any more`);
         continue;
       }
       if (byName.has(original)) {
-        report2.blocked.push(`${original} is taken \u2014 ${current} stays where it is`);
+        report2.blocked.push(`${original} is taken \u2014 ${current2} stays where it is`);
         continue;
       }
       try {
         variable.name = original;
-        byName.delete(current);
+        byName.delete(current2);
         byName.set(original, variable);
         delete remaining[original];
         report2.restored++;
       } catch (error) {
-        report2.blocked.push(`${current}: ${String(error.message)}`);
+        report2.blocked.push(`${current2}: ${String(error.message)}`);
       }
     }
     writeRenameMap(remaining);
@@ -18780,9 +19095,10 @@ ${scrollGuards}` : project.css;
       } catch (error) {
         warnings.push(`${scene.name}: ${String(error.message)}`);
       }
-      if (++handled % 100 === 0) {
+      handled++;
+      if (pauseDue()) {
         progress2 == null ? void 0 : progress2(`restoring layers\u2026 ${handled}/${byNode.size}`);
-        await yieldToHost();
+        await checkpoint();
       }
     }
     return restored;
@@ -18831,9 +19147,9 @@ ${scrollGuards}` : project.css;
       } catch (error) {
         warnings.push(`${variable.name}: ${String(error.message)}`);
       }
-      if ((index2 + 1) % 100 === 0) {
+      if (pauseDue()) {
         progress2 == null ? void 0 : progress2(`restoring values\u2026 ${index2 + 1}/${snapshot.values.length}`);
-        await yieldToHost();
+        await checkpoint();
       }
     }
     const styles = snapshot.styles ? await revertStyles(snapshot, warnings) : 0;
@@ -18876,7 +19192,7 @@ ${scrollGuards}` : project.css;
       return { r: gray, g: gray, b: gray };
     }
     const base = hslToRgb(h, 1, 0.5);
-    const apply = (channel) => channel * (1 - w - b) + w;
+    const apply = (channel2) => channel2 * (1 - w - b) + w;
     return { r: apply(base.r), g: apply(base.g), b: apply(base.b) };
   }
   function rgbToHwb(rgb) {
@@ -19089,8 +19405,8 @@ ${scrollGuards}` : project.css;
     const [first, second, third, fourth] = parts;
     const alpha = fourth ? clamp012(fourth.percent ? fourth.value / 100 : fourth.value) : 1;
     if (fn === "rgb") {
-      const channel = (part) => clamp012(part.percent ? part.value / 100 : part.value / 255);
-      return { r: channel(first), g: channel(second), b: channel(third), a: alpha };
+      const channel2 = (part) => clamp012(part.percent ? part.value / 100 : part.value / 255);
+      return { r: channel2(first), g: channel2(second), b: channel2(third), a: alpha };
     }
     const ratio = (part, full) => part.percent ? part.value / 100 : part.value / full;
     if (fn === "hsl") {
@@ -19109,7 +19425,7 @@ ${scrollGuards}` : project.css;
     return __spreadProps(__spreadValues({}, oklchToRgb({ l: ratio(first, 1), c: chroma, h: hue })), { a: alpha });
   }
   function parseHexLiteral(digits) {
-    const expand = (hex2) => hex2.split("").map((char) => char + char).join("");
+    const expand = (hex4) => hex4.split("").map((char) => char + char).join("");
     if (digits.length === 3 || digits.length === 6) {
       const rgb2 = parseHex(digits);
       return rgb2 ? { rgba: __spreadProps(__spreadValues({}, rgb2), { a: 1 }), notation: digits.length === 3 ? "hex3" : "hex6" } : null;
@@ -19160,10 +19476,10 @@ ${scrollGuards}` : project.css;
       });
     }
     for (const match of text6.matchAll(NAMED_RE)) {
-      const hex2 = NAMED_COLORS[match[1].toLowerCase()];
-      if (hex2 === void 0) continue;
+      const hex4 = NAMED_COLORS[match[1].toLowerCase()];
+      if (hex4 === void 0) continue;
       if (!inValuePosition(text6, match.index, match.index + match[0].length)) continue;
-      const rgb = parseHex(hex2);
+      const rgb = parseHex(hex4);
       if (!rgb) continue;
       found.push({
         rgba: __spreadProps(__spreadValues({}, rgb), { a: 1 }),
@@ -19194,8 +19510,8 @@ ${scrollGuards}` : project.css;
       case "hex8":
         return formatHex(rgba) + hexPair(rgba.a);
       case "rgb": {
-        const channel = (value2) => Math.round(clamp012(value2) * 255);
-        const parts = [channel(rgba.r), channel(rgba.g), channel(rgba.b)];
+        const channel2 = (value2) => Math.round(clamp012(value2) * 255);
+        const parts = [channel2(rgba.r), channel2(rgba.g), channel2(rgba.b)];
         return opaque ? `rgb(${parts.join(", ")})` : `rgba(${parts.join(", ")}, ${round8(rgba.a)})`;
       }
       case "hsl": {
@@ -19257,17 +19573,17 @@ ${scrollGuards}` : project.css;
     await figma.loadFontAsync(first);
     return { body: first };
   }
-  var rgbOf2 = (hex2) => {
-    const rgb = parseHex(hex2);
+  var rgbOf2 = (hex4) => {
+    const rgb = parseHex(hex4);
     return rgb ? { r: rgb.r, g: rgb.g, b: rgb.b } : { r: 0.5, g: 0.5, b: 0.5 };
   };
-  var solid3 = (hex2) => ({ type: "SOLID", color: rgbOf2(hex2) });
-  function label2(text6, fonts, size, hex2) {
+  var solid3 = (hex4) => ({ type: "SOLID", color: rgbOf2(hex4) });
+  function label2(text6, fonts, size, hex4) {
     const node = figma.createText();
     node.fontName = fonts.body;
     node.fontSize = size;
     node.characters = text6;
-    node.fills = [solid3(hex2)];
+    node.fills = [solid3(hex4)];
     return node;
   }
   function autoLayout2(name, direction, gap) {
@@ -19298,8 +19614,8 @@ ${scrollGuards}` : project.css;
     frame3.paddingLeft = 8;
     frame3.paddingTop = 7;
     frame3.primaryAxisAlignItems = "MIN";
-    const hex2 = toHex(color);
-    frame3.appendChild(label2(hex2, fonts, CAPTION_SIZE2, inkOn(color)));
+    const hex4 = toHex(color);
+    frame3.appendChild(label2(hex4, fonts, CAPTION_SIZE2, inkOn(color)));
     if (caption !== "") frame3.appendChild(label2(caption, fonts, CAPTION_SIZE2, inkOn(color)));
     return frame3;
   }
@@ -19394,15 +19710,14 @@ ${scrollGuards}` : project.css;
       if (entry.toVariableKey !== null) keys.add(entry.toVariableKey);
     }
     const old = /* @__PURE__ */ new Map();
-    let fetched = 0;
     for (const id of oldIds) {
-      if (++fetched % 25 === 0) await yieldToHost();
+      if (pauseDue()) await checkpoint();
       const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
       if (variable) old.set(id, variable);
     }
     const imported = /* @__PURE__ */ new Map();
     for (const key of keys) {
-      if (++fetched % 25 === 0) await yieldToHost();
+      if (pauseDue()) await checkpoint();
       const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null);
       if (variable) imported.set(key, variable);
     }
@@ -19609,9 +19924,10 @@ ${scrollGuards}` : project.css;
     const keys = new Set([...byVariable.values()].map((target) => target.key));
     let fetched = 0;
     for (const key of keys) {
-      if (++fetched % 25 === 0) {
+      fetched++;
+      if (pauseDue()) {
         progress2 == null ? void 0 : progress2(`importing library tokens\u2026 ${fetched}/${keys.size}`);
-        await yieldToHost();
+        await checkpoint();
       }
       const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null);
       if (variable) {
@@ -19649,8 +19965,8 @@ ${scrollGuards}` : project.css;
       warnings.push("variables and styles are file-global \u2014 they move only on a whole-document rebind");
     }
     const planBySite = new Map(plan.entries.map((entry) => [entry.site.id, entry]));
-    for (const [index2, variable] of wholeFile ? locals.entries() : []) {
-      if (index2 % 50 === 0) await yieldToHost();
+    for (const variable of wholeFile ? locals : []) {
+      if (pauseDue()) await checkpoint();
       for (const [modeId, value2] of Object.entries(variable.valuesByMode)) {
         if (isAliasValue2(value2)) {
           const decision = rebindOf(value2.id);
@@ -19673,18 +19989,18 @@ ${scrollGuards}` : project.css;
         if (!entry || entry.toVariableKey === null || entry.flags.includes("excluded")) continue;
         const landing = await valueOfKey(entry.toVariableKey);
         if (!landing) continue;
-        const current = { r: value2.r, g: value2.g, b: value2.b, a: alphaOf(value2) };
+        const current2 = { r: value2.r, g: value2.g, b: value2.b, a: alphaOf(value2) };
         const target = __spreadValues({}, entry.to);
         if (!sameRgba(target, landing.rgba)) {
           if (sameRgba(__spreadProps(__spreadValues({}, target), { a: landing.rgba.a }), landing.rgba)) counts.skipped.alphaMismatch++;
           continue;
         }
-        if (!sameRgba(current, landing.rgba)) continue;
+        if (!sameRgba(current2, landing.rgba)) continue;
         ops.push({
           kind: "variable",
           variableId: variable.id,
           modeId,
-          old: [current.r, current.g, current.b, current.a],
+          old: [current2.r, current2.g, current2.b, current2.a],
           key: entry.toVariableKey
         });
         counts.literalsBound++;
@@ -19745,7 +20061,6 @@ ${scrollGuards}` : project.css;
         }
       }
     }
-    if (wholeFile) await loadAllPagesAsync();
     const overridden = /* @__PURE__ */ new Map();
     const noteOverrides = (instance) => {
       var _a;
@@ -19824,17 +20139,27 @@ ${scrollGuards}` : project.css;
         }
       }
     };
-    figma.skipInvisibleInstanceChildren = true;
+    const releaseSkipInvisible = holdSkipInvisible();
     try {
       let visited = 0;
-      const rootSets = wholeFile ? figma.root.children.map((page) => ({ label: page.name, roots: page.children })) : [{ label: options.scope, roots: await scopeRoots(options.scope) }];
+      const rootSets = [];
+      if (wholeFile) {
+        for (const page of figma.root.children) {
+          if (pauseDue()) await checkpoint();
+          await page.loadAsync();
+          rootSets.push({ label: page.name, roots: page.children });
+        }
+      } else {
+        rootSets.push({ label: options.scope, roots: await scopeRoots(options.scope) });
+      }
       for (const { label: label3, roots } of rootSets) {
         progress2 == null ? void 0 : progress2(`scanning ${label3}\u2026`);
         const stack = [];
         for (let i = roots.length - 1; i >= 0; i--) stack.push({ node: roots[i], inInstance: false });
         while (stack.length > 0) {
           const { node, inInstance } = stack.pop();
-          if (++visited % 400 === 0) await yieldToHost();
+          visited++;
+          if (pauseDue()) await checkpoint();
           const isInstance = node.type === "INSTANCE";
           if (isInstance) noteOverrides(node);
           const gated = inInstance || isInstance;
@@ -19849,7 +20174,7 @@ ${scrollGuards}` : project.css;
         }
       }
     } finally {
-      figma.skipInvisibleInstanceChildren = false;
+      releaseSkipInvisible();
     }
     return { ops, counts, warnings };
   }
@@ -19895,9 +20220,9 @@ ${scrollGuards}` : project.css;
       return (_a = importedByKey.get(key)) != null ? _a : null;
     };
     for (const [index2, op] of ops.entries()) {
-      if (index2 % 25 === 0) {
+      if (pauseDue()) {
         progress2 == null ? void 0 : progress2(`${undo ? "restoring" : "rebinding"}\u2026 ${index2}/${ops.length}`);
-        await yieldToHost();
+        await checkpoint();
       }
       if (op.kind === "variable") {
         const variable = await figma.variables.getVariableByIdAsync(op.variableId).catch(() => null);
@@ -20176,7 +20501,7 @@ ${scrollGuards}` : project.css;
   };
   var land = (site, target) => ({ r: target.r, g: target.g, b: target.b, a: site.rgba.a });
   var sameColor2 = (a, b) => Math.abs(a.r - b.r) < 1 / 512 && Math.abs(a.g - b.g) < 1 / 512 && Math.abs(a.b - b.b) < 1 / 512;
-  var colorKey = (color) => [color.r, color.g, color.b].map((channel) => Math.round(channel * 255)).join(",");
+  var colorKey = (color) => [color.r, color.g, color.b].map((channel2) => Math.round(channel2 * 255)).join(",");
   function groupByMode(sites) {
     var _a;
     const groups = /* @__PURE__ */ new Map();
@@ -20235,7 +20560,7 @@ ${scrollGuards}` : project.css;
       if (!held || held.familyLabel === null && candidate.familyLabel !== null) identical.set(key, candidate);
     }
     const identityOf = (color) => {
-      const channels = [color.r, color.g, color.b].map((channel) => channel * 255);
+      const channels = [color.r, color.g, color.b].map((channel2) => channel2 * 255);
       const options = channels.map((value2) => {
         const rounded = Math.round(value2);
         const keys = [rounded];
@@ -20678,9 +21003,9 @@ ${scrollGuards}` : project.css;
       flags: record2.flags
     };
   }
-  function rgbaOf(hex2, alpha, where) {
-    const rgb = parseHex(hex2);
-    if (!rgb) throw new Error(`mapping: ${where} is not a hex color ("${hex2}")`);
+  function rgbaOf(hex4, alpha, where) {
+    const rgb = parseHex(hex4);
+    if (!rgb) throw new Error(`mapping: ${where} is not a hex color ("${hex4}")`);
     return __spreadProps(__spreadValues({}, rgb), { a: typeof alpha === "number" && alpha >= 0 && alpha <= 1 ? alpha : 1 });
   }
   function parseMappingFile(raw) {
@@ -20707,8 +21032,8 @@ ${scrollGuards}` : project.css;
 
   // src/tokens/remap/rewrite.ts
   var DEFAULT_REWRITE_OPTIONS = { snap: 2, mode: null, byName: false };
-  var rgbaOf2 = (hex2, alpha) => {
-    const rgb = parseHex(hex2);
+  var rgbaOf2 = (hex4, alpha) => {
+    const rgb = parseHex(hex4);
     return rgb ? __spreadProps(__spreadValues({}, rgb), { a: alpha }) : null;
   };
   var nameKey = (name) => varName(name.split(/[/.]/));
@@ -20738,22 +21063,22 @@ ${scrollGuards}` : project.css;
       }
       byHex.set(record2.from, target);
     }
-    for (const hex2 of conflicting) {
-      byHex.delete(hex2);
+    for (const hex4 of conflicting) {
+      byHex.delete(hex4);
       warnings.push(
-        `${hex2} maps to more than one new color in this file \u2014 pass --mode to say which theme this repository is`
+        `${hex4} maps to more than one new color in this file \u2014 pass --mode to say which theme this repository is`
       );
     }
-    for (const [hex2, target] of byHex) {
-      const from = rgbaOf2(hex2, 1);
+    for (const [hex4, target] of byHex) {
+      const from = rgbaOf2(hex4, 1);
       if (from) all.push({ from, target });
     }
     return { byHex, settled, all, byName, warnings };
   }
   function matchLiteral(literal, lookup, snap) {
-    const hex2 = toHex(literal.rgba);
-    if (lookup.settled.has(hex2)) return null;
-    const exact = lookup.byHex.get(hex2);
+    const hex4 = toHex(literal.rgba);
+    if (lookup.settled.has(hex4)) return null;
+    const exact = lookup.byHex.get(hex4);
     if (exact) return { target: exact, snapped: false };
     if (snap <= 0) return null;
     let best = null;
@@ -20856,10 +21181,10 @@ ${scrollGuards}` : project.css;
   }
 
   // src/tokens/remap/sources.ts
-  function swatchOf(hex2, name, family, step2) {
-    const rgb = parseHex(hex2);
+  function swatchOf(hex4, name, family, step2) {
+    const rgb = parseHex(hex4);
     if (!rgb) return null;
-    return { hex: hex2.toUpperCase(), alpha: 1, rgba: __spreadProps(__spreadValues({}, rgb), { a: 1 }), name, family, step: step2 };
+    return { hex: hex4.toUpperCase(), alpha: 1, rgba: __spreadProps(__spreadValues({}, rgb), { a: 1 }), name, family, step: step2 };
   }
   function swatchesFromPalette(palette) {
     const swatches = [];
@@ -20962,23 +21287,22 @@ ${scrollGuards}` : project.css;
   }
   var isAlias2 = (value2) => typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
   var isRgb2 = (value2) => typeof value2 === "object" && value2 !== null && "r" in value2 && "g" in value2 && "b" in value2;
-  var IMPORT_CHUNK = 50;
   var ALIAS_DEPTH = 6;
   async function resolveColor(variable, modeId) {
     var _a, _b, _c;
-    let current = variable;
+    let current2 = variable;
     let mode = modeId;
     for (let depth = 0; depth < ALIAS_DEPTH; depth++) {
-      const value2 = (_a = current.valuesByMode[mode]) != null ? _a : await defaultValueOf(current);
+      const value2 = (_a = current2.valuesByMode[mode]) != null ? _a : await defaultValueOf(current2);
       if (value2 === void 0) return null;
       if (isRgb2(value2)) return value2;
       if (!isAlias2(value2)) return null;
       const next = await figma.variables.getVariableByIdAsync(value2.id).catch(() => null);
       if (!next) return null;
-      current = next;
-      if (!(mode in current.valuesByMode)) {
-        const collection = await figma.variables.getVariableCollectionByIdAsync(current.variableCollectionId).catch(() => null);
-        mode = (_c = (_b = collection == null ? void 0 : collection.defaultModeId) != null ? _b : Object.keys(current.valuesByMode)[0]) != null ? _c : mode;
+      current2 = next;
+      if (!(mode in current2.valuesByMode)) {
+        const collection = await figma.variables.getVariableCollectionByIdAsync(current2.variableCollectionId).catch(() => null);
+        mode = (_c = (_b = collection == null ? void 0 : collection.defaultModeId) != null ? _b : Object.keys(current2.valuesByMode)[0]) != null ? _c : mode;
       }
     }
     return null;
@@ -21005,9 +21329,9 @@ ${scrollGuards}` : project.css;
     let chosenMode = null;
     let unresolved = 0;
     for (const [index2, candidate] of colors.entries()) {
-      if (index2 % IMPORT_CHUNK === 0) {
+      if (pauseDue()) {
         progress2 == null ? void 0 : progress2(`importing library colors\u2026 ${index2}/${colors.length}`);
-        await yieldToHost();
+        await checkpoint();
       }
       const variable = await figma.variables.importVariableByKeyAsync(candidate.key).catch(() => null);
       if (!variable) continue;
@@ -21403,7 +21727,567 @@ ${renderSections(sections)}
     }
   }
 
+  // src/canvas/keyframe-fields.ts
+  var EFFECT_WORDS = {
+    OFFSET_X: "x",
+    OFFSET_Y: "y",
+    RADIUS: "radius",
+    SPREAD: "spread",
+    COLOR: "color",
+    SECONDARY_COLOR: "second",
+    EFFECT_OPACITY: "opacity",
+    DENSITY: "density",
+    NOISE_SIZE_X: "sizeX",
+    NOISE_SIZE_Y: "sizeY",
+    START_RADIUS: "startRadius",
+    // Glass: the five words `{ glass }` is written with, plus splay, which it has no word for yet.
+    REFRACTION_RADIUS: "depth",
+    REFRACTION_INTENSITY: "refraction",
+    CHROMATIC_ABERRATION: "dispersion",
+    SPECULAR_ANGLE: "lightAngle",
+    SPECULAR_INTENSITY: "lightIntensity",
+    SPLAY: "splay"
+  };
+  var EFFECT_FIELDS = Object.fromEntries(
+    Object.entries(EFFECT_WORDS).map(([figma2, ours]) => [ours, figma2])
+  );
+  var COLOUR_EFFECT_FIELDS = ["COLOR", "SECONDARY_COLOR"];
+  var COLLECTIONS = {
+    fill: "fills",
+    stroke: "strokes",
+    effect: "effects"
+  };
+  var EFFECT_KEYFRAME_WORDS = Object.values(EFFECT_WORDS);
+  function parseIndexedField(word) {
+    const match = /^(fill|stroke|effect)(?:\[(\d+)\])?(?:\.([A-Za-z]+))?$/.exec(word.trim());
+    if (!match) return null;
+    const collection = COLLECTIONS[match[1]];
+    const index2 = match[2] === void 0 ? 0 : Number(match[2]);
+    const part = match[3];
+    if (collection === "effects") {
+      if (part === void 0) return null;
+      const field = EFFECT_FIELDS[part];
+      if (!field) return null;
+      return {
+        field: { type: "INDEXED_ITEM", collection, index: index2, field },
+        value: COLOUR_EFFECT_FIELDS.includes(field) ? "COLOR" : "FLOAT"
+      };
+    }
+    if (part !== void 0) return null;
+    return { field: { type: "INDEXED_ITEM", collection, index: index2 }, value: "COLOR" };
+  }
+  function indexedWord(collection, index2, effectField) {
+    const noun = collection === "fills" ? "fill" : collection === "strokes" ? "stroke" : collection === "effects" ? "effect" : null;
+    if (!noun) return null;
+    const head = index2 === 0 ? noun : `${noun}[${index2}]`;
+    if (noun !== "effect") return effectField === void 0 ? head : null;
+    const part = effectField === void 0 ? void 0 : EFFECT_WORDS[effectField];
+    return part ? `${head}.${part}` : null;
+  }
+  var clamp3 = (n) => Math.min(1, Math.max(0, n));
+  var channel = (n) => Math.round(clamp3(n) * 255).toString(16).padStart(2, "0").toUpperCase();
+  function formatKeyframeColour(colour) {
+    const hex4 = `#${channel(colour.r)}${channel(colour.g)}${channel(colour.b)}`;
+    const alpha = colour.a === void 0 ? 1 : Math.round(clamp3(colour.a) * 1e3) / 1e3;
+    return alpha === 1 ? hex4 : `${hex4} @${alpha}`;
+  }
+  function keyframeColour(value2, fallback) {
+    var _a;
+    if (typeof value2 === "string") {
+      const text6 = value2.trim();
+      const faded = /^#([0-9a-fA-F]{6})(?:\s*@\s*(\d*\.?\d+))?$/.exec(text6);
+      const eight = /^#([0-9a-fA-F]{6})([0-9a-fA-F]{2})$/.exec(text6);
+      const hex4 = (_a = faded == null ? void 0 : faded[1]) != null ? _a : eight == null ? void 0 : eight[1];
+      if (hex4) {
+        const alpha = (faded == null ? void 0 : faded[2]) !== void 0 ? Number(faded[2]) : eight ? parseInt(eight[2], 16) / 255 : 1;
+        if (!(alpha >= 0 && alpha <= 1)) return null;
+        return {
+          r: parseInt(hex4.slice(0, 2), 16) / 255,
+          g: parseInt(hex4.slice(2, 4), 16) / 255,
+          b: parseInt(hex4.slice(4, 6), 16) / 255,
+          a: alpha
+        };
+      }
+    }
+    return fallback(value2);
+  }
+
+  // src/canvas/board.ts
+  var EDITOR_NAMES = {
+    figma: "Figma Design",
+    figjam: "FigJam",
+    dev: "Dev Mode",
+    slides: "Figma Slides",
+    buzz: "Figma Buzz"
+  };
+  var EDITOR_FEATURES = {
+    // Components and local styles are authored in Design; Slides and Buzz can use them from a
+    // library but not make them.
+    "components.create": ["figma"],
+    "styles.create": ["figma"],
+    "stickies": ["figjam"],
+    "connectors": ["figjam"],
+    "shapesWithText": ["figjam"],
+    "codeBlocks": ["figjam"],
+    "tables": ["figjam"],
+    "linkPreviews": ["figjam"],
+    "gifs": ["figjam"],
+    "stuckNodes": ["figjam"],
+    "activeUsers": ["figjam"],
+    "timer": ["figjam"],
+    "slides": ["slides"],
+    "slideGrid": ["slides"],
+    "canvasGrid": ["slides", "buzz"],
+    "focusedNode": ["slides", "buzz", "dev"],
+    "buzz": ["buzz"],
+    "measurements": ["dev"],
+    "codegen": ["dev"]
+  };
+  function editorProblem(feature, editor, what = feature) {
+    var _a;
+    const allowed = EDITOR_FEATURES[feature];
+    if (!editor) return null;
+    if (!allowed || allowed.includes(editor)) return null;
+    const names = allowed.map((one) => EDITOR_NAMES[one]).join(" or ");
+    const here = (_a = EDITOR_NAMES[editor]) != null ? _a : editor;
+    return `${what} needs ${names} \u2014 this file is open in ${here}`;
+  }
+  function editorFeatures(editor) {
+    const out = {};
+    for (const [feature, allowed] of Object.entries(EDITOR_FEATURES)) out[feature] = allowed.includes(editor);
+    return out;
+  }
+  function pageIdOf(node) {
+    let at = node;
+    while (at && at.type !== "PAGE") at = at.parent;
+    return at == null ? void 0 : at.id;
+  }
+  function fileUrlPath(editor) {
+    return editor === "figjam" ? "board" : editor === "slides" ? "slides" : editor === "buzz" ? "buzz" : "design";
+  }
+  var SHAPE_TYPES2 = [
+    "SQUARE",
+    "ELLIPSE",
+    "ROUNDED_RECTANGLE",
+    "DIAMOND",
+    "TRIANGLE_UP",
+    "TRIANGLE_DOWN",
+    "PARALLELOGRAM_RIGHT",
+    "PARALLELOGRAM_LEFT",
+    "ENG_DATABASE",
+    "ENG_QUEUE",
+    "ENG_FILE",
+    "ENG_FOLDER",
+    "TRAPEZOID",
+    "PREDEFINED_PROCESS",
+    "SHIELD",
+    "DOCUMENT_SINGLE",
+    "DOCUMENT_MULTIPLE",
+    "MANUAL_INPUT",
+    "HEXAGON",
+    "CHEVRON",
+    "PENTAGON",
+    "OCTAGON",
+    "STAR",
+    "PLUS",
+    "ARROW_LEFT",
+    "ARROW_RIGHT",
+    "SUMMING_JUNCTION",
+    "OR",
+    "SPEECH_BUBBLE",
+    "INTERNAL_STORAGE"
+  ];
+  var CODE_LANGUAGES = [
+    "TYPESCRIPT",
+    "CPP",
+    "RUBY",
+    "CSS",
+    "JAVASCRIPT",
+    "HTML",
+    "JSON",
+    "GRAPHQL",
+    "PYTHON",
+    "GO",
+    "SQL",
+    "SWIFT",
+    "KOTLIN",
+    "RUST",
+    "BASH",
+    "PLAINTEXT",
+    "DART"
+  ];
+  var CONNECTOR_LINES = ["ELBOWED", "STRAIGHT", "CURVED"];
+  var CONNECTOR_CAPS = [
+    "NONE",
+    "ARROW_EQUILATERAL",
+    "ARROW_LINES",
+    "TRIANGLE_FILLED",
+    "DIAMOND_FILLED",
+    "CIRCLE_FILLED"
+  ];
+  var MAGNETS = ["NONE", "AUTO", "TOP", "LEFT", "BOTTOM", "RIGHT", "CENTER"];
+  var isPoint = (raw) => Array.isArray(raw) && raw.length === 2 && raw.every((n) => typeof n === "number" && Number.isFinite(n));
+  function endpoint(raw) {
+    if (typeof raw === "string" && raw.trim() !== "") return { endpointNodeId: raw, magnet: "AUTO" };
+    if (isPoint(raw)) return { position: { x: raw[0], y: raw[1] } };
+    if (typeof raw !== "object" || raw === null) return null;
+    const one = raw;
+    if (typeof one.node !== "string" || one.node === "") return null;
+    const extra = Object.keys(one).filter((key) => !["node", "magnet", "at"].includes(key));
+    if (extra.length > 0 || one.at !== void 0 && one.magnet !== void 0) return null;
+    if (one.at !== void 0) {
+      if (!isPoint(one.at)) return null;
+      return { endpointNodeId: one.node, position: { x: one.at[0], y: one.at[1] } };
+    }
+    const magnet = one.magnet === void 0 ? "AUTO" : String(one.magnet).toUpperCase();
+    if (!MAGNETS.includes(magnet)) return null;
+    return { endpointNodeId: one.node, magnet };
+  }
+  function planConnector(raw) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return { problem: "must be { start, end, line, startCap, endCap }" };
+    }
+    const spec = raw;
+    const known = ["start", "end", "line", "startCap", "endCap", "label"];
+    const extra = Object.keys(spec).filter((key) => !known.includes(key));
+    if (extra.length > 0) return { problem: `takes ${known.join(", ")} \u2014 not ${extra.join(", ")}` };
+    const values = {};
+    if (spec.label !== void 0) {
+      if (spec.label === "none") values.labelFills = [];
+      else {
+        const colour = keyframeColour(spec.label, colourFrom);
+        if (!colour) return { problem: 'label must be a colour like "#FFFFFF" or "#000000 @0.5", or "none"' };
+        values.labelFills = [
+          __spreadValues({ type: "SOLID", color: solidColourOf(colour) }, colour.a < 1 ? { opacity: colour.a } : {})
+        ];
+      }
+    }
+    for (const [key, property] of [["start", "connectorStart"], ["end", "connectorEnd"]]) {
+      if (spec[key] === void 0) continue;
+      const end = endpoint(spec[key]);
+      if (!end) {
+        return {
+          problem: `${key} must be a node id, { node, magnet: ${MAGNETS.join("|")} }, { node, at: [x, y] } or a canvas point [x, y]`
+        };
+      }
+      values[property] = end;
+    }
+    if (spec.line !== void 0) {
+      const line = String(spec.line).toUpperCase();
+      if (!CONNECTOR_LINES.includes(line)) return { problem: `line must be one of: ${CONNECTOR_LINES.join(", ")}` };
+      values.connectorLineType = line;
+    }
+    for (const [key, property] of [["startCap", "connectorStartStrokeCap"], ["endCap", "connectorEndStrokeCap"]]) {
+      if (spec[key] === void 0) continue;
+      const cap = String(spec[key]).toUpperCase();
+      if (!CONNECTOR_CAPS.includes(cap)) return { problem: `${key} must be one of: ${CONNECTOR_CAPS.join(", ")}` };
+      values[property] = cap;
+    }
+    if (Object.keys(values).length === 0) return { problem: "names nothing to change" };
+    return { values };
+  }
+  var round11 = (value2) => Math.round(value2 * 100) / 100;
+  function endpointWords(raw, pageId) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const one = raw;
+    if (typeof one.endpointNodeId === "string" && one.endpointNodeId !== "" && one.endpointNodeId !== pageId) {
+      if (one.position) return { node: one.endpointNodeId, at: [round11(one.position.x), round11(one.position.y)] };
+      return !one.magnet || one.magnet === "AUTO" ? one.endpointNodeId : { node: one.endpointNodeId, magnet: one.magnet };
+    }
+    return one.position ? [round11(one.position.x), round11(one.position.y)] : null;
+  }
+  function connectorWords(bag, pageId) {
+    var _a;
+    const out = {};
+    const start = endpointWords(bag.connectorStart, pageId);
+    const end = endpointWords(bag.connectorEnd, pageId);
+    if (start !== null) out.start = start;
+    if (end !== null) out.end = end;
+    if (typeof bag.connectorLineType === "string" && bag.connectorLineType !== "ELBOWED") out.line = bag.connectorLineType;
+    if (typeof bag.connectorStartStrokeCap === "string" && bag.connectorStartStrokeCap !== "NONE") {
+      out.startCap = bag.connectorStartStrokeCap;
+    }
+    if (typeof bag.connectorEndStrokeCap === "string" && bag.connectorEndStrokeCap !== "NONE") {
+      out.endCap = bag.connectorEndStrokeCap;
+    }
+    const label3 = (_a = bag.textBackground) == null ? void 0 : _a.fills;
+    if (Array.isArray(label3)) {
+      const solid6 = label3.find((paint) => (paint == null ? void 0 : paint.type) === "SOLID" && paint.visible !== false);
+      if (solid6) {
+        const alpha = typeof solid6.opacity === "number" && solid6.opacity < 1 ? Math.round(solid6.opacity * 1e3) / 1e3 : void 0;
+        const hex4 = `#${[solid6.color.r, solid6.color.g, solid6.color.b].map((n) => Math.round(n * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+        out.label = alpha === void 0 ? hex4 : `${hex4} @${alpha}`;
+      }
+    }
+    return out;
+  }
+  function planTable(raw) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return { problem: "must be { rows, columns, cells, columnWidths, rowHeights }" };
+    }
+    const spec = raw;
+    const known = ["rows", "columns", "cells", "columnWidths", "rowHeights", "moveRows", "moveColumns"];
+    const extra = Object.keys(spec).filter((key) => !known.includes(key));
+    if (extra.length > 0) return { problem: `takes ${known.join(", ")} \u2014 not ${extra.join(", ")}` };
+    if (Object.keys(spec).length === 0) return { problem: "names nothing to change" };
+    for (const key of ["rows", "columns"]) {
+      const n = spec[key];
+      if (n !== void 0 && (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 100)) {
+        return { problem: `${key} must be a whole number from 1 to 100` };
+      }
+    }
+    if (spec.cells !== void 0) {
+      const ok = Array.isArray(spec.cells) && spec.cells.every((row) => Array.isArray(row) && row.every((cell) => cell === null || typeof cell === "string"));
+      if (!ok) return { problem: "cells must be rows of strings \u2014 null leaves a cell as it is" };
+      const cells = spec.cells;
+      if (typeof spec.rows === "number" && cells.length > spec.rows) return { problem: `cells has ${cells.length} rows and the table ${spec.rows}` };
+      const widest = Math.max(0, ...cells.map((row) => row.length));
+      if (typeof spec.columns === "number" && widest > spec.columns) {
+        return { problem: `cells has a row of ${widest} and the table ${spec.columns} columns` };
+      }
+    }
+    for (const key of ["columnWidths", "rowHeights"]) {
+      const list2 = spec[key];
+      if (list2 === void 0) continue;
+      if (!Array.isArray(list2) || !list2.every((n) => n === null || typeof n === "number" && n >= 0.01)) {
+        return { problem: `${key} must be a list of sizes (>= 0.01), null to leave one as it is` };
+      }
+    }
+    for (const key of ["moveRows", "moveColumns"]) {
+      const list2 = spec[key];
+      if (list2 === void 0) continue;
+      const ok = Array.isArray(list2) && list2.every((pair2) => Array.isArray(pair2) && pair2.length === 2 && pair2.every((n) => Number.isInteger(n) && n >= 0));
+      if (!ok) return { problem: `${key} must be a list of [from, to] index pairs` };
+    }
+    return { value: spec };
+  }
+  function tableWords(table2) {
+    const cells = [];
+    for (let row = 0; row < table2.numRows; row++) {
+      const line = [];
+      for (let column2 = 0; column2 < table2.numColumns; column2++) line.push(table2.cellAt(row, column2).text.characters);
+      cells.push(line);
+    }
+    const columnWidths = Array.from({ length: table2.numColumns }, (_, column2) => round11(table2.cellAt(0, column2).width));
+    const rowHeights = Array.from({ length: table2.numRows }, (_, row) => round11(table2.cellAt(row, 0).height));
+    return { rows: table2.numRows, columns: table2.numColumns, cells, columnWidths, rowHeights };
+  }
+  var TRANSITION_STYLES = [
+    "NONE",
+    "DISSOLVE",
+    "SLIDE_FROM_LEFT",
+    "SLIDE_FROM_RIGHT",
+    "SLIDE_FROM_BOTTOM",
+    "SLIDE_FROM_TOP",
+    "PUSH_FROM_LEFT",
+    "PUSH_FROM_RIGHT",
+    "PUSH_FROM_BOTTOM",
+    "PUSH_FROM_TOP",
+    "MOVE_FROM_LEFT",
+    "MOVE_FROM_RIGHT",
+    "MOVE_FROM_TOP",
+    "MOVE_FROM_BOTTOM",
+    "SLIDE_OUT_TO_LEFT",
+    "SLIDE_OUT_TO_RIGHT",
+    "SLIDE_OUT_TO_TOP",
+    "SLIDE_OUT_TO_BOTTOM",
+    "MOVE_OUT_TO_LEFT",
+    "MOVE_OUT_TO_RIGHT",
+    "MOVE_OUT_TO_TOP",
+    "MOVE_OUT_TO_BOTTOM",
+    "SMART_ANIMATE"
+  ];
+  var TRANSITION_CURVES = ["EASE_IN", "EASE_OUT", "EASE_IN_AND_OUT", "LINEAR", "GENTLE", "QUICK", "BOUNCY", "SLOW"];
+  function planTransition(raw) {
+    var _a, _b, _c;
+    const spec = typeof raw === "string" ? { style: raw } : raw;
+    if (typeof spec !== "object" || spec === null || Array.isArray(spec)) {
+      return { problem: "must be a style word or { style, duration, curve, after }" };
+    }
+    const one = spec;
+    const extra = Object.keys(one).filter((key) => !["style", "duration", "curve", "after"].includes(key));
+    if (extra.length > 0) return { problem: `takes style, duration, curve, after \u2014 not ${extra.join(", ")}` };
+    const style = String((_a = one.style) != null ? _a : "").toUpperCase();
+    if (!TRANSITION_STYLES.includes(style)) return { problem: `style must be one of: ${TRANSITION_STYLES.join(", ")}` };
+    const duration = (_b = one.duration) != null ? _b : 0.3;
+    if (typeof duration !== "number" || duration < 0 || duration > 10) return { problem: "duration must be seconds, 0 to 10" };
+    const curve = String((_c = one.curve) != null ? _c : "EASE_OUT").toUpperCase();
+    if (!TRANSITION_CURVES.includes(curve)) return { problem: `curve must be one of: ${TRANSITION_CURVES.join(", ")}` };
+    if (one.after !== void 0 && (typeof one.after !== "number" || one.after < 0)) return { problem: "after must be seconds, 0 or more" };
+    return {
+      value: {
+        style,
+        duration,
+        curve,
+        timing: typeof one.after === "number" ? { type: "AFTER_DELAY", delay: one.after } : { type: "ON_CLICK" }
+      }
+    };
+  }
+  function transitionWords(value2) {
+    var _a, _b;
+    if (!value2 || value2.style === "NONE") return null;
+    const after = ((_a = value2.timing) == null ? void 0 : _a.type) === "AFTER_DELAY" ? (_b = value2.timing.delay) != null ? _b : 0 : void 0;
+    const plain3 = value2.duration === 0.3 && value2.curve === "EASE_OUT" && after === void 0;
+    if (plain3) return value2.style;
+    return __spreadValues(__spreadValues(__spreadValues({
+      style: value2.style
+    }, value2.duration !== 0.3 ? { duration: round11(value2.duration) } : {}), value2.curve !== "EASE_OUT" ? { curve: value2.curve } : {}), after !== void 0 ? { after: round11(after) } : {});
+  }
+  var BUZZ_ASSET_TYPES = [
+    "CUSTOM",
+    "TWITTER_POST",
+    "LINKEDIN_POST",
+    "INSTA_POST_SQUARE",
+    "INSTA_POST_PORTRAIT",
+    "INSTA_STORY",
+    "INSTA_AD",
+    "FACEBOOK_POST",
+    "FACEBOOK_COVER_PHOTO",
+    "FACEBOOK_EVENT_COVER",
+    "FACEBOOK_AD_PORTRAIT",
+    "FACEBOOK_AD_SQUARE",
+    "PINTEREST_AD_PIN",
+    "TWITTER_BANNER",
+    "LINKEDIN_POST_SQUARE",
+    "LINKEDIN_POST_PORTRAIT",
+    "LINKEDIN_POST_LANDSCAPE",
+    "LINKEDIN_PROFILE_BANNER",
+    "LINKEDIN_ARTICLE_BANNER",
+    "LINKEDIN_AD_LANDSCAPE",
+    "LINKEDIN_AD_SQUARE",
+    "LINKEDIN_AD_VERTICAL",
+    "YOUTUBE_THUMBNAIL",
+    "YOUTUBE_BANNER",
+    "YOUTUBE_AD",
+    "TWITCH_BANNER",
+    "GOOGLE_LEADERBOARD_AD",
+    "GOOGLE_LARGE_AD",
+    "GOOGLE_MED_AD",
+    "GOOGLE_MOBILE_BANNER_AD",
+    "GOOGLE_SKYSCRAPER_AD",
+    "CARD_HORIZONTAL",
+    "CARD_VERTICAL",
+    "PRINT_US_LETTER",
+    "POSTER",
+    "BANNER_STANDARD",
+    "BANNER_WIDE",
+    "BANNER_ULTRAWIDE",
+    "NAME_TAG_PORTRAIT",
+    "NAME_TAG_LANDSCAPE",
+    "INSTA_REEL_COVER",
+    "ZOOM_BACKGROUND"
+  ];
+  function gridPlace(raw) {
+    if (typeof raw === "number" && Number.isInteger(raw) && raw >= 0) return { row: raw };
+    if (!Array.isArray(raw) || raw.length < 1 || raw.length > 2) return null;
+    if (!raw.every((n) => typeof n === "number" && Number.isInteger(n) && n >= 0)) return null;
+    return raw.length === 2 ? { row: raw[0], column: raw[1] } : { row: raw[0] };
+  }
+
+  // src/canvas/decoration.ts
+  var STYLES = ["SOLID", "WAVY", "DOTTED"];
+  function measured(raw) {
+    if (raw === "AUTO") return { unit: "AUTO" };
+    if (typeof raw === "number" && Number.isFinite(raw)) return { value: raw, unit: "PIXELS" };
+    if (typeof raw === "string") {
+      const match = /^(-?\d+(?:\.\d+)?)(px|%)?$/.exec(raw.trim());
+      if (match) return { value: Number(match[1]), unit: match[2] === "%" ? "PERCENT" : "PIXELS" };
+    }
+    return null;
+  }
+  function measureWords(value2) {
+    if (value2.unit === "AUTO") return "AUTO";
+    const rounded = Math.round(value2.value * 100) / 100;
+    return value2.unit === "PERCENT" ? `${rounded}%` : rounded;
+  }
+  function planDecoration(raw) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return { problem: "must be { style, offset, thickness, color, skipInk }" };
+    }
+    const spec = raw;
+    const known = ["style", "offset", "thickness", "color", "skipInk"];
+    const extra = Object.keys(spec).filter((key) => !known.includes(key));
+    if (extra.length > 0) return { problem: `takes ${known.join(", ")} \u2014 not ${extra.join(", ")}` };
+    if (Object.keys(spec).length === 0) return { problem: "names nothing to change" };
+    const values = {};
+    if (spec.style !== void 0) {
+      const style = String(spec.style).toUpperCase();
+      if (!STYLES.includes(style)) return { problem: `style must be one of: ${STYLES.join(", ")}` };
+      values.textDecorationStyle = style;
+    }
+    for (const [key, property] of [["offset", "textDecorationOffset"], ["thickness", "textDecorationThickness"]]) {
+      if (spec[key] === void 0) continue;
+      const value2 = measured(spec[key]);
+      if (!value2) return { problem: `${key} must be pixels, a percentage like "10%", or "AUTO"` };
+      values[property] = value2;
+    }
+    if (spec.color !== void 0) {
+      if (spec.color === "AUTO") values.textDecorationColor = { value: "AUTO" };
+      else {
+        const colour = keyframeColour(spec.color, colourFrom);
+        if (!colour) return { problem: 'color must be a colour, or "AUTO" to follow the text' };
+        values.textDecorationColor = {
+          value: __spreadValues({ type: "SOLID", color: solidColourOf(colour) }, colour.a < 1 ? { opacity: colour.a } : {})
+        };
+      }
+    }
+    if (spec.skipInk !== void 0) {
+      if (typeof spec.skipInk !== "boolean") return { problem: "skipInk must be true or false" };
+      values.textDecorationSkipInk = spec.skipInk;
+    }
+    return { values };
+  }
+  var hex2 = (colour) => `#${[colour.r, colour.g, colour.b].map((n) => Math.round(n * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+  function decorationWords(source) {
+    const out = {};
+    const style = source.textDecorationStyle;
+    if (typeof style === "string" && style !== "SOLID") out.style = style;
+    for (const [key, property] of [["offset", "textDecorationOffset"], ["thickness", "textDecorationThickness"]]) {
+      const value2 = source[property];
+      if (value2 && typeof value2 === "object" && value2.unit !== "AUTO") out[key] = measureWords(value2);
+    }
+    const colour = source.textDecorationColor;
+    if (colour && typeof colour === "object" && colour.value && colour.value !== "AUTO") {
+      const paint = colour.value;
+      const alpha = typeof paint.opacity === "number" && paint.opacity < 1 ? Math.round(paint.opacity * 1e3) / 1e3 : void 0;
+      out.color = alpha === void 0 ? hex2(paint.color) : `${hex2(paint.color)} @${alpha}`;
+    }
+    if (source.textDecorationSkipInk === false) out.skipInk = false;
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
   // src/canvas/props.ts
+  var PATTERN_TILES = ["RECTANGULAR", "HORIZONTAL_HEXAGONAL", "VERTICAL_HEXAGONAL"];
+  var PATTERN_ALIGN = ["START", "CENTER", "END"];
+  function repeatModifier(raw) {
+    var _a, _b, _c;
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { problem: "must be { type, count, offset, unit, axis }" };
+    const spec = raw;
+    const known = ["type", "count", "offset", "unit", "axis"];
+    const extra = Object.keys(spec).filter((key) => !known.includes(key));
+    if (extra.length > 0) return { problem: `takes ${known.join(", ")} \u2014 not ${extra.join(", ")}` };
+    const kind = String((_a = spec.type) != null ? _a : "LINEAR").toUpperCase();
+    if (kind !== "LINEAR" && kind !== "RADIAL") return { problem: "type must be LINEAR or RADIAL" };
+    const radial = kind === "RADIAL";
+    const count = spec.count === void 0 ? 3 : spec.count;
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 2) return { problem: "count must be a whole number of at least 2" };
+    const offset = spec.offset === void 0 ? radial ? 0 : 1 : spec.offset;
+    if (typeof offset !== "number" || !Number.isFinite(offset)) return { problem: "offset must be a number \u2014 a distance, not an angle" };
+    const unit = String((_b = spec.unit) != null ? _b : "RELATIVE").toUpperCase();
+    if (unit !== "RELATIVE" && unit !== "PIXELS") return { problem: "unit must be RELATIVE or PIXELS" };
+    if (radial) return { modifier: { type: "REPEAT", repeatType: "RADIAL", count, unitType: unit, offset } };
+    const axis = String((_c = spec.axis) != null ? _c : "HORIZONTAL").toUpperCase();
+    if (axis !== "HORIZONTAL" && axis !== "VERTICAL") return { problem: "axis must be HORIZONTAL or VERTICAL" };
+    return { modifier: { type: "REPEAT", repeatType: "LINEAR", count, unitType: unit, offset, axis } };
+  }
+  function repeatWords(modifier) {
+    const radial = modifier.repeatType === "RADIAL";
+    return __spreadValues(__spreadValues({
+      type: radial ? "RADIAL" : "LINEAR",
+      count: modifier.count,
+      offset: Math.round(modifier.offset * 1e3) / 1e3
+    }, modifier.unitType === "PIXELS" ? { unit: "PIXELS" } : {}), !radial && modifier.axis === "VERTICAL" ? { axis: "VERTICAL" } : {});
+  }
   var BLEND_FREE_ENUMS = {
     textAlign: ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"],
     verticalAlign: ["TOP", "CENTER", "BOTTOM"],
@@ -21484,8 +22368,42 @@ ${renderSections(sections)}
     "strokesInLayout",
     "rows",
     "columns",
-    "autoTracks"
+    "autoTracks",
+    "rowGap",
+    "columnGap",
+    "rowSizes",
+    "columnSizes",
+    "positioning",
+    "moveRows",
+    "moveColumns"
   ];
+  function parseGridTrack(raw) {
+    if (typeof raw === "number") return Number.isFinite(raw) && raw >= 0 ? { type: "FIXED", value: raw } : null;
+    if (typeof raw === "string") {
+      const text6 = raw.trim().toLowerCase();
+      if (text6 === "hug" || text6 === "auto") return { type: "HUG" };
+      const fr = /^(\d+(?:\.\d+)?)fr$/.exec(text6);
+      if (fr) return Number(fr[1]) > 0 ? { type: "FLEX", value: Number(fr[1]) } : null;
+      const px2 = /^(\d+(?:\.\d+)?)(px)?$/.exec(text6);
+      if (px2) return { type: "FIXED", value: Number(px2[1]) };
+      return null;
+    }
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+      const { type, value: value2 } = raw;
+      if (type === "HUG") return { type: "HUG" };
+      if ((type === "FIXED" || type === "FLEX") && (value2 === void 0 || typeof value2 === "number")) {
+        if (type === "FIXED" && typeof value2 !== "number") return null;
+        return value2 === void 0 ? { type } : { type, value: value2 };
+      }
+    }
+    return null;
+  }
+  function formatGridTrack(track) {
+    var _a, _b;
+    if (track.type === "HUG") return "hug";
+    if (track.type === "FLEX") return `${(_a = track.value) != null ? _a : 1}fr`;
+    return Math.round(((_b = track.value) != null ? _b : 0) * 100) / 100;
+  }
   var PRIMARY_AXIS = ["MIN", "CENTER", "MAX", "SPACE_BETWEEN", "SPACE_AROUND", "SPACE_EVENLY"];
   var COUNTER_AXIS = ["MIN", "CENTER", "MAX", "BASELINE"];
   var SIZING = ["FIXED", "HUG", "FILL"];
@@ -21546,6 +22464,23 @@ ${renderSections(sections)}
     "maxHeight",
     "gridSpan",
     "gridAlign",
+    "gridCell",
+    "textStart",
+    "repeat",
+    "decoration",
+    // The kind of shape before its size and its text: a new shape type brings its own proportions.
+    "shapeType",
+    "wide",
+    "authorVisible",
+    "codeLanguage",
+    "code",
+    "connector",
+    "table",
+    "skipped",
+    "transition",
+    "stuckTo",
+    // Before the size: an asset type is a format, and a format comes with dimensions.
+    "assetType",
     "x",
     "y",
     "rotation",
@@ -21644,7 +22579,12 @@ ${renderSections(sections)}
     hyperlink: "link",
     reactions: "links",
     boundVariables: "bind",
-    parentId: "parent"
+    parentId: "parent",
+    isWideWidth: "wide",
+    isSkippedSlide: "skipped",
+    connectorStart: "connector.start",
+    connectorEnd: "connector.end",
+    connectorLineType: "connector.line"
   };
   function unknownProperty(where, key) {
     var _a;
@@ -21661,7 +22601,8 @@ ${renderSections(sections)}
     "y",
     "gridRowSpan",
     "gridColumnSpan",
-    "gridChildVerticalAlign"
+    "gridChildVerticalAlign",
+    "gridChildHorizontalAlign"
   ];
   function movesToAnotherParent(step2) {
     return step2.step === "reparent" && step2.parent !== "";
@@ -21670,10 +22611,11 @@ ${renderSections(sections)}
     if (step2.step === "sizing" || step2.step === "resize") return true;
     if (step2.step === "reparent" && step2.parent === "") return true;
     if (step2.step === "timeline") return true;
+    if (step2.step === "gridCell") return true;
     return step2.step === "assign" && PLACED.includes(step2.property);
   }
   function planProps(raw, where = "props") {
-    var _a, _b, _c;
+    var _b, _c, _d;
     const problems = [];
     const steps = [];
     let asked = null;
@@ -21704,6 +22646,7 @@ ${renderSections(sections)}
       }
       return value2;
     };
+    let labelLast = null;
     for (const key of ORDER) {
       if (!(key in props)) continue;
       switch (key) {
@@ -21785,8 +22728,128 @@ ${renderSections(sections)}
         case "gridAlign": {
           const allowed = ["MIN", "CENTER", "MAX", "AUTO"];
           const value2 = props.gridAlign;
-          if (typeof value2 !== "string" || !allowed.includes(value2)) fail2(`gridAlign must be one of: ${allowed.join(", ")}`);
-          else steps.push({ step: "assign", property: "gridChildVerticalAlign", value: value2 });
+          if (typeof value2 === "string") {
+            if (!allowed.includes(value2)) fail2(`gridAlign must be one of: ${allowed.join(", ")}`);
+            else steps.push({ step: "assign", property: "gridChildVerticalAlign", value: value2 });
+            break;
+          }
+          if (typeof value2 !== "object" || value2 === null || Array.isArray(value2)) {
+            fail2(`gridAlign must be one of ${allowed.join(", ")} or { horizontal, vertical }`);
+            break;
+          }
+          const axes = value2;
+          const unknown = Object.keys(axes).filter((axis) => axis !== "horizontal" && axis !== "vertical");
+          if (unknown.length > 0) {
+            fail2(`gridAlign takes horizontal and vertical \u2014 not ${unknown.join(", ")}`);
+            break;
+          }
+          for (const axis of ["horizontal", "vertical"]) {
+            const word = axes[axis];
+            if (word === void 0) continue;
+            if (typeof word !== "string" || !allowed.includes(word)) fail2(`gridAlign.${axis} must be one of: ${allowed.join(", ")}`);
+            else {
+              const property = axis === "horizontal" ? "gridChildHorizontalAlign" : "gridChildVerticalAlign";
+              steps.push({ step: "assign", property, value: word });
+            }
+          }
+          break;
+        }
+        case "repeat": {
+          const asked2 = props.repeat;
+          const list2 = Array.isArray(asked2) ? asked2 : [asked2];
+          if (list2.length === 0) {
+            fail2("repeat must be { type, count, offset, unit, axis } or a list of them");
+            break;
+          }
+          const modifiers = [];
+          for (const [index2, one] of list2.entries()) {
+            const read = repeatModifier(one);
+            if ("problem" in read) fail2(`repeat${Array.isArray(asked2) ? `[${index2}]` : ""} ${read.problem}`);
+            else modifiers.push(read.modifier);
+          }
+          if (modifiers.length === list2.length) steps.push({ step: "repeat", modifiers: Array.isArray(asked2) ? modifiers : modifiers[0] });
+          break;
+        }
+        case "decoration": {
+          const planned = planDecoration(props.decoration);
+          if ("problem" in planned) fail2(`decoration ${planned.problem}`);
+          else steps.push({ step: "decoration", values: planned.values });
+          break;
+        }
+        case "shapeType": {
+          const value2 = String(props.shapeType).toUpperCase();
+          if (!SHAPE_TYPES2.includes(value2)) fail2(`shapeType must be one of: ${SHAPE_TYPES2.join(", ")}`);
+          else steps.push({ step: "assign", property: "shapeType", value: value2 });
+          break;
+        }
+        case "codeLanguage": {
+          const value2 = String(props.codeLanguage).toUpperCase();
+          if (!/^[A-Z_+#]+$/.test(value2)) fail2(`codeLanguage must be a language word: ${CODE_LANGUAGES.join(", ")}`);
+          else steps.push({ step: "assign", property: "codeLanguage", value: value2 });
+          break;
+        }
+        case "code": {
+          if (typeof props.code !== "string") fail2("code must be a string");
+          else steps.push({ step: "assign", property: "code", value: props.code });
+          break;
+        }
+        case "wide":
+        case "authorVisible":
+        case "skipped": {
+          if (typeof props[key] !== "boolean") fail2(`${key} must be true or false`);
+          else {
+            const property = key === "wide" ? "isWideWidth" : key === "skipped" ? "isSkippedSlide" : key;
+            steps.push({ step: "assign", property, value: props[key] });
+          }
+          break;
+        }
+        case "connector": {
+          const planned = planConnector(props.connector);
+          if ("problem" in planned) fail2(`connector ${planned.problem}`);
+          else {
+            const _a = planned.values, { labelFills } = _a, ends = __objRest(_a, ["labelFills"]);
+            if (Object.keys(ends).length > 0) steps.push({ step: "connector", values: ends });
+            if (labelFills) labelLast = { step: "connector", values: { labelFills } };
+          }
+          break;
+        }
+        case "table": {
+          const planned = planTable(props.table);
+          if ("problem" in planned) fail2(`table ${planned.problem}`);
+          else steps.push({ step: "table", table: planned.value });
+          break;
+        }
+        case "transition": {
+          const planned = planTransition(props.transition);
+          if ("problem" in planned) fail2(`transition ${planned.problem}`);
+          else steps.push({ step: "transition", transition: planned.value });
+          break;
+        }
+        case "stuckTo": {
+          const target = props.stuckTo;
+          if (target !== null && (typeof target !== "string" || target === "")) fail2("stuckTo must be a node id, or null to peel it off");
+          else steps.push({ step: "stuckTo", target });
+          break;
+        }
+        case "assetType": {
+          const value2 = String(props.assetType).toUpperCase();
+          if (!BUZZ_ASSET_TYPES.includes(value2)) fail2(`assetType must be one of: ${BUZZ_ASSET_TYPES.join(", ")}`);
+          else steps.push({ step: "assetType", assetType: value2 });
+          break;
+        }
+        case "textStart": {
+          const at = props.textStart;
+          if (!Array.isArray(at) || at.length !== 2 || !Number.isInteger(at[0]) || at[0] < 0 || typeof at[1] !== "number" || at[1] < 0 || at[1] > 1) {
+            fail2("textStart must be [segment, position] \u2014 a segment index and a position from 0 to 1 along it");
+          } else steps.push({ step: "textStart", segment: at[0], position: at[1] });
+          break;
+        }
+        case "gridCell": {
+          const cell = props.gridCell;
+          const index2 = (n) => typeof n === "number" && Number.isInteger(n) && n >= 0;
+          if (typeof cell !== "object" || cell === null || !index2(cell.row) || !index2(cell.column)) {
+            fail2("gridCell must be { row, column }, each a whole number counted from 0");
+          } else steps.push({ step: "gridCell", row: cell.row, column: cell.column });
           break;
         }
         case "strokeWeight": {
@@ -21800,9 +22863,9 @@ ${renderSections(sections)}
           break;
         }
         case "letterSpacing": {
-          const measured2 = measure(props.letterSpacing);
-          if (measured2 === null) fail2('letterSpacing must be a number of pixels or a percentage like "5%"');
-          else steps.push(__spreadValues({ step: "letterSpacing" }, measured2));
+          const measured3 = measure(props.letterSpacing);
+          if (measured3 === null) fail2('letterSpacing must be a number of pixels or a percentage like "5%"');
+          else steps.push(__spreadValues({ step: "letterSpacing" }, measured3));
           break;
         }
         case "lineHeight": {
@@ -21810,10 +22873,10 @@ ${renderSections(sections)}
             steps.push({ step: "lineHeight", value: "AUTO" });
             break;
           }
-          const measured2 = measure(props.lineHeight);
-          if (measured2 === null || measured2.value <= 0) {
+          const measured3 = measure(props.lineHeight);
+          if (measured3 === null || measured3.value <= 0) {
             fail2('lineHeight must be a positive number of pixels, a percentage like "150%", or "AUTO"');
-          } else steps.push(__spreadValues({ step: "lineHeight" }, measured2));
+          } else steps.push(__spreadValues({ step: "lineHeight" }, measured3));
           break;
         }
         case "textAlign":
@@ -22168,10 +23231,10 @@ ${renderSections(sections)}
     }
     const topLevel = sizingProblem(props.sizing) === null ? props.sizing : void 0;
     if (asked || topLevel) {
-      const sizing = __spreadValues(__spreadValues({}, (_a = asked == null ? void 0 : asked.sizing) != null ? _a : {}), topLevel != null ? topLevel : {});
+      const sizing = __spreadValues(__spreadValues({}, (_b = asked == null ? void 0 : asked.sizing) != null ? _b : {}), topLevel != null ? topLevel : {});
       const laidOut = (asked == null ? void 0 : asked.mode) !== void 0 && asked.mode !== "NONE";
-      const horizontal = (_b = sizing.horizontal) != null ? _b : "width" in props ? "FIXED" : laidOut ? "HUG" : void 0;
-      const vertical = (_c = sizing.vertical) != null ? _c : "height" in props ? "FIXED" : laidOut ? "HUG" : void 0;
+      const horizontal = (_c = sizing.horizontal) != null ? _c : "width" in props ? "FIXED" : laidOut ? "HUG" : void 0;
+      const vertical = (_d = sizing.vertical) != null ? _d : "height" in props ? "FIXED" : laidOut ? "HUG" : void 0;
       const pin = { step: "sizing" };
       const fit = { step: "sizing" };
       if (horizontal === "FIXED") pin.horizontal = "FIXED";
@@ -22184,6 +23247,7 @@ ${renderSections(sections)}
       }
       if (fit.horizontal || fit.vertical) steps.push(fit);
     }
+    if (labelLast) steps.push(labelLast);
     return { steps, problems };
   }
   var TRIGGERS = {
@@ -22641,8 +23705,17 @@ ${renderSections(sections)}
     "textWrap",
     "letterSpacing",
     "lineHeight",
-    "link"
+    "link",
+    "textStyle",
+    "fillStyle",
+    "list",
+    "indent",
+    "listSpacing",
+    "paragraphSpacing",
+    "paragraphIndent",
+    "decoration"
   ];
+  var LIST_TYPES = ["ORDERED", "UNORDERED", "NONE"];
   function planRuns(raw, where, problems) {
     var _a, _b;
     if (!Array.isArray(raw)) {
@@ -22724,6 +23797,21 @@ ${renderSections(sections)}
         `textWrap must be one of: ${BLEND_FREE_ENUMS.textWrap.join(", ")}`
       );
       check("link", typeof run.link === "string" || run.link === null, "link must be a URL, or null to remove one");
+      for (const key of ["textStyle", "fillStyle"]) {
+        check(key, typeof run[key] === "string" && run[key].trim() !== "", `${key} must be a style name or id`);
+      }
+      check("list", typeof run.list === "string" && LIST_TYPES.includes(run.list), `list must be one of: ${LIST_TYPES.join(", ")}`);
+      if (run.decoration !== void 0) {
+        const planned = planDecoration(run.decoration);
+        if ("problem" in planned) {
+          fail2(`decoration ${planned.problem}`);
+          bad = true;
+        }
+      }
+      check("indent", typeof run.indent === "number" && Number.isInteger(run.indent) && run.indent >= 0, "indent must be a whole number >= 0");
+      for (const key of ["listSpacing", "paragraphSpacing", "paragraphIndent"]) {
+        check(key, typeof run[key] === "number" && Number.isFinite(run[key]) && run[key] >= 0, `${key} must be a number of pixels >= 0`);
+      }
       if (run.fill !== void 0) {
         const problem = paintProblem(normalisePaint(run.fill));
         if (problem) {
@@ -22866,12 +23954,16 @@ ${renderSections(sections)}
         if (!colour) continue;
         const second = noiseType === "DUOTONE" ? colourOf(spec.second, "#FFFFFF", `${at}.second`, problems) : null;
         if (noiseType === "DUOTONE" && !second) continue;
-        effects.push(__spreadProps(__spreadValues(__spreadProps(__spreadValues({
+        const grain = grainSize(spec.size);
+        if (!grain) {
+          fail2("size must be a number of pixels, or [x, y] for grain stretched one way");
+          continue;
+        }
+        effects.push(__spreadProps(__spreadValues(__spreadProps(__spreadValues(__spreadValues({
           type: "NOISE",
           noiseType,
           color: colour
-        }, second ? { secondaryColor: second } : {}), {
-          noiseSize: typeof spec.size === "number" ? spec.size : 1,
+        }, second ? { secondaryColor: second } : {}), grain), {
           density: typeof spec.density === "number" ? spec.density : 0.5
         }), noiseType === "MULTITONE" ? { opacity: typeof spec.opacity === "number" ? spec.opacity : 1 } : {}), {
           visible: spec.visible !== false
@@ -22880,13 +23972,18 @@ ${renderSections(sections)}
         continue;
       }
       if (typeof spec.texture === "number") {
-        effects.push({
+        const grain = grainSize(spec.size);
+        if (!grain) {
+          fail2("size must be a number of pixels, or [x, y] for grain stretched one way");
+          continue;
+        }
+        effects.push(__spreadProps(__spreadValues({
           type: "TEXTURE",
-          radius: spec.texture,
-          noiseSize: typeof spec.size === "number" ? spec.size : 1,
+          radius: spec.texture
+        }, grain), {
           clipToShape: spec.clip !== false,
           visible: spec.visible !== false
-        });
+        }));
         summary.push(`texture ${spec.texture}`);
         continue;
       }
@@ -22998,6 +24095,7 @@ ${renderSections(sections)}
   };
   var VECTOR_FIELDS = ["TRANSLATION_XY", "SCALE_XY"];
   function planKeyframes(raw, where, problems) {
+    if (raw === null || Array.isArray(raw) && raw.length === 0) return { step: "keyframes", tracks: [], clear: true };
     if (!Array.isArray(raw)) {
       problems.push(`${where} must be an array of { field, at } tracks`);
       return null;
@@ -23006,24 +24104,42 @@ ${renderSections(sections)}
     for (const [index2, entry] of raw.entries()) {
       const at = `${where}[${index2}]`;
       const one = entry;
-      const field = typeof (one == null ? void 0 : one.field) === "string" ? KEYFRAME_FIELDS[one.field.trim()] : void 0;
-      if (!field) {
-        problems.push(`${at}.field must be one of: ${Object.keys(KEYFRAME_FIELDS).join(", ")}`);
+      const word = typeof (one == null ? void 0 : one.field) === "string" ? one.field.trim() : "";
+      const property = KEYFRAME_FIELDS[word];
+      const indexed = property ? null : parseIndexedField(word);
+      if (!property && !indexed) {
+        problems.push(
+          `${at}.field must be one of: ${Object.keys(KEYFRAME_FIELDS).join(", ")} \u2014 or fill, stroke[n], effect[n].<${EFFECT_KEYFRAME_WORDS.join("|")}>`
+        );
+        continue;
+      }
+      const name = property != null ? property : word;
+      const field = property ? { type: "PROPERTY", name: property } : indexed.field;
+      if (one.at === null) {
+        tracks.push({ name, field, track: null });
         continue;
       }
       if (!Array.isArray(one.at) || one.at.length === 0) {
-        problems.push(`${at}.at must be a non-empty array of { time, value }`);
+        problems.push(`${at}.at must be a non-empty array of { time, value } \u2014 or null to take the track off`);
         continue;
       }
-      const wantsVector = VECTOR_FIELDS.includes(field);
+      const kind = property ? VECTOR_FIELDS.includes(property) ? "VECTOR" : "FLOAT" : indexed.value;
       const valueOf = (value2, at2) => {
-        if (wantsVector) {
+        if (kind === "VECTOR") {
           const pair2 = value2;
           if (typeof (pair2 == null ? void 0 : pair2.x) !== "number" || typeof (pair2 == null ? void 0 : pair2.y) !== "number") {
-            problems.push(`${at2} must be { x, y } \u2014 ${field} moves in two directions at once`);
+            problems.push(`${at2} must be { x, y } \u2014 ${name} moves in two directions at once`);
             return null;
           }
           return { type: "VECTOR", value: { x: pair2.x, y: pair2.y } };
+        }
+        if (kind === "COLOR") {
+          const colour = keyframeColour(value2, colourFrom);
+          if (!colour) {
+            problems.push(`${at2} must be a colour \u2014 "#RRGGBB", "#RRGGBB @0.5" or a CSS colour`);
+            return null;
+          }
+          return { type: "COLOR", value: colour };
         }
         if (typeof value2 !== "number" || !Number.isFinite(value2)) {
           problems.push(`${at2} must be a number`);
@@ -23057,10 +24173,7 @@ ${renderSections(sections)}
       }
       if (keyframes.length === 0) continue;
       const base = one.from === void 0 ? null : valueOf(one.from, `${at}.from`);
-      tracks.push({
-        name: field,
-        track: __spreadValues({ keyframes }, base ? { baseValue: base } : {})
-      });
+      tracks.push({ name, field, track: __spreadValues({ keyframes }, base ? { baseValue: base } : {}) });
     }
     return tracks.length > 0 ? { step: "keyframes", tracks } : null;
   }
@@ -23399,6 +24512,25 @@ ${renderSections(sections)}
     };
   }
   var GRID_ALIGN = ["MIN", "MAX", "CENTER", "STRETCH"];
+  function gridSpecsOf(value2) {
+    if (!Array.isArray(value2)) return [];
+    const round17 = (n) => Math.round(n * 1e3) / 1e3;
+    const hex4 = (c) => `#${[c.r, c.g, c.b].map((n) => Math.round(n * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+    const tint2 = (grid) => __spreadValues(__spreadValues(__spreadValues({}, grid.color ? { color: hex4(grid.color) } : {}), grid.color && round17(grid.color.a) !== 0.1 ? { opacity: round17(grid.color.a) } : {}), grid.visible === false ? { visible: false } : {});
+    return value2.map((grid) => {
+      if (grid.pattern === "GRID") return __spreadValues({ square: grid.sectionSize }, tint2(grid));
+      const lines = grid;
+      const vertical = lines.pattern === "COLUMNS";
+      const size = lines.alignment !== "STRETCH" && typeof lines.sectionSize === "number" ? lines.sectionSize : void 0;
+      const defaultAlign = size === void 0 ? "STRETCH" : "MIN";
+      const out = vertical ? { columns: lines.count } : { rows: lines.count };
+      if (lines.gutterSize) out.gutter = round17(lines.gutterSize);
+      if (lines.offset && lines.alignment !== "CENTER") out.margin = round17(lines.offset);
+      if (size !== void 0) out[vertical ? "width" : "height"] = round17(size);
+      if (lines.alignment !== defaultAlign) out.align = lines.alignment;
+      return __spreadValues(__spreadValues({}, out), tint2(lines));
+    });
+  }
   function planGrids(raw, where, problems) {
     if (!Array.isArray(raw)) {
       problems.push(`${where} must be an array of grids \u2014 [] removes them`);
@@ -23556,6 +24688,46 @@ ${renderSections(sections)}
       if (value2.autoTracks !== "NONE" && value2.autoTracks !== "ROWS") fail2("autoTracks must be NONE or ROWS");
       else layout.autoTracks = value2.autoTracks;
     }
+    for (const gap of ["rowGap", "columnGap"]) {
+      if (value2[gap] === void 0) continue;
+      const amount = value2[gap];
+      if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) fail2(`${gap} must be a number >= 0`);
+      else layout[gap] = amount;
+    }
+    for (const [key, axis] of [["rowSizes", "rows"], ["columnSizes", "columns"]]) {
+      if (value2[key] === void 0) continue;
+      const list2 = value2[key];
+      if (!Array.isArray(list2) || list2.length === 0) {
+        fail2(`${key} must be a non-empty list of tracks \u2014 pixels, "1fr" or "hug"`);
+        continue;
+      }
+      const bad = list2.findIndex((one) => parseGridTrack(one) === null);
+      if (bad !== -1) {
+        fail2(`${key}[${bad}] must be a number of pixels, "<n>fr" or "hug" \u2014 got ${JSON.stringify(list2[bad])}`);
+        continue;
+      }
+      const count = layout[axis];
+      if (count !== void 0 && count !== list2.length) {
+        fail2(`${key} has ${list2.length} track(s) but ${axis} is ${count}`);
+        continue;
+      }
+      layout[key] = list2;
+    }
+    if (value2.positioning !== void 0) {
+      if (value2.positioning !== "MANUAL" && value2.positioning !== "ROW_AUTO_FLOW") {
+        fail2("positioning must be MANUAL or ROW_AUTO_FLOW");
+      } else layout.positioning = value2.positioning;
+    }
+    for (const key of ["moveRows", "moveColumns"]) {
+      if (value2[key] === void 0) continue;
+      const move = value2[key];
+      const from = move && typeof move === "object" ? move.from : void 0;
+      const to = move && typeof move === "object" ? move.to : void 0;
+      const index2 = (n) => typeof n === "number" && Number.isInteger(n) && n >= 0;
+      if (!Array.isArray(from) || from.length === 0 || !from.every(index2) || !index2(to)) {
+        fail2(`${key} must be { from: [track indices], to: insertion index }`);
+      } else layout[key] = { from, to };
+    }
     if (value2.sizing !== void 0) {
       if (typeof value2.sizing !== "object" || value2.sizing === null) fail2("sizing must be { horizontal, vertical }");
       else {
@@ -23572,6 +24744,15 @@ ${renderSections(sections)}
     const saysMore = Object.keys(layout).some((key) => key !== "sizing");
     const _a = layout, { sizing: _sizing } = _a, rest = __objRest(_a, ["sizing"]);
     return { step: saysMore ? { step: "layout", layout: rest } : null, layout };
+  }
+  function grainSize(raw) {
+    if (raw === void 0) return { noiseSize: 1 };
+    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return { noiseSize: raw };
+    if (Array.isArray(raw) && raw.length === 2 && raw.every((one) => typeof one === "number" && Number.isFinite(one) && one > 0)) {
+      const [x, y] = raw;
+      return x === y ? { noiseSize: x } : { noiseSize: x, noiseSizeVector: { x, y } };
+    }
+    return null;
   }
   var HEX = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
   var CSS_COLOUR = /^(rgba?|hsla?|lab|lch|oklab|oklch|color)\(\s*[^()]*\)$/i;
@@ -23728,6 +24909,25 @@ ${renderSections(sections)}
       [zeroed(-b), zeroed(a), zeroed(origin - (-b * from[0] + a * from[1]))]
     ];
   }
+  function gradientEnds(transform, kind = "LINEAR") {
+    const [[a, b, tx], [c, d, ty]] = transform;
+    const det = a * d - b * c;
+    if (!Number.isFinite(det) || Math.abs(det) < 1e-9) return null;
+    const centred = normaliseEnum(kind) !== "LINEAR";
+    const solve = (gx, gy) => {
+      const rx = gx - tx;
+      const ry = gy - ty;
+      const x = (d * rx - b * ry) / det;
+      const y = (-c * rx + a * ry) / det;
+      const tidy = (n) => Math.round(n * 1e4) / 1e4 + 0;
+      return [tidy(x), tidy(y)];
+    };
+    const from = centred ? solve(0.5, 0.5) : solve(0, 0);
+    const to = centred ? solve(1, 0.5) : solve(1, 0);
+    const scale = Math.hypot(a, b) || 1;
+    const skewed = Math.abs(c + b) / scale > 1e-3 || Math.abs(d - a) / scale > 1e-3;
+    return { from, to, skewed };
+  }
   function sizingProblem(value2) {
     if (value2 === void 0) return null;
     if (typeof value2 !== "object" || value2 === null || Array.isArray(value2)) {
@@ -23770,7 +24970,15 @@ ${renderSections(sections)}
     if (entry.shader !== void 0) return shaderProblem(ref);
     if (entry.gradient !== void 0) return gradientProblem(ref);
     if (entry.image !== void 0) return imageProblem(entry);
-    if (typeof entry.variable === "string") return entry.variable === "" ? "variable must be a name, id or library key" : null;
+    if (entry.video !== void 0) return videoProblem(entry);
+    if (entry.pattern !== void 0) return patternProblem(ref);
+    if (typeof entry.variable === "string") {
+      if (entry.variable === "") return "variable must be a name, id or library key";
+      if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
+        return "opacity must be between 0 and 1";
+      }
+      return null;
+    }
     if (entry.color !== void 0) {
       if (!isColourInput(entry.color)) return `${JSON.stringify(entry.color)} is not a ${COLOUR_WORDS}`;
       if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
@@ -23848,6 +25056,46 @@ ${renderSections(sections)}
     }
     return null;
   }
+  function patternProblem(entry) {
+    const known = ["pattern", "tile", "scale", "spacing", "align", "opacity"];
+    const extra = Object.keys(entry).filter((key) => !known.includes(key));
+    if (extra.length > 0) return `a pattern takes ${known.join(", ")} \u2014 not ${extra.join(", ")}`;
+    if (typeof entry.pattern !== "string" || entry.pattern.trim() === "") return "pattern must be the id of the node to tile";
+    if (entry.tile !== void 0 && (typeof entry.tile !== "string" || !PATTERN_TILES.includes(entry.tile))) {
+      return `tile must be one of: ${PATTERN_TILES.join(", ")}`;
+    }
+    if (entry.scale !== void 0 && (typeof entry.scale !== "number" || !(entry.scale > 0))) return "scale must be a number above 0";
+    if (entry.spacing !== void 0 && !(Array.isArray(entry.spacing) && entry.spacing.length === 2 && entry.spacing.every((n) => typeof n === "number" && Number.isFinite(n)))) {
+      return "spacing must be [x, y]";
+    }
+    if (entry.align !== void 0 && (typeof entry.align !== "string" || !PATTERN_ALIGN.includes(entry.align))) {
+      return `align must be one of: ${PATTERN_ALIGN.join(", ")}`;
+    }
+    if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
+      return "opacity must be between 0 and 1";
+    }
+    return null;
+  }
+  function videoProblem(entry) {
+    const video = entry.video;
+    if (typeof video !== "object" || video === null || Array.isArray(video)) {
+      return "video must be { hash } or { bytes } \u2014 bytes being base64 MP4, MOV or WebM";
+    }
+    const source = video;
+    if (source.url !== void 0) return "video cannot come from a url \u2014 Figma takes the bytes only; send { bytes } as base64";
+    const named = ["hash", "bytes"].filter((key) => source[key] !== void 0);
+    if (named.length !== 1) return named.length === 0 ? "video must name hash or bytes" : "video names hash and bytes \u2014 pick one";
+    if (typeof source[named[0]] !== "string" || source[named[0]] === "") {
+      return `video.${named[0]} must be a non-empty string`;
+    }
+    if (entry.scaleMode !== void 0 && (typeof entry.scaleMode !== "string" || !SCALE_MODES.includes(entry.scaleMode))) {
+      return `scaleMode must be one of: ${SCALE_MODES.join(", ")}`;
+    }
+    if (entry.opacity !== void 0 && (typeof entry.opacity !== "number" || entry.opacity < 0 || entry.opacity > 1)) {
+      return "opacity must be between 0 and 1";
+    }
+    return null;
+  }
   function imageProblem(entry) {
     const image = entry.image;
     if (typeof image !== "object" || image === null || Array.isArray(image)) {
@@ -23896,11 +25144,11 @@ ${renderSections(sections)}
       if (!rgb2) return null;
       return __spreadProps(__spreadValues({}, rgb2), { a: clamp013(Number(withPercent[2]) / 100) });
     }
-    const hex2 = text6.replace(/^#/, "");
-    if (/^[0-9a-fA-F]{8}$/.test(hex2)) {
-      const rgb2 = parseHex(hex2.slice(0, 6));
+    const hex4 = text6.replace(/^#/, "");
+    if (/^[0-9a-fA-F]{8}$/.test(hex4)) {
+      const rgb2 = parseHex(hex4.slice(0, 6));
       if (!rgb2) return null;
-      return __spreadProps(__spreadValues({}, rgb2), { a: parseInt(hex2.slice(6, 8), 16) / 255 });
+      return __spreadProps(__spreadValues({}, rgb2), { a: parseInt(hex4.slice(6, 8), 16) / 255 });
     }
     const rgb = parseHex(text6);
     if (rgb) return __spreadProps(__spreadValues({}, rgb), { a: 1 });
@@ -23908,8 +25156,8 @@ ${renderSections(sections)}
     return colour ? { r: colour.r, g: colour.g, b: colour.b, a: colour.a } : null;
   }
   function describeColor(color) {
-    const hex2 = formatHex(color);
-    return color.a >= 0.999 ? hex2 : `${hex2} ${Math.round(color.a * 100)}%`;
+    const hex4 = formatHex(color);
+    return color.a >= 0.999 ? hex4 : `${hex4} ${Math.round(color.a * 100)}%`;
   }
   var VARIABLE_ID = /^VariableID:/;
   var COLLECTION_ID = /^VariableCollectionId:/;
@@ -23969,9 +25217,24 @@ ${renderSections(sections)}
         if (match) return match;
       }
     }
+    const seen = SEEN_REMOTE.get(ref);
+    if (seen) {
+      const variable = await figma.variables.getVariableByIdAsync(seen).catch(() => null);
+      if (variable) return variable;
+    }
     const fromLibrary = await libraryVariable(ref);
     if (fromLibrary) return fromLibrary;
     throw new Error(`no variable named "${ref}"`);
+  }
+  var SEEN_REMOTE = /* @__PURE__ */ new Map();
+  var AMBIGUOUS = /* @__PURE__ */ new Set();
+  function rememberVariable(variable) {
+    if (!variable.remote || AMBIGUOUS.has(variable.name)) return;
+    const known = SEEN_REMOTE.get(variable.name);
+    if (known && known !== variable.id) {
+      SEEN_REMOTE.delete(variable.name);
+      AMBIGUOUS.add(variable.name);
+    } else SEEN_REMOTE.set(variable.name, variable.id);
   }
   async function libraryVariable(ref) {
     let collections;
@@ -24180,1610 +25443,72 @@ ${renderSections(sections)}
     }
   }
 
-  // src/canvas/components.ts
-  function humanPropertyName(raw) {
-    const hash = raw.indexOf("#");
-    return (hash === -1 ? raw : raw.slice(0, hash)).trim();
+  // src/canvas/paint-reader.ts
+  var round12 = (value2) => Math.round(value2 * 1e3) / 1e3;
+  function hex3(colour) {
+    return `#${[colour.r, colour.g, colour.b].map((channel2) => Math.round(Math.min(1, Math.max(0, channel2)) * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
   }
-  var MAX_OPTIONS = 8;
-  var MAX_DEFAULT_TEXT = 24;
-  function describeProperties(definitions) {
-    const parts = [];
-    for (const [raw, definition] of Object.entries(definitions)) {
-      const name = humanPropertyName(raw);
-      const options = definition.variantOptions;
-      const fallback = describeDefault(definition.defaultValue);
-      if (options && options.length > 0) {
-        const shown = options.slice(0, MAX_OPTIONS).join("|");
-        const rest = options.length > MAX_OPTIONS ? `|\u2026+${options.length - MAX_OPTIONS}` : "";
-        parts.push(`${name}: ${shown}${rest}${fallback}`);
-      } else {
-        parts.push(`${name}: ${definition.type.toLowerCase()}${fallback}`);
-      }
-    }
-    return parts.join(" \xB7 ");
-  }
-  function describeDefault(value2) {
-    if (value2 === void 0 || value2 === null || value2 === "") return "";
-    const text6 = String(value2);
-    const short = text6.length > MAX_DEFAULT_TEXT ? `${text6.slice(0, MAX_DEFAULT_TEXT)}\u2026` : text6;
-    return ` (=${short})`;
-  }
-  function resolveProperties(wanted, defined) {
-    const resolved = {};
-    const problems = [];
-    const keys = Object.keys(defined);
-    for (const [asked, value2] of Object.entries(wanted)) {
-      const exact = keys.includes(asked) ? [asked] : [];
-      const byName = exact.length > 0 ? exact : keys.filter((key2) => humanPropertyName(key2) === asked);
-      const matches2 = byName.length > 0 ? byName : keys.filter((key2) => humanPropertyName(key2).toLowerCase() === asked.toLowerCase());
-      if (matches2.length === 0) {
-        const available = keys.map(humanPropertyName).join(", ");
-        problems.push(`"${asked}" is not a property here \u2014 this instance has: ${available || "(none)"}`);
-        continue;
-      }
-      if (matches2.length > 1) {
-        problems.push(`"${asked}" matches ${matches2.length} properties (${matches2.join(", ")}) \u2014 name one in full`);
-        continue;
-      }
-      const key = matches2[0];
-      const type = defined[key].type;
-      if (type === "BOOLEAN") {
-        if (typeof value2 !== "boolean") {
-          problems.push(`${humanPropertyName(key)} is a boolean property, and ${JSON.stringify(value2)} is not a boolean`);
-          continue;
-        }
-      } else if (typeof value2 !== "string") {
-        problems.push(`${humanPropertyName(key)} is a ${type.toLowerCase()} property, so its value must be a string`);
-        continue;
-      }
-      resolved[key] = value2;
-    }
-    return { resolved, problems };
-  }
-  async function componentFor(ref) {
-    const byId = await figma.getNodeByIdAsync(ref).catch(() => null);
-    if (byId) {
-      if (byId.type === "COMPONENT") return byId;
-      if (byId.type === "COMPONENT_SET") {
-        if (!byId.defaultVariant) throw new Error(`"${byId.name}" has no default variant to instantiate`);
-        return byId.defaultVariant;
-      }
-      throw new Error(`${ref} is a ${byId.type}, not a component`);
-    }
-    try {
-      return await figma.importComponentByKeyAsync(ref);
-    } catch (error) {
-      const set = await figma.importComponentSetByKeyAsync(ref).catch(() => null);
-      if (set == null ? void 0 : set.defaultVariant) return set.defaultVariant;
-      throw error;
-    }
-  }
-  var INSTANCE_CAP = 4e3;
-  var DESCRIPTION_CAP = 300;
-  function isDocumentable(node) {
-    var _a;
-    if (node.type === "COMPONENT_SET") return true;
-    return node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) !== "COMPONENT_SET";
-  }
-  async function collectComponents2(options = {}) {
-    var _a, _b, _c, _d;
-    const source = (_a = options.source) != null ? _a : "all";
-    const scope = options.scope === "document" ? "document" : "page";
-    const census2 = options.usage !== false;
-    const limit = Math.min(Math.max((_b = options.limit) != null ? _b : 100, 1), 500);
-    const query = ((_c = options.query) != null ? _c : "").trim().toLowerCase();
-    let root = figma.currentPage;
-    if (scope === "document") {
-      try {
-        await figma.loadAllPagesAsync();
-        root = figma.root;
-      } catch (e) {
-        root = figma.root;
-      }
-    }
-    const wasSkipping = figma.skipInvisibleInstanceChildren;
-    figma.skipInvisibleInstanceChildren = true;
-    const entries = /* @__PURE__ */ new Map();
-    let read = 0;
-    let sampled = false;
-    try {
-      if (source !== "library") {
-        for (const node of root.findAllWithCriteria({ types: ["COMPONENT_SET", "COMPONENT"] })) {
-          if (isDocumentable(node)) entries.set(node.id, entryFor2(node, "local"));
-        }
-      }
-      if (census2) {
-        const instances = root.findAllWithCriteria({ types: ["INSTANCE"] });
-        sampled = instances.length > INSTANCE_CAP;
-        for (const instance of instances.slice(0, INSTANCE_CAP)) {
-          read++;
-          const main = await instance.getMainComponentAsync().catch(() => null);
-          if (!main) continue;
-          const owner = ownerOf(main);
-          const known = entries.get(owner.id);
-          if (known) {
-            known.used = ((_d = known.used) != null ? _d : 0) + 1;
-            continue;
-          }
-          if (source === "local") continue;
-          entries.set(owner.id, __spreadProps(__spreadValues({}, entryFor2(owner, owner.remote ? "library" : "local")), { used: 1 }));
-        }
-      }
-    } finally {
-      figma.skipInvisibleInstanceChildren = wasSkipping;
-    }
-    const all = [...entries.values()].filter((entry) => query === "" || entry.name.toLowerCase().includes(query));
-    all.sort((left, right) => {
-      var _a2, _b2;
-      return ((_a2 = right.used) != null ? _a2 : 0) - ((_b2 = left.used) != null ? _b2 : 0) || left.name.localeCompare(right.name);
-    });
-    const where = scope === "document" ? "this document" : `the page "${figma.currentPage.name}"`;
-    return {
-      components: all.slice(0, limit),
-      total: all.length,
-      truncated: all.length > limit,
-      scope,
-      instances: read,
-      sampled,
-      note: census2 ? `Everything found in ${where}. Library components are the ones it already uses \u2014 Figma offers plugins no way to list a library\u2019s full contents.` : `Local components in ${where}: without the instance census (usage: false) a library component cannot be discovered at all.`
-    };
-  }
-  function ownerOf(main) {
-    var _a;
-    try {
-      return ((_a = main.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? main.parent : main;
-    } catch (e) {
-      return main;
-    }
-  }
-  function entryFor2(node, source) {
-    var _a;
-    let definitions = {};
-    try {
-      definitions = (_a = node.componentPropertyDefinitions) != null ? _a : {};
-    } catch (e) {
-    }
-    const properties = describeProperties(definitions);
-    let description = "";
-    try {
-      description = (node.descriptionMarkdown || node.description || "").trim();
-    } catch (e) {
-    }
-    return __spreadValues(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
-      id: node.id,
-      key: node.key,
-      name: node.name
-    }, source === "local" ? { page: pageOf2(node) } : {}), {
-      source
-    }), node.type === "COMPONENT_SET" ? { variants: node.children.length } : {}), properties ? { properties } : {}), description ? { description: description.length > DESCRIPTION_CAP ? `${description.slice(0, DESCRIPTION_CAP)}\u2026` : description } : {});
-  }
-  function pageOf2(node) {
-    let current = node;
-    while (current && current.type !== "PAGE") current = current.parent;
-    return (current == null ? void 0 : current.type) === "PAGE" ? current.name : void 0;
-  }
-  var PROPERTY_TYPES = ["BOOLEAN", "TEXT", "INSTANCE_SWAP", "VARIANT", "SLOT"];
-  function bindingField(type) {
-    switch (type) {
-      case "BOOLEAN":
-        return "visible";
-      case "TEXT":
-        return "characters";
-      case "INSTANCE_SWAP":
-        return "mainComponent";
-      default:
-        return null;
-    }
-  }
-  function slotProblem(raw) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return "must be an object";
-    const spec = raw;
-    for (const key of Object.keys(spec)) {
-      if (!["stretchChildOnInsert", "displayEmptyByDefault", "minChildren", "maxChildren", "allowPreferredValuesOnly"].includes(key)) {
-        return `unknown key "${key}" \u2014 accepted: stretchChildOnInsert, displayEmptyByDefault, minChildren, maxChildren, allowPreferredValuesOnly`;
-      }
-    }
-    for (const flag2 of ["stretchChildOnInsert", "displayEmptyByDefault", "allowPreferredValuesOnly"]) {
-      if (spec[flag2] !== void 0 && typeof spec[flag2] !== "boolean") return `${flag2} must be true or false`;
-    }
-    for (const limit of ["minChildren", "maxChildren"]) {
-      const value2 = spec[limit];
-      if (value2 === void 0 || value2 === null) continue;
-      if (typeof value2 !== "number" || !Number.isInteger(value2) || value2 < 0) {
-        return `${limit} must be a whole number >= 0, or null for no limit`;
-      }
-    }
-    return null;
-  }
-  function planComponentProperties(raw) {
-    var _a, _b, _c, _d;
-    const plan = { add: [], edit: [], remove: [], bind: [], problems: [] };
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      plan.problems.push("the request must be an object of add / edit / remove / bind");
-      return plan;
-    }
-    const spec = raw;
-    const list2 = (key) => {
-      const value2 = spec[key];
-      if (value2 === void 0) return null;
-      if (!Array.isArray(value2)) {
-        plan.problems.push(`${key} must be an array`);
-        return null;
-      }
-      return value2;
-    };
-    for (const [index2, entry] of ((_a = list2("add")) != null ? _a : []).entries()) {
-      const at = `add[${index2}]`;
-      const one = entry;
-      if (typeof (one == null ? void 0 : one.name) !== "string" || one.name.trim() === "") {
-        plan.problems.push(`${at}.name must be a non-empty string`);
-        continue;
-      }
-      const type = typeof one.type === "string" ? one.type.trim().toUpperCase() : "";
-      if (!PROPERTY_TYPES.includes(type)) {
-        plan.problems.push(`${at}.type must be one of: ${PROPERTY_TYPES.join(", ")}`);
-        continue;
-      }
-      const fallback = one.default;
-      if (type === "SLOT") {
-        if (fallback !== void 0) {
-          plan.problems.push(`${at}: a SLOT has no default \u2014 it holds whatever is put into it`);
-          continue;
-        }
-      } else if (type === "BOOLEAN" ? typeof fallback !== "boolean" : typeof fallback !== "string") {
-        plan.problems.push(
-          `${at}.default must be ${type === "BOOLEAN" ? "true or false" : "a string"} for a ${type} property`
-        );
-        continue;
-      }
-      if (one.settings !== void 0) {
-        if (type !== "SLOT") {
-          plan.problems.push(`${at}.settings belongs to a SLOT property, not to a ${type} one`);
-          continue;
-        }
-        const problem = slotProblem(one.settings);
-        if (problem) {
-          plan.problems.push(`${at}.settings: ${problem}`);
-          continue;
-        }
-      }
-      if (one.bind !== void 0 && (!Array.isArray(one.bind) || one.bind.some((id) => typeof id !== "string"))) {
-        plan.problems.push(`${at}.bind must be an array of node ids`);
-        continue;
-      }
-      if (one.bind !== void 0 && bindingField(type) === null) {
-        plan.problems.push(`${at}: a VARIANT property is not bound to layers \u2014 its values are the components' names`);
-        continue;
-      }
-      if (one.preferred !== void 0 && (!Array.isArray(one.preferred) || one.preferred.some((k) => typeof k !== "string"))) {
-        plan.problems.push(`${at}.preferred must be an array of component ids or keys`);
-        continue;
-      }
-      plan.add.push(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
-        name: one.name.trim(),
-        type
-      }, type === "SLOT" ? {} : { default: fallback }), one.settings ? { settings: one.settings } : {}), one.preferred ? { preferred: one.preferred } : {}), one.bind ? { bind: one.bind } : {}));
-    }
-    for (const [index2, entry] of ((_b = list2("edit")) != null ? _b : []).entries()) {
-      const at = `edit[${index2}]`;
-      const one = entry;
-      if (typeof (one == null ? void 0 : one.name) !== "string" || one.name.trim() === "") {
-        plan.problems.push(`${at}.name must name the property to change`);
-        continue;
-      }
-      if (one.rename !== void 0 && (typeof one.rename !== "string" || one.rename.trim() === "")) {
-        plan.problems.push(`${at}.rename must be a non-empty string`);
-        continue;
-      }
-      if (one.default !== void 0 && typeof one.default !== "string" && typeof one.default !== "boolean") {
-        plan.problems.push(`${at}.default must be a string or a boolean`);
-        continue;
-      }
-      if (one.rename === void 0 && one.default === void 0 && one.preferred === void 0) {
-        plan.problems.push(`${at} changes nothing \u2014 give a rename, a default or preferred values`);
-        continue;
-      }
-      plan.edit.push(__spreadValues(__spreadValues(__spreadValues({
-        name: one.name.trim()
-      }, one.rename ? { rename: one.rename.trim() } : {}), one.default === void 0 ? {} : { default: one.default }), one.preferred ? { preferred: one.preferred } : {}));
-    }
-    for (const [index2, entry] of ((_c = list2("remove")) != null ? _c : []).entries()) {
-      if (typeof entry !== "string" || entry.trim() === "") {
-        plan.problems.push(`remove[${index2}] must be a property name`);
-        continue;
-      }
-      plan.remove.push(entry.trim());
-    }
-    for (const [index2, entry] of ((_d = list2("bind")) != null ? _d : []).entries()) {
-      const one = entry;
-      if (typeof (one == null ? void 0 : one.node) !== "string" || typeof (one == null ? void 0 : one.property) !== "string") {
-        plan.problems.push(`bind[${index2}] must be { node: "<layer id>", property: "<property name>" }`);
-        continue;
-      }
-      plan.bind.push({ node: one.node, property: one.property });
-    }
-    if (plan.add.length + plan.edit.length + plan.remove.length + plan.bind.length === 0 && plan.problems.length === 0) {
-      plan.problems.push("nothing to do \u2014 give add, edit, remove or bind");
-    }
-    return plan;
-  }
-
-  // src/canvas/overrides.ts
-  var FIELD_WORDS = {
-    characters: "text",
-    visible: "visible",
-    locked: "locked",
-    name: "name",
-    opacity: "opacity",
-    fills: "fill",
-    strokes: "stroke",
-    strokeWeight: "strokeWeight",
-    cornerRadius: "cornerRadius",
-    effects: "effects",
-    fontName: "fontName",
-    fontSize: "fontSize",
-    letterSpacing: "letterSpacing",
-    lineHeight: "lineHeight",
-    textCase: "textCase",
-    textDecoration: "textDecoration",
-    textAlignHorizontal: "textAlign",
-    textAlignVertical: "verticalAlign",
-    textAutoResize: "autoResize",
-    textTruncation: "truncate",
-    maxLines: "maxLines",
-    paragraphSpacing: "paragraphSpacing",
-    paragraphIndent: "paragraphIndent",
-    width: "width",
-    height: "height",
-    layoutSizingHorizontal: "sizing",
-    layoutSizingVertical: "sizing",
-    itemSpacing: "layout",
-    paddingLeft: "layout",
-    paddingRight: "layout",
-    paddingTop: "layout",
-    paddingBottom: "layout",
-    layoutMode: "layout",
-    primaryAxisAlignItems: "layout",
-    counterAxisAlignItems: "layout",
-    componentProperties: "properties",
-    fillStyleId: "fillStyle",
-    strokeStyleId: "strokeStyle",
-    textStyleId: "textStyle",
-    effectStyleId: "effectStyle",
-    gridStyleId: "gridStyle",
-    styledTextSegments: "runs",
-    boundVariables: "bind",
-    rotation: "rotation",
-    blendMode: "blendMode",
-    constraints: "constraints",
-    reactions: "links"
-  };
-  var CLEARED = {
-    fill: "none",
-    stroke: "none",
-    effects: [],
-    link: null,
-    maxLines: null,
-    runs: []
-  };
-  async function readOverrides(instance, describe) {
-    const own = instance.id;
-    const prefix = own.startsWith("I") ? `${own};` : `I${own};`;
-    const out = [];
-    for (const entry of instance.overrides) {
-      if (entry.id === own || !entry.id.startsWith(prefix)) continue;
-      const node = await figma.getNodeByIdAsync(entry.id).catch(() => null);
-      if (!node || !("type" in node)) continue;
-      const reading = await describe(node);
-      const wanted = /* @__PURE__ */ new Set();
-      const unread = [];
-      for (const field of entry.overriddenFields) {
-        const word = FIELD_WORDS[field];
-        if (word) wanted.add(word);
-        else unread.push(field);
-      }
-      const props = {};
-      for (const word of wanted) {
-        if (reading[word] !== void 0) props[word] = reading[word];
-        else if (word in CLEARED) props[word] = CLEARED[word];
-      }
-      if (Object.keys(props).length === 0 && unread.length === 0) continue;
-      out.push(__spreadValues({
-        at: entry.id.slice(prefix.length),
-        props
-      }, unread.length > 0 ? { unread } : {}));
-    }
-    return out;
-  }
-  function addressIn(instance, at) {
-    const own = instance.id;
-    return own.startsWith("I") ? `${own};${at}` : `I${own};${at}`;
-  }
-
-  // src/canvas/styles.ts
-  var STYLE_KINDS = ["paint", "text", "effect", "grid", "animation"];
-  var FIGMA_TYPE = {
-    paint: "PAINT",
-    text: "TEXT",
-    effect: "EFFECT",
-    grid: "GRID",
-    animation: "CUSTOM_ANIMATION"
-  };
-  var KIND_OF_TYPE = {
-    PAINT: "paint",
-    TEXT: "text",
-    EFFECT: "effect",
-    GRID: "grid",
-    CUSTOM_ANIMATION: "animation"
-  };
-  async function localStyles(kind) {
-    switch (kind) {
-      case "paint":
-        return figma.getLocalPaintStylesAsync();
-      case "text":
-        return figma.getLocalTextStylesAsync();
-      case "effect":
-        return figma.getLocalEffectStylesAsync();
-      case "animation":
-        return figma.getLocalCustomAnimationStylesAsync();
-      default:
-        return figma.getLocalGridStylesAsync();
-    }
-  }
-  async function styleFor(ref, kind) {
-    const wanted = ref.trim();
-    const styles = await localStyles(kind);
-    const exact = styles.filter((style) => style.name === wanted);
-    const loose = exact.length > 0 ? exact : styles.filter((style) => style.name.toLowerCase() === wanted.toLowerCase());
-    if (loose.length === 1) return loose[0];
-    if (loose.length > 1) {
-      throw new Error(`"${wanted}" matches ${loose.length} ${kind} styles \u2014 name one by id`);
-    }
-    const byId = await figma.getStyleByIdAsync(wanted).catch(() => null);
-    if (byId) {
-      if (KIND_OF_TYPE[byId.type] !== kind) throw new Error(`${wanted} is a ${byId.type} style, not ${FIGMA_TYPE[kind]}`);
-      return byId;
-    }
-    const imported = await figma.importStyleByKeyAsync(wanted).catch(() => null);
-    if (imported) {
-      if (KIND_OF_TYPE[imported.type] !== kind) {
-        throw new Error(`${wanted} is a ${imported.type} style, not ${FIGMA_TYPE[kind]}`);
-      }
-      return imported;
-    }
-    const names = styles.slice(0, 12).map((style) => style.name);
-    throw new Error(
-      `no ${kind} style called "${wanted}"${names.length > 0 ? ` \u2014 this file has ${names.join(", ")}` : " in this file"}`
-    );
-  }
-  async function describeStyle(style, paints2, effects, grids) {
-    var _a;
-    switch (style.type) {
-      case "PAINT":
-        return (_a = await paints2(style.paints)) != null ? _a : "none";
-      case "EFFECT":
-        return effects(style.effects);
-      case "CUSTOM_ANIMATION":
-        return style.animationEntries.map((entry) => `${entry.name}${entry.duration === void 0 ? "" : ` ${entry.duration}s`}`).join(" \u2192 ") || "no animations";
-      case "TEXT": {
-        const text6 = style;
-        const height = text6.lineHeight.unit === "AUTO" ? "auto" : `${Math.round(text6.lineHeight.value * 100) / 100}${text6.lineHeight.unit === "PERCENT" ? "%" : ""}`;
-        const spacing = text6.letterSpacing.value === 0 ? "" : ` \xB7 tracking ${Math.round(text6.letterSpacing.value * 100) / 100}${text6.letterSpacing.unit === "PERCENT" ? "%" : ""}`;
-        const axes = text6.fontName.variationSettings;
-        const variations = axes ? ` \xB7 ${Object.entries(axes).map(([tag, value2]) => `${tag} ${value2}`).join(" ")}` : "";
-        return `${text6.fontName.family} ${text6.fontName.style} ${text6.fontSize}/${height}${variations}${spacing}`;
-      }
-      default:
-        return grids(style.layoutGrids);
-    }
-  }
-
-  // src/canvas/motion-styles.ts
-  function resolveMotionStyleTarget(reference2, figmaStyles, customStyles) {
-    const wanted = reference2.trim();
-    const byId = [
-      ...figmaStyles.filter((style) => style.styleId === wanted).map((style) => ({ type: "FIGMA", id: style.styleId, name: style.name })),
-      ...customStyles.filter((style) => style.id === wanted).map((style) => ({ type: "CUSTOM", id: style.id, name: style.name }))
-    ];
-    if (byId.length === 1) return byId[0];
-    const byName = [
-      ...figmaStyles.filter((style) => style.name === wanted).map((style) => ({ type: "FIGMA", id: style.styleId, name: style.name })),
-      ...customStyles.filter((style) => style.name === wanted).map((style) => ({ type: "CUSTOM", id: style.id, name: style.name }))
-    ];
-    if (byName.length === 1) return byName[0];
-    if (byName.length > 1) {
-      throw new Error(`animation style name "${wanted}" is ambiguous \u2014 use one of these ids: ${byName.map((style) => style.id).join(", ")}`);
-    }
-    const available = [
-      ...figmaStyles.map((style) => `${style.name} (${style.styleId})`),
-      ...customStyles.map((style) => `${style.name} (${style.id}, custom)`)
-    ];
-    throw new Error(`no animation style called "${wanted}" \u2014 Figma has ${available.join(", ") || "none"}`);
-  }
-  function resolveFigmaAnimationStyle(reference2, figmaStyles) {
-    const wanted = reference2.trim();
-    const byId = figmaStyles.filter((style) => style.styleId === wanted);
-    if (byId.length === 1) return byId[0];
-    const byName = figmaStyles.filter((style) => style.name === wanted);
-    if (byName.length === 1) return byName[0];
-    if (byName.length > 1) {
-      throw new Error(`Figma animation name "${wanted}" is ambiguous \u2014 use one of these styleIds: ${byName.map((style) => style.styleId).join(", ")}`);
-    }
-    throw new Error(
-      `no Figma animation called "${wanted}" \u2014 available: ${figmaStyles.map((style) => `${style.name} (${style.styleId})`).join(", ") || "none"}`
-    );
-  }
-  async function replaceCustomAnimationEntries(style, wanted) {
-    const previous = style.animationEntries.map((entry) => {
-      var _a;
-      return {
-        styleId: entry.styleId,
-        props: (_a = entry.props) != null ? _a : {}
-      };
-    });
-    const write = async (entries) => {
-      for (const entry of [...style.animationEntries]) style.removeAnimationEntry(entry.id);
-      for (const entry of entries) await style.addAnimationEntryAsync(entry.styleId, entry.props);
-    };
-    try {
-      await write(wanted);
-    } catch (error) {
-      try {
-        await write(previous);
-      } catch (rollbackError) {
-        throw new Error(
-          `${String((error == null ? void 0 : error.message) || error)}; rollback also failed: ${String(
-            (rollbackError == null ? void 0 : rollbackError.message) || rollbackError
-          )}`
-        );
-      }
-      throw error;
-    }
-  }
-
-  // src/canvas/apply.ts
-  async function applyProps(node, steps, dry = false) {
-    const applied = [];
-    let failed = 0;
-    for (const step2 of steps) {
-      try {
-        const result = await applyStep(node, step2, dry);
-        if (result.error) failed++;
-        applied.push(result);
-      } catch (error) {
-        failed++;
-        applied.push({ property: propertyOf(step2), error: String((error == null ? void 0 : error.message) || error) });
-      }
-    }
-    return { applied, failed };
-  }
-  var propertyOf = (step2) => {
-    switch (step2.step) {
-      case "assign":
-      case "paint":
-        return step2.property;
-      case "overrides":
-        return "overrides";
-      case "keyframes":
-        return "keyframes";
-      case "strokeProfile":
-        return "strokeProfile";
-      case "timeline":
-        return "timeline";
-      case "font":
-        return "fontName";
-      case "text":
-        return "characters";
-      case "resize":
-        return "size";
-      case "radius":
-        return "cornerRadius";
-      case "reparent":
-        return "parent";
-      // A refusal should name the slot the caller wrote, the way a success does — "style" tells
-      // them nothing about which of the five they got wrong.
-      case "style":
-        return step2.slot;
-      // `layout`, `constraints` and `lineHeight` are named after themselves.
-      default:
-        return step2.step;
-    }
-  };
-  async function applyStep(node, step2, dry) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r;
-    const bag = node;
-    switch (step2.step) {
-      case "assign": {
-        if (!(step2.property in bag)) throw new Error(`a ${node.type} has no ${step2.property}`);
-        const before = bag[step2.property];
-        if (isText(node) && TEXT_PROPERTIES.includes(step2.property)) await loadNodeFont(node);
-        if (!dry) bag[step2.property] = step2.value;
-        return { property: step2.property, before, after: step2.value };
-      }
-      case "font": {
-        if (!isText(node)) throw new Error(`only a text node has a font, not a ${node.type}`);
-        const before = describeFont(node.fontName);
-        const font = step2.font;
-        await figma.loadFontAsync(font);
-        if (!dry) node.fontName = font;
-        return { property: "fontName", before, after: describeFont(font) };
-      }
-      case "text": {
-        if (!isText(node)) throw new Error(`only a text node has characters, not a ${node.type}`);
-        await loadNodeFont(node);
-        const before = node.characters;
-        if (!dry) node.characters = step2.characters;
-        return { property: "characters", before, after: step2.characters };
-      }
-      case "lineHeight": {
-        if (!isText(node)) throw new Error(`only a text node has a line height, not a ${node.type}`);
-        await loadNodeFont(node);
-        const before = node.lineHeight;
-        const after = step2.value === "AUTO" ? { unit: "AUTO" } : { value: step2.value, unit: (_a = step2.unit) != null ? _a : "PIXELS" };
-        if (!dry) node.lineHeight = after;
-        return { property: "lineHeight", before: describeMeasure(before), after: describeMeasure(after) };
-      }
-      case "letterSpacing": {
-        if (!isText(node)) throw new Error(`only a text node has letter spacing, not a ${node.type}`);
-        await loadNodeFont(node);
-        const before = node.letterSpacing;
-        const after = { value: step2.value, unit: step2.unit };
-        if (!dry) node.letterSpacing = after;
-        return { property: "letterSpacing", before: describeMeasure(before), after: describeMeasure(after) };
-      }
-      case "resize": {
-        if (typeof node.resize !== "function") {
-          throw new Error(`a ${node.type} cannot be resized`);
-        }
-        const before = { width: round11(node.width), height: round11(node.height) };
-        const width = (_b = step2.width) != null ? _b : node.width;
-        const height = (_c = step2.height) != null ? _c : node.height;
-        if (!dry) node.resizeWithoutConstraints(width, height);
-        const after = dry ? { width: round11(width), height: round11(height) } : { width: round11(node.width), height: round11(node.height) };
-        return { property: "size", before, after };
-      }
-      case "radius": {
-        if (!("cornerRadius" in bag)) throw new Error(`a ${node.type} has no corners`);
-        const corners = ["topLeft", "topRight", "bottomRight", "bottomLeft"];
-        const before = {};
-        const after = {};
-        for (const corner of corners) {
-          const amount = step2.corners[corner];
-          if (amount === void 0) continue;
-          const property = `${corner}Radius`;
-          before[property] = bag[property];
-          after[property] = amount;
-          if (!dry) bag[property] = amount;
-        }
-        return { property: "cornerRadius", before, after };
-      }
-      case "constraints": {
-        if (!("constraints" in bag)) throw new Error(`a ${node.type} has no constraints`);
-        const before = bag.constraints;
-        const current = before != null ? before : { horizontal: "MIN", vertical: "MIN" };
-        const after = {
-          horizontal: (_d = step2.horizontal) != null ? _d : current.horizontal,
-          vertical: (_e = step2.vertical) != null ? _e : current.vertical
-        };
-        if (!dry) bag.constraints = after;
-        return { property: "constraints", before, after };
-      }
-      case "layout": {
-        if (!("layoutMode" in bag)) throw new Error(`a ${node.type} has no auto-layout`);
-        const frame3 = node;
-        const before = {
-          mode: frame3.layoutMode,
-          gap: frame3.itemSpacing,
-          padding: [frame3.paddingTop, frame3.paddingRight, frame3.paddingBottom, frame3.paddingLeft]
-        };
-        const layout = step2.layout;
-        if (!dry) {
-          if (layout.mode) frame3.layoutMode = layout.mode;
-          if (layout.gap !== void 0) frame3.itemSpacing = layout.gap;
-          if (layout.padding) {
-            const [top, right, bottom, left] = layout.padding;
-            frame3.paddingTop = top;
-            frame3.paddingRight = right;
-            frame3.paddingBottom = bottom;
-            frame3.paddingLeft = left;
-          }
-          if (layout.primaryAxis) frame3.primaryAxisAlignItems = layout.primaryAxis;
-          if (layout.counterAxis) frame3.counterAxisAlignItems = layout.counterAxis;
-          if (layout.wrap !== void 0) frame3.layoutWrap = layout.wrap ? "WRAP" : "NO_WRAP";
-          if (layout.wrapGap !== void 0) frame3.counterAxisSpacing = layout.wrapGap;
-          if (layout.reverseZ !== void 0) frame3.itemReverseZIndex = layout.reverseZ;
-          if (layout.strokesInLayout !== void 0) frame3.strokesIncludedInLayout = layout.strokesInLayout;
-          const grid = frame3;
-          if (layout.rows !== void 0) grid.gridRowCount = layout.rows;
-          if (layout.columns !== void 0) grid.gridColumnCount = layout.columns;
-          if (layout.autoTracks !== void 0) grid.gridAutoTracks = layout.autoTracks;
-        }
-        return { property: "layout", before, after: layout };
-      }
-      case "paint": {
-        if (!(step2.property in bag)) throw new Error(`a ${node.type} has no ${step2.property}`);
-        const before = await describePaints(bag[step2.property]);
-        const paints2 = await buildPaints(step2.ref);
-        if (!dry) bag[step2.property] = paints2;
-        return { property: step2.property, before, after: await describePaints(paints2) };
-      }
-      case "reset": {
-        const instance = asInstance(node, "overrides to reset");
-        let before = null;
-        try {
-          before = `${instance.overrides.length} override(s)`;
-        } catch (e) {
-        }
-        const bag2 = instance;
-        if (!dry) {
-          if (typeof bag2.removeOverrides === "function") instance.removeOverrides();
-          else instance.resetOverrides();
-        }
-        return { property: "reset", before, after: "whatever the main component says" };
-      }
-      case "swap": {
-        const instance = asInstance(node, "a component to swap");
-        const target = await componentFor(step2.component);
-        const before = componentName(await instance.getMainComponentAsync());
-        if (!dry) instance.swapComponent(target);
-        return { property: "swap", before, after: componentName(target) };
-      }
-      case "properties": {
-        const instance = asInstance(node, "component properties");
-        const defined = instance.componentProperties;
-        const { resolved, problems } = resolveProperties(step2.properties, defined);
-        const before = {};
-        for (const key of Object.keys(resolved)) before[humanPropertyName(key)] = (_f = defined[key]) == null ? void 0 : _f.value;
-        if (!dry && Object.keys(resolved).length > 0) {
-          try {
-            instance.setProperties(resolved);
-          } catch (e) {
-            for (const [key, value2] of Object.entries(resolved)) {
-              try {
-                instance.setProperties({ [key]: value2 });
-              } catch (one) {
-                problems.push(`${humanPropertyName(key)}: ${String((one == null ? void 0 : one.message) || one)}`);
-              }
-            }
-          }
-        }
-        const now = dry ? null : byHumanName(instance.componentProperties);
-        const after = {};
-        for (const [key, value2] of Object.entries(resolved)) {
-          const name = humanPropertyName(key);
-          after[name] = now && name in now ? now[name] : value2;
-        }
-        return __spreadValues({
-          property: "properties",
-          before,
-          after
-        }, problems.length > 0 ? { error: problems.join(" \xB7 ") } : {});
-      }
-      case "links": {
-        const holder = node;
-        if (typeof holder.setReactionsAsync !== "function") {
-          throw new Error(`a ${node.type} cannot carry prototype links`);
-        }
-        for (const id of step2.destinations) {
-          const target = await figma.getNodeByIdAsync(id).catch(() => null);
-          if (!target) throw new Error(`no node with id ${id} to link to`);
-        }
-        const reactions = [];
-        for (const link of step2.links) {
-          const actions = [];
-          for (const action of link.actions) actions.push(await buildAction(action));
-          reactions.push({ trigger: link.trigger, actions });
-        }
-        const had = Array.isArray(holder.reactions) ? holder.reactions.length : 0;
-        if (!dry) await holder.setReactionsAsync(reactions);
-        const stored = !dry && Array.isArray(holder.reactions) ? holder.reactions : reactions;
-        return { property: "links", before: `${had} link(s)`, after: await describeLinks(stored, variableName) };
-      }
-      case "data": {
-        const before = {};
-        for (const key of Object.keys(step2.data)) {
-          const held = node.getPluginData(key);
-          if (held !== "") before[key] = held;
-        }
-        if (!dry) for (const [key, value2] of Object.entries(step2.data)) node.setPluginData(key, value2 != null ? value2 : "");
-        return { property: "data", before, after: step2.data };
-      }
-      case "effects": {
-        if (!("effects" in bag)) throw new Error(`a ${node.type} takes no effects`);
-        const before = await describeEffects(bag.effects);
-        let effects = step2.effects;
-        const failures = [];
-        for (const effect of effects) {
-          if (effect.type === "SHADER") {
-            await figma.importShaderById(effect.id).catch(() => void 0);
-          }
-        }
-        for (const binding of step2.bind) {
-          try {
-            const variable = await resolveVariableRef(binding.variable);
-            const wants = binding.field === "color" ? "COLOR" : "FLOAT";
-            if (variable.resolvedType !== wants) {
-              throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${binding.field} wants a ${wants}`);
-            }
-            const bound = figma.variables.setBoundVariableForEffect(
-              effects[binding.index],
-              binding.field,
-              variable
-            );
-            effects = effects.map((effect, index2) => index2 === binding.index ? bound : effect);
-          } catch (error) {
-            failures.push(`${binding.field}: ${String((error == null ? void 0 : error.message) || error)}`);
-          }
-        }
-        if (!dry) bag.effects = effects;
-        return __spreadValues({
-          property: "effects",
-          before,
-          after: step2.summary
-        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
-      }
-      case "animation": {
-        const holder = node;
-        if (typeof holder.applyAnimationStyle !== "function") {
-          throw new Error(`a ${node.type} takes no animation styles`);
-        }
-        const held = (_g = holder.animationStyles) != null ? _g : [];
-        const before = held.map((one) => `${one.type}:${one.styleId}`).join(", ") || "none";
-        const figmaStyles = figma.motion.figmaAnimationStyles();
-        const customStyles = typeof figma.getLocalCustomAnimationStylesAsync === "function" ? await figma.getLocalCustomAnimationStylesAsync() : [];
-        const resolved = step2.styles.map((one) => __spreadProps(__spreadValues({}, one), {
-          target: resolveMotionStyleTarget(one.style, figmaStyles, customStyles)
-        }));
-        for (const one of resolved) {
-          if (one.target.type === "CUSTOM" && (one.duration !== void 0 || Object.keys(one.props).length > 0)) {
-            throw new Error(
-              `custom animation style "${one.target.name}" owns its durations and props \u2014 only offset may be overridden`
-            );
-          }
-        }
-        const failures = [];
-        if (!dry) {
-          for (const applied of [...held]) (_h = holder.removeAnimationStyle) == null ? void 0 : _h.call(holder, applied.id);
-          for (const one of resolved) {
-            try {
-              if (one.target.type === "CUSTOM") {
-                holder.applyAnimationStyle(one.target.id, __spreadValues({
-                  type: "CUSTOM"
-                }, one.offset === void 0 ? {} : { timelineOffset: one.offset }));
-                continue;
-              }
-              const settings = {};
-              for (const [name, value2] of Object.entries(one.props)) {
-                const named = value2;
-                if (named && typeof named === "object" && typeof named.variable === "string") {
-                  const variable = await resolveVariableRef(named.variable);
-                  settings[name] = { type: "VARIABLE_ALIAS", id: variable.id };
-                  continue;
-                }
-                settings[name] = value2;
-              }
-              holder.applyAnimationStyle(one.target.id, __spreadValues(__spreadValues(__spreadValues({
-                type: "FIGMA"
-              }, one.duration === void 0 ? {} : { duration: one.duration }), one.offset === void 0 ? {} : { timelineOffset: one.offset }), Object.keys(settings).length > 0 ? { props: settings } : {}));
-            } catch (error) {
-              failures.push(`${one.style}: ${String((error == null ? void 0 : error.message) || error)}`);
-            }
-          }
-        }
-        return __spreadValues({
-          property: "animation",
-          before,
-          after: step2.summary
-        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
-      }
-      case "grid": {
-        if (!("layoutGrids" in bag)) throw new Error(`a ${node.type} takes no layout grids`);
-        const before = Array.isArray(bag.layoutGrids) ? `${bag.layoutGrids.length} grid(s)` : "none";
-        if (!dry) bag.layoutGrids = step2.grids;
-        return { property: "grid", before, after: step2.summary };
-      }
-      case "brush": {
-        if (!("complexStrokeProperties" in bag)) throw new Error(`a ${node.type} has no stroke to draw with`);
-        const before = describeBrush(bag.complexStrokeProperties);
-        if (step2.loads) await figma.loadBrushesAsync(step2.loads);
-        if (!dry) bag.complexStrokeProperties = step2.brush;
-        return { property: "brush", before, after: step2.summary };
-      }
-      case "bound": {
-        if (!(step2.property in bag)) throw new Error(`a ${node.type} has no ${step2.property}`);
-        const before = bag[step2.property];
-        if (!dry) bag[step2.property] = step2.value;
-        return { property: step2.property, before, after: step2.value };
-      }
-      case "dashes": {
-        if (!("dashPattern" in bag)) throw new Error(`a ${node.type} has no stroke to dash`);
-        const before = bag.dashPattern;
-        if (!dry) bag.dashPattern = step2.dashes;
-        return { property: "strokeDashes", before, after: step2.dashes };
-      }
-      case "link": {
-        if (!isText(node)) throw new Error(`only a text node carries a link, not a ${node.type}`);
-        await loadNodeFont(node);
-        const before = node.hyperlink;
-        if (!dry) node.hyperlink = step2.url === null ? null : { type: "URL", value: step2.url };
-        return { property: "hyperlink", before, after: (_i = step2.url) != null ? _i : "none" };
-      }
-      case "runs": {
-        if (!isText(node)) throw new Error(`only a text node has runs, not a ${node.type}`);
-        await loadNodeFont(node);
-        const applied = [];
-        const problems = [];
-        for (const run of step2.runs) {
-          const { ranges, problem } = resolveRanges(node.characters, run);
-          if (problem) {
-            problems.push(problem);
-            continue;
-          }
-          if (run.fontName) await figma.loadFontAsync(run.fontName);
-          const paints2 = run.fill === void 0 ? null : await buildPaints(run.fill);
-          for (const [from, to] of ranges) {
-            if (dry) continue;
-            if (run.fontName) node.setRangeFontName(from, to, run.fontName);
-            if (run.fontSize !== void 0) node.setRangeFontSize(from, to, run.fontSize);
-            if (paints2) node.setRangeFills(from, to, paints2);
-            if (run.textDecoration) node.setRangeTextDecoration(from, to, run.textDecoration);
-            if (run.textCase) node.setRangeTextCase(from, to, run.textCase);
-            if (run.textWrap) node.setRangeTextWrapStyle(from, to, run.textWrap);
-            if (run.letterSpacing !== void 0) {
-              node.setRangeLetterSpacing(from, to, measured(run.letterSpacing));
-            }
-            if (run.lineHeight !== void 0) {
-              node.setRangeLineHeight(from, to, run.lineHeight === "AUTO" ? { unit: "AUTO" } : measured(run.lineHeight));
-            }
-            if (run.link !== void 0) {
-              node.setRangeHyperlink(from, to, run.link === null ? null : { type: "URL", value: run.link });
-            }
-          }
-          for (const [from, to] of ranges) applied.push(`"${node.characters.slice(from, to)}" ${describeRun(run)}`);
-        }
-        return __spreadValues({
-          property: "runs",
-          before: `${node.characters.length} character(s)`,
-          after: applied.join(" \xB7 ") || "nothing"
-        }, problems.length > 0 ? { error: problems.join(" \xB7 ") } : {});
-      }
-      case "sizing": {
-        if (!("layoutSizingHorizontal" in bag)) throw new Error(`a ${node.type} has no sizing to set`);
-        const before = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical };
-        const failures = [];
-        for (const axis of ["horizontal", "vertical"]) {
-          const mode = step2[axis];
-          if (!mode) continue;
-          try {
-            if (!dry) applySizing(node, axis, mode);
-          } catch (error) {
-            failures.push(`${axis}: ${String((error == null ? void 0 : error.message) || error)}`);
-          }
-        }
-        return __spreadValues({
-          property: "sizing",
-          before,
-          after: { horizontal: step2.horizontal, vertical: step2.vertical }
-        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
-      }
-      case "bind": {
-        const holder = node;
-        if (typeof holder.setBoundVariable !== "function") throw new Error(`a ${node.type} binds no variables`);
-        const before = {};
-        const after = {};
-        const failures = [];
-        const bound = (_j = node.boundVariables) != null ? _j : {};
-        for (const entry of step2.bindings) {
-          try {
-            const held = (_k = bound[entry.field]) == null ? void 0 : _k.id;
-            if (held) {
-              const was = await figma.variables.getVariableByIdAsync(held).catch(() => null);
-              before[entry.field] = `var:${(_l = was == null ? void 0 : was.name) != null ? _l : held}`;
-            }
-            if (entry.variable === null) {
-              if (!dry) holder.setBoundVariable(entry.field, null);
-              after[entry.field] = "unbound";
-              continue;
-            }
-            const variable = await resolveVariableRef(entry.variable);
-            if (variable.resolvedType !== entry.wants) {
-              throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${entry.field} wants a ${entry.wants}`);
-            }
-            if (!dry) holder.setBoundVariable(entry.field, variable);
-            after[entry.field] = `var:${variable.name}`;
-          } catch (error) {
-            failures.push(`${entry.field}: ${String((error == null ? void 0 : error.message) || error)}`);
-          }
-        }
-        return __spreadValues({
-          property: "bind",
-          before,
-          after
-        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
-      }
-      case "style": {
-        const setter = STYLE_SETTERS[step2.slot];
-        const holder = node;
-        if (typeof holder[setter] !== "function") {
-          throw new Error(`a ${node.type} takes no ${step2.slot}`);
-        }
-        const held = holder[`${step2.slot}Id`];
-        const was = typeof held === "string" && held !== "" ? await figma.getStyleByIdAsync(held).catch(() => null) : null;
-        if (step2.ref === null) {
-          if (!dry) await holder[setter]("");
-          return { property: step2.slot, before: (_m = was == null ? void 0 : was.name) != null ? _m : null, after: "detached" };
-        }
-        const style = await styleFor(step2.ref, step2.kind);
-        if (!dry) await holder[setter](style.id);
-        return { property: step2.slot, before: (_n = was == null ? void 0 : was.name) != null ? _n : null, after: style.name };
-      }
-      case "network": {
-        const holder = node;
-        if (typeof holder.setVectorNetworkAsync !== "function") {
-          throw new Error(`a ${node.type} has no vector network \u2014 only a vector does`);
-        }
-        const before = node.vectorNetwork;
-        if (!dry) await holder.setVectorNetworkAsync(step2.network);
-        return {
-          property: "network",
-          before: before ? `${before.vertices.length} point(s), ${before.segments.length} segment(s)` : "none",
-          after: step2.summary
-        };
-      }
-      case "paths": {
-        if (!("vectorPaths" in bag)) throw new Error(`a ${node.type} has no paths \u2014 only a vector does`);
-        const before = (_p = (_o = bag.vectorPaths) == null ? void 0 : _o.length) != null ? _p : 0;
-        if (!dry) bag.vectorPaths = step2.paths;
-        return {
-          property: "paths",
-          before: `${before} path(s)`,
-          after: step2.paths.map((path) => `${path.windingRule} ${path.data}`).join(" \xB7 ")
-        };
-      }
-      case "strokeProfile": {
-        if (!("variableWidthStrokeProperties" in bag)) throw new Error(`a ${node.type} has no stroke to shape`);
-        const before = describeProfile(bag.variableWidthStrokeProperties);
-        if (!dry) bag.variableWidthStrokeProperties = step2.profile;
-        return { property: "strokeProfile", before, after: describeProfile(step2.profile) };
-      }
-      case "keyframes": {
-        const motion = node;
-        if (typeof motion.applyManualKeyframeTrack !== "function") {
-          throw new Error(`a ${node.type} cannot be animated on a timeline`);
-        }
-        const applied = [];
-        const failures = [];
-        for (const one of step2.tracks) {
-          try {
-            if (!dry) motion.applyManualKeyframeTrack({ type: "PROPERTY", name: one.name }, one.track);
-            applied.push(one.name);
-          } catch (error) {
-            failures.push(`${one.name}: ${String((error == null ? void 0 : error.message) || error)}`);
-          }
-        }
-        return __spreadValues({
-          property: "keyframes",
-          before: `${Object.keys((_q = motion.manualKeyframeTracks) != null ? _q : {}).length} track(s)`,
-          after: applied.join(", ")
-        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
-      }
-      case "timeline": {
-        const motion = node;
-        const timeline = (_r = motion.timelines) == null ? void 0 : _r[0];
-        if (!timeline || timeline.id.startsWith("-1") || typeof motion.setTimelineDuration !== "function") {
-          throw new Error(`a ${node.type} has no timeline of its own \u2014 only a top-level frame does`);
-        }
-        const before = timeline.duration;
-        if (!dry) motion.setTimelineDuration(timeline.id, step2.seconds);
-        return { property: "timeline", before: `${before}s`, after: `${step2.seconds}s` };
-      }
-      case "overrides": {
-        const applied = [];
-        const failures = [];
-        for (const one of step2.overrides) {
-          const id = addressIn(node, one.at);
-          const child = await figma.getNodeByIdAsync(id).catch(() => null);
-          if (!child || !("type" in child)) {
-            failures.push(`${one.at}: no such node inside this instance`);
-            continue;
-          }
-          const report2 = await applyProps(child, one.steps, dry);
-          const wrong = report2.applied.filter((entry) => entry.error);
-          if (wrong.length > 0) failures.push(`${one.at}: ${wrong.map((entry) => `${entry.property} \u2014 ${entry.error}`).join(", ")}`);
-          applied.push(`${child.name} (${report2.applied.length - wrong.length})`);
-        }
-        return __spreadValues({
-          property: "overrides",
-          before: `${step2.overrides.length} to apply`,
-          after: applied.join(" \xB7 ")
-        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
-      }
-      case "reparent": {
-        const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null;
-        const parent = step2.parent === "" ? node.parent : await resolveParent(step2.parent);
-        if (!parent) throw new Error("the node has no parent to move within");
-        if (!("appendChild" in parent)) throw new Error(`a ${parent.type} cannot hold children`);
-        if (!dry) {
-          const container = parent;
-          if (step2.index === void 0) container.appendChild(node);
-          else container.insertChild(Math.min(step2.index, container.children.length), node);
-        }
-        return { property: "parent", before, after: { id: parent.id, name: parent.name, index: step2.index } };
-      }
-    }
-  }
-  function componentName(component) {
-    var _a;
-    if (!component) return null;
-    try {
-      return ((_a = component.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? component.parent.name : component.name;
-    } catch (e) {
-      return component.name;
-    }
-  }
-  async function buildAction(action) {
-    switch (action.kind) {
-      case "back":
-        return { type: "BACK" };
-      case "close":
-        return { type: "CLOSE" };
-      case "url":
-        return { type: "URL", url: action.url, openInNewTab: action.newTab };
-      case "setVariable": {
-        const variable = await resolveVariableRef(action.variable);
-        const value2 = action.value;
-        if (typeof value2 === "object" && value2 !== null) {
-          const other = await resolveVariableRef(value2.variable);
-          if (other.resolvedType !== variable.resolvedType) {
-            throw new Error(`"${other.name}" is a ${other.resolvedType} and "${variable.name}" holds a ${variable.resolvedType}`);
-          }
-          return {
-            type: "SET_VARIABLE",
-            variableId: variable.id,
-            variableValue: { type: "VARIABLE_ALIAS", resolvedType: variable.resolvedType, value: { type: "VARIABLE_ALIAS", id: other.id } }
-          };
-        }
-        const held = typeof value2 === "boolean" ? "BOOLEAN" : typeof value2 === "number" ? "FLOAT" : "STRING";
-        if (held !== variable.resolvedType) {
-          throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${JSON.stringify(value2)} is a ${held}`);
-        }
-        return {
-          type: "SET_VARIABLE",
-          variableId: variable.id,
-          variableValue: { type: held, resolvedType: variable.resolvedType, value: value2 }
-        };
-      }
-      case "setMode": {
-        const collection = await resolveCollection(action.collection);
-        const modes = resolveModes(collection, action.mode);
-        if (modes.length !== 1) throw new Error(`"${action.mode}" must name exactly one mode of ${collection.name}`);
-        return { type: "SET_VARIABLE_MODE", variableCollectionId: collection.id, variableModeId: modes[0].modeId };
-      }
-      case "conditional": {
-        const blocks2 = [];
-        for (const block3 of action.blocks) {
-          const actions = [];
-          for (const one of block3.actions) actions.push(await buildAction(one));
-          blocks2.push(__spreadProps(__spreadValues({}, block3.condition ? { condition: await buildCondition(block3.condition) } : {}), { actions }));
-        }
-        return { type: "CONDITIONAL", conditionalBlocks: blocks2 };
-      }
-      default:
-        return __spreadValues(__spreadValues(__spreadValues({
-          type: "NODE",
-          destinationId: action.destinationId,
-          navigation: action.navigation,
-          transition: action.transition
-        }, action.resetScroll === void 0 ? {} : { resetScrollPosition: action.resetScroll }), action.resetVideo === void 0 ? {} : { resetVideoPosition: action.resetVideo }), action.resetInteractive === void 0 ? {} : { resetInteractiveComponents: action.resetInteractive });
-    }
-  }
-  async function buildCondition(condition2) {
-    const args = [];
-    for (const operand of condition2.args) args.push(await buildOperand(operand));
-    return {
-      type: "EXPRESSION",
-      resolvedType: "BOOLEAN",
-      value: { expressionFunction: condition2.fn, expressionArguments: args }
-    };
-  }
-  async function buildOperand(operand) {
-    if (operand.kind === "condition") return buildCondition(operand.condition);
-    if (operand.kind === "variable") {
-      const variable = await resolveVariableRef(operand.name);
-      return {
-        type: "VARIABLE_ALIAS",
-        resolvedType: variable.resolvedType,
-        value: { type: "VARIABLE_ALIAS", id: variable.id }
-      };
-    }
-    const value2 = operand.value;
-    const type = typeof value2 === "boolean" ? "BOOLEAN" : typeof value2 === "number" ? "FLOAT" : "STRING";
-    return { type, resolvedType: type, value: value2 };
-  }
-  async function variableName(id, withinCollection) {
-    var _a, _b, _c, _d, _e, _f;
-    if (withinCollection) {
-      const collection = await figma.variables.getVariableCollectionByIdAsync(withinCollection).catch(() => null);
-      return (_b = (_a = collection == null ? void 0 : collection.modes.find((mode) => mode.modeId === id)) == null ? void 0 : _a.name) != null ? _b : null;
-    }
-    if (id.startsWith("VariableCollectionId:")) {
-      return (_d = (_c = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)) == null ? void 0 : _c.name) != null ? _d : null;
-    }
-    return (_f = (_e = await figma.variables.getVariableByIdAsync(id).catch(() => null)) == null ? void 0 : _e.name) != null ? _f : null;
-  }
-  function byHumanName(properties) {
-    const out = {};
-    for (const [key, entry] of Object.entries(properties)) {
-      out[humanPropertyName(key)] = entry == null ? void 0 : entry.value;
-    }
-    return out;
-  }
-  function measured(value2) {
-    const result = measure(value2);
-    if (result === null) throw new Error(`${JSON.stringify(value2)} is neither pixels nor a percentage`);
-    return result;
-  }
-  function describeMeasure(value2) {
-    if (typeof value2 !== "object" || value2 === null || !("unit" in value2)) return "mixed";
-    const { unit, value: amount } = value2;
-    if (unit === "AUTO") return "auto";
-    return unit === "PERCENT" ? `${round11(amount != null ? amount : 0)}%` : `${round11(amount != null ? amount : 0)}px`;
-  }
-  function describeRun(run) {
-    const parts = [];
-    if (run.fontName) parts.push(describeFont(run.fontName));
-    if (run.fontSize !== void 0) parts.push(`${run.fontSize}px`);
-    if (run.fill !== void 0) parts.push(typeof run.fill === "string" ? run.fill : "fill");
-    if (run.textDecoration) parts.push(run.textDecoration.toLowerCase());
-    if (run.textCase) parts.push(run.textCase.toLowerCase());
-    if (run.textWrap) parts.push(`wrap ${run.textWrap.toLowerCase()}`);
-    if (run.letterSpacing !== void 0) parts.push(`tracking ${run.letterSpacing}`);
-    if (run.lineHeight !== void 0) parts.push(`leading ${run.lineHeight}`);
-    if (run.link !== void 0) parts.push(run.link === null ? "unlinked" : "linked");
-    return parts.join(" ");
-  }
-  var STYLE_SETTERS = {
-    fillStyle: "setFillStyleIdAsync",
-    strokeStyle: "setStrokeStyleIdAsync",
-    textStyle: "setTextStyleIdAsync",
-    effectStyle: "setEffectStyleIdAsync",
-    gridStyle: "setGridStyleIdAsync"
-  };
-  function isText(node) {
-    return node.type === "TEXT" || node.type === "TEXT_PATH";
-  }
-  function asInstance(node, wanted) {
-    if (node.type !== "INSTANCE") throw new Error(`only an INSTANCE has ${wanted}, not a ${node.type}`);
-    return node;
-  }
-  var TEXT_PROPERTIES = [
-    "textWrapStyle",
-    "textAlignVertical",
-    "paragraphSpacing",
-    "paragraphIndent",
-    "listSpacing",
-    "hangingPunctuation",
-    "hangingList",
-    "leadingTrim",
-    "textTruncation",
-    "maxLines",
-    "fontSize",
-    "letterSpacing",
-    "textAlignHorizontal",
-    "textAlignVertical",
-    "textAutoResize",
-    "textCase",
-    "textDecoration",
-    "paragraphSpacing"
-  ];
-  async function loadNodeFont(node) {
-    if (node.fontName !== figma.mixed) {
-      await figma.loadFontAsync(node.fontName);
-      return;
-    }
-    const fonts = /* @__PURE__ */ new Set();
-    const wanted = [];
-    for (let index2 = 0; index2 < node.characters.length; index2++) {
-      const font = node.getRangeFontName(index2, index2 + 1);
-      if (font === figma.mixed) continue;
-      const key = `${font.family}|${font.style}`;
-      if (fonts.has(key)) continue;
-      fonts.add(key);
-      wanted.push(font);
-    }
-    await Promise.all(wanted.map((font) => figma.loadFontAsync(font)));
-  }
-  function applySizing(frame3, axis, mode) {
-    const property = axis === "horizontal" ? "layoutSizingHorizontal" : "layoutSizingVertical";
-    frame3[property] = mode;
-  }
-  async function buildPaints(ref) {
-    if (ref === null) return [];
-    if (Array.isArray(ref)) {
-      const stack = [];
-      for (const one of ref) stack.push(...await buildPaints(one));
-      return stack;
-    }
-    if (typeof ref === "string") return [solid4(ref)];
-    if ("shader" in ref) return [await buildShader(ref)];
-    if ("gradient" in ref) return [await buildGradient(ref)];
-    if ("image" in ref) return [await buildImage(ref)];
-    if ("variable" in ref) {
-      const variable = await resolveVariableRef(ref.variable);
-      if (variable.resolvedType !== "COLOR") {
-        throw new Error(`"${variable.name}" is a ${variable.resolvedType} variable, not a colour`);
-      }
-      const base = { type: "SOLID", color: { r: 0, g: 0, b: 0 } };
-      return [figma.variables.setBoundVariableForPaint(base, "color", variable)];
-    }
-    return [solid4(ref.color, ref.opacity)];
-  }
-  async function buildShader(ref) {
-    await figma.importShaderById(ref.shader).catch(() => void 0);
-    return __spreadValues(__spreadValues(__spreadValues({
-      type: "SHADER",
-      id: ref.shader
-    }, ref.properties ? { properties: ref.properties } : {}), ref.opacity === void 0 ? {} : { opacity: ref.opacity }), ref.visible === void 0 ? {} : { visible: ref.visible });
-  }
-  async function buildGradient(ref) {
-    var _a, _b;
-    const { from, to } = gradientHandles(ref);
-    const spread = ref.stops.length - 1;
-    const stops = [];
-    for (const [index2, entry] of ref.stops.entries()) {
-      const stop = typeof entry === "string" ? { at: spread === 0 ? 0 : index2 / spread, color: entry } : entry;
-      const alpha = (_a = stop.opacity) != null ? _a : 1;
-      if (typeof stop.color === "object" && "variable" in stop.color) {
-        const variable = await resolveVariableRef(stop.color.variable);
-        if (variable.resolvedType !== "COLOR") {
-          throw new Error(`"${variable.name}" is a ${variable.resolvedType} variable, not a colour`);
-        }
-        stops.push({
-          position: stop.at,
-          color: { r: 0, g: 0, b: 0, a: alpha },
-          boundVariables: { color: { type: "VARIABLE_ALIAS", id: variable.id } }
-        });
-        continue;
-      }
-      const colour = colourFrom(stop.color);
-      if (!colour) throw new Error(`${JSON.stringify(stop.color)} is not a colour`);
-      stops.push({ position: stop.at, color: __spreadProps(__spreadValues({}, colour), { a: (_b = stop.opacity) != null ? _b : colour.a }) });
-    }
-    stops.sort((left, right) => left.position - right.position);
-    return __spreadValues({
-      type: `GRADIENT_${ref.gradient.toUpperCase()}`,
-      gradientTransform: gradientTransform(from, to, ref.gradient),
-      gradientStops: stops
-    }, ref.opacity === void 0 ? {} : { opacity: ref.opacity });
-  }
-  async function buildImage(ref) {
-    var _a;
-    const { hash, url, bytes } = ref.image;
-    let imageHash;
-    if (hash) {
-      imageHash = hash;
-    } else if (url) {
-      const image = await figma.createImageAsync(url);
-      imageHash = image.hash;
-    } else {
-      const image = figma.createImage(figma.base64Decode(bytes));
-      imageHash = image.hash;
-    }
-    return __spreadValues({
-      type: "IMAGE",
-      scaleMode: (_a = ref.scaleMode) != null ? _a : "FILL",
-      imageHash
-    }, ref.opacity === void 0 ? {} : { opacity: ref.opacity });
-  }
-  function solid4(input, opacity) {
-    const colour = colourFrom(input);
-    if (!colour) throw new Error(`${JSON.stringify(input)} is not a colour`);
-    const alpha = opacity != null ? opacity : colour.a < 1 ? colour.a : void 0;
-    return __spreadValues({
-      type: "SOLID",
-      color: solidColourOf(colour)
-    }, alpha === void 0 ? {} : { opacity: alpha });
-  }
-  async function resolveParent(id) {
-    if (id === "page") return figma.currentPage;
-    const node = await figma.getNodeByIdAsync(id);
-    if (!node) throw new Error(`no node with id ${id}`);
-    return node;
-  }
-  async function describePaints(value2) {
+  async function readOne(paint, nameOf) {
     var _a, _b, _c, _d, _e, _f, _g, _h;
-    if (value2 === figma.mixed) return "mixed";
+    const opacity = typeof paint.opacity === "number" && paint.opacity < 1 ? round12(paint.opacity) : void 0;
+    const type = String(paint.type);
+    const bound = (_b = (_a = paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
+    if (type === "SOLID") {
+      if (bound) {
+        const name = (_c = await nameOf(bound)) != null ? _c : bound;
+        return opacity === void 0 ? `var:${name}` : { variable: name, opacity };
+      }
+      const colour = hex3(paint.color);
+      return opacity === void 0 ? colour : `${colour} @${opacity}`;
+    }
+    if (type === "IMAGE" || type === "VIDEO") {
+      const key = type === "IMAGE" ? "image" : "video";
+      const hash = type === "IMAGE" ? paint.imageHash : paint.videoHash;
+      if (typeof hash !== "string" || hash === "") return type;
+      return __spreadValues(__spreadValues({
+        [key]: { hash }
+      }, typeof paint.scaleMode === "string" && paint.scaleMode !== "FILL" ? { scaleMode: paint.scaleMode } : {}), opacity === void 0 ? {} : { opacity });
+    }
+    if (type.startsWith("GRADIENT_")) {
+      const kind = type.slice("GRADIENT_".length);
+      const ends = gradientEnds(paint.gradientTransform, kind);
+      const stops = [];
+      for (const stop of (_d = paint.gradientStops) != null ? _d : []) {
+        const id = (_f = (_e = stop.boundVariables) == null ? void 0 : _e.color) == null ? void 0 : _f.id;
+        const alpha = typeof stop.color.a === "number" && stop.color.a < 1 ? round12(stop.color.a) : void 0;
+        stops.push(__spreadValues({
+          at: round12(stop.position),
+          color: id ? { variable: (_g = await nameOf(id)) != null ? _g : id } : hex3(stop.color)
+        }, alpha === void 0 || id ? {} : { opacity: alpha }));
+      }
+      return __spreadValues(__spreadProps(__spreadValues({
+        gradient: kind
+      }, ends ? { from: ends.from, to: ends.to } : {}), {
+        stops
+      }), opacity === void 0 ? {} : { opacity });
+    }
+    if (type === "PATTERN") {
+      const spacing = paint.spacing;
+      return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+        pattern: String(paint.sourceNodeId)
+      }, paint.tileType && paint.tileType !== "RECTANGULAR" ? { tile: paint.tileType } : {}), typeof paint.scalingFactor === "number" && paint.scalingFactor !== 1 ? { scale: round12(paint.scalingFactor) } : {}), spacing && (spacing.x !== 0 || spacing.y !== 0) ? { spacing: [round12(spacing.x), round12(spacing.y)] } : {}), paint.horizontalAlignment && paint.horizontalAlignment !== "START" ? { align: paint.horizontalAlignment } : {}), opacity === void 0 ? {} : { opacity });
+    }
+    if (type === "SHADER") {
+      const settings = Object.keys((_h = paint.properties) != null ? _h : {});
+      return `shader:${String(paint.id)}${settings.length > 0 ? ` (${settings.join(", ")})` : ""}`;
+    }
+    return type;
+  }
+  async function readPaintsForWrite(value2, nameOf, mixed) {
+    if (mixed !== void 0 && value2 === mixed) return "mixed";
     if (!Array.isArray(value2)) return value2 === void 0 ? null : String(value2);
     if (value2.length === 0) return "none";
-    const parts = [];
+    const read = [];
     for (const paint of value2) {
-      if (typeof paint !== "object" || paint === null) {
-        parts.push(String(paint));
-        continue;
-      }
-      const entry = paint;
-      const bound = (_b = (_a = entry.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
-      if (bound) {
-        const named = await figma.variables.getVariableByIdAsync(bound).catch(() => null);
-        parts.push(`var:${(_c = named == null ? void 0 : named.name) != null ? _c : bound}`);
-        continue;
-      }
-      if (entry.type === "SHADER") {
-        const shader = paint;
-        const settings = Object.keys((_d = shader.properties) != null ? _d : {});
-        parts.push(`shader:${shader.id}${settings.length > 0 ? ` (${settings.join(", ")})` : ""}`);
-        continue;
-      }
-      if (entry.type === "IMAGE") {
-        const picture = paint;
-        parts.push(`image:${(_e = picture.imageHash) != null ? _e : "?"} ${picture.scaleMode}`);
-        continue;
-      }
-      if (entry.type.startsWith("GRADIENT")) {
-        const gradient = paint;
-        const colours = [];
-        for (const stop of gradient.gradientStops) {
-          const bound2 = (_g = (_f = stop.boundVariables) == null ? void 0 : _f.color) == null ? void 0 : _g.id;
-          if (bound2) {
-            const named = await figma.variables.getVariableByIdAsync(bound2).catch(() => null);
-            colours.push(`var:${(_h = named == null ? void 0 : named.name) != null ? _h : bound2}`);
-            continue;
-          }
-          colours.push(hexOf2(stop.color));
-        }
-        parts.push(`${entry.type.replace("GRADIENT_", "gradient:").toLowerCase()} ${colours.join(" \u2192 ")}`);
-        continue;
-      }
-      if (entry.type !== "SOLID") {
-        parts.push(entry.type);
-        continue;
-      }
-      const flat = entry;
-      const hex2 = `#${[flat.color.r, flat.color.g, flat.color.b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-      parts.push(flat.opacity !== void 0 && flat.opacity < 1 ? `${hex2} @${flat.opacity}` : hex2);
+      read.push(typeof paint === "object" && paint !== null ? await readOne(paint, nameOf) : String(paint));
     }
-    return parts.join(" + ");
+    return read.length === 1 ? read[0] : read;
   }
-  function hexOf2(color) {
-    const hex2 = `#${[color.r, color.g, color.b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-    return color.a !== void 0 && color.a < 1 ? `${hex2} @${round11(color.a)}` : hex2;
-  }
-  async function describeAnimation(value2) {
-    if (!Array.isArray(value2) || value2.length === 0) return "none";
-    const lines = [];
-    for (const style of value2) {
-      const place = style.timelineOffset ? ` +${Math.round(style.timelineOffset * 1e3) / 1e3}s` : "";
-      if (style.type === "CUSTOM") {
-        lines.push(`${style.name || style.styleId} (custom)${place}`);
-        continue;
-      }
-      lines.push(await (async () => {
-        var _a, _b, _c, _d, _e;
-        const entries = Object.entries((_a = style.props) != null ? _a : {}).sort(
-          (left, right) => Number(typeof right[1] === "object") - Number(typeof left[1] === "object")
-        );
-        const said = [];
-        for (const [name, held] of entries.slice(0, MAX_ANIMATION_PROPS)) {
-          const alias = held;
-          if (alias && typeof alias === "object" && alias.type === "VARIABLE_ALIAS" && alias.id) {
-            const variable = await figma.variables.getVariableByIdAsync(alias.id).catch(() => null);
-            said.push(`${name}=var:${(_b = variable == null ? void 0 : variable.name) != null ? _b : alias.id}`);
-            continue;
-          }
-          said.push(`${name}=${typeof held === "object" ? JSON.stringify(held) : held}`);
-        }
-        const shown = said.join(", ");
-        const rest = entries.length > MAX_ANIMATION_PROPS ? `, +${entries.length - MAX_ANIMATION_PROPS} more` : "";
-        const called = (_e = (_d = (_c = animationStyleWord(style.name)) != null ? _c : animationStyleWord(style.styleId)) != null ? _d : style.name) != null ? _e : style.styleId;
-        const seconds2 = style.duration === void 0 ? "" : ` ${Math.round(style.duration * 1e3) / 1e3}s`;
-        return `${called}${seconds2}${place}${shown ? ` (${shown}${rest})` : ""}`;
-      })());
-    }
-    return lines.join(" \xB7 ");
-  }
-  var MAX_ANIMATION_PROPS = 5;
-  var styleWords = null;
-  function animationStyleWord(key) {
-    var _a;
-    if (!key) return null;
-    if (!styleWords) {
-      styleWords = /* @__PURE__ */ new Map();
-      try {
-        for (const style of figma.motion.figmaAnimationStyles()) {
-          styleWords.set(style.styleId, style.styleId);
-          if (style.name) styleWords.set(style.name, style.styleId);
-        }
-      } catch (e) {
-      }
-    }
-    return (_a = styleWords.get(key)) != null ? _a : null;
-  }
-  function describeShaderPaints(value2) {
-    if (!Array.isArray(value2)) return [];
-    const shaders = [];
-    for (const paint of value2) {
-      if ((paint == null ? void 0 : paint.type) !== "SHADER") continue;
-      const shader = paint;
-      shaders.push(__spreadValues({
-        id: shader.id
-      }, shader.properties && Object.keys(shader.properties).length > 0 ? { properties: shader.properties } : {}));
-    }
-    return shaders;
-  }
-  function describeProfile(value2) {
-    var _a;
-    const one = value2;
-    if (!(one == null ? void 0 : one.widthProfile)) return null;
-    if (one.widthProfile !== "CUSTOM") return one.widthProfile;
-    return ((_a = one.variableWidthPoints) != null ? _a : []).map((point2) => ({ at: round11(point2.position), width: round11(point2.width) }));
-  }
-  function describeBrush(value2) {
-    const brush = value2;
-    if (!brush || brush.type === "BASIC") return "basic";
-    if (brush.type === "DYNAMIC") return `dynamic ${brush.frequency}/${brush.wiggle}/${brush.smoothen}`;
-    return `${brush.brushType.toLowerCase()} ${brush.brushName}`;
-  }
-  function describeGrids(value2) {
-    if (!Array.isArray(value2) || value2.length === 0) return "none";
-    const parts = [];
-    for (const grid of value2) {
-      if (grid.pattern === "GRID") {
-        parts.push(`square ${grid.sectionSize}`);
-        continue;
-      }
-      const rows = grid;
-      const kind = rows.pattern === "COLUMNS" ? "column" : "row";
-      parts.push(
-        `${rows.count} ${kind}(s) ${rows.alignment.toLowerCase()}${rows.gutterSize ? ` gutter ${rows.gutterSize}` : ""}${rows.offset ? ` margin ${rows.offset}` : ""}${rows.sectionSize ? ` at ${rows.sectionSize}` : ""}`
-      );
-    }
-    return parts.join(" \xB7 ");
-  }
-  async function describeEffects(value2) {
-    var _a, _b;
-    if (!Array.isArray(value2)) return value2 === figma.mixed ? "mixed" : "none";
-    if (value2.length === 0) return "none";
-    const parts = [];
-    for (const effect of value2) {
-      const bound = (_a = effect.boundVariables) != null ? _a : {};
-      const named = async (field, fallback) => {
-        var _a2, _b2;
-        const id = (_a2 = bound[field]) == null ? void 0 : _a2.id;
-        if (!id) return String(fallback);
-        const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
-        return `var:${(_b2 = variable == null ? void 0 : variable.name) != null ? _b2 : id}`;
-      };
-      if (effect.type === "SHADER") {
-        parts.push(`shader ${effect.id}`);
-        continue;
-      }
-      if (effect.type === "LAYER_BLUR" || effect.type === "BACKGROUND_BLUR") {
-        parts.push(`${effect.type === "LAYER_BLUR" ? "layer" : "background"} blur ${await named("radius", effect.radius)}`);
-        continue;
-      }
-      if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
-        const { r, g, b, a } = effect.color;
-        const hex2 = `#${[r, g, b].map((channel) => Math.round(channel * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-        const colour = await named("color", `${hex2}${a === 1 ? "" : ` @${round11(a)}`}`);
-        const kind = effect.type === "DROP_SHADOW" ? "drop" : "inner";
-        const spread = effect.spread || bound.spread ? ` spread ${await named("spread", (_b = effect.spread) != null ? _b : 0)}` : "";
-        const x = await named("offsetX", effect.offset.x);
-        const y = await named("offsetY", effect.offset.y);
-        parts.push(`${kind} shadow ${colour} ${x},${y} blur ${await named("radius", effect.radius)}${spread}`);
-        continue;
-      }
-      parts.push(String(effect.type).toLowerCase());
-    }
-    return parts.join(" \xB7 ");
-  }
-  var describeFont = (font) => {
-    if (font === figma.mixed) return "mixed";
-    const named = font;
-    const axes = named.variationSettings ? ` (${Object.entries(named.variationSettings).map(([axis, value2]) => `${axis}=${value2}`).join(", ")})` : "";
-    return `${named.family}${named.style ? ` ${named.style}` : ""}${axes}`;
-  };
-  var round11 = (value2) => Math.round(value2 * 100) / 100;
 
   // src/canvas/text-runs.ts
   var RUN_FIELDS = [
@@ -25795,10 +25520,22 @@ ${renderSections(sections)}
     "textWrapStyle",
     "letterSpacing",
     "lineHeight",
-    "hyperlink"
+    "hyperlink",
+    "textStyleId",
+    "fillStyleId",
+    "listOptions",
+    "indentation",
+    "listSpacing",
+    "paragraphSpacing",
+    "paragraphIndent",
+    "textDecorationStyle",
+    "textDecorationOffset",
+    "textDecorationThickness",
+    "textDecorationColor",
+    "textDecorationSkipInk"
   ];
   async function styledRuns(node) {
-    var _a;
+    var _a, _b, _c, _d;
     let segments;
     try {
       segments = node.getStyledTextSegments(
@@ -25814,7 +25551,15 @@ ${renderSections(sections)}
       const differs = (field, value2) => JSON.stringify(bag[field]) !== JSON.stringify(value2);
       if (differs("fontName", segment.fontName)) run.fontName = writableFont(segment.fontName);
       if (differs("fontSize", segment.fontSize)) run.fontSize = segment.fontSize;
-      if (differs("fills", segment.fills)) run.fill = await describePaints(segment.fills);
+      if (differs("fills", segment.fills)) {
+        run.fill = await readPaintsForWrite(
+          segment.fills,
+          async (id) => {
+            var _a2, _b2;
+            return (_b2 = (_a2 = await figma.variables.getVariableByIdAsync(id).catch(() => null)) == null ? void 0 : _a2.name) != null ? _b2 : null;
+          }
+        );
+      }
       if (differs("textDecoration", segment.textDecoration)) run.textDecoration = segment.textDecoration;
       if (differs("textCase", segment.textCase)) run.textCase = segment.textCase;
       if (differs("textWrapStyle", segment.textWrapStyle)) run.textWrap = segment.textWrapStyle;
@@ -25823,6 +25568,20 @@ ${renderSections(sections)}
       if (differs("hyperlink", segment.hyperlink)) {
         const link = segment.hyperlink;
         run.link = (_a = link == null ? void 0 : link.value) != null ? _a : null;
+      }
+      for (const [field, word] of [["textStyleId", "textStyle"], ["fillStyleId", "fillStyle"]]) {
+        const id = segment[field];
+        if (typeof id === "string" && id !== "" && differs(field, id)) {
+          run[word] = (_c = (_b = await figma.getStyleByIdAsync(id).catch(() => null)) == null ? void 0 : _b.name) != null ? _c : id;
+        }
+      }
+      const decoration = decorationWords(segment);
+      if (decoration && JSON.stringify(decoration) !== JSON.stringify(decorationWords(bag))) run.decoration = decoration;
+      const list2 = (_d = segment.listOptions) == null ? void 0 : _d.type;
+      if (list2 && list2 !== "NONE") run.list = list2;
+      if (typeof segment.indentation === "number" && segment.indentation > 0) run.indent = segment.indentation;
+      for (const field of ["listSpacing", "paragraphSpacing", "paragraphIndent"]) {
+        if (typeof segment[field] === "number" && differs(field, segment[field])) run[field] = segment[field];
       }
       runs.push(run);
     }
@@ -25851,8 +25610,9 @@ ${renderSections(sections)}
   }
 
   // src/canvas/effect-reader.ts
-  var point = (value2) => value2 ? [round12(value2.x), round12(value2.y)] : void 0;
-  var round12 = (value2) => Math.round(value2 * 100) / 100;
+  var point = (value2) => value2 ? [round13(value2.x), round13(value2.y)] : void 0;
+  var round13 = (value2) => Math.round(value2 * 100) / 100;
+  var grainWords = (size, vector) => vector && round13(vector.x) !== round13(vector.y) ? [round13(vector.x), round13(vector.y)] : round13(size);
   function colourWords(colour) {
     var _a;
     return (_a = authoredColourText(colour)) != null ? _a : formatHex({ r: colour.r, g: colour.g, b: colour.b }).toUpperCase();
@@ -25878,10 +25638,10 @@ ${renderSections(sections)}
           out.push(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
             shadow: effect.type === "DROP_SHADOW" ? "drop" : "inner",
             color: colour
-          }, effect.color.a !== 1 ? { opacity: round12(effect.color.a) } : {}), {
-            offset: [await field("offsetX", round12(effect.offset.x)), await field("offsetY", round12(effect.offset.y))],
-            radius: await field("radius", round12(effect.radius))
-          }), effect.spread ? { spread: await field("spread", round12(effect.spread)) } : {}), hidden));
+          }, effect.color.a !== 1 ? { opacity: round13(effect.color.a) } : {}), {
+            offset: [await field("offsetX", round13(effect.offset.x)), await field("offsetY", round13(effect.offset.y))],
+            radius: await field("radius", round13(effect.radius))
+          }), effect.spread ? { spread: await field("spread", round13(effect.spread)) } : {}), hidden));
           break;
         }
         case "LAYER_BLUR":
@@ -25890,9 +25650,9 @@ ${renderSections(sections)}
           const one = effect;
           out.push(__spreadValues(__spreadValues({
             blur: progressive ? "progressive" : effect.type === "LAYER_BLUR" ? "layer" : "background",
-            radius: await field("radius", round12(effect.radius))
+            radius: await field("radius", round13(effect.radius))
           }, progressive ? {
-            startRadius: round12((_e = one.startRadius) != null ? _e : 0),
+            startRadius: round13((_e = one.startRadius) != null ? _e : 0),
             from: point(one.startOffset),
             to: point(one.endOffset)
           } : {}), hidden));
@@ -25905,25 +25665,25 @@ ${renderSections(sections)}
             noise: (_f = kinds[one.noiseType]) != null ? _f : one.noiseType,
             color: colourWords(one.color)
           }, one.secondaryColor ? { second: colourWords(one.secondaryColor) } : {}), {
-            size: round12(one.noiseSize),
-            density: round12(one.density)
-          }), one.opacity !== void 0 ? { opacity: round12(one.opacity) } : {}), hidden));
+            size: grainWords(one.noiseSize, one.noiseSizeVector),
+            density: round13(one.density)
+          }), one.opacity !== void 0 ? { opacity: round13(one.opacity) } : {}), hidden));
           break;
         }
         case "TEXTURE": {
           const one = effect;
-          out.push(__spreadValues(__spreadValues({ texture: round12(one.radius), size: round12(one.noiseSize) }, one.clipToShape ? {} : { clip: false }), hidden));
+          out.push(__spreadValues(__spreadValues({ texture: round13(one.radius), size: grainWords(one.noiseSize, one.noiseSizeVector) }, one.clipToShape ? {} : { clip: false }), hidden));
           break;
         }
         case "GLASS": {
           const one = effect;
           out.push(__spreadValues({
-            glass: round12(one.radius),
-            depth: round12(one.depth),
-            refraction: round12(one.refraction),
-            dispersion: round12(one.dispersion),
-            lightAngle: round12(one.lightAngle),
-            lightIntensity: round12(one.lightIntensity)
+            glass: round13(one.radius),
+            depth: round13(one.depth),
+            refraction: round13(one.refraction),
+            dispersion: round13(one.dispersion),
+            lightAngle: round13(one.lightAngle),
+            lightIntensity: round13(one.lightIntensity)
           }, hidden));
           break;
         }
@@ -26009,11 +25769,11 @@ ${renderSections(sections)}
     if (!Array.isArray(rows) || rows.length < 2 || !Array.isArray(rows[0]) || !Array.isArray(rows[1])) return null;
     const [[a, b, tx], [c, d, ty]] = rows;
     if (b !== 0 || c !== 0 || !a || !d) return { fit: "matrix" };
-    const round15 = (value2) => Math.round(value2 * 1e4) / 1e4;
+    const round17 = (value2) => Math.round(value2 * 1e4) / 1e4;
     return {
       fit: "crop",
-      scale: { x: round15(1 / a), y: round15(1 / d) },
-      offset: { x: round15(-tx / a), y: round15(-ty / d) }
+      scale: { x: round17(1 / a), y: round17(1 / d) },
+      offset: { x: round17(-tx / a), y: round17(-ty / d) }
     };
   }
   async function describePaint(paint, index2, shaders, resolve2) {
@@ -26322,7 +26082,7 @@ ${renderSections(sections)}
   var SLOW_MS = 1e3;
   var warmed = /* @__PURE__ */ new Set();
   var pending = [];
-  function pageOf3(node) {
+  function pageOf2(node) {
     var _a;
     let cursor = node;
     while (cursor && cursor.type !== "PAGE") cursor = (_a = cursor.parent) != null ? _a : null;
@@ -26346,7 +26106,7 @@ ${renderSections(sections)}
       })
     ]).finally(() => clearTimeout(timer));
     const ms = Date.now() - started;
-    const page = pageOf3(node);
+    const page = pageOf2(node);
     if (page) {
       const first = !warmed.has(page.id);
       warmed.add(page.id);
@@ -26962,6 +26722,301 @@ ${scripts}`, "");
     return slug2 || fallback;
   }
 
+  // src/agent/sweep.ts
+  var SWEEP_PARAMS = {
+    cursor: {
+      type: "string",
+      description: "Continue a sweep: the `cursor` the previous answer handed back (with `complete: false`). Send the same other params with it; the sweep resumes exactly where it stopped."
+    },
+    budgetMs: {
+      type: "number",
+      min: 1e3,
+      max: 6e5,
+      description: "How long this call may sweep before answering with a `cursor`. Defaults to the time the call has left before the bridge stops waiting."
+    }
+  };
+  var SESSION_TTL_MS = 15 * 6e4;
+  var MAX_SESSIONS = 8;
+  var COLD_PAGE_RESERVE_MS = 3e4;
+  var sessions = /* @__PURE__ */ new Map();
+  var minted = 0;
+  function sweepSessions(now) {
+    for (const [id, session] of sessions) if (now - session.touchedAt > SESSION_TTL_MS) sessions.delete(id);
+    while (sessions.size > MAX_SESSIONS) {
+      let oldest = null;
+      for (const session of sessions.values()) if (!oldest || session.touchedAt < oldest.touchedAt) oldest = session;
+      if (!oldest) break;
+      sessions.delete(oldest.id);
+    }
+  }
+  function fingerprintOf(params) {
+    const keys = Object.keys(params).filter((key) => key !== "cursor" && key !== "budgetMs" && params[key] !== void 0).sort();
+    return JSON.stringify(keys.map((key) => [key, params[key]]));
+  }
+  async function resolveSweepRoots(params) {
+    if (typeof params.nodeId === "string" && params.nodeId !== "") {
+      const found = await getNodeByIdTimed(params.nodeId);
+      if (!found || found.type === "DOCUMENT") throw new Error(`no node with id ${params.nodeId}`);
+      if (found.type === "PAGE") return { roots: [found], labels: [found.name] };
+      return { roots: [found], labels: [`${found.name} (subtree)`] };
+    }
+    if (params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "") {
+      const page = typeof params.pageId === "string" && params.pageId !== "" ? await figma.getNodeByIdAsync(params.pageId) : figma.currentPage;
+      if (!page || page.type !== "PAGE") throw new Error(`no page with id ${String(params.pageId)}`);
+      return { roots: [page], labels: [page.name] };
+    }
+    const pages = figma.root.children.slice();
+    return { roots: pages, labels: pages.map((page) => page.name) };
+  }
+  async function openSweep(options) {
+    const now = Date.now();
+    sweepSessions(now);
+    const fingerprint = fingerprintOf(options.params);
+    const cursor = typeof options.params.cursor === "string" && options.params.cursor !== "" ? options.params.cursor : null;
+    let session;
+    const resumed = cursor !== null;
+    if (cursor !== null) {
+      const parked = sessions.get(cursor);
+      if (!parked) {
+        throw new ParamError(
+          `cursor ${JSON.stringify(cursor)} is unknown \u2014 the plugin was reopened or the sweep sat unused for more than ${SESSION_TTL_MS / 6e4} minutes. Start over without a cursor.`
+        );
+      }
+      if (parked.op !== options.op || parked.fingerprint !== fingerprint) {
+        throw new ParamError(
+          `cursor ${JSON.stringify(cursor)} belongs to a different ${parked.op} call \u2014 resume it with exactly the params it started with (only cursor and budgetMs may change), or drop cursor to start a new sweep.`
+        );
+      }
+      session = parked;
+      resync(session);
+    } else {
+      const { roots, labels } = await options.roots();
+      minted += 1;
+      session = {
+        id: `sweep-${now.toString(36)}-${minted.toString(36)}`,
+        op: options.op,
+        fingerprint,
+        roots,
+        labels,
+        types: options.types && options.types.length > 0 ? options.types.slice() : null,
+        skipInstanceChildren: options.skipInstanceChildren === true,
+        invisibleInstanceChildren: options.invisibleInstanceChildren === true,
+        includeRoots: options.includeRoots !== false,
+        root: 0,
+        frames: null,
+        batch: null,
+        offset: 0,
+        state: options.state(),
+        visited: 0,
+        drifted: 0,
+        calls: 0,
+        touchedAt: now
+      };
+    }
+    session.calls += 1;
+    session.touchedAt = now;
+    const budgetMs = typeof options.params.budgetMs === "number" ? options.params.budgetMs : null;
+    const deadline2 = sliceDeadline(now, budgetMs);
+    let progress2 = null;
+    return {
+      state: session.state,
+      labels: session.labels,
+      resumed,
+      async walk(visit) {
+        progress2 = session.types ? await walkTypes(session, visit, deadline2) : await walkTree(session, visit, deadline2);
+        return progress2;
+      },
+      report() {
+        var _a, _b;
+        const done = (_a = progress2 == null ? void 0 : progress2.complete) != null ? _a : session.root >= session.roots.length;
+        const swept = __spreadValues({
+          nodes: session.visited,
+          roots: { done: Math.min(session.root, session.roots.length), of: session.roots.length },
+          calls: session.calls
+        }, session.drifted > 0 ? { drifted: session.drifted } : {});
+        if (done) {
+          sessions.delete(session.id);
+          return { complete: true, swept };
+        }
+        session.touchedAt = Date.now();
+        sessions.set(session.id, session);
+        sweepSessions(session.touchedAt);
+        return { complete: false, cursor: session.id, stoppedOn: (_b = progress2 == null ? void 0 : progress2.stoppedOn) != null ? _b : "budget", swept };
+      }
+    };
+  }
+  function sliceDeadline(now, budgetMs) {
+    let deadline2 = budgetMs !== null ? now + budgetMs : Infinity;
+    const run = currentRun();
+    if (run) {
+      const left = run.deadline - now;
+      const reserve = Math.min(8e3, Math.max(1500, left * 0.1));
+      deadline2 = Math.min(deadline2, run.deadline - reserve);
+    }
+    return deadline2;
+  }
+  function outOfTime(deadline2) {
+    const run = currentRun();
+    return Date.now() >= deadline2 || run !== null && run.cancelled !== null;
+  }
+  async function enterRoot(root, deadline2, visitedThisCall) {
+    let walk3 = root;
+    while (walk3 && walk3.type !== "PAGE") walk3 = walk3.parent;
+    if (!walk3) return true;
+    const page = walk3;
+    if (!isWarm(page.id) && visitedThisCall > 0 && deadline2 - Date.now() < COLD_PAGE_RESERVE_MS) return false;
+    const started = Date.now();
+    await page.loadAsync();
+    noteLoad(page.name, Date.now() - started);
+    markWarm(page.id);
+    return true;
+  }
+  function childrenOf(node) {
+    return "children" in node ? node.children : [];
+  }
+  function isSceneNode2(node) {
+    return node.type !== "DOCUMENT" && node.type !== "PAGE";
+  }
+  function isGone(node) {
+    try {
+      return node.removed === true;
+    } catch (e) {
+      return true;
+    }
+  }
+  function resync(session) {
+    if (session.types) return;
+    const frames = session.frames;
+    if (!frames) return;
+    for (let depth = 0; depth < frames.length; depth++) {
+      const frame3 = frames[depth];
+      if (isGone(frame3.node)) {
+        frames.length = depth;
+        session.drifted += 1;
+        break;
+      }
+      frame3.kids = kidsOf(session, frame3.node);
+      if (frame3.nextId !== null) {
+        const at = frame3.kids.findIndex((kid) => kid.id === frame3.nextId);
+        if (at >= 0) frame3.next = at;
+        else {
+          frame3.next = Math.min(frame3.next, frame3.kids.length);
+          session.drifted += 1;
+        }
+      }
+      frame3.nextId = null;
+    }
+    if (frames.length === 0) {
+      session.frames = null;
+      session.root += 1;
+    }
+  }
+  function park(session) {
+    var _a, _b;
+    if (!session.frames) return;
+    for (const frame3 of session.frames) frame3.nextId = (_b = (_a = frame3.kids[frame3.next]) == null ? void 0 : _a.id) != null ? _b : null;
+  }
+  function kidsOf(session, node) {
+    return session.skipInstanceChildren && node.type === "INSTANCE" ? [] : childrenOf(node);
+  }
+  async function walkTree(session, visit, deadline2) {
+    const release = session.invisibleInstanceChildren ? () => {
+    } : holdSkipInvisible();
+    try {
+      let visitedThisCall = 0;
+      while (session.root < session.roots.length) {
+        if (!session.frames) {
+          if (outOfTime(deadline2)) return { complete: false, stoppedOn: "budget" };
+          const root = session.roots[session.root];
+          if (isGone(root)) {
+            session.root += 1;
+            session.drifted += 1;
+            continue;
+          }
+          if (!await enterRoot(root, deadline2, visitedThisCall)) return { complete: false, stoppedOn: "budget" };
+          session.frames = [{ node: root, kids: kidsOf(session, root), next: 0, nextId: null, inInstance: root.type === "INSTANCE" }];
+          if (session.includeRoots && isSceneNode2(root)) {
+            session.visited += 1;
+            visitedThisCall += 1;
+            const verdict = await visit(root, false);
+            if (verdict === "skip") session.frames = [];
+            if (verdict === "stop") {
+              park(session);
+              return { complete: false, stoppedOn: "limit" };
+            }
+          }
+        }
+        const frames = session.frames;
+        while (frames.length > 0) {
+          const top = frames[frames.length - 1];
+          if (top.next >= top.kids.length) {
+            frames.pop();
+            continue;
+          }
+          if (outOfTime(deadline2)) {
+            park(session);
+            return { complete: false, stoppedOn: "budget" };
+          }
+          const child = top.kids[top.next];
+          top.next += 1;
+          session.visited += 1;
+          visitedThisCall += 1;
+          const verdict = await visit(child, top.inInstance);
+          if (verdict !== "skip" && "children" in child && !(session.skipInstanceChildren && child.type === "INSTANCE")) {
+            frames.push({
+              node: child,
+              kids: childrenOf(child),
+              next: 0,
+              nextId: null,
+              inInstance: top.inInstance || child.type === "INSTANCE"
+            });
+          }
+          if (verdict === "stop") {
+            park(session);
+            return { complete: false, stoppedOn: "limit" };
+          }
+          if (pauseDue()) await checkpoint();
+        }
+        session.frames = null;
+        session.root += 1;
+      }
+      return { complete: true };
+    } finally {
+      release();
+    }
+  }
+  async function walkTypes(session, visit, deadline2) {
+    let visitedThisCall = 0;
+    while (session.root < session.roots.length) {
+      if (!session.batch) {
+        if (outOfTime(deadline2)) return { complete: false, stoppedOn: "budget" };
+        const root = session.roots[session.root];
+        if (isGone(root)) {
+          session.root += 1;
+          session.drifted += 1;
+          continue;
+        }
+        if (!await enterRoot(root, deadline2, visitedThisCall)) return { complete: false, stoppedOn: "budget" };
+        session.batch = await findAllByTypes(root, session.types, { includeRoot: session.includeRoots });
+        session.offset = 0;
+      }
+      const batch = session.batch;
+      while (session.offset < batch.length) {
+        if (outOfTime(deadline2)) return { complete: false, stoppedOn: "budget" };
+        const node = batch[session.offset];
+        session.offset += 1;
+        if (isGone(node)) continue;
+        session.visited += 1;
+        visitedThisCall += 1;
+        if (await visit(node, false) === "stop") return { complete: false, stoppedOn: "limit" };
+        if (pauseDue()) await checkpoint();
+      }
+      session.batch = null;
+      session.root += 1;
+    }
+    return { complete: true };
+  }
+
   // src/agent/subtree.ts
   async function resolveSceneNode(ref) {
     if (typeof ref !== "string" || ref === "") throw new Error("nodeId must be a non-empty string");
@@ -27021,7 +27076,9 @@ ${scripts}`, "");
     };
   }
   async function screenshot(node, scale) {
-    return node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: scale } });
+    const fitted = fitScaleToPixels(node, scale, Math.floor(MAX_REPLY_RAW_BYTES / 5));
+    const bytes = await node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: fitted.scale } });
+    return { bytes, scale: fitted.scale, downscaled: fitted.downscaled };
   }
   async function designerScale(nodeId, sceneNodesById) {
     var _a;
@@ -27126,6 +27183,7 @@ ${scripts}`, "");
     {
       name: "node.screenshot",
       summary: "Render a node to PNG \u2014 the one way an agent can check what it actually drew.",
+      agent: "Oversized screenshots are downscaled before exportAsync so the sandbox and the 3 MiB reply hop stay safe; `scale` in the answer is the scale actually rendered and `requestedScale` is present when it changed.",
       mutates: false,
       params: {
         nodeId: { type: "string", required: true, description: "Layer to render." },
@@ -27133,20 +27191,21 @@ ${scripts}`, "");
       },
       async run(params) {
         const node = await resolveSceneNode(params.nodeId);
-        const scale = params.scale;
-        const bytes = await screenshot(node, scale);
-        return {
+        const requestedScale = params.scale;
+        const shot = await screenshot(node, requestedScale);
+        return __spreadProps(__spreadValues({
           node: { id: node.id, name: node.name, type: node.type, width: node.width, height: node.height },
-          scale,
-          bytes: bytes.length,
-          file: binaryFile(`${slugify2(node.name)}.png`, "image/png", bytes)
-        };
+          scale: shot.scale
+        }, shot.downscaled ? { requestedScale, downscaled: true } : {}), {
+          bytes: shot.bytes.length,
+          file: binaryFile(`${slugify2(node.name)}.png`, "image/png", shot.bytes)
+        });
       }
     },
     {
       name: "image.plate",
       summary: "A node rendered to PNG/JPG with every descendant hidden \u2014 the photo itself, not the badge baked over it.",
-      agent: `A card thumbnail is routinely an instance whose own IMAGE fill is the photo and whose only child is an overlay \u2014 a "10 min" reading-time chip, a rating badge \u2014 and node.screenshot/NODE_EXPORT bake that overlay into the pixels, because exportAsync has no "skip children" switch. image.fills answers this without touching the canvas at all when the photo is a plain paint (getImageByHash, no render), but its subtree walk can outrun a large file's budget; reach for image.plate once a walk already has nodeId and the photo just needs to come back clean. Reach for node.screenshot/NODE_EXPORT instead when the overlay is actually wanted in the picture. Costs a fleeting clone \u2014 created, hidden, exported, deleted \u2014 the document is back to itself once this returns.`,
+      agent: `A card thumbnail is routinely an instance whose own IMAGE fill is the photo and whose only child is an overlay \u2014 a "10 min" reading-time chip, a rating badge \u2014 and node.screenshot/NODE_EXPORT bake that overlay into the pixels, because exportAsync has no "skip children" switch. image.fills answers this without touching the canvas at all when the photo is a plain paint (getImageByHash, no render), but its subtree walk can outrun a large file's budget; reach for image.plate once a walk already has nodeId and the photo just needs to come back clean. Oversized plates are downscaled before exportAsync; the answer reports the scale actually used. Costs a fleeting clone \u2014 created, hidden, exported, deleted \u2014 the document is back to itself once this returns.`,
       mutates: true,
       params: {
         nodeId: { type: "string", required: true, description: "Node to render without its descendants." },
@@ -27155,65 +27214,77 @@ ${scripts}`, "");
       },
       async run(params) {
         const node = await resolveSceneNode(params.nodeId);
-        const scale = params.scale;
+        const requestedScale = params.scale;
         const format = params.format;
-        const bytes = await exportPlate(node, { format, constraint: { type: "SCALE", value: scale } });
+        const fitted = fitScaleToPixels(node, requestedScale, Math.floor(MAX_REPLY_RAW_BYTES / 5));
+        const bytes = await exportPlate(node, {
+          format,
+          constraint: { type: "SCALE", value: fitted.scale },
+          maxPixels: Math.floor(MAX_REPLY_RAW_BYTES / 5)
+        });
         const ext = format === "JPG" ? "jpg" : "png";
-        return {
+        return __spreadProps(__spreadValues({
           node: { id: node.id, name: node.name, type: node.type, width: node.width, height: node.height },
-          scale,
+          scale: fitted.scale
+        }, fitted.downscaled ? { requestedScale, downscaled: true } : {}), {
           format,
           bytes: bytes.length,
           file: binaryFile(`${slugify2(node.name)}.${ext}`, format === "JPG" ? "image/jpeg" : "image/png", bytes)
-        };
+        });
       }
     },
     {
       name: "image.fills",
       summary: "The original files behind a subtree\u2019s image fills \u2014 the photo itself, not a render with text baked over it.",
-      agent: "A render (node.screenshot, NODE_EXPORT, image.plate) flattens overlays and text into the pixels; this hands back the uploaded source of each IMAGE paint under the node, deduplicated by hash, largest first. Read-only: no export settings on the node, no write gate \u2014 `figma.getImageByHash` is a read. Pin one exact fill with `imageHash` (add `paintIndex` when the same hash paints more than one slot on the same node) instead of guessing it out of a ranked list; `self: true` skips the subtree walk when the node's own fills are already known to be the answer. On a large subtree the walk and the byte fetches can outrun `budgetMs` (default 60 s, capped at 170 s to fit inside the bridge's own deadline) \u2014 the call always answers within it, with whatever it reached in `images[]` and the rest named in `failed[]` alongside `timedOut: true`, never left hanging.",
+      agent: "A render (node.screenshot, NODE_EXPORT, image.plate) flattens overlays and text into the pixels; this hands back the uploaded source of each IMAGE paint under the node, deduplicated by hash, largest first. A large subtree is swept in resumable slices: on `complete: false`, call again with the same params plus `cursor`. Byte fetching is paged separately; when `nextOffset` is present, repeat the call with that offset. The byte budget is clamped below the 3 MiB transport ceiling. Pin one fill with `imageHash`, or use `self: true`.",
       mutates: false,
-      params: {
+      params: __spreadProps(__spreadValues({
         nodeId: { type: "string", required: true, description: "Subtree to search for image fills." },
         limit: { type: "number", default: 20, min: 1, max: 100, description: "How many distinct images to hand back." },
+        offset: {
+          type: "number",
+          default: 0,
+          min: 0,
+          max: 1e4,
+          description: "Skip this many ranked fills. Use nextOffset to resume byte fetching."
+        },
+        budgetBytes: {
+          type: "number",
+          default: MAX_REPLY_RAW_BYTES,
+          min: 1e5,
+          max: 12e6,
+          description: "Raw image bytes allowed in one reply; clamped to the transport-safe ceiling."
+        },
         minSide: {
           type: "number",
           default: 64,
           min: 0,
           description: "Skip images whose longer side is below this many pixels \u2014 icons and textures, not photos."
         },
-        imageHash: {
-          type: "string",
-          description: "Only this image hash \u2014 narrows the whole subtree walk down to one exact fill."
-        },
-        paintIndex: {
-          type: "number",
-          min: 0,
-          description: "Only a paint sitting at this index in its node's own fill stack."
-        },
-        self: {
-          type: "boolean",
-          default: false,
-          description: "Check only nodeId's own fills \u2014 skip the subtree walk entirely."
-        },
+        imageHash: { type: "string", description: "Only this image hash." },
+        paintIndex: { type: "number", min: 0, description: "Only this index in a node's own fill stack." },
+        self: { type: "boolean", default: false, description: "Check only nodeId's own fills." }
+      }, SWEEP_PARAMS), {
         budgetMs: {
           type: "number",
           default: 6e4,
           min: 1e3,
           max: 17e4,
-          description: "Total time the walk plus every byte fetch together may take before the call returns whatever it has."
+          description: "Time for this sweep/fetch slice; the active agent-run deadline is also enforced."
         },
         imageMs: {
           type: "number",
           default: 15e3,
           min: 1e3,
           max: 17e4,
-          description: "Per-image deadline for one getBytesAsync \u2014 shortened further when budgetMs is close to running out."
+          description: "Per-image getBytesAsync deadline, shortened when the call deadline is close."
         }
-      },
+      }),
       async run(params) {
+        var _a;
         const root = await resolveSceneNode(params.nodeId);
         const limit = params.limit;
+        const offset = params.offset;
         const minSide = params.minSide;
         const imageHash = params.imageHash;
         const paintIndex = params.paintIndex;
@@ -27222,6 +27293,44 @@ ${scripts}`, "");
         const imageMs = params.imageMs;
         const start = Date.now();
         const deadlineAt = start + budgetMs;
+        const record2 = (hits, node) => {
+          if (node.visible === false) return;
+          const fills = node.fills;
+          if (!Array.isArray(fills)) return;
+          fills.forEach((paint, index3) => {
+            if (paint.type !== "IMAGE" || !paint.imageHash || paint.visible === false) return;
+            if (paintIndex !== void 0 && index3 !== paintIndex) return;
+            if (imageHash !== void 0 && paint.imageHash !== imageHash) return;
+            if (!hits.has(paint.imageHash)) {
+              hits.set(paint.imageHash, { node, paintIndex: index3, scaleMode: paint.scaleMode });
+            }
+          });
+        };
+        let state;
+        let sweepReport;
+        if (self) {
+          state = { hits: /* @__PURE__ */ new Map() };
+          record2(state.hits, root);
+          sweepReport = { complete: true, swept: { nodes: 1, roots: { done: 1, of: 1 }, calls: 1 } };
+        } else {
+          const sweep = await openSweep({
+            op: "image.fills",
+            params,
+            roots: () => resolveSweepRoots(params),
+            state: () => ({ hits: /* @__PURE__ */ new Map() }),
+            includeRoots: true
+          });
+          state = sweep.state;
+          await sweep.walk((node) => record2(state.hits, node));
+          sweepReport = sweep.report();
+        }
+        if (!sweepReport.complete) {
+          return __spreadProps(__spreadValues({
+            node: { id: root.id, name: root.name, type: root.type }
+          }, sweepReport), {
+            note: "Collection is incomplete; call image.fills again with the same params plus cursor."
+          });
+        }
         const raceDeadline = (work, what, ms) => new Promise((resolve2, reject) => {
           const timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms);
           work.then(
@@ -27235,76 +27344,60 @@ ${scripts}`, "");
             }
           );
         });
-        let page = root;
-        while (page && page.type !== "PAGE") page = page.parent;
-        if (page) {
-          const loadStarted = Date.now();
-          try {
-            await raceDeadline(page.loadAsync(), `loading page "${page.name}"`, budgetMs);
-          } catch (e) {
-            throw new Error(
-              `"${page.name}" was still loading after ${budgetMs} ms \u2014 Figma keeps loading it in the background, so calling again usually answers at once. Raise budgetMs to wait here instead.`
-            );
-          }
-          noteLoad(page.name, Date.now() - loadStarted);
-        }
-        const hits = /* @__PURE__ */ new Map();
-        const record2 = (node) => {
-          if (node.visible === false) return;
-          const fills = node.fills;
-          if (!Array.isArray(fills)) return;
-          fills.forEach((paint, index3) => {
-            if (paint.type !== "IMAGE" || !paint.imageHash || paint.visible === false) return;
-            if (paintIndex !== void 0 && index3 !== paintIndex) return;
-            if (imageHash !== void 0 && paint.imageHash !== imageHash) return;
-            if (!hits.has(paint.imageHash)) hits.set(paint.imageHash, { node, paintIndex: index3, scaleMode: paint.scaleMode });
-          });
-        };
-        record2(root);
-        let timedOut = false;
-        if (!self && "children" in root) {
-          let visited = 0;
-          const stack = [...root.children];
-          while (stack.length > 0) {
-            if (Date.now() > deadlineAt) {
-              timedOut = true;
-              break;
-            }
-            const node = stack.pop();
-            record2(node);
-            if ("children" in node) for (const child of node.children) stack.push(child);
-            if (++visited % 500 === 0) await yieldToHost();
-          }
-        }
-        const ranked = [...hits.entries()].sort(
+        const ranked = [...state.hits.entries()].sort(
           ([, a], [, b]) => b.node.width * b.node.height - a.node.width * a.node.height
         );
         const failures = [];
-        let skipped = 0;
         const images = [];
-        let index2 = 0;
-        for (; index2 < ranked.length && images.length < limit; index2++) {
-          if (Date.now() > deadlineAt) {
-            timedOut = true;
+        const guard = new ExportGuard({ budgetBytes: params.budgetBytes, reserveMs: 2e3 });
+        let skipped = 0;
+        let index2 = offset;
+        let stoppedOn = null;
+        while (index2 < ranked.length && images.length < limit) {
+          if (Date.now() >= deadlineAt) {
+            stoppedOn = "time";
+            break;
+          }
+          const gate = await guard.beforeRender(index2);
+          if (!gate.include) {
+            stoppedOn = (_a = gate.stoppedOn) != null ? _a : "time";
             break;
           }
           const [hash, hit] = ranked[index2];
           const image = figma.getImageByHash(hash);
-          if (!image) continue;
+          if (!image) {
+            failures.push({ node: hit.node.id, hash, error: "image hash is no longer available" });
+            index2 += 1;
+            continue;
+          }
           let bytes;
           try {
             const perImageMs = Math.max(1, Math.min(imageMs, deadlineAt - Date.now()));
             bytes = await raceDeadline(image.getBytesAsync(), `getBytesAsync ${hit.node.name}`, perImageMs);
           } catch (error) {
             failures.push({ node: hit.node.id, hash, error: String(error) });
+            index2 += 1;
             continue;
           }
           const format = detectImageFillFormat(bytes);
           const { width, height } = imageDimensions(bytes);
-          const alpha = imageAlpha(bytes);
           if (width && height && Math.max(width, height) < minSide) {
             skipped += 1;
+            index2 += 1;
             continue;
+          }
+          const admitted = guard.admit(bytes.length, index2);
+          if (!admitted.include) {
+            stoppedOn = "bytes";
+            if (admitted.firstItemTooLarge) {
+              failures.push({
+                node: hit.node.id,
+                hash,
+                error: `source is ${bytes.length} bytes, too large for one transport-safe reply; use image.plate to render a smaller copy`
+              });
+              index2 += 1;
+            }
+            break;
           }
           images.push({
             node: { id: hit.node.id, name: hit.node.name, type: hit.node.type, width: hit.node.width, height: hit.node.height },
@@ -27315,34 +27408,28 @@ ${scripts}`, "");
             height,
             bytes: bytes.length,
             format,
-            alpha,
+            alpha: imageAlpha(bytes),
             file: binaryFile(
               `${slugify2(hit.node.name)}-${hash.slice(0, 8)}.${format}`,
               format === "jpg" ? "image/jpeg" : `image/${format}`,
               bytes
             )
           });
+          index2 += 1;
         }
-        if (timedOut) {
-          for (; index2 < ranked.length; index2++) {
-            const [hash, hit] = ranked[index2];
-            failures.push({ node: hit.node.id, hash, error: `budget exhausted (${budgetMs} ms) before this image was fetched` });
-          }
-        }
-        const truncated = Math.max(0, ranked.length - images.length - failures.length - skipped);
-        return {
-          node: { id: root.id, name: root.name, type: root.type },
+        const more = index2 < ranked.length;
+        return __spreadProps(__spreadValues(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
+          node: { id: root.id, name: root.name, type: root.type }
+        }, sweepReport), {
           count: images.length,
-          truncated,
           skippedSmall: skipped,
-          /** Images Figma would not hand over in time, or never reached because the budget ran
-           * out first — named, so the caller can retry (a narrower `imageHash`/`self`) or fall
-           * back (image.plate) instead of assuming the subtree simply has nothing left. */
           failed: failures,
-          timedOut,
+          timedOut: stoppedOn === "time" || stoppedOn === "deadline" || stoppedOn === "cancelled"
+        }), stoppedOn ? { stoppedOn } : {}), offset > 0 ? { offset } : {}), more ? { remaining: ranked.length - index2, nextOffset: index2 } : {}), {
+          bytes: guard.spent,
           elapsedMs: Date.now() - start,
           images
-        };
+        });
       }
     },
     {
@@ -27353,10 +27440,17 @@ ${scripts}`, "");
       params: {
         nodeId: { type: "string", description: "One node to reveal (legacy shorthand for nodes: [nodeId])." },
         nodes: { type: "string[]", description: "Node ids to select together where they share a page." },
-        select: { type: "boolean", default: true, description: "Also select visible-page nodes, not just scroll to them." }
+        select: { type: "boolean", default: true, description: "Also select visible-page nodes, not just scroll to them." },
+        zoom: {
+          type: "number",
+          description: "Hold this zoom (1 = 100%) centred on the nodes instead of fitting them \u2014 a detail at 400% rather than a whole screen shrunk to fit."
+        }
       },
       async run(params) {
         var _a;
+        if (params.zoom !== void 0 && (typeof params.zoom !== "number" || !(params.zoom > 0) || params.zoom > 256)) {
+          throw new Error("zoom must be a number above 0 and at most 256 \u2014 1 is 100%");
+        }
         const ids = [
           ...Array.isArray(params.nodes) ? params.nodes.filter((id) => typeof id === "string" && id !== "") : [],
           ...typeof params.nodeId === "string" && params.nodeId !== "" ? [params.nodeId] : []
@@ -27376,7 +27470,7 @@ ${scripts}`, "");
             result: {
               node: { id: node.id, name: node.name, type: node.type },
               page: { id: page.id, name: page.name },
-              url: fileKey ? `https://www.figma.com/design/${fileKey}/${anchor}` : null,
+              url: fileKey ? `https://www.figma.com/${fileUrlPath(figma.editorType)}/${fileKey}/${anchor}` : null,
               deepLinkSuffix: anchor
             }
           };
@@ -27387,6 +27481,11 @@ ${scripts}`, "");
         const visible = rows.filter((row) => row.page.id === visiblePage.id);
         if (params.select !== false) figma.currentPage.selection = visible.map((row) => row.node);
         figma.viewport.scrollAndZoomIntoView(visible.map((row) => row.node));
+        if (typeof params.zoom === "number") {
+          const centre = figma.viewport.center;
+          figma.viewport.zoom = params.zoom;
+          figma.viewport.center = centre;
+        }
         const elsewhere = /* @__PURE__ */ new Map();
         for (const row of rows.filter((candidate) => candidate.page.id !== visiblePage.id)) {
           const group2 = (_a = elsewhere.get(row.page.id)) != null ? _a : {
@@ -27400,14 +27499,18 @@ ${scripts}`, "");
           page: { id: visiblePage.id, name: visiblePage.name },
           selected: params.select === false ? [] : visible.map((row) => row.result.node),
           elsewhere: [...elsewhere.values()],
-          nodes: rows.map((row) => row.result)
+          nodes: rows.map((row) => row.result),
+          viewport: {
+            zoom: Math.round(figma.viewport.zoom * 1e3) / 1e3,
+            center: { x: Math.round(figma.viewport.center.x), y: Math.round(figma.viewport.center.y) }
+          }
         };
       }
     },
     {
       name: "design.context",
       summary: "Reference HTML + CSS + PNG for a node, with the tokens it binds \u2014 implement from this.",
-      agent: "Answers with file paths, not payloads \u2014 open them. The token usage table says which variables actually carry the subtree. `assets[]` names every raster/vector/video/poster the emitted HTML+CSS actually references \u2014 `filename` is exactly the path the markup asks for, and `nodeId` is the id to hand straight to NODE_EXPORT to produce it; no need to reverse-engineer one from the other. An entry with `exportable: false` names a video Figma's export API already refused \u2014 NODE_EXPORT will fail on that nodeId the same way, so don't retry it.",
+      agent: "Answers with file paths, not payloads \u2014 open them. The token usage table says which variables actually carry the subtree. Oversized reference PNGs are downscaled before exportAsync; `screenshotScale` is the actual scale. `assets[]` names every raster/vector/video/poster the emitted HTML+CSS references \u2014 `filename` is exactly the path the markup asks for, and `nodeId` goes straight to NODE_EXPORT. An entry with `exportable: false` names a video Figma's export API already refused, so do not retry it.",
       mutates: false,
       params: {
         nodeId: { type: "string", required: true, description: "Frame or component to describe." },
@@ -27442,23 +27545,28 @@ ${scripts}`, "");
         );
         const interactions = await clock.time("interactions", () => emitInteractions(irNodes, sceneNodesById));
         const slug2 = slugify2(root.name);
+        let screenshotScale = null;
         const files = [
           textFile(`${slug2}.html`, "text/html", html),
           textFile(`${slug2}.css`, "text/css", css)
         ];
         if (params.screenshot !== false) {
-          const png = await clock.time("screenshot", () => screenshot(root, params.scale));
-          files.push(binaryFile(`${slug2}.png`, "image/png", png));
+          const shot = await clock.time("screenshot", () => screenshot(root, params.scale));
+          files.push(binaryFile(`${slug2}.png`, "image/png", shot.bytes));
+          screenshotScale = shot;
         }
         const assets = await clock.time("assets", () => collectContextAssets(irNodes, sceneNodesById));
-        return __spreadValues(__spreadValues(__spreadValues({
+        return __spreadValues(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
           node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
           layers: sceneNodesById.size,
           tokens: tokens.usage,
           ms: clock.report(),
-          files,
+          files
+        }, screenshotScale ? __spreadValues({
+          screenshotScale: screenshotScale.scale
+        }, screenshotScale.downscaled ? { requestedScreenshotScale: params.scale, screenshotDownscaled: true } : {}) : {}), {
           assets
-        }, interactions.css.length > 0 ? { interactionsCss: textFile(`${slug2}.interactions.css`, "text/css", interactions.css) } : {}), interactions.js.length > 0 ? { interactionsJs: textFile(`${slug2}.interactions.js`, "text/javascript", interactions.js) } : {}), typeof params.pair === "string" && params.pair !== "" ? {
+        }), interactions.css.length > 0 ? { interactionsCss: textFile(`${slug2}.interactions.css`, "text/css", interactions.css) } : {}), interactions.js.length > 0 ? { interactionsJs: textFile(`${slug2}.interactions.js`, "text/javascript", interactions.js) } : {}), typeof params.pair === "string" && params.pair !== "" ? {
           breakpoints: await clock.time("breakpoints", async () => {
             if (!("children" in ir)) {
               throw new Error(`"${root.name}" (${root.type}) has no children \u2014 nothing to pair a breakpoint frame against`);
@@ -27721,12 +27829,14 @@ ${scripts}`, "");
         const first = await describeLayer(root);
         if (first) layers.push(first);
         if (withChildren && "children" in root) {
-          const queue2 = [...root.children];
-          while (queue2.length > 0 && layers.length < limit) {
-            const node = queue2.shift();
+          const queue3 = [...root.children];
+          let cursor = 0;
+          while (cursor < queue3.length && layers.length < limit) {
+            const node = queue3[cursor++];
             const described = await describeLayer(node);
             if (described) layers.push(described);
-            if ("children" in node) queue2.push(...node.children);
+            if ("children" in node) queue3.push(...node.children);
+            await checkpoint();
           }
         }
         const effects = root.effects;
@@ -27786,20 +27896,20 @@ ${scripts}`, "");
         }
         const namedOnCanvas = /* @__PURE__ */ new Set();
         if (dryRun) {
-          const note = (entry) => {
-            const one = entry;
-            if ((one == null ? void 0 : one.type) !== "SHADER" || typeof one.id !== "string") return;
-            if (one.propertyMetadata && Object.keys(one.propertyMetadata).length > 0) namedOnCanvas.add(one.id);
-          };
-          const visit = (node) => {
-            for (const field of ["fills", "strokes", "effects"]) {
-              const bag = node[field];
-              if (Array.isArray(bag)) for (const entry of bag) note(entry);
-            }
-            if ("children" in node) for (const child of node.children) visit(child);
-          };
-          await figma.currentPage.loadAsync();
-          for (const node of figma.currentPage.children) visit(node);
+          await enforceDeadline(async () => {
+            const note = (entry) => {
+              const one = entry;
+              if ((one == null ? void 0 : one.type) !== "SHADER" || typeof one.id !== "string") return;
+              if (one.propertyMetadata && Object.keys(one.propertyMetadata).length > 0) namedOnCanvas.add(one.id);
+            };
+            await figma.currentPage.loadAsync();
+            await walkSceneNodes(figma.currentPage, (node) => {
+              for (const field of ["fills", "strokes", "effects"]) {
+                const bag = node[field];
+                if (Array.isArray(bag)) for (const entry of bag) note(entry);
+              }
+            }, { includeRoot: false });
+          });
         }
         const results = [];
         for (const id of ids) {
@@ -27918,12 +28028,12 @@ ${scripts}`, "");
   function* descend(root, maxDepth) {
     const stack = [{ node: root, depth: 0, path: root.name }];
     while (stack.length > 0) {
-      const current = stack.pop();
-      yield current;
-      if (current.depth >= maxDepth || !("children" in current.node)) continue;
-      const children = current.node.children;
+      const current2 = stack.pop();
+      yield current2;
+      if (current2.depth >= maxDepth || !("children" in current2.node)) continue;
+      const children = current2.node.children;
       for (let i = children.length - 1; i >= 0; i--) {
-        stack.push({ node: children[i], depth: current.depth + 1, path: `${current.path}/${children[i].name}` });
+        stack.push({ node: children[i], depth: current2.depth + 1, path: `${current2.path}/${children[i].name}` });
       }
     }
   }
@@ -27995,22 +28105,41 @@ ${scripts}`, "");
     {
       name: "export.run",
       summary: "Render nodes by THEIR OWN export settings \u2014 the designer's format, density and suffix, not the caller's guess.",
-      agent: "The companion to export.settings: that one says what the designer asked for, this one produces it. A node with three rows comes back as three files, each named with its own suffix, so a 1x/2x/3x set arrives in one call. Nodes with no settings are reported, not silently skipped. Use NODE_EXPORT instead when the caller \u2014 not the file \u2014 decides the format.",
+      agent: "The companion to export.settings: that one says what the designer asked for, this one produces it. A node with three rows comes back as three files, each named with its own suffix. Replies are capped below the transport ceiling and renders stop one at a time; when `nextOffset` is present, call again with that offset. Raster rows above maxPixels are refused before exportAsync with a hint to lower the designer\u2019s scale.",
       mutates: false,
       params: {
         nodes: { type: "string[]", required: true, description: "Node ids to render by their own export rows." },
         format: { type: "string", enum: [...FORMATS], description: "Only render rows of this format." },
-        budgetBytes: { type: "number", default: 8e6, min: 1e5, max: 12e6, description: "Stop once the answer reaches this size." }
+        offset: { type: "number", default: 0, min: 0, max: 1e4, description: "Skip this many matching export rows; resume with nextOffset." },
+        budgetBytes: {
+          type: "number",
+          default: MAX_REPLY_RAW_BYTES,
+          min: 1e5,
+          max: 12e6,
+          description: "Raw file bytes in one reply; clamped to the transport-safe ceiling."
+        },
+        maxPixels: {
+          type: "number",
+          default: 4e7,
+          min: 25e4,
+          max: 6e7,
+          description: "Refuse a raster row above this output-pixel count before exportAsync."
+        }
       },
       async run(params) {
-        var _a;
+        var _a, _b, _c;
         const ids = (_a = params.nodes) != null ? _a : [];
         const wanted = typeof params.format === "string" ? params.format.toUpperCase() : null;
-        const budget = params.budgetBytes;
+        const offset = params.offset;
+        const guard = new ExportGuard({
+          budgetBytes: params.budgetBytes,
+          maxPixels: params.maxPixels
+        });
         const files = [];
         const reports = [];
-        let spent = 0;
+        const jobs = [];
         for (const id of ids) {
+          await checkpoint();
           let node;
           try {
             node = await resolveScene(id);
@@ -28022,36 +28151,109 @@ ${scripts}`, "");
             reports.push({ node: id, name: node.name, ok: false, error: "no export settings on this node" });
             continue;
           }
-          for (const [index2, setting] of [...node.exportSettings].entries()) {
+          for (const [row, setting] of [...node.exportSettings].entries()) {
             const summary = summarize(setting);
-            if (wanted && summary.format !== wanted) continue;
-            if (spent >= budget) {
-              reports.push({ node: id, name: node.name, row: index2, ok: false, error: "budget spent before this row" });
-              continue;
-            }
-            try {
-              const stem = `${slugify2(node.name)}${summary.suffix ? slugify2(summary.suffix) : ""}`;
-              if (summary.format === "SVG") {
-                const svg = await node.exportAsync(__spreadProps(__spreadValues({}, setting), { format: "SVG_STRING" }));
-                spent += svg.length;
-                const name2 = `${stem}.svg`;
-                files.push(textFile(name2, "image/svg+xml", svg));
-                reports.push({ node: id, name: node.name, row: index2, ok: true, file: name2, bytes: svg.length, settings: summary });
-                continue;
-              }
-              const bytes = await node.exportAsync(setting);
-              spent += bytes.length;
-              const ext = summary.format.toLowerCase();
-              const mime = summary.format === "JPG" ? "image/jpeg" : summary.format === "PDF" ? "application/pdf" : "image/png";
-              const name = `${stem}.${ext}`;
-              files.push(binaryFile(name, mime, bytes));
-              reports.push({ node: id, name: node.name, row: index2, ok: true, file: name, bytes: bytes.length, settings: summary });
-            } catch (error) {
-              reports.push({ node: id, name: node.name, row: index2, ok: false, error: String((error == null ? void 0 : error.message) || error) });
-            }
+            if (!wanted || summary.format === wanted) jobs.push({ node, setting, row, summary });
           }
         }
-        return { files, nodes: reports, bytes: spent, budgetSpent: spent >= budget };
+        let jobOffset = offset;
+        let stoppedOn = null;
+        while (jobOffset < jobs.length) {
+          const job = jobs[jobOffset];
+          const gate = await guard.beforeRender(jobOffset);
+          if (!gate.include) {
+            stoppedOn = (_b = gate.stoppedOn) != null ? _b : "bytes";
+            break;
+          }
+          if (job.summary.format === "PNG" || job.summary.format === "JPG") {
+            const constraint = (_c = job.summary.constraint) != null ? _c : { type: "SCALE", value: 1 };
+            const pixels2 = pixelRefusal(job.node, constraint, guard.maxPixels);
+            if (pixels2.error) {
+              reports.push({
+                node: job.node.id,
+                name: job.node.name,
+                row: job.row,
+                ok: false,
+                error: pixels2.error,
+                settings: job.summary
+              });
+              jobOffset += 1;
+              continue;
+            }
+            const preflight = guard.preflightRaster(pixels2.render, jobOffset);
+            if (!preflight.include) {
+              stoppedOn = "bytes";
+              if (preflight.firstItemTooLarge) {
+                reports.push({
+                  node: job.node.id,
+                  name: job.node.name,
+                  row: job.row,
+                  ok: false,
+                  error: "the estimated raster cannot fit one transport-safe reply; lower its export scale or use WIDTH/HEIGHT",
+                  settings: job.summary
+                });
+                jobOffset += 1;
+              }
+              break;
+            }
+          }
+          try {
+            const stem = `${slugify2(job.node.name)}${job.summary.suffix ? slugify2(job.summary.suffix) : ""}`;
+            const data = job.summary.format === "SVG" ? await job.node.exportAsync(__spreadProps(__spreadValues({}, job.setting), {
+              format: "SVG_STRING"
+            })) : await job.node.exportAsync(job.setting);
+            const size = typeof data === "string" ? data.length : data.length;
+            const admitted = guard.admit(size, jobOffset);
+            if (!admitted.include) {
+              stoppedOn = "bytes";
+              if (admitted.firstItemTooLarge) {
+                reports.push({
+                  node: job.node.id,
+                  name: job.node.name,
+                  row: job.row,
+                  ok: false,
+                  error: `this row is ${size} bytes, too large for one transport-safe reply; lower its export scale or use a WIDTH/HEIGHT constraint`,
+                  settings: job.summary
+                });
+                jobOffset += 1;
+              }
+              break;
+            }
+            const ext = job.summary.format.toLowerCase();
+            const name = `${stem}.${ext}`;
+            if (typeof data === "string") {
+              files.push(textFile(name, "image/svg+xml", data));
+            } else {
+              const mime = job.summary.format === "JPG" ? "image/jpeg" : job.summary.format === "PDF" ? "application/pdf" : "image/png";
+              files.push(binaryFile(name, mime, data));
+            }
+            reports.push({
+              node: job.node.id,
+              name: job.node.name,
+              row: job.row,
+              ok: true,
+              file: name,
+              bytes: size,
+              settings: job.summary
+            });
+            jobOffset += 1;
+          } catch (error) {
+            reports.push({
+              node: job.node.id,
+              name: job.node.name,
+              row: job.row,
+              ok: false,
+              error: String((error == null ? void 0 : error.message) || error)
+            });
+            jobOffset += 1;
+          }
+        }
+        return __spreadValues(__spreadValues(__spreadValues({
+          files,
+          nodes: reports,
+          bytes: guard.spent,
+          budgetBytes: guard.budgetBytes
+        }, offset > 0 ? { offset } : {}), stoppedOn ? { stoppedOn } : {}), jobOffset < jobs.length ? { remaining: jobs.length - jobOffset, nextOffset: jobOffset } : {});
       }
     },
     {
@@ -28115,7 +28317,7 @@ ${scripts}`, "");
       }
     }
   ];
-  var HOP_BYTES = 3 * 1024 * 1024;
+  var HOP_BYTES = MAX_REPLY_RAW_BYTES;
   var PNG_BYTES_PER_MEGAPIXEL = 1e6;
   function hasImageFill(node) {
     const fills = node.fills;
@@ -28350,9 +28552,9 @@ ${scripts}`, "");
   }
   function value(raw, token2) {
     if (typeof raw !== "number" || !Number.isFinite(raw)) return void 0;
-    return token2 ? { token: token2, value: round13(raw) } : { value: round13(raw) };
+    return token2 ? { token: token2, value: round14(raw) } : { value: round14(raw) };
   }
-  function round13(n) {
+  function round14(n) {
     return Math.round(n * 100) / 100;
   }
   function collapse2(parts) {
@@ -28421,7 +28623,7 @@ ${scripts}`, "");
       if (weight) out.strokeWeight = weight;
       if (typeof source.strokeAlign === "string") out.strokeAlign = source.strokeAlign;
       if (Array.isArray(source.dashPattern) && source.dashPattern.length > 0) {
-        out.dashPattern = source.dashPattern.map(round13);
+        out.dashPattern = source.dashPattern.map(round14);
       }
       if (typeof source.strokeCap === "string" && source.strokeCap !== "NONE") out.strokeCap = source.strokeCap;
       if (typeof source.strokeJoin === "string" && source.strokeJoin !== "MITER") out.strokeJoin = source.strokeJoin;
@@ -28437,7 +28639,7 @@ ${scripts}`, "");
       out.radius = radius;
     }
     const smoothing = plain(source.cornerSmoothing);
-    if (smoothing !== void 0 && smoothing > 0) out.cornerSmoothing = round13(smoothing);
+    if (smoothing !== void 0 && smoothing > 0) out.cornerSmoothing = round14(smoothing);
     const effects = await readEffects(source.effects);
     if (effects && effects.length > 0) out.effects = effects;
     const opacity = plain(source.opacity);
@@ -28449,7 +28651,7 @@ ${scripts}`, "");
       out.blendMode = source.blendMode;
     }
     const rotation = plain(source.rotation);
-    if (rotation !== void 0 && round13(rotation) !== 0) out.rotation = round13(rotation);
+    if (rotation !== void 0 && round14(rotation) !== 0) out.rotation = round14(rotation);
     if (source.isMask === true) out.mask = { type: typeof source.maskType === "string" ? source.maskType : "ALPHA" };
     if (Object.keys(layout).length > 0) out.layoutTokens = layout;
     if (text6) out.typography = typeStyleOf(text6, await typeTokenNames(text6, resolve2));
@@ -28523,25 +28725,25 @@ ${scripts}`, "");
       assetScales: ASSET_SCALES[platform],
       assetNaming: platform
     };
-    const measured2 = typeof width === "number" && Number.isFinite(width) && width > 0 ? width : 0;
-    if (measured2 === 0) {
+    const measured3 = typeof width === "number" && Number.isFinite(width) && width > 0 ? width : 0;
+    if (measured3 === 0) {
       return __spreadProps(__spreadValues({}, base), { scale: 1, basis: "no frame width to reason from \u2014 treated as 1\xD7" });
     }
     for (const scale of CANDIDATE_SCALES) {
-      const logical = measured2 / scale;
+      const logical = measured3 / scale;
       const match = LOGICAL_WIDTHS[platform].find((candidate) => Math.abs(candidate - logical) <= WIDTH_TOLERANCE);
       if (match === void 0) continue;
       if (scale === 1) {
-        return __spreadProps(__spreadValues({}, base), { scale: 1, basis: `${measured2}px matches a ${match}${unit} ${platform} width` });
+        return __spreadProps(__spreadValues({}, base), { scale: 1, basis: `${measured3}px matches a ${match}${unit} ${platform} width` });
       }
       return __spreadProps(__spreadValues({}, base), {
         scale,
-        basis: `${measured2}px is ${scale}\xD7 a ${match}${unit} ${platform} width \u2014 divide every length by ${scale}`
+        basis: `${measured3}px is ${scale}\xD7 a ${match}${unit} ${platform} width \u2014 divide every length by ${scale}`
       });
     }
     return __spreadProps(__spreadValues({}, base), {
       scale: 1,
-      basis: `${measured2}px matches no standard ${platform} width \u2014 treated as 1\xD7, check the artboard`
+      basis: `${measured3}px matches no standard ${platform} width \u2014 treated as 1\xD7, check the artboard`
     });
   }
 
@@ -28711,7 +28913,7 @@ ${scripts}`, "");
         screenshot: {
           type: "boolean",
           default: false,
-          description: "Also render a PNG, for a look at what the tree describes."
+          description: "Also render a PNG. Oversized previews are downscaled before exportAsync; previewScale reports the actual scale."
         },
         type: {
           type: "boolean",
@@ -28758,6 +28960,7 @@ ${scripts}`, "");
         const tree = JSON.stringify(ir, null, 2);
         const componentUses = params.components === false ? [] : collectComponentUses(ir);
         if (componentUses.length > 0) await annotateComponentUses(componentUses);
+        const preview2 = params.screenshot === true ? await screenshot(root, 2) : null;
         return __spreadValues(__spreadValues(__spreadProps(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
           node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
           layers: sceneNodesById.size,
@@ -28765,13 +28968,16 @@ ${scripts}`, "");
           tokens: tokens.usage
         }, params.components === false ? {} : { components: componentUses }), params.assets === false ? {} : { assets }), params.type === false ? {} : { type: await typographyOf(sceneNodesById.values(), tokens.names) }), params.screen === false ? {} : { screen: screenSummary(ir, { width: root.width, height: root.height }) }), platform ? { units: unitProfile(platform, root.width) } : {}), painted ? { painted } : {}), {
           bytes: tree.length
-        }), params.inline === true ? { ir } : { ir: textFile(`${slug2}.ir.json`, "application/json", tree) }), params.screenshot === true ? { preview: binaryFile(`${slug2}.png`, "image/png", await screenshot(root, 2)) } : {});
+        }), params.inline === true ? { ir } : { ir: textFile(`${slug2}.ir.json`, "application/json", tree) }), preview2 ? __spreadValues({
+          preview: binaryFile(`${slug2}.png`, "image/png", preview2.bytes),
+          previewScale: preview2.scale
+        }, preview2.downscaled ? { requestedPreviewScale: 2, previewDownscaled: true } : {}) : {});
       }
     },
     {
       name: "assets.export",
       summary: "The pictures of a screen as files \u2014 chosen formats and densities, named for the platform that will use them.",
-      agent: 'The companion to design.ir: the tree points at pictures, this produces them. `select: "assets"` exports every raster and vector the subtree actually references (deduplicated, the same list design.ir reports); `select: "node"` exports the node itself, which is what you want for a single icon or a share image. Scales apply to raster formats only \u2014 SVG and PDF are exported once, because three identical vectors is three files and a slower answer. `naming` decides the paths in the manifest: `ios` an asset catalogue, `android` density buckets, `web` an @2x pair, `plain` flat names. The FILES always arrive as flat basenames (the bridge refuses a path), and the manifest says where each one belongs \u2014 move them, do not guess the layout. An asset design.ir marked `exportable: false` is a video Figma already refused; it is skipped here with its reason rather than retried. One answer carries about 2.5 MB of image data \u2014 measured, not guessed: past roughly three megabytes the sandbox\u2192UI hop stalls and the call never returns. So a screen comes in pages: the answer stops before that line, says `remaining` and `nextOffset`, and you call again with `offset`. Three calls of a second each beat one that dies at the bridge ceiling with nothing to show.',
+      agent: 'The companion to design.ir: the tree points at pictures, this produces them. `select: "assets"` exports every raster and vector the subtree actually references (deduplicated, the same list design.ir reports); `select: "node"` exports the node itself, which is what you want for a single icon or a share image. Scales apply to raster formats only \u2014 SVG and PDF are exported once, because three identical vectors is three files and a slower answer. `naming` decides the paths in the manifest: `ios` an asset catalogue, `android` density buckets, `web` an @2x pair, `plain` flat names. The FILES always arrive as flat basenames (the bridge refuses a path), and the manifest says where each one belongs \u2014 move them, do not guess the layout. An asset design.ir marked `exportable: false` is a video Figma already refused; it is skipped here with its reason rather than retried. Every reply is clamped below the 3 MiB transport ceiling. The answer stops one render at a time, returns `remaining` and `nextOffset`, and resumes with `offset`; pixel-heavy rows are refused before exportAsync with a hint to lower the scale.',
       mutates: false,
       params: {
         nodeId: { type: "string", required: true, description: "Node to export, or the screen whose assets to collect." },
@@ -28812,10 +29018,10 @@ ${scripts}`, "");
         },
         budgetBytes: {
           type: "number",
-          default: 25e5,
+          default: MAX_REPLY_RAW_BYTES,
           min: 1e5,
           max: 8e6,
-          description: "How many bytes one answer may carry. Measured, not guessed: a reply under ~2.5 MB of image data comes back in under a second, and one over ~3 MB never arrives at all \u2014 the sandbox\u2192UI hop stalls past that. The export stops BEFORE crossing it and reports what is left, so paging with `offset` is the way to take a whole screen."
+          description: "Raw file bytes allowed in one answer. It is clamped below the transport-safe ceiling after base64 growth and envelope overhead; the export stops before crossing it and reports nextOffset."
         },
         budgetMs: {
           type: "number",
@@ -28843,7 +29049,7 @@ ${scripts}`, "");
         }
       },
       async run(params) {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
         const root = await resolveSceneNode(params.nodeId);
         let parent = root.parent;
         while (parent && parent.type !== "PAGE") parent = parent.parent;
@@ -28854,6 +29060,8 @@ ${scripts}`, "");
         const scales = requestedScales((_e = (_d = params.scales) != null ? _d : profile == null ? void 0 : profile.assetScales) != null ? _e : [1, 2, 3], format);
         const limit = Number((_f = params.limit) != null ? _f : 24);
         const targets = [];
+        const offset = Number((_g = params.offset) != null ? _g : 0);
+        let collectionHasMore = false;
         if (params.select === "assets") {
           const sceneNodesById = await indexSceneNodes([root]);
           const ir = await serializeNode(root);
@@ -28865,14 +29073,19 @@ ${scripts}`, "");
           const found = await collectContextAssets(irNodes, sceneNodesById);
           const seen = /* @__PURE__ */ new Set();
           for (const asset of found) {
+            await checkpoint();
             if (seen.has(asset.nodeId)) continue;
             seen.add(asset.nodeId);
+            if (targets.length >= offset + limit + 1) {
+              collectionHasMore = true;
+              break;
+            }
             const node = sceneNodesById.get(asset.nodeId);
             targets.push(__spreadValues({
               nodeId: asset.nodeId,
-              name: (_g = node == null ? void 0 : node.name) != null ? _g : asset.filename,
+              name: (_h = node == null ? void 0 : node.name) != null ? _h : asset.filename,
               kind: asset.kind
-            }, asset.exportable === false ? { reason: (_h = asset.reason) != null ? _h : "Figma refuses to export this asset" } : {}));
+            }, asset.exportable === false ? { reason: (_i = asset.reason) != null ? _i : "Figma refuses to export this asset" } : {}));
           }
         } else {
           targets.push({ nodeId: root.id, name: root.name, kind: root.type.toLowerCase() });
@@ -28883,52 +29096,80 @@ ${scripts}`, "");
         const taken = /* @__PURE__ */ new Set();
         const wantAlpha = params.alpha === true;
         const imageAlphaCache = /* @__PURE__ */ new Map();
-        const budget = Number((_i = params.budgetBytes) != null ? _i : 25e5);
-        const deadline2 = Date.now() + Number((_j = params.budgetMs) != null ? _j : 6e4);
-        const maxPixels = Number((_k = params.maxPixels) != null ? _k : 4e6);
-        const offset = Number((_l = params.offset) != null ? _l : 0);
+        const guard = new ExportGuard({
+          budgetBytes: Number((_j = params.budgetBytes) != null ? _j : MAX_REPLY_RAW_BYTES),
+          maxPixels: Number((_k = params.maxPixels) != null ? _k : 4e6)
+        });
+        const deadline2 = Date.now() + Number((_l = params.budgetMs) != null ? _l : 6e4);
         const page = targets.slice(offset, offset + limit);
-        let spent = 0;
         let ranOut = null;
         let done = 0;
         for (const target of page) {
           if (ranOut) break;
           if (target.reason) {
             skipped.push({ name: target.name, reason: target.reason });
+            done += 1;
             continue;
           }
           const found = await figma.getNodeByIdAsync(target.nodeId);
           const node = found && found.type !== "PAGE" && found.type !== "DOCUMENT" ? found : null;
           if (!node || !("exportAsync" in node)) {
             skipped.push({ name: target.name, reason: "node is gone or cannot be exported" });
+            done += 1;
             continue;
           }
           const stem = uniqueStem(slugify2(target.name, "asset"), taken);
           const entry = { nodeId: target.nodeId, name: target.name, kind: target.kind, files: [] };
-          if (wantAlpha && format !== "SVG" && format !== "PDF" && Date.now() <= deadline2) {
-            const alpha = await sourceImageAlpha(node, imageAlphaCache);
-            if (alpha !== void 0) entry.alpha = alpha;
-          }
+          let alphaRead = false;
           for (const scale of scales) {
-            if (Date.now() > deadline2) {
+            if (Date.now() >= deadline2) {
               ranOut = "time";
               break;
             }
-            const pixels2 = Math.round(node.width * scale) * Math.round(node.height * scale);
-            if (format !== "SVG" && format !== "PDF" && pixels2 > maxPixels) {
-              skipped.push({
-                name: target.name,
-                reason: `${Math.round(node.width * scale)}\xD7${Math.round(node.height * scale)} at @${scale}x is ${(pixels2 / 1e6).toFixed(1)} megapixels, past maxPixels \u2014 export the icon or image layer itself rather than the frame around it, or drop the scale.`
-              });
-              continue;
+            const gate = await guard.beforeRender(offset + done);
+            if (!gate.include) {
+              ranOut = (_m = gate.stoppedOn) != null ? _m : "time";
+              break;
+            }
+            if (format !== "SVG" && format !== "PDF") {
+              const pixels2 = pixelRefusal(node, { type: "SCALE", value: scale }, guard.maxPixels);
+              if (pixels2.error) {
+                skipped.push({
+                  name: target.name,
+                  reason: `${pixels2.render.width}\xD7${pixels2.render.height} at @${scale}x is ${(pixels2.render.pixels / 1e6).toFixed(1)} megapixels, past maxPixels \u2014 export the icon or image layer itself rather than the frame around it, or drop the scale.`
+                });
+                continue;
+              }
+              const preflight = guard.preflightRaster(pixels2.render, offset + done);
+              if (!preflight.include) {
+                ranOut = "bytes";
+                if (preflight.firstItemTooLarge) {
+                  skipped.push({
+                    name: target.name,
+                    reason: "the estimated raster cannot fit one transport-safe reply; lower the scale or use a smaller node"
+                  });
+                }
+                break;
+              }
+            }
+            if (!alphaRead && wantAlpha && format !== "SVG" && format !== "PDF") {
+              alphaRead = true;
+              const alpha = await sourceImageAlpha(node, imageAlphaCache);
+              if (alpha !== void 0) entry.alpha = alpha;
             }
             try {
               const bytes = format === "SVG" || format === "PDF" ? await node.exportAsync({ format }) : await node.exportAsync({ format, constraint: { type: "SCALE", value: scale } });
-              if (spent > 0 && spent + bytes.length > budget) {
+              const admitted = guard.admit(bytes.length, offset + done);
+              if (!admitted.include) {
                 ranOut = "bytes";
+                if (admitted.firstItemTooLarge) {
+                  skipped.push({
+                    name: target.name,
+                    reason: `the @${scale}x file is ${bytes.length} bytes, too large for one transport-safe reply; lower the scale or use a smaller node`
+                  });
+                }
                 break;
               }
-              spent += bytes.length;
               const name = assetFileName(stem, scale, format);
               files.push(binaryFile(name, MIME_BY_FORMAT[format], bytes));
               entry.files.push({
@@ -28957,8 +29198,12 @@ ${scripts}`, "");
           scales,
           naming,
           exported: manifest.length,
-          bytes: spent
-        }, ranOut ? { stoppedOn: ranOut } : {}), offset > 0 ? { offset } : {}), targets.length > offset + done ? { remaining: targets.length - offset - done, nextOffset: offset + done } : {}), skipped.length > 0 ? { skipped } : {}), {
+          bytes: guard.spent,
+          budgetBytes: guard.budgetBytes
+        }, ranOut ? { stoppedOn: ranOut } : {}), offset > 0 ? { offset } : {}), targets.length > offset + done || collectionHasMore ? {
+          remaining: Math.max(1, targets.length - offset - done),
+          nextOffset: offset + done
+        } : {}), skipped.length > 0 ? { skipped } : {}), {
           assets: manifest,
           files,
           manifest: textFile(
@@ -29569,7 +29814,7 @@ ${scripts}`, "");
     return Math.abs(design - built) <= LENGTH_TOLERANCE;
   }
   function sameColor3(a, b) {
-    const norm = (hex2) => hex2.trim().toUpperCase().replace(/^#/, "").replace(/FF$/, "");
+    const norm = (hex4) => hex4.trim().toUpperCase().replace(/^#/, "").replace(/FF$/, "");
     return norm(a) === norm(b);
   }
   function agrees(design, built, unit, scale) {
@@ -29699,7 +29944,7 @@ ${scripts}`, "");
   function pinnableId(id) {
     return typeof id === "string" && !id.includes(";");
   }
-  function round14(value2) {
+  function round15(value2) {
     return Math.round(value2 * 100) / 100;
   }
   function pointsOf(box2) {
@@ -29709,7 +29954,7 @@ ${scripts}`, "");
     const bottom = box2.y + box2.height;
     const midX = box2.x + box2.width / 2;
     const midY = box2.y + box2.height / 2;
-    const at = (x, y) => ({ x: round14(x), y: round14(y) });
+    const at = (x, y) => ({ x: round15(x), y: round15(y) });
     return {
       center: at(midX, midY),
       "top-left": at(left, top),
@@ -29730,14 +29975,14 @@ ${scripts}`, "");
   }
   function enclosingFrame(node) {
     var _a;
-    let current = node;
+    let current2 = node;
     let depth = 0;
-    while (current) {
-      if (current.type === "PAGE" || current.type === "DOCUMENT") return null;
-      if (PINNABLE.has(current.type) && pinnableId(current.id) && boxOf(current)) {
-        return { frame: current, depth };
+    while (current2) {
+      if (current2.type === "PAGE" || current2.type === "DOCUMENT") return null;
+      if (PINNABLE.has(current2.type) && pinnableId(current2.id) && boxOf(current2)) {
+        return { frame: current2, depth };
       }
-      current = (_a = current.parent) != null ? _a : null;
+      current2 = (_a = current2.parent) != null ? _a : null;
       depth += 1;
     }
     return null;
@@ -29750,7 +29995,7 @@ ${scripts}`, "");
       );
     }
     const enclosing = enclosingFrame(node);
-    const rotated = typeof node.rotation === "number" && Math.abs(round14(node.rotation)) > 0.01;
+    const rotated = typeof node.rotation === "number" && Math.abs(round15(node.rotation)) > 0.01;
     if (!enclosing) {
       return __spreadValues({
         node: { id: node.id, name: node.name, type: node.type },
@@ -29782,7 +30027,7 @@ ${scripts}`, "");
     }, rotated ? { rotated: true } : {});
   }
   function roundBox(box2) {
-    return { x: round14(box2.x), y: round14(box2.y), width: round14(box2.width), height: round14(box2.height) };
+    return { x: round15(box2.x), y: round15(box2.y), width: round15(box2.width), height: round15(box2.height) };
   }
   function pinFor(anchor, point2 = "center") {
     const offset = anchor.offsets[point2];
@@ -30309,9 +30554,9 @@ ${scripts}`, "");
     {
       name: "text.inventory",
       summary: "Every TEXT node of a subtree, split into copy that must be translated and text drawn inside illustrations.",
-      agent: 'The op behind "a text node is a string, and a string belongs in the translation file". Each row carries the characters, the layer path and a role: `content` is copy a CMS field and a PO entry must exist for; `baked` is text inside an illustration (`img/*`, `Img`, `Interface`, `Calculator`) \u2014 it ships as pixels or as an SVG overlay and must NOT be duplicated into the copy deck. Compare `content` against the strings a build exports and the difference is the localization gap, computed from the design rather than from a copy of the design\'s conventions kept somewhere else. `illustrations` extends the name list; `includeHidden` adds layers the designer switched off.',
+      agent: "The op behind \"a text node is a string, and a string belongs in the translation file\". Each row carries the characters, the layer path and a role: `content` is copy a CMS field and a PO entry must exist for; `baked` is text inside an illustration (`img/*`, `Img`, `Interface`, `Calculator`) \u2014 it ships as pixels or as an SVG overlay and must NOT be duplicated into the copy deck. Compare `content` against the strings a build exports and the difference is the localization gap, computed from the design rather than from a copy of the design's conventions kept somewhere else. `illustrations` extends the name list; `includeHidden` adds layers the designer switched off. Rows and `counts` describe this call's page and are paged by `limit`; on `complete: false`, call again with the same params plus `cursor`.",
       mutates: false,
-      params: {
+      params: __spreadValues({
         nodeId: { type: "string", required: true, description: "Frame, section or page-level frame to inventory." },
         illustrations: {
           type: "string[]",
@@ -30325,66 +30570,69 @@ ${scripts}`, "");
           description: "Report only copy, only drawn text, or both."
         },
         limit: { type: "number", default: 500, min: 1, max: 5e3, description: "Maximum rows reported." }
-      },
+      }, SWEEP_PARAMS),
       async run(params) {
-        var _a, _b, _c;
-        const root = await figma.getNodeByIdAsync(String(params.nodeId));
-        if (!root) throw new Error(`no node with id ${String(params.nodeId)}`);
-        if (root.type === "DOCUMENT") throw new Error("give a frame or a page-level node, not the document");
+        var _a, _b;
         const extra = (_a = params.illustrations) != null ? _a : [];
         const includeHidden = params.includeHidden === true;
         const wanted = String((_b = params.role) != null ? _b : "all");
         const limit = params.limit;
+        let rootNode = null;
+        const sweep = await openSweep({
+          op: "text.inventory",
+          params,
+          roots: async () => {
+            var _a2;
+            const resolved = await resolveSweepRoots({ nodeId: params.nodeId });
+            rootNode = (_a2 = resolved.roots[0]) != null ? _a2 : null;
+            return resolved;
+          },
+          state: () => ({
+            root: rootNode ? { id: rootNode.id, name: rootNode.name, type: rootNode.type } : { id: String(params.nodeId), name: "", type: "UNKNOWN" }
+          }),
+          skipInstanceChildren: false,
+          includeRoots: true,
+          // Hidden layers inside instances exist for this read only when Figma is told not to
+          // skip them — the one inventory that asks for them must see them.
+          invisibleInstanceChildren: includeHidden
+        });
         const rows = [];
-        let scanned = 0;
-        let truncated = false;
-        const stack = [
-          { node: root, path: root.name, bakedIn: isIllustration(root.name, extra) ? root.name : null }
-        ];
-        while (stack.length > 0) {
-          const current = stack.pop();
-          const node = current.node;
-          scanned += 1;
-          const visible = node.visible !== false;
-          if (!visible && !includeHidden) continue;
-          if (node.type === "TEXT") {
-            const text6 = node;
-            const role = current.bakedIn ? "baked" : "content";
-            if (wanted === "all" || wanted === role) {
-              if (rows.length >= limit) {
-                truncated = true;
-              } else {
-                const style = text6.textStyleId ? await figma.getStyleByIdAsync(String(text6.textStyleId)) : null;
-                rows.push(__spreadProps(__spreadValues(__spreadValues({
-                  id: text6.id,
-                  name: text6.name,
-                  path: current.path,
-                  // Newlines escaped: a paragraph mark in the middle of a report reads as a broken row.
-                  characters: text6.characters.replace(/\n/g, "\\n"),
-                  length: text6.characters.length,
-                  role
-                }, current.bakedIn ? { bakedIn: current.bakedIn } : {}), style ? { style: style.name } : {}), {
-                  visible
-                }));
-              }
-            }
+        await sweep.walk(async (node) => {
+          if (node.type !== "TEXT") return;
+          const names = [];
+          let walk3 = node;
+          let visible = true;
+          let bakedIn = null;
+          while (walk3 && walk3.type !== "DOCUMENT") {
+            names.unshift(walk3.name);
+            if ("visible" in walk3 && walk3.visible === false) visible = false;
+            if (isIllustration(walk3.name, extra)) bakedIn = walk3.name;
+            if (walk3.id === String(params.nodeId)) break;
+            walk3 = walk3.parent;
           }
-          if ("children" in node) {
-            for (const child of node.children) {
-              stack.push({
-                node: child,
-                path: `${current.path}/${child.name}`,
-                // Once inside an illustration, always inside it: depth changes nothing.
-                bakedIn: (_c = current.bakedIn) != null ? _c : isIllustration(child.name, extra) ? child.name : null
-              });
-            }
-          }
-        }
+          if (!visible && !includeHidden) return;
+          const role = bakedIn ? "baked" : "content";
+          if (wanted !== "all" && wanted !== role) return;
+          const text6 = node;
+          const style = text6.textStyleId ? await figma.getStyleByIdAsync(String(text6.textStyleId)) : null;
+          rows.push(__spreadProps(__spreadValues(__spreadValues({
+            id: text6.id,
+            name: text6.name,
+            path: names.join("/"),
+            characters: text6.characters.replace(/\n/g, "\\n"),
+            length: text6.characters.length,
+            role
+          }, bakedIn ? { bakedIn } : {}), style ? { style: style.name } : {}), {
+            visible
+          }));
+          if (rows.length >= limit) return "stop";
+        });
+        const report2 = sweep.report();
         const content = rows.filter((row) => row.role === "content");
-        return {
-          node: { id: root.id, name: root.name, type: root.type },
-          scanned,
-          truncated,
+        return __spreadProps(__spreadValues(__spreadProps(__spreadValues({}, report2), {
+          node: sweep.state.root
+        }), report2.complete ? { scanned: report2.swept.nodes } : { scannedSoFar: report2.swept.nodes }), {
+          truncated: !report2.complete,
           counts: {
             total: rows.length,
             content: content.length,
@@ -30392,7 +30640,7 @@ ${scripts}`, "");
             distinct: new Set(content.map((row) => row.characters.trim())).size
           },
           texts: rows
-        };
+        });
       }
     }
   ];
@@ -30519,9 +30767,9 @@ ${scripts}`, "");
     }
     throw new Error("no usable font \u2014 install Inter or Roboto");
   }
-  function solid5(hex2, fallback = "#000000") {
+  function solid4(hex4, fallback = "#000000") {
     var _a, _b;
-    const color = (_b = (_a = parseColor2(hex2)) != null ? _a : parseColor2(fallback)) != null ? _b : { r: 0, g: 0, b: 0, a: 1 };
+    const color = (_b = (_a = parseColor2(hex4)) != null ? _a : parseColor2(fallback)) != null ? _b : { r: 0, g: 0, b: 0, a: 1 };
     return { type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a };
   }
   function str(value2, fallback = "") {
@@ -30564,7 +30812,7 @@ ${scripts}`, "");
     node.characters = chars;
     node.fontSize = size;
     node.lineHeight = { unit: "PERCENT", value: 140 };
-    node.fills = [solid5(color)];
+    node.fills = [solid4(color)];
     return node;
   }
   function paragraph(chars, size, weight, color, width) {
@@ -30577,7 +30825,7 @@ ${scripts}`, "");
     const rect = figma.createRectangle();
     rect.resize(width, height);
     rect.cornerRadius = Math.min(14, Math.round(height / 3));
-    rect.strokes = [solid5(ctx.chrome.border)];
+    rect.strokes = [solid4(ctx.chrome.border)];
     rect.strokeWeight = 1;
     rect.name = str(spec.label) || str(spec.color) || str(spec.variable) || "swatch";
     const ref = spec.variable;
@@ -30599,7 +30847,7 @@ ${scripts}`, "");
       rect.dashPattern = [4, 4];
       return { node: rect, label: str(spec.sub) };
     }
-    rect.fills = [solid5(String(spec.color))];
+    rect.fills = [solid4(String(spec.color))];
     return { node: rect, label: str(spec.sub) };
   }
   var variableCache = /* @__PURE__ */ new Map();
@@ -30634,9 +30882,9 @@ ${scripts}`, "");
     const node = frame2(`status/${label3}`, "HORIZONTAL", 0);
     pad(node, 4, 10);
     node.cornerRadius = 999;
-    const hex2 = (_a = TONES[tone]) != null ? _a : TONES.neutral;
-    node.fills = [__spreadProps(__spreadValues({}, solid5(hex2)), { opacity: 0.12 })];
-    node.appendChild(text2(label3, 11, "medium", hex2));
+    const hex4 = (_a = TONES[tone]) != null ? _a : TONES.neutral;
+    node.fills = [__spreadProps(__spreadValues({}, solid4(hex4)), { opacity: 0.12 })];
+    node.appendChild(text2(label3, 11, "medium", hex4));
     return node;
   }
   async function renderBlock(raw, ctx) {
@@ -30664,14 +30912,14 @@ ${scripts}`, "");
       }
       case "callout": {
         const tone = str(spec.tone, "info");
-        const hex2 = (_a = TONES[tone]) != null ? _a : TONES.info;
+        const hex4 = (_a = TONES[tone]) != null ? _a : TONES.info;
         const node = frame2(`callout/${tone}`, "VERTICAL", 6);
         pad(node, 16, 20);
         node.cornerRadius = 16;
-        node.fills = [__spreadProps(__spreadValues({}, solid5(hex2)), { opacity: 0.08 })];
-        node.strokes = [__spreadProps(__spreadValues({}, solid5(hex2)), { opacity: 0.24 })];
+        node.fills = [__spreadProps(__spreadValues({}, solid4(hex4)), { opacity: 0.08 })];
+        node.strokes = [__spreadProps(__spreadValues({}, solid4(hex4)), { opacity: 0.24 })];
         node.strokeWeight = 1;
-        if (spec.title) node.appendChild(text2(str(spec.title), 14, "bold", hex2));
+        if (spec.title) node.appendChild(text2(str(spec.title), 14, "bold", hex4));
         if (spec.text) node.appendChild(paragraph(str(spec.text), 13, "regular", chrome.ink, ctx.width - 200));
         return node;
       }
@@ -30708,7 +30956,7 @@ ${scripts}`, "");
           line.counterAxisAlignItems = "CENTER";
           pad(line, 10, 14);
           line.cornerRadius = 14;
-          line.fills = [solid5(chrome.panel)];
+          line.fills = [solid4(chrome.panel)];
           line.layoutAlign = "STRETCH";
           line.primaryAxisSizingMode = "FIXED";
           const label3 = frame2("label", "VERTICAL", 2);
@@ -30765,7 +31013,7 @@ ${scripts}`, "");
           line.counterAxisAlignItems = "CENTER";
           pad(line, 10, 14);
           line.cornerRadius = 10;
-          if (rowIndex % 2 === 0) line.fills = [solid5(chrome.panel)];
+          if (rowIndex % 2 === 0) line.fills = [solid4(chrome.panel)];
           cells.forEach((value2, index2) => {
             const cell = paragraph(str(value2), 12, index2 === 0 ? "medium" : "regular", index2 === 0 ? chrome.ink : chrome.inkMuted, columnWidth(index2));
             line.appendChild(cell);
@@ -30780,7 +31028,7 @@ ${scripts}`, "");
         if (spec.padding !== void 0 || spec.background) {
           pad(node, num(spec.padding, 24), num(spec.padding, 24));
           node.cornerRadius = num(spec.radius, 20);
-          node.fills = [solid5(str(spec.background) || chrome.panel)];
+          node.fills = [solid4(str(spec.background) || chrome.panel)];
         }
         if (spec.title && direction === "VERTICAL") node.appendChild(text2(str(spec.title), 18, "bold", chrome.ink));
         await applyModes(node, obj(spec.modes), ctx);
@@ -30876,11 +31124,11 @@ ${scripts}`, "");
     }
     const ctx = { chrome, width, warnings: [] };
     const board = frame2(name, "VERTICAL", num(spec.gap, 36));
-    board.fills = [solid5(chrome.bg)];
+    board.fills = [solid4(chrome.bg)];
     pad(board, 64, 64);
     board.cornerRadius = 32;
     column(board, width);
-    board.strokes = [solid5(chrome.border)];
+    board.strokes = [solid4(chrome.border)];
     board.strokeWeight = 1;
     page.appendChild(board);
     for (const raw of list(spec.blocks)) {
@@ -30924,7 +31172,7 @@ ${scripts}`, "");
       );
     }
   }
-  var pageOf4 = (node) => {
+  var pageOf3 = (node) => {
     let walk3 = node.parent;
     while (walk3 && walk3.type !== "PAGE") walk3 = walk3.parent;
     return walk3 ? walk3.name : null;
@@ -30963,7 +31211,7 @@ ${scripts}`, "");
             const scene = found;
             planned.push({
               node: scene,
-              row: { node: id, name: scene.name, type: scene.type, page: pageOf4(scene) }
+              row: { node: id, name: scene.name, type: scene.type, page: pageOf3(scene) }
             });
           } catch (err) {
             results.push({ node: id, ok: false, removed: false, error: String((err == null ? void 0 : err.message) || err) });
@@ -30993,6 +31241,41 @@ ${scripts}`, "");
       }
     }
   ];
+
+  // src/agent/scope.ts
+  function pageOf4(node) {
+    let walk3 = node;
+    while (walk3 && walk3.type !== "PAGE") walk3 = walk3.parent;
+    return walk3 && walk3.type === "PAGE" ? walk3 : null;
+  }
+  async function resolveWalkRoots(params) {
+    if (typeof params.nodeId === "string" && params.nodeId !== "") {
+      const found = await getNodeByIdTimed(params.nodeId);
+      if (!found || found.type === "DOCUMENT") throw new Error(`no node with id ${params.nodeId}`);
+      if (found.type === "PAGE") {
+        await found.loadAsync();
+        return { roots: [found], labels: [found.name] };
+      }
+      let page = found.parent;
+      while (page && page.type !== "PAGE") page = page.parent;
+      if (page) await page.loadAsync();
+      return { roots: [found], labels: [`${found.name} (subtree)`] };
+    }
+    if (params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "") {
+      const page = await resolvePage(params.pageId);
+      return { roots: [page], labels: [page.name] };
+    }
+    await loadAllPagesAsync();
+    const pages = figma.root.children.slice();
+    return { roots: pages, labels: pages.map((one) => one.name) };
+  }
+  async function resolvePage(pageId) {
+    if (typeof pageId !== "string" || pageId === "") return figma.currentPage;
+    const page = await figma.getNodeByIdAsync(pageId);
+    if (!page || page.type !== "PAGE") throw new Error(`no page with id ${pageId}`);
+    await page.loadAsync();
+    return page;
+  }
 
   // src/agent/write-ops.ts
   function asArray(value2, param) {
@@ -31177,9 +31460,9 @@ ${scripts}`, "");
       const known = await figma.variables.getVariableByIdAsync(aliasId);
       return known ? known.name : aliasId;
     }
-    const channel = (value2) => Math.round(value2 * 255).toString(16).padStart(2, "0");
-    const hex2 = `#${channel(paint.color.r)}${channel(paint.color.g)}${channel(paint.color.b)}`;
-    return paint.opacity !== void 0 && paint.opacity < 1 ? `${hex2} ${Math.round(paint.opacity * 100)}%` : hex2;
+    const channel2 = (value2) => Math.round(value2 * 255).toString(16).padStart(2, "0");
+    const hex4 = `#${channel2(paint.color.r)}${channel2(paint.color.g)}${channel2(paint.color.b)}`;
+    return paint.opacity !== void 0 && paint.opacity < 1 ? `${hex4} ${Math.round(paint.opacity * 100)}%` : hex4;
   }
   async function bindPaints(node, prop, variable, paintIndex, dryRun, region) {
     const styleId2 = node[prop === "fills" ? "fillStyleId" : "strokeStyleId"];
@@ -31449,7 +31732,7 @@ ${scripts}`, "");
             });
           }
         }
-        const failed = results.filter((entry) => !entry.ok);
+        const failed2 = results.filter((entry) => !entry.ok);
         const changed = results.filter((entry) => entry.ok && entry.changed);
         if (!dryRun && changed.length > 0) {
           figma.notify(`Agent: ${changed.length} variable value${changed.length === 1 ? "" : "s"} updated`);
@@ -31459,7 +31742,7 @@ ${scripts}`, "");
           total: results.length,
           changed: changed.length,
           unchanged: results.filter((entry) => entry.ok && !entry.changed).length,
-          failed: failed.length,
+          failed: failed2.length,
           results
         };
       }
@@ -31517,7 +31800,7 @@ ${scripts}`, "");
             });
           }
         }
-        const failed = results.filter((entry) => !entry.ok).length;
+        const failed2 = results.filter((entry) => !entry.ok).length;
         const changed = results.filter((entry) => entry.ok && entry.changed).length;
         if (!dryRun && changed > 0) {
           figma.notify(`Agent: ${changed} variable${changed === 1 ? "" : "s"} updated`);
@@ -31527,7 +31810,7 @@ ${scripts}`, "");
           total: results.length,
           changed,
           unchanged: results.filter((entry) => entry.ok && !entry.changed).length,
-          failed,
+          failed: failed2,
           results
         };
       }
@@ -32231,56 +32514,35 @@ ${scripts}`, "");
         const wantOverrides = params.overrides === true;
         const pairs = [];
         const pairByFromId = /* @__PURE__ */ new Map();
-        for (const [index2, raw] of rows.entries()) {
-          const entry = record(raw, `map[${index2}]`);
-          const from = await resolveVariableRef(entry.from);
-          const to = await resolveVariableRef(entry.to);
-          if (from.resolvedType !== to.resolvedType) {
-            throw new Error(`map[${index2}]: "${from.name}" is ${from.resolvedType} but "${to.name}" is ${to.resolvedType}`);
+        await enforceDeadline(async () => {
+          for (const [index2, raw] of rows.entries()) {
+            await checkpoint();
+            const entry = record(raw, `map[${index2}]`);
+            const from = await resolveVariableRef(entry.from);
+            const to = await resolveVariableRef(entry.to);
+            if (from.resolvedType !== to.resolvedType) {
+              throw new Error(`map[${index2}]: "${from.name}" is ${from.resolvedType} but "${to.name}" is ${to.resolvedType}`);
+            }
+            if (from.id === to.id) throw new Error(`map[${index2}]: "${from.name}" maps to itself`);
+            if (pairByFromId.has(from.id)) throw new Error(`map[${index2}]: "${from.name}" appears twice as a source`);
+            pairByFromId.set(from.id, pairs.length);
+            pairs.push({ from, to, matched: 0, rebound: 0, failed: 0, overrides: 0, inherited: 0, errors: [] });
           }
-          if (from.id === to.id) throw new Error(`map[${index2}]: "${from.name}" maps to itself`);
-          if (pairByFromId.has(from.id)) throw new Error(`map[${index2}]: "${from.name}" appears twice as a source`);
-          pairByFromId.set(from.id, pairs.length);
-          pairs.push({ from, to, matched: 0, rebound: 0, failed: 0, overrides: 0, inherited: 0, errors: [] });
-        }
-        if (!dryRun) figma.commitUndo();
-        let roots;
-        let labels;
-        if (typeof params.nodeId === "string" && params.nodeId !== "") {
-          const found = await figma.getNodeByIdAsync(params.nodeId);
-          if (!found || found.type === "DOCUMENT") throw new Error(`no node with id ${params.nodeId}`);
-          if (found.type === "PAGE") {
-            await found.loadAsync();
-          } else {
-            let page = found.parent;
-            while (page && page.type !== "PAGE") page = page.parent;
-            if (page) await page.loadAsync();
+        });
+        const { roots, labels } = await enforceDeadline(async () => {
+          if (typeof params.nodeId === "string" && params.nodeId !== "" || params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "") {
+            return resolveWalkRoots(params);
           }
-          roots = [found];
-          labels = [found.type === "PAGE" ? found.name : `${found.name} (subtree)`];
-        } else if (params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "") {
-          let page;
-          if (typeof params.pageId === "string" && params.pageId !== "") {
-            const found = await figma.getNodeByIdAsync(params.pageId);
-            if (!found || found.type !== "PAGE") throw new Error(`no page with id ${params.pageId}`);
-            page = found;
-          } else {
-            page = figma.currentPage;
-          }
-          await page.loadAsync();
-          roots = [page];
-          labels = [page.name];
-        } else {
-          await loadAllPagesAsync();
-          roots = figma.root.children.slice();
-          labels = roots.map((one) => one.name);
-        }
+          const pages = figma.root.children.slice();
+          return { roots: pages, labels: pages.map((page) => page.name) };
+        });
         const aliasTo2 = (to) => ({ type: "VARIABLE_ALIAS", id: to.id });
         const textJobs = [];
         const textFillJobs = [];
         const regionJobs = [];
         const styled = (value2) => value2 !== void 0 && value2 !== "";
         const writeErrors = [];
+        const writeJobs = [];
         const overrideJobs = [];
         const collectOverrides = (node) => {
           var _a2;
@@ -32352,18 +32614,20 @@ ${scripts}`, "");
                   textJobs.push({ node, field });
                 } else {
                   const at2 = pairByFromId.get((_d2 = (_c2 = value2[0]) == null ? void 0 : _c2.id) != null ? _d2 : "");
-                  try {
-                    ;
-                    node.setBoundVariable(
-                      field,
-                      pairs[at2].to
-                    );
-                    pairs[at2].rebound += hits;
-                  } catch (err) {
-                    pairs[at2].failed += hits;
-                    const message = `${field}: ${String((err == null ? void 0 : err.message) || err)}`;
-                    if (pairs[at2].errors.length < 3 && !pairs[at2].errors.includes(message)) pairs[at2].errors.push(message);
-                  }
+                  writeJobs.push(() => {
+                    try {
+                      ;
+                      node.setBoundVariable(
+                        field,
+                        pairs[at2].to
+                      );
+                      pairs[at2].rebound += hits;
+                    } catch (err) {
+                      pairs[at2].failed += hits;
+                      const message = `${field}: ${String((err == null ? void 0 : err.message) || err)}`;
+                      if (pairs[at2].errors.length < 3 && !pairs[at2].errors.includes(message)) pairs[at2].errors.push(message);
+                    }
+                  });
                 }
                 continue;
               }
@@ -32372,18 +32636,20 @@ ${scripts}`, "");
               const pair2 = pairs[at];
               pair2.matched += 1;
               if (dryRun) continue;
-              try {
-                ;
-                node.setBoundVariable(
-                  field,
-                  pair2.to
-                );
-                pair2.rebound += 1;
-              } catch (err) {
-                pair2.failed += 1;
-                const message = `${field}: ${String((err == null ? void 0 : err.message) || err)}`;
-                if (pair2.errors.length < 3 && !pair2.errors.includes(message)) pair2.errors.push(message);
-              }
+              writeJobs.push(() => {
+                try {
+                  ;
+                  node.setBoundVariable(
+                    field,
+                    pair2.to
+                  );
+                  pair2.rebound += 1;
+                } catch (err) {
+                  pair2.failed += 1;
+                  const message = `${field}: ${String((err == null ? void 0 : err.message) || err)}`;
+                  if (pair2.errors.length < 3 && !pair2.errors.includes(message)) pair2.errors.push(message);
+                }
+              });
             }
           }
           for (const prop of ["fills", "strokes"]) {
@@ -32443,13 +32709,15 @@ ${scripts}`, "");
               }
             });
             if (next && !dryRun) {
-              try {
-                ;
-                holder[prop] = next;
-              } catch (err) {
-                const message = `${node.name} (${node.id}) ${prop}: ${String((err == null ? void 0 : err.message) || err)}`;
-                if (writeErrors.length < 5) writeErrors.push(message);
-              }
+              const replacement = next;
+              writeJobs.push(() => {
+                try {
+                  holder[prop] = replacement;
+                } catch (err) {
+                  const message = `${node.name} (${node.id}) ${prop}: ${String((err == null ? void 0 : err.message) || err)}`;
+                  if (writeErrors.length < 5) writeErrors.push(message);
+                }
+              });
             }
           }
           if (Array.isArray(holder.layoutGrids)) {
@@ -32480,13 +32748,15 @@ ${scripts}`, "");
               }
             });
             if (nextGrids && !dryRun) {
-              try {
-                ;
-                holder.layoutGrids = nextGrids;
-              } catch (err) {
-                const message = `${node.name} (${node.id}) layoutGrids: ${String((err == null ? void 0 : err.message) || err)}`;
-                if (writeErrors.length < 5) writeErrors.push(message);
-              }
+              const replacement = nextGrids;
+              writeJobs.push(() => {
+                try {
+                  holder.layoutGrids = replacement;
+                } catch (err) {
+                  const message = `${node.name} (${node.id}) layoutGrids: ${String((err == null ? void 0 : err.message) || err)}`;
+                  if (writeErrors.length < 5) writeErrors.push(message);
+                }
+              });
             }
           }
           if (Array.isArray(holder.effects)) {
@@ -32517,22 +32787,28 @@ ${scripts}`, "");
               }
             });
             if (nextEffects && !dryRun) {
-              try {
-                ;
-                holder.effects = nextEffects;
-              } catch (err) {
-                const message = `${node.name} (${node.id}) effects: ${String((err == null ? void 0 : err.message) || err)}`;
-                if (writeErrors.length < 5) writeErrors.push(message);
-              }
+              const replacement = nextEffects;
+              writeJobs.push(() => {
+                try {
+                  holder.effects = replacement;
+                } catch (err) {
+                  const message = `${node.name} (${node.id}) effects: ${String((err == null ? void 0 : err.message) || err)}`;
+                  if (writeErrors.length < 5) writeErrors.push(message);
+                }
+              });
             }
           }
         };
         const tWalk = Date.now();
         let visited = 0;
-        for (const root of roots) {
-          const walked = await walkSceneNodes(root, migrateNode, { skipInstanceChildren: !wantOverrides });
-          visited += walked.visited;
-        }
+        await enforceDeadline(async () => {
+          for (const root of roots) {
+            await checkpoint();
+            if (root.type === "PAGE") await root.loadAsync();
+            const walked = await walkSceneNodes(root, migrateNode, { skipInstanceChildren: !wantOverrides });
+            visited += walked.visited;
+          }
+        });
         const walkMs = Date.now() - tWalk;
         const mainByInstance = /* @__PURE__ */ new Map();
         const lookups = {
@@ -32547,47 +32823,119 @@ ${scripts}`, "");
           }
         };
         const mainSideByNode = /* @__PURE__ */ new Map();
-        for (const job of overrideJobs) {
-          let main = mainSideByNode.get(job.node.id);
-          if (main === void 0) {
-            main = await resolveMainSide(job.node, lookups);
-            mainSideByNode.set(job.node.id, main);
-          }
-          if (!isOwnOverride(job.aliasId, mainAliasFor(main, job))) {
-            pairs[job.at].inherited += 1;
-            continue;
-          }
-          pairs[job.at].overrides += 1;
-          if (dryRun) continue;
-          try {
-            if (job.prop !== void 0 && job.index !== void 0) {
-              const holder = job.node;
-              const paints2 = holder[job.prop];
-              if (!Array.isArray(paints2)) throw new Error(`${job.prop} is not an array any more`);
-              const next = paints2.slice();
-              next[job.index] = figma.variables.setBoundVariableForPaint(
-                next[job.index],
-                "color",
-                pairs[job.at].to
-              );
-              holder[job.prop] = next;
-            } else {
-              ;
-              job.node.setBoundVariable(
-                job.field,
-                pairs[job.at].to
-              );
+        await enforceDeadline(async () => {
+          for (const job of overrideJobs) {
+            await checkpoint();
+            let main = mainSideByNode.get(job.node.id);
+            if (main === void 0) {
+              main = await resolveMainSide(job.node, lookups);
+              mainSideByNode.set(job.node.id, main);
             }
-            pairs[job.at].rebound += 1;
-          } catch (err) {
-            pairs[job.at].failed += 1;
-            const message = `override ${job.field}: ${String((err == null ? void 0 : err.message) || err)}`;
-            if (pairs[job.at].errors.length < 3 && !pairs[job.at].errors.includes(message)) {
-              pairs[job.at].errors.push(message);
+            if (!isOwnOverride(job.aliasId, mainAliasFor(main, job))) {
+              pairs[job.at].inherited += 1;
+              continue;
             }
+            pairs[job.at].overrides += 1;
+            if (dryRun) continue;
+            writeJobs.push(() => {
+              try {
+                if (job.prop !== void 0 && job.index !== void 0) {
+                  const holder = job.node;
+                  const paints2 = holder[job.prop];
+                  if (!Array.isArray(paints2)) throw new Error(`${job.prop} is not an array any more`);
+                  const next = paints2.slice();
+                  next[job.index] = figma.variables.setBoundVariableForPaint(
+                    next[job.index],
+                    "color",
+                    pairs[job.at].to
+                  );
+                  holder[job.prop] = next;
+                } else {
+                  ;
+                  job.node.setBoundVariable(
+                    job.field,
+                    pairs[job.at].to
+                  );
+                }
+                pairs[job.at].rebound += 1;
+              } catch (err) {
+                pairs[job.at].failed += 1;
+                const message = `override ${job.field}: ${String((err == null ? void 0 : err.message) || err)}`;
+                if (pairs[job.at].errors.length < 3 && !pairs[job.at].errors.includes(message)) {
+                  pairs[job.at].errors.push(message);
+                }
+              }
+            });
+          }
+        });
+        let stylesScanned = 0;
+        await enforceDeadline(async () => {
+          if (params.styles !== false) {
+            const paintStyles = await figma.getLocalPaintStylesAsync();
+            stylesScanned = paintStyles.length;
+            for (const style of paintStyles) {
+              await checkpoint();
+              const paints2 = style.paints;
+              let next = null;
+              paints2.forEach((paint, index2) => {
+                var _a2, _b2, _c2;
+                const paintAt = pairByFromId.get(
+                  (_c2 = (_b2 = (_a2 = paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id) != null ? _c2 : ""
+                );
+                if (paintAt !== void 0 && paint.type === "SOLID") {
+                  pairs[paintAt].matched += 1;
+                  if (!dryRun) {
+                    next = next != null ? next : paints2.slice();
+                    next[index2] = figma.variables.setBoundVariableForPaint(next[index2], "color", pairs[paintAt].to);
+                    pairs[paintAt].rebound += 1;
+                  }
+                }
+                const stops = paint.gradientStops;
+                if (Array.isArray(stops)) {
+                  let newStops = null;
+                  stops.forEach((stop, stopIndex) => {
+                    var _a3, _b3, _c3;
+                    const stopAt = pairByFromId.get((_c3 = (_b3 = (_a3 = stop.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b3.id) != null ? _c3 : "");
+                    if (stopAt === void 0) return;
+                    pairs[stopAt].matched += 1;
+                    if (dryRun) return;
+                    newStops = newStops != null ? newStops : stops.slice();
+                    newStops[stopIndex] = {
+                      position: stop.position,
+                      color: stop.color,
+                      boundVariables: { color: aliasTo2(pairs[stopAt].to) }
+                    };
+                    pairs[stopAt].rebound += 1;
+                  });
+                  if (newStops) {
+                    next = next != null ? next : paints2.slice();
+                    next[index2] = __spreadProps(__spreadValues({}, paint), { gradientStops: newStops });
+                  }
+                }
+              });
+              if (next && !dryRun) {
+                const replacement = next;
+                writeJobs.push(() => {
+                  try {
+                    style.paints = replacement;
+                  } catch (err) {
+                    const message = `style "${style.name}": ${String((err == null ? void 0 : err.message) || err)}`;
+                    if (writeErrors.length < 5) writeErrors.push(message);
+                  }
+                });
+              }
+            }
+          }
+        });
+        if (!dryRun) {
+          figma.commitUndo();
+          for (const write of writeJobs) {
+            if (pauseDue()) await checkpoint();
+            write();
           }
         }
         for (const job of textJobs) {
+          if (pauseDue()) await checkpoint();
           try {
             const text6 = job.node;
             await loadTextFonts(text6);
@@ -32655,6 +33003,7 @@ ${scripts}`, "");
           }
         }
         for (const node of textFillJobs) {
+          if (pauseDue()) await checkpoint();
           try {
             const text6 = node;
             await loadTextFonts(text6);
@@ -32681,6 +33030,7 @@ ${scripts}`, "");
           }
         }
         for (const node of regionJobs) {
+          if (pauseDue()) await checkpoint();
           const regions = (_h = regionFills(node)) != null ? _h : [];
           const next = /* @__PURE__ */ new Map();
           const counted = [];
@@ -32704,59 +33054,6 @@ ${scripts}`, "");
             for (const at of counted) pairs[at].failed += 1;
             if (writeErrors.length < 5) {
               writeErrors.push(`${node.name} (${node.id}) region fills: ${String((err == null ? void 0 : err.message) || err)}`);
-            }
-          }
-        }
-        let stylesScanned = 0;
-        if (params.styles !== false) {
-          const paintStyles = await figma.getLocalPaintStylesAsync();
-          stylesScanned = paintStyles.length;
-          for (const style of paintStyles) {
-            const paints2 = style.paints;
-            let next = null;
-            paints2.forEach((paint, index2) => {
-              var _a2, _b2, _c2;
-              const paintAt = pairByFromId.get(
-                (_c2 = (_b2 = (_a2 = paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id) != null ? _c2 : ""
-              );
-              if (paintAt !== void 0 && paint.type === "SOLID") {
-                pairs[paintAt].matched += 1;
-                if (!dryRun) {
-                  next = next != null ? next : paints2.slice();
-                  next[index2] = figma.variables.setBoundVariableForPaint(next[index2], "color", pairs[paintAt].to);
-                  pairs[paintAt].rebound += 1;
-                }
-              }
-              const stops = paint.gradientStops;
-              if (Array.isArray(stops)) {
-                let newStops = null;
-                stops.forEach((stop, stopIndex) => {
-                  var _a3, _b3, _c3;
-                  const stopAt = pairByFromId.get((_c3 = (_b3 = (_a3 = stop.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b3.id) != null ? _c3 : "");
-                  if (stopAt === void 0) return;
-                  pairs[stopAt].matched += 1;
-                  if (dryRun) return;
-                  newStops = newStops != null ? newStops : stops.slice();
-                  newStops[stopIndex] = {
-                    position: stop.position,
-                    color: stop.color,
-                    boundVariables: { color: aliasTo2(pairs[stopAt].to) }
-                  };
-                  pairs[stopAt].rebound += 1;
-                });
-                if (newStops) {
-                  next = next != null ? next : paints2.slice();
-                  next[index2] = __spreadProps(__spreadValues({}, paint), { gradientStops: newStops });
-                }
-              }
-            });
-            if (next && !dryRun) {
-              try {
-                style.paints = next;
-              } catch (err) {
-                const message = `style "${style.name}": ${String((err == null ? void 0 : err.message) || err)}`;
-                if (writeErrors.length < 5) writeErrors.push(message);
-              }
             }
           }
         }
@@ -33003,61 +33300,72 @@ ${scripts}`, "");
         }
       },
       async run(params) {
-        var _a, _b;
+        var _a;
         const refs = (Array.isArray(params.variables) ? params.variables : []).filter(
           (entry) => typeof entry === "string" && entry !== ""
         );
         if (refs.length === 0) throw new Error('"variables" must be a non-empty array of ids or names');
         const dryRun = params.dryRun === true;
-        if (!dryRun) figma.commitUndo();
         const targets = /* @__PURE__ */ new Map();
-        for (const ref of refs) {
-          const variable = await resolveVariableRef(ref);
-          if (variable.remote) throw new Error(`"${variable.name}" is a library variable \u2014 it cannot be deleted from here`);
-          targets.set(variable.id, variable);
-        }
+        await enforceDeadline(async () => {
+          for (const ref of refs) {
+            await checkpoint();
+            const variable = await resolveVariableRef(ref);
+            if (variable.remote) throw new Error(`"${variable.name}" is a library variable \u2014 it cannot be deleted from here`);
+            targets.set(variable.id, variable);
+          }
+        });
         const used = /* @__PURE__ */ new Map();
         const note = (id) => {
           var _a2;
           if (typeof id === "string" && targets.has(id)) used.set(id, ((_a2 = used.get(id)) != null ? _a2 : 0) + 1);
         };
         const scanPaints = (paints2) => {
-          var _a2, _b2, _c, _d;
+          var _a2, _b, _c, _d;
           if (!Array.isArray(paints2)) return;
           for (const paint of paints2) {
-            note((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id);
+            note((_b = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b.id);
             if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) for (const stop of paint.gradientStops) note((_d = (_c = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c.color) == null ? void 0 : _d.id);
           }
         };
         const counting = params.force !== true;
-        if (counting) await loadAllPagesAsync();
-        for (const page of counting ? figma.root.children : []) {
-          await walkSceneNodes(page, (node) => {
-            const holder = node;
-            const bound = holder.boundVariables;
-            if (bound) {
-              for (const [field, value2] of Object.entries(bound)) {
-                if (field === "fills" || field === "strokes") continue;
-                if (Array.isArray(value2)) value2.forEach((entry) => note(entry == null ? void 0 : entry.id));
-                else note(value2 == null ? void 0 : value2.id);
+        if (counting) {
+          await enforceDeadline(async () => {
+            var _a2;
+            for (const page of figma.root.children) {
+              await checkpoint();
+              await page.loadAsync();
+              await walkSceneNodes(page, (node) => {
+                const holder = node;
+                const bound = holder.boundVariables;
+                if (bound) {
+                  for (const [field, value2] of Object.entries(bound)) {
+                    if (field === "fills" || field === "strokes") continue;
+                    if (Array.isArray(value2)) value2.forEach((entry) => note(entry == null ? void 0 : entry.id));
+                    else note(value2 == null ? void 0 : value2.id);
+                  }
+                }
+                scanPaints(holder.fills);
+                scanPaints(holder.strokes);
+              });
+            }
+            for (const style of await figma.getLocalPaintStylesAsync()) {
+              if (pauseDue()) await checkpoint();
+              scanPaints(style.paints);
+            }
+            for (const variable of await figma.variables.getLocalVariablesAsync()) {
+              if (pauseDue()) await checkpoint();
+              for (const value2 of Object.values((_a2 = variable.valuesByMode) != null ? _a2 : {})) {
+                const alias = value2;
+                if ((alias == null ? void 0 : alias.type) === "VARIABLE_ALIAS") note(alias.id);
               }
             }
-            scanPaints(holder.fills);
-            scanPaints(holder.strokes);
           });
         }
-        if (counting) {
-          for (const style of await figma.getLocalPaintStylesAsync()) scanPaints(style.paints);
-          for (const variable of await figma.variables.getLocalVariablesAsync()) {
-            for (const value2 of Object.values((_a = variable.valuesByMode) != null ? _a : {})) {
-              const alias = value2;
-              if ((alias == null ? void 0 : alias.type) === "VARIABLE_ALIAS") note(alias.id);
-            }
-          }
-        }
+        if (!dryRun) figma.commitUndo();
         const results = [];
         for (const variable of targets.values()) {
-          const references = counting ? (_b = used.get(variable.id)) != null ? _b : 0 : null;
+          const references = counting ? (_a = used.get(variable.id)) != null ? _a : 0 : null;
           if (references !== null && references > 0 && params.force !== true) {
             results.push({ variable: variable.name, references, ok: false, deleted: false, error: "still referenced \u2014 rebind first, or pass force" });
             continue;
@@ -33269,7 +33577,7 @@ ${scripts}`, "");
   ];
 
   // src/agent/props-vocabulary.ts
-  var INJECTED = `[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer's mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"sizing","type":"{ horizontal?: SizingMode; vertical?: SizingMode }","note":"How each axis is sized inside the parent \u2014 the same thing \`layout.sizing\` says, and the word a read gives back."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see \`layout.sizing\`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; \`layout.sizing\` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent's auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. \`null\` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"'MIN' | 'CENTER' | 'MAX' | 'AUTO'","note":"GRID only: how the child sits in its cell."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up; \\"none\\" or null clears it."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes \`fill\` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"'INSIDE' | 'OUTSIDE' | 'CENTER'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"'NONE' | 'ROUND' | 'SQUARE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL'","note":"How an open end is finished."},{"name":"strokeJoin","type":"'MITER' | 'BEVEL' | 'ROUND'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. \`[]\` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw's brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. \`[]\` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. \`[]\` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Animation styles on this node \u2014 Figma's own, or this file's custom ones. \`null\` or \`[]\` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"FontSpec","note":"Static font name or variable-font family plus OpenType axes."},{"name":"textAlign","type":"'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | 'AUTO' | \`\${number}%\` | \`\${number}px\`","note":"Pixels (\`16\` or \`\\"16px\\"\`), a percentage of the font size like \`\\"150%\\"\`, or AUTO to follow the font."},{"name":"letterSpacing","type":"number | \`\${number}%\` | \`\${number}px\`","note":"Pixels between characters (\`1\` or \`\\"1px\\"\`), or a percentage like \`\\"5%\\"\`; negative tightens."},{"name":"autoResize","type":"'NONE' | 'WIDTH_AND_HEIGHT' | 'HEIGHT' | 'TRUNCATE'","note":"Whether the box follows the text, and in which direction."},{"name":"verticalAlign","type":"'TOP' | 'CENTER' | 'BOTTOM'","note":"Where the text sits in a box taller than itself."},{"name":"textCase","type":"'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE' | 'SMALL_CAPS' | 'SMALL_CAPS_FORCED'","note":"Capitals, small capitals, or the letters as typed."},{"name":"textDecoration","type":"'NONE' | 'UNDERLINE' | 'STRIKETHROUGH'","note":"A line under the words, through them, or neither."},{"name":"paragraphSpacing","type":"number","note":"Space between paragraphs, in pixels."},{"name":"paragraphIndent","type":"number","note":"How far the first line of each paragraph is pushed in."},{"name":"truncate","type":"boolean","note":"Cut the text with an ellipsis when it will not fit."},{"name":"maxLines","type":"number | null","note":"Stop after this many lines. \`null\` lets it run on."},{"name":"link","type":"string | null","note":"A link on the whole layer. \`null\` removes it."},{"name":"listSpacing","type":"number","note":"Space between list items."},{"name":"hangingPunctuation","type":"boolean","note":"Whether punctuation may hang outside the text box."},{"name":"hangingList","type":"boolean","note":"Whether list markers hang outside the text box."},{"name":"leadingTrim","type":"'NONE' | 'CAP_HEIGHT'","note":"Trim the space a font reserves above and below its letters."},{"name":"autoRename","type":"boolean","note":"Whether the layer renames itself when the text changes."},{"name":"textWrap","type":"'AUTO' | 'BALANCE' | 'PRETTY'","note":"How lines are broken: \`AUTO\`, \`BALANCE\` (even lines) or \`PRETTY\` (no orphans)."},{"name":"strokeProfile","type":"'UNIFORM' | 'WEDGE' | 'TAPER' | 'QUARTER_TAPER' | 'EYE' | 'MIRRORED_TAPER' | Array<{ at: number; width: number }> | null","note":"How the stroke's width varies along its length \u2014 a named profile, or points of your own."},{"name":"keyframes","type":"KeyframeTrack[]","note":"Movement on a timeline: \`[{ field: \\"opacity\\", from: 0, at: [{ time: 0, value: 0 }, \u2026] }]\`. A \`time\` of \`\\"playhead\\"\` is wherever the designer has the Motion timeline parked."},{"name":"timeline","type":"number","note":"How long this node's timeline runs, in seconds."},{"name":"overrides","type":"Array<{ at: string; props: unknown }>","note":"INSTANCE only: what the designer changed INSIDE it \u2014 \`[{ at: \\"<child id within the instance>\\", props }]\`."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE only: throw away every override first."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin's own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma's parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: 'NONZERO' | 'EVENODD' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. \`null\` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"'NONE' | 'HORIZONTAL' | 'VERTICAL' | 'BOTH'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame's first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent's children it sits; 0 is first."}]`;
+  var INJECTED = '[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer\'s mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"sizing","type":"{ horizontal?: SizingMode; vertical?: SizingMode }","note":"How each axis is sized inside the parent \u2014 the same thing `layout.sizing` says, and the word a read gives back."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see `layout.sizing`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; `layout.sizing` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent\'s auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. `null` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"repeat","type":"RepeatSpec | RepeatSpec[]","note":"TRANSFORM_GROUP only (Figma Draw\'s repeat): `{ type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }`, applied to every child \u2014 or a list, one per child. `offset` is a distance, also for a radial repeat, which spaces its copies by itself."},{"name":"decoration","type":"DecorationSpec","note":"TEXT only: how the underline or strikethrough is drawn \u2014 `{ style: SOLID|WAVY|DOTTED, offset, thickness, color, skipInk }`. Offset and thickness take pixels, `\\"10%\\"` of the font size or `\\"AUTO\\"`; color takes a colour or `\\"AUTO\\"`. `textDecoration` still says whether there is one."},{"name":"textStart","type":"[number, number]","note":"TEXT_PATH only: where on the outline the text starts \u2014 `[segment, position]`, the position 0 to 1 along that segment. The same pair `NODE_CREATE` takes as `at`."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"GridAlignWord | { horizontal?: GridAlignWord; vertical?: GridAlignWord }","note":"GRID only: how the child sits in its cell \u2014 one word for the vertical axis, or `{ horizontal, vertical }` for both."},{"name":"gridCell","type":"{ row: number; column: number }","note":"GRID only: the cell the child\'s top-left corner sits in, counted from 0. Meaningful when the grid\'s `positioning` is `MANUAL`; an auto-flowing grid places its children itself."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up; \\"none\\" or null clears it."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes `fill` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"\'INSIDE\' | \'OUTSIDE\' | \'CENTER\'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"\'NONE\' | \'ROUND\' | \'SQUARE\' | \'ARROW_LINES\' | \'ARROW_EQUILATERAL\'","note":"How an open end is finished."},{"name":"strokeJoin","type":"\'MITER\' | \'BEVEL\' | \'ROUND\'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. `[]` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw\'s brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. `[]` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. `[]` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Animation styles on this node \u2014 Figma\'s own, or this file\'s custom ones. `null` or `[]` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"FontSpec","note":"Static font name or variable-font family plus OpenType axes."},{"name":"textAlign","type":"\'LEFT\' | \'CENTER\' | \'RIGHT\' | \'JUSTIFIED\'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | \'AUTO\' | `${number}%` | `${number}px`","note":"Pixels (`16` or `\\"16px\\"`), a percentage of the font size like `\\"150%\\"`, or AUTO to follow the font."},{"name":"letterSpacing","type":"number | `${number}%` | `${number}px`","note":"Pixels between characters (`1` or `\\"1px\\"`), or a percentage like `\\"5%\\"`; negative tightens."},{"name":"autoResize","type":"\'NONE\' | \'WIDTH_AND_HEIGHT\' | \'HEIGHT\' | \'TRUNCATE\'","note":"Whether the box follows the text, and in which direction."},{"name":"verticalAlign","type":"\'TOP\' | \'CENTER\' | \'BOTTOM\'","note":"Where the text sits in a box taller than itself."},{"name":"textCase","type":"\'ORIGINAL\' | \'UPPER\' | \'LOWER\' | \'TITLE\' | \'SMALL_CAPS\' | \'SMALL_CAPS_FORCED\'","note":"Capitals, small capitals, or the letters as typed."},{"name":"textDecoration","type":"\'NONE\' | \'UNDERLINE\' | \'STRIKETHROUGH\'","note":"A line under the words, through them, or neither."},{"name":"paragraphSpacing","type":"number","note":"Space between paragraphs, in pixels."},{"name":"paragraphIndent","type":"number","note":"How far the first line of each paragraph is pushed in."},{"name":"truncate","type":"boolean","note":"Cut the text with an ellipsis when it will not fit."},{"name":"maxLines","type":"number | null","note":"Stop after this many lines. `null` lets it run on."},{"name":"link","type":"string | null","note":"A link on the whole layer. `null` removes it."},{"name":"listSpacing","type":"number","note":"Space between list items."},{"name":"hangingPunctuation","type":"boolean","note":"Whether punctuation may hang outside the text box."},{"name":"hangingList","type":"boolean","note":"Whether list markers hang outside the text box."},{"name":"leadingTrim","type":"\'NONE\' | \'CAP_HEIGHT\'","note":"Trim the space a font reserves above and below its letters."},{"name":"autoRename","type":"boolean","note":"Whether the layer renames itself when the text changes."},{"name":"textWrap","type":"\'AUTO\' | \'BALANCE\' | \'PRETTY\'","note":"How lines are broken: `AUTO`, `BALANCE` (even lines) or `PRETTY` (no orphans)."},{"name":"strokeProfile","type":"\'UNIFORM\' | \'WEDGE\' | \'TAPER\' | \'QUARTER_TAPER\' | \'EYE\' | \'MIRRORED_TAPER\' | Array<{ at: number; width: number }> | null","note":"How the stroke\'s width varies along its length \u2014 a named profile, or points of your own."},{"name":"keyframes","type":"KeyframeTrack[] | null","note":"Movement on a timeline: `[{ field: \\"opacity\\", from: 0, at: [{ time: 0, value: 0 }, \u2026] }]`. A `time` of `\\"playhead\\"` is wherever the designer has the Motion timeline parked. `field` is a property (`x`, `gap`\u2026), a paint\'s colour (`fill`, `stroke[1]`) or an effect\'s setting (`effect.radius`, `effect[1].color`). `at: null` takes that track off; `[]` or `null` takes them all off."},{"name":"timeline","type":"number","note":"How long this node\'s timeline runs, in seconds."},{"name":"overrides","type":"Array<{ at: string; props: unknown }>","note":"INSTANCE only: what the designer changed INSIDE it \u2014 `[{ at: \\"<child id within the instance>\\", props }]`."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE: throw away every override first. SLOT: put back the content the component\'s slot ships with."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin\'s own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma\'s parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: \'NONZERO\' | \'EVENODD\' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. `null` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"\'NONE\' | \'HORIZONTAL\' | \'VERTICAL\' | \'BOTH\'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame\'s first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent\'s children it sits; 0 is first."},{"name":"shapeType","type":"(typeof SHAPE_TYPES)[number]","note":"FigJam SHAPE_WITH_TEXT: which shape \u2014 SQUARE, DIAMOND, ENG_DATABASE, SPEECH_BUBBLE\u2026"},{"name":"code","type":"string","note":"FigJam CODE_BLOCK: the code itself."},{"name":"codeLanguage","type":"string","note":"FigJam CODE_BLOCK: which language it is highlighted as \u2014 TYPESCRIPT, PYTHON, SQL\u2026"},{"name":"wide","type":"boolean","note":"FigJam STICKY: the wide rectangle rather than the square."},{"name":"authorVisible","type":"boolean","note":"FigJam STICKY: whether the author\'s name shows on it."},{"name":"connector","type":"ConnectorSpec","note":"FigJam CONNECTOR: what it joins \u2014 `{ start, end, line, startCap, endCap }`; an end is a node id, `{ node, magnet }`, `{ node, at: [x, y] }` or a canvas point `[x, y]`."},{"name":"table","type":"TableSpec","note":"FigJam TABLE: `{ rows, columns, cells, columnWidths, rowHeights }` \u2014 `null` in cells leaves one alone."},{"name":"skipped","type":"boolean","note":"Slides SLIDE: left out of the presentation, still in the deck."},{"name":"transition","type":"TransitionSpec","note":"Slides SLIDE: how it arrives \u2014 a style word, or `{ style, duration, curve, after }`."},{"name":"stuckTo","type":"string | null","note":"FigJam: the node this one is stuck to (a sticky on a frame, a stamp on a sticky); `null` peels it off."},{"name":"assetType","type":"(typeof BUZZ_ASSET_TYPES)[number]","note":"Buzz: what the asset is for \u2014 INSTA_STORY, YOUTUBE_THUMBNAIL, CUSTOM\u2026"}]';
   var PROPS_VOCABULARY = (() => {
     if (!INJECTED.startsWith("[")) return [];
     try {
@@ -33280,7 +33588,7 @@ ${scripts}`, "");
   })();
 
   // src/agent/ui-commands.ts
-  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide"},{"name":"tokens","required":false,"type":"{ includeLibraries?: boolean; emitNative?: boolean }","note":"overrides for this one build \u2014 { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine; with dryRun the receiver writes nothing and answers with the plan it would have applied","params":[{"name":"files","required":true,"type":"Record<string, string | { base64: string }>","note":"the package as \`{ 'path/file.css': 'text' }\`, or \`{ base64 }\` for bytes"},{"name":"dryRun","required":false,"type":"boolean","note":"change nothing, just report the plan \u2014 omit to use the saved default"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SOURCE_PREVIEW","access":"read","classified":true,"summary":"resolve generator, selection, or library colors so one can be chosen for an exact replacement","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"{ kind: \\"generator\\", settings }, { kind: \\"selection\\" }, or { kind: \\"library\\", key }"}],"replies":["REMAP_SOURCE_COLORS","REMAP_SOURCE_ERROR"]},{"name":"REMAP_DIRECT_PREVIEW","access":"read","classified":true,"summary":"find exact RGB matches for one color without building a palette migration","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB; alpha is ignored while matching"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB; every matched site's alpha is preserved"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""}],"replies":["REMAP_DIRECT_PLAN","REMAP_DIRECT_ERROR"]},{"name":"REMAP_DIRECT_APPLY","access":"write","classified":true,"summary":"replace exact RGB matches in variables, styles, and/or loose canvas paints behind an undo snapshot","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"choose variables, styles, canvas, and document/page scope; names and bindings never change"}],"replies":["REMAP_PROGRESS","REMAP_DIRECT_APPLIED","REMAP_DIRECT_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"LIST_VARIABLE_COLLECTIONS","access":"read","classified":true,"summary":"local variable collections for the settings table, plus whether this file has only single-mode collections","params":[],"replies":["VARIABLE_COLLECTIONS"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"},{"name":"fileUrl","required":false,"type":"string","note":"the design file's Figma URL (or bare key) \u2014 what the Code Connect templates link to when this plugin cannot read figma.fileKey, which is everywhere except a private Organization plugin"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string | Uint8Array>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"}],"replies":["AGENT_RESPONSE"]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; dsTool: DsToolId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportD\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_UPDATE_PREFERENCES","access":"deny","classified":true,"summary":"update discovery is the designer's outbound-network preference","params":[{"name":"preferences","required":true,"type":"unknown","note":"normalized update-discovery preference and cached release metadata"}],"replies":[]},{"name":"OPEN_EXTERNAL","access":"deny","classified":true,"summary":"only visible UI controls may open a browser link for the designer","params":[{"name":"url","required":true,"type":"string","note":"the validated https://github.com release or archive URL to open"}],"replies":["UPDATE_LINK_ERROR"]},{"name":"UI_RESIZE","access":"read","classified":true,"summary":"resize the plugin panel chrome; the Figma document is untouched","params":[{"name":"width","required":true,"type":"number","note":"requested panel width in pixels, clamped to 340\u20261240"},{"name":"height","required":true,"type":"number","note":"requested panel height in pixels, clamped to 320\u20261200"},{"name":"persist","required":false,"type":"boolean","note":"schedule the clamped size for storage; false is for live drag frames"}],"replies":["UI_SIZE"]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on AllCrew Figma Workspace","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)","cost":"one render each, and a large frame at 4x is megabytes \u2014 the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"},{"name":"withoutChildren","required":false,"type":"boolean","note":"PNG or JPG only \u2014 renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly."},{"name":"contentsOnly","required":false,"type":"boolean","note":"PNG, JPG or SVG \u2014 false renders what overlaps the node from outside it too (Figma's \\"Ignore overlapping layers\\" switch, inverted); true is Figma's default"},{"name":"useAbsoluteBounds","required":false,"type":"boolean","note":"render the node's full bounds even where a parent clips or a mask crops it \u2014 the way to get a layer whose art spills outside its frame"},{"name":"colorProfile","required":false,"type":"string","note":"DOCUMENT (default), SRGB or DISPLAY_P3_V4 \u2014 the profile the raster is written in"},{"name":"svgIdAttribute","required":false,"type":"boolean","note":"SVG only \u2014 keep Figma's layer ids as \`id=\` attributes, so a build can address a part of the drawing"},{"name":"svgSimplifyStroke","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) collapses a stroke into an outlined path; false keeps it a stroked path"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FONT_FAMILY_AXES","access":"read","classified":true,"summary":"list the OpenType variation axis tags a font family accepts; null means the family is static","params":[{"name":"family","required":true,"type":"string","note":"exact font family name, for example \\"Roboto Flex\\""}],"replies":["FONT_FAMILY_AXES","CANVAS_ERROR"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"Figma-provided and local custom animation styles, including every ordered entry a custom style owns","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"MOTION_STYLE_SET","access":"write","classified":true,"summary":"create a local custom animation style or replace one by id, preserving its ordered Figma animation entries","params":[{"name":"id","required":false,"type":"string","note":"local custom animation style id to update; omit to create a new style"},{"name":"name","required":true,"type":"string","note":"final custom style name"},{"name":"description","required":false,"type":"string","note":"final description; omitted preserves it on update"},{"name":"entries","required":true,"type":"Array<{ style: string; props?: Record<string, unknown> }>","note":"ordered [{ style, props? }] using Figma animation styleIds or names from MOTION_STYLES"}],"replies":["MOTION_STYLE_UPDATED","CANVAS_ERROR"]},{"name":"MOTION_STYLE_MOVE","access":"write","classified":true,"summary":"reorder a local custom animation style or one of its folders","params":[{"name":"id","required":false,"type":"string","note":"custom animation style id to move; mutually exclusive with folder"},{"name":"folder","required":false,"type":"string","note":"full slash-delimited folder name to move; mutually exclusive with id"},{"name":"after","required":false,"type":"string | null","note":"style id or folder name to place it after; null/omitted moves it first"}],"replies":["MOTION_STYLE_MOVED","MOTION_STYLE_FOLDER_MOVED","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect, grid and custom animation \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect, grid or animation; omitted means all five"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are made with MOTION_STYLE_SET"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\" or a CSS colour like \\"oklch(70% 0.2 140)\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style?, variationSettings? }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? } \u2014 variationSettings names a variable font's axes, like { wght: 550 }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect, grid or animation \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MOVE","access":"write","classified":true,"summary":"reorder local styles in the panel \u2014 one style after another, or a whole folder after another folder","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are reordered with MOTION_STYLE_MOVE"},{"name":"name","required":false,"type":"string","note":"the style to move \u2014 its name, id or key. Give this, or folder"},{"name":"after","required":false,"type":"string | null","note":"the style it should follow, from the same folder; null or \\"\\" puts it first"},{"name":"folder","required":false,"type":"string","note":"the folder to move instead of a style, by its full path (\\"Brand/Primary\\")"},{"name":"afterFolder","required":false,"type":"string | null","note":"the sibling folder it should follow; null or \\"\\" puts it first in its parent"}],"replies":["STYLE_MOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_SCHEMA","access":"read","classified":true,"summary":"the canonical user-module JSON Schema, starter file, runtime rules and limits","params":[],"replies":["MODULE_SCHEMA"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the complete declarative module object"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id"},{"name":"allowDowngrade","required":false,"type":"boolean","note":"true explicitly permits replacing a newer SemVer"}],"replies":["MODULE_INSTALLED","MODULE_REJECTED","MODULE_ERROR"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the declared type and numeric bounds"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
+  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide"},{"name":"tokens","required":false,"type":"{ includeLibraries?: boolean; emitNative?: boolean }","note":"overrides for this one build \u2014 { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine; with dryRun the receiver writes nothing and answers with the plan it would have applied","params":[{"name":"files","required":true,"type":"Record<string, string | { base64: string }>","note":"the package as \`{ 'path/file.css': 'text' }\`, or \`{ base64 }\` for bytes"},{"name":"dryRun","required":false,"type":"boolean","note":"change nothing, just report the plan \u2014 omit to use the saved default"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SOURCE_PREVIEW","access":"read","classified":true,"summary":"resolve generator, selection, or library colors so one can be chosen for an exact replacement","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"{ kind: \\"generator\\", settings }, { kind: \\"selection\\" }, or { kind: \\"library\\", key }"}],"replies":["REMAP_SOURCE_COLORS","REMAP_SOURCE_ERROR"]},{"name":"REMAP_DIRECT_PREVIEW","access":"read","classified":true,"summary":"find exact RGB matches for one color without building a palette migration","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB; alpha is ignored while matching"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB; every matched site's alpha is preserved"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""}],"replies":["REMAP_DIRECT_PLAN","REMAP_DIRECT_ERROR"]},{"name":"REMAP_DIRECT_APPLY","access":"write","classified":true,"summary":"replace exact RGB matches in variables, styles, and/or loose canvas paints behind an undo snapshot","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"choose variables, styles, canvas, and document/page scope; names and bindings never change"}],"replies":["REMAP_PROGRESS","REMAP_DIRECT_APPLIED","REMAP_DIRECT_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"LIST_VARIABLE_COLLECTIONS","access":"read","classified":true,"summary":"local variable collections for the settings table, plus whether this file has only single-mode collections","params":[],"replies":["VARIABLE_COLLECTIONS"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"},{"name":"fileUrl","required":false,"type":"string","note":"the design file's Figma URL (or bare key) \u2014 what the Code Connect templates link to when this plugin cannot read figma.fileKey, which is everywhere except a private Organization plugin"},{"name":"codeLayer","required":false,"type":"boolean","note":"true packs the project for a Figma code layer \u2014 the four .figma/make scripts (named in \`executables\`, which must be chmod 755), a dev server on Figma's $PORT, src/App.tsx, no Code Connect files \u2014 ready to archive and import with Figma's MCP send_code_to_figma"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string | Uint8Array>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"},{"name":"budgetMs","required":false,"type":"unknown","note":"how long the bridge will still wait for the answer"}],"replies":["AGENT_RESPONSE"]},{"name":"AGENT_CANCEL","access":"deny","classified":true,"summary":"the bridge withdrawing its own request, not something to call","params":[{"name":"ids","required":false,"type":"unknown","note":"the request ids the bridge stopped waiting for"},{"name":"reason","required":false,"type":"unknown","note":"why it stopped waiting"}],"replies":[]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; dsTool: DsToolId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportD\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_UPDATE_PREFERENCES","access":"deny","classified":true,"summary":"update discovery is the designer's outbound-network preference","params":[{"name":"preferences","required":true,"type":"unknown","note":"normalized update-discovery preference and cached release metadata"}],"replies":[]},{"name":"OPEN_EXTERNAL","access":"deny","classified":true,"summary":"only visible UI controls may open a browser link for the designer","params":[{"name":"url","required":true,"type":"string","note":"the validated https://github.com release or archive URL to open"}],"replies":["UPDATE_LINK_ERROR"]},{"name":"UI_RESIZE","access":"read","classified":true,"summary":"resize the plugin panel chrome; the Figma document is untouched","params":[{"name":"width","required":true,"type":"number","note":"requested panel width in pixels, clamped to 340\u20261240"},{"name":"height","required":true,"type":"number","note":"requested panel height in pixels, clamped to 320\u20261200"},{"name":"persist","required":false,"type":"boolean","note":"schedule the clamped size for storage; false is for live drag frames"}],"replies":["UI_SIZE"]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, at?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon|textPath|slice, on a FigJam board also sticky|shapeWithText|connector|codeBlock|table|linkPreview (of: the URL)|gif (of: the hash), in Slides slide|slideRow (at: [row, column]), in Buzz asset (at: [row, column], of: a component to instance). A kind made in the wrong editor is refused by name \u2014 editor.capabilities says which this is"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on AllCrew Figma Workspace","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)","cost":"one render each. Replies stop before the transport cap and return remaining/nextOffset; lower scale when a node is reported too large. A video costs far more than a picture because it renders every frame.","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"},{"name":"withoutChildren","required":false,"type":"boolean","note":"PNG or JPG only \u2014 renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly."},{"name":"contentsOnly","required":false,"type":"boolean","note":"PNG, JPG or SVG \u2014 false renders what overlaps the node from outside it too (Figma's \\"Ignore overlapping layers\\" switch, inverted); true is Figma's default"},{"name":"useAbsoluteBounds","required":false,"type":"boolean","note":"render the node's full bounds even where a parent clips or a mask crops it \u2014 the way to get a layer whose art spills outside its frame"},{"name":"colorProfile","required":false,"type":"string","note":"DOCUMENT (default), SRGB or DISPLAY_P3_V4 \u2014 the profile the raster is written in"},{"name":"svgIdAttribute","required":false,"type":"boolean","note":"SVG only \u2014 keep Figma's layer ids as \`id=\` attributes, so a build can address a part of the drawing"},{"name":"svgSimplifyStroke","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) collapses a stroke into an outlined path; false keeps it a stroked path"},{"name":"offset","required":false,"type":"number","note":"skip this many node ids; when the answer has nextOffset, call again from there"},{"name":"maxPixels","required":false,"type":"number","note":"raster/video pixel ceiling checked before exportAsync (40 million by default)"},{"name":"budgetBytes","required":false,"type":"number","note":"raw reply-byte budget, clamped below the 3 MiB transport ceiling"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FONT_FAMILY_AXES","access":"read","classified":true,"summary":"list the OpenType variation axis tags a font family accepts; null means the family is static","params":[{"name":"family","required":true,"type":"string","note":"exact font family name, for example \\"Roboto Flex\\""}],"replies":["FONT_FAMILY_AXES","CANVAS_ERROR"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"Figma-provided and local custom animation styles, including every ordered entry a custom style owns","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"MOTION_STYLE_SET","access":"write","classified":true,"summary":"create a local custom animation style or replace one by id, preserving its ordered Figma animation entries","params":[{"name":"id","required":false,"type":"string","note":"local custom animation style id to update; omit to create a new style"},{"name":"name","required":true,"type":"string","note":"final custom style name"},{"name":"description","required":false,"type":"string","note":"final description; omitted preserves it on update"},{"name":"entries","required":true,"type":"Array<{ style: string; props?: Record<string, unknown> }>","note":"ordered [{ style, props? }] using Figma animation styleIds or names from MOTION_STYLES"}],"replies":["MOTION_STYLE_UPDATED","CANVAS_ERROR"]},{"name":"MOTION_STYLE_MOVE","access":"write","classified":true,"summary":"reorder a local custom animation style or one of its folders","params":[{"name":"id","required":false,"type":"string","note":"custom animation style id to move; mutually exclusive with folder"},{"name":"folder","required":false,"type":"string","note":"full slash-delimited folder name to move; mutually exclusive with id"},{"name":"after","required":false,"type":"string | null","note":"style id or folder name to place it after; null/omitted moves it first"}],"replies":["MOTION_STYLE_MOVED","MOTION_STYLE_FOLDER_MOVED","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect, grid and custom animation \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect, grid or animation; omitted means all five"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are made with MOTION_STYLE_SET"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\" or a CSS colour like \\"oklch(70% 0.2 140)\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style?, variationSettings? }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? } \u2014 variationSettings names a variable font's axes, like { wght: 550 }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect, grid or animation \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MOVE","access":"write","classified":true,"summary":"reorder local styles in the panel \u2014 one style after another, or a whole folder after another folder","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are reordered with MOTION_STYLE_MOVE"},{"name":"name","required":false,"type":"string","note":"the style to move \u2014 its name, id or key. Give this, or folder"},{"name":"after","required":false,"type":"string | null","note":"the style it should follow, from the same folder; null or \\"\\" puts it first"},{"name":"folder","required":false,"type":"string","note":"the folder to move instead of a style, by its full path (\\"Brand/Primary\\")"},{"name":"afterFolder","required":false,"type":"string | null","note":"the sibling folder it should follow; null or \\"\\" puts it first in its parent"}],"replies":["STYLE_MOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called; with divider: true, the divider's label (omitted, Figma's own line)"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""},{"name":"divider","required":false,"type":"boolean","note":"true makes a divider \u2014 a heading in the pages list that holds no canvas, how a long file is split into sections"}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"SELECTION_COLORS","access":"read","classified":true,"summary":"the colours the designer's selection uses \u2014 Figma's own \\"Selection colors\\", with the styles and tokens behind them","params":[],"replies":["SELECTION_COLORS"]},{"name":"FILE_THUMBNAIL","access":"read","classified":true,"summary":"which frame is the file's cover in the file browser \u2014 null means Figma picks one itself","params":[],"replies":["FILE_THUMBNAIL"]},{"name":"FILE_THUMBNAIL_SET","access":"write","classified":true,"summary":"make a frame the file's cover in the file browser, or hand the choice back to Figma","params":[{"name":"nodeId","required":true,"type":"string | null","note":"a frame, component, component set or section; null restores Figma's default"}],"replies":["FILE_THUMBNAIL","CANVAS_ERROR"]},{"name":"UNDO","access":"write","classified":true,"summary":"take back the last change \u2014 Cmd+Z, for an agent. Every write here closes its own undo step, so this undoes the most recent one; if the designer has worked since, it undoes theirs instead, so read before you reach for it","params":[],"replies":["UNDONE"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATION_CATEGORIES","access":"read","classified":true,"summary":"the annotation categories this file defines \u2014 what ANNOTATE's category can name, with each one's colour and whether Figma shipped it","params":[],"replies":["ANNOTATION_CATEGORIES"]},{"name":"ANNOTATION_CATEGORY_SET","access":"write","classified":true,"summary":"add, rename, recolour or remove annotation categories \u2014 the vocabulary a team files its Dev Mode notes under","params":[{"name":"add","required":false,"type":"unknown","note":"[{ label, color }] \u2014 color is one of yellow, orange, red, pink, violet, blue, teal, green"},{"name":"edit","required":false,"type":"unknown","note":"[{ category, label?, color? }] \u2014 category by name or id"},{"name":"remove","required":false,"type":"unknown","note":"[category] by name or id. Figma's presets cannot be removed"}],"replies":["ANNOTATION_CATEGORIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_SCHEMA","access":"read","classified":true,"summary":"the canonical user-module JSON Schema, starter file, runtime rules and limits","params":[],"replies":["MODULE_SCHEMA"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the complete declarative module object"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id"},{"name":"allowDowngrade","required":false,"type":"boolean","note":"true explicitly permits replacing a newer SemVer"}],"replies":["MODULE_INSTALLED","MODULE_REJECTED","MODULE_ERROR"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the declared type and numeric bounds"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","FILES_READY","EXPORT_ERROR"]}]`;
   var UI_COMMANDS = (() => {
     if (!INJECTED2.startsWith("[")) return [];
     try {
@@ -33295,11 +33603,11 @@ ${scripts}`, "");
   );
 
   // src/agent/reply-digest.ts
-  var DEFAULT_DIGEST_BUDGET = { keep: 400, maxFiles: 60, maxBytes: 4e6 };
+  var DEFAULT_DIGEST_BUDGET = { keep: 400, maxFiles: 60, maxBytes: 27e5 };
   var MAX_DEPTH = 5;
   var MAX_ARRAY = 12;
   var MAX_KEYS = 24;
-  var CHANNEL_TYPES = ["AGENT_REQUEST", "AGENT_RESPONSE", "AGENT_GATES", "AGENT_ACTIVITY"];
+  var CHANNEL_TYPES = ["AGENT_REQUEST", "AGENT_CANCEL", "AGENT_RESPONSE", "AGENT_GATES", "AGENT_ACTIVITY"];
   function digestReplies(replies, budget = DEFAULT_DIGEST_BUDGET) {
     const state = { files: 0, bytes: 0, truncated: false, names: /* @__PURE__ */ new Set() };
     const own = replies.filter((reply) => {
@@ -33678,12 +33986,15 @@ ${scripts}`, "");
           }
           const ignored = def ? Object.keys(extra).filter((key) => !def.params.some((param) => !param.nested && param.name === key)) : [];
           const started = Date.now();
+          const requestedTimeoutMs = params.timeoutMs;
+          const remaining = timeLeft();
+          const captureTimeoutMs = Number.isFinite(remaining) ? Math.max(1, Math.min(requestedTimeoutMs, remaining - 3e3)) : requestedTimeoutMs;
           let moduleReport;
           const capture = await serialize(
             () => withCapture(async () => {
               if (def == null ? void 0 : def.module) moduleReport = await modules.run(command, extra);
               else await runner(__spreadProps(__spreadValues({}, extra), { type: command }));
-            }, params.timeoutMs)
+            }, captureTimeoutMs)
           );
           const refusal = capture.replies.find(
             (reply) => typeof reply === "object" && reply !== null && reply.type === "COMMAND_REFUSED"
@@ -33700,7 +34011,7 @@ ${scripts}`, "");
             replies: digest.replies
           }), digest.collapsed ? { collapsed: digest.collapsed } : {}), digest.files ? { files: digest.files } : {}), digest.truncated ? { truncated: true } : {}), refusal ? { refused: String((_f = refusal.reason) != null ? _f : "no reason given") } : {}), ignored.length > 0 ? { ignoredParams: ignored } : {}), capture.timedOut ? {
             stillRunning: true,
-            note: `stopped waiting after ${params.timeoutMs}ms \u2014 the command is still running in the plugin. Its remaining replies are no longer attributed to this call: they reach the panel, and one arriving mid-way through a later call can show up in that call's replies. Check the result with a follow-up read rather than repeating this command.`
+            note: `stopped waiting after ${captureTimeoutMs}ms \u2014 the command is still running in the plugin. Its remaining replies are no longer attributed to this call: they reach the panel, and one arriving mid-way through a later call can show up in that call's replies. Check the result with a follow-up read rather than repeating this command.`
           } : digest.replies.length === 0 ? { note: "the command posted no reply \u2014 some only store a setting, and answer nothing" } : {});
         }
       }
@@ -34110,64 +34421,64 @@ ${scripts}`, "");
     }
     const steps = [];
     const available = /* @__PURE__ */ new Set([...Object.keys(context.state), ...availableNames]);
-    let failed = false;
+    let failed2 = false;
     for (const [index2, entry] of raw.entries()) {
       const at = `${path}[${index2}]`;
       if (!isRecord(entry)) {
         context.fail(at, "must be an object");
-        failed = true;
+        failed2 = true;
         continue;
       }
       const hasWhen = entry.when !== void 0;
       const when = parseCondition(entry.when, `${at}.when`, available, context);
-      if (hasWhen && !when) failed = true;
+      if (hasWhen && !when) failed2 = true;
       const conditional = when ? { when } : {};
       if (typeof entry.call === "string") {
         rejectUnknown(entry, ["call", "params", "as", "when"], at, context.fail);
         const command = context.known.get(entry.call);
         if (!command) {
           context.fail(`${at}.call`, `no command "${entry.call}" in this build \u2014 the module needs a newer plugin, or a typo fixed`);
-          failed = true;
+          failed2 = true;
           continue;
         }
         if (command.access === "deny") {
           context.fail(`${at}.call`, `"${entry.call}" is never callable from outside the panel`);
-          failed = true;
+          failed2 = true;
           continue;
         }
         if (entry.params !== void 0 && !isRecord(entry.params)) {
           context.fail(`${at}.params`, "must be an object");
-          failed = true;
+          failed2 = true;
           continue;
         }
         const params = (_a = entry.params) != null ? _a : {};
         for (const [key, value2] of Object.entries(params)) {
           if (dangerousKey(key)) {
             context.fail(`${at}.params.${key}`, "unsafe object key");
-            failed = true;
+            failed2 = true;
             continue;
           }
           if (!command.params.some((param) => param.name === key)) {
             context.fail(`${at}.params.${key}`, `"${entry.call}" does not read ${key}`);
-            failed = true;
+            failed2 = true;
           }
-          if (!checkReference(value2, `${at}.params.${key}`, available, context)) failed = true;
+          if (!checkReference(value2, `${at}.params.${key}`, available, context)) failed2 = true;
         }
         for (const param of command.params) {
           if (param.required && !(param.name in params)) {
             context.fail(`${at}.params.${param.name}`, `"${entry.call}" requires ${param.name}`);
-            failed = true;
+            failed2 = true;
           }
         }
         if (entry.as !== void 0) {
           if (typeof entry.as !== "string" || !MODULE_SAFE_NAME_PATTERN.test(entry.as) || dangerousKey(entry.as)) {
             context.fail(`${at}.as`, "must start with a letter and contain only letters, digits, dashes or underscores");
-            failed = true;
+            failed2 = true;
             continue;
           }
           if (available.has(entry.as)) {
             context.fail(`${at}.as`, `"${entry.as}" is already a state field, parameter or earlier result`);
-            failed = true;
+            failed2 = true;
             continue;
           }
           available.add(entry.as);
@@ -34179,12 +34490,12 @@ ${scripts}`, "");
         rejectUnknown(entry, ["set", "from", "when"], at, context.fail);
         if (!(entry.set in context.state)) {
           context.fail(`${at}.set`, `must name a declared state field${knownFields(context)}`);
-          failed = true;
+          failed2 = true;
           continue;
         }
         if (typeof entry.from !== "string" || !isReachable(entry.from, available)) {
           context.fail(`${at}.from`, "must read a state field or an earlier step's `as` name");
-          failed = true;
+          failed2 = true;
           continue;
         }
         steps.push(__spreadValues({ set: entry.set, from: entry.from }, conditional));
@@ -34194,13 +34505,13 @@ ${scripts}`, "");
         rejectUnknown(entry, ["confirm", "when"], at, context.fail);
         const confirm = text3(entry.confirm, `${at}.confirm`, context.fail, MODULE_LIMITS.textLength);
         if (confirm !== null) steps.push(__spreadValues({ confirm }, conditional));
-        else failed = true;
+        else failed2 = true;
         continue;
       }
       context.fail(at, "must be one of { call }, { set, from } or { confirm }");
-      failed = true;
+      failed2 = true;
     }
-    return failed ? null : steps;
+    return failed2 ? null : steps;
   }
   function checkReference(value2, path, available, context) {
     if (Array.isArray(value2)) {
@@ -34834,54 +35145,653 @@ ${scripts}`, "");
     }
   ];
 
-  // src/agent/scope.ts
-  function pageOf5(node) {
-    let walk3 = node;
-    while (walk3 && walk3.type !== "PAGE") walk3 = walk3.parent;
-    return walk3 && walk3.type === "PAGE" ? walk3 : null;
+  // src/agent/editor-ops.ts
+  function need(feature, what) {
+    const problem = editorProblem(feature, figma.editorType, what);
+    if (problem) throw new Error(problem);
   }
-  async function resolveWalkRoots(params) {
-    if (typeof params.nodeId === "string" && params.nodeId !== "") {
-      const found = await getNodeByIdTimed(params.nodeId);
-      if (!found || found.type === "DOCUMENT") throw new Error(`no node with id ${params.nodeId}`);
-      if (found.type === "PAGE") {
-        await found.loadAsync();
-        return { roots: [found], labels: [found.name] };
+  var brief = (node) => ({ id: node.id, name: node.name, type: node.type });
+  function gridOf(rows, buzz) {
+    return rows.map(
+      (row) => row.map((node) => __spreadValues(__spreadValues(__spreadValues(__spreadValues({}, brief(node)), node.type === "SLIDE" && node.isSkippedSlide ? { skipped: true } : {}), node.type === "SLIDE" && transitionWords(node.getSlideTransition()) ? { transition: transitionWords(node.getSlideTransition()) } : {}), buzz && figma.buzz.getBuzzAssetTypeForNode(node) ? { assetType: figma.buzz.getBuzzAssetTypeForNode(node) } : {}))
+    );
+  }
+  async function nodesGrid(raw, where) {
+    if (!Array.isArray(raw) || !raw.every((row) => Array.isArray(row) && row.every((id) => typeof id === "string"))) {
+      throw new Error(`${where} must be rows of node ids \u2014 [["1:2", "1:3"], ["1:4"]]`);
+    }
+    const grid = [];
+    for (const row of raw) grid.push(await Promise.all(row.map((id) => resolveSceneNode(id))));
+    return grid;
+  }
+  function currentGrid() {
+    const grid = figma.currentPage.children.find((node) => node.type === "SLIDE_GRID");
+    if (grid) {
+      return grid.children.filter((row) => row.type === "SLIDE_ROW").map((row) => row.children.filter((node) => figma.editorType !== "slides" || node.type === "SLIDE"));
+    }
+    return figma.editorType === "slides" ? figma.getSlideGrid() : figma.getCanvasGrid();
+  }
+  function viewport() {
+    const port = figma.viewport;
+    const page = figma.currentPage;
+    const view = figma.editorType === "slides" ? port.slidesView : figma.editorType === "buzz" ? port.canvasView : void 0;
+    const focused = figma.editorType === "slides" ? page.focusedSlide : page.focusedNode;
+    return __spreadValues(__spreadValues({}, view ? { view } : {}), focused ? { focused: brief(focused) } : {});
+  }
+  var EDITOR_OPS = [
+    {
+      name: "editor.capabilities",
+      summary: "Which editor this file is open in, and what can be done here that cannot elsewhere.",
+      agent: "One plugin runs in Figma Design, Dev Mode, FigJam, Slides and Buzz, and the Plugin API is not the same in each: stickies and connectors exist only on a board, slides only in a deck, components and styles are only authored in Design. Ask once at the start of a session; an op used in the wrong editor refuses by naming the right one.",
+      mutates: false,
+      params: {},
+      async run() {
+        return __spreadValues({
+          editorType: figma.editorType,
+          mode: figma.mode,
+          features: editorFeatures(figma.editorType)
+        }, viewport());
       }
-      let page = found.parent;
-      while (page && page.type !== "PAGE") page = page.parent;
-      if (page) await page.loadAsync();
-      return { roots: [found], labels: [`${found.name} (subtree)`] };
+    },
+    {
+      name: "canvas.grid",
+      summary: "Slides or Buzz: the deck or canvas as rows of slides/assets, with what is focused and the view.",
+      agent: "Slides and Buzz place things in a grid of rows rather than at x and y \u2014 order in a row is order in the deck. Each cell carries its id for node.get, plus a slide's transition and skip flag or a Buzz asset's format.",
+      mutates: false,
+      params: {},
+      async run() {
+        need("canvasGrid", "canvas.grid");
+        return __spreadValues({ editorType: figma.editorType, rows: gridOf(currentGrid(), figma.editorType === "buzz") }, viewport());
+      }
+    },
+    {
+      name: "canvas.arrange",
+      summary: "Slides or Buzz: reorder the grid, move nodes to a row/column, add a row, focus a node, switch view.",
+      agent: "`grid` replaces the whole arrangement with rows of ids \u2014 every slide or asset must be named once, which is how a deck is reordered. `move` puts the given nodes at `[row, column]`. `newRow` inserts an empty row at that index. `focus` opens one slide or asset; `view` switches between the grid and the single-item view.",
+      mutates: true,
+      params: {
+        grid: { type: "json", description: "Rows of node ids, the whole new arrangement." },
+        move: { type: "json", description: "{ nodes: [ids], at: [row, column] } \u2014 move these there." },
+        newRow: { type: "number", min: 0, description: "Insert an empty row at this index." },
+        focus: { type: "string", description: "Node id of the slide or asset to focus." },
+        view: { type: "string", enum: ["grid", "single"], description: "The grid, or one slide/asset at a time." }
+      },
+      async run(params) {
+        need("canvasGrid", "canvas.arrange");
+        const slides = figma.editorType === "slides";
+        const done = [];
+        if (params.grid !== void 0) {
+          const grid = await nodesGrid(params.grid, "grid");
+          if (slides) {
+            const wrong = grid.flat().find((node) => node.type !== "SLIDE");
+            if (wrong) throw new Error(`${wrong.id} is a ${wrong.type} \u2014 a deck's grid holds slides`);
+            figma.setSlideGrid(grid);
+          } else figma.setCanvasGrid(grid);
+          done.push("grid");
+        }
+        if (params.newRow !== void 0) {
+          figma.createCanvasRow(params.newRow);
+          done.push("newRow");
+        }
+        if (params.move !== void 0) {
+          const move = params.move;
+          const at = Array.isArray(move == null ? void 0 : move.at) ? move.at : [];
+          if (!Array.isArray(move == null ? void 0 : move.nodes) || move.nodes.length === 0 || !at.every((n) => Number.isInteger(n) && n >= 0)) {
+            throw new Error("move must be { nodes: [ids], at: [row, column] }");
+          }
+          const ids = move.nodes.map(String);
+          for (const id of ids) await resolveSceneNode(id);
+          figma.moveNodesToCoord(ids, at[0], at[1]);
+          done.push("move");
+        }
+        if (params.focus !== void 0) {
+          const node = await resolveSceneNode(String(params.focus));
+          const page = figma.currentPage;
+          if (slides) {
+            if (node.type !== "SLIDE") throw new Error(`${node.id} is a ${node.type} \u2014 focus a slide`);
+            page.focusedSlide = node;
+          } else page.focusedNode = node;
+          done.push("focus");
+        }
+        if (params.view !== void 0) {
+          const port = figma.viewport;
+          if (slides) port.slidesView = params.view === "single" ? "single-slide" : "grid";
+          else port.canvasView = params.view === "single" ? "single-asset" : "grid";
+          done.push("view");
+        }
+        if (done.length === 0) throw new Error("send grid, move, newRow, focus or view");
+        return __spreadValues({ done, rows: gridOf(currentGrid(), !slides) }, viewport());
+      }
+    },
+    {
+      name: "buzz.content",
+      summary: "Buzz: the text and media fields of an asset \u2014 what a templated post lets you swap.",
+      agent: "A Buzz asset is a template: the fields are the words and images meant to change from one post to the next. Read them here, then buzz.content.set by field index or by the field's node id.",
+      mutates: false,
+      params: { nodeId: { type: "string", required: true, description: "The asset (or any node in it)." } },
+      async run(params) {
+        need("buzz", "buzz.content");
+        const node = await resolveSceneNode(String(params.nodeId));
+        return {
+          node: brief(node),
+          assetType: figma.buzz.getBuzzAssetTypeForNode(node),
+          texts: figma.buzz.getTextContent(node).map((field, index2) => __spreadValues({
+            index: index2,
+            value: field.value
+          }, field.node ? { node: brief(field.node) } : {})),
+          media: figma.buzz.getMediaContent(node).map((field, index2) => __spreadValues({
+            index: index2,
+            type: field.type,
+            hash: field.hash
+          }, field.node ? { node: brief(field.node) } : {}))
+        };
+      }
+    },
+    {
+      name: "buzz.content.set",
+      summary: "Buzz: fill an asset's text and media fields \u2014 the words and images of a templated post.",
+      agent: "`texts` maps a field (its index from buzz.content, or its node id) to the new words. `media` maps a field to `{ image: hash }` or `{ video: hash }` \u2014 upload with ASSET_UPLOAD first to get a hash. Fonts are loaded for you.",
+      mutates: true,
+      params: {
+        nodeId: { type: "string", required: true, description: "The asset." },
+        texts: { type: "json", description: '{ "<index or node id>": "new text" }' },
+        media: { type: "json", description: '{ "<index or node id>": { image: hash } | { video: hash } }' }
+      },
+      async run(params) {
+        var _a, _b;
+        need("buzz", "buzz.content.set");
+        const node = await resolveSceneNode(String(params.nodeId));
+        const pick = (fields2, key) => {
+          const byIndex = /^\d+$/.test(key) ? fields2[Number(key)] : void 0;
+          const found = byIndex != null ? byIndex : fields2.find((field) => {
+            var _a2;
+            return ((_a2 = field.node) == null ? void 0 : _a2.id) === key;
+          });
+          if (!found) throw new Error(`no field "${key}" \u2014 there are ${fields2.length}; ask buzz.content for them`);
+          return found;
+        };
+        const changed = [];
+        const texts = (_a = params.texts) != null ? _a : {};
+        const media = (_b = params.media) != null ? _b : {};
+        if (Object.keys(texts).length + Object.keys(media).length === 0) throw new Error("send texts or media");
+        const textFields = figma.buzz.getTextContent(node);
+        for (const [key, value2] of Object.entries(texts)) {
+          if (typeof value2 !== "string") throw new Error(`texts.${key} must be a string`);
+          const field = pick(textFields, key);
+          const before = field.value;
+          if (field.node && field.node.fontName !== figma.mixed) await figma.loadFontAsync(field.node.fontName);
+          else if (field.node) await Promise.all(field.node.getRangeAllFontNames(0, field.node.characters.length).map((font) => figma.loadFontAsync(font)));
+          await field.setValueAsync(value2);
+          changed.push({ text: key, before, after: value2 });
+        }
+        const mediaFields = figma.buzz.getMediaContent(node);
+        for (const [key, value2] of Object.entries(media)) {
+          const one = value2 != null ? value2 : {};
+          const hash = typeof one.image === "string" ? one.image : typeof one.video === "string" ? one.video : null;
+          if (!hash) throw new Error(`media.${key} must be { image: hash } or { video: hash }`);
+          const field = pick(mediaFields, key);
+          const paint = typeof one.image === "string" ? { type: "IMAGE", imageHash: hash, scaleMode: "FILL" } : { type: "VIDEO", videoHash: hash, scaleMode: "FILL" };
+          const before = field.hash;
+          await field.setMediaAsync(paint);
+          changed.push({ media: key, before, after: hash });
+        }
+        return { node: brief(node), changed };
+      }
+    },
+    {
+      name: "buzz.resize",
+      summary: "Buzz: resize an asset to a new format the way Buzz does \u2014 layout kept, images reframed.",
+      agent: "Not a plain resize: Buzz re-lays the content for the new proportions. Give `assetType` to resize to a known format and record it, or `width` and `height` for a custom size.",
+      mutates: true,
+      params: {
+        nodeId: { type: "string", required: true, description: "The asset." },
+        width: { type: "number", min: 1, description: "New width in pixels." },
+        height: { type: "number", min: 1, description: "New height in pixels." },
+        assetType: { type: "string", enum: BUZZ_ASSET_TYPES, description: "Also record the asset as this format." }
+      },
+      async run(params) {
+        need("buzz", "buzz.resize");
+        const node = await resolveSceneNode(String(params.nodeId));
+        const before = { width: node.width, height: node.height, assetType: figma.buzz.getBuzzAssetTypeForNode(node) };
+        if (typeof params.width === "number" && typeof params.height === "number") {
+          figma.buzz.smartResize(node, params.width, params.height);
+        } else if (params.width !== void 0 || params.height !== void 0) {
+          throw new Error("send both width and height");
+        }
+        if (typeof params.assetType === "string") figma.buzz.setBuzzAssetTypeForNode(node, params.assetType);
+        if (params.width === void 0 && params.assetType === void 0) throw new Error("send width and height, or assetType");
+        return {
+          node: brief(node),
+          before,
+          after: { width: node.width, height: node.height, assetType: figma.buzz.getBuzzAssetTypeForNode(node) }
+        };
+      }
+    },
+    {
+      name: "figjam.board",
+      summary: "FigJam: who is on the board, the timer, and what is stuck to a node.",
+      mutates: false,
+      params: { nodeId: { type: "string", description: "Also list what is stuck to this node." } },
+      async run(params) {
+        var _a;
+        need("stickies", "figjam.board");
+        const timer = figma.timer;
+        let users;
+        try {
+          users = figma.activeUsers.map((user) => ({ id: user.id, name: user.name, color: user.color }));
+        } catch (error) {
+          users = { unavailable: String((error == null ? void 0 : error.message) || error) };
+        }
+        const stuck = [];
+        if (typeof params.nodeId === "string" && params.nodeId !== "") {
+          const node = await resolveSceneNode(params.nodeId);
+          for (const one of (_a = node.stuckNodes) != null ? _a : []) stuck.push(brief(one));
+        }
+        return __spreadValues({
+          activeUsers: users,
+          timer: timer ? { state: timer.state, remaining: timer.remaining, total: timer.total } : null
+        }, params.nodeId ? { stuckNodes: stuck } : {});
+      }
+    },
+    {
+      name: "figjam.timer",
+      summary: "FigJam: start, pause, resume or stop the board timer everyone sees.",
+      agent: "The timer is shared \u2014 starting it starts it for every person on the board. `seconds` is required to start.",
+      mutates: true,
+      params: {
+        action: { type: "string", required: true, enum: ["start", "pause", "resume", "stop"], description: "What to do." },
+        seconds: { type: "number", min: 1, max: 86400, description: "How long, for start." }
+      },
+      async run(params) {
+        need("timer", "figjam.timer");
+        const timer = figma.timer;
+        if (!timer) throw new Error("the timer is not available on this board");
+        const action = String(params.action);
+        if (action === "start") {
+          if (typeof params.seconds !== "number") throw new Error("start needs seconds");
+          timer.start(params.seconds);
+        } else if (action === "pause") timer.pause();
+        else if (action === "resume") timer.resume();
+        else timer.stop();
+        return { state: timer.state, remaining: timer.remaining, total: timer.total };
+      }
+    },
+    {
+      name: "node.probe",
+      summary: "Every property and method a node actually has, with the plain values \u2014 for node types the typings do not describe.",
+      agent: "For a node type Figma ships before its typings do (code layers read as CODE_INSTANCE with nothing documented). Walks the object and its prototypes, names each method, and reads each property \u2014 a value when it is plain or small, its kind otherwise, the error when the getter throws. Read-only: no method is called.",
+      mutates: false,
+      params: { nodeId: { type: "string", required: true, description: "The node to look inside." } },
+      async run(params) {
+        const node = await resolveSceneNode(String(params.nodeId));
+        const methods = [];
+        const properties = {};
+        const seen = /* @__PURE__ */ new Set();
+        for (let at = node; at && at !== Object.prototype; at = Object.getPrototypeOf(at)) {
+          for (const key of Object.getOwnPropertyNames(at)) {
+            if (seen.has(key) || key === "constructor") continue;
+            seen.add(key);
+            const descriptor = Object.getOwnPropertyDescriptor(at, key);
+            if (descriptor && typeof descriptor.value === "function") {
+              methods.push(key);
+              continue;
+            }
+            try {
+              const value2 = node[key];
+              if (typeof value2 === "function") methods.push(key);
+              else if (value2 === figma.mixed) properties[key] = "mixed";
+              else if (value2 === null || ["string", "number", "boolean", "undefined"].includes(typeof value2)) properties[key] = value2 != null ? value2 : null;
+              else {
+                const text6 = JSON.stringify(value2);
+                properties[key] = text6 !== void 0 && text6.length <= 2e3 ? JSON.parse(text6) : `(${Array.isArray(value2) ? `array of ${value2.length}` : typeof value2})`;
+              }
+            } catch (error) {
+              properties[key] = { threw: String((error == null ? void 0 : error.message) || error) };
+            }
+          }
+        }
+        return { node: brief(node), methods: methods.sort(), properties };
+      }
     }
-    if (params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "") {
-      const page = await resolvePage(params.pageId);
-      return { roots: [page], labels: [page.name] };
+  ];
+
+  // src/canvas/components.ts
+  function humanPropertyName(raw) {
+    const hash = raw.indexOf("#");
+    return (hash === -1 ? raw : raw.slice(0, hash)).trim();
+  }
+  var MAX_OPTIONS = 8;
+  var MAX_DEFAULT_TEXT = 24;
+  function describeProperties(definitions) {
+    const parts = [];
+    for (const [raw, definition] of Object.entries(definitions)) {
+      const name = humanPropertyName(raw);
+      const options = definition.variantOptions;
+      const fallback = describeDefault(definition.defaultValue);
+      if (options && options.length > 0) {
+        const shown = options.slice(0, MAX_OPTIONS).join("|");
+        const rest = options.length > MAX_OPTIONS ? `|\u2026+${options.length - MAX_OPTIONS}` : "";
+        parts.push(`${name}: ${shown}${rest}${fallback}`);
+      } else {
+        parts.push(`${name}: ${definition.type.toLowerCase()}${fallback}`);
+      }
     }
-    await loadAllPagesAsync();
-    const pages = figma.root.children.slice();
-    return { roots: pages, labels: pages.map((one) => one.name) };
+    return parts.join(" \xB7 ");
   }
-  async function resolvePage(pageId) {
-    if (typeof pageId !== "string" || pageId === "") return figma.currentPage;
-    const page = await figma.getNodeByIdAsync(pageId);
-    if (!page || page.type !== "PAGE") throw new Error(`no page with id ${pageId}`);
-    await page.loadAsync();
-    return page;
+  function describeDefault(value2) {
+    if (value2 === void 0 || value2 === null || value2 === "") return "";
+    const text6 = String(value2);
+    const short = text6.length > MAX_DEFAULT_TEXT ? `${text6.slice(0, MAX_DEFAULT_TEXT)}\u2026` : text6;
+    return ` (=${short})`;
   }
-  async function resolveScope(scope) {
+  function resolveProperties(wanted, defined) {
+    const resolved = {};
+    const problems = [];
+    const keys = Object.keys(defined);
+    for (const [asked, value2] of Object.entries(wanted)) {
+      const exact = keys.includes(asked) ? [asked] : [];
+      const byName = exact.length > 0 ? exact : keys.filter((key2) => humanPropertyName(key2) === asked);
+      const matches2 = byName.length > 0 ? byName : keys.filter((key2) => humanPropertyName(key2).toLowerCase() === asked.toLowerCase());
+      if (matches2.length === 0) {
+        const available = keys.map(humanPropertyName).join(", ");
+        problems.push(`"${asked}" is not a property here \u2014 this instance has: ${available || "(none)"}`);
+        continue;
+      }
+      if (matches2.length > 1) {
+        problems.push(`"${asked}" matches ${matches2.length} properties (${matches2.join(", ")}) \u2014 name one in full`);
+        continue;
+      }
+      const key = matches2[0];
+      const type = defined[key].type;
+      if (type === "BOOLEAN") {
+        if (typeof value2 !== "boolean") {
+          problems.push(`${humanPropertyName(key)} is a boolean property, and ${JSON.stringify(value2)} is not a boolean`);
+          continue;
+        }
+      } else if (typeof value2 !== "string") {
+        problems.push(`${humanPropertyName(key)} is a ${type.toLowerCase()} property, so its value must be a string`);
+        continue;
+      }
+      resolved[key] = value2;
+    }
+    return { resolved, problems };
+  }
+  async function componentFor(ref) {
+    const byId = await figma.getNodeByIdAsync(ref).catch(() => null);
+    if (byId) {
+      if (byId.type === "COMPONENT") return byId;
+      if (byId.type === "COMPONENT_SET") {
+        if (!byId.defaultVariant) throw new Error(`"${byId.name}" has no default variant to instantiate`);
+        return byId.defaultVariant;
+      }
+      throw new Error(`${ref} is a ${byId.type}, not a component`);
+    }
+    try {
+      return await figma.importComponentByKeyAsync(ref);
+    } catch (error) {
+      const set = await figma.importComponentSetByKeyAsync(ref).catch(() => null);
+      if (set == null ? void 0 : set.defaultVariant) return set.defaultVariant;
+      throw error;
+    }
+  }
+  var INSTANCE_CAP = 4e3;
+  var DESCRIPTION_CAP = 300;
+  function isDocumentable(node) {
+    var _a;
+    if (node.type === "COMPONENT_SET") return true;
+    return node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) !== "COMPONENT_SET";
+  }
+  async function collectComponents2(options = {}) {
+    var _a, _b, _c, _d;
+    const source = (_a = options.source) != null ? _a : "all";
+    const scope = options.scope === "document" ? "document" : "page";
+    const census = options.usage !== false;
+    const limit = Math.min(Math.max((_b = options.limit) != null ? _b : 100, 1), 500);
+    const query = ((_c = options.query) != null ? _c : "").trim().toLowerCase();
+    let root = figma.currentPage;
     if (scope === "document") {
-      await loadAllPagesAsync();
-      return figma.root;
+      try {
+        await loadAllPagesAsync();
+        root = figma.root;
+      } catch (e) {
+        root = figma.root;
+      }
     }
-    return figma.currentPage;
+    const releaseSkipInvisible = holdSkipInvisible();
+    const entries = /* @__PURE__ */ new Map();
+    let read = 0;
+    let sampled = false;
+    try {
+      if (source !== "library") {
+        for (const node of root.findAllWithCriteria({ types: ["COMPONENT_SET", "COMPONENT"] })) {
+          if (isDocumentable(node)) entries.set(node.id, entryFor2(node, "local"));
+        }
+      }
+      if (census) {
+        const pages = scope === "document" ? figma.root.children : [figma.currentPage];
+        outer: for (const page of pages) {
+          await checkpoint();
+          const instances = page.findAllWithCriteria({ types: ["INSTANCE"] });
+          for (const instance of instances) {
+            if (read >= INSTANCE_CAP) {
+              sampled = true;
+              break outer;
+            }
+            await checkpoint();
+            read++;
+            const main = await instance.getMainComponentAsync().catch(() => null);
+            if (!main) continue;
+            const owner = ownerOf(main);
+            const known = entries.get(owner.id);
+            if (known) {
+              known.used = ((_d = known.used) != null ? _d : 0) + 1;
+              continue;
+            }
+            if (source === "local") continue;
+            entries.set(owner.id, __spreadProps(__spreadValues({}, entryFor2(owner, owner.remote ? "library" : "local")), { used: 1 }));
+          }
+        }
+      }
+    } finally {
+      releaseSkipInvisible();
+    }
+    const all = [...entries.values()].filter((entry) => query === "" || entry.name.toLowerCase().includes(query));
+    all.sort((left, right) => {
+      var _a2, _b2;
+      return ((_a2 = right.used) != null ? _a2 : 0) - ((_b2 = left.used) != null ? _b2 : 0) || left.name.localeCompare(right.name);
+    });
+    const where = scope === "document" ? "this document" : `the page "${figma.currentPage.name}"`;
+    return {
+      components: all.slice(0, limit),
+      total: all.length,
+      truncated: all.length > limit,
+      scope,
+      instances: read,
+      sampled,
+      note: census ? `Everything found in ${where}. Library components are the ones it already uses \u2014 Figma offers plugins no way to list a library\u2019s full contents.` : `Local components in ${where}: without the instance census (usage: false) a library component cannot be discovered at all.`
+    };
+  }
+  function ownerOf(main) {
+    var _a;
+    try {
+      return ((_a = main.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? main.parent : main;
+    } catch (e) {
+      return main;
+    }
+  }
+  function entryFor2(node, source) {
+    var _a;
+    let definitions = {};
+    try {
+      definitions = (_a = node.componentPropertyDefinitions) != null ? _a : {};
+    } catch (e) {
+    }
+    const properties = describeProperties(definitions);
+    let description = "";
+    try {
+      description = (node.descriptionMarkdown || node.description || "").trim();
+    } catch (e) {
+    }
+    return __spreadValues(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
+      id: node.id,
+      key: node.key,
+      name: node.name
+    }, source === "local" ? { page: pageOf5(node) } : {}), {
+      source
+    }), node.type === "COMPONENT_SET" ? { variants: node.children.length } : {}), properties ? { properties } : {}), description ? { description: description.length > DESCRIPTION_CAP ? `${description.slice(0, DESCRIPTION_CAP)}\u2026` : description } : {});
+  }
+  function pageOf5(node) {
+    let current2 = node;
+    while (current2 && current2.type !== "PAGE") current2 = current2.parent;
+    return (current2 == null ? void 0 : current2.type) === "PAGE" ? current2.name : void 0;
+  }
+  var PROPERTY_TYPES = ["BOOLEAN", "TEXT", "INSTANCE_SWAP", "VARIANT", "SLOT"];
+  function bindingField(type) {
+    switch (type) {
+      case "BOOLEAN":
+        return "visible";
+      case "TEXT":
+        return "characters";
+      case "INSTANCE_SWAP":
+        return "mainComponent";
+      default:
+        return null;
+    }
+  }
+  function slotProblem(raw) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return "must be an object";
+    const spec = raw;
+    for (const key of Object.keys(spec)) {
+      if (!["stretchChildOnInsert", "displayEmptyByDefault", "minChildren", "maxChildren", "allowPreferredValuesOnly"].includes(key)) {
+        return `unknown key "${key}" \u2014 accepted: stretchChildOnInsert, displayEmptyByDefault, minChildren, maxChildren, allowPreferredValuesOnly`;
+      }
+    }
+    for (const flag2 of ["stretchChildOnInsert", "displayEmptyByDefault", "allowPreferredValuesOnly"]) {
+      if (spec[flag2] !== void 0 && typeof spec[flag2] !== "boolean") return `${flag2} must be true or false`;
+    }
+    for (const limit of ["minChildren", "maxChildren"]) {
+      const value2 = spec[limit];
+      if (value2 === void 0 || value2 === null) continue;
+      if (typeof value2 !== "number" || !Number.isInteger(value2) || value2 < 0) {
+        return `${limit} must be a whole number >= 0, or null for no limit`;
+      }
+    }
+    return null;
+  }
+  function planComponentProperties(raw) {
+    var _a, _b, _c, _d;
+    const plan = { add: [], edit: [], remove: [], bind: [], problems: [] };
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      plan.problems.push("the request must be an object of add / edit / remove / bind");
+      return plan;
+    }
+    const spec = raw;
+    const list2 = (key) => {
+      const value2 = spec[key];
+      if (value2 === void 0) return null;
+      if (!Array.isArray(value2)) {
+        plan.problems.push(`${key} must be an array`);
+        return null;
+      }
+      return value2;
+    };
+    for (const [index2, entry] of ((_a = list2("add")) != null ? _a : []).entries()) {
+      const at = `add[${index2}]`;
+      const one = entry;
+      if (typeof (one == null ? void 0 : one.name) !== "string" || one.name.trim() === "") {
+        plan.problems.push(`${at}.name must be a non-empty string`);
+        continue;
+      }
+      const type = typeof one.type === "string" ? one.type.trim().toUpperCase() : "";
+      if (!PROPERTY_TYPES.includes(type)) {
+        plan.problems.push(`${at}.type must be one of: ${PROPERTY_TYPES.join(", ")}`);
+        continue;
+      }
+      const fallback = one.default;
+      if (type === "SLOT") {
+        if (fallback !== void 0) {
+          plan.problems.push(`${at}: a SLOT has no default \u2014 it holds whatever is put into it`);
+          continue;
+        }
+      } else if (type === "BOOLEAN" ? typeof fallback !== "boolean" : typeof fallback !== "string") {
+        plan.problems.push(
+          `${at}.default must be ${type === "BOOLEAN" ? "true or false" : "a string"} for a ${type} property`
+        );
+        continue;
+      }
+      if (one.settings !== void 0) {
+        if (type !== "SLOT") {
+          plan.problems.push(`${at}.settings belongs to a SLOT property, not to a ${type} one`);
+          continue;
+        }
+        const problem = slotProblem(one.settings);
+        if (problem) {
+          plan.problems.push(`${at}.settings: ${problem}`);
+          continue;
+        }
+      }
+      if (one.bind !== void 0 && (!Array.isArray(one.bind) || one.bind.some((id) => typeof id !== "string"))) {
+        plan.problems.push(`${at}.bind must be an array of node ids`);
+        continue;
+      }
+      if (one.bind !== void 0 && bindingField(type) === null) {
+        plan.problems.push(`${at}: a VARIANT property is not bound to layers \u2014 its values are the components' names`);
+        continue;
+      }
+      if (one.preferred !== void 0 && (!Array.isArray(one.preferred) || one.preferred.some((k) => typeof k !== "string"))) {
+        plan.problems.push(`${at}.preferred must be an array of component ids or keys`);
+        continue;
+      }
+      plan.add.push(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+        name: one.name.trim(),
+        type
+      }, type === "SLOT" ? {} : { default: fallback }), one.settings ? { settings: one.settings } : {}), one.preferred ? { preferred: one.preferred } : {}), one.bind ? { bind: one.bind } : {}));
+    }
+    for (const [index2, entry] of ((_b = list2("edit")) != null ? _b : []).entries()) {
+      const at = `edit[${index2}]`;
+      const one = entry;
+      if (typeof (one == null ? void 0 : one.name) !== "string" || one.name.trim() === "") {
+        plan.problems.push(`${at}.name must name the property to change`);
+        continue;
+      }
+      if (one.rename !== void 0 && (typeof one.rename !== "string" || one.rename.trim() === "")) {
+        plan.problems.push(`${at}.rename must be a non-empty string`);
+        continue;
+      }
+      if (one.default !== void 0 && typeof one.default !== "string" && typeof one.default !== "boolean") {
+        plan.problems.push(`${at}.default must be a string or a boolean`);
+        continue;
+      }
+      if (one.rename === void 0 && one.default === void 0 && one.preferred === void 0) {
+        plan.problems.push(`${at} changes nothing \u2014 give a rename, a default or preferred values`);
+        continue;
+      }
+      plan.edit.push(__spreadValues(__spreadValues(__spreadValues({
+        name: one.name.trim()
+      }, one.rename ? { rename: one.rename.trim() } : {}), one.default === void 0 ? {} : { default: one.default }), one.preferred ? { preferred: one.preferred } : {}));
+    }
+    for (const [index2, entry] of ((_c = list2("remove")) != null ? _c : []).entries()) {
+      if (typeof entry !== "string" || entry.trim() === "") {
+        plan.problems.push(`remove[${index2}] must be a property name`);
+        continue;
+      }
+      plan.remove.push(entry.trim());
+    }
+    for (const [index2, entry] of ((_d = list2("bind")) != null ? _d : []).entries()) {
+      const one = entry;
+      if (typeof (one == null ? void 0 : one.node) !== "string" || typeof (one == null ? void 0 : one.property) !== "string") {
+        plan.problems.push(`bind[${index2}] must be { node: "<layer id>", property: "<property name>" }`);
+        continue;
+      }
+      plan.bind.push({ node: one.node, property: one.property });
+    }
+    if (plan.add.length + plan.edit.length + plan.remove.length + plan.bind.length === 0 && plan.problems.length === 0) {
+      plan.problems.push("nothing to do \u2014 give add, edit, remove or bind");
+    }
+    return plan;
   }
 
   // src/agent/component-ops.ts
-  var CHECK_EVERY = 200;
-  function budgetOf(params, fallback) {
-    const asked = typeof params.budgetMs === "number" ? params.budgetMs : fallback;
-    return Math.max(1e3, Math.min(asked, 17e4));
-  }
   function deepLink(id) {
     return `?node-id=${id.replace(":", "-")}`;
   }
@@ -34897,7 +35807,7 @@ ${scripts}`, "");
     return { path: names, nested };
   }
   function describeInstance(instance) {
-    const page = pageOf5(instance);
+    const page = pageOf4(instance);
     const { path, nested } = ancestry(instance);
     let overrides = 0;
     try {
@@ -34948,7 +35858,7 @@ ${scripts}`, "");
       name: main.name,
       remote: main.remote === true
     }, set ? { setId: set.id, setName: set.name } : {}), {
-      status: classifyMain({ removed, remote: main.remote === true }, pageOf5(main) !== null),
+      status: classifyMain({ removed, remote: main.remote === true }, pageOf4(main) !== null),
       identity: set ? set.id : main.id
     });
   }
@@ -35129,11 +36039,11 @@ ${scripts}`, "");
     return cursor;
   }
   function findByName(root, name, type) {
-    const queue2 = [root];
-    while (queue2.length > 0) {
-      const node = queue2.shift();
+    const queue3 = [root];
+    while (queue3.length > 0) {
+      const node = queue3.shift();
       if (node !== root && node.name === name && node.type === type) return node;
-      if ("children" in node) queue2.push(...node.children);
+      if ("children" in node) queue3.push(...node.children);
     }
     return null;
   }
@@ -35190,21 +36100,21 @@ ${scripts}`, "");
     const kept2 = [];
     const restored = [];
     const dropped = [];
-    const current = (_a = readProperties(instance)) != null ? _a : {};
+    const current2 = (_a = readProperties(instance)) != null ? _a : {};
     const byBase = {};
-    for (const key of Object.keys(current)) {
+    for (const key of Object.keys(current2)) {
       const hash = key.lastIndexOf("#");
       byBase[hash > 0 ? key.slice(0, hash) : key] = key;
     }
     const writes = {};
     for (const [key, value2] of Object.entries(wanted)) {
       const hash = key.lastIndexOf("#");
-      const target = key in current ? key : byBase[hash > 0 ? key.slice(0, hash) : key];
+      const target = key in current2 ? key : byBase[hash > 0 ? key.slice(0, hash) : key];
       if (!target) {
         dropped.push(key);
         continue;
       }
-      if (current[target] === value2) kept2.push(target);
+      if (current2[target] === value2) kept2.push(target);
       else writes[target] = value2;
     }
     if (Object.keys(writes).length > 0) {
@@ -35395,26 +36305,26 @@ ${scripts}`, "");
     const overrides = await restoreOverrides(instance, snapshot);
     return __spreadValues({ method: "swap", overrides }, productReport(overrides));
   }
-  async function census(roots, deadline2) {
-    const found = [];
-    for (const root of roots) {
-      found.push(...await findAllByTypes(root, ["INSTANCE"], { includeRoot: true }));
+  function phaseCursor(params) {
+    if (typeof params.cursor !== "string" || params.cursor === "") return { phase: null };
+    const split = params.cursor.indexOf(":");
+    const phase = params.cursor.slice(0, split);
+    if (split < 1 || !["targets", "instances", "unused", "detached"].includes(phase)) {
+      throw new ParamError("cursor is not a component census cursor; start over without it");
     }
-    const mains = /* @__PURE__ */ new Map();
-    let timedOut = false;
-    let walked = 0;
-    for (const instance of found) {
-      if (walked > 0 && walked % CHECK_EVERY === 0) {
-        await yieldToHost();
-        if (Date.now() > deadline2) {
-          timedOut = true;
-          break;
-        }
-      }
-      mains.set(instance.id, await readMain(instance));
-      walked += 1;
-    }
-    return { instances: timedOut ? found.slice(0, walked) : found, mains, timedOut, walked };
+    return { phase, cursor: params.cursor.slice(split + 1) };
+  }
+  function paramsForPhase(params, cursor) {
+    return __spreadProps(__spreadValues({}, params), { cursor });
+  }
+  function reportForPhase(report2, phase) {
+    return report2.cursor ? __spreadProps(__spreadValues({}, report2), { cursor: `${phase}:${report2.cursor}` }) : report2;
+  }
+  function unfinished(report2, labels, phase) {
+    return __spreadProps(__spreadValues({}, reportForPhase(report2, phase)), {
+      scope: { pages: labels },
+      note: "The sweep is not complete; call again with the same params plus `cursor`."
+    });
   }
   function countBy(rows, key) {
     var _a;
@@ -35426,47 +36336,34 @@ ${scripts}`, "");
     }
     return [...counts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
   }
-  async function resolveTargets(params) {
+  async function targetIds(params) {
+    var _a;
     const ids = /* @__PURE__ */ new Set();
-    if (typeof params.nodeId === "string" && params.nodeId !== "") {
-      const node = await figma.getNodeByIdAsync(params.nodeId);
-      if (!node) throw new Error(`no node with id ${params.nodeId}`);
-      if (node.type === "INSTANCE") {
-        const facts = await readMain(node);
-        ids.add(facts.identity);
-        if (facts.id) ids.add(facts.id);
-      } else if (node.type === "COMPONENT_SET") {
-        ids.add(node.id);
-        for (const child of node.children) ids.add(child.id);
-      } else if (node.type === "COMPONENT") {
-        const parent = node.parent;
-        if (params.exact !== true && parent && parent.type === "COMPONENT_SET") ids.add(parent.id);
-        ids.add(node.id);
-      } else {
-        throw new Error(`${node.name} is a ${node.type} \u2014 name a component, a set, a variant or an instance`);
-      }
+    if (typeof params.nodeId !== "string" || params.nodeId === "") return ids;
+    const node = await figma.getNodeByIdAsync(params.nodeId);
+    if (!node) throw new Error(`no node with id ${params.nodeId}`);
+    if (node.type === "INSTANCE") {
+      const facts = await readMain(node);
+      ids.add(facts.identity);
+      if (facts.id) ids.add(facts.id);
+    } else if (node.type === "COMPONENT_SET") {
+      ids.add(node.id);
+      for (const child of node.children) ids.add(child.id);
+    } else if (node.type === "COMPONENT") {
+      if (params.exact !== true && ((_a = node.parent) == null ? void 0 : _a.type) === "COMPONENT_SET") ids.add(node.parent.id);
+      ids.add(node.id);
+    } else {
+      throw new Error(`${node.name} is a ${node.type} \u2014 name a component, a set, a variant or an instance`);
     }
-    if (typeof params.name === "string" && params.name !== "") {
-      await loadAllPagesAsync();
-      const needle = params.name.toLowerCase();
-      const found = await findAllByTypes(figma.root, ["COMPONENT", "COMPONENT_SET"]);
-      const matches2 = found.filter((node) => node.name.toLowerCase().includes(needle));
-      if (matches2.length === 0) throw new Error(`no component matches "${params.name}"`);
-      for (const node of matches2) {
-        const parent = node.parent;
-        if (node.type === "COMPONENT" && params.exact !== true && parent && parent.type === "COMPONENT_SET") ids.add(parent.id);
-        ids.add(node.id);
-      }
-    }
-    return ids.size > 0 ? ids : null;
+    return ids;
   }
   var COMPONENT_READ_OPS = [
     {
       name: "component.instances",
       summary: "Every copy of a component: how many, on which pages, and the link to jump to each.",
-      agent: "The census a designer asks for before touching a component. With `nodeId` (a component, a set, a variant, or any instance of one) it answers for that component: total copies, the split by page and by variant, and a row per copy with its frame path, its override count and a `link` to hand to `node.focus`. With NO target it inverts into an inventory \u2014 every component ranked by how many copies it has, plus `unused`, the ones nothing instantiates, which is the list a library cleanup starts from. `nested: true` also lists copies that sit inside other copies (they are override mirrors, counted separately either way). Copies whose main is gone are counted as `orphans` here and detailed by `component.orphans`.",
+      agent: "The census a designer asks for before touching a component. With `nodeId` (a component, a set, a variant, or any instance of one) it answers for that component: total copies, the split by page and by variant, and a row per copy with its frame path, its override count and a `link` to hand to `node.focus`. With NO target it inverts into an inventory \u2014 every component ranked by how many copies it has, plus `unused`, the ones nothing instantiates. On `complete: false`, call again with the same params plus `cursor`; only the completing call contains aggregates. The target lookup, instance census, and unused inventory are separate cursor phases so no page-loading pass is silently skipped.",
       mutates: false,
-      params: {
+      params: __spreadValues({
         nodeId: {
           type: "string",
           description: "The component to count: a COMPONENT, a COMPONENT_SET, one variant, or an INSTANCE (which resolves to its own main). Leave it out for the whole-file inventory."
@@ -35482,47 +36379,141 @@ ${scripts}`, "");
         limit: { type: "number", default: 50, min: 0, max: 1e3, description: "Instance rows listed per component; counts are complete." },
         components: { type: "number", default: 40, min: 1, max: 500, description: "Components listed in inventory mode." },
         nested: { type: "boolean", default: false, description: "Also list copies nested inside other copies. They are always counted." },
-        unused: { type: "boolean", default: true, description: "Inventory mode: also list components nothing instantiates." },
-        budgetMs: { type: "number", default: 6e4, min: 1e3, max: 17e4, description: "Answer within this, partially if need be." }
-      },
+        unused: { type: "boolean", default: true, description: "Inventory mode: also list components nothing instantiates." }
+      }, SWEEP_PARAMS),
       async run(params) {
-        var _a, _b;
         const started = Date.now();
-        const deadline2 = started + budgetOf(params, 6e4);
-        const wantNested = params.nested === true;
-        const limit = params.limit;
-        const { roots, labels } = await resolveWalkRoots({ scope: params.scope, pageId: params.pageId });
-        const { instances, mains, timedOut, walked } = await census(roots, deadline2);
-        const targets = await resolveTargets(params);
-        const groups = /* @__PURE__ */ new Map();
-        let orphans = 0;
-        for (const instance of instances) {
-          const facts = mains.get(instance.id);
-          if (!facts) continue;
-          if (facts.status !== "live") orphans += 1;
-          if (targets && !targets.has(facts.identity) && !(facts.id && targets.has(facts.id))) continue;
-          let group2 = groups.get(facts.identity);
-          if (!group2) {
-            group2 = { facts, rows: [], total: 0, nested: 0, variants: /* @__PURE__ */ new Map(), pages: /* @__PURE__ */ new Map() };
-            groups.set(facts.identity, group2);
+        const incoming = phaseCursor(params);
+        let phase = incoming.phase;
+        let cursor = incoming.cursor;
+        let targets = null;
+        if (phase === null || phase === "targets") {
+          const ids = await targetIds(params);
+          if (typeof params.name === "string" && params.name !== "") {
+            const targetSweep = await openSweep({
+              op: "component.instances:targets",
+              params: paramsForPhase(params, phase === "targets" ? cursor : void 0),
+              roots: () => resolveSweepRoots({ scope: params.scope, pageId: params.pageId }),
+              state: () => ({ ids }),
+              types: ["COMPONENT", "COMPONENT_SET"]
+            });
+            const needle = params.name.toLowerCase();
+            await targetSweep.walk((node) => {
+              var _a;
+              if (node.name.toLowerCase().includes(needle)) {
+                if (node.type === "COMPONENT" && params.exact !== true && ((_a = node.parent) == null ? void 0 : _a.type) === "COMPONENT_SET") {
+                  targetSweep.state.ids.add(node.parent.id);
+                }
+                targetSweep.state.ids.add(node.id);
+              }
+            });
+            const report3 = targetSweep.report();
+            if (!report3.complete) return unfinished(report3, targetSweep.labels, "targets");
+            if (targetSweep.state.ids.size === 0) throw new Error(`no component matches "${params.name}"`);
+            targets = targetSweep.state.ids;
+          } else {
+            targets = ids.size > 0 ? ids : null;
           }
-          group2.total += 1;
-          if (facts.name) group2.variants.set(facts.name, ((_a = group2.variants.get(facts.name)) != null ? _a : 0) + 1);
-          const row = describeInstance(instance);
-          if (row.nested) group2.nested += 1;
-          if (row.page) group2.pages.set(row.page, ((_b = group2.pages.get(row.page)) != null ? _b : 0) + 1);
-          if ((wantNested || !row.nested) && group2.rows.length < limit) group2.rows.push(row);
+          phase = null;
+          cursor = void 0;
         }
-        const inventory = targets === null;
-        const ranked = [...groups.values()].sort((a, b) => b.total - a.total);
+        let state;
+        let labels;
+        let report2;
+        if (phase === "unused") {
+          const unusedSweep = await openSweep({
+            op: "component.instances:unused",
+            params: paramsForPhase(params, cursor),
+            roots: () => resolveSweepRoots({}),
+            state: () => {
+              throw new Error("unused sweep state is missing");
+            },
+            types: ["COMPONENT", "COMPONENT_SET"]
+          });
+          state = unusedSweep.state;
+          labels = unusedSweep.labels;
+          await unusedSweep.walk((node) => {
+            var _a;
+            if (state.used.has(node.id)) return;
+            if (node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) === "COMPONENT_SET") return;
+            if (node.type === "COMPONENT_SET" && node.children.some((child) => state.used.has(child.id))) return;
+            state.unused.push({ id: node.id, name: node.name, type: node.type, link: deepLink(node.id) });
+          });
+          report2 = unusedSweep.report();
+          if (!report2.complete) return unfinished(report2, labels, "unused");
+        } else {
+          const instanceSweep = await openSweep({
+            op: "component.instances:instances",
+            params: paramsForPhase(params, phase === "instances" ? cursor : void 0),
+            roots: () => resolveSweepRoots({ scope: params.scope, pageId: params.pageId }),
+            state: () => ({
+              targets,
+              groups: /* @__PURE__ */ new Map(),
+              used: /* @__PURE__ */ new Set(),
+              walked: 0,
+              orphans: 0,
+              unused: []
+            }),
+            types: ["INSTANCE"],
+            includeRoots: true
+          });
+          state = instanceSweep.state;
+          labels = instanceSweep.labels;
+          await instanceSweep.walk(async (node) => {
+            var _a, _b;
+            const instance = node;
+            const facts = await readMain(instance);
+            state.walked += 1;
+            if (facts.id) state.used.add(facts.id);
+            if (facts.setId) state.used.add(facts.setId);
+            if (facts.status !== "live") state.orphans += 1;
+            if (state.targets && !state.targets.has(facts.identity) && !(facts.id && state.targets.has(facts.id))) return;
+            let group2 = state.groups.get(facts.identity);
+            if (!group2) {
+              group2 = { facts, rows: [], total: 0, nested: 0, variants: /* @__PURE__ */ new Map(), pages: /* @__PURE__ */ new Map() };
+              state.groups.set(facts.identity, group2);
+            }
+            group2.total += 1;
+            if (facts.name) group2.variants.set(facts.name, ((_a = group2.variants.get(facts.name)) != null ? _a : 0) + 1);
+            const row = describeInstance(instance);
+            if (row.nested) group2.nested += 1;
+            if (row.page) group2.pages.set(row.page, ((_b = group2.pages.get(row.page)) != null ? _b : 0) + 1);
+            if ((params.nested === true || !row.nested) && group2.rows.length < params.limit) group2.rows.push(row);
+          });
+          report2 = instanceSweep.report();
+          if (!report2.complete) return unfinished(report2, labels, "instances");
+          const inventory2 = state.targets === null;
+          const pageScope = params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "";
+          if (inventory2 && params.unused !== false && !pageScope) {
+            const unusedSweep = await openSweep({
+              op: "component.instances:unused",
+              params: paramsForPhase(params),
+              roots: () => resolveSweepRoots({}),
+              state: () => state,
+              types: ["COMPONENT", "COMPONENT_SET"]
+            });
+            labels = unusedSweep.labels;
+            await unusedSweep.walk((node) => {
+              var _a;
+              if (state.used.has(node.id)) return;
+              if (node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) === "COMPONENT_SET") return;
+              if (node.type === "COMPONENT_SET" && node.children.some((child) => state.used.has(child.id))) return;
+              state.unused.push({ id: node.id, name: node.name, type: node.type, link: deepLink(node.id) });
+            });
+            report2 = unusedSweep.report();
+            if (!report2.complete) return unfinished(report2, labels, "unused");
+          }
+        }
+        const inventory = state.targets === null;
+        const ranked = [...state.groups.values()].sort((a, b) => b.total - a.total);
         const shown = inventory ? ranked.slice(0, params.components) : ranked;
         const components = shown.map((group2) => {
-          var _a2, _b2;
-          const id = (_a2 = group2.facts.setId) != null ? _a2 : group2.facts.id;
+          var _a, _b;
+          const id = (_a = group2.facts.setId) != null ? _a : group2.facts.id;
           return {
             component: {
               id,
-              name: (_b2 = group2.facts.setName) != null ? _b2 : group2.facts.name,
+              name: (_b = group2.facts.setName) != null ? _b : group2.facts.name,
               key: group2.facts.key,
               remote: group2.facts.remote,
               status: group2.facts.status,
@@ -35534,39 +36525,22 @@ ${scripts}`, "");
             byPage: [...group2.pages.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
             byVariant: [...group2.variants.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
             rows: group2.rows,
-            truncated: group2.rows.length < (wantNested ? group2.total : group2.total - group2.nested)
+            truncated: group2.rows.length < (params.nested === true ? group2.total : group2.total - group2.nested)
           };
         });
-        const pageScope = params.scope === "page" || typeof params.pageId === "string" && params.pageId !== "";
-        let unused;
-        if (inventory && params.unused !== false && !pageScope && !timedOut) {
-          await loadAllPagesAsync();
-          const all = await findAllByTypes(figma.root, ["COMPONENT", "COMPONENT_SET"]);
-          const used = /* @__PURE__ */ new Set();
-          for (const facts of mains.values()) {
-            if (facts.id) used.add(facts.id);
-            if (facts.setId) used.add(facts.setId);
-          }
-          unused = all.filter((node) => {
-            if (used.has(node.id)) return false;
-            if (node.type === "COMPONENT") return !(node.parent && node.parent.type === "COMPONENT_SET");
-            return !node.children.some((child) => used.has(child.id));
-          }).map((node) => ({ id: node.id, name: node.name, type: node.type, link: deepLink(node.id) }));
-        }
-        return __spreadProps(__spreadValues({
+        const hasUnused = inventory && params.unused !== false && !(params.scope === "page" || params.pageId);
+        return __spreadProps(__spreadValues(__spreadProps(__spreadValues({}, report2), {
           mode: inventory ? "inventory" : "component",
           scope: { pages: labels },
-          walked: { instances: walked, of: instances.length },
+          walked: { instances: state.walked, of: state.walked },
           totals: __spreadValues({
-            instances: walked,
-            components: groups.size,
-            orphans
-          }, inventory ? { listed: components.length, unused: unused ? unused.length : null } : {}),
+            instances: state.walked,
+            components: state.groups.size,
+            orphans: state.orphans
+          }, inventory ? { listed: components.length, unused: hasUnused ? state.unused.length : null } : {}),
           components
-        }, unused ? { unused } : {}), {
-          /** Jump to any row with `node.focus`, or paste its `link` after the file URL. */
+        }), hasUnused ? { unused: state.unused } : {}), {
           focusWith: "node.focus",
-          timedOut,
           ms: Date.now() - started
         });
       }
@@ -35574,41 +36548,85 @@ ${scripts}`, "");
     {
       name: "component.orphans",
       summary: "Copies whose main component is gone \u2014 grouped by the master that died, with a source to rebuild it from.",
-      agent: "Deleting a main in Figma does not break its instances: they keep rendering and keep their overrides, pointing at a component that has no page and no way back \u2014 which is why every other read reports them as ordinary instances. This is the op that finds them. `deleted` means the main is still in the file but unparented (a local main somebody deleted); `missing` means Figma would not hand the main over at all (a library component deleted upstream, or a library this file cannot reach) \u2014 and a `missing` group is keyed by NAME, because an unresolvable main has no id to key on. Each group ranks its copies as rebuild sources \u2014 most structure, fewest overrides first \u2014 and `component.restore` takes the id of one of them. `detached` lists frames that were instances once (Figma remembers what they were detached from) whose main is also gone: those cannot be relinked, only rebuilt from. A frame detached from a LIBRARY component carries only a key, and whether that component still exists is a question only the other file can answer \u2014 those rows come back `verified: false` and are counted apart, never as casualties they may not be.",
+      agent: "Finds deleted or missing mains and ranks their surviving copies as restore sources. Detached frames are a second cursor phase so that pass is never silently omitted near a deadline. On `complete: false`, call again with the same params plus `cursor`; only the completing call contains groups and totals.",
       mutates: false,
-      params: {
+      params: __spreadValues({
         scope: { type: "string", default: "document", enum: ["page", "document"], description: "Where to look." },
         pageId: { type: "string", description: 'One page \u2014 giving it implies scope: "page".' },
         nodeId: { type: "string", description: "Walk just this subtree. Overrides scope and pageId." },
         limit: { type: "number", default: 20, min: 0, max: 500, description: "Instance rows listed per dead main; counts are complete." },
-        detached: { type: "boolean", default: true, description: "Also report detached frames whose original main is gone." },
-        budgetMs: { type: "number", default: 6e4, min: 1e3, max: 17e4, description: "Answer within this, partially if need be." }
-      },
+        detached: { type: "boolean", default: true, description: "Also report detached frames whose original main is gone." }
+      }, SWEEP_PARAMS),
       async run(params) {
-        var _a, _b;
         const started = Date.now();
-        const deadline2 = started + budgetOf(params, 6e4);
-        const { roots, labels } = await resolveWalkRoots(params);
-        const { instances, mains, timedOut, walked } = await census(roots, deadline2);
-        const groups = /* @__PURE__ */ new Map();
-        for (const instance of instances) {
-          const facts = mains.get(instance.id);
-          if (!facts || facts.status === "live") continue;
-          let group2 = groups.get(facts.identity);
-          if (!group2) {
-            group2 = { facts, rows: [] };
-            groups.set(facts.identity, group2);
+        const incoming = phaseCursor(params);
+        let state;
+        let labels;
+        let report2;
+        if (incoming.phase === "detached") {
+          const detachedSweep = await openSweep({
+            op: "component.orphans:detached",
+            params: paramsForPhase(params, incoming.cursor),
+            roots: () => resolveSweepRoots(params),
+            state: () => {
+              throw new Error("detached sweep state is missing");
+            },
+            types: ["FRAME"],
+            includeRoots: true
+          });
+          state = detachedSweep.state;
+          labels = detachedSweep.labels;
+          await walkDetached(detachedSweep, state);
+          report2 = detachedSweep.report();
+          if (!report2.complete) return unfinished(report2, labels, "detached");
+        } else {
+          const instanceSweep = await openSweep({
+            op: "component.orphans:instances",
+            params: paramsForPhase(params, incoming.phase === "instances" ? incoming.cursor : void 0),
+            roots: () => resolveSweepRoots(params),
+            state: () => ({ walked: 0, groups: /* @__PURE__ */ new Map(), detached: [] }),
+            types: ["INSTANCE"],
+            includeRoots: true
+          });
+          state = instanceSweep.state;
+          labels = instanceSweep.labels;
+          await instanceSweep.walk(async (node) => {
+            const instance = node;
+            const facts = await readMain(instance);
+            state.walked += 1;
+            if (facts.status === "live") return;
+            let group2 = state.groups.get(facts.identity);
+            if (!group2) {
+              group2 = { facts, rows: [] };
+              state.groups.set(facts.identity, group2);
+            }
+            group2.rows.push(__spreadProps(__spreadValues({}, describeInstance(instance)), { children: instance.children.length }));
+          });
+          report2 = instanceSweep.report();
+          if (!report2.complete) return unfinished(report2, labels, "instances");
+          if (params.detached !== false) {
+            const detachedSweep = await openSweep({
+              op: "component.orphans:detached",
+              params: paramsForPhase(params),
+              roots: () => resolveSweepRoots(params),
+              state: () => state,
+              types: ["FRAME"],
+              includeRoots: true
+            });
+            labels = detachedSweep.labels;
+            await walkDetached(detachedSweep, state);
+            report2 = detachedSweep.report();
+            if (!report2.complete) return unfinished(report2, labels, "detached");
           }
-          group2.rows.push(__spreadProps(__spreadValues({}, describeInstance(instance)), { children: instance.children.length }));
         }
-        const out = [...groups.values()].map((group2) => {
-          var _a2, _b2, _c, _d;
+        const groups = [...state.groups.values()].map((group2) => {
+          var _a, _b, _c, _d;
           const ranked = [...group2.rows].sort((a, b) => b.children - a.children || a.overrides - b.overrides);
           return {
             main: {
               id: group2.facts.id,
               key: group2.facts.key,
-              name: (_c = (_b2 = group2.facts.name) != null ? _b2 : (_a2 = group2.rows[0]) == null ? void 0 : _a2.name) != null ? _c : null,
+              name: (_c = (_b = group2.facts.name) != null ? _b : (_a = group2.rows[0]) == null ? void 0 : _a.name) != null ? _c : null,
               remote: group2.facts.remote,
               set: (_d = group2.facts.setName) != null ? _d : null
             },
@@ -35630,49 +36648,47 @@ ${scripts}`, "");
             truncated: group2.rows.length > params.limit
           };
         }).sort((a, b) => b.instances - a.instances);
-        let detached;
-        if (params.detached !== false && !timedOut) {
-          detached = [];
-          for (const root of roots) {
-            for (const frame3 of await findAllByTypes(root, ["FRAME"])) {
-              if (!("detachedInfo" in frame3)) break;
-              const info = frame3.detachedInfo;
-              if (!info) continue;
-              const id = "componentId" in info ? info.componentId : null;
-              if (id) {
-                const main = await figma.getNodeByIdAsync(id);
-                if (main && pageOf5(main) !== null) continue;
-              }
-              detached.push({
-                id: frame3.id,
-                name: frame3.name,
-                page: (_b = (_a = pageOf5(frame3)) == null ? void 0 : _a.name) != null ? _b : null,
-                was: id != null ? id : "componentKey" in info ? info.componentKey : "unknown",
-                origin: id ? "local" : "library",
-                verified: id !== null,
-                link: deepLink(frame3.id)
-              });
-            }
-          }
-        }
-        return __spreadProps(__spreadValues({
+        const detached = params.detached === false ? void 0 : state.detached;
+        return __spreadProps(__spreadValues(__spreadProps(__spreadValues({}, report2), {
           scope: { pages: labels },
-          walked: { instances: walked, of: instances.length },
+          walked: { instances: state.walked, of: state.walked },
           totals: {
-            deadMains: out.length,
-            orphanInstances: out.reduce((sum, group2) => sum + group2.instances, 0),
+            deadMains: groups.length,
+            orphanInstances: groups.reduce((sum, group2) => sum + group2.instances, 0),
             detachedFrames: detached ? detached.filter((row) => row.verified).length : null,
             detachedUnverified: detached ? detached.filter((row) => !row.verified).length : null
           },
-          groups: out
-        }, detached ? { detached } : {}), {
+          groups
+        }), detached ? { detached } : {}), {
           next: "component.restore \u2014 rebuild the main from one of `restoreFrom` and relink the rest",
-          timedOut,
           ms: Date.now() - started
         });
       }
     }
   ];
+  async function walkDetached(sweep, state) {
+    await sweep.walk(async (node) => {
+      var _a, _b;
+      const frame3 = node;
+      if (!("detachedInfo" in frame3)) return;
+      const info = frame3.detachedInfo;
+      if (!info) return;
+      const id = "componentId" in info ? info.componentId : null;
+      if (id) {
+        const main = await figma.getNodeByIdAsync(id);
+        if (main && pageOf4(main) !== null) return;
+      }
+      state.detached.push({
+        id: frame3.id,
+        name: frame3.name,
+        page: (_b = (_a = pageOf4(frame3)) == null ? void 0 : _a.name) != null ? _b : null,
+        was: id != null ? id : "componentKey" in info ? info.componentKey : "unknown",
+        origin: id ? "local" : "library",
+        verified: id !== null,
+        link: deepLink(frame3.id)
+      });
+    });
+  }
   async function resolveInstance(id) {
     if (typeof id !== "string" || id === "") throw new Error("an instance node id is required");
     const node = await figma.getNodeByIdAsync(id);
@@ -35753,7 +36769,7 @@ ${scripts}`, "");
         }
       },
       async run(params) {
-        var _a, _b, _c;
+        var _a;
         const source = await resolveInstance(params.restoreFrom);
         const facts = await readMain(source);
         if (facts.status === "live") {
@@ -35761,7 +36777,7 @@ ${scripts}`, "");
             `"${source.name}" still has its main (${facts.name}) \u2014 nothing to restore. Use instance.swap to repoint it somewhere else.`
           );
         }
-        const sourcePage = pageOf5(source);
+        const sourcePage = pageOf4(source);
         let page = sourcePage != null ? sourcePage : figma.currentPage;
         if (typeof params.pageId === "string" && params.pageId !== "") {
           const found = await figma.getNodeByIdAsync(params.pageId);
@@ -35772,23 +36788,32 @@ ${scripts}`, "");
         const name = typeof params.name === "string" && params.name !== "" ? params.name : (_a = facts.name) != null ? _a : source.name;
         const matchBy = params.match === "main" || params.match === "name" ? params.match : facts.id ? "main" : "name";
         if (matchBy === "main" && !facts.id) throw new Error('the dead main has no id to match on \u2014 use match: "name"');
-        const siblings = [];
-        if (params.relink === false) {
-          siblings.push({ instance: source, matchedBy: matchBy });
-        } else {
-          await loadAllPagesAsync();
-          for (const candidate of await findAllByTypes(figma.root, ["INSTANCE"])) {
-            const theirs = await readMain(candidate);
-            if (theirs.status === "live") continue;
-            if (matchBy === "main") {
-              const sameId = theirs.id !== null && theirs.id === facts.id;
-              const sameKey = theirs.key !== null && theirs.key === facts.key;
-              if (sameId || sameKey) siblings.push({ instance: candidate, matchedBy: "main" });
-            } else if (((_b = theirs.name) != null ? _b : candidate.name) === ((_c = facts.name) != null ? _c : source.name)) {
-              siblings.push({ instance: candidate, matchedBy: "name" });
+        const siblings = await enforceDeadline(async () => {
+          var _a2, _b;
+          const found = [];
+          await checkpoint();
+          if (params.relink === false) {
+            found.push({ instance: source, matchedBy: matchBy });
+            return found;
+          }
+          for (const candidatePage of figma.root.children) {
+            await checkpoint();
+            await candidatePage.loadAsync();
+            for (const candidate of await findAllByTypes(candidatePage, ["INSTANCE"])) {
+              await checkpoint();
+              const theirs = await readMain(candidate);
+              if (theirs.status === "live") continue;
+              if (matchBy === "main") {
+                const sameId = theirs.id !== null && theirs.id === facts.id;
+                const sameKey = theirs.key !== null && theirs.key === facts.key;
+                if (sameId || sameKey) found.push({ instance: candidate, matchedBy: "main" });
+              } else if (((_a2 = theirs.name) != null ? _a2 : candidate.name) === ((_b = facts.name) != null ? _b : source.name)) {
+                found.push({ instance: candidate, matchedBy: "name" });
+              }
             }
           }
-        }
+          return found;
+        });
         const fallback = freeSpot2(page);
         const spot = {
           x: typeof params.x === "number" ? params.x : fallback.x,
@@ -35808,6 +36833,9 @@ ${scripts}`, "");
             relinked: 0,
             note: "the restored main is the source copy WITH its overrides baked in \u2014 check `source.overrides` before running for real"
           });
+        }
+        if (figma.editorType && figma.editorType !== "figma") {
+          throw new Error(`component.restore makes a component, which only Figma Design can \u2014 this file is open in ${figma.editorType}`);
         }
         figma.commitUndo();
         const clone2 = source.clone();
@@ -36123,8 +37151,8 @@ ${scripts}`, "");
     const order = ids.filter((id) => !plans.some((plan) => plan.remove && plan.id === id));
     for (const plan of plans) {
       if (plan.index === void 0) continue;
-      const current = order.indexOf(plan.id);
-      if (current >= 0) order.splice(current, 1);
+      const current2 = order.indexOf(plan.id);
+      if (current2 >= 0) order.splice(current2, 1);
       order.splice(Math.min(plan.index, order.length), 0, plan.id);
     }
     return order;
@@ -36170,8 +37198,8 @@ ${scripts}`, "");
     const ignore = strings(params.ignore);
     const wanted = strings(params.collections);
     const locals = await localCollections();
-    const queue2 = wanted.length ? await Promise.all(wanted.map((ref) => resolveCollection(ref))) : [...locals];
-    const audited = new Set(queue2.map((collection) => collection.id));
+    const queue3 = wanted.length ? await Promise.all(wanted.map((ref) => resolveCollection(ref))) : [...locals];
+    const audited = new Set(queue3.map((collection) => collection.id));
     const aliasOnly = /* @__PURE__ */ new Set();
     for (const ref of strings(params.aliasOnly)) {
       if (ref.endsWith("*")) {
@@ -36207,8 +37235,8 @@ ${scripts}`, "");
     };
     const findings = [];
     const summary = [];
-    for (let at = 0; at < queue2.length; at++) {
-      const collection = queue2[at];
+    for (let at = 0; at < queue3.length; at++) {
+      const collection = queue3[at];
       const modeIds = collection.modes.map((mode) => mode.modeId);
       const modeName = new Map(collection.modes.map((mode) => [mode.modeId, mode.name]));
       if (modeIds.length < 2 && params.singleMode !== true && !aliasOnly.has(collection.id)) {
@@ -36252,7 +37280,7 @@ ${scripts}`, "");
             }
             if (remote) {
               audited.add(remote.id);
-              queue2.push(remote);
+              queue3.push(remote);
             }
           }
         }
@@ -36604,9 +37632,9 @@ ${scripts}`, "");
   var text5 = (value2) => typeof value2 === "string" && value2.trim() ? value2.trim() : void 0;
   function pageOf6(node) {
     var _a;
-    let current = node;
-    while (current && current.type !== "PAGE") current = (_a = current.parent) != null ? _a : null;
-    return (current == null ? void 0 : current.type) === "PAGE" ? current : null;
+    let current2 = node;
+    while (current2 && current2.type !== "PAGE") current2 = (_a = current2.parent) != null ? _a : null;
+    return (current2 == null ? void 0 : current2.type) === "PAGE" ? current2 : null;
   }
   function aliases(value2, out) {
     if (!value2 || typeof value2 !== "object") return;
@@ -36977,7 +38005,7 @@ ${scripts}`, "");
     return { r: entry.r, g: entry.g, b: entry.b, a: typeof entry.a === "number" ? entry.a : 1 };
   }
   function sameColor4(a, b) {
-    return ["r", "g", "b", "a"].every((channel) => Math.abs(a[channel] - b[channel]) < 2e-3);
+    return ["r", "g", "b", "a"].every((channel2) => Math.abs(a[channel2] - b[channel2]) < 2e-3);
   }
   function renderedValue(node, field) {
     var _a;
@@ -37151,7 +38179,7 @@ ${scripts}`, "");
     return catalogue.map;
   }
   var hasShader = (paints2) => Array.isArray(paints2) && paints2.some((paint) => (paint == null ? void 0 : paint.type) === "SHADER");
-  async function describePaints2(node, catalogue = {}) {
+  async function describePaints(node, catalogue = {}) {
     const out = {};
     const shaders = hasShader(node.fills) || hasShader(node.strokes) ? await shadersFor(catalogue) : void 0;
     if (Array.isArray(node.fills)) {
@@ -37236,7 +38264,7 @@ ${scripts}`, "");
     const modes = await describeVariableModes(node, collections, root);
     if (modes) summary.modes = modes;
     if (paints2) {
-      const described = await describePaints2(node, catalogue);
+      const described = await describePaints(node, catalogue);
       if (described) summary.paints = described;
     }
     if (effects) {
@@ -37435,9 +38463,9 @@ ${scripts}`, "");
     {
       name: "node.find",
       summary: "Search nodes by name substring, by the text they show, and/or type \u2014 within a page, the whole document, or one frame.",
-      agent: 'Designers name layers "Tag", "Text", "Title": a name search rarely finds the words on the canvas. Pass `text` to match what a TEXT layer actually says (case and spacing ignored) \u2014 it searches TEXT nodes through the type index, instances included, so it stays fast document-wide. Each text match carries `frame`, the top-level frame it sits in, which is how "Startups" on the desktop frame is told apart from "Startups" on the mobile one. `within` narrows any search to one frame or section.',
+      agent: 'Designers name layers "Tag", "Text", "Title": a name search rarely finds the words on the canvas. Pass `text` to match what a TEXT layer actually says (case and spacing ignored) \u2014 it searches TEXT nodes through the type index, instances included, so it stays fast document-wide. Each text match carries `frame`, the top-level frame it sits in, which is how "Startups" on the desktop frame is told apart from "Startups" on the mobile one. `within` narrows any search to one frame or section. Each call returns up to `limit` matches; while `complete` is false, call again with the same params plus the `cursor` it handed back for the next ones \u2014 a document-wide search pages instead of timing out.',
       mutates: false,
-      params: {
+      params: __spreadValues({
         name: { type: "string", description: "Case-insensitive substring of the node name." },
         text: {
           type: "string",
@@ -37457,8 +38485,14 @@ ${scripts}`, "");
           type: "string",
           description: "Search only inside this node (a frame, section or page id) instead of the scope."
         },
-        limit: { type: "number", description: "Max matches returned.", default: 50, min: 1, max: 500 }
-      },
+        limit: {
+          type: "number",
+          description: "Max matches returned by this call; the `cursor` continues after the last one.",
+          default: 50,
+          min: 1,
+          max: 500
+        }
+      }, SWEEP_PARAMS),
       async run(params) {
         var _a;
         const needle = typeof params.name === "string" ? params.name.toLowerCase() : null;
@@ -37470,26 +38504,36 @@ ${scripts}`, "");
           }
           types = ["TEXT"];
         }
-        let root;
-        if (typeof params.within === "string" && params.within !== "") {
-          const node = await figma.getNodeByIdAsync(params.within);
-          if (!node) throw new Error(`no node with id ${params.within}`);
-          let page = node;
-          while (page && page.type !== "PAGE") page = page.parent;
-          if (page && "loadAsync" in page) await page.loadAsync();
-          if (!("findAllWithCriteria" in node) && !("children" in node)) throw new Error(`${params.within} is a ${node.type}, which has nothing inside to search`);
-          root = node;
-        } else {
-          root = await resolveScope(params.scope);
-        }
-        const keep = (node) => (!needle || node.name.toLowerCase().includes(needle)) && (!said || node.type === "TEXT" && normalizeSaid(node.characters).includes(said));
-        const matches2 = types && types.length > 0 ? (await findAllByTypes(root, types)).filter(keep) : await findAllWithCriteria(root, (node) => keep(node));
+        const sweep = await openSweep(__spreadProps(__spreadValues({
+          op: "node.find",
+          params,
+          roots: async () => {
+            if (typeof params.within !== "string" || params.within === "") return resolveSweepRoots({ scope: params.scope });
+            const node = await getNodeByIdTimed(params.within);
+            if (!node) throw new Error(`no node with id ${params.within}`);
+            if (!("findAllWithCriteria" in node) && !("children" in node)) throw new Error(`${params.within} is a ${node.type}, which has nothing inside to search`);
+            return { roots: [node], labels: [`${node.name} (subtree)`] };
+          },
+          state: () => ({ matched: 0 })
+        }, types && types.length > 0 ? { types } : {}), {
+          // The node searched within is the scope, not a match — as it always was.
+          includeRoots: false
+        }));
         const limit = params.limit;
-        return {
-          total: matches2.length,
-          truncated: matches2.length > limit,
-          nodes: matches2.slice(0, limit).map((node) => said ? __spreadProps(__spreadValues({}, summarizeNode(node)), { frame: topFrameOf(node) }) : summarizeNode(node))
-        };
+        const nodes = [];
+        await sweep.walk((node) => {
+          if (needle && !node.name.toLowerCase().includes(needle)) return;
+          if (said && !(node.type === "TEXT" && normalizeSaid(node.characters).includes(said))) return;
+          nodes.push(said ? __spreadProps(__spreadValues({}, summarizeNode(node)), { frame: topFrameOf(node) }) : summarizeNode(node));
+          sweep.state.matched += 1;
+          return nodes.length >= limit ? "stop" : void 0;
+        });
+        const report2 = sweep.report();
+        return __spreadProps(__spreadValues({}, report2), {
+          /** Matches across every call of this search so far; the total once `complete`. */
+          matched: sweep.state.matched,
+          nodes
+        });
       }
     },
     {
@@ -37521,30 +38565,42 @@ ${scripts}`, "");
     {
       name: "components.list",
       summary: "Local components and component sets with their property/variant definitions.",
-      agent: "Variant property names and values are exact \u2014 use them verbatim, with each component's own description and links.",
+      agent: "Variant property names and values are exact \u2014 use them verbatim, with each component's own description and links. Each call returns up to `limit` components, page by page through the file; while `complete` is false, call again with the same params plus `cursor`.",
       mutates: false,
-      params: {
+      params: __spreadValues({
         scope: { type: "string", description: "Where to look.", enum: ["page", "document"], default: "document" },
         name: { type: "string", description: "Case-insensitive substring of the component name." },
-        limit: { type: "number", description: "Max components returned.", default: 100, min: 1, max: 500 },
+        limit: {
+          type: "number",
+          description: "Max components returned by this call; the `cursor` continues after the last one.",
+          default: 100,
+          min: 1,
+          max: 500
+        },
         publishStatus: {
           type: "boolean",
           default: false,
           description: "Also report UNPUBLISHED / CURRENT / CHANGED per component. One extra call each, so off unless you are asking what consumers of this library can actually see."
         }
-      },
+      }, SWEEP_PARAMS),
       async run(params) {
         const needle = typeof params.name === "string" ? params.name.toLowerCase() : null;
-        const root = await resolveScope(params.scope);
-        const found = (await findAllByTypes(root, ["COMPONENT", "COMPONENT_SET"])).filter((node) => {
-          var _a;
-          if (needle && !node.name.toLowerCase().includes(needle)) return false;
-          return !(node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) === "COMPONENT_SET");
+        const sweep = await openSweep({
+          op: "components.list",
+          params,
+          roots: () => resolveSweepRoots({ scope: params.scope }),
+          state: () => ({ matched: 0 }),
+          types: ["COMPONENT", "COMPONENT_SET"]
         });
         const limit = params.limit;
         const wantStatus = params.publishStatus === true;
         const components = [];
-        for (const node of found.slice(0, limit)) {
+        await sweep.walk(async (found) => {
+          var _a;
+          const node = found;
+          if (needle && !node.name.toLowerCase().includes(needle)) return;
+          if (node.type === "COMPONENT" && ((_a = node.parent) == null ? void 0 : _a.type) === "COMPONENT_SET") return;
+          sweep.state.matched += 1;
           components.push(__spreadValues(__spreadProps(__spreadValues({
             id: node.id,
             key: node.key,
@@ -37562,8 +38618,9 @@ ${scripts}`, "");
           }, readPropertyDefinitions(node)), {
             variants: node.type === "COMPONENT_SET" ? node.children.map((child) => ({ id: child.id, name: child.name })) : void 0
           }), wantStatus ? { publishStatus: await publishStatusOf(node) } : {}));
-        }
-        return { total: found.length, truncated: found.length > limit, components };
+          return components.length >= limit ? "stop" : void 0;
+        });
+        return __spreadProps(__spreadValues({}, sweep.report()), { matched: sweep.state.matched, components });
       }
     },
     {
@@ -37615,7 +38672,7 @@ ${scripts}`, "");
     {
       name: "styles.list",
       summary: "Local text, paint, effect, grid and custom animation styles.",
-      agent: "paints: true shows per-stop bindings (a gradient binds per stop; its paint-level bound is null however tokenised). consumers: true says whether anything uses a style at all. A custom animation style comes back with its `animations` in the order they play \u2014 the same `style`/`props` pairs STYLE_MAKE takes back as `entries`.",
+      agent: "paints: true shows per-stop bindings (a gradient binds per stop; its paint-level bound is null however tokenised). consumers: true says whether anything uses a style at all. A custom animation style comes back with its `animations` in the order they play \u2014 the same `style`/`props` pairs STYLE_MAKE takes back as `entries`. Consumer lookups are one document search per style, so they page: when `consumersComplete` is false, call again with `offset: nextOffset` for the next styles' consumers.",
       mutates: false,
       params: {
         paints: {
@@ -37627,7 +38684,21 @@ ${scripts}`, "");
           type: "boolean",
           default: false,
           description: "List the layers actually using each style. Answers the question a style inventory otherwise cannot: whether a style is applied anywhere at all. A tidied style nobody consumes and a style the whole product depends on look the same in every other field. One extra document walk per style, so off by default."
-        }
+        },
+        offset: {
+          type: "number",
+          default: 0,
+          min: 0,
+          description: "With consumers: start the consumer lookups at this style \u2014 the `nextOffset` a previous answer handed back."
+        },
+        consumerLimit: {
+          type: "number",
+          default: 50,
+          min: 0,
+          max: 1e3,
+          description: "With consumers: layers listed per style; the count is always complete."
+        },
+        budgetMs: SWEEP_PARAMS.budgetMs
       },
       async run(params) {
         const [text6, paint, effect, grid, animation] = await Promise.all([
@@ -37652,28 +38723,38 @@ ${scripts}`, "");
           }
         }
         const consumerDetail = /* @__PURE__ */ new Map();
+        const all = [...text6, ...paint, ...effect, ...grid, ...animation];
+        const from = Math.min(params.offset, all.length);
+        let next = from;
         if (params.consumers === true) {
-          for (const style of [...text6, ...paint, ...effect, ...grid, ...animation]) {
+          const until = typeof params.budgetMs === "number" ? Date.now() + params.budgetMs : Infinity;
+          const shown = params.consumerLimit;
+          for (; next < all.length; next++) {
+            if (next > from && (Date.now() >= until || stopReason(3e3) !== null)) break;
+            const style = all[next];
             try {
               const users = await style.getStyleConsumersAsync();
               consumerDetail.set(style.id, {
                 count: users.length,
-                nodes: users.map((user) => ({ id: user.node.id, name: user.node.name, fields: user.fields }))
+                nodes: users.slice(0, shown).map((user) => ({ id: user.node.id, name: user.node.name, fields: user.fields }))
               });
             } catch (err) {
               consumerDetail.set(style.id, { error: String((err == null ? void 0 : err.message) || err) });
             }
+            await checkpoint();
           }
         }
         const withConsumers = (style, row) => consumerDetail.has(style.id) ? __spreadProps(__spreadValues({}, row), { consumers: consumerDetail.get(style.id) }) : row;
-        return {
-          text: text6.map((style) => __spreadProps(__spreadValues(__spreadProps(__spreadValues({}, base(style)), {
-            fontFamily: style.fontName.family,
-            fontStyle: style.fontName.style
-          }), style.fontName.variationSettings ? { fontAxes: style.fontName.variationSettings } : {}), {
-            fontSize: style.fontSize,
-            lineHeight: style.lineHeight
-          })),
+        return __spreadProps(__spreadValues({}, params.consumers === true ? next < all.length ? { consumersComplete: false, consumersFrom: from, nextOffset: next } : { consumersComplete: true, consumersFrom: from } : {}), {
+          text: text6.map(
+            (style) => withConsumers(style, __spreadProps(__spreadValues(__spreadProps(__spreadValues({}, base(style)), {
+              fontFamily: style.fontName.family,
+              fontStyle: style.fontName.style
+            }), style.fontName.variationSettings ? { fontAxes: style.fontName.variationSettings } : {}), {
+              fontSize: style.fontSize,
+              lineHeight: style.lineHeight
+            }))
+          ),
           paint: paint.map(
             (style) => {
               var _a;
@@ -37682,8 +38763,8 @@ ${scripts}`, "");
               }));
             }
           ),
-          effect: effect.map((style) => __spreadProps(__spreadValues({}, base(style)), { effects: style.effects.map((e) => e.type) })),
-          grid: grid.map(base),
+          effect: effect.map((style) => withConsumers(style, __spreadProps(__spreadValues({}, base(style)), { effects: style.effects.map((e) => e.type) }))),
+          grid: grid.map((style) => withConsumers(style, base(style))),
           animation: animation.map(
             (style) => withConsumers(style, __spreadProps(__spreadValues({}, base(style)), {
               /* What a custom animation style holds IS its entries, in order — a row with only a
@@ -37696,7 +38777,7 @@ ${scripts}`, "");
               }, entry.duration === void 0 ? {} : { duration: entry.duration }), entry.props && Object.keys(entry.props).length > 0 ? { props: entry.props } : {}))
             }))
           )
-        };
+        });
       }
     },
     {
@@ -37791,50 +38872,48 @@ ${scripts}`, "");
     {
       name: "instances.external",
       summary: "Which foreign components are instantiated here, and how many external bindings each drags in.",
-      agent: "Class B of a migration: bindings inside foreign components have no local main to fix \u2014 swap or detach the instances, then rebind.",
+      agent: "Class B of a migration: bindings inside foreign components have no local main to fix \u2014 swap or detach the instances, then rebind. A whole document is swept over several calls: while `complete` is false the answer is progress only \u2014 call again with the same params plus `cursor`; the call that completes carries the full table.",
       mutates: false,
-      params: {
+      params: __spreadValues({
         scope: { type: "string", default: "document", enum: ["page", "document"], description: "Where to look." },
         pageId: { type: "string", description: 'Which page to walk \u2014 giving it implies scope: "page". Defaults to the current page when scope is "page".' },
         nodeId: { type: "string", description: "Walk just this subtree. Overrides scope and pageId." },
         limit: { type: "number", default: 5, min: 0, max: 100, description: "Sample instances listed per component; counts are complete." }
-      },
+      }, SWEEP_PARAMS),
       async run(params) {
-        var _a, _b;
-        const tLoad = Date.now();
-        const { roots, labels } = await resolveWalkRoots(params);
-        const loadMs = Date.now() - tLoad;
-        const tWalk = Date.now();
-        const tops = [];
-        let visited = 0;
-        for (const root of roots) {
-          const walked = await walkSceneNodes(root, (node, insideInstance) => {
-            if (!insideInstance && node.type === "INSTANCE") tops.push(node);
-          });
-          visited += walked.visited;
-        }
-        const groups = /* @__PURE__ */ new Map();
-        for (const instance of tops) {
+        const sweep = await openSweep({
+          op: "instances.external",
+          params,
+          roots: () => resolveSweepRoots(params),
+          state: () => ({ groups: /* @__PURE__ */ new Map() })
+        });
+        const limit = params.limit;
+        await sweep.walk(async (node) => {
+          var _a, _b;
+          if (node.type !== "INSTANCE") return;
+          const instance = node;
           let main = null;
           try {
             main = await instance.getMainComponentAsync();
           } catch (e) {
             main = null;
           }
-          if (main && !main.remote) continue;
+          if (main && !main.remote) return "skip";
           const groupKey = main ? main.key : `unresolved:${instance.name}`;
-          let group2 = groups.get(groupKey);
+          let group2 = sweep.state.groups.get(groupKey);
           if (!group2) {
-            group2 = { main: (_a = main == null ? void 0 : main.name) != null ? _a : null, key: (_b = main == null ? void 0 : main.key) != null ? _b : null, instances: [], idCounts: /* @__PURE__ */ new Map() };
-            groups.set(groupKey, group2);
+            group2 = { main: (_a = main == null ? void 0 : main.name) != null ? _a : null, key: (_b = main == null ? void 0 : main.key) != null ? _b : null, count: 0, sample: [], idCounts: /* @__PURE__ */ new Map() };
+            sweep.state.groups.set(groupKey, group2);
           }
-          group2.instances.push({ id: instance.id, name: instance.name });
-          await walkSceneNodes(instance, (node) => {
+          const into = group2;
+          into.count += 1;
+          if (into.sample.length < limit) into.sample.push({ id: instance.id, name: instance.name });
+          await walkSceneNodes(instance, (inner) => {
             var _a2, _b2, _c, _d;
-            const holder = node;
+            const holder = inner;
             const push = (id) => {
               var _a3;
-              if (typeof id === "string") group2.idCounts.set(id, ((_a3 = group2.idCounts.get(id)) != null ? _a3 : 0) + 1);
+              if (typeof id === "string") into.idCounts.set(id, ((_a3 = into.idCounts.get(id)) != null ? _a3 : 0) + 1);
             };
             const bound = holder.boundVariables;
             if (bound) {
@@ -37855,9 +38934,13 @@ ${scripts}`, "");
               }
             }
           });
+          return "skip";
+        });
+        const report2 = sweep.report();
+        if (!report2.complete) {
+          return __spreadProps(__spreadValues({}, report2), { walked: { pages: sweep.labels }, note: "partial sweep \u2014 call again with the same params plus `cursor`" });
         }
-        const walkMs = Date.now() - tWalk;
-        const tResolve = Date.now();
+        const groups = sweep.state.groups;
         const distinct = /* @__PURE__ */ new Set();
         for (const group2 of groups.values()) for (const id of group2.idCounts.keys()) distinct.add(id);
         const remoteCollection = /* @__PURE__ */ new Map();
@@ -37870,8 +38953,8 @@ ${scripts}`, "");
             collectionNames2.set(variable.variableCollectionId, collection ? collection.name : variable.variableCollectionId);
           }
           remoteCollection.set(id, collectionNames2.get(variable.variableCollectionId));
+          await checkpoint();
         }
-        const resolveMs = Date.now() - tResolve;
         const out = [...groups.values()].map((group2) => {
           let bindings = 0;
           const collections = /* @__PURE__ */ new Set();
@@ -37885,27 +38968,26 @@ ${scripts}`, "");
           return {
             main: group2.main,
             key: group2.key,
-            instances: group2.instances.length,
+            instances: group2.count,
             externalBindings: bindings,
             collections: [...collections].sort(),
-            sample: group2.instances.slice(0, params.limit)
+            sample: group2.sample
           };
         }).sort((a, b) => b.externalBindings - a.externalBindings);
-        return {
-          walked: { pages: labels, nodes: visited },
-          ms: { load: loadMs, walk: walkMs, resolve: resolveMs },
+        return __spreadProps(__spreadValues({}, report2), {
+          walked: { pages: sweep.labels, nodes: report2.swept.nodes },
           foreignComponents: out.length,
           foreignInstances: out.reduce((sum, group2) => sum + group2.instances, 0),
           groups: out
-        };
+        });
       }
     },
     {
       name: "variables.external",
       summary: "Which variables this file binds to that it does not own \u2014 the dependency a library inherits.",
-      agent: "The self-containment audit. A collection listed here but absent from enabledLibraryCollections is a dependency with no live subscription \u2014 resolvable, never updatable.",
+      agent: "The self-containment audit. A collection listed here but absent from enabledLibraryCollections is a dependency with no live subscription \u2014 resolvable, never updatable. A whole document is swept over several calls: while `complete` is false the answer is progress only \u2014 call again with the same params plus `cursor`; the call that completes carries the full audit.",
       mutates: false,
-      params: {
+      params: __spreadValues({
         scope: {
           type: "string",
           default: "document",
@@ -37925,10 +39007,17 @@ ${scripts}`, "");
         },
         styles: { type: "boolean", default: true, description: "Also check local styles for external bindings." },
         limit: { type: "number", default: 10, min: 0, max: 200, description: "Sites listed per variable; counts are complete." }
-      },
+      }, SWEEP_PARAMS),
       async run(params) {
-        var _a, _b, _c;
-        const seen = /* @__PURE__ */ new Map();
+        var _a, _b, _c, _d;
+        const sweep = await openSweep({
+          op: "variables.external",
+          params,
+          roots: () => resolveSweepRoots(params),
+          state: () => ({ seen: /* @__PURE__ */ new Map(), insideInstances: 0 }),
+          skipInstanceChildren: params.instances === "shallow"
+        });
+        const seen = sweep.state.seen;
         const cap = params.limit;
         const consider = (id, site) => {
           if (typeof id !== "string") return;
@@ -37954,52 +39043,46 @@ ${scripts}`, "");
         const scanPaints = (paints2, site) => {
           if (!Array.isArray(paints2)) return;
           paints2.forEach((paint, index2) => {
-            var _a2, _b2, _c2, _d;
+            var _a2, _b2, _c2, _d2;
             consider((_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id, () => site(`paint[${index2}]`));
             if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
               for (const stop of paint.gradientStops) {
-                consider((_d = (_c2 = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c2.color) == null ? void 0 : _d.id, () => site(`paint[${index2}] stop p${Math.round(stop.position * 100)}`));
+                consider((_d2 = (_c2 = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _c2.color) == null ? void 0 : _d2.id, () => site(`paint[${index2}] stop p${Math.round(stop.position * 100)}`));
               }
             }
           });
         };
-        const tLoad = Date.now();
-        const { roots, labels } = await resolveWalkRoots(params);
-        const loadMs = Date.now() - tLoad;
-        const tWalk = Date.now();
-        let visited = 0;
-        let insideInstances = 0;
-        for (const root of roots) {
-          const walked = await walkSceneNodes(
-            root,
-            (node) => {
-              const holder = node;
-              const site = (detail) => ({ id: node.id, name: node.name, type: node.type, field: detail });
-              scanBoundMap(holder.boundVariables, site);
-              scanPaints(holder.fills, site);
-              scanPaints(holder.strokes, site);
-              const regions = regionFills(node);
-              if (regions) {
-                for (const one of regions) scanPaints(one.fills, (detail) => site(`regions[${one.region}] ${detail}`));
+        await sweep.walk((node, insideInstance) => {
+          if (insideInstance) sweep.state.insideInstances += 1;
+          const holder = node;
+          const site = (detail) => ({ id: node.id, name: node.name, type: node.type, field: detail });
+          scanBoundMap(holder.boundVariables, site);
+          scanPaints(holder.fills, site);
+          scanPaints(holder.strokes, site);
+          const regions = regionFills(node);
+          if (regions) {
+            for (const one of regions) scanPaints(one.fills, (detail) => site(`regions[${one.region}] ${detail}`));
+          }
+          const mixedBound = holder.boundVariables;
+          if (mixedBound && !regions) {
+            for (const prop of ["fills", "strokes"]) {
+              if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
+                ;
+                mixedBound[prop].forEach(
+                  (entry, index2) => consider(entry == null ? void 0 : entry.id, () => site(`${prop}[${index2}] (segment)`))
+                );
               }
-              const mixedBound = holder.boundVariables;
-              if (mixedBound && !regions) {
-                for (const prop of ["fills", "strokes"]) {
-                  if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
-                    ;
-                    mixedBound[prop].forEach(
-                      (entry, index2) => consider(entry == null ? void 0 : entry.id, () => site(`${prop}[${index2}] (segment)`))
-                    );
-                  }
-                }
-              }
-            },
-            { skipInstanceChildren: params.instances === "shallow" }
-          );
-          visited += walked.visited;
-          insideInstances += walked.insideInstances;
+            }
+          }
+        });
+        const report2 = sweep.report();
+        if (!report2.complete) {
+          return __spreadProps(__spreadValues({}, report2), {
+            scope: (_a = params.scope) != null ? _a : "document",
+            walked: { pages: sweep.labels },
+            note: "partial sweep \u2014 call again with the same params plus `cursor`"
+          });
         }
-        const walkMs = Date.now() - tWalk;
         if (params.styles !== false) {
           const [text6, paint, effect, grid] = await Promise.all([
             figma.getLocalTextStylesAsync(),
@@ -38019,14 +39102,13 @@ ${scripts}`, "");
         }
         const snapshot = await readLocalVariables();
         for (const entry of snapshot.variables) {
-          for (const [modeId, value2] of Object.entries((_a = entry.valuesByMode) != null ? _a : {})) {
+          for (const [modeId, value2] of Object.entries((_b = entry.valuesByMode) != null ? _b : {})) {
             const alias = value2;
             if ((alias == null ? void 0 : alias.type) === "VARIABLE_ALIAS" && alias.id) {
               consider(alias.id, () => ({ alias: entry.name, mode: modeId }));
             }
           }
         }
-        const tResolve = Date.now();
         const collectionNames2 = /* @__PURE__ */ new Map();
         const collectionModes = /* @__PURE__ */ new Map();
         const found = /* @__PURE__ */ new Map();
@@ -38042,7 +39124,7 @@ ${scripts}`, "");
             collectionModes.set(variable.variableCollectionId, collection ? collection.modes : []);
           }
           const values = {};
-          for (const mode of (_b = collectionModes.get(variable.variableCollectionId)) != null ? _b : []) {
+          for (const mode of (_c = collectionModes.get(variable.variableCollectionId)) != null ? _c : []) {
             try {
               values[mode.name] = (await resolveVariableValue(variable, mode.modeId)).value;
             } catch (err) {
@@ -38077,11 +39159,9 @@ ${scripts}`, "");
         }
         const enabled = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync().catch(() => []);
         const groups = [...byCollection.values()].sort((a, b) => b.bindings - a.bindings);
-        const resolveMs = Date.now() - tResolve;
-        return {
-          scope: (_c = params.scope) != null ? _c : "document",
-          walked: { pages: labels, nodes: visited, insideInstances },
-          ms: { load: loadMs, walk: walkMs, resolve: resolveMs },
+        return __spreadProps(__spreadValues({}, report2), {
+          scope: (_d = params.scope) != null ? _d : "document",
+          walked: { pages: sweep.labels, nodes: report2.swept.nodes, insideInstances: sweep.state.insideInstances },
           selfContained: groups.length === 0,
           distinctVariablesSeen: seen.size,
           externalCollections: groups.length,
@@ -38092,15 +39172,15 @@ ${scripts}`, "");
            * values still resolve and can never be updated from this file again. */
           enabledLibraryCollections: enabled.map((one) => one.name),
           results: groups
-        };
+        });
       }
     },
     {
       name: "variables.usage",
       summary: "How many things actually use each token \u2014 layers, styles and gradient stops, counted.",
-      agent: "Layers, styles and aliases are counted separately \u2014 a token nothing paints may still hold the ramp up via aliases. Zero covers THIS file only.",
+      agent: "Layers, styles and aliases are counted separately \u2014 a token nothing paints may still hold the ramp up via aliases. Zero covers THIS file only. A whole document is swept over several calls: while `complete` is false the answer is progress only \u2014 call again with the same params plus `cursor`; the call that completes carries every count.",
       mutates: false,
-      params: {
+      params: __spreadValues({
         variables: {
           type: "string[]",
           description: "Only these tokens, by id, key or name. Omitted counts every local variable."
@@ -38124,7 +39204,7 @@ ${scripts}`, "");
           type: "string",
           default: "document",
           enum: ["page", "document"],
-          description: 'Where to walk. Unlike `lint.colors` this defaults to `document`, because a page-scoped usage count answers a question nobody asked: "unused on this page" reads as "unused" and is the one wrong conclusion that gets a token deleted. Beware the cost: a whole document can outrun the bridge call timeout \u2014 raise ALLCREW_CHANNEL_AGENT_CALL_TIMEOUT_MS, or pass pageId and sum the pages.'
+          description: 'Where to walk. Unlike `lint.colors` this defaults to `document`, because a page-scoped usage count answers a question nobody asked: "unused on this page" reads as "unused" and is the one wrong conclusion that gets a token deleted. A whole document is swept over as many calls as it takes \u2014 follow `cursor` until `complete` is true.'
         },
         styles: {
           type: "boolean",
@@ -38132,9 +39212,9 @@ ${scripts}`, "");
           description: "Count styles as consumers, not just layers. On by default and it matters: a token bound into a paint style has no layer consumers at all, so a layers-only walk reports it unused while the whole library depends on it."
         },
         limit: { type: "number", default: 20, min: 0, max: 500, description: "Consumers listed per token; counts are always complete." }
-      },
+      }, SWEEP_PARAMS),
       async run(params) {
-        var _a, _b;
+        var _a, _b, _c;
         const snapshot = await readLocalVariables();
         const wantedCollection = typeof params.collection === "string" ? params.collection.toLowerCase() : null;
         const collections = wantedCollection ? snapshot.collections.filter(
@@ -38149,20 +39229,30 @@ ${scripts}`, "");
           (entry) => keepCollection.has(entry.collectionId) && (askedLower.size === 0 || askedLower.has(entry.id.toLowerCase()) || askedLower.has(entry.key.toLowerCase()) || askedLower.has(entry.name.toLowerCase()))
         );
         if (asked.length > 0 && tracked.length === 0) throw new Error(`no local variable matched: ${asked.join(", ")}`);
-        const byId = new Map(
-          tracked.map((entry) => [
-            entry.id,
-            {
-              entry,
-              layers: [],
-              styles: [],
-              aliases: [],
-              layerCount: 0,
-              styleCount: 0,
-              aliasCount: 0
-            }
-          ])
-        );
+        const sweep = await openSweep({
+          op: "variables.usage",
+          params,
+          roots: () => resolveSweepRoots(params),
+          state: () => ({
+            byId: new Map(
+              tracked.map((entry) => [
+                entry.id,
+                {
+                  entry,
+                  layers: [],
+                  styles: [],
+                  aliases: [],
+                  layerCount: 0,
+                  styleCount: 0,
+                  aliasCount: 0
+                }
+              ])
+            ),
+            insideInstances: 0
+          }),
+          skipInstanceChildren: params.instances === "shallow"
+        });
+        const byId = sweep.state.byId;
         const note = (id, where, what) => {
           if (typeof id !== "string") return;
           const bucket = byId.get(id);
@@ -38171,13 +39261,13 @@ ${scripts}`, "");
           else if (where === "styles") bucket.styleCount += 1;
           else bucket.aliasCount += 1;
           const list2 = bucket[where];
-          if (list2.length < params.limit) list2.push(what);
+          if (list2.length < params.limit) list2.push(what());
         };
-        for (const entry of snapshot.variables) {
+        if (!sweep.resumed) for (const entry of snapshot.variables) {
           for (const value2 of Object.values((_a = entry.valuesByMode) != null ? _a : {})) {
             const alias = value2;
             if ((alias == null ? void 0 : alias.type) === "VARIABLE_ALIAS" && alias.id) {
-              note(alias.id, "aliases", { token: entry.name, collection: entry.collectionId });
+              note(alias.id, "aliases", () => ({ token: entry.name, collection: entry.collectionId }));
             }
           }
         }
@@ -38186,12 +39276,12 @@ ${scripts}`, "");
           paints2.forEach((paint, index2) => {
             var _a2, _b2;
             const direct = (_b2 = (_a2 = paint == null ? void 0 : paint.boundVariables) == null ? void 0 : _a2.color) == null ? void 0 : _b2.id;
-            if (direct) note(direct, where, label3(`paint[${index2}]`));
+            if (direct) note(direct, where, () => label3(`paint[${index2}]`));
             if (Array.isArray(paint == null ? void 0 : paint.gradientStops)) {
               paint.gradientStops.forEach((stop) => {
                 var _a3, _b3;
                 const id = (_b3 = (_a3 = stop == null ? void 0 : stop.boundVariables) == null ? void 0 : _a3.color) == null ? void 0 : _b3.id;
-                if (id) note(id, where, label3(`paint[${index2}] stop p${Math.round(stop.position * 100)}`));
+                if (id) note(id, where, () => label3(`paint[${index2}] stop p${Math.round(stop.position * 100)}`));
               });
             }
           });
@@ -38201,49 +39291,43 @@ ${scripts}`, "");
           for (const [field, value2] of Object.entries(bound)) {
             if (field === "fills" || field === "strokes") continue;
             if (Array.isArray(value2)) {
-              value2.forEach((alias, index2) => note(alias == null ? void 0 : alias.id, where, label3(`${field}[${index2}]`)));
+              value2.forEach((alias, index2) => note(alias == null ? void 0 : alias.id, where, () => label3(`${field}[${index2}]`)));
             } else {
-              note(value2 == null ? void 0 : value2.id, where, label3(field));
+              note(value2 == null ? void 0 : value2.id, where, () => label3(field));
             }
           }
         };
-        const tLoad = Date.now();
-        const { roots, labels } = await resolveWalkRoots(params);
-        const loadMs = Date.now() - tLoad;
-        const tWalk = Date.now();
-        let visited = 0;
-        let insideInstances = 0;
-        for (const root of roots) {
-          const walked = await walkSceneNodes(
-            root,
-            (node) => {
-              const holder = node;
-              const label3 = (detail) => ({ id: node.id, name: node.name, type: node.type, field: detail });
-              scanBoundMap(holder.boundVariables, "layers", label3);
-              scanPaints(holder.fills, "layers", label3);
-              scanPaints(holder.strokes, "layers", label3);
-              const regions = regionFills(node);
-              if (regions) {
-                for (const one of regions) scanPaints(one.fills, "layers", (detail) => label3(`regions[${one.region}] ${detail}`));
+        await sweep.walk((node, insideInstance) => {
+          if (insideInstance) sweep.state.insideInstances += 1;
+          const holder = node;
+          const label3 = (detail) => ({ id: node.id, name: node.name, type: node.type, field: detail });
+          scanBoundMap(holder.boundVariables, "layers", label3);
+          scanPaints(holder.fills, "layers", label3);
+          scanPaints(holder.strokes, "layers", label3);
+          const regions = regionFills(node);
+          if (regions) {
+            for (const one of regions) scanPaints(one.fills, "layers", (detail) => label3(`regions[${one.region}] ${detail}`));
+          }
+          const mixedBound = holder.boundVariables;
+          if (mixedBound && !regions) {
+            for (const prop of ["fills", "strokes"]) {
+              if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
+                ;
+                mixedBound[prop].forEach(
+                  (entry, index2) => note(entry == null ? void 0 : entry.id, "layers", () => label3(`${prop}[${index2}] (segment)`))
+                );
               }
-              const mixedBound = holder.boundVariables;
-              if (mixedBound && !regions) {
-                for (const prop of ["fills", "strokes"]) {
-                  if (!Array.isArray(holder[prop]) && Array.isArray(mixedBound[prop])) {
-                    ;
-                    mixedBound[prop].forEach(
-                      (entry, index2) => note(entry == null ? void 0 : entry.id, "layers", label3(`${prop}[${index2}] (segment)`))
-                    );
-                  }
-                }
-              }
-            },
-            { skipInstanceChildren: params.instances === "shallow" }
-          );
-          visited += walked.visited;
-          insideInstances += walked.insideInstances;
+            }
+          }
+        });
+        const report2 = sweep.report();
+        if (!report2.complete) {
+          return __spreadProps(__spreadValues({}, report2), {
+            scope: (_b = params.scope) != null ? _b : "document",
+            walked: { pages: sweep.labels },
+            note: "partial sweep \u2014 call again with the same params plus `cursor`"
+          });
         }
-        const walkMs = Date.now() - tWalk;
         let styleCount = 0;
         if (params.styles !== false) {
           const [text6, paint, effect, grid] = await Promise.all([
@@ -38286,12 +39370,9 @@ ${scripts}`, "");
         }).sort(
           (a, b) => b.layers + b.styles + b.aliases - (a.layers + a.styles + a.aliases) || a.token.localeCompare(b.token)
         );
-        return {
-          scope: (_b = params.scope) != null ? _b : "document",
-          // Named, so a page-by-page sweep can be added up without the caller having to remember
-          // which slice each answer covered.
-          walked: { pages: labels, nodes: visited, insideInstances, styles: styleCount },
-          ms: { load: loadMs, walk: walkMs },
+        return __spreadProps(__spreadValues({}, report2), {
+          scope: (_c = params.scope) != null ? _c : "document",
+          walked: { pages: sweep.labels, nodes: report2.swept.nodes, insideInstances: sweep.state.insideInstances, styles: styleCount },
           tokens: results.length,
           unused: results.filter((row) => !row.used).length,
           /* Said out loud because the number invites the wrong conclusion. Zero here means "nothing
@@ -38300,7 +39381,7 @@ ${scripts}`, "");
            * published token read as unused is the deletion nobody meant to make. */
           caveat: "counts cover this file only \u2014 a token consumed by another file reports zero here",
           results
-        };
+        });
       }
     },
     {
@@ -38362,17 +39443,17 @@ ${scripts}`, "");
           const parsed = withAlpha2(input);
           if (!parsed) return { color: input, error: "not a hex colour" };
           const { rgb, alpha } = parsed;
-          const hex2 = formatHex(rgb);
-          const exact = rungs.filter((rung) => rung.hex === hex2 && sameAlpha(rung.alpha, alpha));
+          const hex4 = formatHex(rgb);
+          const exact = rungs.filter((rung) => rung.hex === hex4 && sameAlpha(rung.alpha, alpha));
           const seen = new Set(exact.map((rung) => rung.token));
-          const near = rungs.filter((rung) => !(rung.hex === hex2 && sameAlpha(rung.alpha, alpha))).map((rung) => __spreadProps(__spreadValues({}, rung), { delta: distance(rgb, rung.rgb) })).sort((a, b) => a.delta - b.delta).slice(0, params.nearest);
+          const near = rungs.filter((rung) => !(rung.hex === hex4 && sameAlpha(rung.alpha, alpha))).map((rung) => __spreadProps(__spreadValues({}, rung), { delta: distance(rgb, rung.rgb) })).sort((a, b) => a.delta - b.delta).slice(0, params.nearest);
           const show = ({ token: token2, collection, mode, alpha: at }) => __spreadValues({
             token: token2,
             collection,
             mode
           }, at < 0.999 ? { alpha: Math.round(at * 1e3) / 1e3 } : {});
           return __spreadValues({
-            color: alpha < 0.999 ? `${hex2} ${Math.round(alpha * 100)}%` : hex2,
+            color: alpha < 0.999 ? `${hex4} ${Math.round(alpha * 100)}%` : hex4,
             exact: exact.map(show),
             /* The flag that stops a caller automating this. A colour does not determine a token:
              * one hex is routinely `accent/primary` AND `action/primary/background`, and picking
@@ -38387,22 +39468,36 @@ ${scripts}`, "");
     {
       name: "flow.map",
       summary: "Prototype graph of a page: starting points plus every reaction edge, with the timing on each.",
-      agent: "Read before proposing navigation: extend the existing prototype instead of inventing a parallel one. An edge carries the navigation kind and the transition it animates with - duration, the easing Figma named, and `curve`: the same easing as numbers (bezier control points, or a spring's damping ratio, stiffness and solved settle time). Build the transition from `curve`, not from the CSS string beside it - `PUSH` from the right at 300ms is a native navigation transition, and the numbers for it are here.",
+      agent: "Read before proposing navigation: extend the existing prototype instead of inventing a parallel one. An edge carries the navigation kind and the transition it animates with - duration, the easing Figma named, and `curve`: the same easing as numbers (bezier control points, or a spring's damping ratio, stiffness and solved settle time). Build the transition from `curve`, not from the CSS string beside it - `PUSH` from the right at 300ms is a native navigation transition, and the numbers for it are here. A heavy page is swept over several calls: while `complete` is false call again with the same params plus `cursor`; the completing call carries the whole graph.",
       mutates: false,
-      params: {
+      params: __spreadValues({
         pageId: { type: "string", description: "Page id. Defaults to the page the designer is on." }
-      },
+      }, SWEEP_PARAMS),
       async run(params) {
-        var _a;
-        const page = await resolvePage(params.pageId);
+        let started = null;
+        const sweep = await openSweep({
+          op: "flow.map",
+          params,
+          roots: async () => {
+            const roots = await resolveSweepRoots({ scope: "page", pageId: params.pageId });
+            started = roots.roots[0];
+            return roots;
+          },
+          // The page is pinned on the first call: "the page the designer is on" may be another one
+          // by the time a resumed call arrives.
+          state: () => ({ pageId: started.id, edges: [] })
+        });
+        const found = await figma.getNodeByIdAsync(sweep.state.pageId);
+        if (!found || found.type !== "PAGE") {
+          throw new Error(`the page this flow.map started on (${sweep.state.pageId}) is gone \u2014 start over without cursor`);
+        }
+        const page = found;
+        await page.loadAsync();
         const named = /* @__PURE__ */ new Map();
         for (const node of page.children) named.set(node.id, node.name);
-        const edges = [];
-        const withReactions = await findAllWithCriteria(
-          page,
-          (node) => "reactions" in node || "getReactionsAsync" in node
-        );
-        for (const node of withReactions) {
+        await sweep.walk(async (node) => {
+          var _a;
+          if (!("reactions" in node) && !("getReactionsAsync" in node)) return;
           const anyNode = node;
           const raw = typeof anyNode.getReactionsAsync === "function" ? await anyNode.getReactionsAsync() : anyNode.reactions;
           for (const reaction of await summarizeReactions(raw, async (id) => {
@@ -38410,7 +39505,7 @@ ${scripts}`, "");
             return (_a2 = named.get(id)) != null ? _a2 : null;
           })) {
             if (!reaction.destinationId) continue;
-            edges.push(__spreadValues(__spreadValues({
+            sweep.state.edges.push(__spreadValues(__spreadValues({
               from: node.id,
               fromName: node.name,
               to: reaction.destinationId,
@@ -38419,8 +39514,15 @@ ${scripts}`, "");
               action: reaction.action
             }, reaction.navigation ? { navigation: reaction.navigation } : {}), reaction.transition ? { transition: reaction.transition } : {}));
           }
+        });
+        const report2 = sweep.report();
+        if (!report2.complete) {
+          return __spreadProps(__spreadValues({}, report2), {
+            page: { id: page.id, name: page.name },
+            note: "partial sweep \u2014 call again with the same params plus `cursor`"
+          });
         }
-        return {
+        return __spreadProps(__spreadValues({}, report2), {
           page: { id: page.id, name: page.name },
           // `flowStartingPoints` is the designer's own declaration of where a flow begins —
           // better ground truth than guessing from in-degree.
@@ -38429,8 +39531,8 @@ ${scripts}`, "");
             name: point2.name
           })),
           frames: page.children.filter((node) => node.type === "FRAME").map((node) => ({ id: node.id, name: node.name })),
-          edges
-        };
+          edges: sweep.state.edges
+        });
       }
     },
     {
@@ -38555,50 +39657,58 @@ ${scripts}`, "");
     {
       name: "lint.colors",
       summary: "Layers painted with a raw colour instead of a variable \u2014 exactly what a recolor cannot reach.",
-      agent: "Findings carry value and paintIndex \u2014 node.bind's exact arguments. ignore takes brand hexes out of the debt count, and the report names them back.",
+      agent: "Findings carry value and paintIndex \u2014 node.bind's exact arguments. ignore takes brand hexes out of the debt count, and the report names them back. Each call returns up to `limit` findings; while `complete` is false, call again with the same params plus `cursor` for the next ones. `matched`/`byRule` count every finding so far and are the totals once `complete`.",
       mutates: false,
-      params: {
+      params: __spreadValues({
         pageId: { type: "string", description: 'Which page to walk \u2014 giving it implies scope: "page". Defaults to the current page when scope is "page".' },
         scope: {
           type: "string",
           default: "page",
           enum: ["page", "document"],
-          description: "Where to look. `document` walks every page and is slow on a big file."
+          description: "Where to look. `document` walks every page, over as many calls as it takes."
         },
-        limit: { type: "number", default: 300, min: 1, max: 5e3, description: "Cap on findings returned." },
+        limit: { type: "number", default: 300, min: 1, max: 5e3, description: "Findings returned by this call; the `cursor` continues after them." },
         ignore: {
           type: "string[]",
           description: "Colours to leave alone, as hex. For values that are deliberately outside the design system \u2014 payment-scheme brand colours, a partner logo \u2014 which cannot be tokenised and should not be counted as debt. Without this the totals stay permanently non-zero and stop working as a health number. Case-insensitive; alpha is ignored."
         }
-      },
+      }, SWEEP_PARAMS),
       async run(params) {
-        var _a;
         const ignored = new Set(
           (Array.isArray(params.ignore) ? params.ignore : []).filter((entry) => typeof entry === "string").map((entry) => entry.trim().replace(/^#/, "").slice(0, 6).toLowerCase())
         );
         const wantsPage = typeof params.pageId === "string" && params.pageId !== "";
-        const pages = params.scope === "document" && !wantsPage ? (await loadAllPagesAsync(), figma.root.children.slice()) : [await resolvePage(params.pageId)];
+        const sweep = await openSweep({
+          op: "lint.colors",
+          params,
+          roots: () => resolveSweepRoots({ scope: wantsPage ? "page" : params.scope, pageId: params.pageId }),
+          state: () => ({ matched: 0, byRule: {}, exportedMains: /* @__PURE__ */ new Map() })
+        });
+        const limit = params.limit;
         const findings = [];
-        for (const page of pages) {
-          const roots = page.children.filter((node) => "visible" in node);
-          for (const finding of await lintScopeAsync(roots)) {
+        await sweep.walk(async (node) => {
+          var _a, _b;
+          const found = [];
+          if (!await lintNodeAsync(node, 0, found, sweep.state.exportedMains)) return "skip";
+          for (const finding of found) {
             if (finding.rule !== "unbound-fill" && finding.rule !== "unbound-stroke") continue;
             if (ignored.size > 0 && typeof finding.value === "string" && ignored.has(finding.value.replace(/^#/, "").slice(0, 6).toLowerCase())) {
               continue;
             }
-            findings.push(__spreadProps(__spreadValues({}, finding), { page: page.name }));
+            sweep.state.matched += 1;
+            sweep.state.byRule[finding.rule] = ((_a = sweep.state.byRule[finding.rule]) != null ? _a : 0) + 1;
+            findings.push(__spreadProps(__spreadValues({}, finding), { page: (_b = pageOf4(node)) == null ? void 0 : _b.name }));
           }
-        }
-        const byRule = {};
-        for (const finding of findings) byRule[finding.rule] = ((_a = byRule[finding.rule]) != null ? _a : 0) + 1;
-        return __spreadProps(__spreadValues({
+          return findings.length >= limit ? "stop" : void 0;
+        });
+        return __spreadProps(__spreadValues(__spreadProps(__spreadValues({}, sweep.report()), {
           // The scope that actually ran, not the one passed — pageId may have narrowed it.
           scope: wantsPage ? "page" : params.scope,
-          pages: pages.map((page) => page.name),
-          total: findings.length,
-          byRule
-        }, ignored.size > 0 ? { ignored: [...ignored].map((hex2) => `#${hex2}`) } : {}), {
-          findings: findings.slice(0, params.limit)
+          pages: sweep.labels,
+          matched: sweep.state.matched,
+          byRule: sweep.state.byRule
+        }), ignored.size > 0 ? { ignored: [...ignored].map((hex4) => `#${hex4}`) } : {}), {
+          findings
         });
       }
     },
@@ -38733,11 +39843,15 @@ ${scripts}`, "");
     ...ADMIN_OPS,
     ...WRITE_OPS,
     ...MODULE_OPS,
+    ...EDITOR_OPS,
     ...PLUGIN_OPS
   ];
   var OPS_BY_NAME = new Map(ALL_OPS.map((op) => [op.name, op]));
 
   // src/agent/listener.ts
+  var DEFAULT_CALL_BUDGET_MS = 18e4;
+  var ANSWER_MARGIN_MS = 8e3;
+  var OVERSTAY_MS = 3e3;
   var gates = { read: false, write: false };
   function setGates(next) {
     gates = { read: next.read === true, write: next.write === true };
@@ -38746,7 +39860,45 @@ ${scripts}`, "");
   function agentManifest() {
     return toManifest(ALL_OPS);
   }
+  var queue2 = [];
+  var live = /* @__PURE__ */ new Map();
+  var laneBusy = false;
+  function enterLane(run) {
+    return new Promise((resolve2) => {
+      queue2.push({ run, start: resolve2 });
+      pump();
+    });
+  }
+  function pump() {
+    if (laneBusy) return;
+    const next = queue2.shift();
+    if (!next) return;
+    laneBusy = true;
+    next.start();
+  }
+  function leaveLane() {
+    setCurrentRun(null);
+    laneBusy = false;
+    pump();
+  }
+  function cancelAgentRequest(id, reason) {
+    const run = live.get(id);
+    if (!run || run.cancelled) return false;
+    run.cancelled = reason;
+    return true;
+  }
+  function failed(request, code, message) {
+    const loading = takeLoading();
+    return __spreadValues({
+      id: request.id,
+      ok: false,
+      error: message,
+      code,
+      retryable: isRetryable(code)
+    }, loading ? { loading } : {});
+  }
   async function handleAgentRequest(request) {
+    var _a, _b;
     const started = Date.now();
     const op = OPS_BY_NAME.get(request.op);
     const permitted = authorize(op, gates, request.params);
@@ -38754,29 +39906,88 @@ ${scripts}`, "");
       report(request.op, false, Date.now() - started, permitted.error);
       return { id: request.id, ok: false, error: permitted.error, code: permitted.code, retryable: permitted.retryable };
     }
+    const raw = request.params && typeof request.params === "object" ? request.params : {};
+    const writes = (op.mutatesWhen ? op.mutatesWhen(request.params) : op.mutates) && raw.dryRun !== true;
+    const bridgeBudget = typeof request.budgetMs === "number" && Number.isFinite(request.budgetMs) && request.budgetMs > 0 ? request.budgetMs : DEFAULT_CALL_BUDGET_MS;
+    const run = {
+      id: request.id,
+      op: request.op,
+      startedAt: started,
+      deadline: started + Math.max(1e3, bridgeBudget - ANSWER_MARGIN_MS),
+      cancelled: null,
+      // A read can be stopped anywhere. A write is allowed to finish late rather than stop half
+      // applied; its read-only phase opts back in with `enforceDeadline`.
+      enforce: !writes
+    };
+    live.set(run.id, run);
+    const ahead = laneBusy ? (_b = (_a = currentRun()) == null ? void 0 : _a.op) != null ? _b : "another call" : null;
+    await enterLane(run);
+    if (run.cancelled || Date.now() >= run.deadline) {
+      live.delete(run.id);
+      const waited = Math.round((Date.now() - started) / 1e3);
+      const message2 = run.cancelled ? `${request.op} was cancelled before it ran (${run.cancelled})` : `${request.op} waited ${waited}s behind ${ahead != null ? ahead : "other calls"} on this file and its time ran out before it started. The plugin runs one call at a time; retry once the long call ahead of it has answered.`;
+      leaveLane();
+      report(request.op, false, Date.now() - started, message2);
+      return failed(request, "timeout", message2);
+    }
+    setCurrentRun(run);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      live.delete(run.id);
+      leaveLane();
+    };
+    let params;
     try {
-      const params = validateParams(op.params, request.params);
-      const result = await op.run(params);
+      params = validateParams(op.params, request.params);
+    } catch (err2) {
+      release();
+      const message2 = String((err2 == null ? void 0 : err2.message) || err2);
+      report(request.op, false, Date.now() - started, message2);
+      return failed(request, err2 instanceof ParamError ? "param_invalid" : "figma_threw", message2);
+    }
+    if ("budgetMs" in op.params) {
+      const room = Math.max(500, run.deadline - Date.now() - 1e3);
+      const asked = typeof params.budgetMs === "number" ? params.budgetMs : Infinity;
+      if (asked > room) params.budgetMs = room;
+    }
+    const settled = op.run(params).then(
+      (value2) => ({ ok: true, value: value2 }),
+      (error) => ({ ok: false, error })
+    );
+    let cancelOverstay = () => {
+    };
+    const overstayed = new Promise((resolve2) => {
+      const timer = setTimeout(() => resolve2("overstayed"), Math.max(0, run.deadline + OVERSTAY_MS - Date.now()));
+      cancelOverstay = () => clearTimeout(timer);
+    });
+    const first = await Promise.race([settled, overstayed]);
+    cancelOverstay();
+    if (first === "overstayed") {
+      run.cancelled = "it ran past its deadline";
+      void settled.then(release);
+      const seconds2 = Math.round((run.deadline - started) / 1e3);
+      const message2 = writes ? `${request.op} did not finish within ${seconds2}s. Its writes are NOT interrupted \u2014 they finish in the background; read the document back before retrying any of it.` : `${request.op} did not finish within ${seconds2}s and was stopped by the plugin. Narrow it (pageId, nodeId, a smaller limit), or continue with the \`cursor\` an op hands back.`;
+      report(request.op, false, Date.now() - started, message2);
+      return failed(request, "timeout", message2);
+    }
+    release();
+    if (first.ok) {
       report(request.op, true, Date.now() - started);
       const loading = takeLoading();
+      const result = first.value;
       return __spreadValues({
         id: request.id,
         ok: true,
         result: loading && result && typeof result === "object" && !Array.isArray(result) ? __spreadProps(__spreadValues({}, result), { loading }) : result
       }, loading ? { loading } : {});
-    } catch (err) {
-      const message = String((err == null ? void 0 : err.message) || err);
-      report(request.op, false, Date.now() - started, message);
-      const loading = takeLoading();
-      const code = err instanceof ParamError ? "param_invalid" : "figma_threw";
-      return __spreadValues({
-        id: request.id,
-        ok: false,
-        error: message,
-        code,
-        retryable: isRetryable(code)
-      }, loading ? { loading } : {});
     }
+    const err = first.error;
+    const message = String((err == null ? void 0 : err.message) || err);
+    report(request.op, false, Date.now() - started, message);
+    const code = err instanceof ParamError ? "param_invalid" : err instanceof RunStopped ? "timeout" : "figma_threw";
+    return failed(request, code, message);
   }
   function report(op, ok, ms, error) {
     postToUi({ type: "AGENT_ACTIVITY", op, ok, ms, error });
@@ -38798,12 +40009,12 @@ ${scripts}`, "");
     return (_a = parseStoredGates(storage[fileKey])) != null ? _a : __spreadValues({}, CLOSED_GATES);
   }
   function withStoredGates(storage, fileKey, legacyFileName, gates2) {
-    const current = storage && typeof storage === "object" ? __spreadValues({}, storage) : {};
-    if (!fileKey) return current;
-    if (gates2.read || gates2.write) current[fileKey] = { read: gates2.read, write: gates2.write };
-    else delete current[fileKey];
-    delete current[legacyFileName];
-    return current;
+    const current2 = storage && typeof storage === "object" ? __spreadValues({}, storage) : {};
+    if (!fileKey) return current2;
+    if (gates2.read || gates2.write) current2[fileKey] = { read: gates2.read, write: gates2.write };
+    else delete current2[fileKey];
+    delete current2[legacyFileName];
+    return current2;
   }
 
   // src/modules/registry.ts
@@ -38819,8 +40030,8 @@ ${scripts}`, "");
     }
     return state;
   }
-  function redactModuleState(module, current) {
-    const state = __spreadValues({}, current);
+  function redactModuleState(module, current2) {
+    const state = __spreadValues({}, current2);
     for (const [name, field] of Object.entries(module.state)) if (field.secret) delete state[name];
     return state;
   }
@@ -38962,12 +40173,75 @@ ${scripts}`, "");
     });
   }
 
+  // src/canvas/motion-styles.ts
+  function resolveMotionStyleTarget(reference2, figmaStyles, customStyles) {
+    const wanted = reference2.trim();
+    const byId = [
+      ...figmaStyles.filter((style) => style.styleId === wanted).map((style) => ({ type: "FIGMA", id: style.styleId, name: style.name })),
+      ...customStyles.filter((style) => style.id === wanted).map((style) => ({ type: "CUSTOM", id: style.id, name: style.name }))
+    ];
+    if (byId.length === 1) return byId[0];
+    const byName = [
+      ...figmaStyles.filter((style) => style.name === wanted).map((style) => ({ type: "FIGMA", id: style.styleId, name: style.name })),
+      ...customStyles.filter((style) => style.name === wanted).map((style) => ({ type: "CUSTOM", id: style.id, name: style.name }))
+    ];
+    if (byName.length === 1) return byName[0];
+    if (byName.length > 1) {
+      throw new Error(`animation style name "${wanted}" is ambiguous \u2014 use one of these ids: ${byName.map((style) => style.id).join(", ")}`);
+    }
+    const available = [
+      ...figmaStyles.map((style) => `${style.name} (${style.styleId})`),
+      ...customStyles.map((style) => `${style.name} (${style.id}, custom)`)
+    ];
+    throw new Error(`no animation style called "${wanted}" \u2014 Figma has ${available.join(", ") || "none"}`);
+  }
+  function resolveFigmaAnimationStyle(reference2, figmaStyles) {
+    const wanted = reference2.trim();
+    const byId = figmaStyles.filter((style) => style.styleId === wanted);
+    if (byId.length === 1) return byId[0];
+    const byName = figmaStyles.filter((style) => style.name === wanted);
+    if (byName.length === 1) return byName[0];
+    if (byName.length > 1) {
+      throw new Error(`Figma animation name "${wanted}" is ambiguous \u2014 use one of these styleIds: ${byName.map((style) => style.styleId).join(", ")}`);
+    }
+    throw new Error(
+      `no Figma animation called "${wanted}" \u2014 available: ${figmaStyles.map((style) => `${style.name} (${style.styleId})`).join(", ") || "none"}`
+    );
+  }
+  async function replaceCustomAnimationEntries(style, wanted) {
+    const previous = style.animationEntries.map((entry) => {
+      var _a;
+      return {
+        styleId: entry.styleId,
+        props: (_a = entry.props) != null ? _a : {}
+      };
+    });
+    const write = async (entries) => {
+      for (const entry of [...style.animationEntries]) style.removeAnimationEntry(entry.id);
+      for (const entry of entries) await style.addAnimationEntryAsync(entry.styleId, entry.props);
+    };
+    try {
+      await write(wanted);
+    } catch (error) {
+      try {
+        await write(previous);
+      } catch (rollbackError) {
+        throw new Error(
+          `${String((error == null ? void 0 : error.message) || error)}; rollback also failed: ${String(
+            (rollbackError == null ? void 0 : rollbackError.message) || rollbackError
+          )}`
+        );
+      }
+      throw error;
+    }
+  }
+
   // src/targets/react/jsx.ts
   function newContext(scope) {
     return { copy: {}, props: /* @__PURE__ */ new Map(), used: /* @__PURE__ */ new Set(), instanceRoots: /* @__PURE__ */ new Set(), gaps: [], scope };
   }
   var INDENT = "  ";
-  function componentName2(name) {
+  function componentName(name) {
     const cleaned = name.replace(/[^A-Za-z0-9]+/g, " ").trim();
     const camel = cleaned.split(" ").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join("");
     return /^[A-Za-z]/.test(camel) ? camel : `C${camel}`;
@@ -39041,7 +40315,7 @@ ${pad2})}`;
     const className = node.id === context.rootId ? `[${own}${context.hasVariants ? ", variant" : ""}, className].filter(Boolean).join(' ')` : own;
     for (const warning of (_a = node.warnings) != null ? _a : []) context.gaps.push(`${node.name}: ${warning}`);
     if (node.type === "instance-ref" && node.restyled) {
-      const of = (_c = node.componentId ? (_b = context.namesById) == null ? void 0 : _b.get(node.componentId) : void 0) != null ? _c : componentName2(node.componentSetName || node.name);
+      const of = (_c = node.componentId ? (_b = context.namesById) == null ? void 0 : _b.get(node.componentId) : void 0) != null ? _c : componentName(node.componentSetName || node.name);
       context.gaps.push(
         `${node.name}: restyled where it sits \u2014 written out as markup rather than rendered as <${of} />`
       );
@@ -39070,7 +40344,7 @@ ${pad2})}`;
       return `${pad2}<span className=${worn}>${body}</span>`;
     }
     if (node.type === "instance-ref" && !node.restyled) {
-      const name = (_h = node.componentId ? (_g = context.namesById) == null ? void 0 : _g.get(node.componentId) : void 0) != null ? _h : componentName2(node.componentSetName || node.name);
+      const name = (_h = node.componentId ? (_g = context.namesById) == null ? void 0 : _g.get(node.componentId) : void 0) != null ? _h : componentName(node.componentSetName || node.name);
       context.used.add(name);
       context.instanceRoots.add(node.id);
       const props = [];
@@ -39196,7 +40470,7 @@ ${pad2}</${tag}>`;
     };
     const claimAll = (node, key) => {
       belongs(node.id, key);
-      for (const child of childrenOf(node)) claimAll(child, key);
+      for (const child of childrenOf2(node)) claimAll(child, key);
     };
     claimAll(union, first.key);
     maps.set(first.key, /* @__PURE__ */ new Map());
@@ -39205,9 +40479,9 @@ ${pad2}</${tag}>`;
       const merge = (into, from) => {
         map.set(from.id, into.id);
         belongs(into.id, variant2.key);
-        const existing = childrenOf(into);
+        const existing = childrenOf2(into);
         const taken = /* @__PURE__ */ new Set();
-        for (const incoming of childrenOf(from)) {
+        for (const incoming of childrenOf2(from)) {
           let at = existing.findIndex((one, index2) => !taken.has(index2) && one.name === incoming.name && one.type === incoming.type);
           if (at === -1) {
             const added = clone(incoming);
@@ -39220,14 +40494,14 @@ ${pad2}</${tag}>`;
         }
       };
       const claimNothing = (node) => {
-        for (const child of childrenOf(node)) claimNothing(child);
+        for (const child of childrenOf2(node)) claimNothing(child);
       };
       merge(union, variant2.node);
       maps.set(variant2.key, map);
     }
     return { union, membership, maps, unmatched };
   }
-  var childrenOf = (node) => {
+  var childrenOf2 = (node) => {
     var _a;
     return (_a = node.children) != null ? _a : node.children = [];
   };
@@ -39390,7 +40664,7 @@ import figma from 'figma'
     for (const root of roots) {
       const variants = root.component ? [root] : (_d = root.children) != null ? _d : [];
       if (variants.length === 0) continue;
-      const wanted = componentName2(root.name);
+      const wanted = componentName(root.name);
       let name = (_e = names.get(root.id)) != null ? _e : wanted;
       if (!names.has(root.id)) {
         for (let n = 2; taken.has(name); n++) name = `${wanted}${n}`;
@@ -39542,7 +40816,7 @@ import figma from 'figma'
     }
     let firstScreen = null;
     for (const root of roots) {
-      const name = componentName2((_j = options.name) != null ? _j : root.name);
+      const name = componentName((_j = options.name) != null ? _j : root.name);
       firstScreen != null ? firstScreen : firstScreen = name;
       const context = newContext(name.toLowerCase());
       context.assets = options.assetsByNodeId;
@@ -39565,7 +40839,8 @@ ${motion.css}`);
       gaps.push(...context.gaps);
     }
     if (options.tokensCss) files["src/tokens.css"] = options.tokensCss;
-    Object.assign(files, projectFiles(firstScreen, Boolean(options.tokensCss), fontsIn(files), connectFilesWritten));
+    const withMock = firstScreen !== null && `src/screens/${firstScreen}.mock.ts` in files;
+    Object.assign(files, projectFiles(firstScreen, Boolean(options.tokensCss), fontsIn(files), connectFilesWritten, withMock));
     if (connectFilesWritten) files["figma.config.json"] = `${JSON.stringify(CODE_CONNECT_CONFIG, null, 2)}
 `;
     if (Object.values(files).some((one) => one.includes("from '../copy'"))) files["src/copy.tsx"] = COPY_FILE;
@@ -39613,7 +40888,7 @@ ${motion.css}`);
   function collectComponents3(node, into) {
     var _a, _b, _c, _d, _e, _f;
     if (node.type === "instance-ref") {
-      const name = componentName2(node.componentSetName || node.name);
+      const name = componentName(node.componentSetName || node.name);
       const key = (_a = node.componentId) != null ? _a : name;
       const held = (_c = into.get(key)) != null ? _c : {
         name,
@@ -39805,7 +41080,7 @@ export function useCopy(fallback: Copy = {}): (key: string) => string {
   return (key: string) => copy[key] ?? fallback[key] ?? key
 }
 `;
-  function projectFiles(screen, tokens, fonts, codeConnect = false) {
+  function projectFiles(screen, tokens, fonts, codeConnect = false, mock = false) {
     const files = {
       // The browser's own 8px body margin made a 390-wide screen render at 374, and every row in it
       // wrapped a line early. A scaffold that needs a reset the developer has to guess is not one.
@@ -39900,10 +41175,13 @@ import { createRoot } from 'react-dom/client'
 import './global.css'
 ` + (tokens ? `import './tokens.css'
 ` : "") + `import { ${screen} } from './screens/${screen}'
-
+` + // A screen with props rendered bare showed every field empty and failed `tsc`: it is
+      // rendered with what Figma showed, which is what the mock is for.
+      (mock ? `import { ${screen.charAt(0).toLowerCase()}${screen.slice(1)}Mock } from './screens/${screen}.mock'
+` : "") + `
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <${screen} />
+    <${screen}${mock ? ` {...${screen.charAt(0).toLowerCase()}${screen.slice(1)}Mock}` : ""} />
   </StrictMode>
 )
 `;
@@ -39953,6 +41231,1580 @@ createRoot(document.getElementById('root')!).render(
   }
   var header = (name) => `/* Generated from Figma \u2014 ${name}. Regenerating replaces this file; edits outside it survive. */`;
 
+  // src/targets/react/code-layer.ts
+  var CODE_LAYER_EXECUTABLES = [
+    ".figma/make/install",
+    ".figma/make/dev",
+    ".figma/make/deploy-preview",
+    ".figma/make/deploy"
+  ];
+  var SHEBANG = "#!/usr/bin/env bash\nset -euo pipefail\n";
+  function screenOf(files) {
+    var _a;
+    const rendered = /import \{ (\w+) \} from '\.\/screens\/\1'/.exec((_a = files["src/main.tsx"]) != null ? _a : "");
+    if (rendered) return rendered[1];
+    const first = Object.keys(files).filter((path) => /^src\/screens\/\w+\.tsx$/.test(path)).sort()[0];
+    return first ? first.slice("src/screens/".length, -".tsx".length) : null;
+  }
+  function asCodeLayer(files) {
+    const out = {};
+    for (const [path, contents] of Object.entries(files)) {
+      if (path.endsWith(".figma.ts") || path === "figma.config.json" || path === "tsconfig.figma.json") continue;
+      out[path] = contents;
+    }
+    if (out["package.json"]) {
+      const pkg = JSON.parse(out["package.json"]);
+      pkg.name = "figma-make-app";
+      if (pkg.scripts) {
+        for (const key of Object.keys(pkg.scripts)) if (key.startsWith("figma:")) delete pkg.scripts[key];
+      }
+      if (pkg.devDependencies) delete pkg.devDependencies["@figma/code-connect"];
+      out["package.json"] = `${JSON.stringify(pkg, null, 2)}
+`;
+    }
+    if (out["tsconfig.json"]) {
+      const tsconfig = JSON.parse(out["tsconfig.json"]);
+      delete tsconfig.exclude;
+      out["tsconfig.json"] = `${JSON.stringify(tsconfig, null, 2)}
+`;
+    }
+    out["vite.config.ts"] = `import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite'
+
+const figma = Boolean(process.env.FIGMA)
+
+export default defineConfig({
+  plugins: [react()],
+  base: process.env.FIGMA_PUBLIC_URL ? \`\${process.env.FIGMA_PUBLIC_URL}/\` : '/',
+  server: {
+    port: figma ? Number(process.env.PORT) : 5173,
+    host: figma ? process.env.FIGMA_DEV_SERVER_HOST || '0.0.0.0' : undefined,
+    strictPort: figma,
+  },
+})
+`;
+    const screen = screenOf(out);
+    if (screen && out["src/main.tsx"]) {
+      const mock = `${screen.charAt(0).toLowerCase()}${screen.slice(1)}Mock`;
+      const hasMock = `src/screens/${screen}.mock.ts` in out;
+      out["src/App.tsx"] = `import { ${screen} } from './screens/${screen}'
+` + (hasMock ? `import { ${mock} } from './screens/${screen}.mock'
+` : "") + `
+export default function App() {
+  return <${screen}${hasMock ? ` {...${mock}}` : ""} />
+}
+`;
+      out["src/main.tsx"] = out["src/main.tsx"].replace(`import { ${screen} } from './screens/${screen}'
+`, `import App from './App'
+`).replace(`import { ${mock} } from './screens/${screen}.mock'
+`, "").replace(/<\w+(?: \{\.\.\.\w+\})? \/>/, "<App />");
+    }
+    out[".figma/make/install"] = `${SHEBANG}npm install --no-audit --no-fund
+`;
+    out[".figma/make/dev"] = `${SHEBANG}exec npx vite --port "$PORT" --host "\${FIGMA_DEV_SERVER_HOST:-0.0.0.0}" --strictPort
+`;
+    out[".figma/make/deploy-preview"] = `${SHEBANG}npx vite build --mode development
+[[ -d dist ]]
+figma make deploy-preview --build-dir dist
+`;
+    out[".figma/make/deploy"] = `${SHEBANG}npx vite build
+[[ -d dist ]]
+figma make deploy --build-dir dist
+`;
+    return out;
+  }
+
+  // src/canvas/overrides.ts
+  var FIELD_WORDS = {
+    characters: "text",
+    visible: "visible",
+    locked: "locked",
+    name: "name",
+    opacity: "opacity",
+    fills: "fill",
+    strokes: "stroke",
+    strokeWeight: "strokeWeight",
+    cornerRadius: "cornerRadius",
+    effects: "effects",
+    fontName: "fontName",
+    fontSize: "fontSize",
+    letterSpacing: "letterSpacing",
+    lineHeight: "lineHeight",
+    textCase: "textCase",
+    textDecoration: "textDecoration",
+    textAlignHorizontal: "textAlign",
+    textAlignVertical: "verticalAlign",
+    textAutoResize: "autoResize",
+    textTruncation: "truncate",
+    maxLines: "maxLines",
+    paragraphSpacing: "paragraphSpacing",
+    paragraphIndent: "paragraphIndent",
+    width: "width",
+    height: "height",
+    layoutSizingHorizontal: "sizing",
+    layoutSizingVertical: "sizing",
+    itemSpacing: "layout",
+    paddingLeft: "layout",
+    paddingRight: "layout",
+    paddingTop: "layout",
+    paddingBottom: "layout",
+    layoutMode: "layout",
+    primaryAxisAlignItems: "layout",
+    counterAxisAlignItems: "layout",
+    componentProperties: "properties",
+    fillStyleId: "fillStyle",
+    strokeStyleId: "strokeStyle",
+    textStyleId: "textStyle",
+    effectStyleId: "effectStyle",
+    gridStyleId: "gridStyle",
+    styledTextSegments: "runs",
+    boundVariables: "bind",
+    rotation: "rotation",
+    blendMode: "blendMode",
+    constraints: "constraints",
+    reactions: "links"
+  };
+  var CLEARED = {
+    fill: "none",
+    stroke: "none",
+    effects: [],
+    link: null,
+    maxLines: null,
+    runs: []
+  };
+  async function readOverrides(instance, describe) {
+    const own = instance.id;
+    const prefix = own.startsWith("I") ? `${own};` : `I${own};`;
+    const out = [];
+    for (const entry of instance.overrides) {
+      if (entry.id === own || !entry.id.startsWith(prefix)) continue;
+      const node = await figma.getNodeByIdAsync(entry.id).catch(() => null);
+      if (!node || !("type" in node)) continue;
+      const reading = await describe(node);
+      const wanted = /* @__PURE__ */ new Set();
+      const unread = [];
+      for (const field of entry.overriddenFields) {
+        const word = FIELD_WORDS[field];
+        if (word) wanted.add(word);
+        else unread.push(field);
+      }
+      const props = {};
+      for (const word of wanted) {
+        if (reading[word] !== void 0) props[word] = reading[word];
+        else if (word in CLEARED) props[word] = CLEARED[word];
+      }
+      if (Object.keys(props).length === 0 && unread.length === 0) continue;
+      out.push(__spreadValues({
+        at: entry.id.slice(prefix.length),
+        props
+      }, unread.length > 0 ? { unread } : {}));
+    }
+    return out;
+  }
+  function addressIn(instance, at) {
+    const own = instance.id;
+    return own.startsWith("I") ? `${own};${at}` : `I${own};${at}`;
+  }
+
+  // src/canvas/styles.ts
+  var STYLE_KINDS = ["paint", "text", "effect", "grid", "animation"];
+  var FIGMA_TYPE = {
+    paint: "PAINT",
+    text: "TEXT",
+    effect: "EFFECT",
+    grid: "GRID",
+    animation: "CUSTOM_ANIMATION"
+  };
+  var KIND_OF_TYPE = {
+    PAINT: "paint",
+    TEXT: "text",
+    EFFECT: "effect",
+    GRID: "grid",
+    CUSTOM_ANIMATION: "animation"
+  };
+  async function localStyles(kind) {
+    switch (kind) {
+      case "paint":
+        return figma.getLocalPaintStylesAsync();
+      case "text":
+        return figma.getLocalTextStylesAsync();
+      case "effect":
+        return figma.getLocalEffectStylesAsync();
+      case "animation":
+        return figma.getLocalCustomAnimationStylesAsync();
+      default:
+        return figma.getLocalGridStylesAsync();
+    }
+  }
+  async function styleFor(ref, kind) {
+    const wanted = ref.trim();
+    const styles = await localStyles(kind);
+    const exact = styles.filter((style) => style.name === wanted);
+    const loose = exact.length > 0 ? exact : styles.filter((style) => style.name.toLowerCase() === wanted.toLowerCase());
+    if (loose.length === 1) return loose[0];
+    if (loose.length > 1) {
+      throw new Error(`"${wanted}" matches ${loose.length} ${kind} styles \u2014 name one by id`);
+    }
+    const byId = await figma.getStyleByIdAsync(wanted).catch(() => null);
+    if (byId) {
+      if (KIND_OF_TYPE[byId.type] !== kind) throw new Error(`${wanted} is a ${byId.type} style, not ${FIGMA_TYPE[kind]}`);
+      return byId;
+    }
+    const imported = await figma.importStyleByKeyAsync(wanted).catch(() => null);
+    if (imported) {
+      if (KIND_OF_TYPE[imported.type] !== kind) {
+        throw new Error(`${wanted} is a ${imported.type} style, not ${FIGMA_TYPE[kind]}`);
+      }
+      return imported;
+    }
+    const names = styles.slice(0, 12).map((style) => style.name);
+    throw new Error(
+      `no ${kind} style called "${wanted}"${names.length > 0 ? ` \u2014 this file has ${names.join(", ")}` : " in this file"}`
+    );
+  }
+  async function describeStyle(style, paints2, effects, grids) {
+    var _a;
+    switch (style.type) {
+      case "PAINT":
+        return (_a = await paints2(style.paints)) != null ? _a : "none";
+      case "EFFECT":
+        return effects(style.effects);
+      case "CUSTOM_ANIMATION":
+        return style.animationEntries.map((entry) => `${entry.name}${entry.duration === void 0 ? "" : ` ${entry.duration}s`}`).join(" \u2192 ") || "no animations";
+      case "TEXT": {
+        const text6 = style;
+        const height = text6.lineHeight.unit === "AUTO" ? "auto" : `${Math.round(text6.lineHeight.value * 100) / 100}${text6.lineHeight.unit === "PERCENT" ? "%" : ""}`;
+        const spacing = text6.letterSpacing.value === 0 ? "" : ` \xB7 tracking ${Math.round(text6.letterSpacing.value * 100) / 100}${text6.letterSpacing.unit === "PERCENT" ? "%" : ""}`;
+        const axes = text6.fontName.variationSettings;
+        const variations = axes ? ` \xB7 ${Object.entries(axes).map(([tag, value2]) => `${tag} ${value2}`).join(" ")}` : "";
+        return `${text6.fontName.family} ${text6.fontName.style} ${text6.fontSize}/${height}${variations}${spacing}`;
+      }
+      default:
+        return grids(style.layoutGrids);
+    }
+  }
+
+  // src/canvas/apply.ts
+  function manualTrackFields(tracks) {
+    const out = [];
+    if (!tracks) return out;
+    for (const [key, value2] of Object.entries(tracks)) {
+      if (value2 === void 0 || value2 === null) continue;
+      if (key === "fills" || key === "strokes") {
+        for (const index2 of Object.keys(value2)) {
+          out.push({ name: `${key}[${index2}]`, field: { type: "INDEXED_ITEM", collection: key, index: Number(index2) } });
+        }
+      } else if (key === "effects") {
+        for (const [index2, fields2] of Object.entries(value2)) {
+          for (const field of Object.keys(fields2 != null ? fields2 : {})) {
+            if (field === "properties") continue;
+            out.push({ name: `effects[${index2}].${field}`, field: { type: "INDEXED_ITEM", collection: "effects", index: Number(index2), field } });
+          }
+        }
+      } else if (key !== "properties") {
+        out.push({ name: key, field: { type: "PROPERTY", name: key } });
+      }
+    }
+    return out;
+  }
+  function gridBefore(frame3) {
+    const grid = frame3;
+    return __spreadProps(__spreadValues(__spreadValues({
+      rows: grid.gridRowCount,
+      columns: grid.gridColumnCount,
+      rowGap: grid.gridRowGap,
+      columnGap: grid.gridColumnGap
+    }, grid.gridRowSizes ? { rowSizes: grid.gridRowSizes.map(formatGridTrack) } : {}), grid.gridColumnSizes ? { columnSizes: grid.gridColumnSizes.map(formatGridTrack) } : {}), {
+      positioning: grid.gridItemsPositioning
+    });
+  }
+  async function applyProps(node, steps, dry = false) {
+    const applied = [];
+    let failed2 = 0;
+    for (const step2 of steps) {
+      try {
+        const result = await applyStep(node, step2, dry);
+        if (result.error) failed2++;
+        applied.push(result);
+      } catch (error) {
+        failed2++;
+        applied.push({ property: propertyOf(step2), error: String((error == null ? void 0 : error.message) || error) });
+      }
+    }
+    return { applied, failed: failed2 };
+  }
+  var propertyOf = (step2) => {
+    switch (step2.step) {
+      case "assign":
+      case "paint":
+        return step2.property;
+      case "overrides":
+        return "overrides";
+      case "keyframes":
+        return "keyframes";
+      case "strokeProfile":
+        return "strokeProfile";
+      case "timeline":
+        return "timeline";
+      case "font":
+        return "fontName";
+      case "text":
+        return "characters";
+      case "resize":
+        return "size";
+      case "radius":
+        return "cornerRadius";
+      case "reparent":
+        return "parent";
+      // A refusal should name the slot the caller wrote, the way a success does — "style" tells
+      // them nothing about which of the five they got wrong.
+      case "style":
+        return step2.slot;
+      // `layout`, `constraints` and `lineHeight` are named after themselves.
+      default:
+        return step2.step;
+    }
+  };
+  async function applyStep(node, step2, dry) {
+    var _a, _b, _c, _d, _e, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B;
+    const bag = node;
+    const sublayer = textSublayerFor(node, step2);
+    if (sublayer) return applyStep(sublayer, step2, dry);
+    switch (step2.step) {
+      case "assign": {
+        if (!(step2.property in bag)) throw new Error(`a ${node.type} has no ${step2.property}`);
+        const before = bag[step2.property];
+        if (isText(node) && TEXT_PROPERTIES.includes(step2.property)) await loadNodeFont(node);
+        if (!dry) await withNamedFont(() => bag[step2.property] = step2.value);
+        return { property: step2.property, before, after: step2.value };
+      }
+      case "font": {
+        if (!isText(node)) throw new Error(`only a text node has a font, not a ${node.type}`);
+        const before = describeFont(node.fontName);
+        const font = step2.font;
+        await figma.loadFontAsync(font);
+        if (!dry) node.fontName = font;
+        return { property: "fontName", before, after: describeFont(font) };
+      }
+      case "text": {
+        if (!isText(node)) throw new Error(`only a text node has characters, not a ${node.type}`);
+        await loadNodeFont(node);
+        const before = node.characters;
+        if (!dry) node.characters = step2.characters;
+        return { property: "characters", before, after: step2.characters };
+      }
+      case "lineHeight": {
+        if (!isText(node)) throw new Error(`only a text node has a line height, not a ${node.type}`);
+        await loadNodeFont(node);
+        const before = node.lineHeight;
+        const after = step2.value === "AUTO" ? { unit: "AUTO" } : { value: step2.value, unit: (_a = step2.unit) != null ? _a : "PIXELS" };
+        if (!dry) node.lineHeight = after;
+        return { property: "lineHeight", before: describeMeasure(before), after: describeMeasure(after) };
+      }
+      case "letterSpacing": {
+        if (!isText(node)) throw new Error(`only a text node has letter spacing, not a ${node.type}`);
+        await loadNodeFont(node);
+        const before = node.letterSpacing;
+        const after = { value: step2.value, unit: step2.unit };
+        if (!dry) node.letterSpacing = after;
+        return { property: "letterSpacing", before: describeMeasure(before), after: describeMeasure(after) };
+      }
+      case "resize": {
+        if (typeof node.resize !== "function") {
+          throw new Error(`a ${node.type} cannot be resized`);
+        }
+        const before = { width: round16(node.width), height: round16(node.height) };
+        const width = (_b = step2.width) != null ? _b : node.width;
+        const height = (_c = step2.height) != null ? _c : node.height;
+        const sized = node;
+        if (!dry) {
+          if (typeof sized.resizeWithoutConstraints === "function") sized.resizeWithoutConstraints(width, height);
+          else sized.resize(width, height);
+        }
+        const after = dry ? { width: round16(width), height: round16(height) } : { width: round16(node.width), height: round16(node.height) };
+        return { property: "size", before, after };
+      }
+      case "radius": {
+        if (!("cornerRadius" in bag)) throw new Error(`a ${node.type} has no corners`);
+        const corners = ["topLeft", "topRight", "bottomRight", "bottomLeft"];
+        const before = {};
+        const after = {};
+        for (const corner of corners) {
+          const amount = step2.corners[corner];
+          if (amount === void 0) continue;
+          const property = `${corner}Radius`;
+          before[property] = bag[property];
+          after[property] = amount;
+          if (!dry) bag[property] = amount;
+        }
+        return { property: "cornerRadius", before, after };
+      }
+      case "constraints": {
+        if (!("constraints" in bag)) throw new Error(`a ${node.type} has no constraints`);
+        const before = bag.constraints;
+        const current2 = before != null ? before : { horizontal: "MIN", vertical: "MIN" };
+        const after = {
+          horizontal: (_d = step2.horizontal) != null ? _d : current2.horizontal,
+          vertical: (_e = step2.vertical) != null ? _e : current2.vertical
+        };
+        if (!dry) bag.constraints = after;
+        return { property: "constraints", before, after };
+      }
+      case "layout": {
+        if (!("layoutMode" in bag)) throw new Error(`a ${node.type} has no auto-layout`);
+        const frame3 = node;
+        const before = __spreadValues({
+          mode: frame3.layoutMode,
+          gap: frame3.itemSpacing,
+          padding: [frame3.paddingTop, frame3.paddingRight, frame3.paddingBottom, frame3.paddingLeft]
+        }, frame3.layoutMode === "GRID" ? gridBefore(frame3) : {});
+        const layout = step2.layout;
+        if (!dry) {
+          if (layout.mode) frame3.layoutMode = layout.mode;
+          if (layout.gap !== void 0) frame3.itemSpacing = layout.gap;
+          if (layout.padding) {
+            const [top, right, bottom, left] = layout.padding;
+            frame3.paddingTop = top;
+            frame3.paddingRight = right;
+            frame3.paddingBottom = bottom;
+            frame3.paddingLeft = left;
+          }
+          if (layout.primaryAxis) frame3.primaryAxisAlignItems = layout.primaryAxis;
+          if (layout.counterAxis) frame3.counterAxisAlignItems = layout.counterAxis;
+          if (layout.wrap !== void 0) frame3.layoutWrap = layout.wrap ? "WRAP" : "NO_WRAP";
+          if (layout.wrapGap !== void 0) frame3.counterAxisSpacing = layout.wrapGap;
+          if (layout.reverseZ !== void 0) frame3.itemReverseZIndex = layout.reverseZ;
+          if (layout.strokesInLayout !== void 0) frame3.strokesIncludedInLayout = layout.strokesInLayout;
+          const grid = frame3;
+          if (layout.rows !== void 0) grid.gridRowCount = layout.rows;
+          if (layout.columns !== void 0) grid.gridColumnCount = layout.columns;
+          if (layout.autoTracks !== void 0) grid.gridAutoTracks = layout.autoTracks;
+          if (layout.moveRows) grid.reorderRows({ fromIndices: layout.moveRows.from, insertionIndex: layout.moveRows.to });
+          if (layout.moveColumns) {
+            grid.reorderColumns({ fromIndices: layout.moveColumns.from, insertionIndex: layout.moveColumns.to });
+          }
+          if (layout.rowSizes) grid.gridRowSizes = layout.rowSizes.map((one) => parseGridTrack(one));
+          if (layout.columnSizes) grid.gridColumnSizes = layout.columnSizes.map((one) => parseGridTrack(one));
+          if (layout.rowGap !== void 0) grid.gridRowGap = layout.rowGap;
+          if (layout.columnGap !== void 0) grid.gridColumnGap = layout.columnGap;
+          if (layout.positioning !== void 0) grid.gridItemsPositioning = layout.positioning;
+        }
+        return { property: "layout", before, after: layout };
+      }
+      case "repeat": {
+        if (node.type !== "TRANSFORM_GROUP") {
+          throw new Error(`a ${node.type} cannot repeat \u2014 NODE_GROUP as "repeat" makes the transform group that can`);
+        }
+        const group2 = node;
+        const before = group2.transformModifiers.map((one) => repeatWords(one));
+        const list2 = Array.isArray(step2.modifiers) ? step2.modifiers : group2.children.map(() => step2.modifiers);
+        if (list2.length !== group2.children.length) {
+          throw new Error(`repeat names ${list2.length} modifier(s) for ${group2.children.length} child(ren) \u2014 one each, or a single one for all`);
+        }
+        if (!dry) group2.transformModifiers = list2;
+        return { property: "repeat", before, after: list2.map((one) => repeatWords(one)) };
+      }
+      case "decoration": {
+        if (!isText(node)) throw new Error(`only text has an underline to draw, not a ${node.type}`);
+        await loadNodeFont(node);
+        const target = node;
+        const before = decorationWords(target);
+        if (!dry) for (const [property, value2] of Object.entries(step2.values)) target[property] = value2;
+        return { property: "decoration", before, after: decorationWords(__spreadValues(__spreadValues({}, target), step2.values)) };
+      }
+      case "connector": {
+        if (node.type !== "CONNECTOR") throw new Error(`only a CONNECTOR joins two things, not a ${node.type}`);
+        const before = connectorWords(bag, pageIdOf(node));
+        const _f = step2.values, { labelFills } = _f, values = __objRest(_f, ["labelFills"]);
+        if (!dry) {
+          for (const [property, value2] of Object.entries(values)) bag[property] = value2;
+          if (labelFills) node.textBackground.fills = labelFills;
+        }
+        return { property: "connector", before, after: dry ? "would be set" : connectorWords(bag, pageIdOf(node)) };
+      }
+      case "table": {
+        if (node.type !== "TABLE") throw new Error(`only a TABLE has rows and cells, not a ${node.type}`);
+        const before = tableWords(node);
+        if (dry) return { property: "table", before, after: "would be set" };
+        const { rows, columns, cells, columnWidths, rowHeights, moveRows, moveColumns } = step2.table;
+        while (rows !== void 0 && node.numRows < rows) node.insertRow(node.numRows);
+        while (rows !== void 0 && node.numRows > rows) node.removeRow(node.numRows - 1);
+        while (columns !== void 0 && node.numColumns < columns) node.insertColumn(node.numColumns);
+        while (columns !== void 0 && node.numColumns > columns) node.removeColumn(node.numColumns - 1);
+        for (const [from, to] of moveRows != null ? moveRows : []) node.moveRow(from, to);
+        for (const [from, to] of moveColumns != null ? moveColumns : []) node.moveColumn(from, to);
+        if (cells) {
+          for (const [row, line] of cells.entries()) {
+            for (const [column2, words2] of line.entries()) {
+              if (words2 === null || row >= node.numRows || column2 >= node.numColumns) continue;
+              const text6 = node.cellAt(row, column2).text;
+              const font = text6.fontName;
+              if (font !== figma.mixed) await figma.loadFontAsync(font);
+              else await loadNodeFont(text6);
+              text6.characters = words2;
+            }
+          }
+        }
+        for (const [column2, width] of (columnWidths != null ? columnWidths : []).entries()) {
+          if (typeof width === "number" && column2 < node.numColumns) node.resizeColumn(column2, width);
+        }
+        for (const [row, height] of (rowHeights != null ? rowHeights : []).entries()) {
+          if (typeof height === "number" && row < node.numRows) node.resizeRow(row, height);
+        }
+        return { property: "table", before, after: tableWords(node) };
+      }
+      case "transition": {
+        if (node.type !== "SLIDE") throw new Error(`only a SLIDE has a transition, not a ${node.type}`);
+        const slide = node;
+        const before = transitionWords(slide.getSlideTransition());
+        if (!dry) slide.setSlideTransition(step2.transition);
+        return { property: "transition", before, after: (_g = transitionWords(step2.transition)) != null ? _g : "NONE" };
+      }
+      case "stuckTo": {
+        const stickable = node;
+        if (!("stuckTo" in node)) throw new Error(`a ${node.type} cannot be stuck to anything`);
+        const before = (_i = (_h = stickable.stuckTo) == null ? void 0 : _h.id) != null ? _i : null;
+        let target = null;
+        if (step2.target !== null) {
+          const found = await figma.getNodeByIdAsync(step2.target);
+          if (!found || !("visible" in found)) throw new Error(`${step2.target} is not a layer to stick to`);
+          target = found;
+        }
+        if (!dry) stickable.stuckTo = target;
+        return { property: "stuckTo", before, after: step2.target };
+      }
+      case "assetType": {
+        const buzz = figma.buzz;
+        if (figma.editorType !== "buzz" || !buzz) {
+          throw new Error(`assetType is a Figma Buzz property \u2014 this file is open in ${figma.editorType}`);
+        }
+        const before = buzz.getBuzzAssetTypeForNode(node);
+        if (!dry) buzz.setBuzzAssetTypeForNode(node, step2.assetType);
+        return { property: "assetType", before, after: step2.assetType };
+      }
+      case "textStart": {
+        if (node.type !== "TEXT_PATH") throw new Error(`a ${node.type} has no path for text to start on \u2014 only a TEXT_PATH does`);
+        const path = node;
+        const before = [path.textPathStartData.segment, path.textPathStartData.position];
+        if (!dry) path.textPathStartData = { segment: step2.segment, position: step2.position };
+        return { property: "textStart", before, after: [step2.segment, step2.position] };
+      }
+      case "gridCell": {
+        const child = node;
+        const parent = node.parent;
+        if ((parent == null ? void 0 : parent.layoutMode) !== "GRID" || typeof child.setGridChildPosition !== "function") {
+          throw new Error("gridCell needs a parent with a GRID layout");
+        }
+        const before = { row: child.gridRowAnchorIndex, column: child.gridColumnAnchorIndex };
+        if (!dry) child.setGridChildPosition(step2.row, step2.column);
+        return { property: "gridCell", before, after: { row: step2.row, column: step2.column } };
+      }
+      case "paint": {
+        if (!(step2.property in bag)) throw new Error(`a ${node.type} has no ${step2.property}`);
+        const before = await describePaints2(bag[step2.property]);
+        const paints2 = await buildPaints(step2.ref);
+        if (!dry) {
+          const setter = step2.property === "fills" ? "setFillsAsync" : "setStrokesAsync";
+          if (paints2.some((paint) => paint.type === "PATTERN")) {
+            if (typeof bag[setter] !== "function") throw new Error(`a ${node.type} cannot take a pattern ${step2.property === "fills" ? "fill" : "stroke"}`);
+            await bag[setter].call(node, paints2);
+          } else bag[step2.property] = paints2;
+        }
+        return { property: step2.property, before, after: await describePaints2(paints2) };
+      }
+      case "reset": {
+        if (node.type === "SLOT") {
+          const slot = node;
+          if (typeof slot.resetSlot !== "function") throw new Error("this Figma cannot reset a slot");
+          const before2 = `${(_k = (_j = slot.children) == null ? void 0 : _j.length) != null ? _k : 0} child(ren)`;
+          if (!dry) slot.resetSlot();
+          return { property: "reset", before: before2, after: "whatever the component's slot holds" };
+        }
+        const instance = asInstance(node, "overrides to reset");
+        let before = null;
+        try {
+          before = `${instance.overrides.length} override(s)`;
+        } catch (e) {
+        }
+        const bag2 = instance;
+        if (!dry) {
+          if (typeof bag2.removeOverrides === "function") instance.removeOverrides();
+          else instance.resetOverrides();
+        }
+        return { property: "reset", before, after: "whatever the main component says" };
+      }
+      case "swap": {
+        const instance = asInstance(node, "a component to swap");
+        const target = await componentFor(step2.component);
+        const before = componentName2(await instance.getMainComponentAsync());
+        if (!dry) instance.swapComponent(target);
+        return { property: "swap", before, after: componentName2(target) };
+      }
+      case "properties": {
+        const instance = asInstance(node, "component properties");
+        const defined = instance.componentProperties;
+        const { resolved, problems } = resolveProperties(step2.properties, defined);
+        const before = {};
+        for (const key of Object.keys(resolved)) before[humanPropertyName(key)] = (_l = defined[key]) == null ? void 0 : _l.value;
+        if (!dry && Object.keys(resolved).length > 0) {
+          try {
+            instance.setProperties(resolved);
+          } catch (e) {
+            for (const [key, value2] of Object.entries(resolved)) {
+              try {
+                instance.setProperties({ [key]: value2 });
+              } catch (one) {
+                problems.push(`${humanPropertyName(key)}: ${String((one == null ? void 0 : one.message) || one)}`);
+              }
+            }
+          }
+        }
+        const now = dry ? null : byHumanName(instance.componentProperties);
+        const after = {};
+        for (const [key, value2] of Object.entries(resolved)) {
+          const name = humanPropertyName(key);
+          after[name] = now && name in now ? now[name] : value2;
+        }
+        return __spreadValues({
+          property: "properties",
+          before,
+          after
+        }, problems.length > 0 ? { error: problems.join(" \xB7 ") } : {});
+      }
+      case "links": {
+        const holder = node;
+        if (typeof holder.setReactionsAsync !== "function") {
+          throw new Error(`a ${node.type} cannot carry prototype links`);
+        }
+        for (const id of step2.destinations) {
+          const target = await figma.getNodeByIdAsync(id).catch(() => null);
+          if (!target) throw new Error(`no node with id ${id} to link to`);
+        }
+        const reactions = [];
+        for (const link of step2.links) {
+          const actions = [];
+          for (const action of link.actions) actions.push(await buildAction(action));
+          reactions.push({ trigger: link.trigger, actions });
+        }
+        const had = Array.isArray(holder.reactions) ? holder.reactions.length : 0;
+        if (!dry) await holder.setReactionsAsync(reactions);
+        const stored = !dry && Array.isArray(holder.reactions) ? holder.reactions : reactions;
+        return { property: "links", before: `${had} link(s)`, after: await describeLinks(stored, variableName) };
+      }
+      case "data": {
+        const before = {};
+        for (const key of Object.keys(step2.data)) {
+          const held = node.getPluginData(key);
+          if (held !== "") before[key] = held;
+        }
+        if (!dry) for (const [key, value2] of Object.entries(step2.data)) node.setPluginData(key, value2 != null ? value2 : "");
+        return { property: "data", before, after: step2.data };
+      }
+      case "effects": {
+        if (!("effects" in bag)) throw new Error(`a ${node.type} takes no effects`);
+        const before = await describeEffects(bag.effects);
+        let effects = step2.effects;
+        const failures = [];
+        for (const effect of effects) {
+          if (effect.type === "SHADER") {
+            await figma.importShaderById(effect.id).catch(() => void 0);
+          }
+        }
+        for (const binding of step2.bind) {
+          try {
+            const variable = await resolveVariableRef(binding.variable);
+            const wants = binding.field === "color" ? "COLOR" : "FLOAT";
+            if (variable.resolvedType !== wants) {
+              throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${binding.field} wants a ${wants}`);
+            }
+            const bound = figma.variables.setBoundVariableForEffect(
+              effects[binding.index],
+              binding.field,
+              variable
+            );
+            effects = effects.map((effect, index2) => index2 === binding.index ? bound : effect);
+          } catch (error) {
+            failures.push(`${binding.field}: ${String((error == null ? void 0 : error.message) || error)}`);
+          }
+        }
+        if (!dry) bag.effects = effects;
+        return __spreadValues({
+          property: "effects",
+          before,
+          after: step2.summary
+        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
+      }
+      case "animation": {
+        const holder = node;
+        if (typeof holder.applyAnimationStyle !== "function") {
+          throw new Error(`a ${node.type} takes no animation styles`);
+        }
+        const held = (_m = holder.animationStyles) != null ? _m : [];
+        const before = held.map((one) => `${one.type}:${one.styleId}`).join(", ") || "none";
+        const figmaStyles = figma.motion.figmaAnimationStyles();
+        const customStyles = typeof figma.getLocalCustomAnimationStylesAsync === "function" ? await figma.getLocalCustomAnimationStylesAsync() : [];
+        const resolved = step2.styles.map((one) => __spreadProps(__spreadValues({}, one), {
+          target: resolveMotionStyleTarget(one.style, figmaStyles, customStyles)
+        }));
+        for (const one of resolved) {
+          if (one.target.type === "CUSTOM" && (one.duration !== void 0 || Object.keys(one.props).length > 0)) {
+            throw new Error(
+              `custom animation style "${one.target.name}" owns its durations and props \u2014 only offset may be overridden`
+            );
+          }
+        }
+        const failures = [];
+        if (!dry) {
+          for (const applied of [...held]) (_n = holder.removeAnimationStyle) == null ? void 0 : _n.call(holder, applied.id);
+          for (const one of resolved) {
+            try {
+              if (one.target.type === "CUSTOM") {
+                holder.applyAnimationStyle(one.target.id, __spreadValues({
+                  type: "CUSTOM"
+                }, one.offset === void 0 ? {} : { timelineOffset: one.offset }));
+                continue;
+              }
+              const settings = {};
+              for (const [name, value2] of Object.entries(one.props)) {
+                const named = value2;
+                if (named && typeof named === "object" && typeof named.variable === "string") {
+                  const variable = await resolveVariableRef(named.variable);
+                  settings[name] = { type: "VARIABLE_ALIAS", id: variable.id };
+                  continue;
+                }
+                settings[name] = value2;
+              }
+              holder.applyAnimationStyle(one.target.id, __spreadValues(__spreadValues(__spreadValues({
+                type: "FIGMA"
+              }, one.duration === void 0 ? {} : { duration: one.duration }), one.offset === void 0 ? {} : { timelineOffset: one.offset }), Object.keys(settings).length > 0 ? { props: settings } : {}));
+            } catch (error) {
+              failures.push(`${one.style}: ${String((error == null ? void 0 : error.message) || error)}`);
+            }
+          }
+        }
+        return __spreadValues({
+          property: "animation",
+          before,
+          after: step2.summary
+        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
+      }
+      case "grid": {
+        if (!("layoutGrids" in bag)) throw new Error(`a ${node.type} takes no layout grids`);
+        const before = Array.isArray(bag.layoutGrids) ? `${bag.layoutGrids.length} grid(s)` : "none";
+        if (!dry) bag.layoutGrids = step2.grids;
+        return { property: "grid", before, after: step2.summary };
+      }
+      case "brush": {
+        if (!("complexStrokeProperties" in bag)) throw new Error(`a ${node.type} has no stroke to draw with`);
+        const before = describeBrush(bag.complexStrokeProperties);
+        if (step2.loads) await figma.loadBrushesAsync(step2.loads);
+        if (!dry) bag.complexStrokeProperties = step2.brush;
+        return { property: "brush", before, after: step2.summary };
+      }
+      case "bound": {
+        if (!(step2.property in bag)) throw new Error(`a ${node.type} has no ${step2.property}`);
+        const before = bag[step2.property];
+        if (!dry) bag[step2.property] = step2.value;
+        return { property: step2.property, before, after: step2.value };
+      }
+      case "dashes": {
+        if (!("dashPattern" in bag)) throw new Error(`a ${node.type} has no stroke to dash`);
+        const before = bag.dashPattern;
+        if (!dry) bag.dashPattern = step2.dashes;
+        return { property: "strokeDashes", before, after: step2.dashes };
+      }
+      case "link": {
+        if (!isText(node)) throw new Error(`only a text node carries a link, not a ${node.type}`);
+        await loadNodeFont(node);
+        const before = node.hyperlink;
+        if (!dry) node.hyperlink = step2.url === null ? null : { type: "URL", value: step2.url };
+        return { property: "hyperlink", before, after: (_o = step2.url) != null ? _o : "none" };
+      }
+      case "runs": {
+        if (!isText(node)) throw new Error(`only a text node has runs, not a ${node.type}`);
+        await loadNodeFont(node);
+        const applied = [];
+        const problems = [];
+        for (const run of step2.runs) {
+          const { ranges, problem } = resolveRanges(node.characters, run);
+          if (problem) {
+            problems.push(problem);
+            continue;
+          }
+          if (run.fontName) await figma.loadFontAsync(run.fontName);
+          const paints2 = run.fill === void 0 ? null : await buildPaints(run.fill);
+          const textStyle = run.textStyle ? await styleFor(run.textStyle, "text") : null;
+          const fillStyle = run.fillStyle ? await styleFor(run.fillStyle, "paint") : null;
+          if (textStyle) await figma.loadFontAsync(textStyle.fontName);
+          for (const [from, to] of ranges) {
+            if (dry) continue;
+            if (textStyle) await node.setRangeTextStyleIdAsync(from, to, textStyle.id);
+            if (fillStyle) await node.setRangeFillStyleIdAsync(from, to, fillStyle.id);
+            if (run.fontName) node.setRangeFontName(from, to, run.fontName);
+            if (run.fontSize !== void 0) node.setRangeFontSize(from, to, run.fontSize);
+            if (paints2) node.setRangeFills(from, to, paints2);
+            if (run.textDecoration) node.setRangeTextDecoration(from, to, run.textDecoration);
+            if (run.textCase) node.setRangeTextCase(from, to, run.textCase);
+            if (run.textWrap) node.setRangeTextWrapStyle(from, to, run.textWrap);
+            if (run.letterSpacing !== void 0) {
+              node.setRangeLetterSpacing(from, to, measured2(run.letterSpacing));
+            }
+            if (run.lineHeight !== void 0) {
+              node.setRangeLineHeight(from, to, run.lineHeight === "AUTO" ? { unit: "AUTO" } : measured2(run.lineHeight));
+            }
+            if (run.link !== void 0) {
+              node.setRangeHyperlink(from, to, run.link === null ? null : { type: "URL", value: run.link });
+            }
+            const paragraphs = node;
+            if (run.list) (_p = paragraphs.setRangeListOptions) == null ? void 0 : _p.call(paragraphs, from, to, { type: run.list });
+            if (run.indent !== void 0) (_q = paragraphs.setRangeIndentation) == null ? void 0 : _q.call(paragraphs, from, to, run.indent);
+            if (run.listSpacing !== void 0) (_r = paragraphs.setRangeListSpacing) == null ? void 0 : _r.call(paragraphs, from, to, run.listSpacing);
+            if (run.paragraphSpacing !== void 0) (_s = paragraphs.setRangeParagraphSpacing) == null ? void 0 : _s.call(paragraphs, from, to, run.paragraphSpacing);
+            if (run.paragraphIndent !== void 0) (_t = paragraphs.setRangeParagraphIndent) == null ? void 0 : _t.call(paragraphs, from, to, run.paragraphIndent);
+            if (run.decoration !== void 0) {
+              const planned = planDecoration(run.decoration);
+              if ("values" in planned) {
+                const ranged = node;
+                for (const [property, value2] of Object.entries(planned.values)) {
+                  const setter = `setRange${property[0].toUpperCase()}${property.slice(1)}`;
+                  if (typeof ranged[setter] === "function") ranged[setter].call(node, from, to, value2);
+                }
+              }
+            }
+          }
+          for (const [from, to] of ranges) applied.push(`"${node.characters.slice(from, to)}" ${describeRun(run)}`);
+        }
+        return __spreadValues({
+          property: "runs",
+          before: `${node.characters.length} character(s)`,
+          after: applied.join(" \xB7 ") || "nothing"
+        }, problems.length > 0 ? { error: problems.join(" \xB7 ") } : {});
+      }
+      case "sizing": {
+        if (!("layoutSizingHorizontal" in bag)) throw new Error(`a ${node.type} has no sizing to set`);
+        const before = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical };
+        const failures = [];
+        for (const axis of ["horizontal", "vertical"]) {
+          const mode = step2[axis];
+          if (!mode) continue;
+          try {
+            if (!dry) applySizing(node, axis, mode);
+          } catch (error) {
+            failures.push(`${axis}: ${String((error == null ? void 0 : error.message) || error)}`);
+          }
+        }
+        return __spreadValues({
+          property: "sizing",
+          before,
+          after: { horizontal: step2.horizontal, vertical: step2.vertical }
+        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
+      }
+      case "bind": {
+        const holder = node;
+        if (typeof holder.setBoundVariable !== "function") throw new Error(`a ${node.type} binds no variables`);
+        const before = {};
+        const after = {};
+        const failures = [];
+        const bound = (_u = node.boundVariables) != null ? _u : {};
+        for (const entry of step2.bindings) {
+          try {
+            const held = (_v = bound[entry.field]) == null ? void 0 : _v.id;
+            if (held) {
+              const was = await figma.variables.getVariableByIdAsync(held).catch(() => null);
+              before[entry.field] = `var:${(_w = was == null ? void 0 : was.name) != null ? _w : held}`;
+            }
+            if (entry.variable === null) {
+              if (!dry) holder.setBoundVariable(entry.field, null);
+              after[entry.field] = "unbound";
+              continue;
+            }
+            const variable = await resolveVariableRef(entry.variable);
+            if (variable.resolvedType !== entry.wants) {
+              throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${entry.field} wants a ${entry.wants}`);
+            }
+            if (!dry) holder.setBoundVariable(entry.field, variable);
+            after[entry.field] = `var:${variable.name}`;
+          } catch (error) {
+            failures.push(`${entry.field}: ${String((error == null ? void 0 : error.message) || error)}`);
+          }
+        }
+        return __spreadValues({
+          property: "bind",
+          before,
+          after
+        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
+      }
+      case "style": {
+        const setter = STYLE_SETTERS[step2.slot];
+        const holder = node;
+        if (typeof holder[setter] !== "function") {
+          throw new Error(`a ${node.type} takes no ${step2.slot}`);
+        }
+        const held = holder[`${step2.slot}Id`];
+        const was = typeof held === "string" && held !== "" ? await figma.getStyleByIdAsync(held).catch(() => null) : null;
+        if (step2.ref === null) {
+          if (!dry) await holder[setter]("");
+          return { property: step2.slot, before: (_x = was == null ? void 0 : was.name) != null ? _x : null, after: "detached" };
+        }
+        const style = await styleFor(step2.ref, step2.kind);
+        if (!dry) await holder[setter](style.id);
+        return { property: step2.slot, before: (_y = was == null ? void 0 : was.name) != null ? _y : null, after: style.name };
+      }
+      case "network": {
+        const holder = node;
+        if (typeof holder.setVectorNetworkAsync !== "function") {
+          throw new Error(`a ${node.type} has no vector network \u2014 only a vector does`);
+        }
+        const before = node.vectorNetwork;
+        if (!dry) await holder.setVectorNetworkAsync(step2.network);
+        return {
+          property: "network",
+          before: before ? `${before.vertices.length} point(s), ${before.segments.length} segment(s)` : "none",
+          after: step2.summary
+        };
+      }
+      case "paths": {
+        if (!("vectorPaths" in bag)) throw new Error(`a ${node.type} has no paths \u2014 only a vector does`);
+        const before = (_A = (_z = bag.vectorPaths) == null ? void 0 : _z.length) != null ? _A : 0;
+        if (!dry) bag.vectorPaths = step2.paths;
+        return {
+          property: "paths",
+          before: `${before} path(s)`,
+          after: step2.paths.map((path) => `${path.windingRule} ${path.data}`).join(" \xB7 ")
+        };
+      }
+      case "strokeProfile": {
+        if (!("variableWidthStrokeProperties" in bag)) throw new Error(`a ${node.type} has no stroke to shape`);
+        const before = describeProfile(bag.variableWidthStrokeProperties);
+        if (!dry) bag.variableWidthStrokeProperties = step2.profile;
+        return { property: "strokeProfile", before, after: describeProfile(step2.profile) };
+      }
+      case "keyframes": {
+        const motion = node;
+        if (typeof motion.applyManualKeyframeTrack !== "function") {
+          throw new Error(`a ${node.type} cannot be animated on a timeline`);
+        }
+        const existing = manualTrackFields(motion.manualKeyframeTracks);
+        const before = `${existing.length} track(s)`;
+        const applied = [];
+        const failures = [];
+        const remove = (name, field) => {
+          if (typeof motion.removeManualKeyframeTrack !== "function") throw new Error("this Figma cannot remove a keyframe track");
+          if (!dry) motion.removeManualKeyframeTrack(field);
+          applied.push(`-${name}`);
+        };
+        if (step2.clear) {
+          for (const one of existing) {
+            try {
+              remove(one.name, one.field);
+            } catch (error) {
+              failures.push(`${one.name}: ${String((error == null ? void 0 : error.message) || error)}`);
+            }
+          }
+        }
+        for (const one of step2.tracks) {
+          try {
+            if (one.track === null) remove(one.name, one.field);
+            else {
+              if (!dry) motion.applyManualKeyframeTrack(one.field, one.track);
+              applied.push(one.name);
+            }
+          } catch (error) {
+            failures.push(`${one.name}: ${String((error == null ? void 0 : error.message) || error)}`);
+          }
+        }
+        return __spreadValues({
+          property: "keyframes",
+          before,
+          after: applied.join(", ") || "none"
+        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
+      }
+      case "timeline": {
+        const motion = node;
+        const timeline = (_B = motion.timelines) == null ? void 0 : _B[0];
+        if (!timeline || timeline.id.startsWith("-1") || typeof motion.setTimelineDuration !== "function") {
+          throw new Error(`a ${node.type} has no timeline of its own \u2014 only a top-level frame does`);
+        }
+        const before = timeline.duration;
+        if (!dry) motion.setTimelineDuration(timeline.id, step2.seconds);
+        return { property: "timeline", before: `${before}s`, after: `${step2.seconds}s` };
+      }
+      case "overrides": {
+        const applied = [];
+        const failures = [];
+        for (const one of step2.overrides) {
+          const id = addressIn(node, one.at);
+          const child = await figma.getNodeByIdAsync(id).catch(() => null);
+          if (!child || !("type" in child)) {
+            failures.push(`${one.at}: no such node inside this instance`);
+            continue;
+          }
+          const report2 = await applyProps(child, one.steps, dry);
+          const wrong = report2.applied.filter((entry) => entry.error);
+          if (wrong.length > 0) failures.push(`${one.at}: ${wrong.map((entry) => `${entry.property} \u2014 ${entry.error}`).join(", ")}`);
+          applied.push(`${child.name} (${report2.applied.length - wrong.length})`);
+        }
+        return __spreadValues({
+          property: "overrides",
+          before: `${step2.overrides.length} to apply`,
+          after: applied.join(" \xB7 ")
+        }, failures.length > 0 ? { error: failures.join(" \xB7 ") } : {});
+      }
+      case "reparent": {
+        const before = node.parent ? { id: node.parent.id, name: node.parent.name } : null;
+        const parent = step2.parent === "" ? node.parent : await resolveParent(step2.parent);
+        if (!parent) throw new Error("the node has no parent to move within");
+        if (!("appendChild" in parent)) throw new Error(`a ${parent.type} cannot hold children`);
+        if (!dry) {
+          const container = parent;
+          if (step2.index === void 0) container.appendChild(node);
+          else container.insertChild(Math.min(step2.index, container.children.length), node);
+        }
+        return { property: "parent", before, after: { id: parent.id, name: parent.name, index: step2.index } };
+      }
+    }
+  }
+  function componentName2(component) {
+    var _a;
+    if (!component) return null;
+    try {
+      return ((_a = component.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? component.parent.name : component.name;
+    } catch (e) {
+      return component.name;
+    }
+  }
+  async function buildAction(action) {
+    switch (action.kind) {
+      case "back":
+        return { type: "BACK" };
+      case "close":
+        return { type: "CLOSE" };
+      case "url":
+        return { type: "URL", url: action.url, openInNewTab: action.newTab };
+      case "setVariable": {
+        const variable = await resolveVariableRef(action.variable);
+        const value2 = action.value;
+        if (typeof value2 === "object" && value2 !== null) {
+          const other = await resolveVariableRef(value2.variable);
+          if (other.resolvedType !== variable.resolvedType) {
+            throw new Error(`"${other.name}" is a ${other.resolvedType} and "${variable.name}" holds a ${variable.resolvedType}`);
+          }
+          return {
+            type: "SET_VARIABLE",
+            variableId: variable.id,
+            variableValue: { type: "VARIABLE_ALIAS", resolvedType: variable.resolvedType, value: { type: "VARIABLE_ALIAS", id: other.id } }
+          };
+        }
+        const held = typeof value2 === "boolean" ? "BOOLEAN" : typeof value2 === "number" ? "FLOAT" : "STRING";
+        if (held !== variable.resolvedType) {
+          throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${JSON.stringify(value2)} is a ${held}`);
+        }
+        return {
+          type: "SET_VARIABLE",
+          variableId: variable.id,
+          variableValue: { type: held, resolvedType: variable.resolvedType, value: value2 }
+        };
+      }
+      case "setMode": {
+        const collection = await resolveCollection(action.collection);
+        const modes = resolveModes(collection, action.mode);
+        if (modes.length !== 1) throw new Error(`"${action.mode}" must name exactly one mode of ${collection.name}`);
+        return { type: "SET_VARIABLE_MODE", variableCollectionId: collection.id, variableModeId: modes[0].modeId };
+      }
+      case "conditional": {
+        const blocks2 = [];
+        for (const block3 of action.blocks) {
+          const actions = [];
+          for (const one of block3.actions) actions.push(await buildAction(one));
+          blocks2.push(__spreadProps(__spreadValues({}, block3.condition ? { condition: await buildCondition(block3.condition) } : {}), { actions }));
+        }
+        return { type: "CONDITIONAL", conditionalBlocks: blocks2 };
+      }
+      default:
+        return __spreadValues(__spreadValues(__spreadValues({
+          type: "NODE",
+          destinationId: action.destinationId,
+          navigation: action.navigation,
+          transition: action.transition
+        }, action.resetScroll === void 0 ? {} : { resetScrollPosition: action.resetScroll }), action.resetVideo === void 0 ? {} : { resetVideoPosition: action.resetVideo }), action.resetInteractive === void 0 ? {} : { resetInteractiveComponents: action.resetInteractive });
+    }
+  }
+  async function buildCondition(condition2) {
+    const args = [];
+    for (const operand of condition2.args) args.push(await buildOperand(operand));
+    return {
+      type: "EXPRESSION",
+      resolvedType: "BOOLEAN",
+      value: { expressionFunction: condition2.fn, expressionArguments: args }
+    };
+  }
+  async function buildOperand(operand) {
+    if (operand.kind === "condition") return buildCondition(operand.condition);
+    if (operand.kind === "variable") {
+      const variable = await resolveVariableRef(operand.name);
+      return {
+        type: "VARIABLE_ALIAS",
+        resolvedType: variable.resolvedType,
+        value: { type: "VARIABLE_ALIAS", id: variable.id }
+      };
+    }
+    const value2 = operand.value;
+    const type = typeof value2 === "boolean" ? "BOOLEAN" : typeof value2 === "number" ? "FLOAT" : "STRING";
+    return { type, resolvedType: type, value: value2 };
+  }
+  async function variableName(id, withinCollection) {
+    var _a, _b, _c, _d, _e, _f;
+    if (withinCollection) {
+      const collection = await figma.variables.getVariableCollectionByIdAsync(withinCollection).catch(() => null);
+      return (_b = (_a = collection == null ? void 0 : collection.modes.find((mode) => mode.modeId === id)) == null ? void 0 : _a.name) != null ? _b : null;
+    }
+    if (id.startsWith("VariableCollectionId:")) {
+      return (_d = (_c = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)) == null ? void 0 : _c.name) != null ? _d : null;
+    }
+    return (_f = (_e = await figma.variables.getVariableByIdAsync(id).catch(() => null)) == null ? void 0 : _e.name) != null ? _f : null;
+  }
+  function byHumanName(properties) {
+    const out = {};
+    for (const [key, entry] of Object.entries(properties)) {
+      out[humanPropertyName(key)] = entry == null ? void 0 : entry.value;
+    }
+    return out;
+  }
+  function measured2(value2) {
+    const result = measure(value2);
+    if (result === null) throw new Error(`${JSON.stringify(value2)} is neither pixels nor a percentage`);
+    return result;
+  }
+  function describeMeasure(value2) {
+    if (typeof value2 !== "object" || value2 === null || !("unit" in value2)) return "mixed";
+    const { unit, value: amount } = value2;
+    if (unit === "AUTO") return "auto";
+    return unit === "PERCENT" ? `${round16(amount != null ? amount : 0)}%` : `${round16(amount != null ? amount : 0)}px`;
+  }
+  function describeRun(run) {
+    const parts = [];
+    if (run.fontName) parts.push(describeFont(run.fontName));
+    if (run.fontSize !== void 0) parts.push(`${run.fontSize}px`);
+    if (run.fill !== void 0) parts.push(typeof run.fill === "string" ? run.fill : "fill");
+    if (run.textDecoration) parts.push(run.textDecoration.toLowerCase());
+    if (run.textCase) parts.push(run.textCase.toLowerCase());
+    if (run.textWrap) parts.push(`wrap ${run.textWrap.toLowerCase()}`);
+    if (run.letterSpacing !== void 0) parts.push(`tracking ${run.letterSpacing}`);
+    if (run.lineHeight !== void 0) parts.push(`leading ${run.lineHeight}`);
+    if (run.link !== void 0) parts.push(run.link === null ? "unlinked" : "linked");
+    if (run.textStyle) parts.push(`style "${run.textStyle}"`);
+    if (run.fillStyle) parts.push(`fill style "${run.fillStyle}"`);
+    if (run.list) parts.push(run.list === "NONE" ? "no list" : run.list === "ORDERED" ? "numbered" : "bulleted");
+    if (run.indent !== void 0) parts.push(`level ${run.indent}`);
+    if (run.listSpacing !== void 0) parts.push(`list spacing ${run.listSpacing}`);
+    if (run.paragraphSpacing !== void 0) parts.push(`paragraph spacing ${run.paragraphSpacing}`);
+    if (run.paragraphIndent !== void 0) parts.push(`first-line indent ${run.paragraphIndent}`);
+    if (run.decoration !== void 0) parts.push(`decoration ${JSON.stringify(run.decoration)}`);
+    return parts.join(" ");
+  }
+  var STYLE_SETTERS = {
+    fillStyle: "setFillStyleIdAsync",
+    strokeStyle: "setStrokeStyleIdAsync",
+    textStyle: "setTextStyleIdAsync",
+    effectStyle: "setEffectStyleIdAsync",
+    gridStyle: "setGridStyleIdAsync"
+  };
+  async function withNamedFont(write) {
+    try {
+      write();
+    } catch (error) {
+      const message = String((error == null ? void 0 : error.message) || error);
+      const named = /loadFontAsync\(\{\s*family:\s*"([^"]+)",\s*style:\s*"([^"]+)"\s*\}\)/.exec(message);
+      if (!named) throw error;
+      await figma.loadFontAsync({ family: named[1], style: named[2] });
+      write();
+    }
+  }
+  var SUBLAYER_STEPS = /* @__PURE__ */ new Set(["text", "font", "lineHeight", "letterSpacing", "runs", "decoration"]);
+  function textSublayerFor(node, step2) {
+    if (node.type !== "STICKY" && node.type !== "SHAPE_WITH_TEXT" && node.type !== "CONNECTOR") return null;
+    const text6 = node.text;
+    const wanted = SUBLAYER_STEPS.has(step2.step) || step2.step === "assign" && !(step2.property in node) && step2.property in text6;
+    if (!wanted) return null;
+    return new Proxy(text6, {
+      get(target, key) {
+        if (key === "type") return "TEXT";
+        if (key === "parent") return node;
+        const value2 = Reflect.get(target, key);
+        return typeof value2 === "function" ? value2.bind(target) : value2;
+      },
+      set(target, key, value2) {
+        return Reflect.set(target, key, value2);
+      },
+      has(target, key) {
+        return key === "type" || Reflect.has(target, key);
+      }
+    });
+  }
+  function isText(node) {
+    return node.type === "TEXT" || node.type === "TEXT_PATH";
+  }
+  function asInstance(node, wanted) {
+    if (node.type !== "INSTANCE") throw new Error(`only an INSTANCE has ${wanted}, not a ${node.type}`);
+    return node;
+  }
+  var TEXT_PROPERTIES = [
+    "textWrapStyle",
+    "textAlignVertical",
+    "paragraphSpacing",
+    "paragraphIndent",
+    "listSpacing",
+    "hangingPunctuation",
+    "hangingList",
+    "leadingTrim",
+    "textTruncation",
+    "maxLines",
+    "fontSize",
+    "letterSpacing",
+    "textAlignHorizontal",
+    "textAlignVertical",
+    "textAutoResize",
+    "textCase",
+    "textDecoration",
+    "paragraphSpacing"
+  ];
+  async function loadNodeFont(node) {
+    if (node.fontName !== figma.mixed) {
+      await figma.loadFontAsync(node.fontName);
+      return;
+    }
+    const fonts = /* @__PURE__ */ new Set();
+    const wanted = [];
+    for (let index2 = 0; index2 < node.characters.length; index2++) {
+      const font = node.getRangeFontName(index2, index2 + 1);
+      if (font === figma.mixed) continue;
+      const key = `${font.family}|${font.style}`;
+      if (fonts.has(key)) continue;
+      fonts.add(key);
+      wanted.push(font);
+    }
+    await Promise.all(wanted.map((font) => figma.loadFontAsync(font)));
+  }
+  function applySizing(frame3, axis, mode) {
+    const property = axis === "horizontal" ? "layoutSizingHorizontal" : "layoutSizingVertical";
+    frame3[property] = mode;
+  }
+  async function buildPaints(ref) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    if (ref === null) return [];
+    if (Array.isArray(ref)) {
+      const stack = [];
+      for (const one of ref) stack.push(...await buildPaints(one));
+      return stack;
+    }
+    if (typeof ref === "string") return [solid5(ref)];
+    if ("shader" in ref) return [await buildShader(ref)];
+    if ("gradient" in ref) return [await buildGradient(ref)];
+    if ("image" in ref) return [await buildImage(ref)];
+    if ("video" in ref) return [await buildVideo(ref)];
+    if ("pattern" in ref) {
+      const source = await figma.getNodeByIdAsync(ref.pattern);
+      if (!source || source.type === "PAGE" || source.type === "DOCUMENT") throw new Error(`no node ${ref.pattern} to tile`);
+      return [
+        __spreadValues({
+          type: "PATTERN",
+          sourceNodeId: source.id,
+          tileType: (_a = ref.tile) != null ? _a : "RECTANGULAR",
+          scalingFactor: (_b = ref.scale) != null ? _b : 1,
+          spacing: { x: (_d = (_c = ref.spacing) == null ? void 0 : _c[0]) != null ? _d : 0, y: (_f = (_e = ref.spacing) == null ? void 0 : _e[1]) != null ? _f : 0 },
+          horizontalAlignment: (_g = ref.align) != null ? _g : "START"
+        }, ref.opacity === void 0 ? {} : { opacity: ref.opacity })
+      ];
+    }
+    if ("variable" in ref) {
+      const variable = await resolveVariableRef(ref.variable);
+      if (variable.resolvedType !== "COLOR") {
+        throw new Error(`"${variable.name}" is a ${variable.resolvedType} variable, not a colour`);
+      }
+      const base = __spreadValues({
+        type: "SOLID",
+        color: { r: 0, g: 0, b: 0 }
+      }, typeof ref.opacity === "number" ? { opacity: ref.opacity } : {});
+      return [figma.variables.setBoundVariableForPaint(base, "color", variable)];
+    }
+    return [solid5(ref.color, ref.opacity)];
+  }
+  async function buildShader(ref) {
+    await figma.importShaderById(ref.shader).catch(() => void 0);
+    return __spreadValues(__spreadValues(__spreadValues({
+      type: "SHADER",
+      id: ref.shader
+    }, ref.properties ? { properties: ref.properties } : {}), ref.opacity === void 0 ? {} : { opacity: ref.opacity }), ref.visible === void 0 ? {} : { visible: ref.visible });
+  }
+  async function buildGradient(ref) {
+    var _a, _b;
+    const { from, to } = gradientHandles(ref);
+    const spread = ref.stops.length - 1;
+    const stops = [];
+    for (const [index2, entry] of ref.stops.entries()) {
+      const stop = typeof entry === "string" ? { at: spread === 0 ? 0 : index2 / spread, color: entry } : entry;
+      const alpha = (_a = stop.opacity) != null ? _a : 1;
+      if (typeof stop.color === "object" && "variable" in stop.color) {
+        const variable = await resolveVariableRef(stop.color.variable);
+        if (variable.resolvedType !== "COLOR") {
+          throw new Error(`"${variable.name}" is a ${variable.resolvedType} variable, not a colour`);
+        }
+        stops.push({
+          position: stop.at,
+          color: { r: 0, g: 0, b: 0, a: alpha },
+          boundVariables: { color: { type: "VARIABLE_ALIAS", id: variable.id } }
+        });
+        continue;
+      }
+      const colour = colourFrom(stop.color);
+      if (!colour) throw new Error(`${JSON.stringify(stop.color)} is not a colour`);
+      stops.push({ position: stop.at, color: __spreadProps(__spreadValues({}, colour), { a: (_b = stop.opacity) != null ? _b : colour.a }) });
+    }
+    stops.sort((left, right) => left.position - right.position);
+    return __spreadValues({
+      type: `GRADIENT_${ref.gradient.toUpperCase()}`,
+      gradientTransform: gradientTransform(from, to, ref.gradient),
+      gradientStops: stops
+    }, ref.opacity === void 0 ? {} : { opacity: ref.opacity });
+  }
+  async function buildImage(ref) {
+    var _a;
+    const { hash, url, bytes } = ref.image;
+    let imageHash;
+    if (hash) {
+      imageHash = hash;
+    } else if (url) {
+      const image = await figma.createImageAsync(url);
+      imageHash = image.hash;
+    } else {
+      const image = figma.createImage(figma.base64Decode(bytes));
+      imageHash = image.hash;
+    }
+    return __spreadValues({
+      type: "IMAGE",
+      scaleMode: (_a = ref.scaleMode) != null ? _a : "FILL",
+      imageHash
+    }, ref.opacity === void 0 ? {} : { opacity: ref.opacity });
+  }
+  async function buildVideo(ref) {
+    var _a;
+    const { hash, bytes } = ref.video;
+    const videoHash = hash != null ? hash : (await figma.createVideoAsync(figma.base64Decode(bytes))).hash;
+    return __spreadValues({
+      type: "VIDEO",
+      scaleMode: (_a = ref.scaleMode) != null ? _a : "FILL",
+      videoHash
+    }, ref.opacity === void 0 ? {} : { opacity: ref.opacity });
+  }
+  function solid5(input, opacity) {
+    const colour = colourFrom(input);
+    if (!colour) throw new Error(`${JSON.stringify(input)} is not a colour`);
+    const alpha = opacity != null ? opacity : colour.a < 1 ? colour.a : void 0;
+    return __spreadValues({
+      type: "SOLID",
+      color: solidColourOf(colour)
+    }, alpha === void 0 ? {} : { opacity: alpha });
+  }
+  async function resolveParent(id) {
+    if (id === "page") return figma.currentPage;
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) throw new Error(`no node with id ${id}`);
+    return node;
+  }
+  async function describePaints2(value2) {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    if (value2 === figma.mixed) return "mixed";
+    if (!Array.isArray(value2)) return value2 === void 0 ? null : String(value2);
+    if (value2.length === 0) return "none";
+    const parts = [];
+    for (const paint of value2) {
+      if (typeof paint !== "object" || paint === null) {
+        parts.push(String(paint));
+        continue;
+      }
+      const entry = paint;
+      const bound = (_b = (_a = entry.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
+      if (bound) {
+        const named = await figma.variables.getVariableByIdAsync(bound).catch(() => null);
+        parts.push(`var:${(_c = named == null ? void 0 : named.name) != null ? _c : bound}`);
+        continue;
+      }
+      if (entry.type === "SHADER") {
+        const shader = paint;
+        const settings = Object.keys((_d = shader.properties) != null ? _d : {});
+        parts.push(`shader:${shader.id}${settings.length > 0 ? ` (${settings.join(", ")})` : ""}`);
+        continue;
+      }
+      if (entry.type === "IMAGE") {
+        const picture = paint;
+        parts.push(`image:${(_e = picture.imageHash) != null ? _e : "?"} ${picture.scaleMode}`);
+        continue;
+      }
+      if (entry.type.startsWith("GRADIENT")) {
+        const gradient = paint;
+        const colours = [];
+        for (const stop of gradient.gradientStops) {
+          const bound2 = (_g = (_f = stop.boundVariables) == null ? void 0 : _f.color) == null ? void 0 : _g.id;
+          if (bound2) {
+            const named = await figma.variables.getVariableByIdAsync(bound2).catch(() => null);
+            colours.push(`var:${(_h = named == null ? void 0 : named.name) != null ? _h : bound2}`);
+            continue;
+          }
+          colours.push(hexOf2(stop.color));
+        }
+        parts.push(`${entry.type.replace("GRADIENT_", "gradient:").toLowerCase()} ${colours.join(" \u2192 ")}`);
+        continue;
+      }
+      if (entry.type !== "SOLID") {
+        parts.push(entry.type);
+        continue;
+      }
+      const flat = entry;
+      const hex4 = `#${[flat.color.r, flat.color.g, flat.color.b].map((channel2) => Math.round(channel2 * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+      parts.push(flat.opacity !== void 0 && flat.opacity < 1 ? `${hex4} @${flat.opacity}` : hex4);
+    }
+    return parts.join(" + ");
+  }
+  function hexOf2(color) {
+    const hex4 = `#${[color.r, color.g, color.b].map((channel2) => Math.round(channel2 * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+    return color.a !== void 0 && color.a < 1 ? `${hex4} @${round16(color.a)}` : hex4;
+  }
+  async function describeAnimation(value2) {
+    if (!Array.isArray(value2) || value2.length === 0) return "none";
+    const lines = [];
+    for (const style of value2) {
+      const place = style.timelineOffset ? ` +${Math.round(style.timelineOffset * 1e3) / 1e3}s` : "";
+      if (style.type === "CUSTOM") {
+        lines.push(`${style.name || style.styleId} (custom)${place}`);
+        continue;
+      }
+      lines.push(await (async () => {
+        var _a, _b, _c, _d, _e;
+        const entries = Object.entries((_a = style.props) != null ? _a : {}).sort(
+          (left, right) => Number(typeof right[1] === "object") - Number(typeof left[1] === "object")
+        );
+        const said = [];
+        for (const [name, held] of entries.slice(0, MAX_ANIMATION_PROPS)) {
+          const alias = held;
+          if (alias && typeof alias === "object" && alias.type === "VARIABLE_ALIAS" && alias.id) {
+            const variable = await figma.variables.getVariableByIdAsync(alias.id).catch(() => null);
+            said.push(`${name}=var:${(_b = variable == null ? void 0 : variable.name) != null ? _b : alias.id}`);
+            continue;
+          }
+          said.push(`${name}=${typeof held === "object" ? JSON.stringify(held) : held}`);
+        }
+        const shown = said.join(", ");
+        const rest = entries.length > MAX_ANIMATION_PROPS ? `, +${entries.length - MAX_ANIMATION_PROPS} more` : "";
+        const called = (_e = (_d = (_c = animationStyleWord(style.name)) != null ? _c : animationStyleWord(style.styleId)) != null ? _d : style.name) != null ? _e : style.styleId;
+        const seconds2 = style.duration === void 0 ? "" : ` ${Math.round(style.duration * 1e3) / 1e3}s`;
+        return `${called}${seconds2}${place}${shown ? ` (${shown}${rest})` : ""}`;
+      })());
+    }
+    return lines.join(" \xB7 ");
+  }
+  var MAX_ANIMATION_PROPS = 5;
+  var styleWords = null;
+  function animationStyleWord(key) {
+    var _a;
+    if (!key) return null;
+    if (!styleWords) {
+      styleWords = /* @__PURE__ */ new Map();
+      try {
+        for (const style of figma.motion.figmaAnimationStyles()) {
+          styleWords.set(style.styleId, style.styleId);
+          if (style.name) styleWords.set(style.name, style.styleId);
+        }
+      } catch (e) {
+      }
+    }
+    return (_a = styleWords.get(key)) != null ? _a : null;
+  }
+  function describeShaderPaints(value2) {
+    if (!Array.isArray(value2)) return [];
+    const shaders = [];
+    for (const paint of value2) {
+      if ((paint == null ? void 0 : paint.type) !== "SHADER") continue;
+      const shader = paint;
+      shaders.push(__spreadValues({
+        id: shader.id
+      }, shader.properties && Object.keys(shader.properties).length > 0 ? { properties: shader.properties } : {}));
+    }
+    return shaders;
+  }
+  function describeProfile(value2) {
+    var _a;
+    const one = value2;
+    if (!(one == null ? void 0 : one.widthProfile)) return null;
+    if (one.widthProfile !== "CUSTOM") return one.widthProfile;
+    return ((_a = one.variableWidthPoints) != null ? _a : []).map((point2) => ({ at: round16(point2.position), width: round16(point2.width) }));
+  }
+  function describeBrush(value2) {
+    const brush = value2;
+    if (!brush || brush.type === "BASIC") return "basic";
+    if (brush.type === "DYNAMIC") return `dynamic ${brush.frequency}/${brush.wiggle}/${brush.smoothen}`;
+    return `${brush.brushType.toLowerCase()} ${brush.brushName}`;
+  }
+  function describeGrids(value2) {
+    if (!Array.isArray(value2) || value2.length === 0) return "none";
+    const parts = [];
+    for (const grid of value2) {
+      if (grid.pattern === "GRID") {
+        parts.push(`square ${grid.sectionSize}`);
+        continue;
+      }
+      const rows = grid;
+      const kind = rows.pattern === "COLUMNS" ? "column" : "row";
+      parts.push(
+        `${rows.count} ${kind}(s) ${rows.alignment.toLowerCase()}${rows.gutterSize ? ` gutter ${rows.gutterSize}` : ""}${rows.offset ? ` margin ${rows.offset}` : ""}${rows.sectionSize ? ` at ${rows.sectionSize}` : ""}`
+      );
+    }
+    return parts.join(" \xB7 ");
+  }
+  async function describeEffects(value2) {
+    var _a, _b;
+    if (!Array.isArray(value2)) return value2 === figma.mixed ? "mixed" : "none";
+    if (value2.length === 0) return "none";
+    const parts = [];
+    for (const effect of value2) {
+      const bound = (_a = effect.boundVariables) != null ? _a : {};
+      const named = async (field, fallback) => {
+        var _a2, _b2;
+        const id = (_a2 = bound[field]) == null ? void 0 : _a2.id;
+        if (!id) return String(fallback);
+        const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
+        return `var:${(_b2 = variable == null ? void 0 : variable.name) != null ? _b2 : id}`;
+      };
+      if (effect.type === "SHADER") {
+        parts.push(`shader ${effect.id}`);
+        continue;
+      }
+      if (effect.type === "LAYER_BLUR" || effect.type === "BACKGROUND_BLUR") {
+        parts.push(`${effect.type === "LAYER_BLUR" ? "layer" : "background"} blur ${await named("radius", effect.radius)}`);
+        continue;
+      }
+      if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
+        const { r, g, b, a } = effect.color;
+        const hex4 = `#${[r, g, b].map((channel2) => Math.round(channel2 * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+        const colour = await named("color", `${hex4}${a === 1 ? "" : ` @${round16(a)}`}`);
+        const kind = effect.type === "DROP_SHADOW" ? "drop" : "inner";
+        const spread = effect.spread || bound.spread ? ` spread ${await named("spread", (_b = effect.spread) != null ? _b : 0)}` : "";
+        const x = await named("offsetX", effect.offset.x);
+        const y = await named("offsetY", effect.offset.y);
+        parts.push(`${kind} shadow ${colour} ${x},${y} blur ${await named("radius", effect.radius)}${spread}`);
+        continue;
+      }
+      parts.push(String(effect.type).toLowerCase());
+    }
+    return parts.join(" \xB7 ");
+  }
+  var describeFont = (font) => {
+    if (font === figma.mixed) return "mixed";
+    const named = font;
+    const axes = named.variationSettings ? ` (${Object.entries(named.variationSettings).map(([axis, value2]) => `${axis}=${value2}`).join(", ")})` : "";
+    return `${named.family}${named.style ? ` ${named.style}` : ""}${axes}`;
+  };
+  var round16 = (value2) => Math.round(value2 * 100) / 100;
+
   // src/canvas/create.ts
   var NODE_KINDS = [
     "frame",
@@ -39967,8 +42819,40 @@ createRoot(document.getElementById('root')!).render(
     "svg",
     "star",
     "polygon",
-    "textPath"
+    "textPath",
+    "slice",
+    // FigJam
+    "sticky",
+    "shapeWithText",
+    "connector",
+    "codeBlock",
+    "table",
+    "linkPreview",
+    "gif",
+    // Figma Slides
+    "slide",
+    "slideRow",
+    // Figma Buzz
+    "asset"
   ];
+  var KIND_FEATURE = {
+    component: "components.create",
+    sticky: "stickies",
+    shapeWithText: "shapesWithText",
+    connector: "connectors",
+    codeBlock: "codeBlocks",
+    table: "tables",
+    linkPreview: "linkPreviews",
+    gif: "gifs",
+    slide: "slides",
+    slideRow: "slides",
+    asset: "buzz"
+  };
+  function kindProblem(kind, editor) {
+    const feature = KIND_FEATURE[kind];
+    return feature ? editorProblem(feature, editor, kind) : null;
+  }
+  var GRID_PLACED = ["slide", "slideRow", "asset"];
   function planCreate(raw, where, problems) {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
       problems.push(`${where} must be an object`);
@@ -40000,6 +42884,20 @@ createRoot(document.getElementById('root')!).render(
           return null;
         }
       }
+    }
+    if ((kind === "linkPreview" || kind === "gif") && (typeof spec.of !== "string" || spec.of === "")) {
+      problems.push(`${where}.of must be ${kind === "gif" ? "the image hash of the GIF" : "the URL to preview"}`);
+      return null;
+    }
+    if (GRID_PLACED.includes(kind) && spec.at !== void 0) {
+      const place = gridPlace(spec.at);
+      if (!place || kind === "slideRow" && place.column !== void 0) {
+        problems.push(`${where}.at must be ${kind === "slideRow" ? "[row]" : "[row, column]"} \u2014 whole numbers from 0`);
+        return null;
+      }
+    } else if (spec.at !== void 0 && kind !== "textPath") {
+      problems.push(`${where}.at is for textPath, slide, slideRow and asset \u2014 not ${kind}`);
+      return null;
     }
     for (const key of Object.keys(spec)) {
       if (!["kind", "of", "props", "children", "at"].includes(key)) {
@@ -40050,7 +42948,8 @@ createRoot(document.getElementById('root')!).render(
       children.push(await createNode(child, node, false));
     }
     const moves = plan.steps.some(movesToAnotherParent);
-    if (!moves && node.parent !== fallbackParent) {
+    const gridded = GRID_PLACED.includes(plan.kind) && fallbackParent.type === "PAGE";
+    if (!moves && !gridded && node.parent !== fallbackParent) {
       fallbackParent.appendChild(node);
     }
     const late = later.length > 0 ? await applyProps(node, later, false) : { applied: [], failed: 0 };
@@ -40067,7 +42966,10 @@ createRoot(document.getElementById('root')!).render(
     }, failures.length > 0 ? { failures } : {});
   }
   async function make(plan) {
-    var _a;
+    var _a, _b;
+    const refusal = kindProblem(plan.kind, figma.editorType);
+    if (refusal) throw new Error(refusal);
+    const [row, column2] = (_a = plan.at) != null ? _a : [];
     switch (plan.kind) {
       case "frame":
         return figma.createFrame();
@@ -40093,6 +42995,10 @@ createRoot(document.getElementById('root')!).render(
         return figma.createStar();
       case "polygon":
         return figma.createPolygon();
+      // An export area and nothing else: no fill, no children, only a box and the export rows
+      // export.configure gives it — how a designer marks "ship this region" across several layers.
+      case "slice":
+        return figma.createSlice();
       case "svg":
         return figma.createNodeFromSvg(plan.of);
       case "textPath": {
@@ -40100,7 +43006,7 @@ createRoot(document.getElementById('root')!).render(
         if (!outline || outline.type !== "VECTOR") {
           throw new Error(`${plan.of} is ${outline ? `a ${outline.type}` : "not a node"}, and text follows a VECTOR`);
         }
-        const [segment, position] = (_a = plan.at) != null ? _a : [0, 0];
+        const [segment, position] = (_b = plan.at) != null ? _b : [0, 0];
         const path = figma.createTextPath(outline, segment, position);
         const font = path.fontName;
         if (font !== figma.mixed) await figma.loadFontAsync(font);
@@ -40110,7 +43016,46 @@ createRoot(document.getElementById('root')!).render(
         const target = await componentFor(plan.of);
         return target.createInstance();
       }
+      case "sticky":
+        return withSublayerFont(figma.createSticky());
+      case "shapeWithText":
+        return withSublayerFont(figma.createShapeWithText());
+      case "connector":
+        return withSublayerFont(figma.createConnector());
+      case "codeBlock":
+        return figma.createCodeBlock();
+      case "table": {
+        const table2 = figma.createTable();
+        await figma.loadFontAsync(table2.cellAt(0, 0).text.fontName);
+        return table2;
+      }
+      case "linkPreview":
+        return await figma.createLinkPreviewAsync(plan.of);
+      case "gif":
+        return figma.createGif(plan.of);
+      case "slide":
+        return figma.createSlide(row, column2);
+      case "slideRow":
+        return figma.createSlideRow(row);
+      case "asset": {
+        const buzz = figma.buzz;
+        if (plan.of) {
+          const target = await componentFor(plan.of);
+          return buzz.createInstance(target, row != null ? row : 0, column2);
+        }
+        return buzz.createFrame(row, column2);
+      }
     }
+  }
+  async function withSublayerFont(node) {
+    const font = node.text.fontName;
+    if (font !== figma.mixed && font.family !== "") await figma.loadFontAsync(font);
+    else if (font !== figma.mixed) {
+      const fallback = { family: "Inter", style: "Medium" };
+      await figma.loadFontAsync(fallback);
+      node.text.fontName = fallback;
+    }
+    return node;
   }
   var nameFrom = (plan) => {
     for (const step2 of plan.steps) if (step2.step === "assign" && step2.property === "name") return String(step2.value);
@@ -40131,8 +43076,17 @@ createRoot(document.getElementById('root')!).render(
     SECTION: "section",
     VECTOR: "vector",
     STAR: "star",
-    POLYGON: "polygon"
+    POLYGON: "polygon",
+    SLICE: "slice",
+    STICKY: "sticky",
+    SHAPE_WITH_TEXT: "shapeWithText",
+    CONNECTOR: "connector",
+    CODE_BLOCK: "codeBlock",
+    TABLE: "table",
+    SLIDE: "slide",
+    SLIDE_ROW: "slideRow"
   };
+  var SIZED_BY_CONTENT = /* @__PURE__ */ new Set(["STICKY", "CONNECTOR", "CODE_BLOCK", "TABLE", "SLIDE_ROW", "SLIDE"]);
   var kindOf = (type) => {
     var _a;
     return (_a = KIND_OF[type]) != null ? _a : null;
@@ -40152,7 +43106,16 @@ createRoot(document.getElementById('root')!).render(
     "devLinks",
     "annotations",
     // A slot is a fact about the component, not a value this instance can be told.
-    "slots"
+    "slots",
+    // Which limits a slot's content breaks: a verdict about the children, not a property.
+    "slotViolations",
+    // What kind of live element a slide holds — a poll, an embed — which no write can change.
+    "interactive",
+    // Who made a sticky or a stamp, what a link unfurled into, a widget's own state: facts about
+    // the node that no property write can set.
+    "author",
+    "preview",
+    "widget"
   ]);
   var SUMMARIES = /* @__PURE__ */ new Set(["network", "brush", "shader"]);
   var NOT_SENT = /* @__PURE__ */ new Set(["x", "y"]);
@@ -40196,10 +43159,15 @@ createRoot(document.getElementById('root')!).render(
     return { props: candidate, dropped, notValues };
   }
   function specFrom(reading, children, of) {
-    var _a;
-    const kind = kindOf(String(reading.type));
+    var _a, _b;
+    const kind = reading.type === "FRAME" && ((_a = reading.props) == null ? void 0 : _a.assetType) ? "asset" : kindOf(String(reading.type));
     if (!kind) return null;
-    const { props, dropped, notValues } = sendable((_a = reading.props) != null ? _a : {});
+    const readProps = __spreadValues({}, (_b = reading.props) != null ? _b : {});
+    if (SIZED_BY_CONTENT.has(String(reading.type))) {
+      delete readProps.width;
+      delete readProps.height;
+    }
+    const { props, dropped, notValues } = sendable(readProps);
     if (kind === "instance" && !of) {
       return { spec: { kind: "instance", props }, dropped: [...dropped, { property: "(instance)", why: "the main component is unavailable, so the copy cannot be made" }], notValues };
     }
@@ -40264,31 +43232,55 @@ createRoot(document.getElementById('root')!).render(
   var plainValue = (held) => {
     const one = held;
     if (!one || one.value === void 0) return void 0;
+    if (one.type === "COLOR") return formatKeyframeColour(one.value);
     return one.value;
   };
-  function readKeyframes(tracks) {
+  function readTrack(word, binding) {
     var _a;
+    const held = binding;
+    const frames = Array.isArray(held == null ? void 0 : held.keyframes) ? held.keyframes : [];
+    const at = [];
+    for (const frame3 of frames) {
+      const one = frame3;
+      if (typeof (one == null ? void 0 : one.timelinePosition) !== "number") continue;
+      const value2 = plainValue(one.value);
+      if (value2 === void 0) continue;
+      at.push(__spreadValues({
+        time: one.timelinePosition,
+        value: value2
+      }, ((_a = one.easing) == null ? void 0 : _a.type) && one.easing.type !== "CUSTOM_CUBIC_BEZIER" ? { easing: one.easing.type } : {}));
+    }
+    if (at.length === 0) return null;
+    const from = plainValue(held == null ? void 0 : held.baseValue);
+    return __spreadProps(__spreadValues({ field: word }, from === void 0 ? {} : { from }), { at });
+  }
+  function readKeyframes(tracks) {
     if (typeof tracks !== "object" || tracks === null) return {};
     const out = [];
     for (const [name, binding] of Object.entries(tracks)) {
+      if (binding === void 0 || binding === null) continue;
+      if (name === "fills" || name === "strokes") {
+        for (const [index2, paint] of Object.entries(binding)) {
+          const word2 = indexedWord(name, Number(index2));
+          const track2 = word2 ? readTrack(word2, paint) : null;
+          if (track2) out.push(track2);
+        }
+        continue;
+      }
+      if (name === "effects") {
+        for (const [index2, fields2] of Object.entries(binding)) {
+          for (const [field, effect] of Object.entries(fields2 != null ? fields2 : {})) {
+            const word2 = indexedWord("effects", Number(index2), field);
+            const track2 = word2 ? readTrack(word2, effect) : null;
+            if (track2) out.push(track2);
+          }
+        }
+        continue;
+      }
       const word = OUR_WORDS[name];
       if (!word) continue;
-      const held = binding;
-      const frames = Array.isArray(held == null ? void 0 : held.keyframes) ? held.keyframes : [];
-      const at = [];
-      for (const frame3 of frames) {
-        const one = frame3;
-        if (typeof (one == null ? void 0 : one.timelinePosition) !== "number") continue;
-        const value2 = plainValue(one.value);
-        if (value2 === void 0) continue;
-        at.push(__spreadValues({
-          time: one.timelinePosition,
-          value: value2
-        }, ((_a = one.easing) == null ? void 0 : _a.type) && one.easing.type !== "CUSTOM_CUBIC_BEZIER" ? { easing: one.easing.type } : {}));
-      }
-      if (at.length === 0) continue;
-      const from = plainValue(held == null ? void 0 : held.baseValue);
-      out.push(__spreadProps(__spreadValues({ field: word }, from === void 0 ? {} : { from }), { at }));
+      const track = readTrack(word, binding);
+      if (track) out.push(track);
     }
     return out.length > 0 ? { keyframes: out } : {};
   }
@@ -40435,12 +43427,12 @@ createRoot(document.getElementById('root')!).render(
   }
   var MISSING_PATH = /* @__PURE__ */ Symbol("missing-path");
   function resolve(path, scope) {
-    let current = scope;
+    let current2 = scope;
     for (const part of path.split(".")) {
-      if (part === "__proto__" || part === "constructor" || part === "prototype" || typeof current !== "object" || current === null || !Object.prototype.hasOwnProperty.call(current, part)) return MISSING;
-      current = current[part];
+      if (part === "__proto__" || part === "constructor" || part === "prototype" || typeof current2 !== "object" || current2 === null || !Object.prototype.hasOwnProperty.call(current2, part)) return MISSING;
+      current2 = current2[part];
     }
-    return current;
+    return current2;
   }
 
   // src/code.ts
@@ -40660,7 +43652,7 @@ createRoot(document.getElementById('root')!).render(
         const main = await node.getMainComponentAsync().catch(() => null);
         if (main == null ? void 0 : main.remote) {
           const owner = ((_a = main.parent) == null ? void 0 : _a.type) === "COMPONENT_SET" ? main.parent : main;
-          remote.add(componentName2(owner.name));
+          remote.add(componentName(owner.name));
         }
       }
       if ("children" in node) for (const child of node.children) await walk3(child);
@@ -41077,26 +44069,22 @@ createRoot(document.getElementById('root')!).render(
     var _a;
     const budgetBytes = Math.max(1, budgetMb) * 1024 * 1024;
     const files = {};
+    const previewGuard = new ExportGuard({ budgetBytes, transport: false });
     let targets;
     if (nodes) {
       targets = [...nodes];
     } else {
-      try {
-        await figma.loadAllPagesAsync();
-      } catch (e) {
-      }
+      await loadAllPagesAsync();
       targets = figma.root.findAllWithCriteria({ types: ["COMPONENT_SET", "COMPONENT"] }).filter(isDocumentableComponent);
     }
     const pageNameById = /* @__PURE__ */ new Map();
     const pageOf8 = (node) => {
-      let current = node;
-      while (current && current.type !== "PAGE") current = current.parent;
-      if (!current) return void 0;
-      if (!pageNameById.has(current.id)) pageNameById.set(current.id, current.name);
-      return pageNameById.get(current.id);
+      let current2 = node;
+      while (current2 && current2.type !== "PAGE") current2 = current2.parent;
+      if (!current2) return void 0;
+      if (!pageNameById.has(current2.id)) pageNameById.set(current2.id, current2.name);
+      return pageNameById.get(current2.id);
     };
-    let previewBytes = 0;
-    let previewCount = 0;
     const docs = [];
     for (const node of targets) {
       let description = "";
@@ -41116,19 +44104,32 @@ createRoot(document.getElementById('root')!).render(
         variantCount: node.type === "COMPONENT_SET" ? node.children.length : void 0
       };
       if (withPreviews) {
-        if (previewBytes >= budgetBytes) {
-          doc.previewError = `the ${budgetMb} MB preview budget for this export was already spent \u2014 raise it in Settings \u2192 Documentation`;
+        const gate = await previewGuard.beforeRender(docs.length);
+        if (!gate.include) {
+          doc.previewError = `the ${budgetMb} MB preview budget for this export is spent \u2014 raise it in Settings \u2192 Documentation`;
         } else {
           try {
+            const scale = previewScale(node.width);
+            const pixels2 = pixelRefusal(node, { type: "SCALE", value: scale }, previewGuard.maxPixels);
+            if (pixels2.error) throw new Error(pixels2.error);
+            const preflight = previewGuard.preflightRaster(pixels2.render, docs.length);
+            if (!preflight.include) {
+              throw new Error(
+                preflight.firstItemTooLarge ? "this preview cannot fit the documentation preview budget \u2014 lower preview density or raise the budget" : `the ${budgetMb} MB preview budget for this export is spent \u2014 raise it in Settings \u2192 Documentation`
+              );
+            }
             const bytes = await node.exportAsync({
               format: "PNG",
-              constraint: { type: "SCALE", value: previewScale(node.width) }
+              constraint: { type: "SCALE", value: scale }
             });
-            const path = previewPath(node.name, node.id);
-            files[path] = bytes;
-            previewBytes += bytes.length;
-            previewCount++;
-            doc.preview = path;
+            const admitted = previewGuard.admit(bytes.length, docs.length);
+            if (!admitted.include) {
+              doc.previewError = admitted.firstItemTooLarge ? "this preview is too large for the export budget \u2014 lower preview density or raise the documentation budget" : `the ${budgetMb} MB preview budget for this export is spent \u2014 raise it in Settings \u2192 Documentation`;
+            } else {
+              const path = previewPath(node.name, node.id);
+              files[path] = bytes;
+              doc.preview = path;
+            }
           } catch (error) {
             doc.previewError = error instanceof Error ? error.message : String(error);
           }
@@ -41138,7 +44139,7 @@ createRoot(document.getElementById('root')!).render(
       if (withPreviews) {
         postToUi({ type: "COMPONENT_PREVIEW_PROGRESS", done: docs.length, total: targets.length });
       }
-      if (docs.length % 10 === 0) await yieldToHost();
+      await checkpoint();
     }
     return { docs, files };
   }
@@ -41198,12 +44199,12 @@ createRoot(document.getElementById('root')!).render(
       } catch (e) {
       }
     }
-    let bound = 0, failed = 0;
+    let bound = 0, failed2 = 0;
     const failures = [];
     for (const b of plan.bindings) {
       const style = styleById[b.styleId], variable = byName[b.varName];
       if (!style || !variable) {
-        failed++;
+        failed2++;
         continue;
       }
       const field = b.field;
@@ -41217,17 +44218,17 @@ createRoot(document.getElementById('root')!).render(
             style.fontName = before;
           } catch (e) {
           }
-          failed++;
+          failed2++;
           if (failures.length < 8) failures.push(`${b.styleName} \xB7 ${b.field}: would change ${before.family} ${before.style} \u2192 ${after.family} ${after.style}`);
           continue;
         }
         bound++;
       } catch (e) {
-        failed++;
+        failed2++;
         if (failures.length < 8) failures.push(`${b.styleName} \xB7 ${b.field}: ${String((e == null ? void 0 : e.message) || e)}`);
       }
     }
-    return { collection: plan.collectionName, created: plan.variables.length, bound, failed, failures, replaced };
+    return { collection: plan.collectionName, created: plan.variables.length, bound, failed: failed2, failures, replaced };
   }
   var UI_SIZE = { width: 420, height: 660 };
   var UI_BOUNDS = { minWidth: 340, maxWidth: 1240, minHeight: 320, maxHeight: 1200 };
@@ -41289,21 +44290,46 @@ createRoot(document.getElementById('root')!).render(
     }, 400);
   }
   var GATES_KEY = "allcrewChannel.v1.agentGates";
-  async function gatesFor() {
+  var FILE_ID_KEY = "allcrewChannel.fileId";
+  function stampedFileId() {
     try {
-      return storedGatesFor(await figma.clientStorage.getAsync(GATES_KEY), figma.fileKey);
+      return figma.root.getPluginData(FILE_ID_KEY);
     } catch (e) {
-      return { read: false, write: false };
+      return "";
     }
   }
-  async function rememberGates(gates2) {
-    if (!figma.fileKey) return;
+  function fileIdentity(create) {
+    if (figma.fileKey) return figma.fileKey;
+    const stamped = stampedFileId();
+    if (stamped) return stamped;
+    if (!create) return null;
+    try {
+      const id = `local:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+      figma.root.setPluginData(FILE_ID_KEY, id);
+      return id;
+    } catch (e) {
+      return null;
+    }
+  }
+  async function gatesFor() {
     try {
       const stored = await figma.clientStorage.getAsync(GATES_KEY);
-      await figma.clientStorage.setAsync(
-        GATES_KEY,
-        withStoredGates(stored, figma.fileKey, figma.root.name, gates2)
-      );
+      for (const key of [figma.fileKey, stampedFileId()]) {
+        const gates2 = storedGatesFor(stored, key);
+        if (gates2.read || gates2.write) return gates2;
+      }
+    } catch (e) {
+    }
+    return { read: false, write: false };
+  }
+  async function rememberGates(gates2) {
+    const id = fileIdentity(gates2.read || gates2.write);
+    if (!id) return;
+    try {
+      const next = withStoredGates(await figma.clientStorage.getAsync(GATES_KEY), id, figma.root.name, gates2);
+      const stamped = stampedFileId();
+      if (stamped && stamped !== id) delete next[stamped];
+      await figma.clientStorage.setAsync(GATES_KEY, next);
     } catch (e) {
     }
   }
@@ -41369,6 +44395,7 @@ createRoot(document.getElementById('root')!).render(
         const id = one == null ? void 0 : one.id;
         if (!id || field in bound) continue;
         const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
+        if (variable) rememberVariable(variable);
         bound[field] = (_a = variable == null ? void 0 : variable.name) != null ? _a : id;
       }
     }
@@ -41384,8 +44411,8 @@ createRoot(document.getElementById('root')!).render(
     const scratch = as === "grid" ? figma.createFrame() : figma.createRectangle();
     try {
       const report2 = await applyProps(scratch, plan.steps, false);
-      const failed = report2.applied.filter((one) => one.error);
-      if (failed.length > 0) throw new Error(failed.map((one) => `${one.property}: ${one.error}`).join(" \xB7 "));
+      const failed2 = report2.applied.filter((one) => one.error);
+      if (failed2.length > 0) throw new Error(failed2.map((one) => `${one.property}: ${one.error}`).join(" \xB7 "));
       return {
         fills: scratch.fills,
         effects: scratch.effects,
@@ -41448,7 +44475,7 @@ createRoot(document.getElementById('root')!).render(
       }
       return value2;
     };
-    const endpoint = (value2, where) => {
+    const endpoint2 = (value2, where) => {
       const one = value2;
       if (typeof (one == null ? void 0 : one.node) !== "string") {
         plan.problems.push(`${where} must be { node, side }`);
@@ -41471,8 +44498,8 @@ createRoot(document.getElementById('root')!).render(
     };
     for (const [index2, entry] of list2(msg.add, "add").entries()) {
       const one = entry;
-      const from = endpoint(one == null ? void 0 : one.from, `add[${index2}].from`);
-      const to = endpoint(one == null ? void 0 : one.to, `add[${index2}].to`);
+      const from = endpoint2(one == null ? void 0 : one.from, `add[${index2}].from`);
+      const to = endpoint2(one == null ? void 0 : one.to, `add[${index2}].to`);
       const offset = offsetOf(one == null ? void 0 : one.offset, `add[${index2}]`);
       if (from && to) {
         plan.add.push(__spreadValues(__spreadValues({ from, to }, offset ? { offset } : {}), typeof one.text === "string" ? { text: one.text } : {}));
@@ -41499,6 +44526,10 @@ createRoot(document.getElementById('root')!).render(
       plan.problems.push("nothing to do \u2014 give add, edit or remove");
     }
     return plan;
+  }
+  var ANNOTATION_COLOURS = ["yellow", "orange", "red", "pink", "violet", "blue", "teal", "green"];
+  function describeCategory(category) {
+    return __spreadValues({ id: category.id, label: category.label, color: category.color }, category.isPreset ? { preset: true } : {});
   }
   async function describeAnnotations(notes) {
     if (notes.length === 0) return [];
@@ -41562,7 +44593,7 @@ createRoot(document.getElementById('root')!).render(
     GIF: "image/gif",
     WEBM: "video/webm"
   };
-  var EXPORT_BUDGET = 12 * 1024 * 1024;
+  var EXPORT_BUDGET = MAX_REPLY_RAW_BYTES;
   function exportName(layer, extension, taken) {
     const stem = slugify2(layer, "node");
     let candidate = `${stem}.${extension}`;
@@ -41595,6 +44626,22 @@ createRoot(document.getElementById('root')!).render(
     const size = Math.round((amount != null ? amount : 0) * 100) / 100;
     return unit === "PERCENT" ? `${size}%` : `${size}px`;
   }
+  function readGridLayout(bag) {
+    const tracks = (value2) => Array.isArray(value2) ? value2.map((one) => formatGridTrack(one)) : void 0;
+    const rowSizes = tracks(bag.gridRowSizes);
+    const columnSizes = tracks(bag.gridColumnSizes);
+    return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+      rows: bag.gridRowCount,
+      columns: bag.gridColumnCount,
+      autoTracks: bag.gridAutoTracks
+    }, typeof bag.gridRowGap === "number" ? { rowGap: Math.round(bag.gridRowGap * 100) / 100 } : {}), typeof bag.gridColumnGap === "number" ? { columnGap: Math.round(bag.gridColumnGap * 100) / 100 } : {}), rowSizes ? { rowSizes } : {}), columnSizes ? { columnSizes } : {}), typeof bag.gridItemsPositioning === "string" ? { positioning: bag.gridItemsPositioning } : {});
+  }
+  var variableNameOf = async (id) => {
+    var _a;
+    const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null);
+    if (variable) rememberVariable(variable);
+    return (_a = variable == null ? void 0 : variable.name) != null ? _a : null;
+  };
   async function describeNode2(node, withProps) {
     var _a, _b, _c, _d, _e, _f, _g;
     const base = __spreadValues(__spreadValues({
@@ -41604,38 +44651,58 @@ createRoot(document.getElementById('root')!).render(
     }, node.parent ? { parent: { id: node.parent.id, name: node.parent.name } } : {}), "children" in node ? { childCount: node.children.length } : {});
     if (!withProps) return base;
     const bag = node;
-    const round15 = (value2) => typeof value2 === "number" ? Math.round(value2 * 100) / 100 : value2;
+    const round17 = (value2) => typeof value2 === "number" ? Math.round(value2 * 100) / 100 : value2;
     const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
-      x: round15(bag.x),
-      y: round15(bag.y),
-      width: round15(bag.width),
-      height: round15(bag.height)
-    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round15(bag.opacity) } : {}), "fills" in bag ? { fill: await describePaints(bag.fills) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
-      stroke: await describePaints(bag.strokes)
-    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round15(bag.strokeWeight) } : {}), bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), describeProfile(bag.variableWidthStrokeProperties) ? { strokeProfile: describeProfile(bag.variableWidthStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" && bag.cornerRadius > 0 ? { cornerRadius: round15(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 && !bag.timelines[0].id.startsWith("-1") ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
+      x: round17(bag.x),
+      y: round17(bag.y),
+      width: round17(bag.width),
+      height: round17(bag.height)
+    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round17(bag.opacity) } : {}), "fills" in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+      stroke: await readPaintsForWrite(bag.strokes, variableNameOf, figma.mixed)
+    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round17(bag.strokeWeight) } : {}), typeof bag.strokeAlign === "string" && bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), describeProfile(bag.variableWidthStrokeProperties) ? { strokeProfile: describeProfile(bag.variableWidthStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" && bag.cornerRadius > 0 ? { cornerRadius: round17(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 && !bag.timelines[0].id.startsWith("-1") ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
       props.layout = __spreadValues(__spreadValues({
         mode: bag.layoutMode,
-        gap: round15(bag.itemSpacing),
-        padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round15),
+        gap: round17(bag.itemSpacing),
+        padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round17),
         primaryAxis: bag.primaryAxisAlignItems,
         counterAxis: bag.counterAxisAlignItems
-      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round15(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? { rows: bag.gridRowCount, columns: bag.gridColumnCount, autoTracks: bag.gridAutoTracks } : {});
+      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round17(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? readGridLayout(bag) : {});
     }
     if (typeof bag.layoutSizingHorizontal === "string") {
       props.sizing = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical };
     }
     if (bag.layoutPositioning === "ABSOLUTE") props.absolute = true;
+    if (node.type === "TRANSFORM_GROUP" && Array.isArray(bag.transformModifiers) && bag.transformModifiers.length > 0) {
+      const words2 = bag.transformModifiers.map(repeatWords);
+      const same = words2.every((one) => JSON.stringify(one) === JSON.stringify(words2[0]));
+      props.repeat = same ? words2[0] : words2;
+    }
+    if (node.type === "TEXT_PATH") {
+      const start = bag.textPathStartData;
+      if (start && (start.segment !== 0 || start.position !== 0)) {
+        props.textStart = [start.segment, Math.round(start.position * 1e4) / 1e4];
+      }
+    }
+    if (node.type === "SLOT" && Array.isArray(bag.limitViolations) && bag.limitViolations.length > 0) {
+      props.slotViolations = bag.limitViolations;
+    }
     if (typeof bag.gridRowSpan === "number" && (bag.gridRowSpan > 1 || bag.gridColumnSpan > 1)) {
       props.gridSpan = { rows: bag.gridRowSpan, columns: bag.gridColumnSpan };
     }
-    if (typeof bag.gridChildVerticalAlign === "string" && bag.gridChildVerticalAlign !== "AUTO") {
-      props.gridAlign = bag.gridChildVerticalAlign;
+    const vertical = typeof bag.gridChildVerticalAlign === "string" ? bag.gridChildVerticalAlign : "AUTO";
+    const horizontal = typeof bag.gridChildHorizontalAlign === "string" ? bag.gridChildHorizontalAlign : "AUTO";
+    if (horizontal !== "AUTO") {
+      props.gridAlign = __spreadValues({ horizontal }, vertical !== "AUTO" ? { vertical } : {});
+    } else if (vertical !== "AUTO") props.gridAlign = vertical;
+    const parentBag = node.parent;
+    if ((parentBag == null ? void 0 : parentBag.layoutMode) === "GRID" && parentBag.gridItemsPositioning !== "ROW_AUTO_FLOW" && typeof bag.gridRowAnchorIndex === "number" && typeof bag.gridColumnAnchorIndex === "number" && bag.layoutPositioning !== "ABSOLUTE") {
+      props.gridCell = { row: bag.gridRowAnchorIndex, column: bag.gridColumnAnchorIndex };
     }
     for (const bound of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
       if (typeof bag[bound] === "number") props[bound] = bag[bound];
     }
-    const keys = node.getPluginDataKeys();
+    const keys = typeof node.getPluginDataKeys === "function" ? node.getPluginDataKeys() : [];
     if (keys.length > 0) {
       const data = {};
       for (const key of keys) data[key] = node.getPluginData(key);
@@ -41670,7 +44737,8 @@ createRoot(document.getElementById('root')!).render(
       }));
       if (overrides.length > 0) props.overrides = overrides;
     }
-    const links = await node.getDevResourcesAsync().catch(() => []);
+    const devEditor = figma.editorType === "figma" || figma.editorType === "dev";
+    const links = devEditor && typeof node.getDevResourcesAsync === "function" ? await node.getDevResourcesAsync().catch(() => []) : [];
     const own = links.filter((link) => link.nodeId === node.id);
     if (own.length > 0) props.devLinks = own.map((link) => ({ name: link.name, url: link.url }));
     const notes = (_d = node.annotations) != null ? _d : [];
@@ -41693,9 +44761,13 @@ createRoot(document.getElementById('root')!).render(
       if (node.type === "COMPONENT" && ((_f = node.parent) == null ? void 0 : _f.type) === "COMPONENT_SET") props.variantOf = node.parent.name;
       props.key = owner.key;
     }
+    if ((node.type === "TEXT" || node.type === "TEXT_PATH") && bag.textDecoration !== "NONE") {
+      const decoration = decorationWords(bag);
+      if (decoration) props.decoration = decoration;
+    }
     if (node.type === "TEXT" || node.type === "TEXT_PATH") {
       props.text = node.characters;
-      props.fontSize = node.fontSize === figma.mixed ? "mixed" : round15(node.fontSize);
+      props.fontSize = node.fontSize === figma.mixed ? "mixed" : round17(node.fontSize);
       props.fontName = node.fontName === figma.mixed ? "mixed" : writableFont(node.fontName);
       props.textAlign = node.textAlignHorizontal;
       if (node.textAlignVertical !== "TOP") props.verticalAlign = node.textAlignVertical;
@@ -41724,7 +44796,53 @@ createRoot(document.getElementById('root')!).render(
       const runs = await styledRuns(node);
       if (runs.length > 1) props.runs = runs;
     }
+    Object.assign(props, await boardProps(node));
+    if (node.type === "SHAPE_WITH_TEXT" || node.type === "CONNECTOR") delete props.cornerRadius;
     return __spreadProps(__spreadValues({}, base), { props });
+  }
+  async function boardProps(node) {
+    const props = {};
+    const bag = node;
+    if (node.type === "STICKY" || node.type === "SHAPE_WITH_TEXT" || node.type === "CONNECTOR") {
+      const text6 = node.text;
+      if (text6.characters !== "") props.text = text6.characters;
+      if (text6.fontSize !== figma.mixed) props.fontSize = Math.round(text6.fontSize * 100) / 100;
+      if (text6.fontName !== figma.mixed) props.fontName = writableFont(text6.fontName);
+    }
+    if (node.type === "STICKY") {
+      if (node.authorName) props.author = node.authorName;
+      if (node.isWideWidth) props.wide = true;
+      if (!node.authorVisible) props.authorVisible = false;
+    }
+    if (node.type === "SHAPE_WITH_TEXT") props.shapeType = node.shapeType;
+    if (node.type === "CONNECTOR") {
+      props.connector = connectorWords(bag, pageIdOf(node));
+    }
+    if (node.type === "CODE_BLOCK") {
+      props.code = node.code;
+      props.codeLanguage = node.codeLanguage;
+    }
+    if (node.type === "TABLE") props.table = tableWords(node);
+    const stuck = bag.stuckTo;
+    if (figma.editorType === "figjam" && stuck) props.stuckTo = stuck.id;
+    if (node.type === "SLIDE") {
+      if (node.isSkippedSlide) props.skipped = true;
+      const transition = transitionWords(node.getSlideTransition());
+      if (transition) props.transition = transition;
+    }
+    if (node.type === "STAMP") {
+      const author = await node.getAuthorAsync().catch(() => null);
+      if (author) props.author = author.name;
+    }
+    if (node.type === "EMBED") props.preview = __spreadValues({}, node.embedData);
+    if (node.type === "LINK_UNFURL") props.preview = __spreadValues({}, node.linkUnfurlData);
+    if (node.type === "WIDGET") props.widget = { id: node.widgetId, state: node.widgetSyncedState };
+    if (node.type === "INTERACTIVE_SLIDE_ELEMENT") props.interactive = node.interactiveSlideElementType;
+    if (figma.editorType === "buzz") {
+      const asset = figma.buzz.getBuzzAssetTypeForNode(node);
+      if (asset) props.assetType = asset;
+    }
+    return props;
   }
   var MODULES_KEY = "allcrewChannel.v1.userModules";
   var userModules = [];
@@ -41989,8 +45107,12 @@ createRoot(document.getElementById('root')!).render(
     }
     return plan;
   }
+  function requireEditor(feature, what) {
+    const problem = editorProblem(feature, figma.editorType, what);
+    if (problem) throw new Error(problem);
+  }
   async function handleUiMessage(msg) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y, _Z, __, _$, _aa, _ba, _ca, _da;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y, _Z, __, _$, _aa, _ba, _ca, _da, _ea;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
@@ -42550,9 +45672,9 @@ createRoot(document.getElementById('root')!).render(
             const seen = /* @__PURE__ */ new Set();
             const layers = [];
             let frontier = [...roots, ...alongsideRoots];
-            for (let round15 = 0; round15 < 6 && frontier.length > 0; round15++) {
+            for (let round17 = 0; round17 < 6 && frontier.length > 0; round17++) {
               const found = (await readableMasters(frontier)).filter(
-                (one) => !seen.has(one.owner.id) && !(`src/components/${componentName2(one.owner.name)}.tsx` in library.files)
+                (one) => !seen.has(one.owner.id) && !(`src/components/${componentName(one.owner.name)}.tsx` in library.files)
               );
               for (const one of found) seen.add(one.owner.id);
               if (found.length === 0) break;
@@ -42588,7 +45710,7 @@ createRoot(document.getElementById('root')!).render(
                 }));
                 indexed.push(...master.used.values());
                 trims.push(
-                  `${componentName2(master.owner.name)} has ${kids.length} variants and this design uses ${master.used.size} \u2014 only those were emitted; export that set on its own for the rest`
+                  `${componentName(master.owner.name)} has ${kids.length} variants and this design uses ${master.used.size} \u2014 only those were emitted; export that set on its own for the rest`
                 );
               }
               const index2 = await indexSceneNodes2(indexed);
@@ -42606,7 +45728,7 @@ createRoot(document.getElementById('root')!).render(
                   ...one.gaps,
                   ...trims,
                   ...masters.map(
-                    (master) => `${componentName2(master.owner.name)} was read out of the design-system library rather than this file \u2014 swap the import for your own package when you have one`
+                    (master) => `${componentName(master.owner.name)} was read out of the design-system library rather than this file \u2014 swap the import for your own package when you have one`
                   )
                 ],
                 props: new Map([...library.props, ...one.props]),
@@ -42645,7 +45767,13 @@ createRoot(document.getElementById('root')!).render(
               ...missingImports(files, await remoteComponents([...roots, ...alongsideRoots]))
             ])
           ];
-          postToUi({ type: "REACT_PROJECT", files, gaps, count: Object.keys(files).length });
+          const project = msg.codeLayer === true ? asCodeLayer(files) : files;
+          postToUi(__spreadValues({
+            type: "REACT_PROJECT",
+            files: project,
+            gaps,
+            count: Object.keys(project).length
+          }, msg.codeLayer === true ? { executables: CODE_LAYER_EXECUTABLES } : {}));
         } catch (error) {
           postToUi({ type: "CANVAS_ERROR", command: "EMIT_REACT", message: String((error == null ? void 0 : error.message) || error) });
         }
@@ -42732,7 +45860,7 @@ createRoot(document.getElementById('root')!).render(
         for (const node of index2.values()) {
           if (node.type !== "TEXT") continue;
           textNodes.push({ id: node.id, name: node.name, characters: node.characters });
-          if (textNodes.length % 200 === 0) await yieldToHost();
+          if (textNodes.length % 200 === 0) await checkpoint();
         }
         const lintMaxDepth = typeof msg.lintMaxDepth === "number" ? msg.lintMaxDepth : normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions")).lint.maxNestingDepth;
         const lint = await lintScopeAsync(roots, { maxNestingDepth: lintMaxDepth });
@@ -42796,7 +45924,7 @@ createRoot(document.getElementById('root')!).render(
               results.push(await applyLintFix(node, request.rule, ctx));
             }
             progress2();
-            if (results.length % 10 === 0) await yieldToHost();
+            if (results.length % 10 === 0) await checkpoint();
           }
         } finally {
           figma.commitUndo();
@@ -42859,8 +45987,15 @@ createRoot(document.getElementById('root')!).render(
         break;
       }
       case "AGENT_REQUEST": {
-        const response = await handleAgentRequest({ id: msg.id, op: msg.op, params: msg.params });
+        const response = await handleAgentRequest({ id: msg.id, op: msg.op, params: msg.params, budgetMs: msg.budgetMs });
         postToUi(__spreadValues({ type: "AGENT_RESPONSE" }, response));
+        break;
+      }
+      case "AGENT_CANCEL": {
+        const ids = Array.isArray(msg.ids) ? msg.ids : [];
+        for (const id of ids) {
+          if (typeof id === "string") cancelAgentRequest(id, typeof msg.reason === "string" ? msg.reason : "the bridge stopped waiting");
+        }
         break;
       }
       case "SAVE_EXPORT_OPTIONS": {
@@ -42934,13 +46069,13 @@ createRoot(document.getElementById('root')!).render(
             }
           }
           if (!dry) figma.commitUndo();
-          const failed = made.reduce((total, node) => total + node.failed, 0) + refused.length;
+          const failed2 = made.reduce((total, node) => total + node.failed, 0) + refused.length;
           figma.notify(dry ? `Would create ${made.length} node(s)` : `Created ${made.length} node(s)`);
           postToUi(__spreadValues(__spreadProps(__spreadValues({
             type: "NODES_CREATED",
             dryRun: dry
           }, dry ? { wouldCreate: made.length } : { created: made.length }), {
-            failed,
+            failed: failed2,
             nodes: made
           }), refused.length > 0 ? { refused } : {}));
         } catch (error) {
@@ -42992,14 +46127,14 @@ createRoot(document.getElementById('root')!).render(
             }, failures.length > 0 ? { failures } : {}));
           }
           if (!dry) figma.commitUndo();
-          const failed = reports.filter((report2) => !report2.ok).length;
-          figma.notify(dry ? `Would change ${reports.length} node(s)` : `Changed ${reports.length - failed} node(s)`);
-          const touched = reports.length - failed;
+          const failed2 = reports.filter((report2) => !report2.ok).length;
+          figma.notify(dry ? `Would change ${reports.length} node(s)` : `Changed ${reports.length - failed2} node(s)`);
+          const touched = reports.length - failed2;
           postToUi(__spreadProps(__spreadValues({
             type: "NODES_SET",
             dryRun: dry
           }, dry ? { wouldChange: touched } : { changed: touched }), {
-            failed,
+            failed: failed2,
             nodes: reports
           }));
         } catch (error) {
@@ -43145,14 +46280,14 @@ createRoot(document.getElementById('root')!).render(
             });
           }
           if (!dry) figma.commitUndo();
-          const failed = reports.filter((report2) => !report2.ok).length;
-          figma.notify(dry ? `Would copy ${reports.length} node(s)` : `Copied ${reports.length - failed} node(s)`);
-          const made = reports.length - failed;
+          const failed2 = reports.filter((report2) => !report2.ok).length;
+          figma.notify(dry ? `Would copy ${reports.length} node(s)` : `Copied ${reports.length - failed2} node(s)`);
+          const made = reports.length - failed2;
           postToUi(__spreadProps(__spreadValues({
             type: "NODES_CLONED",
             dryRun: dry
           }, dry ? { wouldCopy: made } : { copied: made }), {
-            failed,
+            failed: failed2,
             nodes: reports
           }));
         } catch (error) {
@@ -43194,37 +46329,21 @@ createRoot(document.getElementById('root')!).render(
             break;
           }
           if (as === "repeat") {
-            const spec = (_x = msg.repeat) != null ? _x : {};
-            const radial = String((_y = spec.type) != null ? _y : "LINEAR").toUpperCase() === "RADIAL";
-            const count = typeof spec.count === "number" ? spec.count : 3;
-            if (!Number.isInteger(count) || count < 2) {
-              refuse("NODE_GROUP", "repeat.count must be a whole number of at least 2");
+            const parsed = repeatModifier((_x = msg.repeat) != null ? _x : {});
+            if ("problem" in parsed) {
+              refuse("NODE_GROUP", `repeat ${parsed.problem}`);
               break;
             }
-            const offset = typeof spec.offset === "number" ? spec.offset : radial ? 0 : 1;
-            const unit = String((_z = spec.unit) != null ? _z : radial ? "RELATIVE" : "RELATIVE").toUpperCase();
-            if (unit !== "RELATIVE" && unit !== "PIXELS") {
-              refuse("NODE_GROUP", "repeat.unit must be RELATIVE or PIXELS");
-              break;
-            }
-            const axis = String((_A = spec.axis) != null ? _A : "HORIZONTAL").toUpperCase();
-            if (!radial && axis !== "HORIZONTAL" && axis !== "VERTICAL") {
-              refuse("NODE_GROUP", "repeat.axis must be HORIZONTAL or VERTICAL");
-              break;
-            }
+            const modifier = parsed.modifier;
+            const radial = modifier.repeatType === "RADIAL";
+            const { count, offset } = modifier;
+            const unit = modifier.unitType;
+            const axis = modifier.repeatType === "LINEAR" ? modifier.axis : "HORIZONTAL";
             const home2 = nodes[0].parent;
             if (!home2 || !("appendChild" in home2)) {
               refuse("NODE_GROUP", "the nodes have nowhere to be grouped into");
               break;
             }
-            const modifier = radial ? { type: "REPEAT", repeatType: "RADIAL", count, unitType: unit, offset } : {
-              type: "REPEAT",
-              repeatType: "LINEAR",
-              count,
-              unitType: unit,
-              offset,
-              axis
-            };
             const group2 = figma.transformGroup(
               nodes,
               home2,
@@ -43350,6 +46469,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "COMPONENT_MAKE": {
         try {
+          requireEditor("components.create", "COMPONENT_MAKE");
           const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes];
           const as = typeof msg.as === "string" ? msg.as.trim().toLowerCase() : "component";
           if (as !== "component" && as !== "set") {
@@ -43429,13 +46549,13 @@ createRoot(document.getElementById('root')!).render(
           }
           const applied = result && plan.steps.length > 0 ? await applyProps(result, plan.steps, false) : null;
           figma.commitUndo();
-          const failed = reports.filter((report2) => !report2.ok).length;
+          const failed2 = reports.filter((report2) => !report2.ok).length;
           figma.notify(set ? `Variant set: ${set.name}` : `${made.length} component(s)`);
           postToUi(__spreadValues(__spreadProps(__spreadValues({
             type: "COMPONENTS_MADE",
             as,
             made: made.length,
-            failed
+            failed: failed2
           }, set ? {
             set: {
               id: set.id,
@@ -43505,7 +46625,7 @@ createRoot(document.getElementById('root')!).render(
                 preferred ? { preferredValues: preferred } : void 0
               );
               done.push({ added: full, type: entry.type });
-              for (const node of (_B = entry.bind) != null ? _B : []) bindings.push({ node, property: full, type: entry.type });
+              for (const node of (_y = entry.bind) != null ? _y : []) bindings.push({ node, property: full, type: entry.type });
             } catch (error) {
               done.push({ added: entry.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
             }
@@ -43529,7 +46649,7 @@ createRoot(document.getElementById('root')!).render(
               done.push({ removed: name, ok: false, error: noSuchProperty(owner, name) });
               continue;
             }
-            const wasSlot = ((_C = definitionsOf(owner)[key]) == null ? void 0 : _C.type) === "SLOT";
+            const wasSlot = ((_z = definitionsOf(owner)[key]) == null ? void 0 : _z.type) === "SLOT";
             try {
               owner.deleteComponentProperty(key);
               done.push(__spreadValues({ removed: key }, wasSlot ? { note: "the slot's own layer stays on the canvas" } : {}));
@@ -43561,19 +46681,19 @@ createRoot(document.getElementById('root')!).render(
             }
             try {
               const layer = node;
-              layer.componentPropertyReferences = __spreadProps(__spreadValues({}, (_D = layer.componentPropertyReferences) != null ? _D : {}), { [field]: entry.property });
+              layer.componentPropertyReferences = __spreadProps(__spreadValues({}, (_A = layer.componentPropertyReferences) != null ? _A : {}), { [field]: entry.property });
               done.push({ bound: entry.property, to: layer.name, drives: field });
             } catch (error) {
               done.push({ bound: entry.property, ok: false, error: String((error == null ? void 0 : error.message) || error) });
             }
           }
           figma.commitUndo();
-          const failed = done.filter((one) => one.ok === false).length;
-          figma.notify(failed > 0 ? `${failed} of ${done.length} failed` : `${done.length} change(s)`);
+          const failed2 = done.filter((one) => one.ok === false).length;
+          figma.notify(failed2 > 0 ? `${failed2} of ${done.length} failed` : `${done.length} change(s)`);
           postToUi({
             type: "COMPONENT_PROPERTIES",
             component: { id: owner.id, name: owner.name },
-            failed,
+            failed: failed2,
             done,
             properties: describeProperties2(owner)
           });
@@ -43631,11 +46751,24 @@ createRoot(document.getElementById('root')!).render(
           const files = [];
           const reports = [];
           const taken = /* @__PURE__ */ new Set();
-          let spent = 0;
-          for (const id of ids) {
+          const offset = typeof msg.offset === "number" ? Math.max(0, Math.floor(msg.offset)) : 0;
+          const guard = new ExportGuard({
+            budgetBytes: typeof msg.budgetBytes === "number" ? msg.budgetBytes : EXPORT_BUDGET,
+            maxPixels: typeof msg.maxPixels === "number" ? msg.maxPixels : void 0
+          });
+          let cursor = offset;
+          let stoppedOn = null;
+          while (cursor < ids.length) {
+            const gate = await guard.beforeRender(cursor);
+            if (!gate.include) {
+              stoppedOn = (_B = gate.stoppedOn) != null ? _B : "bytes";
+              break;
+            }
+            const id = ids[cursor];
             const node = await figma.getNodeByIdAsync(id);
             if (!node || !("exportAsync" in node)) {
               reports.push({ node: id, ok: false, error: "no such exportable node" });
+              cursor += 1;
               continue;
             }
             const scene = node;
@@ -43647,9 +46780,10 @@ createRoot(document.getElementById('root')!).render(
                 ok: false,
                 error: `renders nothing: it sits outside ${clipped.by}, which clips its content. Turn off "Clip content" on that frame, or export the frame itself.`
               });
+              cursor += 1;
               continue;
             }
-            if (video && ((_E = scene.parent) == null ? void 0 : _E.type) !== "PAGE") {
+            if (video && ((_C = scene.parent) == null ? void 0 : _C.type) !== "PAGE") {
               const top = scene.getTopLevelFrame();
               reports.push({
                 node: id,
@@ -43657,7 +46791,30 @@ createRoot(document.getElementById('root')!).render(
                 ok: false,
                 error: `a ${format} renders a top-level frame's whole animation, and this layer is nested` + (top ? ` \u2014 export "${top.name}" (${top.id}) instead` : " with no top-level frame above it")
               });
+              cursor += 1;
               continue;
+            }
+            if (format !== "SVG" && format !== "PDF") {
+              const pixels2 = pixelRefusal(scene, constraint, guard.maxPixels);
+              if (pixels2.error) {
+                reports.push({ node: id, name: scene.name, ok: false, error: pixels2.error });
+                cursor += 1;
+                continue;
+              }
+              const preflight = guard.preflightRaster(pixels2.render, cursor);
+              if (!preflight.include) {
+                stoppedOn = "bytes";
+                if (preflight.firstItemTooLarge) {
+                  reports.push({
+                    node: id,
+                    name: scene.name,
+                    ok: false,
+                    error: "the estimated raster cannot fit one transport-safe reply; lower scale or use a WIDTH/HEIGHT constraint"
+                  });
+                  cursor += 1;
+                }
+                break;
+              }
             }
             try {
               if (format === "SVG") {
@@ -43665,14 +46822,24 @@ createRoot(document.getElementById('root')!).render(
                   format: "SVG_STRING",
                   svgOutlineText: msg.outlineText !== false
                 }), msg.svgIdAttribute === void 0 ? {} : { svgIdAttribute: msg.svgIdAttribute === true }), msg.svgSimplifyStroke === void 0 ? {} : { svgSimplifyStroke: msg.svgSimplifyStroke === true }));
-                spent += svg.length;
-                if (spent > EXPORT_BUDGET) {
-                  reports.push({ node: id, name: scene.name, ok: false, error: "the 12 MB budget for this call was already spent" });
-                  continue;
+                const admitted2 = guard.admit(svg.length, cursor);
+                if (!admitted2.include) {
+                  stoppedOn = "bytes";
+                  if (admitted2.firstItemTooLarge) {
+                    reports.push({
+                      node: id,
+                      name: scene.name,
+                      ok: false,
+                      error: `this export is ${svg.length} bytes, too large for one transport-safe reply; simplify the node or export a smaller subtree`
+                    });
+                    cursor += 1;
+                  }
+                  break;
                 }
                 const name2 = exportName(scene.name, "svg", taken);
                 files.push(textFile(name2, "image/svg+xml", svg));
                 reports.push({ node: id, name: scene.name, ok: true, file: name2, bytes: svg.length });
+                cursor += 1;
                 continue;
               }
               let bytes;
@@ -43684,12 +46851,26 @@ createRoot(document.getElementById('root')!).render(
               } else if (format === "PDF") {
                 bytes = await scene.exportAsync({ format: "PDF" });
               } else {
-                bytes = withoutChildren ? await exportPlate(scene, __spreadValues({ format, constraint }, extras)) : await scene.exportAsync(__spreadValues({ format, constraint }, extras));
+                bytes = withoutChildren ? await exportPlate(scene, __spreadProps(__spreadValues({
+                  format,
+                  constraint
+                }, extras), {
+                  maxPixels: guard.maxPixels
+                })) : await scene.exportAsync(__spreadValues({ format, constraint }, extras));
               }
-              spent += bytes.length;
-              if (spent > EXPORT_BUDGET) {
-                reports.push({ node: id, name: scene.name, ok: false, error: "the 12 MB budget for this call was already spent" });
-                continue;
+              const admitted = guard.admit(bytes.length, cursor);
+              if (!admitted.include) {
+                stoppedOn = "bytes";
+                if (admitted.firstItemTooLarge) {
+                  reports.push({
+                    node: id,
+                    name: scene.name,
+                    ok: false,
+                    error: `this export is ${bytes.length} bytes, too large for one transport-safe reply; lower scale or use a WIDTH/HEIGHT constraint`
+                  });
+                  cursor += 1;
+                }
+                break;
               }
               const ext = format.toLowerCase();
               const name = exportName(scene.name, ext, taken);
@@ -43701,11 +46882,20 @@ createRoot(document.getElementById('root')!).render(
                 file: name,
                 bytes: bytes.length
               }, clipped ? { clipped: { by: clipped.by, renderedPx: Math.round(clipped.visible), ownPx: Math.round(clipped.own) } } : {}));
+              cursor += 1;
             } catch (error) {
               reports.push({ node: id, name: scene.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
+              cursor += 1;
             }
           }
-          postToUi({ type: "NODES_EXPORTED", format, files, nodes: reports });
+          postToUi(__spreadValues(__spreadValues(__spreadValues({
+            type: "NODES_EXPORTED",
+            format,
+            files,
+            nodes: reports,
+            bytes: guard.spent,
+            budgetBytes: guard.budgetBytes
+          }, offset > 0 ? { offset } : {}), stoppedOn ? { stoppedOn } : {}), cursor < ids.length ? { remaining: ids.length - cursor, nextOffset: cursor } : {}));
         } catch (error) {
           postToUi({ type: "CANVAS_ERROR", command: "NODE_EXPORT", message: String((error == null ? void 0 : error.message) || error) });
         }
@@ -43756,6 +46946,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "MOTION_STYLE_SET": {
         try {
+          requireEditor("styles.create", "MOTION_STYLE_SET");
           const name = typeof msg.name === "string" ? msg.name.trim() : "";
           if (!name) throw new Error("name must be a non-empty custom animation style name");
           if (!Array.isArray(msg.entries)) throw new Error("entries must be an array of { style, props? }");
@@ -43772,7 +46963,7 @@ createRoot(document.getElementById('root')!).render(
               throw new Error(`entries[${index2}].props must be an object`);
             }
             const props = {};
-            for (const [prop, value2] of Object.entries((_F = raw.props) != null ? _F : {})) {
+            for (const [prop, value2] of Object.entries((_D = raw.props) != null ? _D : {})) {
               const alias = value2;
               if (typeof (alias == null ? void 0 : alias.variable) === "string" && alias.variable.trim()) {
                 const variable = await resolveVariableRef(alias.variable.trim());
@@ -43844,6 +47035,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "MOTION_STYLE_MOVE": {
         try {
+          requireEditor("styles.create", "MOTION_STYLE_MOVE");
           const id = typeof msg.id === "string" ? msg.id.trim() : "";
           const folder = typeof msg.folder === "string" ? msg.folder.trim() : "";
           if (Boolean(id) === Boolean(folder)) throw new Error("provide exactly one of id or folder");
@@ -43855,10 +47047,10 @@ createRoot(document.getElementById('root')!).render(
             const styles = await figma.getLocalCustomAnimationStylesAsync();
             const target = styles.find((style) => style.id === id);
             if (!target) throw new Error(`no local custom animation style has id "${id}"`);
-            const reference2 = after ? (_G = styles.find((style) => style.id === after)) != null ? _G : null : null;
+            const reference2 = after ? (_E = styles.find((style) => style.id === after)) != null ? _E : null : null;
             if (after && reference2 === null) throw new Error(`no local custom animation style has id "${after}"`);
             figma.moveLocalCustomAnimationStyleAfter(target, reference2);
-            postToUi({ type: "MOTION_STYLE_MOVED", id, after: (_H = reference2 == null ? void 0 : reference2.id) != null ? _H : null });
+            postToUi({ type: "MOTION_STYLE_MOVED", id, after: (_F = reference2 == null ? void 0 : reference2.id) != null ? _F : null });
           } else {
             figma.moveLocalCustomAnimationFolderAfter(folder, after);
             postToUi({ type: "MOTION_STYLE_FOLDER_MOVED", folder, after });
@@ -43928,12 +47120,11 @@ createRoot(document.getElementById('root')!).render(
                   note(effectShader.id, "effect", node, effectShader.properties, effectShader.propertyMetadata);
                 }
               }
-              if ("children" in node) for (const child of node.children) visit(child);
             };
             const pages = scope === "document" ? figma.root.children : [figma.currentPage];
             for (const page of pages) {
               await page.loadAsync();
-              for (const node of page.children) visit(node);
+              await walkSceneNodes(page, visit, { includeRoot: false });
             }
           }
           const known = new Set(offered.map((shader) => shader.id));
@@ -43972,7 +47163,7 @@ createRoot(document.getElementById('root')!).render(
             break;
           }
           const query = typeof msg.query === "string" ? msg.query.trim().toLowerCase() : "";
-          const limit = Math.min(Math.max((_I = msg.limit) != null ? _I : 100, 1), 500);
+          const limit = Math.min(Math.max((_G = msg.limit) != null ? _G : 100, 1), 500);
           const styles = [];
           for (const kind of kinds) {
             for (const style of await localStyles(kind)) {
@@ -43982,7 +47173,7 @@ createRoot(document.getElementById('root')!).render(
                 key: style.key,
                 name: style.name,
                 kind,
-                holds: await describeStyle(style, describePaints, describeEffects, describeGrids)
+                holds: await describeStyle(style, describePaints2, describeEffects, describeGrids)
               }, style.type === "CUSTOM_ANIMATION" ? {
                 animations: style.animationEntries.map((entry) => __spreadValues(__spreadValues({
                   id: entry.id,
@@ -44005,6 +47196,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "STYLE_MAKE": {
         try {
+          requireEditor("styles.create", "STYLE_MAKE");
           const kind = typeof msg.as === "string" ? msg.as.trim().toLowerCase() : "";
           if (kind === "animation") {
             refuse("STYLE_MAKE", "custom animation styles are created and updated with MOTION_STYLE_SET");
@@ -44028,18 +47220,18 @@ createRoot(document.getElementById('root')!).render(
             }
             source = node;
           }
-          const existing = (_J = (await localStyles(kind)).find((style2) => style2.name === name)) != null ? _J : null;
+          const existing = (_H = (await localStyles(kind)).find((style2) => style2.name === name)) != null ? _H : null;
           const style = existing != null ? existing : kind === "paint" ? figma.createPaintStyle() : kind === "text" ? figma.createTextStyle() : kind === "effect" ? figma.createEffectStyle() : figma.createGridStyle();
           style.name = name;
           if (typeof msg.description === "string") style.description = msg.description;
           if (kind === "paint") {
-            const paints2 = source ? (_K = source.fills) != null ? _K : [] : (await applyToScratch(msg.paints, "paints")).fills;
+            const paints2 = source ? (_I = source.fills) != null ? _I : [] : (await applyToScratch(msg.paints, "paints")).fills;
             style.paints = paints2;
           } else if (kind === "effect") {
-            const effects = source ? (_L = source.effects) != null ? _L : [] : (await applyToScratch(msg.effects, "effects")).effects;
+            const effects = source ? (_J = source.effects) != null ? _J : [] : (await applyToScratch(msg.effects, "effects")).effects;
             style.effects = effects;
           } else if (kind === "grid") {
-            const grids = source ? (_M = source.layoutGrids) != null ? _M : [] : (await applyToScratch(msg.grid, "grid")).grids;
+            const grids = source ? (_K = source.layoutGrids) != null ? _K : [] : (await applyToScratch(msg.grid, "grid")).grids;
             style.layoutGrids = grids;
           } else {
             const from = (source == null ? void 0 : source.type) === "TEXT" ? source : null;
@@ -44089,7 +47281,7 @@ createRoot(document.getElementById('root')!).render(
               key: style.key,
               name: style.name,
               kind,
-              holds: await describeStyle(style, describePaints, describeEffects, describeGrids)
+              holds: await describeStyle(style, describePaints2, describeEffects, describeGrids)
             }
           });
         } catch (error) {
@@ -44124,6 +47316,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "STYLE_MOVE": {
         try {
+          requireEditor("styles.create", "STYLE_MOVE");
           const kind = typeof msg.kind === "string" ? msg.kind.trim().toLowerCase() : "";
           if (kind === "animation") {
             refuse("STYLE_MOVE", "custom animation styles are reordered with MOTION_STYLE_MOVE");
@@ -44164,7 +47357,7 @@ createRoot(document.getElementById('root')!).render(
           moveStyle.call(figma, style, reference2);
           figma.commitUndo();
           const order = (await localStyles(kind)).map((s) => s.name);
-          postToUi({ type: "STYLE_MOVED", kind, name: style.name, after: (_N = reference2 == null ? void 0 : reference2.name) != null ? _N : null, order });
+          postToUi({ type: "STYLE_MOVED", kind, name: style.name, after: (_L = reference2 == null ? void 0 : reference2.name) != null ? _L : null, order });
         } catch (error) {
           const message = String((error == null ? void 0 : error.message) || error);
           postToUi({ type: "CANVAS_ERROR", command: "STYLE_MOVE", message });
@@ -44182,7 +47375,7 @@ createRoot(document.getElementById('root')!).render(
           const flows = [];
           for (const point2 of page.flowStartingPoints) {
             const node = await figma.getNodeByIdAsync(point2.nodeId).catch(() => null);
-            flows.push({ name: point2.name, node: point2.nodeId, frame: (_O = node == null ? void 0 : node.name) != null ? _O : "(missing)" });
+            flows.push({ name: point2.name, node: point2.nodeId, frame: (_M = node == null ? void 0 : node.name) != null ? _M : "(missing)" });
           }
           postToUi({ type: "FLOWS", page: { id: page.id, name: page.name }, flows });
         } catch (error) {
@@ -44212,7 +47405,7 @@ createRoot(document.getElementById('root')!).render(
               continue;
             }
             const node = await figma.getNodeByIdAsync(entry.node).catch(() => null);
-            if (!node || node.type !== "FRAME" || ((_P = node.parent) == null ? void 0 : _P.type) !== "PAGE") {
+            if (!node || node.type !== "FRAME" || ((_N = node.parent) == null ? void 0 : _N.type) !== "PAGE") {
               problems.push(`flows[${index2}]: ${entry.node} is not a top-level frame on this page`);
               continue;
             }
@@ -44241,26 +47434,85 @@ createRoot(document.getElementById('root')!).render(
         postToUi({
           type: "PAGES",
           current: figma.currentPage.id,
-          pages: figma.root.children.map((page) => ({
+          pages: figma.root.children.map((page) => __spreadValues({
             id: page.id,
             name: page.name,
             current: page.id === figma.currentPage.id
-          }))
+          }, page.isPageDivider ? { divider: true } : {}))
         });
         break;
       }
       case "PAGE_CREATE": {
         const name = typeof msg.name === "string" ? msg.name.trim() : "";
-        if (name === "") {
+        if (name === "" && msg.divider !== true) {
           refuse("PAGE_CREATE", "name must be a non-empty string");
           break;
         }
-        const page = figma.createPage();
-        page.name = name;
+        if (msg.divider === true && msg.activate === true) {
+          refuse("PAGE_CREATE", "a divider has no canvas to open \u2014 leave activate out");
+          break;
+        }
+        const page = msg.divider === true ? figma.createPageDivider(name === "" ? void 0 : name) : figma.createPage();
+        if (msg.divider !== true) page.name = name;
         if (msg.activate === true) await figma.setCurrentPageAsync(page);
         figma.commitUndo();
-        figma.notify(`Page "${page.name}" created`);
-        postToUi({ type: "PAGE_CREATED", page: { id: page.id, name: page.name }, current: figma.currentPage.id });
+        figma.notify(msg.divider === true ? "Page divider created" : `Page "${page.name}" created`);
+        postToUi({
+          type: "PAGE_CREATED",
+          page: __spreadValues({ id: page.id, name: page.name }, page.isPageDivider ? { divider: true } : {}),
+          current: figma.currentPage.id
+        });
+        break;
+      }
+      case "SELECTION_COLORS": {
+        const colours = figma.getSelectionColors();
+        if (!colours) {
+          postToUi({ type: "SELECTION_COLORS", selection: 0, paints: [], styles: [] });
+          break;
+        }
+        const paints2 = [];
+        for (const paint of colours.paints) paints2.push(await readPaintsForWrite([paint], variableNameOf));
+        postToUi({
+          type: "SELECTION_COLORS",
+          selection: figma.currentPage.selection.length,
+          // One entry per distinct paint, in the shape `fill` takes: a bound one reads `var:<token>`,
+          // a raw one its hex — the raw ones are exactly what a recolour cannot reach.
+          paints: paints2,
+          styles: colours.styles.map((style) => ({ id: style.id, name: style.name }))
+        });
+        break;
+      }
+      case "FILE_THUMBNAIL": {
+        const node = await figma.getFileThumbnailNodeAsync();
+        postToUi({ type: "FILE_THUMBNAIL", node: node ? { id: node.id, name: node.name, type: node.type } : null });
+        break;
+      }
+      case "FILE_THUMBNAIL_SET": {
+        try {
+          const before = await figma.getFileThumbnailNodeAsync();
+          let target = null;
+          if (msg.nodeId !== null) {
+            const node = typeof msg.nodeId === "string" ? await figma.getNodeByIdAsync(msg.nodeId) : null;
+            if (!node) throw new Error(`no node ${JSON.stringify(msg.nodeId)} \u2014 pass an id, or null for the default`);
+            if (!["FRAME", "COMPONENT", "COMPONENT_SET", "SECTION"].includes(node.type)) {
+              throw new Error(`a ${node.type} cannot be the cover \u2014 a frame, component, component set or section can`);
+            }
+            target = node;
+          }
+          await figma.setFileThumbnailNodeAsync(target);
+          figma.commitUndo();
+          const after = await figma.getFileThumbnailNodeAsync();
+          const brief2 = (node) => node ? { id: node.id, name: node.name } : null;
+          postToUi({ type: "FILE_THUMBNAIL", before: brief2(before), node: brief2(after), verified: ((_O = after == null ? void 0 : after.id) != null ? _O : null) === ((_P = target == null ? void 0 : target.id) != null ? _P : null) });
+        } catch (error) {
+          postToUi({ type: "CANVAS_ERROR", command: "FILE_THUMBNAIL_SET", message: String((error == null ? void 0 : error.message) || error) });
+        }
+        break;
+      }
+      case "UNDO": {
+        figma.triggerUndo();
+        figma.notify("Undone");
+        postToUi({ type: "UNDONE" });
         break;
       }
       /* ---- Dev Mode ---- */
@@ -44339,12 +47591,12 @@ createRoot(document.getElementById('root')!).render(
             });
           }
           figma.commitUndo();
-          const failed = rows.reduce(
+          const failed2 = rows.reduce(
             (sum, row) => sum + row.done.filter((entry) => entry.ok === false).length,
             0
           );
-          figma.notify(failed > 0 ? `${failed} link(s) refused` : `Links on ${rows.length} node(s)`);
-          postToUi({ type: "DEV_LINKS_SET", failed, nodes: rows });
+          figma.notify(failed2 > 0 ? `${failed2} link(s) refused` : `Links on ${rows.length} node(s)`);
+          postToUi({ type: "DEV_LINKS_SET", failed: failed2, nodes: rows });
         } catch (error) {
           postToUi({ type: "CANVAS_ERROR", command: "DEV_LINK_SET", message: String((error == null ? void 0 : error.message) || error) });
         }
@@ -44404,11 +47656,86 @@ createRoot(document.getElementById('root')!).render(
             }
           }
           figma.commitUndo();
-          const failed = rows.filter((row) => row.ok === false).length;
-          figma.notify(failed > 0 ? `${failed} node(s) refused the note` : clearing ? `Cleared ${rows.length}` : `Annotated ${rows.length}`);
-          postToUi({ type: "ANNOTATED", cleared: clearing, failed, nodes: rows });
+          const failed2 = rows.filter((row) => row.ok === false).length;
+          figma.notify(failed2 > 0 ? `${failed2} node(s) refused the note` : clearing ? `Cleared ${rows.length}` : `Annotated ${rows.length}`);
+          postToUi({ type: "ANNOTATED", cleared: clearing, failed: failed2, nodes: rows });
         } catch (error) {
           postToUi({ type: "CANVAS_ERROR", command: "ANNOTATE", message: String((error == null ? void 0 : error.message) || error) });
+        }
+        break;
+      }
+      case "ANNOTATION_CATEGORIES": {
+        const categories = await figma.annotations.getAnnotationCategoriesAsync();
+        postToUi({ type: "ANNOTATION_CATEGORIES", categories: categories.map(describeCategory), colours: ANNOTATION_COLOURS });
+        break;
+      }
+      case "ANNOTATION_CATEGORY_SET": {
+        try {
+          const listOf = (value2) => value2 === void 0 ? [] : Array.isArray(value2) ? value2 : [value2];
+          const known = await figma.annotations.getAnnotationCategoriesAsync();
+          const find = (wanted) => {
+            var _a2;
+            const key = typeof wanted === "string" ? wanted.trim() : "";
+            const hit = (_a2 = known.find((one) => one.id === key)) != null ? _a2 : known.find((one) => one.label.toLowerCase() === key.toLowerCase());
+            if (!hit) throw new Error(`no category ${JSON.stringify(wanted)} \u2014 this file has: ${known.map((one) => one.label).join(", ") || "(none)"}`);
+            return hit;
+          };
+          const colour = (value2) => {
+            if (typeof value2 !== "string" || !ANNOTATION_COLOURS.includes(value2)) {
+              throw new Error(`color must be one of: ${ANNOTATION_COLOURS.join(", ")}`);
+            }
+            return value2;
+          };
+          const rows = [];
+          for (const entry of listOf(msg.add)) {
+            const one = entry;
+            try {
+              if (typeof (one == null ? void 0 : one.label) !== "string" || one.label.trim() === "") throw new Error("label must be a non-empty string");
+              if (known.some((existing) => existing.label.toLowerCase() === one.label.trim().toLowerCase())) {
+                throw new Error(`a category "${one.label}" already exists \u2014 edit it instead`);
+              }
+              const made = await figma.annotations.addAnnotationCategoryAsync({ label: one.label.trim(), color: colour((_T = one.color) != null ? _T : "blue") });
+              rows.push({ action: "add", ok: true, category: describeCategory(made) });
+            } catch (error) {
+              rows.push({ action: "add", ok: false, label: one == null ? void 0 : one.label, error: String((error == null ? void 0 : error.message) || error) });
+            }
+          }
+          for (const entry of listOf(msg.edit)) {
+            const one = entry;
+            try {
+              const category = find(one == null ? void 0 : one.category);
+              const before = describeCategory(category);
+              if (one.label !== void 0) {
+                if (typeof one.label !== "string" || one.label.trim() === "") throw new Error("label must be a non-empty string");
+                category.setLabel(one.label.trim());
+              }
+              if (one.color !== void 0) category.setColor(colour(one.color));
+              const fresh = await figma.annotations.getAnnotationCategoryByIdAsync(category.id);
+              rows.push({ action: "edit", ok: true, before, after: fresh ? describeCategory(fresh) : null });
+            } catch (error) {
+              rows.push({ action: "edit", ok: false, category: one == null ? void 0 : one.category, error: String((error == null ? void 0 : error.message) || error) });
+            }
+          }
+          for (const wanted of listOf(msg.remove)) {
+            try {
+              const category = find(wanted);
+              if (category.isPreset) throw new Error(`"${category.label}" is one of Figma's presets and cannot be removed`);
+              const before = describeCategory(category);
+              category.remove();
+              rows.push({ action: "remove", ok: true, before });
+            } catch (error) {
+              rows.push({ action: "remove", ok: false, category: wanted, error: String((error == null ? void 0 : error.message) || error) });
+            }
+          }
+          if (rows.length === 0) {
+            refuse("ANNOTATION_CATEGORY_SET", "give add, edit or remove");
+            break;
+          }
+          figma.commitUndo();
+          const after = await figma.annotations.getAnnotationCategoriesAsync();
+          postToUi({ type: "ANNOTATION_CATEGORIES", results: rows, categories: after.map(describeCategory), colours: ANNOTATION_COLOURS });
+        } catch (error) {
+          postToUi({ type: "CANVAS_ERROR", command: "ANNOTATION_CATEGORY_SET", message: String((error == null ? void 0 : error.message) || error) });
         }
         break;
       }
@@ -44468,9 +47795,9 @@ createRoot(document.getElementById('root')!).render(
             }
           }
           figma.commitUndo();
-          const failed = done.filter((entry) => entry.ok === false).length;
-          figma.notify(failed > 0 ? `${failed} measurement(s) refused` : `${done.length} measurement(s)`);
-          postToUi({ type: "MEASUREMENTS_SET", failed, done, total: page.getMeasurements().length });
+          const failed2 = done.filter((entry) => entry.ok === false).length;
+          figma.notify(failed2 > 0 ? `${failed2} measurement(s) refused` : `${done.length} measurement(s)`);
+          postToUi({ type: "MEASUREMENTS_SET", failed: failed2, done, total: page.getMeasurements().length });
         } catch (error) {
           postToUi({ type: "CANVAS_ERROR", command: "MEASURE_SET", message: String((error == null ? void 0 : error.message) || error) });
         }
@@ -44479,7 +47806,7 @@ createRoot(document.getElementById('root')!).render(
       case "NODE_ROUNDTRIP": {
         try {
           const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id));
-          const depth = Math.min(Math.max((_T = msg.depth) != null ? _T : 3, 0), 12);
+          const depth = Math.min(Math.max((_U = msg.depth) != null ? _U : 3, 0), 12);
           const ignore = new Set((Array.isArray(msg.ignore) ? msg.ignore : []).map((one) => String(one)));
           const reports = [];
           for (const id of ids) {
@@ -44495,7 +47822,7 @@ createRoot(document.getElementById('root')!).render(
               var _a2, _b2;
               const reading = await describeNode2(one, true);
               const kids = [];
-              if (level > 0 && "children" in one && one.type !== "INSTANCE") {
+              if (level > 0 && "children" in one && one.type !== "INSTANCE" && String(one.type) !== "TABLE") {
                 for (const child of one.children) {
                   const made2 = await build(child, level - 1);
                   if (made2) kids.push(made2);
@@ -44504,7 +47831,12 @@ createRoot(document.getElementById('root')!).render(
               const of = one.type === "INSTANCE" ? (_b2 = (_a2 = await one.getMainComponentAsync().catch(() => null)) == null ? void 0 : _a2.id) != null ? _b2 : null : null;
               const built = specFrom(reading, kids, of);
               if (!built) {
-                dropped.push({ property: "(node)", why: `a ${one.type} cannot be made by NODE_CREATE` });
+                dropped.push({
+                  property: "(node)",
+                  // A code layer is a Figma Make project on the canvas: the Plugin API can see it and
+                  // not build one; its source is read, and a new one made, through Figma's own MCP.
+                  why: String(one.type) === "CODE_INSTANCE" ? "a code layer is made from a project through Figma's MCP (send_code_to_figma), not by NODE_CREATE" : `a ${one.type} cannot be made by NODE_CREATE`
+                });
                 return null;
               }
               for (const entry of built.dropped) dropped.push(__spreadProps(__spreadValues({}, entry), { property: `${one.name}.${entry.property}` }));
@@ -44522,26 +47854,26 @@ createRoot(document.getElementById('root')!).render(
               reports.push({ node: id, name: original.name, ok: false, error: problems.join(" \xB7 ") || "the reading did not plan", dropped });
               continue;
             }
-            const parent = (_U = original.parent) != null ? _U : figma.currentPage;
+            const parent = (_V = original.parent) != null ? _V : figma.currentPage;
             const copy = await createNode(plan, parent, false);
             const made = await figma.getNodeByIdAsync(copy.id);
             if (!made || !("type" in made)) {
               reports.push({ node: id, name: original.name, ok: false, error: "the copy was not made", dropped });
               continue;
             }
-            const before = (_V = (await describeNode2(original, true)).props) != null ? _V : {};
-            const after = (_W = (await describeNode2(made, true)).props) != null ? _W : {};
+            const before = (_W = (await describeNode2(original, true)).props) != null ? _W : {};
+            const after = (_X = (await describeNode2(made, true)).props) != null ? _X : {};
             const { same, diverged } = compare(before, after, ignore);
-            const failed = (_X = copy.failures) != null ? _X : [];
+            const failed2 = (_Y = copy.failures) != null ? _Y : [];
             if (msg.keep !== true) made.remove();
             else figma.commitUndo();
             reports.push(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
               node: id,
               name: original.name,
               type: original.type,
-              ok: diverged.length === 0 && dropped.length === 0 && failed.length === 0,
+              ok: diverged.length === 0 && dropped.length === 0 && failed2.length === 0,
               same: same.length
-            }, diverged.length > 0 ? { diverged } : {}), dropped.length > 0 ? { dropped } : {}), failed.length > 0 ? { failed } : {}), notValues.length > 0 ? { notValues } : {}), msg.keep === true ? { copy: copy.id } : {}));
+            }, diverged.length > 0 ? { diverged } : {}), dropped.length > 0 ? { dropped } : {}), failed2.length > 0 ? { failed: failed2 } : {}), notValues.length > 0 ? { notValues } : {}), msg.keep === true ? { copy: copy.id } : {}));
           }
           const broken = reports.filter((one) => one.ok === false).length;
           figma.notify(broken > 0 ? `${broken} of ${reports.length} did not survive` : `${reports.length} survived the round trip`);
@@ -44679,7 +48011,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "MODULE_RUN": {
         const entry = userModules.find((candidate) => candidate.id === msg.id);
-        const screen = (_Y = entry == null ? void 0 : entry.module) == null ? void 0 : _Y.screens[msg.screen];
+        const screen = (_Z = entry == null ? void 0 : entry.module) == null ? void 0 : _Z.screens[msg.screen];
         const block3 = screen == null ? void 0 : screen.blocks[msg.block];
         if (!(entry == null ? void 0 : entry.module) || !block3) {
           refuse("MODULE_RUN", `no block ${msg.block} on the ${msg.screen} screen of "${msg.id}"`);
@@ -44758,6 +48090,7 @@ createRoot(document.getElementById('root')!).render(
       }
       case "GENERATE_KIT": {
         try {
+          requireEditor("components.create", "GENERATE_KIT");
           const snapshot = await readAllVariables();
           const colorVariables = snapshot.variables.filter((variable) => variable.resolvedType === "COLOR").map((variable) => ({ id: variable.id, name: variable.name }));
           const report2 = await generateDesignKit(colorVariables);
@@ -44842,7 +48175,7 @@ createRoot(document.getElementById('root')!).render(
           const targetLanguages = modules2.i18n ? parseLanguages(exportOptions.i18n.languages, exportOptions.i18n.sourceLanguage) : [];
           let startPageId;
           try {
-            startPageId = (_Z = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _Z.nodeId;
+            startPageId = (__ = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : __.nodeId;
           } catch (e) {
           }
           const [project, assets] = await Promise.all([
@@ -44908,7 +48241,7 @@ createRoot(document.getElementById('root')!).render(
           if (!project && motionExport.animation.js) files["static/js/animations.js"] = motionExport.animation.js;
           let tauriPageHrefs;
           if (exportOptions.targetOptions.platform === "tauri" && project) {
-            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (__ = pageRoots[0]) == null ? void 0 : __.id;
+            const startRootId = startPageId && pageRoots.some((root) => root.id === startPageId) ? startPageId : (_$ = pageRoots[0]) == null ? void 0 : _$.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -44941,9 +48274,9 @@ createRoot(document.getElementById('root')!).render(
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_$ = sceneNodesById.get(nodeId)) != null ? _$ : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (_aa = sceneNodesById.get(nodeId)) != null ? _aa : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_aa = node.parent) == null ? void 0 : _aa.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((_ba = node.parent) == null ? void 0 : _ba.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -44966,7 +48299,7 @@ createRoot(document.getElementById('root')!).render(
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((_ba = counts[finding.rule]) != null ? _ba : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_ca = counts[finding.rule]) != null ? _ca : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -45016,7 +48349,7 @@ createRoot(document.getElementById('root')!).render(
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (_da = (_ca = figma.currentUser) == null ? void 0 : _ca.name) != null ? _da : "unknown";
+            exportedBy = (_ea = (_da = figma.currentUser) == null ? void 0 : _da.name) != null ? _ea : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }
@@ -45067,6 +48400,6 @@ createRoot(document.getElementById('root')!).render(
       }
     }
   }
-  figma.ui.onmessage = handleUiMessage;
+  figma.ui.onmessage = (msg) => msg.type.startsWith("AGENT_") ? handleUiMessage(msg) : asPanelCommand(() => handleUiMessage(msg));
   setUiMessageRunner((message) => handleUiMessage(message));
 })();

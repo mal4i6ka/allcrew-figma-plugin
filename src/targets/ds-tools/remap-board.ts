@@ -13,7 +13,7 @@
 import { contrastRatio, parseHex, rgbToOklch } from '../../tokens/color.ts'
 import { toHex } from '../../tokens/remap/color-literal.ts'
 import type { RemapEntry, RemapPlan } from '../../tokens/remap/plan.ts'
-import { yieldToHost } from '../../utils/tree.ts'
+import { checkpoint, pauseDue } from '../../utils/budget.ts'
 
 const SECTION_KEY = 'allcrew-channel-remap-board'
 const SECTION_NAME = 'Color remap'
@@ -266,15 +266,14 @@ async function collectBindings(entries: readonly RemapEntry[]): Promise<BoardBin
   }
 
   const old = new Map<string, Variable>()
-  let fetched = 0
   for (const id of oldIds) {
-    if (++fetched % 25 === 0) await yieldToHost()
+    if (pauseDue()) await checkpoint()
     const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
     if (variable) old.set(id, variable)
   }
   const imported = new Map<string, Variable>()
   for (const key of keys) {
-    if (++fetched % 25 === 0) await yieldToHost()
+    if (pauseDue()) await checkpoint()
     const variable = await figma.variables.importVariableByKeyAsync(key).catch(() => null)
     if (variable) imported.set(key, variable)
   }

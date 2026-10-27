@@ -31,8 +31,15 @@ import { collectReactionDestinationIds } from './targets/django/interactions'
 import { matchBootstrapComponent } from './targets/django/bootstrap/components'
 import { imageFillUrls, scaleBorderRadius } from './targets/django/css-emitter'
 import type { ThemableSetData, ThemableVariantData } from './targets/django/bootstrap/theme'
-import { findAllWithCriteria, topLevelAncestorOrNull, walkSceneNodes, yieldToHost } from './utils/tree'
+import { findAllWithCriteria, loadAllPagesAsync, topLevelAncestorOrNull, walkSceneNodes } from './utils/tree'
+import { asPanelCommand, checkpoint } from './utils/budget'
 import { exportPlate } from './canvas/plate'
+import {
+  ExportGuard,
+  MAX_REPLY_RAW_BYTES,
+  pixelRefusal,
+  type ExportConstraint,
+} from './agent/export-guard'
 import { extractStrings, type ExtractedEntry } from './targets/django/i18n/extract'
 import { translationKey } from './targets/django/i18n/normalize'
 import { emitLocaleCatalogs, emitPo } from './targets/django/i18n/po'
@@ -104,13 +111,13 @@ import { buildDjangoDesignMd, buildTokenAudit, type DjangoDesignMdInput } from '
 import { buildComponentsMd, COMPONENTS_FILE, type ComponentDoc, type ComponentProperty } from './targets/design-md/component-docs'
 import { buildTokenEntries } from './targets/design-md/model'
 import { deliverPackage } from './delivery'
-import { agentManifest, handleAgentRequest, setGates } from './agent/listener.ts'
+import { agentManifest, cancelAgentRequest, handleAgentRequest, setGates } from './agent/listener.ts'
 import { storedGatesFor, withStoredGates, type StoredGates } from './agent/gate-storage.ts'
 import { postToUi } from './agent/ui-post.ts'
 import { setModuleProvider, setUiMessageRunner } from './agent/plugin-ops.ts'
 import { setModuleAdminProvider } from './agent/module-ops.ts'
 import { UI_COMMANDS } from './agent/ui-commands.ts'
-import { resolveVariableRef } from './agent/values.ts'
+import { rememberVariable, resolveVariableRef } from './agent/values.ts'
 import {
   compareModuleVersions,
   describeModules,
@@ -127,9 +134,10 @@ import {
 } from './modules/registry.ts'
 import { conditionMatches, moduleCapabilities, moduleStateValueError, parseUserModule, type ModuleProblem, type UserModule } from './modules/contract.ts'
 import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TEMPLATE, moduleAgentPrompt } from './modules/schema.ts'
-import { planFont, planProps } from './canvas/props.ts'
+import { formatGridTrack, gridSpecsOf, planFont, planProps, repeatModifier, repeatWords } from './canvas/props.ts'
 import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
+import { asCodeLayer, CODE_LAYER_EXECUTABLES } from './targets/react/code-layer.ts'
 import { fileKeyFrom } from './targets/react/code-connect.ts'
 import { componentName as reactComponentName } from './targets/react/jsx.ts'
 import type { MotionSnapshot } from './targets/django/motion/types.ts'
@@ -151,6 +159,9 @@ import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
 import { addressIn, readOverrides } from './canvas/overrides.ts'
 import { readKeyframes } from './canvas/keyframes.ts'
+import { readPaintsForWrite } from './canvas/paint-reader.ts'
+import { decorationWords } from './canvas/decoration.ts'
+import { connectorWords, editorProblem, pageIdOf, tableWords, transitionWords } from './canvas/board.ts'
 import { readEffects } from './canvas/effect-reader.ts'
 import {
   bindingField,
@@ -258,6 +269,9 @@ type PluginMessage =
       colorProfile?: string
       svgIdAttribute?: boolean
       svgSimplifyStroke?: boolean
+      offset?: number
+      maxPixels?: number
+      budgetBytes?: number
     }
   | { type: 'FONT_FAMILY_AXES'; family: string }
   | { type: 'MOTION_STYLES' }
@@ -287,11 +301,17 @@ type PluginMessage =
   | { type: 'PAGE_LIST' }
   | { type: 'FLOW_LIST'; pageId?: string }
   | { type: 'FLOW_SET'; flows: unknown; pageId?: string }
-  | { type: 'PAGE_CREATE'; name: string; activate?: boolean }
+  | { type: 'PAGE_CREATE'; name: string; activate?: boolean; divider?: boolean }
+  | { type: 'SELECTION_COLORS' }
+  | { type: 'FILE_THUMBNAIL' }
+  | { type: 'FILE_THUMBNAIL_SET'; nodeId: string | null }
+  | { type: 'UNDO' }
   // Dev Mode: the links, notes and measurements a designer leaves for the person writing the code
   | { type: 'DEV_LINK_LIST'; nodes?: unknown; includeChildren?: boolean }
   | { type: 'DEV_LINK_SET'; nodes?: unknown; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'ANNOTATE'; nodes?: unknown; label?: string; properties?: unknown; category?: string; clear?: boolean }
+  | { type: 'ANNOTATION_CATEGORIES' }
+  | { type: 'ANNOTATION_CATEGORY_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'MEASURE_LIST'; nodes?: unknown }
   | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'NODE_ROUNDTRIP'; nodes: unknown; depth?: number; keep?: boolean; ignore?: unknown }
@@ -305,6 +325,7 @@ type PluginMessage =
       libraryComponents?: boolean
       limit?: number
       fileUrl?: string
+      codeLayer?: boolean
     }
   // User modules (see TASK-user-modules.md)
   | { type: 'MODULES_LIST' }
@@ -383,7 +404,8 @@ type PluginMessage =
     }
   // Agent listener messages (see src/agent/, agent/README.md)
   | { type: 'AGENT_SET_GATES'; read: boolean; write: boolean }
-  | { type: 'AGENT_REQUEST'; id: string; op: string; params?: unknown }
+  | { type: 'AGENT_REQUEST'; id: string; op: string; params?: unknown; budgetMs?: unknown }
+  | { type: 'AGENT_CANCEL'; ids?: unknown; reason?: unknown }
 
 /* ------------------------------------------------------------------ remap */
 
@@ -1291,13 +1313,14 @@ async function collectComponentDocs(
 ): Promise<ComponentDocsResult> {
   const budgetBytes = Math.max(1, budgetMb) * 1024 * 1024
   const files: Record<string, Uint8Array> = {}
+  // These previews go into the panel's own zip, not into an agent reply: the designer's
+  // documentation budget is the limit, not the transport cap.
+  const previewGuard = new ExportGuard({ budgetBytes, transport: false })
   let targets: (ComponentSetNode | ComponentNode)[]
   if (nodes) {
     targets = [...nodes]
   } else {
-    try {
-      await figma.loadAllPagesAsync()
-    } catch { /* older host, or already loaded */ }
+    await loadAllPagesAsync()
     targets = figma.root
       .findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
       .filter(isDocumentableComponent)
@@ -1312,8 +1335,6 @@ async function collectComponentDocs(
     return pageNameById.get(current.id)
   }
 
-  let previewBytes = 0
-  let previewCount = 0
   const docs: ComponentDoc[] = []
   for (const node of targets) {
     let description = ''
@@ -1336,19 +1357,38 @@ async function collectComponentDocs(
     }
 
     if (withPreviews) {
-      if (previewBytes >= budgetBytes) {
-        doc.previewError = `the ${budgetMb} MB preview budget for this export was already spent — raise it in Settings → Documentation`
+      const gate = await previewGuard.beforeRender(docs.length)
+      if (!gate.include) {
+        doc.previewError =
+          `the ${budgetMb} MB preview budget for this export is spent — raise it in Settings → Documentation`
       } else {
         try {
+          const scale = previewScale(node.width)
+          const pixels = pixelRefusal(node, { type: 'SCALE', value: scale }, previewGuard.maxPixels)
+          if (pixels.error) throw new Error(pixels.error)
+          const preflight = previewGuard.preflightRaster(pixels.render, docs.length)
+          if (!preflight.include) {
+            throw new Error(
+              preflight.firstItemTooLarge
+                ? 'this preview cannot fit the documentation preview budget — lower preview density or raise the budget'
+                : `the ${budgetMb} MB preview budget for this export is spent — raise it in Settings → Documentation`
+            )
+          }
           const bytes = await node.exportAsync({
             format: 'PNG',
-            constraint: { type: 'SCALE', value: previewScale(node.width) },
+            constraint: { type: 'SCALE', value: scale },
           })
-          const path = previewPath(node.name, node.id)
-          files[path] = bytes
-          previewBytes += bytes.length
-          previewCount++
-          doc.preview = path
+          const admitted = previewGuard.admit(bytes.length, docs.length)
+          if (!admitted.include) {
+            doc.previewError =
+              admitted.firstItemTooLarge
+                ? 'this preview is too large for the export budget — lower preview density or raise the documentation budget'
+                : `the ${budgetMb} MB preview budget for this export is spent — raise it in Settings → Documentation`
+          } else {
+            const path = previewPath(node.name, node.id)
+            files[path] = bytes
+            doc.preview = path
+          }
         } catch (error) {
           doc.previewError = error instanceof Error ? error.message : String(error)
         }
@@ -1359,7 +1399,7 @@ async function collectComponentDocs(
     if (withPreviews) {
       postToUi({ type: 'COMPONENT_PREVIEW_PROGRESS', done: docs.length, total: targets.length })
     }
-    if (docs.length % 10 === 0) await yieldToHost()
+    await checkpoint()
   }
   return { docs, files }
 }
@@ -1529,30 +1569,74 @@ function persistUiSizeLater(size: { width: number; height: number }): void {
 }
 
 /**
- * Agent gates persist only when Figma exposes a stable `fileKey` (private organization plugins).
- * Development plugins imported from GitHub receive no key, so their consent is deliberately
- * session-only. A file name is not an identity: two unrelated files named "Untitled" must never
- * inherit each other's read or write grant.
+ * Agent gates are remembered per file, so reopening the plugin — or Figma reloading it after an
+ * update — does not mean switching the listener on and granting writes again.
+ *
+ * The key is `figma.fileKey` when Figma hands one out (private organization plugins). Development
+ * and public plugins get none, and a file name is not an identity: two unrelated files named
+ * "Untitled" must never inherit each other's read or write grant. So the first grant in such a
+ * file stamps the document itself with a random id (plugin data on the root, invisible to the
+ * designer) and the grant is stored under that. It travels with the file, survives a rename, and
+ * is never written into a file nobody granted anything in. A duplicate of the file carries the
+ * stamp and so the grant — a copy made by someone who could already open the original.
  */
 const GATES_KEY = 'allcrewChannel.v1.agentGates'
+const FILE_ID_KEY = 'allcrewChannel.fileId'
 
-async function gatesFor(): Promise<StoredGates> {
+/** The id this plugin stamped into the document, or '' when there is none or it cannot be read. */
+function stampedFileId(): string {
   try {
-    return storedGatesFor(await figma.clientStorage.getAsync(GATES_KEY), figma.fileKey)
+    return figma.root.getPluginData(FILE_ID_KEY)
   } catch {
-    return { read: false, write: false }
+    return ''
   }
 }
 
-async function rememberGates(gates: StoredGates): Promise<void> {
-  // Development-plugin consent lasts for this open panel only.
-  if (!figma.fileKey) return
+/**
+ * The stable key this file's grants are written under: the file key when Figma gives one — no
+ * stamp is written then — and otherwise the stamp, made on the first grant when `create` is on.
+ * Null when neither exists: in a runtime that will not let the document be stamped (Dev Mode
+ * refusing a write), consent lasts for this session only.
+ */
+function fileIdentity(create: boolean): string | null {
+  if (figma.fileKey) return figma.fileKey
+  const stamped = stampedFileId()
+  if (stamped) return stamped
+  if (!create) return null
+  try {
+    const id = `local:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+    figma.root.setPluginData(FILE_ID_KEY, id)
+    return id
+  } catch {
+    return null
+  }
+}
+
+async function gatesFor(): Promise<StoredGates> {
   try {
     const stored = await figma.clientStorage.getAsync(GATES_KEY)
-    await figma.clientStorage.setAsync(
-      GATES_KEY,
-      withStoredGates(stored, figma.fileKey, figma.root.name, gates)
-    )
+    // The file key first; then the stamp, which is where a grant given while the plugin ran as a
+    // development build — before Figma handed out a key — was left.
+    for (const key of [figma.fileKey, stampedFileId()]) {
+      const gates = storedGatesFor(stored, key)
+      if (gates.read || gates.write) return gates
+    }
+  } catch {
+    /* closed, below */
+  }
+  return { read: false, write: false }
+}
+
+async function rememberGates(gates: StoredGates): Promise<void> {
+  // Stamped only to remember a grant: closing the gates in an unstamped file writes nothing.
+  const id = fileIdentity(gates.read || gates.write)
+  if (!id) return
+  try {
+    const next = withStoredGates(await figma.clientStorage.getAsync(GATES_KEY), id, figma.root.name, gates)
+    // Moved onto the file key once there is one, so a grant has one home and a revoke reaches it.
+    const stamped = stampedFileId()
+    if (stamped && stamped !== id) delete next[stamped]
+    await figma.clientStorage.setAsync(GATES_KEY, next)
   } catch {
     /* a listener that works but forgets is better than one that fails to open */
   }
@@ -1648,6 +1732,8 @@ async function describeBindings(value: unknown): Promise<{ bind?: Record<string,
       const id = one?.id
       if (!id || field in bound) continue
       const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
+      // So the write of this same name finds it without asking every library — see `values.ts`.
+      if (variable) rememberVariable(variable)
       bound[field] = variable?.name ?? id
     }
   }
@@ -1841,6 +1927,12 @@ function planMeasurements(msg: { add?: unknown; edit?: unknown; remove?: unknown
  * An annotation as it reads: the category by NAME, which is also what ANNOTATE takes, so the
  * reading can be sent back. Figma stores `"8947:0"`, which is sendable and says nothing.
  */
+const ANNOTATION_COLOURS: readonly string[] = ['yellow', 'orange', 'red', 'pink', 'violet', 'blue', 'teal', 'green']
+
+function describeCategory(category: AnnotationCategory) {
+  return { id: category.id, label: category.label, color: category.color, ...(category.isPreset ? { preset: true } : {}) }
+}
+
 async function describeAnnotations(notes: ReadonlyArray<Annotation>): Promise<Array<Record<string, unknown>>> {
   if (notes.length === 0) return []
   const categories = await figma.annotations.getAnnotationCategoriesAsync().catch(() => [])
@@ -1888,8 +1980,8 @@ const EXPORT_MIME: Readonly<Record<string, string>> = {
   WEBM: 'video/webm',
 }
 
-/** Past this a call is handing back more than anyone asked to read; what did not fit is named. */
-const EXPORT_BUDGET = 12 * 1024 * 1024
+/** Raw bytes that safely fit after base64 growth and response-envelope overhead. */
+const EXPORT_BUDGET = MAX_REPLY_RAW_BYTES
 
 /** A file name from a layer name, kept unique within one call — two layers may share a name, and
  * the second must not overwrite the first on the way out. */
@@ -1970,6 +2062,35 @@ function textMeasure(value: unknown): string {
   return unit === 'PERCENT' ? `${size}%` : `${size}px`
 }
 
+/**
+ * A GRID frame's own half of `layout`, in the words the write takes back. A grid has two gaps and
+ * a size per track, and a read that printed only the counts made every copy of a 1fr/240px grid
+ * come back as equal tracks with the flow gap — which is a different layout that looks similar.
+ */
+function readGridLayout(bag: Record<string, unknown>): Record<string, unknown> {
+  const tracks = (value: unknown) =>
+    Array.isArray(value) ? value.map((one) => formatGridTrack(one as { type: string; value?: number })) : undefined
+  const rowSizes = tracks(bag.gridRowSizes)
+  const columnSizes = tracks(bag.gridColumnSizes)
+  return {
+    rows: bag.gridRowCount,
+    columns: bag.gridColumnCount,
+    autoTracks: bag.gridAutoTracks,
+    ...(typeof bag.gridRowGap === 'number' ? { rowGap: Math.round(bag.gridRowGap * 100) / 100 } : {}),
+    ...(typeof bag.gridColumnGap === 'number' ? { columnGap: Math.round(bag.gridColumnGap * 100) / 100 } : {}),
+    ...(rowSizes ? { rowSizes } : {}),
+    ...(columnSizes ? { columnSizes } : {}),
+    ...(typeof bag.gridItemsPositioning === 'string' ? { positioning: bag.gridItemsPositioning } : {}),
+  }
+}
+
+/** A variable's name for a read, or null — never a throw, because a read must not fail over a name. */
+const variableNameOf = async (id: string): Promise<string | null> => {
+  const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
+  if (variable) rememberVariable(variable)
+  return variable?.name ?? null
+}
+
 async function describeNode(node: SceneNode, withProps: boolean): Promise<Record<string, unknown>> {
   const base: Record<string, unknown> = {
     id: node.id,
@@ -1989,7 +2110,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     height: round(bag.height),
     ...(bag.visible === false ? { visible: false } : {}),
     ...(typeof bag.opacity === 'number' && bag.opacity < 1 ? { opacity: round(bag.opacity) } : {}),
-    ...('fills' in bag ? { fill: await describePaints(bag.fills) } : {}),
+    ...('fills' in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}),
     // Beside the line, the settings themselves: what a read hands over is what a write takes,
     // which is the only way to put the same shader on another layer.
     ...(describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}),
@@ -2001,13 +2122,13 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(node.type === 'INSTANCE' && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: 'none' } : {}),
     ...('strokes' in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0
       ? {
-          stroke: await describePaints(bag.strokes),
+          stroke: await readPaintsForWrite(bag.strokes, variableNameOf, figma.mixed),
           // Only when it is one: a stroke of mixed weights reads as nothing here, and `null` was
           // being sent back as a weight and refused.
           ...(typeof bag.strokeWeight === 'number' ? { strokeWeight: round(bag.strokeWeight) } : {}),
           // The rest of the stroke, when it is not the default — a read that omits the dashes
           // cannot be edited and sent back, which is the whole promise of this shape.
-          ...(bag.strokeAlign !== 'INSIDE' ? { strokeAlign: bag.strokeAlign } : {}),
+          ...(typeof bag.strokeAlign === 'string' && bag.strokeAlign !== 'INSIDE' ? { strokeAlign: bag.strokeAlign } : {}),
           ...(Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}),
           ...(bag.complexStrokeProperties && (bag.complexStrokeProperties as { type?: string }).type !== 'BASIC'
             ? { brush: describeBrush(bag.complexStrokeProperties) }
@@ -2029,7 +2150,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // `"drop shadow #0A1F44 @0.2 0,4 blur 12"` cannot be sent back, and half a screen's design is
     // its shadows.
     ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}),
-    ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: describeGrids(bag.layoutGrids) } : {}),
+    ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}),
     ...(Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0
       ? { animation: await describeAnimation(bag.animationStyles) }
       : {}),
@@ -2060,9 +2181,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       primaryAxis: bag.primaryAxisAlignItems,
       counterAxis: bag.counterAxisAlignItems,
       ...(bag.layoutWrap === 'WRAP' ? { wrap: true, wrapGap: round(bag.counterAxisSpacing) } : {}),
-      ...(bag.layoutMode === 'GRID'
-        ? { rows: bag.gridRowCount, columns: bag.gridColumnCount, autoTracks: bag.gridAutoTracks }
-        : {}),
+      ...(bag.layoutMode === 'GRID' ? readGridLayout(bag) : {}),
     }
   }
   // How the node is sized inside ITS parent — invisible in a read until now, which made a frame
@@ -2071,16 +2190,53 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     props.sizing = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical }
   }
   if (bag.layoutPositioning === 'ABSOLUTE') props.absolute = true
+  // A transform group's repeat, in the words it is written with: one spec when every child
+  // repeats the same way (the only way NODE_GROUP makes one), a list when they differ.
+  if (node.type === 'TRANSFORM_GROUP' && Array.isArray(bag.transformModifiers) && bag.transformModifiers.length > 0) {
+    const words = (bag.transformModifiers as Record<string, unknown>[]).map(repeatWords)
+    const same = words.every((one) => JSON.stringify(one) === JSON.stringify(words[0]))
+    props.repeat = same ? words[0] : words
+  }
+  // Where text on a path begins. Left out, a copy starts at the first segment's beginning — on a
+  // circle that is the text turned to wherever the outline happens to start.
+  if (node.type === 'TEXT_PATH') {
+    const start = (bag as { textPathStartData?: { segment: number; position: number } }).textPathStartData
+    if (start && (start.segment !== 0 || start.position !== 0)) {
+      props.textStart = [start.segment, Math.round(start.position * 10000) / 10000]
+    }
+  }
+  // A slot that breaks its own limits — too few, too many, or something the property does not
+  // prefer — is a component in a state the design system says it should not be in.
+  if (node.type === 'SLOT' && Array.isArray(bag.limitViolations) && bag.limitViolations.length > 0) {
+    props.slotViolations = bag.limitViolations
+  }
   if (typeof bag.gridRowSpan === 'number' && (bag.gridRowSpan > 1 || (bag.gridColumnSpan as number) > 1)) {
     props.gridSpan = { rows: bag.gridRowSpan, columns: bag.gridColumnSpan }
   }
-  if (typeof bag.gridChildVerticalAlign === 'string' && bag.gridChildVerticalAlign !== 'AUTO') {
-    props.gridAlign = bag.gridChildVerticalAlign
+  const vertical = typeof bag.gridChildVerticalAlign === 'string' ? bag.gridChildVerticalAlign : 'AUTO'
+  const horizontal = typeof bag.gridChildHorizontalAlign === 'string' ? bag.gridChildHorizontalAlign : 'AUTO'
+  // One word while only the vertical axis says something — the spelling every earlier read used —
+  // and both axes once the horizontal one does, so neither is lost on the way back.
+  if (horizontal !== 'AUTO') {
+    props.gridAlign = { horizontal, ...(vertical !== 'AUTO' ? { vertical } : {}) }
+  } else if (vertical !== 'AUTO') props.gridAlign = vertical
+  // A child's cell is only its own decision in a MANUAL grid; in an auto-flowing one the grid
+  // placed it, and writing the cell back would pin what was meant to flow.
+  const parentBag = node.parent as unknown as Record<string, unknown> | null
+  if (
+    parentBag?.layoutMode === 'GRID' &&
+    parentBag.gridItemsPositioning !== 'ROW_AUTO_FLOW' &&
+    typeof bag.gridRowAnchorIndex === 'number' &&
+    typeof bag.gridColumnAnchorIndex === 'number' &&
+    bag.layoutPositioning !== 'ABSOLUTE'
+  ) {
+    props.gridCell = { row: bag.gridRowAnchorIndex, column: bag.gridColumnAnchorIndex }
   }
   for (const bound of ['minWidth', 'maxWidth', 'minHeight', 'maxHeight'] as const) {
     if (typeof bag[bound] === 'number') props[bound] = bag[bound]
   }
-  const keys = node.getPluginDataKeys()
+  // A table cell is not a layer and has no plugin data to ask about.
+  const keys = typeof node.getPluginDataKeys === 'function' ? node.getPluginDataKeys() : []
   if (keys.length > 0) {
     const data: Record<string, string> = {}
     for (const key of keys) data[key] = node.getPluginData(key)
@@ -2132,7 +2288,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   }
   // What Dev Mode shows beside the layer: where its code lives, and what the designer wrote for
   // whoever writes it. A handoff that carries neither is the export answering half the question.
-  const links = await node.getDevResourcesAsync().catch(() => [])
+  // Dev resources are a Design and Dev Mode notion; elsewhere the method is not there to call.
+  // Measured live: in FigJam and Slides the method exists and takes tens of seconds to say nothing.
+  const devEditor = figma.editorType === 'figma' || figma.editorType === 'dev'
+  const links = devEditor && typeof node.getDevResourcesAsync === 'function' ? await node.getDevResourcesAsync().catch(() => []) : []
   const own = links.filter((link) => link.nodeId === node.id)
   if (own.length > 0) props.devLinks = own.map((link) => ({ name: link.name, url: link.url }))
   const notes = (node as unknown as { annotations?: ReadonlyArray<Annotation> }).annotations ?? []
@@ -2161,6 +2320,11 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     props.key = owner.key
   }
   // A TEXT_PATH is text too — Figma Draw gives it every text property and a different type.
+  // How the underline is drawn, beyond Figma's defaults — mixed values are left to the runs.
+  if ((node.type === 'TEXT' || node.type === 'TEXT_PATH') && bag.textDecoration !== 'NONE') {
+    const decoration = decorationWords(bag)
+    if (decoration) props.decoration = decoration
+  }
   if (node.type === 'TEXT' || node.type === 'TEXT_PATH') {
     props.text = node.characters
     props.fontSize = node.fontSize === figma.mixed ? 'mixed' : round(node.fontSize)
@@ -2226,7 +2390,66 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     const runs = await styledRuns(node)
     if (runs.length > 1) props.runs = runs
   }
+  Object.assign(props, await boardProps(node))
+  // A FigJam shape's and a connector's corner is the shape's own business: read-only, and sending
+  // it back is refused with "object is not extensible" (measured live).
+  if (node.type === 'SHAPE_WITH_TEXT' || node.type === 'CONNECTOR') delete props.cornerRadius
   return { ...base, props }
+}
+
+/**
+ * What a FigJam, Slides or Buzz node is, in the words the write takes: a sticky's words and
+ * width, a shape's kind, what a connector joins, a code block's code, a table's cells, a slide's
+ * transition, a Buzz asset's format. Empty for everything Figma Design makes.
+ */
+async function boardProps(node: SceneNode): Promise<Record<string, unknown>> {
+  const props: Record<string, unknown> = {}
+  const bag = node as unknown as Record<string, unknown>
+  if (node.type === 'STICKY' || node.type === 'SHAPE_WITH_TEXT' || node.type === 'CONNECTOR') {
+    const text = node.text
+    if (text.characters !== '') props.text = text.characters
+    if (text.fontSize !== figma.mixed) props.fontSize = Math.round(text.fontSize * 100) / 100
+    if (text.fontName !== figma.mixed) props.fontName = writableFont(text.fontName)
+  }
+  if (node.type === 'STICKY') {
+    if (node.authorName) props.author = node.authorName
+    if (node.isWideWidth) props.wide = true
+    if (!node.authorVisible) props.authorVisible = false
+  }
+  if (node.type === 'SHAPE_WITH_TEXT') props.shapeType = node.shapeType
+  if (node.type === 'CONNECTOR') {
+    props.connector = connectorWords(bag, pageIdOf(node))
+  }
+  if (node.type === 'CODE_BLOCK') {
+    props.code = node.code
+    props.codeLanguage = node.codeLanguage
+  }
+  if (node.type === 'TABLE') props.table = tableWords(node)
+  // Stuck to a frame or a shape on a FigJam board — move that and this moves with it.
+  const stuck = (bag as { stuckTo?: SceneNode | null }).stuckTo
+  if (figma.editorType === 'figjam' && stuck) props.stuckTo = stuck.id
+  if (node.type === 'SLIDE') {
+    if (node.isSkippedSlide) props.skipped = true
+    const transition = transitionWords(node.getSlideTransition())
+    if (transition) props.transition = transition
+  }
+  // Who stamped it — needs the `fileusers` permission and a stamp made after mid-2022.
+  if (node.type === 'STAMP') {
+    const author = await node.getAuthorAsync().catch(() => null)
+    if (author) props.author = author.name
+  }
+  // What a pasted link became: the embed or the unfurled card, and the page it points at.
+  if (node.type === 'EMBED') props.preview = { ...node.embedData }
+  if (node.type === 'LINK_UNFURL') props.preview = { ...node.linkUnfurlData }
+  // A widget's state belongs to the widget's own code — only that widget can write it, so it is
+  // reported as the fact it is.
+  if (node.type === 'WIDGET') props.widget = { id: node.widgetId, state: node.widgetSyncedState }
+  if (node.type === 'INTERACTIVE_SLIDE_ELEMENT') props.interactive = node.interactiveSlideElementType
+  if (figma.editorType === 'buzz') {
+    const asset = figma.buzz.getBuzzAssetTypeForNode(node)
+    if (asset) props.assetType = asset
+  }
+  return props
 }
 
 /* ------------------------------------------------------------------ user modules */
@@ -2594,6 +2817,12 @@ function planDevLinks(msg: { add?: unknown; edit?: unknown; remove?: unknown }):
     plan.problems.push('nothing to do — give add, edit or remove')
   }
   return plan
+}
+
+/** Refuses, naming the editor that can, before a Design-only constructor throws "not a function". */
+function requireEditor(feature: string, what: string): void {
+  const problem = editorProblem(feature, figma.editorType, what)
+  if (problem) throw new Error(problem)
 }
 
 async function handleUiMessage(msg: PluginMessage): Promise<void> {
@@ -3207,6 +3436,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param components: component or component-set ids that come out alongside the screen — how you take the two icons a screen needs without emitting a page of four hundred
       // @agent param libraryComponents: whether the design-system components the screen instantiates are read out of the library file and emitted too — true by default, false to leave them as imports for a package you already have in code
       // @agent param pages: page ids whose components come out ALONGSIDE the screen — the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold
+      // @agent param codeLayer: true packs the project for a Figma code layer — the four .figma/make scripts (named in `executables`, which must be chmod 755), a dev server on Figma's $PORT, src/App.tsx, no Code Connect files — ready to archive and import with Figma's MCP send_code_to_figma
       // @agent param fileUrl: the design file's Figma URL (or bare key) — what the Code Connect templates link to when this plugin cannot read figma.fileKey, which is everywhere except a private Organization plugin
       // @agent cost: reads the scope and every variable, like the Django emitter — narrow the scope to a frame
       try {
@@ -3440,7 +3670,15 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             ...missingImports(files, await remoteComponents([...roots, ...alongsideRoots])),
           ]),
         ]
-        postToUi({ type: 'REACT_PROJECT', files, gaps, count: Object.keys(files).length })
+        // Packed for a Figma code layer: the same project plus the scripts Figma's importer runs.
+        const project = msg.codeLayer === true ? asCodeLayer(files) : files
+        postToUi({
+          type: 'REACT_PROJECT',
+          files: project,
+          gaps,
+          count: Object.keys(project).length,
+          ...(msg.codeLayer === true ? { executables: CODE_LAYER_EXECUTABLES } : {}),
+        })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'EMIT_REACT', message: String((error as Error)?.message || error) })
       }
@@ -3551,7 +3789,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       for (const node of index.values()) {
         if (node.type !== 'TEXT') continue
         textNodes.push({ id: node.id, name: node.name, characters: node.characters })
-        if (textNodes.length % 200 === 0) await yieldToHost()
+        if (textNodes.length % 200 === 0) await checkpoint()
       }
       // The UI sends its live value to dodge the save/scan message race; stored options cover
       // scans triggered before the UI's options arrive (e.g. the relaunch path).
@@ -3636,7 +3874,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             results.push(await applyLintFix(node, request.rule, ctx))
           }
           progress()
-          if (results.length % 10 === 0) await yieldToHost()
+          if (results.length % 10 === 0) await checkpoint()
         }
       } finally {
         figma.commitUndo()
@@ -3720,10 +3958,21 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param id: the request's own id, echoed back on the response
       // @agent param op: the channel operation being asked for
       // @agent param params: that operation's parameters
+      // @agent param budgetMs: how long the bridge will still wait for the answer
       // Never throws: a rejected or failed op comes back as `{ ok: false, error }` so the
       // bridge can answer the waiting CLI instead of leaving it on a timeout.
-      const response = await handleAgentRequest({ id: msg.id, op: msg.op, params: msg.params })
+      const response = await handleAgentRequest({ id: msg.id, op: msg.op, params: msg.params, budgetMs: msg.budgetMs })
       postToUi({ type: 'AGENT_RESPONSE', ...response })
+      break
+    }
+    case 'AGENT_CANCEL': {
+      // @agent deny: the bridge withdrawing its own request, not something to call
+      // @agent param ids: the request ids the bridge stopped waiting for
+      // @agent param reason: why it stopped waiting
+      const ids: unknown[] = Array.isArray(msg.ids) ? msg.ids : []
+      for (const id of ids) {
+        if (typeof id === 'string') cancelAgentRequest(id, typeof msg.reason === 'string' ? msg.reason : 'the bridge stopped waiting')
+      }
       break
     }
     case 'SAVE_EXPORT_OPTIONS': {
@@ -3785,7 +4034,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     /* ---- the generic canvas primitives ---- */
     case 'NODE_CREATE': {
       // @agent write: make nodes from a description — frames, text, shapes, sections, components, instances — nested
-      // @agent param nodes: an array of { kind, of?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon
+      // @agent param nodes: an array of { kind, of?, at?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon|textPath|slice, on a FigJam board also sticky|shapeWithText|connector|codeBlock|table|linkPreview (of: the URL)|gif (of: the hash), in Slides slide|slideRow (at: [row, column]), in Buzz asset (at: [row, column], of: a component to instance). A kind made in the wrong editor is refused by name — editor.capabilities says which this is
       // @agent param of: for kind "svg", the markup itself — Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand
       // @agent param props: the same property vocabulary NODE_SET takes — name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset
       // @agent param of: for kind "instance", the component to make — the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures
@@ -4155,42 +4404,21 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         if (as === 'repeat') {
           // Figma Draw's transform group: one modifier per node, so a repeat is described once
           // and applied to each of them.
-          const spec = (msg.repeat ?? {}) as Record<string, unknown>
-          const radial = String(spec.type ?? 'LINEAR').toUpperCase() === 'RADIAL'
-          const count = typeof spec.count === 'number' ? spec.count : 3
-          if (!Number.isInteger(count) || count < 2) {
-            refuse('NODE_GROUP', 'repeat.count must be a whole number of at least 2')
+          const parsed = repeatModifier(msg.repeat ?? {})
+          if ('problem' in parsed) {
+            refuse('NODE_GROUP', `repeat ${parsed.problem}`)
             break
           }
-          // `offset` is a DISTANCE, for both kinds — a radial repeat spaces its copies around the
-          // circle by itself, and the offset pushes them outward from the centre. Defaulting it
-          // to 360/count read as "degrees" and flung eight petals across four thousand pixels.
-          const offset = typeof spec.offset === 'number' ? spec.offset : radial ? 0 : 1
-          const unit = String(spec.unit ?? (radial ? 'RELATIVE' : 'RELATIVE')).toUpperCase()
-          if (unit !== 'RELATIVE' && unit !== 'PIXELS') {
-            refuse('NODE_GROUP', 'repeat.unit must be RELATIVE or PIXELS')
-            break
-          }
-          const axis = String(spec.axis ?? 'HORIZONTAL').toUpperCase()
-          if (!radial && axis !== 'HORIZONTAL' && axis !== 'VERTICAL') {
-            refuse('NODE_GROUP', 'repeat.axis must be HORIZONTAL or VERTICAL')
-            break
-          }
+          const modifier = parsed.modifier
+          const radial = modifier.repeatType === 'RADIAL'
+          const { count, offset } = modifier
+          const unit = modifier.unitType
+          const axis = modifier.repeatType === 'LINEAR' ? modifier.axis : 'HORIZONTAL'
           const home = nodes[0].parent
           if (!home || !('appendChild' in home)) {
             refuse('NODE_GROUP', 'the nodes have nowhere to be grouped into')
             break
           }
-          const modifier = radial
-            ? { type: 'REPEAT' as const, repeatType: 'RADIAL' as const, count, unitType: unit, offset }
-            : {
-                type: 'REPEAT' as const,
-                repeatType: 'LINEAR' as const,
-                count,
-                unitType: unit,
-                offset,
-                axis: axis as 'HORIZONTAL' | 'VERTICAL',
-              }
           const group = figma.transformGroup(
             nodes,
             home as BaseNode & ChildrenMixin,
@@ -4339,6 +4567,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param props: applied to what comes out, the same vocabulary NODE_SET takes
       // @agent param links: documentation URLs for the component — where the real spec lives
       try {
+        requireEditor('components.create', 'COMPONENT_MAKE')
         const rows = Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]
         const as = typeof msg.as === 'string' ? msg.as.trim().toLowerCase() : 'component'
         if (as !== 'component' && as !== 'set') {
@@ -4647,7 +4876,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param colorProfile: DOCUMENT (default), SRGB or DISPLAY_P3_V4 — the profile the raster is written in
       // @agent param svgIdAttribute: SVG only — keep Figma's layer ids as `id=` attributes, so a build can address a part of the drawing
       // @agent param svgSimplifyStroke: SVG only — true (the default) collapses a stroke into an outlined path; false keeps it a stroked path
-      // @agent cost: one render each, and a large frame at 4x is megabytes — the call stops at 12 MB and says what it did not render. A video costs far more than a picture: it renders every frame of the animation
+      // @agent param offset: skip this many node ids; when the answer has nextOffset, call again from there
+      // @agent param maxPixels: raster/video pixel ceiling checked before exportAsync (40 million by default)
+      // @agent param budgetBytes: raw reply-byte budget, clamped below the 3 MiB transport ceiling
+      // @agent cost: one render each. Replies stop before the transport cap and return remaining/nextOffset; lower scale when a node is reported too large. A video costs far more than a picture because it renders every frame.
       try {
         // `{"id": "1:2"}` is what every other node-taking command accepts, and an agent that sent
         // it here got `"node":"[object Object]", "error":"no such exportable node"` — a refusal
@@ -4712,18 +4944,28 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         const files: unknown[] = []
         const reports: Array<Record<string, unknown>> = []
         const taken = new Set<string>()
-        let spent = 0
+        const offset = typeof msg.offset === 'number' ? Math.max(0, Math.floor(msg.offset)) : 0
+        const guard = new ExportGuard({
+          budgetBytes: typeof msg.budgetBytes === 'number' ? msg.budgetBytes : EXPORT_BUDGET,
+          maxPixels: typeof msg.maxPixels === 'number' ? msg.maxPixels : undefined,
+        })
+        let cursor = offset
+        let stoppedOn: string | null = null
 
-        for (const id of ids) {
+        while (cursor < ids.length) {
+          const gate = await guard.beforeRender(cursor)
+          if (!gate.include) {
+            stoppedOn = gate.stoppedOn ?? 'bytes'
+            break
+          }
+          const id = ids[cursor]
           const node = await figma.getNodeByIdAsync(id)
           if (!node || !('exportAsync' in node)) {
             reports.push({ node: id, ok: false, error: 'no such exportable node' })
+            cursor += 1
             continue
           }
           const scene = node as SceneNode
-          // A node an ancestor clips away renders empty, and `exportAsync` hands back a valid 1x1
-          // file for it rather than failing. Say what happened instead: the fix is in Figma ("Clip
-          // content" on the frame named here), and a caller cannot infer that from 149 bytes.
           const clipped = clippedBy(scene)
           if (clipped && clipped.visible === 0) {
             reports.push({
@@ -4734,10 +4976,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
                 `renders nothing: it sits outside ${clipped.by}, which clips its content. ` +
                 `Turn off "Clip content" on that frame, or export the frame itself.`,
             })
+            cursor += 1
             continue
           }
-          // A video is the whole timeline of a top-level frame — Figma rejects one asked of anything
-          // nested, with a message about the call rather than the frame. Name the frame that would work.
           if (video && scene.parent?.type !== 'PAGE') {
             const top = scene.getTopLevelFrame()
             reports.push({
@@ -4748,8 +4989,34 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
                 `a ${format} renders a top-level frame's whole animation, and this layer is nested` +
                 (top ? ` — export "${top.name}" (${top.id}) instead` : ' with no top-level frame above it'),
             })
+            cursor += 1
             continue
           }
+          if (format !== 'SVG' && format !== 'PDF') {
+            const pixels = pixelRefusal(scene, constraint as ExportConstraint, guard.maxPixels)
+            if (pixels.error) {
+              reports.push({ node: id, name: scene.name, ok: false, error: pixels.error })
+              cursor += 1
+              continue
+            }
+            const preflight = guard.preflightRaster(pixels.render, cursor)
+            if (!preflight.include) {
+              stoppedOn = 'bytes'
+              if (preflight.firstItemTooLarge) {
+                reports.push({
+                  node: id,
+                  name: scene.name,
+                  ok: false,
+                  error:
+                    'the estimated raster cannot fit one transport-safe reply; ' +
+                    'lower scale or use a WIDTH/HEIGHT constraint',
+                })
+                cursor += 1
+              }
+              break
+            }
+          }
+
           try {
             if (format === 'SVG') {
               const svg = await scene.exportAsync({
@@ -4759,18 +5026,29 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
                 ...(msg.svgIdAttribute === undefined ? {} : { svgIdAttribute: msg.svgIdAttribute === true }),
                 ...(msg.svgSimplifyStroke === undefined ? {} : { svgSimplifyStroke: msg.svgSimplifyStroke === true }),
               } as ExportSettingsSVGString)
-              spent += svg.length
-              if (spent > EXPORT_BUDGET) {
-                reports.push({ node: id, name: scene.name, ok: false, error: 'the 12 MB budget for this call was already spent' })
-                continue
+              const admitted = guard.admit(svg.length, cursor)
+              if (!admitted.include) {
+                stoppedOn = 'bytes'
+                if (admitted.firstItemTooLarge) {
+                  reports.push({
+                    node: id,
+                    name: scene.name,
+                    ok: false,
+                    error:
+                      `this export is ${svg.length} bytes, too large for one transport-safe reply; ` +
+                      'simplify the node or export a smaller subtree',
+                  })
+                  cursor += 1
+                }
+                break
               }
               const name = exportName(scene.name, 'svg', taken)
               files.push(textFile(name, 'image/svg+xml', svg))
               reports.push({ node: id, name: scene.name, ok: true, file: name, bytes: svg.length })
+              cursor += 1
               continue
             }
-            // Each shape of settings goes to its own overload; TypeScript will not take a union
-            // across them, and the alternative is one cast that hides all three.
+
             let bytes: Uint8Array
             if (video) {
               bytes = await scene.exportAsync({
@@ -4784,13 +5062,29 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               bytes = await scene.exportAsync({ format: 'PDF' })
             } else {
               bytes = withoutChildren
-                ? await exportPlate(scene, { format: format as 'PNG' | 'JPG', constraint, ...extras })
+                ? await exportPlate(scene, {
+                    format: format as 'PNG' | 'JPG',
+                    constraint,
+                    ...extras,
+                    maxPixels: guard.maxPixels,
+                  })
                 : await scene.exportAsync({ format: format as 'PNG' | 'JPG', constraint, ...extras } as ExportSettingsImage)
             }
-            spent += bytes.length
-            if (spent > EXPORT_BUDGET) {
-              reports.push({ node: id, name: scene.name, ok: false, error: 'the 12 MB budget for this call was already spent' })
-              continue
+            const admitted = guard.admit(bytes.length, cursor)
+            if (!admitted.include) {
+              stoppedOn = 'bytes'
+              if (admitted.firstItemTooLarge) {
+                reports.push({
+                  node: id,
+                  name: scene.name,
+                  ok: false,
+                  error:
+                    `this export is ${bytes.length} bytes, too large for one transport-safe reply; ` +
+                    'lower scale or use a WIDTH/HEIGHT constraint',
+                })
+                cursor += 1
+              }
+              break
             }
             const ext = format.toLowerCase()
             const name = exportName(scene.name, ext, taken)
@@ -4801,18 +5095,28 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               ok: true,
               file: name,
               bytes: bytes.length,
-              // Partly clipped still exports — but only the visible band, and a caller comparing
-              // it against the design would be measuring the crop, not the section.
               ...(clipped
                 ? { clipped: { by: clipped.by, renderedPx: Math.round(clipped.visible), ownPx: Math.round(clipped.own) } }
                 : {}),
             })
+            cursor += 1
           } catch (error) {
             reports.push({ node: id, name: scene.name, ok: false, error: String((error as Error)?.message || error) })
+            cursor += 1
           }
         }
 
-        postToUi({ type: 'NODES_EXPORTED', format, files, nodes: reports })
+        postToUi({
+          type: 'NODES_EXPORTED',
+          format,
+          files,
+          nodes: reports,
+          bytes: guard.spent,
+          budgetBytes: guard.budgetBytes,
+          ...(offset > 0 ? { offset } : {}),
+          ...(stoppedOn ? { stoppedOn } : {}),
+          ...(cursor < ids.length ? { remaining: ids.length - cursor, nextOffset: cursor } : {}),
+        })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_EXPORT', message: String((error as Error)?.message || error) })
       }
@@ -4880,6 +5184,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param description: final description; omitted preserves it on update
       // @agent param entries: ordered [{ style, props? }] using Figma animation styleIds or names from MOTION_STYLES
       try {
+        requireEditor('styles.create', 'MOTION_STYLE_SET')
         const name = typeof msg.name === 'string' ? msg.name.trim() : ''
         if (!name) throw new Error('name must be a non-empty custom animation style name')
         if (!Array.isArray(msg.entries)) throw new Error('entries must be an array of { style, props? }')
@@ -4975,6 +5280,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param folder: full slash-delimited folder name to move; mutually exclusive with id
       // @agent param after: style id or folder name to place it after; null/omitted moves it first
       try {
+        requireEditor('styles.create', 'MOTION_STYLE_MOVE')
         const id = typeof msg.id === 'string' ? msg.id.trim() : ''
         const folder = typeof msg.folder === 'string' ? msg.folder.trim() : ''
         if (Boolean(id) === Boolean(folder)) throw new Error('provide exactly one of id or folder')
@@ -5089,12 +5395,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
                 note(effectShader.id, 'effect', node, effectShader.properties, effectShader.propertyMetadata)
               }
             }
-            if ('children' in node) for (const child of node.children) visit(child)
           }
           const pages = scope === 'document' ? figma.root.children : [figma.currentPage]
           for (const page of pages) {
             await page.loadAsync()
-            for (const node of page.children) visit(node)
+            await walkSceneNodes(page, visit, { includeRoot: false })
           }
         }
 
@@ -5196,6 +5501,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param name: what the style is called — an existing style of the same name and kind is updated rather than duplicated
       // @agent param description: the style's description, which is what a designer reads in the panel
       try {
+        requireEditor('styles.create', 'STYLE_MAKE')
           const kind = typeof msg.as === 'string' ? (msg.as.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
         if (kind === 'animation') {
           refuse('STYLE_MAKE', 'custom animation styles are created and updated with MOTION_STYLE_SET')
@@ -5348,6 +5654,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param folder: the folder to move instead of a style, by its full path ("Brand/Primary")
       // @agent param afterFolder: the sibling folder it should follow; null or "" puts it first in its parent
       try {
+        requireEditor('styles.create', 'STYLE_MOVE')
         const kind = typeof msg.kind === 'string' ? (msg.kind.trim().toLowerCase() as StyleKind) : ('' as StyleKind)
         if (kind === 'animation') {
           refuse('STYLE_MOVE', 'custom animation styles are reordered with MOTION_STYLE_MOVE')
@@ -5480,6 +5787,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           id: page.id,
           name: page.name,
           current: page.id === figma.currentPage.id,
+          // A divider is a page in the list and nothing on the canvas — a section heading in the
+          // pages panel. Without the flag it read as an empty page called "———".
+          ...(page.isPageDivider ? { divider: true } : {}),
         })),
       })
       break
@@ -5487,18 +5797,84 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'PAGE_CREATE': {
       // @agent write: add a page — where a new flow goes
       // @agent param activate: true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: "<id>"
-      // @agent param name: what the new page is called
+      // @agent param name: what the new page is called; with divider: true, the divider's label (omitted, Figma's own line)
+      // @agent param divider: true makes a divider — a heading in the pages list that holds no canvas, how a long file is split into sections
       const name = typeof msg.name === 'string' ? msg.name.trim() : ''
-      if (name === '') {
+      if (name === '' && msg.divider !== true) {
         refuse('PAGE_CREATE', 'name must be a non-empty string')
         break
       }
-      const page = figma.createPage()
-      page.name = name
+      if (msg.divider === true && msg.activate === true) {
+        refuse('PAGE_CREATE', 'a divider has no canvas to open — leave activate out')
+        break
+      }
+      const page = msg.divider === true ? figma.createPageDivider(name === '' ? undefined : name) : figma.createPage()
+      if (msg.divider !== true) page.name = name
       if (msg.activate === true) await figma.setCurrentPageAsync(page)
       figma.commitUndo()
-      figma.notify(`Page "${page.name}" created`)
-      postToUi({ type: 'PAGE_CREATED', page: { id: page.id, name: page.name }, current: figma.currentPage.id })
+      figma.notify(msg.divider === true ? 'Page divider created' : `Page "${page.name}" created`)
+      postToUi({
+        type: 'PAGE_CREATED',
+        page: { id: page.id, name: page.name, ...(page.isPageDivider ? { divider: true } : {}) },
+        current: figma.currentPage.id,
+      })
+      break
+    }
+    case 'SELECTION_COLORS': {
+      // @agent read: the colours the designer's selection uses — Figma's own "Selection colors", with the styles and tokens behind them
+      const colours = figma.getSelectionColors()
+      if (!colours) {
+        postToUi({ type: 'SELECTION_COLORS', selection: 0, paints: [], styles: [] })
+        break
+      }
+      const paints: unknown[] = []
+      for (const paint of colours.paints) paints.push(await readPaintsForWrite([paint], variableNameOf))
+      postToUi({
+        type: 'SELECTION_COLORS',
+        selection: figma.currentPage.selection.length,
+        // One entry per distinct paint, in the shape `fill` takes: a bound one reads `var:<token>`,
+        // a raw one its hex — the raw ones are exactly what a recolour cannot reach.
+        paints,
+        styles: colours.styles.map((style) => ({ id: style.id, name: style.name })),
+      })
+      break
+    }
+    case 'FILE_THUMBNAIL': {
+      // @agent read: which frame is the file's cover in the file browser — null means Figma picks one itself
+      const node = await figma.getFileThumbnailNodeAsync()
+      postToUi({ type: 'FILE_THUMBNAIL', node: node ? { id: node.id, name: node.name, type: node.type } : null })
+      break
+    }
+    case 'FILE_THUMBNAIL_SET': {
+      // @agent write: make a frame the file's cover in the file browser, or hand the choice back to Figma
+      // @agent param nodeId: a frame, component, component set or section; null restores Figma's default
+      try {
+        const before = await figma.getFileThumbnailNodeAsync()
+        type Cover = FrameNode | ComponentNode | ComponentSetNode | SectionNode
+        let target: Cover | null = null
+        if (msg.nodeId !== null) {
+          const node = typeof msg.nodeId === 'string' ? await figma.getNodeByIdAsync(msg.nodeId) : null
+          if (!node) throw new Error(`no node ${JSON.stringify(msg.nodeId)} — pass an id, or null for the default`)
+          if (!['FRAME', 'COMPONENT', 'COMPONENT_SET', 'SECTION'].includes(node.type)) {
+            throw new Error(`a ${node.type} cannot be the cover — a frame, component, component set or section can`)
+          }
+          target = node as unknown as Cover
+        }
+        await figma.setFileThumbnailNodeAsync(target)
+        figma.commitUndo()
+        const after = await figma.getFileThumbnailNodeAsync()
+        const brief = (node: { id: string; name: string } | null) => (node ? { id: node.id, name: node.name } : null)
+        postToUi({ type: 'FILE_THUMBNAIL', before: brief(before), node: brief(after), verified: (after?.id ?? null) === ((target as Cover | null)?.id ?? null) })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'FILE_THUMBNAIL_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'UNDO': {
+      // @agent write: take back the last change — Cmd+Z, for an agent. Every write here closes its own undo step, so this undoes the most recent one; if the designer has worked since, it undoes theirs instead, so read before you reach for it
+      figma.triggerUndo()
+      figma.notify('Undone')
+      postToUi({ type: 'UNDONE' })
       break
     }
 
@@ -5690,6 +6066,85 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       break
     }
 
+    case 'ANNOTATION_CATEGORIES': {
+      // @agent read: the annotation categories this file defines — what ANNOTATE's category can name, with each one's colour and whether Figma shipped it
+      const categories = await figma.annotations.getAnnotationCategoriesAsync()
+      postToUi({ type: 'ANNOTATION_CATEGORIES', categories: categories.map(describeCategory), colours: ANNOTATION_COLOURS })
+      break
+    }
+    case 'ANNOTATION_CATEGORY_SET': {
+      // @agent write: add, rename, recolour or remove annotation categories — the vocabulary a team files its Dev Mode notes under
+      // @agent param add: [{ label, color }] — color is one of yellow, orange, red, pink, violet, blue, teal, green
+      // @agent param edit: [{ category, label?, color? }] — category by name or id
+      // @agent param remove: [category] by name or id. Figma's presets cannot be removed
+      try {
+        const listOf = (value: unknown): unknown[] => (value === undefined ? [] : Array.isArray(value) ? value : [value])
+        const known = await figma.annotations.getAnnotationCategoriesAsync()
+        const find = (wanted: unknown) => {
+          const key = typeof wanted === 'string' ? wanted.trim() : ''
+          const hit = known.find((one) => one.id === key) ?? known.find((one) => one.label.toLowerCase() === key.toLowerCase())
+          if (!hit) throw new Error(`no category ${JSON.stringify(wanted)} — this file has: ${known.map((one) => one.label).join(', ') || '(none)'}`)
+          return hit
+        }
+        const colour = (value: unknown): AnnotationCategoryColor => {
+          if (typeof value !== 'string' || !ANNOTATION_COLOURS.includes(value)) {
+            throw new Error(`color must be one of: ${ANNOTATION_COLOURS.join(', ')}`)
+          }
+          return value as AnnotationCategoryColor
+        }
+        const rows: Array<Record<string, unknown>> = []
+        for (const entry of listOf(msg.add)) {
+          const one = entry as { label?: unknown; color?: unknown }
+          try {
+            if (typeof one?.label !== 'string' || one.label.trim() === '') throw new Error('label must be a non-empty string')
+            if (known.some((existing) => existing.label.toLowerCase() === (one.label as string).trim().toLowerCase())) {
+              throw new Error(`a category "${one.label}" already exists — edit it instead`)
+            }
+            const made = await figma.annotations.addAnnotationCategoryAsync({ label: one.label.trim(), color: colour(one.color ?? 'blue') })
+            rows.push({ action: 'add', ok: true, category: describeCategory(made) })
+          } catch (error) {
+            rows.push({ action: 'add', ok: false, label: one?.label, error: String((error as Error)?.message || error) })
+          }
+        }
+        for (const entry of listOf(msg.edit)) {
+          const one = entry as { category?: unknown; label?: unknown; color?: unknown }
+          try {
+            const category = find(one?.category)
+            const before = describeCategory(category)
+            if (one.label !== undefined) {
+              if (typeof one.label !== 'string' || one.label.trim() === '') throw new Error('label must be a non-empty string')
+              category.setLabel(one.label.trim())
+            }
+            if (one.color !== undefined) category.setColor(colour(one.color))
+            const fresh = await figma.annotations.getAnnotationCategoryByIdAsync(category.id)
+            rows.push({ action: 'edit', ok: true, before, after: fresh ? describeCategory(fresh) : null })
+          } catch (error) {
+            rows.push({ action: 'edit', ok: false, category: one?.category, error: String((error as Error)?.message || error) })
+          }
+        }
+        for (const wanted of listOf(msg.remove)) {
+          try {
+            const category = find(wanted)
+            if (category.isPreset) throw new Error(`"${category.label}" is one of Figma's presets and cannot be removed`)
+            const before = describeCategory(category)
+            category.remove()
+            rows.push({ action: 'remove', ok: true, before })
+          } catch (error) {
+            rows.push({ action: 'remove', ok: false, category: wanted, error: String((error as Error)?.message || error) })
+          }
+        }
+        if (rows.length === 0) {
+          refuse('ANNOTATION_CATEGORY_SET', 'give add, edit or remove')
+          break
+        }
+        figma.commitUndo()
+        const after = await figma.annotations.getAnnotationCategoriesAsync()
+        postToUi({ type: 'ANNOTATION_CATEGORIES', results: rows, categories: after.map(describeCategory), colours: ANNOTATION_COLOURS })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'ANNOTATION_CATEGORY_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
     case 'MEASURE_LIST': {
       // @agent read: the measurement lines on this page — the distances a designer drew for the person building it
       // @agent param nodes: only the measurements touching these nodes; omitted, every one on the page
@@ -5801,7 +6256,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             const kids: CreateSpec[] = []
             // Not into an instance: what is inside it belongs to its component, and copying it
             // would compare a screen against a screen with everything in it twice.
-            if (level > 0 && 'children' in one && one.type !== 'INSTANCE') {
+            // Nor into a FigJam table: its cells are not layers, and `table` already carries them.
+            if (level > 0 && 'children' in one && one.type !== 'INSTANCE' && String(one.type) !== 'TABLE') {
               for (const child of (one as SceneNode & ChildrenMixin).children) {
                 const made = await build(child, level - 1)
                 if (made) kids.push(made)
@@ -5814,7 +6270,14 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
 
             const built = specFrom(reading, kids, of)
             if (!built) {
-              dropped.push({ property: '(node)', why: `a ${one.type} cannot be made by NODE_CREATE` })
+              dropped.push({
+                property: '(node)',
+                // A code layer is a Figma Make project on the canvas: the Plugin API can see it and
+                // not build one; its source is read, and a new one made, through Figma's own MCP.
+                why: String(one.type) === 'CODE_INSTANCE'
+                  ? 'a code layer is made from a project through Figma\'s MCP (send_code_to_figma), not by NODE_CREATE'
+                  : `a ${one.type} cannot be made by NODE_CREATE`,
+              })
               return null
             }
             for (const entry of built.dropped) dropped.push({ ...entry, property: `${one.name}.${entry.property}` })
@@ -6119,6 +6582,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'GENERATE_KIT': {
       // @agent write: draw the starter component kit onto the canvas
       try {
+        requireEditor('components.create', 'GENERATE_KIT')
         const snapshot = await readAllVariables()
         const colorVariables = snapshot.variables
           .filter((variable) => variable.resolvedType === 'COLOR')
@@ -6543,7 +7007,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
   }
 }
 
-figma.ui.onmessage = handleUiMessage
+// The designer's own commands run shielded from whatever agent run is in progress (see
+// `asPanelCommand`); the agent channel's messages are the run, and go straight through.
+figma.ui.onmessage = (msg: PluginMessage) =>
+  msg.type.startsWith('AGENT_') ? handleUiMessage(msg) : asPanelCommand(() => handleUiMessage(msg))
 
 // The agent side of the same door. Registered from here rather than imported over there: the
 // handler already imports the op registry, so the registry reaching back for the handler would

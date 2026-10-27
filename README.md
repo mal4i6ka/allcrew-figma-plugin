@@ -135,7 +135,7 @@ node tools/mcp.mjs --install claude
 # cursor, windsurf and vscode are also supported
 ```
 
-Development-plugin grants are session-only. Restarting the plugin closes both gates.
+Grants are remembered per file. A development plugin gets no `fileKey`, so the first grant in a file stamps it with a random id in the document's plugin data. Reopening or reloading the plugin in that file restores the listener with the same read and write switches. Renaming the file keeps the grant. A different file, even one with the same name, starts with both gates closed. A duplicate of the file keeps the stamp, and with it the grant.
 
 ## What you get
 

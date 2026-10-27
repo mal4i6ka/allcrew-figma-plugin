@@ -26,6 +26,7 @@ import { PROPS_VOCABULARY } from './props-vocabulary.ts'
 import { UI_COMMANDS, type UiCommandDef } from './ui-commands.ts'
 import { DEFAULT_DIGEST_BUDGET, digestReplies } from './reply-digest.ts'
 import { beginRecording, endRecording } from './ui-post.ts'
+import { timeLeft } from '../utils/budget.ts'
 
 export type UiMessageRunner = (message: Record<string, unknown>) => Promise<void> | void
 
@@ -355,6 +356,14 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
           : []
 
         const started = Date.now()
+        // Leave the dispatcher enough time to digest and deliver the captured replies. Without
+        // this clamp a caller can request 600s while the run itself has under 180s left, and the
+        // listener cuts the op off before it can answer `stillRunning`.
+        const requestedTimeoutMs = params.timeoutMs as number
+        const remaining = timeLeft()
+        const captureTimeoutMs = Number.isFinite(remaining)
+          ? Math.max(1, Math.min(requestedTimeoutMs, remaining - 3_000))
+          : requestedTimeoutMs
         // A module command is a pipeline over these same commands, so it runs through the same
         // recording, the same one-at-a-time queue and the same timeout — the only difference is
         // who decides which messages get sent.
@@ -363,7 +372,7 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
           withCapture(async () => {
             if (def?.module) moduleReport = await modules!.run(command, extra)
             else await runner!({ ...extra, type: command })
-          }, params.timeoutMs as number)
+          }, captureTimeoutMs)
         )
         // A command that declined names the precondition it wanted (`COMMAND_REFUSED`, see
         // `refuse` in code.ts). On its own that is not a result to read — it is a failed call,
@@ -400,7 +409,7 @@ export function pluginOps(commands: readonly UiCommandDef[] = UI_COMMANDS): read
             ? {
                 stillRunning: true,
                 note:
-                  `stopped waiting after ${params.timeoutMs}ms — the command is still running in the plugin. Its ` +
+                  `stopped waiting after ${captureTimeoutMs}ms — the command is still running in the plugin. Its ` +
                   'remaining replies are no longer attributed to this call: they reach the panel, and one arriving ' +
                   'mid-way through a later call can show up in that call\'s replies. Check the result with a ' +
                   'follow-up read rather than repeating this command.',

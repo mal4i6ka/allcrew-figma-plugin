@@ -4,6 +4,7 @@
  */
 
 import { foldSplitThemeCollections, type CollectionMerge } from './tokens/split-theme.ts'
+import { foldExtensions, type ExtensionReading } from './tokens/extensions.ts'
 
 export interface CollectionEntry {
   id: string
@@ -68,10 +69,55 @@ export async function readLocalVariables(): Promise<VariableSnapshot> {
   const collections = await figma.variables.getLocalVariableCollectionsAsync()
   const variables = await figma.variables.getLocalVariablesAsync()
 
-  return {
+  const snapshot: VariableSnapshot = {
     collections: collections.map(toCollectionEntry),
     variables: variables.map(toVariableEntry),
   }
+  return foldExtensions(snapshot, await readExtensions(collections))
+}
+
+/**
+ * What each extended collection says about every variable it inherits. Values come from
+ * `valuesByModeForCollectionAsync` — inherited or overridden, the answer Figma renders — and fall
+ * back to `variableOverrides` over the parent's own values on a host that predates it. One
+ * extension that cannot be read is skipped, not fatal: the rest of the export is still true.
+ */
+async function readExtensions(collections: readonly VariableCollection[]): Promise<ExtensionReading<VariableEntry>[]> {
+  const out: ExtensionReading<VariableEntry>[] = []
+  for (const collection of collections) {
+    const extension = collection as unknown as ExtendedVariableCollection
+    if (extension.isExtension !== true) continue
+    try {
+      const values: Record<string, Record<string, unknown>> = {}
+      const entries: VariableEntry[] = []
+      for (const id of extension.variableIds) {
+        const variable = await figma.variables.getVariableByIdAsync(id)
+        if (!variable) continue
+        entries.push(toVariableEntry(variable))
+        if (typeof variable.valuesByModeForCollectionAsync === 'function') {
+          values[id] = await variable.valuesByModeForCollectionAsync(extension as unknown as VariableCollection)
+        } else {
+          const own = extension.variableOverrides?.[id] ?? {}
+          values[id] = Object.fromEntries(
+            extension.modes
+              .map((mode) => [mode.modeId, own[mode.modeId] ?? variable.valuesByMode[mode.parentModeId]] as const)
+              .filter(([, value]) => value !== undefined)
+          )
+        }
+      }
+      out.push({
+        id: extension.id,
+        name: extension.name,
+        rootId: extension.rootVariableCollectionId,
+        modes: extension.modes.map((mode) => ({ modeId: mode.modeId, name: mode.name, parentModeId: mode.parentModeId })),
+        values,
+        variables: entries,
+      })
+    } catch {
+      /* an unreadable extension drops out of the fold; its collection entry is still listed */
+    }
+  }
+  return out
 }
 
 function aliasIdsOf(value: unknown, into: string[]): void {

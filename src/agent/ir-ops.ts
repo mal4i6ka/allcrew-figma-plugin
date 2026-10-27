@@ -44,6 +44,8 @@ import { annotateAppearance, type AppearanceSource } from './appearance.ts'
 import { variableNameResolver } from './bound-tokens.ts'
 import { isPlatform, unitProfile, type Platform } from './platform.ts'
 
+import { ExportGuard, MAX_REPLY_RAW_BYTES, pixelRefusal } from './export-guard.ts'
+import { checkpoint } from '../utils/budget.ts'
 /* ------------------------------------------------------------------ shapes */
 
 /** What the subtree is made of, by IR node type — the one number an agent reads before it
@@ -359,7 +361,7 @@ export const IR_OPS: readonly OpDef[] = [
       screenshot: {
         type: 'boolean',
         default: false,
-        description: 'Also render a PNG, for a look at what the tree describes.',
+        description: 'Also render a PNG. Oversized previews are downscaled before exportAsync; previewScale reports the actual scale.',
       },
       type: {
         type: 'boolean',
@@ -428,6 +430,7 @@ export const IR_OPS: readonly OpDef[] = [
        * instead of leaving it to search the document for a name it only has as a key. */
       const componentUses = params.components === false ? [] : collectComponentUses(ir)
       if (componentUses.length > 0) await annotateComponentUses(componentUses)
+      const preview = params.screenshot === true ? await screenshot(root, 2) : null
 
       return {
         node: { id: root.id, name: root.name, type: root.type, width: root.width, height: root.height },
@@ -444,8 +447,12 @@ export const IR_OPS: readonly OpDef[] = [
         ...(params.inline === true
           ? { ir }
           : { ir: textFile(`${slug}.ir.json`, 'application/json', tree) }),
-        ...(params.screenshot === true
-          ? { preview: binaryFile(`${slug}.png`, 'image/png', await screenshot(root, 2)) }
+        ...(preview
+          ? {
+              preview: binaryFile(`${slug}.png`, 'image/png', preview.bytes),
+              previewScale: preview.scale,
+              ...(preview.downscaled ? { requestedPreviewScale: 2, previewDownscaled: true } : {}),
+            }
           : {}),
       }
     },
@@ -463,10 +470,9 @@ export const IR_OPS: readonly OpDef[] = [
       '`android` density buckets, `web` an @2x pair, `plain` flat names. The FILES always arrive as flat ' +
       'basenames (the bridge refuses a path), and the manifest says where each one belongs — move them, do not ' +
       'guess the layout. An asset design.ir marked `exportable: false` is a video Figma already refused; it is ' +
-      'skipped here with its reason rather than retried. One answer carries about 2.5 MB of image data — measured, ' +
-      'not guessed: past roughly three megabytes the sandbox→UI hop stalls and the call never returns. So a screen ' +
-      'comes in pages: the answer stops before that line, says `remaining` and `nextOffset`, and you call again with ' +
-      '`offset`. Three calls of a second each beat one that dies at the bridge ceiling with nothing to show.',
+      'skipped here with its reason rather than retried. Every reply is clamped below the 3 MiB transport ceiling. ' +
+      'The answer stops one render at a time, returns `remaining` and `nextOffset`, and resumes with `offset`; ' +
+      'pixel-heavy rows are refused before exportAsync with a hint to lower the scale.',
     mutates: false,
     params: {
       nodeId: { type: 'string', required: true, description: 'Node to export, or the screen whose assets to collect.' },
@@ -511,14 +517,12 @@ export const IR_OPS: readonly OpDef[] = [
       },
       budgetBytes: {
         type: 'number',
-        default: 2_500_000,
+        default: MAX_REPLY_RAW_BYTES,
         min: 100_000,
         max: 8_000_000,
         description:
-          'How many bytes one answer may carry. Measured, not guessed: a reply under ~2.5 MB of image data comes ' +
-          'back in under a second, and one over ~3 MB never arrives at all — the sandbox→UI hop stalls past that. ' +
-          'The export stops BEFORE crossing it and reports what is left, so paging with `offset` is the way to ' +
-          'take a whole screen.',
+          'Raw file bytes allowed in one answer. It is clamped below the transport-safe ceiling after base64 growth ' +
+          'and envelope overhead; the export stops before crossing it and reports nextOffset.',
       },
       budgetMs: {
         type: 'number',
@@ -576,23 +580,28 @@ export const IR_OPS: readonly OpDef[] = [
       const scales = requestedScales(params.scales ?? profile?.assetScales ?? [1, 2, 3], format)
       const limit = Number(params.limit ?? 24)
 
-      /** What to export: the node itself, or every picture its subtree points at. */
+      /** What to export: the node itself, or a bounded page of referenced pictures. */
       const targets: Array<{ nodeId: string; name: string; kind: string; reason?: string }> = []
+      const offset = Number(params.offset ?? 0)
+      let collectionHasMore = false
       if (params.select === 'assets') {
         const sceneNodesById = await indexSceneNodes([root])
         const ir = await serializeNode(root)
         if (!ir) throw new Error(`"${root.name}" (${root.type}) produced no exportable structure`)
         const irNodes: readonly IrNode[] = [ir]
-        // The asset passes want the node's export settings and fills; `SceneNode` carries both,
-        // and `AssetSourceNode` is the narrower view they declare. Same cast design.context makes.
         const assetSourceNodes = sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>
         await annotateVectorLeaves(irNodes, assetSourceNodes)
         await annotateVideoFills(irNodes, assetSourceNodes)
         const found: ContextAsset[] = await collectContextAssets(irNodes, sceneNodesById)
         const seen = new Set<string>()
         for (const asset of found) {
+          await checkpoint()
           if (seen.has(asset.nodeId)) continue
           seen.add(asset.nodeId)
+          if (targets.length >= offset + limit + 1) {
+            collectionHasMore = true
+            break
+          }
           const node = sceneNodesById.get(asset.nodeId)
           targets.push({
             nodeId: asset.nodeId,
@@ -618,75 +627,95 @@ export const IR_OPS: readonly OpDef[] = [
       // subtree (a card's background and the thumbnail inside it), and a build calling
       // `assets.export` on a whole screen should not pay `getBytesAsync` for it twice.
       const imageAlphaCache = new Map<string, ImageAlpha>()
-      const budget = Number(params.budgetBytes ?? 2_500_000)
+      const guard = new ExportGuard({
+        budgetBytes: Number(params.budgetBytes ?? MAX_REPLY_RAW_BYTES),
+        maxPixels: Number(params.maxPixels ?? 4_000_000),
+      })
       const deadline = Date.now() + Number(params.budgetMs ?? 60_000)
-      const maxPixels = Number(params.maxPixels ?? 4_000_000)
-      const offset = Number(params.offset ?? 0)
       const page = targets.slice(offset, offset + limit)
-      let spent = 0
-      let ranOut: 'bytes' | 'time' | null = null
-      /** How many of this page were finished — the offset to ask for next. */
+      let ranOut: 'bytes' | 'time' | 'deadline' | 'cancelled' | null = null
+      /** How many assets of this page are finished — the offset to ask for next. */
       let done = 0
 
       for (const target of page) {
         if (ranOut) break
         if (target.reason) {
           skipped.push({ name: target.name, reason: target.reason })
+          done += 1
           continue
         }
         const found = await figma.getNodeByIdAsync(target.nodeId)
         const node = found && found.type !== 'PAGE' && found.type !== 'DOCUMENT' ? found : null
         if (!node || !('exportAsync' in node)) {
           skipped.push({ name: target.name, reason: 'node is gone or cannot be exported' })
+          done += 1
           continue
         }
         const stem = uniqueStem(slugify(target.name, 'asset'), taken)
         const entry: ExportedAsset = { nodeId: target.nodeId, name: target.name, kind: target.kind, files: [] }
-        // Charged against the same `budgetMs` the per-scale exports below respect — a call that
-        // already ran out of time answers with whatever it has rather than reaching for one more
-        // fetch. SVG/PDF never ask: a vector's own shape is what ships, not a bitmap fill.
-        if (wantAlpha && format !== 'SVG' && format !== 'PDF' && Date.now() <= deadline) {
-          const alpha = await sourceImageAlpha(node, imageAlphaCache)
-          if (alpha !== undefined) entry.alpha = alpha
-        }
+        let alphaRead = false
         for (const scale of scales) {
-          if (Date.now() > deadline) {
-            // Stopping on a budget beats stopping on the call timeout: what did come back is
-            // usable, and the answer says what stopped it rather than failing whole.
+          if (Date.now() >= deadline) {
             ranOut = 'time'
             break
           }
-          // Figma exports a 4320×2268 PNG for a full-width section at @3x, then the sandbox
-          // base64-encodes ten megapixels of it — minutes, for an asset nobody asked for. The
-          // reason names the alternative rather than leaving the caller with a silent gap.
-          const pixels = Math.round(node.width * scale) * Math.round(node.height * scale)
-          if (format !== 'SVG' && format !== 'PDF' && pixels > maxPixels) {
-            skipped.push({
-              name: target.name,
-              reason:
-                `${Math.round(node.width * scale)}×${Math.round(node.height * scale)} at @${scale}x is ` +
-                `${(pixels / 1e6).toFixed(1)} megapixels, past maxPixels — export the icon or image layer ` +
-                'itself rather than the frame around it, or drop the scale.',
-            })
-            continue
+          const gate = await guard.beforeRender(offset + done)
+          if (!gate.include) {
+            ranOut = gate.stoppedOn ?? 'time'
+            break
+          }
+          if (format !== 'SVG' && format !== 'PDF') {
+            // Figma exports a 4320×2268 PNG for a full-width section at @3x, then the sandbox
+            // base64-encodes ten megapixels of it — minutes, for an asset nobody asked for. The
+            // reason names the alternative rather than leaving the caller with a silent gap.
+            const pixels = pixelRefusal(node, { type: 'SCALE', value: scale }, guard.maxPixels)
+            if (pixels.error) {
+              skipped.push({
+                name: target.name,
+                reason:
+                  `${pixels.render.width}×${pixels.render.height} at @${scale}x is ` +
+                  `${(pixels.render.pixels / 1e6).toFixed(1)} megapixels, past maxPixels — export the icon or image layer ` +
+                  'itself rather than the frame around it, or drop the scale.',
+              })
+              continue
+            }
+            const preflight = guard.preflightRaster(pixels.render, offset + done)
+            if (!preflight.include) {
+              ranOut = 'bytes'
+              if (preflight.firstItemTooLarge) {
+                skipped.push({
+                  name: target.name,
+                  reason:
+                    'the estimated raster cannot fit one transport-safe reply; lower the scale or use a smaller node',
+                })
+              }
+              break
+            }
+          }
+          if (!alphaRead && wantAlpha && format !== 'SVG' && format !== 'PDF') {
+            alphaRead = true
+            const alpha = await sourceImageAlpha(node, imageAlphaCache)
+            if (alpha !== undefined) entry.alpha = alpha
           }
           try {
             const bytes =
               format === 'SVG' || format === 'PDF'
                 ? await node.exportAsync({ format })
                 : await node.exportAsync({ format, constraint: { type: 'SCALE', value: scale } })
-            if (spent > 0 && spent + bytes.length > budget) {
-              // BEFORE, not after: a reply past roughly three megabytes of image data never
-              // arrives — the sandbox→UI hop stalls and the call dies on the bridge's ceiling
-              // with nothing to show. The exported bytes are dropped on the floor here on
-              // purpose; the caller asks for this asset again with `offset`.
+            const admitted = guard.admit(bytes.length, offset + done)
+            if (!admitted.include) {
               ranOut = 'bytes'
+              if (admitted.firstItemTooLarge) {
+                skipped.push({
+                  name: target.name,
+                  reason:
+                    `the @${scale}x file is ${bytes.length} bytes, too large for one transport-safe reply; ` +
+                    'lower the scale or use a smaller node',
+                })
+              }
               break
             }
-            spent += bytes.length
             const name = assetFileName(stem, scale, format)
-            // Even SVG travels as bytes: the sandbox has no TextDecoder, and base64 through the
-            // envelope lands the identical file on disk — the mime type is what a reader needs.
             files.push(binaryFile(name, MIME_BY_FORMAT[format], bytes))
             entry.files.push({
               scale,
@@ -695,17 +724,12 @@ export const IR_OPS: readonly OpDef[] = [
               path: assetPath(stem, { naming, scale, format }),
             })
           } catch (err) {
-            // One asset that will not export is one line in `skipped`, not a failed call: a
-            // screen with thirty icons and one broken video should still hand over twenty-nine.
             skipped.push({ name: target.name, reason: String((err as Error)?.message || err) })
           }
         }
         if (entry.files.length > 0) {
           manifest.push(entry)
           if (naming === 'ios') {
-            // Xcode does not read loose files: an imageset is a directory plus the Contents.json
-            // that maps each file to its scale. Emitting it here is the difference between
-            // "here are three PNGs" and a catalogue folder that compiles as it stands.
             const contents = `${stem}.Contents.json`
             files.push(textFile(contents, 'application/json', iosContents(entry.files, format)))
             entry.contents = { file: contents, path: `Assets.xcassets/${stem}.imageset/Contents.json` }
@@ -720,11 +744,15 @@ export const IR_OPS: readonly OpDef[] = [
         scales,
         naming,
         exported: manifest.length,
-        bytes: spent,
+        bytes: guard.spent,
+        budgetBytes: guard.budgetBytes,
         ...(ranOut ? { stoppedOn: ranOut } : {}),
         ...(offset > 0 ? { offset } : {}),
-        ...(targets.length > offset + done
-          ? { remaining: targets.length - offset - done, nextOffset: offset + done }
+        ...(targets.length > offset + done || collectionHasMore
+          ? {
+              remaining: Math.max(1, targets.length - offset - done),
+              nextOffset: offset + done,
+            }
           : {}),
         ...(skipped.length > 0 ? { skipped } : {}),
         assets: manifest,

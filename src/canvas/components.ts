@@ -21,6 +21,9 @@
  * the publish status, this for anyone who wants to know what they can build with.
  */
 
+import { checkpoint, holdSkipInvisible } from '../utils/budget.ts'
+import { loadAllPagesAsync } from '../utils/tree.ts'
+
 /* ------------------------------------------------------------------ properties */
 
 export interface PropertyDefinition {
@@ -229,7 +232,7 @@ export async function collectComponents(options: CatalogOptions = {}): Promise<C
   let root: DocumentNode | PageNode = figma.currentPage
   if (scope === 'document') {
     try {
-      await figma.loadAllPagesAsync()
+      await loadAllPagesAsync()
       root = figma.root
     } catch {
       /* older host, or already loaded */
@@ -239,8 +242,7 @@ export async function collectComponents(options: CatalogOptions = {}): Promise<C
 
   // Figma's own indexed search rather than a walk of our own, and without the mirrors of every
   // hidden layer inside every instance.
-  const wasSkipping = figma.skipInvisibleInstanceChildren
-  figma.skipInvisibleInstanceChildren = true
+  const releaseSkipInvisible = holdSkipInvisible()
 
   const entries = new Map<string, CatalogEntry>()
   let read = 0
@@ -253,26 +255,34 @@ export async function collectComponents(options: CatalogOptions = {}): Promise<C
     }
 
     if (census) {
-      const instances = root.findAllWithCriteria({ types: ['INSTANCE'] })
-      sampled = instances.length > INSTANCE_CAP
-      for (const instance of instances.slice(0, INSTANCE_CAP)) {
-        read++
-        const main = await instance.getMainComponentAsync().catch(() => null)
-        if (!main) continue
-        const owner = ownerOf(main)
-        const known = entries.get(owner.id)
-        if (known) {
-          known.used = (known.used ?? 0) + 1
-          continue
+      const pages = scope === 'document' ? figma.root.children : [figma.currentPage]
+      outer: for (const page of pages) {
+        await checkpoint()
+        const instances = page.findAllWithCriteria({ types: ['INSTANCE'] })
+        for (const instance of instances) {
+          if (read >= INSTANCE_CAP) {
+            sampled = true
+            break outer
+          }
+          await checkpoint()
+          read++
+          const main = await instance.getMainComponentAsync().catch(() => null)
+          if (!main) continue
+          const owner = ownerOf(main)
+          const known = entries.get(owner.id)
+          if (known) {
+            known.used = (known.used ?? 0) + 1
+            continue
+          }
+          // Not local, so this is a library component — and an instance of it is the only evidence
+          // this file has that it exists.
+          if (source === 'local') continue
+          entries.set(owner.id, { ...entryFor(owner, owner.remote ? 'library' : 'local'), used: 1 })
         }
-        // Not local, so this is a library component — and an instance of it is the only evidence
-        // this file has that it exists.
-        if (source === 'local') continue
-        entries.set(owner.id, { ...entryFor(owner, owner.remote ? 'library' : 'local'), used: 1 })
       }
     }
   } finally {
-    figma.skipInvisibleInstanceChildren = wasSkipping
+    releaseSkipInvisible()
   }
 
   const all = [...entries.values()].filter((entry) => query === '' || entry.name.toLowerCase().includes(query))

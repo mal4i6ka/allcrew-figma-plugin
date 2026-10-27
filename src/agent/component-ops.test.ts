@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import { OPS_BY_NAME } from './ops.ts'
 import { classifyMain, sameValue } from './component-ops.ts'
 import { validateParams } from './protocol.ts'
+import { resetSweeps } from './sweep.ts'
 
 /* ------------------------------------------------------------- fake document */
 
@@ -260,6 +261,37 @@ test('the per-page counts cover every copy, not just the rows that fit under lim
   assert.equal(report.components[0].rows.length, 2)
   assert.deepEqual(report.components[0].byPage, [{ name: 'Screens', count: 5 }])
   assert.equal(report.components[0].truncated, true)
+})
+
+test('component.instances resumes a budgeted census without counting an instance twice', async () => {
+  resetSweeps()
+  const button = component({ id: 'c:1', name: 'Button' })
+  let clock = 0
+  const copies = [1, 2, 3, 4, 5].map((n) => {
+    const copy = instance({ id: `i:${n}`, name: 'Button', main: button })
+    copy.getMainComponentAsync = async () => {
+      clock += 600
+      return button
+    }
+    return copy
+  })
+  mount([page('p:budget', 'Screens', copies), page('p:library-budget', 'Library', [button])])
+  const realNow = Date.now
+  Date.now = () => clock
+  try {
+    let result = await run('component.instances', { unused: false, budgetMs: 1000 })
+    assert.equal(result.complete, false)
+    assert.equal('totals' in result, false, 'an incomplete aggregate must not look final')
+    while (!result.complete) {
+      result = await run('component.instances', { unused: false, budgetMs: 1000, cursor: result.cursor })
+    }
+    assert.equal(result.totals.instances, 5)
+    assert.equal(result.components[0].instances, 5)
+    assert.deepEqual(result.components[0].rows.map((row: Fake) => row.id), copies.map((copy) => copy.id))
+  } finally {
+    Date.now = realNow
+    resetSweeps()
+  }
 })
 
 test('component.instances lists a component nothing instantiates', async () => {
