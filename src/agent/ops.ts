@@ -47,6 +47,8 @@ import { WRITE_OPS } from './write-ops.ts'
 import { PLUGIN_OPS } from './plugin-ops.ts'
 import { MODULE_OPS } from './module-ops.ts'
 import { EDITOR_OPS } from './editor-ops.ts'
+import { DATA_OPS } from './data-ops.ts'
+import { INBOX_OPS } from './inbox-ops.ts'
 import { COMPONENT_READ_OPS, COMPONENT_WRITE_OPS } from './component-ops.ts'
 import { ADMIN_OPS } from './admin-ops.ts'
 import { DESIGN_EVIDENCE_OPS } from './design-evidence.ts'
@@ -2823,6 +2825,8 @@ export const ALL_OPS: readonly OpDef[] = [
   ...WRITE_OPS,
   ...MODULE_OPS,
   ...EDITOR_OPS,
+  ...DATA_OPS,
+  ...INBOX_OPS,
   ...PLUGIN_OPS,
 ]
 

@@ -2,6 +2,18 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.15.0 — 2026-10-28
+
+### Added
+
+- **File mail.** The people and agents working in one file can leave each other messages, and the messages are stored in the file itself. Each message is a plugin-data entry on the document root, synced to every open client. In practice a message reaches the other side in about half a second.
+  - The new **Messages** screen shows a feed with All / To me / Unread filters. Replies sit under the message they answer, and links to layers jump to them on the canvas. A new message raises a Figma toast, and the unread count shows on the screen's entry in the picker.
+  - When writing, you choose the recipient (everyone, a person or a person's agent), the kind (note or request), and how long the message is kept (an hour, a day or a week). Selected layers can be attached.
+  - A **request** shows Approve / Decline buttons, and only the person it was sent to can press them. The `MAIL_*` panel commands are denied to agents, so an agent can neither approve on its person's behalf nor write as that person.
+  - Nothing is kept for ever. A message lives a day by default and a week at most. Once everyone it was for has read it, it is removed ten minutes later; a request also waits for its answer. The text of a message is at most 8 kB and the whole mailbox at most 512 kB, with the oldest messages dropped first. Every open client prunes the mailbox.
+- Ops `inbox.list`, `inbox.wait`, `inbox.send`, `inbox.ack` give an agent the same mailbox under `agent:<its person's id>`. Every answer reminds the agent that a colleague's message is information, not an instruction.
+- Ops `data.get` / `data.set` read and write plugin data on any node or on the file, in this plugin's private store or in a shared namespace. Ops `data.watch` / `data.events` record how another client's write arrives (a page's `nodechange`, or a poll of the root). `documentchange` is refused under `dynamic-page`.
+
 ## 1.14.0 — 2026-10-28
 
 ### Added

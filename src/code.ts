@@ -177,6 +177,8 @@ import { binaryFile, slugify, textFile } from './agent/files.ts'
 import { describeStyle, localStyles, styleFor, STYLE_KINDS, type StyleKind } from './canvas/styles.ts'
 import { runModuleCommand } from './modules/run.ts'
 import { beginRecording, endRecording } from './agent/ui-post.ts'
+import { identity, mayDecide, type MailItem } from './mail/mailbox.ts'
+import { ackMail, decideMail, mailMe, mailView, sendMail, watchMail } from './mail/store.ts'
 
 /* ------------------------------------------------------------------ types */
 
@@ -348,6 +350,12 @@ type PluginMessage =
   | { type: 'GENERATE_TYPOGRAPHY' }
   | { type: 'DELIVER'; files: Record<string, string | { base64: string }>; dryRun?: boolean }
   | { type: 'DOCS_TO_CANVAS'; files?: Record<string, string | Uint8Array | { base64: string }> }
+  // File mail
+  | { type: 'MAIL_REFRESH' }
+  | { type: 'MAIL_SEND'; to: string[]; text: string; kind?: string; thread?: string; ttlHours?: number; attachSelection?: boolean }
+  | { type: 'MAIL_ACK'; ids: string[] }
+  | { type: 'MAIL_DECIDE'; id: string; decision: 'approved' | 'declined'; note?: string }
+  | { type: 'MAIL_FOCUS'; nodeId: string }
   // DS Tools target messages
   | { type: 'PREVIEW_PALETTE'; settings: unknown }
   | { type: 'SUGGEST_SPECTRUM'; settings: unknown }
@@ -2921,6 +2929,69 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       } catch (err) {
         postToUi({ type: 'DOCS_ERROR', message: String((err as Error)?.message || err) })
       }
+      break
+    }
+    /* ---- file mail ---- */
+    // Every mail command is the designer's own hand: an agent has `inbox.*`, which sends and reads
+    // as the agent. Reaching these through `plugin.call` would let an agent write as its person —
+    // and approve a colleague's request on that person's behalf.
+    case 'MAIL_REFRESH': {
+      // @agent deny: the designer's mail panel — agents use inbox.list
+      postMail()
+      break
+    }
+    case 'MAIL_SEND': {
+      // @agent deny: sends as the designer — agents use inbox.send
+      // @agent param to: addresses — `*`, `user:<id>`, `agent:<id>`
+      // @agent param text: the message, 8 kB at most
+      // @agent param kind: note, request or reply
+      // @agent param thread: the id of the message a reply answers
+      // @agent param ttlHours: how long it lives, 1 hour to a week
+      // @agent param attachSelection: link the layers selected now
+      try {
+        const nodes = msg.attachSelection ? figma.currentPage.selection.map((node) => ({ id: node.id, name: node.name })) : []
+        sendMail({ to: msg.to, text: msg.text, kind: msg.kind, thread: msg.thread, ttlHours: msg.ttlHours, nodes }, 'user')
+        postToUi({ type: 'MAIL_SENT' })
+      } catch (err) {
+        postToUi({ type: 'MAIL_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'MAIL_ACK': {
+      // @agent deny: marks mail read for the designer — agents use inbox.ack
+      // @agent param ids: the messages to mark read
+      try {
+        ackMail(msg.ids, 'user')
+      } catch (err) {
+        postToUi({ type: 'MAIL_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'MAIL_DECIDE': {
+      // @agent deny: a person approving or declining a request is the one thing an agent must never do for them
+      // @agent param id: the request being answered
+      // @agent param decision: approved or declined
+      // @agent param note: a word on why, 500 characters at most
+      try {
+        decideMail(msg.id, msg.decision, msg.note)
+      } catch (err) {
+        postToUi({ type: 'MAIL_ERROR', message: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'MAIL_FOCUS': {
+      // @agent deny: the mail panel's jump to a layer — agents use SCROLL_INTO_VIEW
+      // @agent param nodeId: the layer a message links to
+      const node = await figma.getNodeByIdAsync(msg.nodeId)
+      if (!node || !('visible' in node)) {
+        postToUi({ type: 'MAIL_ERROR', message: 'that layer is gone' })
+        break
+      }
+      let page: BaseNode | null = node
+      while (page && page.type !== 'PAGE') page = page.parent
+      if (page && page.id !== figma.currentPage.id) await figma.setCurrentPageAsync(page as PageNode)
+      figma.viewport.scrollAndZoomIntoView([node as SceneNode])
+      try { figma.currentPage.selection = [node as SceneNode] } catch { /* stale */ }
       break
     }
     case 'DELIVER': {
@@ -7071,3 +7142,56 @@ figma.ui.onmessage = (msg: PluginMessage) =>
 // handler already imports the op registry, so the registry reaching back for the handler would
 // be a cycle — and this way the channel can only run commands this build actually has.
 setUiMessageRunner((message) => handleUiMessage(message as PluginMessage))
+
+/* ------------------------------------------------------------- file mail */
+
+/** The designer's view of the file's mail, pushed to the panel on every change. */
+function postMail(): void {
+  let items: MailItem[] = []
+  let people: Array<{ name: string; address: string; agent: string }> = []
+  try {
+    items = mailView('user')
+    const seen = new Set<string>()
+    for (const user of figma.activeUsers) {
+      const them = identity(user)
+      if (seen.has(them.user)) continue
+      seen.add(them.user)
+      people.push({ name: them.name, address: them.user, agent: them.agent })
+    }
+  } catch {
+    // Read what there is; an editor without `activeusers` lists nobody.
+  }
+  const me = mailMe()
+  const shown = items.map((item) => ({ ...item, canDecide: !item.decision && mayDecide(item, me) }))
+  postToUi({ type: 'MAIL_STATE', me: { name: me.name, address: me.user, agent: me.agent }, people, items: shown, now: Date.now() })
+}
+
+if (figma.mode !== 'codegen') {
+  // Mail arriving while the panel is open says so once, in Figma's own toast; the panel shows it.
+  const announced = new Set<string>()
+  let first = true
+  const arrived = () => {
+    let fresh: MailItem[] = []
+    try {
+      fresh = mailView('user').filter((item) => item.forMe && !item.read && !announced.has(item.id))
+    } catch {
+      return
+    }
+    fresh.forEach((item) => announced.add(item.id))
+    if (!first && fresh.length > 0) {
+      const last = fresh[fresh.length - 1]
+      const what = last.kind === 'request' ? 'asks' : 'wrote'
+      figma.notify(fresh.length === 1 ? `✉ ${last.from.name} ${what}: ${last.text.slice(0, 80)}` : `✉ ${fresh.length} new messages in this file`, { timeout: 6000 })
+    }
+    first = false
+  }
+  try {
+    watchMail(() => {
+      arrived()
+      postMail()
+    })
+    arrived()
+  } catch (err) {
+    console.warn('[mail] cannot watch the mailbox', err)
+  }
+}

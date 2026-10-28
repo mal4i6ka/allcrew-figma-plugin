@@ -727,6 +727,43 @@
   }
   #view-agent .agent-separator span { flex: 1; height: 1px; background: var(--border); }
   #view-agent .agent-separator i { font-style: normal; }
+  /* File mail: messages kept in the file, between the people and agents working in it. */
+  #view-mail { gap: 20px; }
+  #view-mail .card + .card { margin-top: 0; }
+  #view-mail .mail-head { display: flex; align-items: center; gap: 10px; }
+  #view-mail .mail-head .label { flex: 1; min-width: 0; margin: 0; }
+  #view-mail .mail-filter { display: inline-flex; gap: 4px; }
+  #view-mail .mail-filter button { appearance: none; border: 1px solid var(--border); background: transparent; color: var(--muted); font: inherit; font-size: 11px; padding: 4px 9px; border-radius: 999px; cursor: pointer; }
+  #view-mail .mail-filter button.active { color: var(--text); border-color: var(--border-2); background: var(--bg-2); }
+  #view-mail .mail-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; max-height: clamp(220px, calc(var(--ui-h) - 470px), 640px); overflow: auto; }
+  #view-mail .mail-empty { color: var(--faint); font-size: 12px; padding: 18px 2px; }
+  #view-mail .mail-item { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg-2); display: flex; flex-direction: column; gap: 6px; }
+  #view-mail .mail-item.unread { border-color: var(--accent); }
+  #view-mail .mail-item.mine { background: transparent; }
+  #view-mail .mail-item.reply { margin-left: 18px; }
+  #view-mail .mail-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 11px; color: var(--faint); }
+  #view-mail .mail-meta b { color: var(--text); font-weight: 600; font-size: 12px; }
+  #view-mail .mail-kind { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border: 1px solid var(--border-2); border-radius: 4px; padding: 0 5px; color: var(--muted); }
+  #view-mail .mail-kind.request { color: var(--warn); border-color: var(--warn); }
+  #view-mail .mail-text { font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+  #view-mail .mail-nodes { display: flex; flex-wrap: wrap; gap: 4px; }
+  #view-mail .mail-nodes button { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 6px; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #view-mail .mail-nodes button:hover { color: var(--text); border-color: var(--border-2); }
+  #view-mail .mail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); }
+  #view-mail .mail-actions .btn.ghost { min-height: 24px; height: 24px; padding: 0 10px; font-size: 11px; margin: 0; }
+  #view-mail .mail-decision.approved { color: var(--ok); }
+  #view-mail .mail-decision.declined { color: var(--err); }
+  #view-mail .mail-compose { display: flex; flex-direction: column; gap: 8px; }
+  #view-mail .mail-row { display: flex; gap: 8px; }
+  #view-mail .mail-row > * { flex: 1; min-width: 0; }
+  #view-mail textarea.input { min-height: 64px; resize: vertical; font-family: inherit; }
+  #view-mail .mail-reply-to { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+  #view-mail .mail-reply-to button { appearance: none; border: 0; background: none; color: var(--faint); cursor: pointer; font: inherit; }
+  #view-mail .mail-send-row { display: flex; align-items: center; gap: 10px; }
+  #view-mail .mail-send-row label { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+  #view-mail .mail-send-row .btn.primary { width: auto; padding: 8px 18px; }
+  #view-mail .mail-note { font-size: 11px; margin: 0; color: var(--faint); }
+  #view-mail .mail-note.err { color: var(--err); }
 
   /* Download-a-script rows: the plugin ships through Figma, so the helper scripts it needs
      are handed over from here rather than assumed to exist on disk. */
@@ -1673,6 +1710,7 @@
     <select id="target-select" class="target-select" aria-label="Workspace screen">
       <optgroup label="Workspace" id="target-native">
         <option value="agent">Agent Listener</option>
+        <option value="mail" id="target-mail">Messages</option>
         <option value="modules">User Modules</option>
         <option value="django">Django × Bootstrap</option>
         <option value="tauri">Tauri</option>
@@ -2204,6 +2242,49 @@
         <p class="label">Result</p>
         <p class="sec-hint" id="mod-result-text"></p>
         <div id="mod-result-detail"></div>
+      </section>
+    </div>
+
+    <!-- File mail. The feed and the composer are drawn by mailRender() from MAIL_STATE; the
+         messages themselves live in the file (src/mail/), so every collaborator's panel shows them. -->
+    <div id="view-mail" class="view hidden">
+      <section class="card">
+        <div class="mail-head">
+          <p class="label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="14" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M4 7l8 6 8-6" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+            Messages in this file
+          </p>
+          <div class="mail-filter" role="tablist" aria-label="Show">
+            <button type="button" data-mail-filter="all" class="active">All</button>
+            <button type="button" data-mail-filter="me">To me</button>
+            <button type="button" data-mail-filter="unread">Unread</button>
+          </div>
+        </div>
+        <div class="mail-list" id="mail-list" aria-live="polite"></div>
+      </section>
+      <section class="card">
+        <p class="label">New message</p>
+        <div class="mail-compose">
+          <div class="mail-reply-to hidden" id="mail-reply-to"><span id="mail-reply-text"></span><button type="button" id="mail-reply-cancel" aria-label="Cancel reply">✕</button></div>
+          <div class="mail-row">
+            <select class="input" id="mail-to" aria-label="To"></select>
+            <select class="input" id="mail-kind" aria-label="Kind">
+              <option value="note">Note</option>
+              <option value="request">Request — needs their approval</option>
+            </select>
+            <select class="input" id="mail-ttl" aria-label="Keep for">
+              <option value="1">Keep 1 hour</option>
+              <option value="24" selected>Keep 1 day</option>
+              <option value="168">Keep 1 week</option>
+            </select>
+          </div>
+          <textarea class="input" id="mail-text" maxlength="8000" placeholder="Write to the people and agents in this file…" aria-label="Message"></textarea>
+          <div class="mail-send-row">
+            <label><input type="checkbox" id="mail-attach" /> Link the selected layers</label>
+            <button class="btn primary" id="mail-send" type="button">Send</button>
+          </div>
+          <p class="mail-note" id="mail-note">Stored in the file: everyone who opens it can read it, and it lands in version history. Read messages are removed ten minutes after everyone has read them; the rest when they expire.</p>
+        </div>
       </section>
     </div>
 
@@ -3421,6 +3502,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         document.getElementById('view-design-tokens').classList.toggle('hidden', settings || target !== 'design-tokens')
         document.getElementById('view-ds-tools').classList.toggle('hidden', settings || target !== 'ds-tools')
         document.getElementById('view-agent').classList.toggle('hidden', settings || target !== 'agent')
+        document.getElementById('view-mail').classList.toggle('hidden', settings || target !== 'mail')
         document.getElementById('view-sdk-builder').classList.toggle('hidden', settings || target !== 'sdk-builder')
         document.getElementById('view-modules').classList.toggle('hidden', settings || target !== 'modules')
         document.getElementById('view-module').classList.toggle('hidden', settings || target.slice(0, 7) !== 'module:')
@@ -3433,7 +3515,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var footer = document.querySelector('footer')
         var compactDsFooter = !settings && target === 'ds-tools'
         var handleOnlyFooter =
-          settings || target === 'agent' || target === 'modules' || target === 'sdk-builder' || Boolean(MODULE_TARGET)
+          settings || target === 'agent' || target === 'mail' || target === 'modules' || target === 'sdk-builder' || Boolean(MODULE_TARGET)
         footer.classList.toggle('ds-tools-footer', compactDsFooter)
         footer.classList.toggle('handle-only', handleOnlyFooter)
         document.body.classList.toggle('ds-tools-mode', compactDsFooter)
@@ -3484,6 +3566,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           show(VIEW)
           return
         }
+        if (picked === 'mail') {
+          MODULE_TARGET = null
+          PAGE_TARGET = 'mail'
+          document.getElementById('export-btn').classList.add('hidden')
+          document.getElementById('pipeline').classList.add('hidden')
+          document.getElementById('dt-foot').classList.add('hidden')
+          Array.prototype.forEach.call(document.querySelectorAll('[data-needs-target]'), function (el) {
+            el.classList.add('hidden')
+          })
+          show(VIEW)
+          parent.postMessage({ pluginMessage: { type: 'MAIL_REFRESH' } }, '*')
+          return
+        }
         if (picked === 'modules') {
           MODULE_TARGET = null
           PAGE_TARGET = 'modules'
@@ -3528,6 +3623,190 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       })
       document.getElementById('open-settings').addEventListener('click', function () { show('settings') })
       document.getElementById('close-settings').addEventListener('click', function () { show('main') })
+
+      // ── File mail ────────────────────────────────────────────────────────────────────────
+      // MAIL_STATE arrives on every change to the mailbox, ours or a colleague's. Messages to
+      // this person are marked read once the Messages screen has shown them for a moment; a
+      // request also waits for Approve / Decline, which only this side can press.
+      var MAIL = { me: null, people: [], items: [], now: 0 }
+      var MAIL_FILTER = 'all'
+      var MAIL_REPLY = null
+      var MAIL_ACK_TIMER = 0
+      var MAIL_LABEL = document.getElementById('target-mail').textContent
+
+      function mailVisible() {
+        return !document.getElementById('view-mail').classList.contains('hidden')
+      }
+
+      function mailAgo(at) {
+        var s = Math.max(0, Math.round((Date.now() - at) / 1000))
+        if (s < 60) return 'just now'
+        if (s < 3600) return Math.round(s / 60) + ' min ago'
+        if (s < 86400) return Math.round(s / 3600) + ' h ago'
+        return Math.round(s / 86400) + ' d ago'
+      }
+
+      function mailLeft(at) {
+        var m = Math.max(0, Math.round((at - Date.now()) / 60000))
+        if (m < 60) return m + ' min left'
+        if (m < 2880) return Math.round(m / 60) + ' h left'
+        return Math.round(m / 1440) + ' d left'
+      }
+
+      function mailName(address) {
+        if (address === '*') return 'everyone'
+        if (MAIL.me && address === MAIL.me.address) return 'you'
+        if (MAIL.me && address === MAIL.me.agent) return 'your agent'
+        for (var i = 0; i < MAIL.people.length; i++) {
+          if (MAIL.people[i].address === address) return MAIL.people[i].name
+          if (MAIL.people[i].agent === address) return MAIL.people[i].name + '’s agent'
+        }
+        for (var j = 0; j < MAIL.items.length; j++) if (MAIL.items[j].from.address === address) return MAIL.items[j].from.name
+        return address
+      }
+
+      function mailRenderTo() {
+        var select = document.getElementById('mail-to')
+        var current = select.value
+        var options = [['*', 'Everyone in the file']]
+        MAIL.people.forEach(function (person) {
+          if (MAIL.me && person.address === MAIL.me.address) return
+          options.push([person.address, person.name])
+          options.push([person.agent, person.name + '’s agent'])
+        })
+        if (MAIL.me) options.push([MAIL.me.agent, 'My agent'])
+        // Someone who wrote and has since left can still be answered.
+        MAIL.items.forEach(function (item) {
+          if (!options.some(function (o) { return o[0] === item.from.address }) && !(MAIL.me && item.from.address === MAIL.me.address)) {
+            options.push([item.from.address, item.from.name])
+          }
+        })
+        select.innerHTML = options.map(function (o) { return '<option value="' + escapeHtml(o[0]) + '">' + escapeHtml(o[1]) + '</option>' }).join('')
+        if (options.some(function (o) { return o[0] === current })) select.value = current
+      }
+
+      function mailRender() {
+        var unread = MAIL.items.filter(function (item) { return item.forMe && !item.read })
+        document.getElementById('target-mail').textContent = MAIL_LABEL + (unread.length ? ' · ' + unread.length : '')
+        mailRenderTo()
+        var items = MAIL.items.filter(function (item) {
+          if (MAIL_FILTER === 'me') return item.forMe
+          if (MAIL_FILTER === 'unread') return item.forMe && !item.read
+          return true
+        })
+        // Replies sit under what they answer; a reply whose question is gone stands on its own.
+        var byId = {}
+        items.forEach(function (item) { byId[item.id] = item })
+        var ordered = []
+        items.forEach(function (item) {
+          if (item.thread && byId[item.thread]) return
+          ordered.push(item)
+          items.forEach(function (reply) { if (reply.thread === item.id) ordered.push(reply) })
+        })
+        var list = document.getElementById('mail-list')
+        if (!ordered.length) {
+          list.innerHTML = '<div class="mail-empty">' + (MAIL.items.length ? 'Nothing here with this filter.' : 'No messages in this file yet.') + '</div>'
+          return
+        }
+        var atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 8
+        var grew = ordered.length > (list.getAttribute('data-count') | 0)
+        list.setAttribute('data-count', String(ordered.length))
+        list.innerHTML = ordered.map(function (item) {
+          var cls = 'mail-item' + (item.forMe && !item.read ? ' unread' : '') + (item.mine ? ' mine' : '') + (item.thread && byId[item.thread] ? ' reply' : '')
+          var to = item.to.map(mailName).join(', ')
+          var meta = '<b>' + escapeHtml(item.mine ? 'You' : item.from.name) + '</b><span>→ ' + escapeHtml(to) + '</span>' +
+            (item.kind !== 'note' ? '<span class="mail-kind ' + item.kind + '">' + item.kind + '</span>' : '') +
+            '<span>· ' + mailAgo(item.at) + ' · ' + mailLeft(item.expiresAt) + '</span>'
+          var nodes = item.nodes && item.nodes.length
+            ? '<div class="mail-nodes">' + item.nodes.map(function (node) {
+                return '<button type="button" data-mail-focus="' + escapeHtml(node.id) + '" title="Show on the canvas">◇ ' + escapeHtml(node.name) + '</button>'
+              }).join('') + '</div>'
+            : ''
+          var actions = []
+          if (item.kind === 'request') {
+            if (item.decision) {
+              actions.push('<span class="mail-decision ' + item.decision.decision + '">' + (item.decision.decision === 'approved' ? 'Approved' : 'Declined') + ' by ' + escapeHtml(item.decision.by.name) + '</span>')
+            } else if (item.canDecide) {
+              actions.push('<button class="btn ghost" type="button" data-mail-decide="approved" data-id="' + item.id + '">Approve</button>')
+              actions.push('<button class="btn ghost" type="button" data-mail-decide="declined" data-id="' + item.id + '">Decline</button>')
+            } else actions.push('<span>Waiting for an answer</span>')
+          }
+          if (!item.mine) actions.push('<button class="btn ghost" type="button" data-mail-reply="' + item.id + '">Reply</button>')
+          if (item.mine && item.readBy.length) actions.push('<span>Read by ' + escapeHtml(item.readBy.map(function (r) { return r.name }).join(', ')) + '</span>')
+          return '<div class="' + cls + '"><div class="mail-meta">' + meta + '</div><p class="mail-text">' + escapeHtml(item.text) + '</p>' + nodes +
+            (actions.length ? '<div class="mail-actions">' + actions.join('') + '</div>' : '') + '</div>'
+        }).join('')
+        // Newest is at the bottom, like a chat: follow it unless the reader has scrolled up.
+        if (atEnd || grew) list.scrollTop = list.scrollHeight
+        mailScheduleAck()
+      }
+
+      function mailScheduleAck() {
+        clearTimeout(MAIL_ACK_TIMER)
+        if (!mailVisible()) return
+        MAIL_ACK_TIMER = setTimeout(function () {
+          if (!mailVisible()) return
+          var ids = MAIL.items.filter(function (item) { return item.forMe && !item.read }).map(function (item) { return item.id })
+          if (ids.length) parent.postMessage({ pluginMessage: { type: 'MAIL_ACK', ids: ids } }, '*')
+        }, 2500)
+      }
+
+      function mailNote(text, err) {
+        var note = document.getElementById('mail-note')
+        note.textContent = text
+        note.className = 'mail-note' + (err ? ' err' : '')
+      }
+
+      function mailSetReply(item) {
+        MAIL_REPLY = item
+        document.getElementById('mail-reply-to').classList.toggle('hidden', !item)
+        if (!item) return
+        document.getElementById('mail-reply-text').textContent = 'Replying to ' + item.from.name + ': “' + item.text.slice(0, 60) + (item.text.length > 60 ? '…' : '') + '”'
+        mailRenderTo()
+        document.getElementById('mail-to').value = item.from.address
+        document.getElementById('mail-kind').value = 'note'
+        document.getElementById('mail-text').focus()
+      }
+
+      document.getElementById('mail-list').addEventListener('click', function (event) {
+        var el = event.target.closest('button')
+        if (!el) return
+        if (el.hasAttribute('data-mail-focus')) {
+          parent.postMessage({ pluginMessage: { type: 'MAIL_FOCUS', nodeId: el.getAttribute('data-mail-focus') } }, '*')
+        } else if (el.hasAttribute('data-mail-decide')) {
+          el.disabled = true
+          parent.postMessage({ pluginMessage: { type: 'MAIL_DECIDE', id: el.getAttribute('data-id'), decision: el.getAttribute('data-mail-decide') } }, '*')
+        } else if (el.hasAttribute('data-mail-reply')) {
+          var id = el.getAttribute('data-mail-reply')
+          mailSetReply(MAIL.items.filter(function (item) { return item.id === id })[0] || null)
+        }
+      })
+      Array.prototype.forEach.call(document.querySelectorAll('[data-mail-filter]'), function (button) {
+        button.addEventListener('click', function () {
+          MAIL_FILTER = button.getAttribute('data-mail-filter')
+          Array.prototype.forEach.call(document.querySelectorAll('[data-mail-filter]'), function (b) { b.classList.toggle('active', b === button) })
+          mailRender()
+        })
+      })
+      document.getElementById('mail-reply-cancel').addEventListener('click', function () { mailSetReply(null) })
+      document.getElementById('mail-send').addEventListener('click', function () {
+        var text = document.getElementById('mail-text').value.trim()
+        if (!text) { mailNote('Write something first.', true); return }
+        document.getElementById('mail-send').disabled = true
+        var thread = MAIL_REPLY ? (MAIL_REPLY.thread || MAIL_REPLY.id) : undefined
+        parent.postMessage({ pluginMessage: {
+          type: 'MAIL_SEND',
+          to: [document.getElementById('mail-to').value],
+          text: text,
+          kind: MAIL_REPLY ? 'reply' : document.getElementById('mail-kind').value,
+          thread: thread,
+          ttlHours: Number(document.getElementById('mail-ttl').value),
+          attachSelection: document.getElementById('mail-attach').checked,
+        } }, '*')
+      })
+      document.getElementById('mail-text').addEventListener('keydown', function (event) {
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) document.getElementById('mail-send').click()
+      })
 
       // Normalized shapes carry identical flat key sets, so a one-directional sweep is complete.
       function sameRecord(a, b) {
@@ -8196,6 +8475,18 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         } else if (msg.type === 'TOKENS_ERROR') {
           var elDtErr = document.getElementById('status')
           if (elDtErr) { elDtErr.textContent = 'Scan error: ' + msg.message; elDtErr.className = 'err' }
+        } else if (msg.type === 'MAIL_STATE') {
+          MAIL = { me: msg.me, people: msg.people || [], items: msg.items || [], now: msg.now }
+          mailRender()
+        } else if (msg.type === 'MAIL_SENT') {
+          document.getElementById('mail-send').disabled = false
+          document.getElementById('mail-text').value = ''
+          document.getElementById('mail-attach').checked = false
+          mailSetReply(null)
+          mailNote('Sent.', false)
+        } else if (msg.type === 'MAIL_ERROR') {
+          document.getElementById('mail-send').disabled = false
+          mailNote(msg.message, true)
         } else if (msg.type === 'DOCS_PLACED') {
           var elDocs = document.getElementById('status')
           if (elDocs) {
