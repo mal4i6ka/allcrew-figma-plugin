@@ -22,25 +22,100 @@ Core extraction and generation run inside Figma. Optional Delivery and Agent Lis
 
 ## AllCrew vs. the official Figma MCP server
 
-The two are complementary, and AllCrew is built to be used alongside Figma's own server rather than
-instead of it. Figma's remote MCP is hosted, broad and OAuth-based; AllCrew is a development-plugin
-workspace for explicit, open-file automation under the designer's read/write gates, and for
-repository-grade artifacts.
+The two are complementary, and AllCrew is built to work alongside Figma's own server rather
+than replace it. Figma's remote MCP is hosted, broad and OAuth-based. Beyond reading Design files,
+almost everything it does in a file goes through one tool, `use_figma`, which runs whatever
+Plugin API JavaScript the agent writes. AllCrew runs inside the file the designer has open. It
+offers typed, schema-checked operations behind switches the designer can see, and it produces
+repository-grade output.
 
-| Capability | Official Figma MCP | AllCrew Figma Workspace |
-|---|---|---|
-| Structured components, variables, layout, motion context | Yes | Yes, plus variable-font axes, shaders, vector regions, history |
-| Generate code from selected frames | Yes, React/Tailwind-shaped by default | Packaged token / Django / React / Tauri / iOS / Android exports |
-| Write to the canvas | Remote: `use_figma` (arbitrary Plugin API JS), file creation, code-to-canvas, assets | Typed, schema-checked ops in the open file, behind **Allow changes**, one undo step each |
-| Find library components and styles | `search_design_system`, `get_libraries` (remote) | Imports by published key; uses Figma's search for discovery (`library.reuse` playbook) |
-| Code Connect | Reads/writes mappings (`get_code_connect_map`, `add_code_connect_map`, …) | Emits Code Connect 2 templates; runs the official CLI (`codeconnect.*`); reads Figma's map |
-| FigJam, Slides, Buzz | Yes | Yes: the plugin runs in all three; stickies, connectors, slides and Buzz assets use the same typed ops ([`docs/editors.md`](docs/editors.md)) |
-| Specs | Yes | Plugins cannot create a spec yet; package docs are drawn on a `Docs` page as ordinary layers instead |
-| Generative plugins, shaders, Weave | Yes | Not in scope |
-| Messages between collaborators and their agents | No | File mail, stored in the file itself, with approval of requests by a person |
-| Open-file, observable operation log; history, comments, org analytics | Not the primary model | Yes |
-| Declarative in-workspace screens | Hosted generative plugins (different model) | AllCrew SDK modules |
-| Hosted service / plan | Remote, OAuth, catalog clients, per-seat rate limits; desktop server is read-only | No AllCrew service; loopback bridge; works on any plan |
+**Where AllCrew is ahead:**
+- **Figma Buzz**, which Figma's MCP does not cover.
+- **Dev Mode** measurements and the React code panel.
+- **Typed operations** for FigJam and Slides, where Figma's MCP has only free-form JavaScript.
+- **Version history**, **comments** and **messages between collaborators**.
+- **Packaged exports** that ship to git, a pull request or npm.
+
+**Where Figma's MCP is ahead:**
+- **Making things:** new files, diagrams, images, code-to-design and Specs.
+- **Search** across team libraries.
+- **Figma-only products:** Make, shaders, generative plugins and Weave.
+
+✅ a dedicated tool or op · 🟡 possible, but only by writing Plugin API JavaScript in `use_figma`,
+or only partly · — not available
+
+### Figma Design
+
+| Capability | Figma MCP | AllCrew |
+|---|:-:|:-:|
+| Read structure, layout, variables, motion | ✅ | ✅ |
+| Read variable-font axes, shaders, vector regions | — | ✅ |
+| Change layers: typed ops, one undo step each, behind **Allow changes** | 🟡 | ✅ |
+| Create components, variants and styles | 🟡 | ✅ |
+| Create and bind variables | 🟡 | ✅ |
+| Search team libraries | ✅ | 🟡 uses Figma's search |
+| Insert library components and styles by key | 🟡 | ✅ |
+| Generate a design from code or HTML | ✅ | — |
+| Generate images | ✅ | — |
+| Code from a frame | ✅ React + Tailwind reference | ✅ packaged React, Django, Tauri |
+| Design tokens: CSS, JSON, TS, iOS, Android | — | ✅ |
+| `DESIGN.md` / `COMPONENTS.md` for agents | — | ✅ |
+| Code Connect mappings | ✅ | ✅ templates and the official CLI |
+| Code layers (Figma Make) | ✅ | 🟡 packs the export for Figma's importer |
+| Markdown on the canvas | ✅ Specs (beta) | ✅ plain layers, refreshed on export |
+| Version history: what changed and who | — | ✅ |
+| Comments: read, post, reply | — | ✅ |
+
+### Dev Mode
+
+| Capability | Figma MCP | AllCrew |
+|---|:-:|:-:|
+| Read the selection for code | ✅ desktop server | ✅ |
+| Measurements: read and set | — | ✅ |
+| Code in Dev Mode's code panel | 🟡 Code Connect snippets | ✅ React + CSS Modules |
+
+### FigJam
+
+| Capability | Figma MCP | AllCrew |
+|---|:-:|:-:|
+| Read a board | ✅ | ✅ |
+| Generate a diagram | ✅ | — |
+| Stickies, shapes with text, connectors | 🟡 | ✅ |
+| Tables, code blocks, link previews | 🟡 | ✅ |
+| Timer and who is on the board | 🟡 | ✅ |
+
+### Figma Slides
+
+| Capability | Figma MCP | AllCrew |
+|---|:-:|:-:|
+| Create a deck file | ✅ | — |
+| Screenshots | ✅ | ✅ |
+| Slides and rows, placed by position | 🟡 | ✅ |
+| Transitions and skipped slides | 🟡 | ✅ |
+| Slide grid: read and rearrange | 🟡 | ✅ |
+
+### Figma Buzz
+
+| Capability | Figma MCP | AllCrew |
+|---|:-:|:-:|
+| Assets: create and set their type | — | ✅ |
+| Text and media content: read and fill | — | ✅ |
+| Smart resize | — | ✅ |
+| Canvas grid: read and rearrange | — | ✅ |
+
+### How it runs
+
+| Capability | Figma MCP | AllCrew |
+|---|:-:|:-:|
+| No account sign-in or per-seat rate limits | — | ✅ |
+| Works on any plan | 🟡 | ✅ |
+| Separate read and write switches the designer sees | — | ✅ |
+| Operation log of what the agent did | — | ✅ |
+| Messages between collaborators and their agents, stored in the file | — | ✅ |
+| Delivery to a folder, git, a pull request or npm | — | ✅ |
+| Design-to-site fidelity check | — | ✅ |
+| Custom screens inside the plugin | 🟡 generative plugins | ✅ AllCrew SDK modules |
+| Make, shaders, Weave | ✅ | — |
 
 AllCrew also relays Figma's **desktop** Dev Mode MCP server through the bridge (`figma.mcp`), so an
 agent connected only to AllCrew can still call `get_design_context` or `get_metadata` when Figma
@@ -117,7 +192,7 @@ node tools/bridge.mjs
 ```
 
 Open **Agent Listener** in the plugin and pair during the five-minute window. **Allow reads** and
-**Allow writes** control external agents only. Independently, **Browser UI mirror** publishes the
+**Allow changes** control external agents only. Independently, **Browser UI mirror** publishes the
 live panel through the loopback bridge; the browser icon in the header opens the exact connected
 file in Chrome.
 
