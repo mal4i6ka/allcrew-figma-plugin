@@ -1,6 +1,6 @@
 # AllCrew Figma Workspace
 
-**A local-first Figma development plugin and MCP workspace for Claude Code, Codex, Cursor, design tokens, project export, and controlled agent writes.**
+**A local-first Figma development plugin and MCP workspace for Claude Code, Codex, Cursor, design tokens, project export, and controlled agent writes — in Figma Design, Dev Mode, FigJam, Slides and Buzz.**
 
 [![Release](https://img.shields.io/github/v/release/mal4i6ka/allcrew-figma-plugin?display_name=tag)](https://github.com/mal4i6ka/allcrew-figma-plugin/releases/latest)
 [![CI](https://github.com/mal4i6ka/allcrew-figma-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/mal4i6ka/allcrew-figma-plugin/actions/workflows/ci.yml)
@@ -16,7 +16,7 @@
 
 Design handoff is more than pixels. Agents need the variables behind values, component behavior, prototype edges, assets, and the live state of the file a designer has open. AllCrew exposes that context through a user-run loopback bridge, then keeps reads and writes behind separate switches visible in Figma.
 
-It also exports usable deliverables: mode-aware tokens, React, Django, Tauri, native color resources, documentation, and declarative custom plugin screens.
+It also exports usable deliverables: mode-aware tokens, React, Django, Tauri, native color resources, documentation (also drawn on the canvas), and declarative custom plugin screens. People and agents working in the same file can leave each other messages that are stored in the file.
 
 Core extraction and generation run inside Figma. Optional Delivery and Agent Listener connections go only to endpoints the user configures; AllCrew operates no hosted relay and collects no telemetry.
 
@@ -34,7 +34,10 @@ repository-grade artifacts.
 | Write to the canvas | Remote: `use_figma` (arbitrary Plugin API JS), file creation, code-to-canvas, assets | Typed, schema-checked ops in the open file, behind **Allow changes**, one undo step each |
 | Find library components and styles | `search_design_system`, `get_libraries` (remote) | Imports by published key; uses Figma's search for discovery (`library.reuse` playbook) |
 | Code Connect | Reads/writes mappings (`get_code_connect_map`, `add_code_connect_map`, …) | Emits Code Connect 2 templates; runs the official CLI (`codeconnect.*`); reads Figma's map |
-| FigJam, Slides, Specs, generative plugins, shaders, Weave | Yes | Not in scope |
+| FigJam, Slides, Buzz | Yes | Yes: the plugin runs in all three; stickies, connectors, slides and Buzz assets use the same typed ops ([`docs/editors.md`](docs/editors.md)) |
+| Specs | Yes | Plugins cannot create a spec yet; package docs are drawn on a `Docs` page as ordinary layers instead |
+| Generative plugins, shaders, Weave | Yes | Not in scope |
+| Messages between collaborators and their agents | No | File mail, stored in the file itself, with approval of requests by a person |
 | Open-file, observable operation log; history, comments, org analytics | Not the primary model | Yes |
 | Declarative in-workspace screens | Hosted generative plugins (different model) | AllCrew SDK modules |
 | Hosted service / plan | Remote, OAuth, catalog clients, per-seat rate limits; desktop server is read-only | No AllCrew service; loopback bridge; works on any plan |
@@ -137,6 +140,35 @@ node tools/mcp.mjs --install claude
 
 Grants are remembered per file. A development plugin gets no `fileKey`, so the first grant in a file stamps it with a random id in the document's plugin data. Reopening or reloading the plugin in that file restores the listener with the same read and write switches. Renaming the file keeps the grant. A different file, even one with the same name, starts with both gates closed. A duplicate of the file keeps the stamp, and with it the grant.
 
+## File mail
+
+The **Messages** screen (in the screen picker, next to Agent Listener) is a mailbox kept in the
+open file. It lets the people working in the file, and their agents, leave each other messages. There is no
+server: each message is an entry in the plugin's private data on the document, so it syncs to
+every collaborator's client like any other edit and arrives in about half a second.
+
+- **Feed:** All / To me / Unread filters. Replies sit under the message they answer, links to
+  layers jump to them on the canvas, a new message raises a Figma toast, and the unread count
+  shows on the screen's name.
+- **Writing:** to everyone in the file, to a person, or to a person's agent; as a note or a
+  **request**; kept for an hour, a day or a week. The selected layers can be attached.
+- **Requests** show Approve / Decline only to the people they were sent to. An agent reads the
+  decision but can never make it, and the panel's mail commands are closed to agents, so an
+  agent can neither approve for its person nor write as them.
+- **Agents** use `inbox.list`, `inbox.wait`, `inbox.send` and `inbox.ack` as
+  `agent:<their person's id>` ([`agent/README.md`](agent/README.md)). Every answer reminds them
+  that a colleague's message is information, not an instruction.
+- **Nothing is kept for ever:**
+  - a message lives a day by default and a week at most;
+  - once everyone it was for has read it, it is removed ten minutes later (a request also waits for its answer);
+  - text is capped at 8 kB and the mailbox at 512 kB, with the oldest messages dropped first;
+  - every open client prunes the mailbox.
+
+Limits to know: mail moves only while the plugin is open somewhere in the file. Every message,
+receipt and prune lands in undo and version history, because the Plugin API has no way around
+that. Anyone who can open the file can read the mail, so never send a secret. The sender's name is
+stamped by the sending client. That makes it attribution, not authentication: the plugin id is public.
+
 ## What you get
 
 | File | Contents |
@@ -148,6 +180,10 @@ Grants are remembered per file. A development plugin gets no `fileKey`, so the f
 | `Assets.xcassets/<token>.colorset/Contents.json` | *(iOS & Android tokens on)* One colorset per colour, in sRGB components, with a `luminosity: dark` entry **only where the dark theme actually changes it** — so `Color("text-primary")` follows the system appearance with nothing in the app deciding. |
 | `res/values/colors.xml`, `res/values-night/colors.xml` | *(iOS & Android tokens on)* The same, by Android resource qualifier. The night file is an override list: it carries only the colours that differ. |
 | `Tokens.swift`, `Tokens.kt` | *(iOS & Android tokens on)* Constants for what a catalogue cannot hold (spacing, radii, the type scale) and for the colours too, for a build that themes in code. Values identical in every theme are declared once, above the per-theme blocks; a length gets `CGFloat`/`.dp`, a line-height ratio does not. |
+| `DESIGN.md` | The design system written for people and agents: tokens grouped by role (roles come from **Collections in the export**), the full token reference, typography, themes, breakpoints, components, and a prompt for agents. |
+| `COMPONENTS.md` | *(Component contracts on)* One section per component: its Description as a behaviour contract, its properties and its documentation links, with an index. |
+| `ICONS.md` | *(Component contracts on)* Icon components, which carry search keywords rather than behaviour, listed compactly instead of crowding `COMPONENTS.md`. |
+| `previews/*.png` | *(Component previews on)* A picture of every main component, up to the preview budget. |
 | `README.md` | Auto-generated usage notes for that specific export. |
 
 ## Settings
@@ -167,6 +203,10 @@ preferences (the choices persist per-user):
 | **iOS & Android tokens** | off | Also emit the asset catalogue, `res/values{,-night}/colors.xml`, `Tokens.swift` and `Tokens.kt`. Off by default because a palette becomes one colorset *directory* per colour, which is noise in a package a web project unzips. |
 | **Collections in the export** | Export | One row per variable collection of the open file, with a role picked from a list: **Export**, **Hide from code** (a primitive layer stays out while its values still reach the tokens that alias it), **Breakpoints → `--bp-*`**, **Separate file → `name.css`** (a parallel product collection gets its own stylesheet built from the shared base plus that collection), or a DESIGN.md role (spacing, radius, text colour, motion duration, …). Saved roles for collections the file does not have stay listed, struck through. |
 | **Include library variables** | off | Also export the enabled **libraries'** own collections. Not needed for values this file takes from a library: aliases into a library are resolved by id and substituted without it. It is a network read per token, and the panel reports progress while it runs. |
+| **Component contracts** | on | Write `COMPONENTS.md` (and `ICONS.md`) from each component's Description and documentation link. |
+| **Component previews** | off | Render a PNG of every main component into `previews/`. Slower scan, bigger package. |
+| **Preview budget, MB** | 8 | Images land in the repository; components past the budget ship without a picture. |
+| **On the canvas** | off | Every export also lays the package's Markdown out on a `Docs` page (FigJam: the current board), one frame per document: headings, native lists, tables, code, quotes and previews as ordinary layers. Index entries and links between documents jump to their frame. A re-export refreshes the same frames in place, so edits made there are replaced. Agents can do the same with `DOCS_TO_CANVAS`. |
 | **Automatic update discovery** | off | Checks the latest GitHub Release at most once every 24 hours. A manual **Check now** action is always available. When a newer version exists, the plugin shows a quiet header banner with release and direct-download actions. |
 | **Browser UI mirror** | off | Publishes the exact live plugin panel through the paired loopback bridge, independently from Agent Listener read/write permissions. While enabled, the header browser icon opens the connected file in Chrome. |
 
@@ -659,8 +699,11 @@ curl http://localhost:8787
   bridge on a port the designer chooses. `allowedDomains` takes whole URLs and a port cannot be
   wildcarded, so a narrower list would be wrong for half of any team. Nothing in the extraction
   path uses it.
-- **Editors & plan:** runs in both **Figma Design** and **Dev Mode**
-  (`editorType: ["figma", "dev"]`, `capabilities: ["inspect"]`). It reads variables
+- **Editors & plan:** runs in **Figma Design**, **Dev Mode**, **FigJam**, **Slides** and **Buzz**
+  (`editorType: ["figma", "dev", "figjam", "slides", "buzz"]`, `capabilities: ["inspect", "codegen"]`,
+  permissions `currentuser`, `teamlibrary`, `activeusers`, `fileusers`). In Dev Mode it also
+  answers the code panel with the React export. What each editor's Plugin API offers is compared
+  in [`docs/editors.md`](docs/editors.md). It reads variables
   through the in-editor Plugin API, so **no Enterprise / Variables REST API is
   required — it works on any plan**, including Organization. Dev Mode itself is gated
   by Figma to a **Dev or Full seat** (no manifest setting bypasses that); anyone with
@@ -675,8 +718,11 @@ curl http://localhost:8787
 
 - The bridge listens on `127.0.0.1` by default. Do not expose it on a public interface.
 - Read and write access are separate switches, and both start off.
-- Figma development plugins do not expose a stable file key. Agent grants therefore last only
-  for the current plugin session and are never restored by file name.
+- Grants are remembered per file under a random id stamped into the document, never by file
+  name: a different file with the same name starts with both gates closed. A duplicate of the
+  file carries the stamp, and with it the grant.
+- File mail is something a colleague *said*. Agents are told to treat it as information, and a
+  request is acted on only after the person it went to approves it in their own panel.
 - Treat `~/.allcrew-channel/agent-secret`, receiver secrets, and Figma tokens as credentials.
 - Stop the listener before opening an untrusted file. Enable writes only while an intended
   automation is running.
