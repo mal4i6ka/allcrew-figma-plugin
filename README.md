@@ -16,7 +16,7 @@
 
 Design handoff is more than pixels. Agents need the variables behind values, component behavior, prototype edges, assets, and the live state of the file a designer has open. AllCrew exposes that context through a user-run loopback bridge, then keeps reads and writes behind separate switches visible in Figma.
 
-It also exports usable deliverables: mode-aware tokens, React, Django, Tauri, native color resources, documentation (also drawn on the canvas), and declarative custom plugin screens. People and agents working in the same file can leave each other messages that are stored in the file.
+It also exports usable deliverables: mode-aware tokens, React, Django, Tauri, native color resources, documentation (also drawn on the canvas), and declarative custom plugin screens. The list is open-ended: an agent builds any other stack or format from the same framework-neutral reading of the design (`design.ir`, `variables.get`). People and agents working in the same file can leave each other messages that are stored in the file.
 
 Core extraction and generation run inside Figma. Optional Delivery and Agent Listener connections go only to endpoints the user configures; AllCrew operates no hosted relay and collects no telemetry.
 
@@ -34,7 +34,7 @@ repository-grade output.
 - **Dev Mode** measurements and the React code panel.
 - **Typed operations** for FigJam and Slides, where Figma's MCP has only free-form JavaScript.
 - **Version history**, **comments** and **messages between collaborators**.
-- **Packaged exports** that ship to git, a pull request or npm.
+- **Code and tokens for any stack:** packaged React, Django, Tauri and token files, … and whatever else an agent builds from `design.ir` and `variables.get`, delivered to git, a pull request, a GitLab merge request or npm.
 
 **Where Figma's MCP is ahead:**
 - **Making things:** new files, diagrams, images, code-to-design and Specs.
@@ -58,7 +58,7 @@ or only partly · — not available
 | Generate a design from code or HTML | ✅ | — |
 | Generate images | ✅ | — |
 | Code from a frame | ✅ React + Tailwind reference | ✅ packaged React, Django, Tauri, … any stack the agent builds from `design.ir` (SwiftUI, Compose, React Native) |
-| Design tokens: CSS, JSON, TS, iOS, Android | — | ✅ |
+| Design tokens | — | ✅ CSS, JSON, TS, iOS, Android, … any format the agent writes from `variables.get` (values, modes, `codeSyntax`) |
 | `DESIGN.md` / `COMPONENTS.md` for agents | — | ✅ |
 | Code Connect mappings | ✅ | ✅ templates and the official CLI |
 | Code layers (Figma Make) | ✅ | 🟡 packs the export for Figma's importer |
@@ -112,9 +112,9 @@ or only partly · — not available
 | Separate read and write switches the designer sees | — | ✅ |
 | Operation log of what the agent did | — | ✅ |
 | Messages between collaborators and their agents, stored in the file | — | ✅ |
-| Delivery to a folder, git, a pull request or npm | — | ✅ |
+| Delivery to a folder, git, a pull request, a GitLab merge request or npm | — | ✅ |
 | Design-to-site fidelity check | — | ✅ |
-| Custom screens inside the plugin | 🟡 generative plugins | ✅ AllCrew SDK modules |
+| Custom screens inside the plugin | 🟡 generative plugins | ✅ AllCrew SDK modules, … any screen an agent writes and installs (`modules.schema`, `modules.install`) |
 | Make, shaders, Weave | ✅ | — |
 
 AllCrew also relays Figma's **desktop** Dev Mode MCP server through the bridge (`figma.mcp`), so an
