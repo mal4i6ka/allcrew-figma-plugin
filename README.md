@@ -57,7 +57,7 @@ or only partly · — not available
 | Insert library components and styles by key | 🟡 | ✅ |
 | Generate a design from code or HTML | ✅ | — |
 | Generate images | ✅ | — |
-| Code from a frame | ✅ React + Tailwind reference | ✅ packaged React, Django, Tauri |
+| Code from a frame | ✅ React + Tailwind reference | ✅ packaged React, Django, Tauri, … any stack the agent builds from `design.ir` (SwiftUI, Compose, React Native) |
 | Design tokens: CSS, JSON, TS, iOS, Android | — | ✅ |
 | `DESIGN.md` / `COMPONENTS.md` for agents | — | ✅ |
 | Code Connect mappings | ✅ | ✅ templates and the official CLI |
