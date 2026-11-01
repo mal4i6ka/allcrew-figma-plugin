@@ -2,6 +2,17 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## 1.15.1 — 2026-11-01
+
+### Changed
+
+- The README's comparison with Figma's MCP server is now organised by product: Design, Dev Mode, FigJam, Slides and Buzz, plus how each one runs. Each row is a single capability, and a summary says where each side is ahead. Rows where an agent builds on what the plugin reads (code, tokens, custom screens) are marked as open-ended.
+- The README covers 1.13–1.15: FigJam, Slides and Buzz; package docs on the canvas; the Documentation settings and the files they write; file mail.
+
+### Fixed
+
+- The README no longer says agent grants last only for one plugin session, and it names the write switch as the panel does: **Allow changes**.
+
 ## 1.15.0 — 2026-10-28
 
 ### Added
