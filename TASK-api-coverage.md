@@ -28,7 +28,7 @@ node agent/api-coverage.mjs --releases 1.107.0
 ---
 <!-- api-coverage:start -->
 
-Типизации 1.142.0, идентификаторов в поверхности: 1597.
+Типизации 1.143.0, идентификаторов в поверхности: 1613.
 Сигнал «у нас» — слово встречается в src/ (кроме тестов): грубо, но без вранья в пользу покрытия.
 
 ## Неймспейсы
@@ -36,7 +36,7 @@ node agent/api-coverage.mjs --releases 1.107.0
 | API | членов | не тронуто | что именно |
 | --- | ---: | ---: | --- |
 | AnnotationsAPI | 3 | 0 | — |
-| BuzzAPI | 7 | 7 | createFrame, createInstance, getBuzzAssetTypeForNode, getMediaContent, getTextContent, setBuzzAssetTypeForNode, smartResize |
+| BuzzAPI | 7 | 0 | — |
 | ClientStorageAPI | 4 | 2 | deleteAsync, keysAsync |
 | CodegenAPI | 6 | 2 | callback, refresh |
 | ConstantsAPI | 1 | 1 | colors |
@@ -44,16 +44,20 @@ node agent/api-coverage.mjs --releases 1.107.0
 | MotionAPI | 3 | 0 | — |
 | ParametersAPI | 3 | 3 | off, on, once |
 | PaymentsAPI | 6 | 6 | getPluginPaymentTokenAsync, getUserFirstRanSecondsAgo, initiateCheckoutAsync, requestCheckout, setPaymentStatusInDevelopment, status |
-| PluginAPI | 141 | 34 | buzz, callback, closePlugin, createBooleanOperation, createCanvasRow, createCodeBlock, createConnector, createGif … |
+| PluginAPI | 141 | 17 | callback, closePlugin, createBooleanOperation, createNodeFromJSXAsync, getFileThumbnailNode, getLocalCustomAnimationStyles, getLocalEffectStyles, getLocalGridStyles … |
 | TeamLibraryAPI | 2 | 0 | — |
 | TextReviewAPI | 3 | 3 | isEnabled, requestToBeDisabledAsync, requestToBeEnabledAsync |
-| TimerAPI | 7 | 7 | pause, remaining, resume, start, state, stop, total |
+| TimerAPI | 7 | 0 | — |
 | UIAPI | 11 | 2 | getPosition, reposition |
 | UtilAPI | 7 | 1 | alphaOverride |
 | VariablesAPI | 27 | 5 | createVariableAliasByIdAsync, getLocalVariableCollections, getLocalVariables, getVariableById, getVariableCollectionById |
-| ViewportAPI | 6 | 2 | canvasView, slidesView |
+| ViewportAPI | 6 | 0 | — |
 
 ## Релизы, от свежего к старому (с 1.107.0)
+
+### 1.143.0 — 2026-11-19  (+16, не тронуто 0)
+
+всё тронуто
 
 ### 1.142.0 — 2026-10-16  (+8, не тронуто 1)
 
@@ -131,9 +135,9 @@ BrushStrokeProperties, MinimalFillsMixin.setFillsAsync, MinimalStrokesMixin.setS
 
 всё тронуто
 
-### 1.119.0 — 2025-10-23  (+26, не тронуто 18)
+### 1.119.0 — 2025-10-23  (+26, не тронуто 0)
 
-BuzzAPI, BuzzAPI.createFrame, BuzzAPI.createInstance, BuzzAPI.getBuzzAssetTypeForNode, BuzzAPI.getMediaContent, BuzzAPI.getTextContent, BuzzAPI.setBuzzAssetTypeForNode, BuzzAPI.smartResize, BuzzAssetType, BuzzMediaField.setMediaAsync, BuzzTextField.setValueAsync, PageNode.focusedNode, PluginAPI.buzz, PluginAPI.createCanvasRow, PluginAPI.getCanvasGrid, PluginAPI.moveNodesToCoord, PluginAPI.setCanvasGrid, ViewportAPI.canvasView
+всё тронуто
 
 ### 1.118.0 — 2025-10-09  (+2, не тронуто 1)
 
@@ -163,9 +167,9 @@ BaseNonResizableTextMixin.Pick, BaseNonResizableTextMixin.getRangeBoundVariable,
 
 всё тронуто
 
-### 1.108.0 — 2025-02-26  (+24, не тронуто 12)
+### 1.108.0 — 2025-02-26  (+24, не тронуто 0)
 
-InteractiveSlideElementNode, InteractiveSlideElementNode.interactiveSlideElementType, PageNode.focusedSlide, PluginAPI.createSlide, PluginAPI.createSlideRow, PluginAPI.getSlideGrid, PluginAPI.setSlideGrid, SlideGridNode, SlideNode.getSlideTransition, SlideNode.isSkippedSlide, SlideNode.setSlideTransition, ViewportAPI.slidesView
+всё тронуто
 
 <!-- api-coverage:end -->
 ---

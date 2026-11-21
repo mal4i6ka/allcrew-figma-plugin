@@ -21728,6 +21728,193 @@ ${renderSections(sections)}
     }
   }
 
+  // src/canvas/space3d.ts
+  var TRANSFORM_NUMBERS = ["translateZ", "rotateX", "rotateY", "rotateZ"];
+  var TRANSFORM_FLAGS = ["backfaceVisible", "visible"];
+  var SCENE_FLAGS = ["preserve3d", "visible"];
+  var isFiniteNumber = (value2) => typeof value2 === "number" && Number.isFinite(value2);
+  var isOff = (raw) => raw === null || raw === "none" || raw === "NONE";
+  function originAxis(raw) {
+    if (isFiniteNumber(raw)) return { unit: "PIXELS", value: raw };
+    if (typeof raw === "string") {
+      const match = /^\s*(-?\d+(?:\.\d+)?)\s*(%|px)?\s*$/i.exec(raw);
+      if (!match) return null;
+      return { unit: match[2] === "%" ? "PERCENT" : "PIXELS", value: Number(match[1]) };
+    }
+    const held = raw;
+    if (held && (held.unit === "PERCENT" || held.unit === "PIXELS") && isFiniteNumber(held.value)) {
+      return { unit: held.unit, value: held.value };
+    }
+    return null;
+  }
+  function plan3d(property, raw, where, problems) {
+    const at = `${where}.${property}`;
+    const object2 = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : null;
+    if (property === "transform3d") {
+      if (isOff(raw)) return { kind: "off" };
+      if (!object2) {
+        problems.push(`${at} must be { translateZ, rotateX, rotateY, rotateZ, backfaceVisible, visible } or "none"`);
+        return null;
+      }
+      const known2 = [...TRANSFORM_NUMBERS, ...TRANSFORM_FLAGS, "type"];
+      const unknown2 = Object.keys(object2).filter((key) => !known2.includes(key));
+      if (unknown2.length > 0) {
+        problems.push(`${at}: unknown field ${unknown2.map((key) => `"${key}"`).join(", ")} \u2014 accepted: ${known2.join(", ")}`);
+        return null;
+      }
+      if (object2.type !== void 0 && object2.type !== "FIXED_ORDER") {
+        problems.push(`${at}.type can only be FIXED_ORDER \u2014 a FREEFORM transform is imported, not written, and "none" takes it off`);
+        return null;
+      }
+      const fields3 = {};
+      let ok = true;
+      for (const key of TRANSFORM_NUMBERS) {
+        if (object2[key] === void 0) continue;
+        if (!isFiniteNumber(object2[key])) {
+          problems.push(`${at}.${key} must be a number (${key === "translateZ" ? "pixels" : "degrees"})`);
+          ok = false;
+        } else fields3[key] = object2[key];
+      }
+      for (const key of TRANSFORM_FLAGS) {
+        if (object2[key] === void 0) continue;
+        if (typeof object2[key] !== "boolean") {
+          problems.push(`${at}.${key} must be a boolean`);
+          ok = false;
+        } else fields3[key] = object2[key];
+      }
+      if (!ok) return null;
+      if (Object.keys(fields3).length === 0) {
+        problems.push(`${at} names nothing to change \u2014 give a rotation or translateZ, or "none" to take it off`);
+        return null;
+      }
+      return { kind: "transform", fields: fields3 };
+    }
+    if (property === "transformOrigin") {
+      if (!object2) {
+        problems.push(`${at} must be { x, y } \u2014 each "50%", "12px" or a number of pixels`);
+        return null;
+      }
+      const x = object2.x === void 0 ? { unit: "PERCENT", value: 50 } : originAxis(object2.x);
+      const y = object2.y === void 0 ? { unit: "PERCENT", value: 50 } : originAxis(object2.y);
+      if (!x || !y) {
+        problems.push(`${at}.${!x ? "x" : "y"} must be "50%", "12px" or a number of pixels`);
+        return null;
+      }
+      return { kind: "origin", origin: { x, y } };
+    }
+    if (isOff(raw)) return { kind: "off" };
+    if (!object2) {
+      problems.push(`${at} must be { perspective, preserve3d, visible } or "none"`);
+      return null;
+    }
+    const known = ["perspective", ...SCENE_FLAGS];
+    const unknown = Object.keys(object2).filter((key) => !known.includes(key));
+    if (unknown.length > 0) {
+      problems.push(`${at}: unknown field ${unknown.map((key) => `"${key}"`).join(", ")} \u2014 accepted: ${known.join(", ")}`);
+      return null;
+    }
+    const fields2 = {};
+    if (object2.perspective !== void 0) {
+      if (!isFiniteNumber(object2.perspective)) {
+        problems.push(`${at}.perspective must be a number of pixels \u2014 or -1 for none`);
+        return null;
+      }
+      fields2.perspective = object2.perspective;
+    }
+    for (const key of SCENE_FLAGS) {
+      if (object2[key] === void 0) continue;
+      if (typeof object2[key] !== "boolean") {
+        problems.push(`${at}.${key} must be a boolean`);
+        return null;
+      }
+      fields2[key] = object2[key];
+    }
+    if (Object.keys(fields2).length === 0) {
+      problems.push(`${at} names nothing to change \u2014 give perspective or preserve3d, or "none" to clear it`);
+      return null;
+    }
+    return { kind: "scene", fields: fields2 };
+  }
+  function merge3d(property, before, value2) {
+    var _a, _b, _c, _d;
+    if (property === "transform3d") {
+      if (value2.kind === "off") return { type: "NONE" };
+      if (value2.kind !== "transform") throw new Error("transform3d takes a transform");
+      const held2 = before;
+      const base = (held2 == null ? void 0 : held2.type) === "FIXED_ORDER" ? held2 : {};
+      const number2 = (key) => {
+        var _a2;
+        return (_a2 = value2.fields[key]) != null ? _a2 : isFiniteNumber(base[key]) ? base[key] : 0;
+      };
+      const next2 = {
+        type: "FIXED_ORDER",
+        translateZ: number2("translateZ"),
+        rotateX: number2("rotateX"),
+        rotateY: number2("rotateY"),
+        rotateZ: number2("rotateZ")
+      };
+      const flagsFrom = held2 && held2.type !== "NONE" ? held2 : {};
+      for (const key of TRANSFORM_FLAGS) {
+        const flag2 = (_a = value2.fields[key]) != null ? _a : flagsFrom[key];
+        if (typeof flag2 === "boolean") next2[key] = flag2;
+      }
+      return next2;
+    }
+    if (property === "transformOrigin") {
+      if (value2.kind !== "origin") throw new Error("transformOrigin takes { x, y }");
+      return value2.origin;
+    }
+    if (value2.kind === "off") return null;
+    if (value2.kind !== "scene") throw new Error("scene3d takes a scene");
+    const held = before != null ? before : {};
+    const next = {
+      perspective: (_b = value2.fields.perspective) != null ? _b : isFiniteNumber(held.perspective) ? held.perspective : -1,
+      preserve3d: (_c = value2.fields.preserve3d) != null ? _c : held.preserve3d === true
+    };
+    const visible = (_d = value2.fields.visible) != null ? _d : held.visible;
+    if (typeof visible === "boolean") next.visible = visible;
+    return next;
+  }
+  var round11 = (value2) => Math.round(value2 * 100) / 100;
+  function axisWord(axis) {
+    return axis.unit === "PERCENT" ? `${round11(axis.value)}%` : round11(axis.value);
+  }
+  function describe3d(source) {
+    const out = {};
+    const transform = source.transform3d;
+    if (transform && (transform.type === "FIXED_ORDER" || transform.type === "FREEFORM")) {
+      const read = {};
+      if (transform.type === "FREEFORM") read.type = "FREEFORM";
+      for (const key of TRANSFORM_NUMBERS) {
+        if (isFiniteNumber(transform[key]) && round11(transform[key]) !== 0) read[key] = round11(transform[key]);
+      }
+      if (transform.backfaceVisible === false) read.backfaceVisible = false;
+      if (transform.visible === false) read.visible = false;
+      if (Object.keys(read).length > 0) out.transform3d = read;
+    }
+    const origin = source.transformOrigin;
+    const centred = (axis) => (axis == null ? void 0 : axis.unit) === "PERCENT" && axis.value === 50;
+    if (out.transform3d && (origin == null ? void 0 : origin.x) && (origin == null ? void 0 : origin.y) && !(centred(origin.x) && centred(origin.y))) {
+      out.transformOrigin = { x: axisWord(origin.x), y: axisWord(origin.y) };
+    }
+    const scene = source.scene3d;
+    if (scene && typeof scene === "object") {
+      const read = {};
+      if (isFiniteNumber(scene.perspective) && scene.perspective >= 0) read.perspective = round11(scene.perspective);
+      if (scene.preserve3d === true) read.preserve3d = true;
+      if (scene.visible === false) read.visible = false;
+      if (Object.keys(read).length > 0) out.scene3d = read;
+    }
+    return Object.keys(out).length > 0 ? out : void 0;
+  }
+  var SPACE_3D_KEYFRAME_FIELDS = {
+    translateZ: "TRANSFORM_3D_TRANSLATION_Z",
+    rotateX: "TRANSFORM_3D_ROTATION_X",
+    rotateY: "TRANSFORM_3D_ROTATION_Y",
+    rotateZ: "TRANSFORM_3D_ROTATION_Z",
+    perspective: "SCENE_3D_PERSPECTIVE"
+  };
+
   // src/canvas/keyframe-fields.ts
   var EFFECT_WORDS = {
     OFFSET_X: "x",
@@ -21987,15 +22174,15 @@ ${renderSections(sections)}
     if (Object.keys(values).length === 0) return { problem: "names nothing to change" };
     return { values };
   }
-  var round11 = (value2) => Math.round(value2 * 100) / 100;
+  var round12 = (value2) => Math.round(value2 * 100) / 100;
   function endpointWords(raw, pageId) {
     if (typeof raw !== "object" || raw === null) return null;
     const one = raw;
     if (typeof one.endpointNodeId === "string" && one.endpointNodeId !== "" && one.endpointNodeId !== pageId) {
-      if (one.position) return { node: one.endpointNodeId, at: [round11(one.position.x), round11(one.position.y)] };
+      if (one.position) return { node: one.endpointNodeId, at: [round12(one.position.x), round12(one.position.y)] };
       return !one.magnet || one.magnet === "AUTO" ? one.endpointNodeId : { node: one.endpointNodeId, magnet: one.magnet };
     }
-    return one.position ? [round11(one.position.x), round11(one.position.y)] : null;
+    return one.position ? [round12(one.position.x), round12(one.position.y)] : null;
   }
   function connectorWords(bag, pageId) {
     var _a;
@@ -22069,8 +22256,8 @@ ${renderSections(sections)}
       for (let column2 = 0; column2 < table2.numColumns; column2++) line.push(table2.cellAt(row, column2).text.characters);
       cells.push(line);
     }
-    const columnWidths = Array.from({ length: table2.numColumns }, (_, column2) => round11(table2.cellAt(0, column2).width));
-    const rowHeights = Array.from({ length: table2.numRows }, (_, row) => round11(table2.cellAt(row, 0).height));
+    const columnWidths = Array.from({ length: table2.numColumns }, (_, column2) => round12(table2.cellAt(0, column2).width));
+    const rowHeights = Array.from({ length: table2.numRows }, (_, row) => round12(table2.cellAt(row, 0).height));
     return { rows: table2.numRows, columns: table2.numColumns, cells, columnWidths, rowHeights };
   }
   var TRANSITION_STYLES = [
@@ -22132,7 +22319,7 @@ ${renderSections(sections)}
     if (plain3) return value2.style;
     return __spreadValues(__spreadValues(__spreadValues({
       style: value2.style
-    }, value2.duration !== 0.3 ? { duration: round11(value2.duration) } : {}), value2.curve !== "EASE_OUT" ? { curve: value2.curve } : {}), after !== void 0 ? { after: round11(after) } : {});
+    }, value2.duration !== 0.3 ? { duration: round12(value2.duration) } : {}), value2.curve !== "EASE_OUT" ? { curve: value2.curve } : {}), after !== void 0 ? { after: round12(after) } : {});
   }
   var BUZZ_ASSET_TYPES = [
     "CUSTOM",
@@ -22485,6 +22672,10 @@ ${renderSections(sections)}
     "x",
     "y",
     "rotation",
+    // 3D (beta): the origin before the transform it turns about, the scene on the container.
+    "transformOrigin",
+    "transform3d",
+    "scene3d",
     "opacity",
     "cornerRadius",
     // Before the paints: the shape decides what there is to fill.
@@ -22671,6 +22862,13 @@ ${renderSections(sections)}
         case "rotation": {
           const value2 = number2("rotation", -180, 180);
           if (value2 !== null) steps.push({ step: "assign", property: "rotation", value: value2 });
+          break;
+        }
+        case "transform3d":
+        case "transformOrigin":
+        case "scene3d": {
+          const value2 = plan3d(key, props[key], where, problems);
+          if (value2) steps.push({ step: "space3d", property: key, value: value2 });
           break;
         }
         case "x":
@@ -24062,7 +24260,7 @@ ${renderSections(sections)}
     }
     return { step: "effects", effects, bind, summary: summary.join(" \xB7 ") || "none" };
   }
-  var KEYFRAME_FIELDS = {
+  var KEYFRAME_FIELDS = __spreadValues({
     opacity: "OPACITY",
     x: "TRANSLATION_X",
     y: "TRANSLATION_Y",
@@ -24093,7 +24291,7 @@ ${renderSections(sections)}
     columnGap: "GRID_COLUMN_GAP",
     trimStart: "PATH_TRIM_START",
     trimEnd: "PATH_TRIM_END"
-  };
+  }, SPACE_3D_KEYFRAME_FIELDS);
   var VECTOR_FIELDS = ["TRANSLATION_XY", "SCALE_XY"];
   function planKeyframes(raw, where, problems) {
     if (raw === null || Array.isArray(raw) && raw.length === 0) return { step: "keyframes", tracks: [], clear: true };
@@ -24144,6 +24342,10 @@ ${renderSections(sections)}
         }
         if (typeof value2 !== "number" || !Number.isFinite(value2)) {
           problems.push(`${at2} must be a number`);
+          return null;
+        }
+        if (property === "SCENE_3D_PERSPECTIVE" && value2 < 0) {
+          problems.push(`${at2} must be >= 0 \u2014 a perspective track cannot switch perspective off`);
           return null;
         }
         return { type: "FLOAT", value: value2 };
@@ -24515,9 +24717,9 @@ ${renderSections(sections)}
   var GRID_ALIGN = ["MIN", "MAX", "CENTER", "STRETCH"];
   function gridSpecsOf(value2) {
     if (!Array.isArray(value2)) return [];
-    const round17 = (n) => Math.round(n * 1e3) / 1e3;
+    const round18 = (n) => Math.round(n * 1e3) / 1e3;
     const hex5 = (c) => `#${[c.r, c.g, c.b].map((n) => Math.round(n * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-    const tint2 = (grid) => __spreadValues(__spreadValues(__spreadValues({}, grid.color ? { color: hex5(grid.color) } : {}), grid.color && round17(grid.color.a) !== 0.1 ? { opacity: round17(grid.color.a) } : {}), grid.visible === false ? { visible: false } : {});
+    const tint2 = (grid) => __spreadValues(__spreadValues(__spreadValues({}, grid.color ? { color: hex5(grid.color) } : {}), grid.color && round18(grid.color.a) !== 0.1 ? { opacity: round18(grid.color.a) } : {}), grid.visible === false ? { visible: false } : {});
     return value2.map((grid) => {
       if (grid.pattern === "GRID") return __spreadValues({ square: grid.sectionSize }, tint2(grid));
       const lines = grid;
@@ -24525,9 +24727,9 @@ ${renderSections(sections)}
       const size = lines.alignment !== "STRETCH" && typeof lines.sectionSize === "number" ? lines.sectionSize : void 0;
       const defaultAlign = size === void 0 ? "STRETCH" : "MIN";
       const out = vertical ? { columns: lines.count } : { rows: lines.count };
-      if (lines.gutterSize) out.gutter = round17(lines.gutterSize);
-      if (lines.offset && lines.alignment !== "CENTER") out.margin = round17(lines.offset);
-      if (size !== void 0) out[vertical ? "width" : "height"] = round17(size);
+      if (lines.gutterSize) out.gutter = round18(lines.gutterSize);
+      if (lines.offset && lines.alignment !== "CENTER") out.margin = round18(lines.offset);
+      if (size !== void 0) out[vertical ? "width" : "height"] = round18(size);
       if (lines.alignment !== defaultAlign) out.align = lines.alignment;
       return __spreadValues(__spreadValues({}, out), tint2(lines));
     });
@@ -25445,13 +25647,13 @@ ${renderSections(sections)}
   }
 
   // src/canvas/paint-reader.ts
-  var round12 = (value2) => Math.round(value2 * 1e3) / 1e3;
+  var round13 = (value2) => Math.round(value2 * 1e3) / 1e3;
   function hex3(colour) {
     return `#${[colour.r, colour.g, colour.b].map((channel2) => Math.round(Math.min(1, Math.max(0, channel2)) * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
   }
   async function readOne(paint, nameOf) {
     var _a, _b, _c, _d, _e, _f, _g, _h;
-    const opacity = typeof paint.opacity === "number" && paint.opacity < 1 ? round12(paint.opacity) : void 0;
+    const opacity = typeof paint.opacity === "number" && paint.opacity < 1 ? round13(paint.opacity) : void 0;
     const type = String(paint.type);
     const bound = (_b = (_a = paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
     if (type === "SOLID") {
@@ -25476,9 +25678,9 @@ ${renderSections(sections)}
       const stops = [];
       for (const stop of (_d = paint.gradientStops) != null ? _d : []) {
         const id = (_f = (_e = stop.boundVariables) == null ? void 0 : _e.color) == null ? void 0 : _f.id;
-        const alpha = typeof stop.color.a === "number" && stop.color.a < 1 ? round12(stop.color.a) : void 0;
+        const alpha = typeof stop.color.a === "number" && stop.color.a < 1 ? round13(stop.color.a) : void 0;
         stops.push(__spreadValues({
-          at: round12(stop.position),
+          at: round13(stop.position),
           color: id ? { variable: (_g = await nameOf(id)) != null ? _g : id } : hex3(stop.color)
         }, alpha === void 0 || id ? {} : { opacity: alpha }));
       }
@@ -25492,7 +25694,7 @@ ${renderSections(sections)}
       const spacing = paint.spacing;
       return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
         pattern: String(paint.sourceNodeId)
-      }, paint.tileType && paint.tileType !== "RECTANGULAR" ? { tile: paint.tileType } : {}), typeof paint.scalingFactor === "number" && paint.scalingFactor !== 1 ? { scale: round12(paint.scalingFactor) } : {}), spacing && (spacing.x !== 0 || spacing.y !== 0) ? { spacing: [round12(spacing.x), round12(spacing.y)] } : {}), paint.horizontalAlignment && paint.horizontalAlignment !== "START" ? { align: paint.horizontalAlignment } : {}), opacity === void 0 ? {} : { opacity });
+      }, paint.tileType && paint.tileType !== "RECTANGULAR" ? { tile: paint.tileType } : {}), typeof paint.scalingFactor === "number" && paint.scalingFactor !== 1 ? { scale: round13(paint.scalingFactor) } : {}), spacing && (spacing.x !== 0 || spacing.y !== 0) ? { spacing: [round13(spacing.x), round13(spacing.y)] } : {}), paint.horizontalAlignment && paint.horizontalAlignment !== "START" ? { align: paint.horizontalAlignment } : {}), opacity === void 0 ? {} : { opacity });
     }
     if (type === "SHADER") {
       const settings = Object.keys((_h = paint.properties) != null ? _h : {});
@@ -25611,9 +25813,9 @@ ${renderSections(sections)}
   }
 
   // src/canvas/effect-reader.ts
-  var point = (value2) => value2 ? [round13(value2.x), round13(value2.y)] : void 0;
-  var round13 = (value2) => Math.round(value2 * 100) / 100;
-  var grainWords = (size, vector) => vector && round13(vector.x) !== round13(vector.y) ? [round13(vector.x), round13(vector.y)] : round13(size);
+  var point = (value2) => value2 ? [round14(value2.x), round14(value2.y)] : void 0;
+  var round14 = (value2) => Math.round(value2 * 100) / 100;
+  var grainWords = (size, vector) => vector && round14(vector.x) !== round14(vector.y) ? [round14(vector.x), round14(vector.y)] : round14(size);
   function colourWords(colour) {
     var _a;
     return (_a = authoredColourText(colour)) != null ? _a : formatHex({ r: colour.r, g: colour.g, b: colour.b }).toUpperCase();
@@ -25639,10 +25841,10 @@ ${renderSections(sections)}
           out.push(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
             shadow: effect.type === "DROP_SHADOW" ? "drop" : "inner",
             color: colour
-          }, effect.color.a !== 1 ? { opacity: round13(effect.color.a) } : {}), {
-            offset: [await field("offsetX", round13(effect.offset.x)), await field("offsetY", round13(effect.offset.y))],
-            radius: await field("radius", round13(effect.radius))
-          }), effect.spread ? { spread: await field("spread", round13(effect.spread)) } : {}), hidden));
+          }, effect.color.a !== 1 ? { opacity: round14(effect.color.a) } : {}), {
+            offset: [await field("offsetX", round14(effect.offset.x)), await field("offsetY", round14(effect.offset.y))],
+            radius: await field("radius", round14(effect.radius))
+          }), effect.spread ? { spread: await field("spread", round14(effect.spread)) } : {}), hidden));
           break;
         }
         case "LAYER_BLUR":
@@ -25651,9 +25853,9 @@ ${renderSections(sections)}
           const one = effect;
           out.push(__spreadValues(__spreadValues({
             blur: progressive ? "progressive" : effect.type === "LAYER_BLUR" ? "layer" : "background",
-            radius: await field("radius", round13(effect.radius))
+            radius: await field("radius", round14(effect.radius))
           }, progressive ? {
-            startRadius: round13((_e = one.startRadius) != null ? _e : 0),
+            startRadius: round14((_e = one.startRadius) != null ? _e : 0),
             from: point(one.startOffset),
             to: point(one.endOffset)
           } : {}), hidden));
@@ -25667,24 +25869,24 @@ ${renderSections(sections)}
             color: colourWords(one.color)
           }, one.secondaryColor ? { second: colourWords(one.secondaryColor) } : {}), {
             size: grainWords(one.noiseSize, one.noiseSizeVector),
-            density: round13(one.density)
-          }), one.opacity !== void 0 ? { opacity: round13(one.opacity) } : {}), hidden));
+            density: round14(one.density)
+          }), one.opacity !== void 0 ? { opacity: round14(one.opacity) } : {}), hidden));
           break;
         }
         case "TEXTURE": {
           const one = effect;
-          out.push(__spreadValues(__spreadValues({ texture: round13(one.radius), size: grainWords(one.noiseSize, one.noiseSizeVector) }, one.clipToShape ? {} : { clip: false }), hidden));
+          out.push(__spreadValues(__spreadValues({ texture: round14(one.radius), size: grainWords(one.noiseSize, one.noiseSizeVector) }, one.clipToShape ? {} : { clip: false }), hidden));
           break;
         }
         case "GLASS": {
           const one = effect;
           out.push(__spreadValues({
-            glass: round13(one.radius),
-            depth: round13(one.depth),
-            refraction: round13(one.refraction),
-            dispersion: round13(one.dispersion),
-            lightAngle: round13(one.lightAngle),
-            lightIntensity: round13(one.lightIntensity)
+            glass: round14(one.radius),
+            depth: round14(one.depth),
+            refraction: round14(one.refraction),
+            dispersion: round14(one.dispersion),
+            lightAngle: round14(one.lightAngle),
+            lightIntensity: round14(one.lightIntensity)
           }, hidden));
           break;
         }
@@ -25770,11 +25972,11 @@ ${renderSections(sections)}
     if (!Array.isArray(rows) || rows.length < 2 || !Array.isArray(rows[0]) || !Array.isArray(rows[1])) return null;
     const [[a, b, tx], [c, d, ty]] = rows;
     if (b !== 0 || c !== 0 || !a || !d) return { fit: "matrix" };
-    const round17 = (value2) => Math.round(value2 * 1e4) / 1e4;
+    const round18 = (value2) => Math.round(value2 * 1e4) / 1e4;
     return {
       fit: "crop",
-      scale: { x: round17(1 / a), y: round17(1 / d) },
-      offset: { x: round17(-tx / a), y: round17(-ty / d) }
+      scale: { x: round18(1 / a), y: round18(1 / d) },
+      offset: { x: round18(-tx / a), y: round18(-ty / d) }
     };
   }
   async function describePaint(paint, index2, shaders, resolve2) {
@@ -28553,9 +28755,9 @@ ${scripts}`, "");
   }
   function value(raw, token2) {
     if (typeof raw !== "number" || !Number.isFinite(raw)) return void 0;
-    return token2 ? { token: token2, value: round14(raw) } : { value: round14(raw) };
+    return token2 ? { token: token2, value: round15(raw) } : { value: round15(raw) };
   }
-  function round14(n) {
+  function round15(n) {
     return Math.round(n * 100) / 100;
   }
   function collapse2(parts) {
@@ -28624,7 +28826,7 @@ ${scripts}`, "");
       if (weight) out.strokeWeight = weight;
       if (typeof source.strokeAlign === "string") out.strokeAlign = source.strokeAlign;
       if (Array.isArray(source.dashPattern) && source.dashPattern.length > 0) {
-        out.dashPattern = source.dashPattern.map(round14);
+        out.dashPattern = source.dashPattern.map(round15);
       }
       if (typeof source.strokeCap === "string" && source.strokeCap !== "NONE") out.strokeCap = source.strokeCap;
       if (typeof source.strokeJoin === "string" && source.strokeJoin !== "MITER") out.strokeJoin = source.strokeJoin;
@@ -28640,7 +28842,7 @@ ${scripts}`, "");
       out.radius = radius;
     }
     const smoothing = plain(source.cornerSmoothing);
-    if (smoothing !== void 0 && smoothing > 0) out.cornerSmoothing = round14(smoothing);
+    if (smoothing !== void 0 && smoothing > 0) out.cornerSmoothing = round15(smoothing);
     const effects = await readEffects(source.effects);
     if (effects && effects.length > 0) out.effects = effects;
     const opacity = plain(source.opacity);
@@ -28652,7 +28854,9 @@ ${scripts}`, "");
       out.blendMode = source.blendMode;
     }
     const rotation = plain(source.rotation);
-    if (rotation !== void 0 && round14(rotation) !== 0) out.rotation = round14(rotation);
+    if (rotation !== void 0 && round15(rotation) !== 0) out.rotation = round15(rotation);
+    const space = describe3d(source);
+    if (space) Object.assign(out, space);
     if (source.isMask === true) out.mask = { type: typeof source.maskType === "string" ? source.maskType : "ALPHA" };
     if (Object.keys(layout).length > 0) out.layoutTokens = layout;
     if (text6) out.typography = typeStyleOf(text6, await typeTokenNames(text6, resolve2));
@@ -29945,7 +30149,7 @@ ${scripts}`, "");
   function pinnableId(id) {
     return typeof id === "string" && !id.includes(";");
   }
-  function round15(value2) {
+  function round16(value2) {
     return Math.round(value2 * 100) / 100;
   }
   function pointsOf(box2) {
@@ -29955,7 +30159,7 @@ ${scripts}`, "");
     const bottom = box2.y + box2.height;
     const midX = box2.x + box2.width / 2;
     const midY = box2.y + box2.height / 2;
-    const at = (x, y) => ({ x: round15(x), y: round15(y) });
+    const at = (x, y) => ({ x: round16(x), y: round16(y) });
     return {
       center: at(midX, midY),
       "top-left": at(left, top),
@@ -29996,7 +30200,7 @@ ${scripts}`, "");
       );
     }
     const enclosing = enclosingFrame(node);
-    const rotated = typeof node.rotation === "number" && Math.abs(round15(node.rotation)) > 0.01;
+    const rotated = typeof node.rotation === "number" && Math.abs(round16(node.rotation)) > 0.01;
     if (!enclosing) {
       return __spreadValues({
         node: { id: node.id, name: node.name, type: node.type },
@@ -30028,7 +30232,7 @@ ${scripts}`, "");
     }, rotated ? { rotated: true } : {});
   }
   function roundBox(box2) {
-    return { x: round15(box2.x), y: round15(box2.y), width: round15(box2.width), height: round15(box2.height) };
+    return { x: round16(box2.x), y: round16(box2.y), width: round16(box2.width), height: round16(box2.height) };
   }
   function pinFor(anchor, point2 = "center") {
     const offset = anchor.offsets[point2];
@@ -42144,6 +42348,7 @@ figma make deploy --build-dir dist
     switch (step2.step) {
       case "assign":
       case "paint":
+      case "space3d":
         return step2.property;
       case "overrides":
         return "overrides";
@@ -42185,6 +42390,15 @@ figma make deploy --build-dir dist
         if (!dry) await withNamedFont(() => bag[step2.property] = step2.value);
         return { property: step2.property, before, after: step2.value };
       }
+      case "space3d": {
+        if (!(step2.property in bag)) {
+          throw new Error(`a ${node.type} has no ${step2.property} \u2014 3D transforms are beta, on frames, shapes and text; scene3d only on frames, components and instances`);
+        }
+        const before = bag[step2.property];
+        const after = merge3d(step2.property, before, step2.value);
+        if (!dry) bag[step2.property] = after;
+        return { property: step2.property, before, after: dry ? after : bag[step2.property] };
+      }
       case "font": {
         if (!isText(node)) throw new Error(`only a text node has a font, not a ${node.type}`);
         const before = describeFont(node.fontName);
@@ -42220,7 +42434,7 @@ figma make deploy --build-dir dist
         if (typeof node.resize !== "function") {
           throw new Error(`a ${node.type} cannot be resized`);
         }
-        const before = { width: round16(node.width), height: round16(node.height) };
+        const before = { width: round17(node.width), height: round17(node.height) };
         const width = (_b = step2.width) != null ? _b : node.width;
         const height = (_c = step2.height) != null ? _c : node.height;
         const sized = node;
@@ -42228,7 +42442,7 @@ figma make deploy --build-dir dist
           if (typeof sized.resizeWithoutConstraints === "function") sized.resizeWithoutConstraints(width, height);
           else sized.resize(width, height);
         }
-        const after = dry ? { width: round16(width), height: round16(height) } : { width: round16(node.width), height: round16(node.height) };
+        const after = dry ? { width: round17(width), height: round17(height) } : { width: round17(node.width), height: round17(node.height) };
         return { property: "size", before, after };
       }
       case "radius": {
@@ -42986,7 +43200,7 @@ figma make deploy --build-dir dist
     if (typeof value2 !== "object" || value2 === null || !("unit" in value2)) return "mixed";
     const { unit, value: amount } = value2;
     if (unit === "AUTO") return "auto";
-    return unit === "PERCENT" ? `${round16(amount != null ? amount : 0)}%` : `${round16(amount != null ? amount : 0)}px`;
+    return unit === "PERCENT" ? `${round17(amount != null ? amount : 0)}%` : `${round17(amount != null ? amount : 0)}px`;
   }
   function describeRun(run) {
     const parts = [];
@@ -43274,7 +43488,7 @@ figma make deploy --build-dir dist
   }
   function hexOf2(color) {
     const hex5 = `#${[color.r, color.g, color.b].map((channel2) => Math.round(channel2 * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-    return color.a !== void 0 && color.a < 1 ? `${hex5} @${round16(color.a)}` : hex5;
+    return color.a !== void 0 && color.a < 1 ? `${hex5} @${round17(color.a)}` : hex5;
   }
   async function describeAnimation(value2) {
     if (!Array.isArray(value2) || value2.length === 0) return "none";
@@ -43343,7 +43557,7 @@ figma make deploy --build-dir dist
     const one = value2;
     if (!(one == null ? void 0 : one.widthProfile)) return null;
     if (one.widthProfile !== "CUSTOM") return one.widthProfile;
-    return ((_a = one.variableWidthPoints) != null ? _a : []).map((point2) => ({ at: round16(point2.position), width: round16(point2.width) }));
+    return ((_a = one.variableWidthPoints) != null ? _a : []).map((point2) => ({ at: round17(point2.position), width: round17(point2.width) }));
   }
   function describeBrush(value2) {
     const brush = value2;
@@ -43392,7 +43606,7 @@ figma make deploy --build-dir dist
       if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
         const { r, g, b, a } = effect.color;
         const hex5 = `#${[r, g, b].map((channel2) => Math.round(channel2 * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-        const colour = await named("color", `${hex5}${a === 1 ? "" : ` @${round16(a)}`}`);
+        const colour = await named("color", `${hex5}${a === 1 ? "" : ` @${round17(a)}`}`);
         const kind = effect.type === "DROP_SHADOW" ? "drop" : "inner";
         const spread = effect.spread || bound.spread ? ` spread ${await named("spread", (_b = effect.spread) != null ? _b : 0)}` : "";
         const x = await named("offsetX", effect.offset.x);
@@ -43410,7 +43624,7 @@ figma make deploy --build-dir dist
     const axes = named.variationSettings ? ` (${Object.entries(named.variationSettings).map(([axis, value2]) => `${axis}=${value2}`).join(", ")})` : "";
     return `${named.family}${named.style ? ` ${named.style}` : ""}${axes}`;
   };
-  var round16 = (value2) => Math.round(value2 * 100) / 100;
+  var round17 = (value2) => Math.round(value2 * 100) / 100;
 
   // src/canvas/create.ts
   var NODE_KINDS = [
@@ -44482,7 +44696,12 @@ figma make deploy --build-dir dist
     GRID_ROW_GAP: "rowGap",
     GRID_COLUMN_GAP: "columnGap",
     PATH_TRIM_START: "trimStart",
-    PATH_TRIM_END: "trimEnd"
+    PATH_TRIM_END: "trimEnd",
+    TRANSFORM_3D_TRANSLATION_Z: "translateZ",
+    TRANSFORM_3D_ROTATION_X: "rotateX",
+    TRANSFORM_3D_ROTATION_Y: "rotateY",
+    TRANSFORM_3D_ROTATION_Z: "rotateZ",
+    SCENE_3D_PERSPECTIVE: "perspective"
   };
   var plainValue = (held) => {
     const one = held;
@@ -45898,7 +46117,7 @@ figma make deploy --build-dir dist
     return (_a = variable == null ? void 0 : variable.name) != null ? _a : null;
   };
   async function describeNode2(node, withProps) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const base = __spreadValues(__spreadValues({
       id: node.id,
       name: node.name,
@@ -45906,23 +46125,23 @@ figma make deploy --build-dir dist
     }, node.parent ? { parent: { id: node.parent.id, name: node.parent.name } } : {}), "children" in node ? { childCount: node.children.length } : {});
     if (!withProps) return base;
     const bag = node;
-    const round17 = (value2) => typeof value2 === "number" ? Math.round(value2 * 100) / 100 : value2;
-    const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
-      x: round17(bag.x),
-      y: round17(bag.y),
-      width: round17(bag.width),
-      height: round17(bag.height)
-    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round17(bag.opacity) } : {}), "fills" in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+    const round18 = (value2) => typeof value2 === "number" ? Math.round(value2 * 100) / 100 : value2;
+    const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+      x: round18(bag.x),
+      y: round18(bag.y),
+      width: round18(bag.width),
+      height: round18(bag.height)
+    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round18(bag.opacity) } : {}), (_a = describe3d(bag)) != null ? _a : {}), "fills" in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
       stroke: await readPaintsForWrite(bag.strokes, variableNameOf, figma.mixed)
-    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round17(bag.strokeWeight) } : {}), typeof bag.strokeAlign === "string" && bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), describeProfile(bag.variableWidthStrokeProperties) ? { strokeProfile: describeProfile(bag.variableWidthStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" && bag.cornerRadius > 0 ? { cornerRadius: round17(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 && !bag.timelines[0].id.startsWith("-1") ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
+    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round18(bag.strokeWeight) } : {}), typeof bag.strokeAlign === "string" && bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), describeProfile(bag.variableWidthStrokeProperties) ? { strokeProfile: describeProfile(bag.variableWidthStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" && bag.cornerRadius > 0 ? { cornerRadius: round18(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 && !bag.timelines[0].id.startsWith("-1") ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
       props.layout = __spreadValues(__spreadValues({
         mode: bag.layoutMode,
-        gap: round17(bag.itemSpacing),
-        padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round17),
+        gap: round18(bag.itemSpacing),
+        padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round18),
         primaryAxis: bag.primaryAxisAlignItems,
         counterAxis: bag.counterAxisAlignItems
-      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round17(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? readGridLayout(bag) : {});
+      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round18(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? readGridLayout(bag) : {});
     }
     if (typeof bag.layoutSizingHorizontal === "string") {
       props.sizing = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical };
@@ -45969,12 +46188,12 @@ figma make deploy --build-dir dist
     }
     const shape = bag.vectorNetwork;
     if (shape && Array.isArray(shape.vertices) && shape.vertices.length > 0) {
-      props.network = `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${((_a = shape.regions) == null ? void 0 : _a.length) ? `, ${shape.regions.length} region(s)` : ""}`;
+      props.network = `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${((_b = shape.regions) == null ? void 0 : _b.length) ? `, ${shape.regions.length} region(s)` : ""}`;
     }
     if (node.type === "INSTANCE") {
       const main = await node.getMainComponentAsync().catch(() => null);
-      const owner = main && ((_b = main.parent) == null ? void 0 : _b.type) === "COMPONENT_SET" ? main.parent : main;
-      props.component = (_c = owner == null ? void 0 : owner.name) != null ? _c : "(unavailable)";
+      const owner = main && ((_c = main.parent) == null ? void 0 : _c.type) === "COMPONENT_SET" ? main.parent : main;
+      props.component = (_d = owner == null ? void 0 : owner.name) != null ? _d : "(unavailable)";
       const settings = {};
       const slots = [];
       for (const [key, entry] of Object.entries(
@@ -45996,7 +46215,7 @@ figma make deploy --build-dir dist
     const links = devEditor && typeof node.getDevResourcesAsync === "function" ? await node.getDevResourcesAsync().catch(() => []) : [];
     const own = links.filter((link) => link.nodeId === node.id);
     if (own.length > 0) props.devLinks = own.map((link) => ({ name: link.name, url: link.url }));
-    const notes = (_d = node.annotations) != null ? _d : [];
+    const notes = (_e = node.annotations) != null ? _e : [];
     if (notes.length > 0) props.annotations = await describeAnnotations(notes);
     if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
       const owner = node;
@@ -46011,9 +46230,9 @@ figma make deploy --build-dir dist
       if (line) props.properties = line;
       const description = (owner.description || "").trim();
       if (description) props.description = description.length > 200 ? `${description.slice(0, 200)}\u2026` : description;
-      const documentation = ((_e = owner.documentationLinks) != null ? _e : []).map((link) => link.uri);
+      const documentation = ((_f = owner.documentationLinks) != null ? _f : []).map((link) => link.uri);
       if (documentation.length > 0) props.documentation = documentation;
-      if (node.type === "COMPONENT" && ((_f = node.parent) == null ? void 0 : _f.type) === "COMPONENT_SET") props.variantOf = node.parent.name;
+      if (node.type === "COMPONENT" && ((_g = node.parent) == null ? void 0 : _g.type) === "COMPONENT_SET") props.variantOf = node.parent.name;
       props.key = owner.key;
     }
     if ((node.type === "TEXT" || node.type === "TEXT_PATH") && bag.textDecoration !== "NONE") {
@@ -46022,7 +46241,7 @@ figma make deploy --build-dir dist
     }
     if (node.type === "TEXT" || node.type === "TEXT_PATH") {
       props.text = node.characters;
-      props.fontSize = node.fontSize === figma.mixed ? "mixed" : round17(node.fontSize);
+      props.fontSize = node.fontSize === figma.mixed ? "mixed" : round18(node.fontSize);
       props.fontName = node.fontName === figma.mixed ? "mixed" : writableFont(node.fontName);
       props.textAlign = node.textAlignHorizontal;
       if (node.textAlignVertical !== "TOP") props.verticalAlign = node.textAlignVertical;
@@ -46041,7 +46260,7 @@ figma make deploy --build-dir dist
         props.truncate = true;
         if (typeof t.maxLines === "number") props.maxLines = t.maxLines;
       }
-      if (t.hyperlink) props.link = t.hyperlink === figma.mixed ? "mixed" : (_g = t.hyperlink.value) != null ? _g : "";
+      if (t.hyperlink) props.link = t.hyperlink === figma.mixed ? "mixed" : (_h = t.hyperlink.value) != null ? _h : "";
       if (t.hangingPunctuation) props.hangingPunctuation = true;
       if (t.hangingList) props.hangingList = true;
       const trim = plain2(t.leadingTrim);
@@ -47004,7 +47223,7 @@ figma make deploy --build-dir dist
             const seen2 = /* @__PURE__ */ new Set();
             const layers = [];
             let frontier = [...roots, ...alongsideRoots];
-            for (let round17 = 0; round17 < 6 && frontier.length > 0; round17++) {
+            for (let round18 = 0; round18 < 6 && frontier.length > 0; round18++) {
               const found = (await readableMasters(frontier)).filter(
                 (one) => !seen2.has(one.owner.id) && !(`src/components/${componentName(one.owner.name)}.tsx` in library.files)
               );

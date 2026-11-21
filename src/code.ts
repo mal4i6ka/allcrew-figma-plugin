@@ -136,6 +136,7 @@ import { conditionMatches, moduleCapabilities, moduleStateValueError, parseUserM
 import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TEMPLATE, moduleAgentPrompt } from './modules/schema.ts'
 import { formatGridTrack, gridSpecsOf, planFont, planProps, repeatModifier, repeatWords } from './canvas/props.ts'
 import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
+import { describe3d } from './canvas/space3d.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
 import { asCodeLayer, CODE_LAYER_EXECUTABLES } from './targets/react/code-layer.ts'
 import { fileKeyFrom } from './targets/react/code-connect.ts'
@@ -2120,6 +2121,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     height: round(bag.height),
     ...(bag.visible === false ? { visible: false } : {}),
     ...(typeof bag.opacity === 'number' && bag.opacity < 1 ? { opacity: round(bag.opacity) } : {}),
+    // 3D (beta): the same shape the transform3d / transformOrigin / scene3d props take, so a tilted
+    // card read and sent back stays tilted. Nothing when the layer is flat.
+    ...(describe3d(bag) ?? {}),
     ...('fills' in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}),
     // Beside the line, the settings themselves: what a read hands over is what a write takes,
     // which is the only way to put the same shader on another layer.
