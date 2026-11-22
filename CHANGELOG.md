@@ -2,6 +2,22 @@
 
 All notable changes to AllCrew Figma Workspace are documented here.
 
+## Unreleased
+
+### Added
+
+- **3D transforms (Figma beta).** Agents can tilt, turn and lift layers and set up a 3D scene on frames, components and instances, using the CSS vocabulary Figma uses:
+  - `transform3d` takes `{ translateZ, rotateX, rotateY, rotateZ, backfaceVisible, visible }`, or `"none"` to remove it. A write that names one rotation keeps the others.
+  - `transformOrigin` takes `{ x, y }`, each as `"50%"`, `"12px"` or a number of pixels.
+  - `scene3d` takes `{ perspective, preserve3d, visible }`, or `"none"` to clear it.
+  - Reading a node returns the same three fields when they are not the defaults, so a tilted card can be read and sent back unchanged. `design.ir` appearance reports them too.
+  - Keyframes animate `rotateX`, `rotateY`, `rotateZ`, `translateZ` and `perspective`. A negative perspective on a track is refused before the write.
+  - On a Figma build or a node type without 3D, the plugin says so by name.
+
+### Changed
+
+- The plugin is built against `@figma/plugin-typings` 1.143.0.
+
 ## 1.15.1 — 2026-11-01
 
 ### Changed

@@ -29,6 +29,7 @@
  * the build, and the payload is only paid for by the consumer that needs it.
  */
 
+import { describe3d } from '../canvas/space3d.ts'
 import { describePaint, type PaintSummary } from './paints.ts'
 import { readEffects } from '../canvas/effect-reader.ts'
 import { typeStyleOf, type TypeStyle } from './ir-mobile.ts'
@@ -86,6 +87,11 @@ export interface IrAppearance {
   blendMode?: string
   /** Degrees, counter-clockwise, as Figma reports it. Absent when 0. */
   rotation?: number
+  /** 3D (beta), in the shape the `transform3d` / `transformOrigin` / `scene3d` props take. Absent
+   * when the layer has none — a centred origin with no transform says nothing. */
+  transform3d?: Record<string, unknown>
+  transformOrigin?: { x: string | number; y: string | number }
+  scene3d?: Record<string, unknown>
   /** This layer masks its siblings. `type` is ALPHA, VECTOR, LUMINANCE or a future one. */
   mask?: { type: string }
   /** Token names on the numbers the layout already carries. The layout itself is in the tree as
@@ -225,6 +231,9 @@ export interface AppearanceSource extends BindingHolder {
   readonly opacity?: unknown
   readonly blendMode?: unknown
   readonly rotation?: unknown
+  readonly transform3d?: unknown
+  readonly transformOrigin?: unknown
+  readonly scene3d?: unknown
   readonly isMask?: unknown
   readonly maskType?: unknown
 }
@@ -351,6 +360,8 @@ export async function appearanceOf(
   }
   const rotation = plain(source.rotation)
   if (rotation !== undefined && round(rotation) !== 0) out.rotation = round(rotation)
+  const space = describe3d(source)
+  if (space) Object.assign(out, space)
   if (source.isMask === true) out.mask = { type: typeof source.maskType === 'string' ? source.maskType : 'ALPHA' }
 
   if (Object.keys(layout).length > 0) out.layoutTokens = layout

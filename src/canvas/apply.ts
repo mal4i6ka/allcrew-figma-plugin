@@ -11,6 +11,7 @@
  * look like in general.
  */
 
+import { merge3d } from './space3d.ts'
 import { resolveCollection, resolveModes, resolveVariableRef } from '../agent/values.ts'
 import { componentFor, humanPropertyName, resolveProperties } from './components.ts'
 import {
@@ -142,6 +143,7 @@ const propertyOf = (step: PropStep): string => {
   switch (step.step) {
     case 'assign':
     case 'paint':
+    case 'space3d':
       return step.property
     case 'overrides':
       return 'overrides'
@@ -189,6 +191,17 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       if (isText(node) && TEXT_PROPERTIES.includes(step.property)) await loadNodeFont(node)
       if (!dry) await withNamedFont(() => (bag[step.property] = step.value))
       return { property: step.property, before, after: step.value }
+    }
+
+    case 'space3d': {
+      // Beta in Figma: a build or a node type without it says so by name, not with a TypeError.
+      if (!(step.property in bag)) {
+        throw new Error(`a ${node.type} has no ${step.property} — 3D transforms are beta, on frames, shapes and text; scene3d only on frames, components and instances`)
+      }
+      const before = bag[step.property]
+      const after = merge3d(step.property, before, step.value)
+      if (!dry) bag[step.property] = after
+      return { property: step.property, before, after: dry ? after : bag[step.property] }
     }
 
     case 'font': {

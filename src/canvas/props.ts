@@ -21,6 +21,7 @@
  *   they set the weight; the plan names what it did not understand, and the command refuses.
  */
 
+import { plan3d, SPACE_3D_KEYFRAME_FIELDS, type Space3dProperty, type Space3dValue } from './space3d.ts'
 import { parseHex } from '../tokens/color.ts'
 import { EFFECT_KEYFRAME_WORDS, keyframeColour, parseIndexedField } from './keyframe-fields.ts'
 import {
@@ -776,6 +777,7 @@ export interface FlowLink {
 
 export type PropStep =
   | { step: 'assign'; property: string; value: string | number | boolean }
+  | { step: 'space3d'; property: Space3dProperty; value: Space3dValue }
   | { step: 'font'; font: FontSpec }
   | { step: 'text'; characters: string }
   | { step: 'layout'; layout: LayoutProps }
@@ -1064,6 +1066,10 @@ const ORDER = [
   'x',
   'y',
   'rotation',
+  // 3D (beta): the origin before the transform it turns about, the scene on the container.
+  'transformOrigin',
+  'transform3d',
+  'scene3d',
   'opacity',
   'cornerRadius',
   // Before the paints: the shape decides what there is to fill.
@@ -1303,6 +1309,13 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
       case 'rotation': {
         const value = number('rotation', -180, 180)
         if (value !== null) steps.push({ step: 'assign', property: 'rotation', value })
+        break
+      }
+      case 'transform3d':
+      case 'transformOrigin':
+      case 'scene3d': {
+        const value = plan3d(key, props[key], where, problems)
+        if (value) steps.push({ step: 'space3d', property: key, value })
         break
       }
       case 'x':
@@ -3037,6 +3050,8 @@ const KEYFRAME_FIELDS: Readonly<Record<string, string>> = {
   columnGap: 'GRID_COLUMN_GAP',
   trimStart: 'PATH_TRIM_START',
   trimEnd: 'PATH_TRIM_END',
+  // 3D (beta, typings 1.143.0): degrees for the rotations, pixels for depth and perspective.
+  ...SPACE_3D_KEYFRAME_FIELDS,
 }
 
 /** A pair moves as a vector; everything else is one number. */
@@ -3097,6 +3112,11 @@ function planKeyframes(raw: unknown, where: string, problems: string[]): PropSte
       }
       if (typeof value !== 'number' || !Number.isFinite(value)) {
         problems.push(`${at} must be a number`)
+        return null
+      }
+      // Figma refuses a negative perspective on a track; say so before the write, not after.
+      if (property === 'SCENE_3D_PERSPECTIVE' && value < 0) {
+        problems.push(`${at} must be >= 0 — a perspective track cannot switch perspective off`)
         return null
       }
       return { type: 'FLOAT', value }

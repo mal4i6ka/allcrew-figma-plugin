@@ -41,6 +41,11 @@ const OUR_WORDS: Readonly<Record<string, string>> = {
   GRID_COLUMN_GAP: 'columnGap',
   PATH_TRIM_START: 'trimStart',
   PATH_TRIM_END: 'trimEnd',
+  TRANSFORM_3D_TRANSLATION_Z: 'translateZ',
+  TRANSFORM_3D_ROTATION_X: 'rotateX',
+  TRANSFORM_3D_ROTATION_Y: 'rotateY',
+  TRANSFORM_3D_ROTATION_Z: 'rotateZ',
+  SCENE_3D_PERSPECTIVE: 'perspective',
 }
 
 /**

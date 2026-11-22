@@ -33,7 +33,7 @@
     "fidelity:deliver": "node agent/fidelity-deliver.mjs"
   },
   "devDependencies": {
-    "@figma/plugin-typings": "^1.142.0",
+    "@figma/plugin-typings": "^1.143.0",
     "esbuild": "^0.28.1",
     "jszip": "^3.10.1",
     "typescript": "^6.0.3"
