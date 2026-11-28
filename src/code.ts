@@ -2638,13 +2638,18 @@ async function traced<T>(node: SceneNode, step: string, work: () => Promise<T>):
  */
 let devLinksDownUntil = 0
 
-async function devLinksOf(node: SceneNode): Promise<DevResourceWithNodeId[] | null> {
-  if (Date.now() < devLinksDownUntil) return null
+async function devLinksOf(node: SceneNode): Promise<DevResourceWithNodeId[] | string> {
+  if (Date.now() < devLinksDownUntil) return 'Figma did not answer a moment ago, so they are not asked again for a minute'
   try {
     return await withCeiling(node.getDevResourcesAsync(), 5_000, 'Dev Mode links')
   } catch (error) {
-    if (/did not answer/.test(String((error as Error)?.message))) devLinksDownUntil = Date.now() + 60_000
-    return null
+    const message = String((error as Error)?.message || error)
+    if (/did not answer/.test(message)) {
+      devLinksDownUntil = Date.now() + 60_000
+      return 'Figma did not answer within 5 s'
+    }
+    // A refusal is not silence: said as Figma said it, not as a hang.
+    return `Figma refused them: ${message}`
   }
 }
 
@@ -2959,8 +2964,8 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   const devEditor = figma.editorType === 'figma' || figma.editorType === 'dev'
   // And they live on Figma's servers: offline, the call never settles, so it is capped (devLinksOf).
   const links = devEditor && typeof node.getDevResourcesAsync === 'function' ? await traced(node, 'Dev Mode links', () => devLinksOf(node)) : []
-  if (links === null) props.unread = 'Dev Mode links — Figma did not answer, so they are left out of this read'
-  const own = (links ?? []).filter((link) => link.nodeId === node.id)
+  if (typeof links === 'string') props.unread = `Dev Mode links — ${links}, so they are left out of this read`
+  const own = (typeof links === 'string' ? [] : links).filter((link) => link.nodeId === node.id)
   if (own.length > 0) props.devLinks = own.map((link) => ({ name: link.name, url: link.url }))
   const notes = (node as unknown as { annotations?: ReadonlyArray<Annotation> }).annotations ?? []
   if (notes.length > 0) props.annotations = await traced(node, 'annotations', () => describeAnnotations(notes))

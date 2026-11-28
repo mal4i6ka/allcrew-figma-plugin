@@ -51731,12 +51731,16 @@ figma make deploy --build-dir dist
   }
   var devLinksDownUntil = 0;
   async function devLinksOf(node) {
-    if (Date.now() < devLinksDownUntil) return null;
+    if (Date.now() < devLinksDownUntil) return "Figma did not answer a moment ago, so they are not asked again for a minute";
     try {
       return await withCeiling(node.getDevResourcesAsync(), 5e3, "Dev Mode links");
     } catch (error) {
-      if (/did not answer/.test(String(error == null ? void 0 : error.message))) devLinksDownUntil = Date.now() + 6e4;
-      return null;
+      const message = String((error == null ? void 0 : error.message) || error);
+      if (/did not answer/.test(message)) {
+        devLinksDownUntil = Date.now() + 6e4;
+        return "Figma did not answer within 5 s";
+      }
+      return `Figma refused them: ${message}`;
     }
   }
   async function describeNodeCapped(node, withProps, ms = 3e4) {
@@ -51913,8 +51917,8 @@ figma make deploy --build-dir dist
     }
     const devEditor = figma.editorType === "figma" || figma.editorType === "dev";
     const links = devEditor && typeof node.getDevResourcesAsync === "function" ? await traced(node, "Dev Mode links", () => devLinksOf(node)) : [];
-    if (links === null) props.unread = "Dev Mode links \u2014 Figma did not answer, so they are left out of this read";
-    const own = (links != null ? links : []).filter((link) => link.nodeId === node.id);
+    if (typeof links === "string") props.unread = `Dev Mode links \u2014 ${links}, so they are left out of this read`;
+    const own = (typeof links === "string" ? [] : links).filter((link) => link.nodeId === node.id);
     if (own.length > 0) props.devLinks = own.map((link) => ({ name: link.name, url: link.url }));
     const notes = (_i = node.annotations) != null ? _i : [];
     if (notes.length > 0) props.annotations = await traced(node, "annotations", () => describeAnnotations(notes));
