@@ -420,6 +420,7 @@
     }
     return { collections, variables };
   }
+  var LIBRARY_IMPORT_CONCURRENCY = 8;
   async function readLibraryVariables(options = {}) {
     var _a, _b, _c, _d;
     const collections = [];
@@ -455,15 +456,18 @@
       if (ranOut) break;
       try {
         const importedVariables = [];
-        for (const libraryVariable2 of libraryVariables) {
-          seen2 += 1;
-          if (seen2 <= skip) continue;
+        const behind = Math.min(Math.max(0, skip - seen2), libraryVariables.length);
+        seen2 += behind;
+        for (let at = behind; at < libraryVariables.length; at += LIBRARY_IMPORT_CONCURRENCY) {
           if (Date.now() > deadline2) {
             ranOut = true;
-            seen2 -= 1;
             break;
           }
-          importedVariables.push(await figma.variables.importVariableByKeyAsync(libraryVariable2.key));
+          const batch = libraryVariables.slice(at, at + LIBRARY_IMPORT_CONCURRENCY);
+          importedVariables.push(
+            ...await Promise.all(batch.map((libraryVariable2) => figma.variables.importVariableByKeyAsync(libraryVariable2.key)))
+          );
+          seen2 += batch.length;
           (_d = options.onProgress) == null ? void 0 : _d.call(options, seen2, total);
         }
         if (importedVariables.length === 0) continue;
@@ -5775,6 +5779,33 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     }
   }
 
+  // src/targets/django/svg-3d.ts
+  var MARKER = 'data-figma-3d="true"';
+  function unwrapFigma3dSvg(svg) {
+    var _a, _b;
+    if (!svg.includes(MARKER)) return svg;
+    const wrapperOpen = /^\s*<svg\b[^>]*>\s*/.exec(svg);
+    const objectStart = svg.indexOf("<foreignObject");
+    const objectEnd = svg.lastIndexOf("</foreignObject>");
+    if (!wrapperOpen || objectStart === -1 || objectEnd === -1) return svg;
+    if (svg.slice(wrapperOpen[0].length, objectStart).trim() !== "") return svg;
+    if (svg.indexOf("<foreignObject", objectStart + 1) !== -1) return svg;
+    if (!/^<\/foreignObject>\s*<\/svg>\s*$/.test(svg.slice(objectEnd))) return svg;
+    const inside = svg.slice(objectStart, objectEnd);
+    const innerStart = inside.indexOf("<svg");
+    const innerEnd = inside.lastIndexOf("</svg>");
+    if (innerStart === -1 || innerEnd === -1) return svg;
+    if (!/^(\s*<\/div>)+\s*$/.test(inside.slice(innerEnd + "</svg>".length))) return svg;
+    const inner = inside.slice(innerStart, innerEnd + "</svg>".length);
+    const open = /^<svg\b([^>]*)>/.exec(inner);
+    const width = open && ((_a = /\bwidth="([\d.]+)"/.exec(open[1])) == null ? void 0 : _a[1]);
+    const height = open && ((_b = /\bheight="([\d.]+)"/.exec(open[1])) == null ? void 0 : _b[1]);
+    if (!open || !width || !height) return svg;
+    const body = inner.slice(open[0].length);
+    return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="none" xmlns="http://www.w3.org/2000/svg">${body}
+`;
+  }
+
   // src/targets/django/assets.ts
   function rasterColorProfile(node) {
     var _a, _b;
@@ -5855,7 +5886,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     return bytes;
   }
   async function exportVectorAsset(node, inlineThresholdBytes = DEFAULT_VECTOR_INLINE_THRESHOLD_BYTES) {
-    const svg = await node.exportAsync({ format: "SVG_STRING" });
+    const svg = unwrapFigma3dSvg(await node.exportAsync({ format: "SVG_STRING" }));
     if (utf8ByteLength(svg) <= inlineThresholdBytes) return { kind: "inline", svg };
     return { kind: "file", filename: vectorFilename(node.id, node.name), svg };
   }
@@ -6784,6 +6815,97 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     return null;
   }
 
+  // src/targets/django/transform3d.ts
+  var round5 = (value2) => Math.round(value2 * 1e3) / 1e3;
+  var CENTRE = { unit: "PERCENT", value: 50 };
+  var axisCss = (axis) => `${round5(axis.value)}${axis.unit === "PERCENT" ? "%" : "px"}`;
+  var isCentre = (axis) => axis.unit === "PERCENT" && Math.abs(axis.value - 50) < 1e-6;
+  var isZero = (axis) => Math.abs(axis.value) < 1e-6;
+  function offsetCss(axis, base, sign) {
+    if (isZero(base)) return axisCss({ unit: axis.unit, value: sign * axis.value });
+    if (isZero(axis)) return axisCss({ unit: base.unit, value: -sign * base.value });
+    if (axis.unit === base.unit) return axisCss({ unit: axis.unit, value: sign * (axis.value - base.value) });
+    const [left, right] = sign === 1 ? [axis, base] : [base, axis];
+    return `calc(${axisCss(left)} - ${axisCss(right)})`;
+  }
+  function pivotFromTopLeft(functions, origin) {
+    var _a, _b;
+    const x = (_a = origin == null ? void 0 : origin.x) != null ? _a : CENTRE;
+    const y = (_b = origin == null ? void 0 : origin.y) != null ? _b : CENTRE;
+    if (isZero(x) && isZero(y)) return functions;
+    const zero = { unit: "PIXELS", value: 0 };
+    return `translate(${offsetCss(x, zero, 1)}, ${offsetCss(y, zero, 1)}) ${functions} translate(${offsetCss(x, zero, -1)}, ${offsetCss(y, zero, -1)})`;
+  }
+  function transform3dFunctions(value2) {
+    return `translateZ(${round5(value2.translateZ)}px) rotateX(${round5(value2.rotateX)}deg) rotateY(${round5(value2.rotateY)}deg) rotateZ(${round5(value2.rotateZ)}deg)`;
+  }
+  var GENERATED_3D_FUNCTION = /(?:rotateX|rotateY|rotateZ|rotate3d|translateZ|translate3d|matrix3d|perspective)\([^)]*\)/g;
+  function strip3dFunctions(decl) {
+    var _a;
+    const flat = (_a = decl["transform"]) == null ? void 0 : _a.replace(GENERATED_3D_FUNCTION, "").replace(/\s{2,}/g, " ").trim();
+    if (flat === void 0) return;
+    if (flat === "") {
+      delete decl["transform"];
+      delete decl["transform-origin"];
+    } else decl["transform"] = flat;
+  }
+  var NOT_RENDERED_UNDER_PRESERVE_3D = ["opacity", "mix-blend-mode", "box-shadow", "filter", "backdrop-filter", "-webkit-backdrop-filter"];
+  function apply3dDeclarations(decl, source, nodeId, notes) {
+    var _a, _b, _c, _d;
+    if (!source) return;
+    const transform = source.transform3d;
+    if ((transform == null ? void 0 : transform.type) === "FIXED_ORDER" && transform.visible === false) {
+      strip3dFunctions(decl);
+      delete decl["backface-visibility"];
+    }
+    if (transform && transform.type !== "NONE" && transform.visible !== false) {
+      if (transform.type === "FREEFORM") {
+        notes == null ? void 0 : notes.push({ type: "transform3d-freeform", node: nodeId });
+      } else if (transform.type === "FIXED_ORDER") {
+        const functions = transform3dFunctions(transform);
+        const origin = { x: (_b = (_a = source.transformOrigin) == null ? void 0 : _a.x) != null ? _b : CENTRE, y: (_d = (_c = source.transformOrigin) == null ? void 0 : _c.y) != null ? _d : CENTRE };
+        strip3dFunctions(decl);
+        const existing = decl["transform"];
+        if (!existing) {
+          decl["transform"] = functions;
+          if (!(isCentre(origin.x) && isCentre(origin.y))) decl["transform-origin"] = `${axisCss(origin.x)} ${axisCss(origin.y)}`;
+        } else {
+          const pinned = decl["transform-origin"] !== void 0;
+          const base = pinned ? { x: { unit: "PIXELS", value: 0 }, y: { unit: "PIXELS", value: 0 } } : { x: CENTRE, y: CENTRE };
+          const atBase = pinned ? isZero(origin.x) && isZero(origin.y) : isCentre(origin.x) && isCentre(origin.y);
+          const pivoted = atBase ? functions : `translate(${offsetCss(origin.x, base.x, 1)}, ${offsetCss(origin.y, base.y, 1)}) ${functions} translate(${offsetCss(origin.x, base.x, -1)}, ${offsetCss(origin.y, base.y, -1)})`;
+          if (pinned) {
+            decl["transform"] = `${existing} ${pivoted}`;
+            notes == null ? void 0 : notes.push({ type: "transform3d-with-2d", node: nodeId });
+          } else {
+            decl["transform"] = `${pivoted} ${existing}`;
+          }
+        }
+        if (transform.backfaceVisible === false) decl["backface-visibility"] = "hidden";
+      }
+    }
+    const scene = source.scene3d;
+    if (scene) {
+      if (scene.visible !== false && Number.isFinite(scene.perspective) && scene.perspective >= 0) {
+        decl["perspective"] = `${round5(scene.perspective)}px`;
+      } else {
+        delete decl["perspective"];
+      }
+      if (scene.preserve3d === true) {
+        decl["transform-style"] = "preserve-3d";
+        for (const property of NOT_RENDERED_UNDER_PRESERVE_3D) {
+          if (decl[property] === void 0) continue;
+          delete decl[property];
+          if (!property.startsWith("-webkit-")) notes == null ? void 0 : notes.push({ type: "preserve3d-not-rendered", node: nodeId, property });
+        }
+        if (decl["overflow"] === "hidden") {
+          delete decl["overflow"];
+          notes == null ? void 0 : notes.push({ type: "preserve3d-not-rendered", node: nodeId, property: "overflow" });
+        }
+      }
+    }
+  }
+
   // src/targets/django/text-styles.ts
   var TEXT_SEGMENT_FIELDS = [
     "fontName",
@@ -7342,6 +7464,7 @@ ${rules.join("\n\n")}
     const picked = {};
     for (const [property, value2] of Object.entries(css)) {
       if (IR_OWNED_CSS.has(property)) continue;
+      if (property === "transform-origin") continue;
       if (property === "transform") {
         const transform = sanitizeTransform(value2);
         if (transform) {
@@ -7825,6 +7948,7 @@ ${body}
     if (node.type === "image" && node.imageRotation) {
       decl["transform"] = decl["transform"] ? `${decl["transform"]} rotate(${node.imageRotation}deg)` : `rotate(${node.imageRotation}deg)`;
     }
+    apply3dDeclarations(decl, source, node.id, notes);
     if (themedMaster) themeButtonInstanceDecl(decl, themedMaster);
     if ("backgroundVideo" in node && node.backgroundVideo) {
       decl["isolation"] = "isolate";
@@ -7970,6 +8094,7 @@ ${body}
       if (effect.dropBoxShadow) delete decl["box-shadow"];
       decl["filter"] = decl["filter"] ? `${effect.filter} ${decl["filter"]}` : effect.filter;
     }
+    apply3dDeclarations(decl, source, node.id);
     return decl;
   }
   async function flattenVariantDeclarations(node, sceneNodesById, variableNamesById) {
@@ -9473,7 +9598,7 @@ ${indent2}</${tag}>`;
   }
 
   // src/targets/django/smart-animate/css-emitter.ts
-  function round5(value2, decimals) {
+  function round6(value2, decimals) {
     const factor = 10 ** decimals;
     return Math.round(value2 * factor) / factor;
   }
@@ -9482,7 +9607,7 @@ ${indent2}</${tag}>`;
     const authored = source && sourceColorCss(source, color.a);
     if (authored) return authored;
     const to255 = (channel2) => Math.round(channel2 * 255);
-    return `rgba(${to255(color.r)}, ${to255(color.g)}, ${to255(color.b)}, ${round5(color.a, 4)})`;
+    return `rgba(${to255(color.r)}, ${to255(color.g)}, ${to255(color.b)}, ${round6(color.a, 4)})`;
   }
   var BLEND_MODE_CSS = {
     PASS_THROUGH: "normal",
@@ -9512,7 +9637,7 @@ ${indent2}</${tag}>`;
   }
   function colorStopsCss(paint) {
     var _a;
-    return ((_a = paint.gradientStops) != null ? _a : []).map((stop) => `${rgbaToCss2(stop.color)} ${round5(stop.position * 100, 2)}%`).join(", ");
+    return ((_a = paint.gradientStops) != null ? _a : []).map((stop) => `${rgbaToCss2(stop.color)} ${round6(stop.position * 100, 2)}%`).join(", ");
   }
   function gradientCss(paint) {
     if (!paint.gradientStops || paint.gradientStops.length === 0) return void 0;
@@ -9520,14 +9645,14 @@ ${indent2}</${tag}>`;
     switch (paint.type) {
       case "GRADIENT_LINEAR": {
         const angle = paint.gradientTransform ? gradientAngleDeg(paint.gradientTransform) : 180;
-        return `linear-gradient(${round5(angle, 2)}deg, ${stops})`;
+        return `linear-gradient(${round6(angle, 2)}deg, ${stops})`;
       }
       case "GRADIENT_RADIAL":
       case "GRADIENT_DIAMOND":
         return `radial-gradient(circle, ${stops})`;
       case "GRADIENT_ANGULAR": {
         const angle = paint.gradientTransform ? gradientAngleDeg(paint.gradientTransform) : 0;
-        return `conic-gradient(from ${round5(angle, 2)}deg, ${stops})`;
+        return `conic-gradient(from ${round6(angle, 2)}deg, ${stops})`;
       }
       default:
         return void 0;
@@ -9580,14 +9705,14 @@ ${indent2}</${tag}>`;
   }
   function shadowCss(layer) {
     const inset = layer.type === "INNER_SHADOW" ? "inset " : "";
-    return `${inset}${round5(layer.offsetX, 2)}px ${round5(layer.offsetY, 2)}px ${round5(layer.radius, 2)}px ${round5(layer.spread, 2)}px ${rgbaToCss2(layer.color)}`;
+    return `${inset}${round6(layer.offsetX, 2)}px ${round6(layer.offsetY, 2)}px ${round6(layer.radius, 2)}px ${round6(layer.spread, 2)}px ${rgbaToCss2(layer.color)}`;
   }
   function letterSpacingCss(letterSpacing) {
-    return `${round5(letterSpacing.value, 2)}${letterSpacing.unit === "PERCENT" ? "%" : "px"}`;
+    return `${round6(letterSpacing.value, 2)}${letterSpacing.unit === "PERCENT" ? "%" : "px"}`;
   }
   function lineHeightCss(lineHeight) {
     if (lineHeight.unit === "AUTO") return "normal";
-    return `${round5(lineHeight.value, 2)}${lineHeight.unit === "PERCENT" ? "%" : "px"}`;
+    return `${round6(lineHeight.value, 2)}${lineHeight.unit === "PERCENT" ? "%" : "px"}`;
   }
   function buildDeclarations(changes) {
     var _a;
@@ -9611,25 +9736,25 @@ ${indent2}</${tag}>`;
           sy = change.from !== 0 ? change.to / change.from : 1;
           break;
         case "rotation":
-          decls.push({ cssProperty: "rotate", value: `${round5(change.to - change.from, 2)}deg`, interpolable: true });
+          decls.push({ cssProperty: "rotate", value: `${round6(change.to - change.from, 2)}deg`, interpolable: true });
           break;
         case "opacity":
-          decls.push({ cssProperty: "opacity", value: `${round5(change.to, 4)}`, interpolable: true });
+          decls.push({ cssProperty: "opacity", value: `${round6(change.to, 4)}`, interpolable: true });
           break;
         case "fillColor":
           decls.push({ cssProperty: "background-color", value: rgbaToCss2(change.to), interpolable: true });
           break;
         case "cornerRadius":
-          decls.push({ cssProperty: "border-radius", value: `${round5(change.to, 2)}px`, interpolable: true });
+          decls.push({ cssProperty: "border-radius", value: `${round6(change.to, 2)}px`, interpolable: true });
           break;
         case "cornerRadii":
-          decls.push({ cssProperty: "border-radius", value: change.to.map((v) => `${round5(v, 2)}px`).join(" "), interpolable: true });
+          decls.push({ cssProperty: "border-radius", value: change.to.map((v) => `${round6(v, 2)}px`).join(" "), interpolable: true });
           break;
         case "strokeColor":
           decls.push({ cssProperty: "border-color", value: rgbaToCss2(change.to), interpolable: true });
           break;
         case "strokeWeight":
-          decls.push({ cssProperty: "border-width", value: `${round5(change.to, 2)}px`, interpolable: true });
+          decls.push({ cssProperty: "border-width", value: `${round6(change.to, 2)}px`, interpolable: true });
           break;
         case "background":
           if (change.interpolable) {
@@ -9654,19 +9779,19 @@ ${indent2}</${tag}>`;
         case "layerBlur":
           decls.push({
             cssProperty: "filter",
-            value: change.to.length > 0 ? change.to.map((radius) => `blur(${round5(radius, 2)}px)`).join(" ") : "none",
+            value: change.to.length > 0 ? change.to.map((radius) => `blur(${round6(radius, 2)}px)`).join(" ") : "none",
             interpolable: true
           });
           break;
         case "backgroundBlur":
           decls.push({
             cssProperty: "backdrop-filter",
-            value: change.to.length > 0 ? change.to.map((radius) => `blur(${round5(radius, 2)}px)`).join(" ") : "none",
+            value: change.to.length > 0 ? change.to.map((radius) => `blur(${round6(radius, 2)}px)`).join(" ") : "none",
             interpolable: true
           });
           break;
         case "fontSize":
-          decls.push({ cssProperty: "font-size", value: `${round5(change.to, 2)}px`, interpolable: true });
+          decls.push({ cssProperty: "font-size", value: `${round6(change.to, 2)}px`, interpolable: true });
           break;
         case "fontWeight":
           decls.push({ cssProperty: "font-weight", value: `${change.to}`, interpolable: true });
@@ -9681,13 +9806,13 @@ ${indent2}</${tag}>`;
           decls.push({ cssProperty: "color", value: rgbaToCss2(change.to), interpolable: true });
           break;
         case "padding":
-          decls.push({ cssProperty: "padding", value: change.to.map((v) => `${round5(v, 2)}px`).join(" "), interpolable: true });
+          decls.push({ cssProperty: "padding", value: change.to.map((v) => `${round6(v, 2)}px`).join(" "), interpolable: true });
           break;
         case "gap":
-          decls.push({ cssProperty: "gap", value: `${round5(change.to, 2)}px`, interpolable: true });
+          decls.push({ cssProperty: "gap", value: `${round6(change.to, 2)}px`, interpolable: true });
           break;
         case "crossGap":
-          decls.push({ cssProperty: "row-gap", value: `${round5(change.to, 2)}px`, interpolable: true });
+          decls.push({ cssProperty: "row-gap", value: `${round6(change.to, 2)}px`, interpolable: true });
           break;
         case "visible":
           decls.push({
@@ -9705,10 +9830,10 @@ ${indent2}</${tag}>`;
       }
     }
     if (dx !== null || dy !== null) {
-      decls.unshift({ cssProperty: "translate", value: `${round5(dx != null ? dx : 0, 2)}px ${round5(dy != null ? dy : 0, 2)}px`, interpolable: true });
+      decls.unshift({ cssProperty: "translate", value: `${round6(dx != null ? dx : 0, 2)}px ${round6(dy != null ? dy : 0, 2)}px`, interpolable: true });
     }
     if (sx !== null || sy !== null) {
-      decls.unshift({ cssProperty: "scale", value: `${round5(sx != null ? sx : 1, 4)} ${round5(sy != null ? sy : 1, 4)}`, interpolable: true });
+      decls.unshift({ cssProperty: "scale", value: `${round6(sx != null ? sx : 1, 4)} ${round6(sy != null ? sy : 1, 4)}`, interpolable: true });
     }
     return decls;
   }
@@ -12883,7 +13008,10 @@ ${mediaCss}`;
     if (notes.length === 0) return void 0;
     const byKind = {};
     for (const note of notes) {
-      const detail = note.type === "squircle-approx" ? `smoothing-${note.smoothing}` : note.type === "unsupported-effect" ? note.effect : note.fill;
+      const detail = note.type === "squircle-approx" ? `smoothing-${note.smoothing}` : note.type === "unsupported-effect" ? note.effect : note.type === "unsupported-fill" ? note.fill : note.type === "preserve3d-not-rendered" ? note.property : (
+        // The two 3D notes that are the whole story on their own.
+        note.type === "transform3d-freeform" ? "exported-flat" : "composed-2d-outside"
+      );
       const details = (_a = byKind[note.type]) != null ? _a : {};
       const ids = (_b = details[detail]) != null ? _b : /* @__PURE__ */ new Set();
       ids.add(note.node);
@@ -13095,6 +13223,38 @@ ${mediaCss}`;
       });
     }
     checkBootstrapComponentNaming(node, findings);
+    check3d(node, findings);
+  }
+  function check3d(node, findings) {
+    var _a, _b;
+    const bag = node;
+    if (((_a = bag.scene3d) == null ? void 0 : _a.preserve3d) === true) {
+      const dead = [];
+      if (typeof bag.opacity === "number" && bag.opacity < 1) dead.push(`opacity ${Math.round(bag.opacity * 100)}%`);
+      if (typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL") {
+        dead.push(`blend mode ${bag.blendMode}`);
+      }
+      const effects = Array.isArray(bag.effects) ? bag.effects.filter((effect) => (effect == null ? void 0 : effect.visible) !== false) : [];
+      if (effects.length > 0) dead.push(effects.length === 1 ? "1 effect" : `${effects.length} effects`);
+      else if (typeof bag.effectStyleId === "string" && bag.effectStyleId !== "") dead.push("an effect style");
+      if (bag.clipsContent === true) dead.push("clip content");
+      if (dead.length > 0) {
+        findings.push({
+          nodeId: node.id,
+          nodeName: node.name,
+          rule: "preserve3d-dead-property",
+          message: `Has ${dead.join(", ")} on a 3D container (preserve 3D) \u2014 Figma does not render ${dead.length === 1 ? "it" : "them"} there, and the export leaves ${dead.length === 1 ? "it" : "them"} out to match. Move ${dead.length === 1 ? "it" : "them"} to a parent frame that does not preserve 3D`
+        });
+      }
+    }
+    if (((_b = bag.transform3d) == null ? void 0 : _b.type) === "FREEFORM" && bag.transform3d.visible !== false) {
+      findings.push({
+        nodeId: node.id,
+        nodeName: node.name,
+        rule: "transform3d-freeform",
+        message: "Has an imported 3D transform Figma gives no values for \u2014 it exports flat. Set depth and rotation in the 3D panel to replace it"
+      });
+    }
   }
   function checkBootstrapComponentNaming(node, findings) {
     var _a, _b;
@@ -13970,6 +14130,10 @@ ${mediaCss}`;
           return __spreadValues(__spreadValues({}, base), withTarget(await fixMissingAutoLayout(target), onMainComponent));
         case "bootstrap-component-mismatch":
           return __spreadProps(__spreadValues({}, base), { status: "skipped", detail: "rename the variant prop in Figma \u2014 not auto-fixable" });
+        case "preserve3d-dead-property":
+          return __spreadProps(__spreadValues({}, base), { status: "skipped", detail: "move it to a parent frame that does not preserve 3D \u2014 not auto-fixable" });
+        case "transform3d-freeform":
+          return __spreadProps(__spreadValues({}, base), { status: "skipped", detail: "an imported 3D transform has no values to convert \u2014 set them in Figma" });
       }
     } catch (error) {
       return __spreadProps(__spreadValues({}, base), { status: "failed", detail: error instanceof Error ? error.message : String(error) });
@@ -14081,7 +14245,12 @@ ${mediaCss}`;
     "GRID_ROW_GAP",
     "GRID_COLUMN_GAP",
     "PATH_TRIM_START",
-    "PATH_TRIM_END"
+    "PATH_TRIM_END",
+    "TRANSFORM_3D_TRANSLATION_Z",
+    "TRANSFORM_3D_ROTATION_X",
+    "TRANSFORM_3D_ROTATION_Y",
+    "TRANSFORM_3D_ROTATION_Z",
+    "SCENE_3D_PERSPECTIVE"
   ];
 
   // src/targets/django/motion/beta-adapter.ts
@@ -14097,6 +14266,20 @@ ${mediaCss}`;
         console.warn("[motion] skipping shader/unknown track:", type);
       }
     }
+  }
+  function readStaticTransform3d(node) {
+    if (!("transform3d" in node)) return void 0;
+    const held = node.transform3d;
+    if (!held || held.type !== "FIXED_ORDER") return void 0;
+    const rotation = node.rotation;
+    const origin = node.transformOrigin;
+    const turned = typeof rotation === "number" && Math.abs(rotation) > 1e-3;
+    return __spreadValues(__spreadValues({
+      translateZ: held.translateZ,
+      rotateX: held.rotateX,
+      rotateY: held.rotateY,
+      rotateZ: held.rotateZ
+    }, turned ? { rotation } : {}), turned && origin ? { origin: { x: origin.x, y: origin.y } } : {});
   }
   function readMotionData(node) {
     var _a, _b, _c, _d;
@@ -14123,11 +14306,12 @@ ${mediaCss}`;
       warnOnShaderTracks(manualTracks == null ? void 0 : manualTracks.fills, "fills" in node ? node.fills : void 0);
       warnOnShaderTracks(manualTracks == null ? void 0 : manualTracks.strokes, "strokes" in node ? node.strokes : void 0);
       warnOnShaderTracks(manualTracks == null ? void 0 : manualTracks.effects, "effects" in node ? node.effects : void 0);
-      return {
+      const transform3d = readStaticTransform3d(node);
+      return __spreadValues({
         animationStyles: (_c = node.animationStyles) != null ? _c : [],
         timelines: (_d = node.timelines) != null ? _d : [],
         tracks
-      };
+      }, transform3d ? { transform3d } : {});
     } catch (error) {
       console.warn("[motion] failed to read motion data, skipping node:", node.id, error);
       return null;
@@ -14194,14 +14378,48 @@ ${mediaCss}`;
   };
   var SCALAR_FIELD_MAPPING = {
     ROTATION: { cssProperty: "rotate", unit: "deg" },
-    OPACITY: { cssProperty: "opacity", unit: "" }
+    OPACITY: { cssProperty: "opacity", unit: "" },
+    TRANSFORM_3D_TRANSLATION_Z: { cssProperty: "--motion-translate-z", unit: "px" },
+    TRANSFORM_3D_ROTATION_X: { cssProperty: "--motion-rotate-x", unit: "deg" },
+    TRANSFORM_3D_ROTATION_Y: { cssProperty: "--motion-rotate-y", unit: "deg" },
+    TRANSFORM_3D_ROTATION_Z: { cssProperty: "--motion-rotate-z", unit: "deg" },
+    // On the container itself — the node that holds `scene3d` is the node the track is on.
+    SCENE_3D_PERSPECTIVE: { cssProperty: "perspective", unit: "px" }
   };
-  function round6(value2, decimals) {
+  var TRANSFORM_3D_AXES = [
+    { field: "TRANSFORM_3D_TRANSLATION_Z", fn: "translateZ", key: "translateZ", syntax: "<length>" },
+    { field: "TRANSFORM_3D_ROTATION_X", fn: "rotateX", key: "rotateX", syntax: "<angle>" },
+    { field: "TRANSFORM_3D_ROTATION_Y", fn: "rotateY", key: "rotateY", syntax: "<angle>" },
+    { field: "TRANSFORM_3D_ROTATION_Z", fn: "rotateZ", key: "rotateZ", syntax: "<angle>" }
+  ];
+  function hasTransform3dTrack(tracks) {
+    return tracks.some((track) => TRANSFORM_3D_AXES.some((axis) => axis.field === track.field));
+  }
+  function emitTransform3dPropertyRules() {
+    return TRANSFORM_3D_AXES.map((axis) => {
+      const mapping = SCALAR_FIELD_MAPPING[axis.field];
+      return `@property ${mapping.cssProperty} { syntax: '${axis.syntax}'; inherits: false; initial-value: 0${mapping.unit}; }`;
+    }).join("\n");
+  }
+  function formatTransform3dDeclaration(tracks, fixed2) {
+    const parts = TRANSFORM_3D_AXES.map((axis) => {
+      var _a;
+      const mapping = SCALAR_FIELD_MAPPING[axis.field];
+      const tracked = tracks.some((track) => track.field === axis.field);
+      return `${axis.fn}(${tracked ? `var(${mapping.cssProperty})` : `${formatNumber((_a = fixed2 == null ? void 0 : fixed2[axis.key]) != null ? _a : 0)}${mapping.unit}`})`;
+    });
+    const functions = parts.join(" ");
+    if ((fixed2 == null ? void 0 : fixed2.rotation) !== void 0) {
+      return `transform: rotate(${formatNumber(-fixed2.rotation)}deg) ${pivotFromTopLeft(functions, fixed2.origin)}`;
+    }
+    return `transform: ${functions}`;
+  }
+  function round7(value2, decimals) {
     const factor = 10 ** decimals;
     return Math.round(value2 * factor) / factor;
   }
   function formatNumber(value2) {
-    return String(round6(value2, 4));
+    return String(round7(value2, 4));
   }
   function formatTransformDeclaration(mapping, value2) {
     const { cssProperty, axis, unit, identity: identity2 } = mapping;
@@ -14234,19 +14452,23 @@ ${mediaCss}`;
       return springToCssLinear(resolveSpringBounce(easing), perceptualAngularFrequency(segmentSec)).easing;
     }
   }
-  function withBaseKeyframe(track) {
-    const first = track.keyframes[0];
-    if (first && first.timelinePosition === 0) return track.keyframes;
-    const base = {
-      id: "__base__",
+  function withStartKeyframe(track) {
+    const sorted = [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition);
+    const first = sorted[0];
+    if (first && first.timelinePosition <= 0) return sorted;
+    const start = {
+      id: "__start__",
       timelinePosition: 0,
       easing: { type: "LINEAR" },
-      value: track.baseValue
+      value: first ? first.value : track.baseValue
     };
-    return [base, ...track.keyframes];
+    return [start, ...sorted];
+  }
+  function startValue(track) {
+    return withStartKeyframe(track)[0].value;
   }
   function buildPercentFrames(track) {
-    const keyframes = withBaseKeyframe(track);
+    const keyframes = withStartKeyframe(track);
     const duration = track.timelineDuration;
     const frames = keyframes.map((keyframe) => ({
       percent: duration > 0 ? keyframe.timelinePosition / duration * 100 : 0,
@@ -14266,7 +14488,7 @@ ${mediaCss}`;
     return frames;
   }
   function formatPercent(percent) {
-    return `${round6(percent, 3)}%`;
+    return `${round7(percent, 3)}%`;
   }
   function formatFrame(frame3) {
     const declarations = [`${frame3.declaration};`];
@@ -14286,12 +14508,14 @@ ${frames.map(formatFrame).join("\n")}
     return `${sanitizeIdentPart(selector)}-${track.field.toLowerCase().replace(/_/g, "-")}`;
   }
   function formatSeconds(duration) {
-    return `${round6(duration, 4)}s`;
+    return `${round7(duration, 4)}s`;
   }
   function emitNodeAnimationCss(input) {
     var _a;
     const nameForTrack = (_a = input.nameForTrack) != null ? _a : ((track) => defaultTrackName(input.selector, track));
-    const baseDeclarations = input.tracks.map((track) => `  ${formatDeclaration(track.field, track.baseValue)};`);
+    const baseDeclarations = input.tracks.map((track) => `  ${formatDeclaration(track.field, startValue(track))};`);
+    const is3d = hasTransform3dTrack(input.tracks);
+    if (is3d) baseDeclarations.push(`  ${formatTransform3dDeclaration(input.tracks, input.transform3d)};`);
     const animationEntries = input.tracks.map((track) => `${nameForTrack(track)} ${formatSeconds(track.timelineDuration)} linear both`);
     const rule = [
       `${input.selector} {`,
@@ -14308,11 +14532,12 @@ ${frames.map(formatFrame).join("\n")}
       "}"
     ].join("\n");
     const keyframesBlocks = input.tracks.map((track) => emitKeyframesRule(nameForTrack(track), track));
-    return [rule, reducedMotionGuard, ...keyframesBlocks].join("\n\n");
+    const properties = is3d && input.registerProperties !== false ? [emitTransform3dPropertyRules()] : [];
+    return [...properties, rule, reducedMotionGuard, ...keyframesBlocks].join("\n\n");
   }
 
   // src/targets/django/motion/gsap-emitter.ts
-  function round7(value2, decimals) {
+  function round8(value2, decimals) {
     const factor = 10 ** decimals;
     return Math.round(value2 * factor) / factor;
   }
@@ -14349,8 +14574,25 @@ ${frames.map(formatFrame).join("\n")}
     STACK_PADDING_RIGHT: "paddingRight",
     STACK_PADDING_BOTTOM: "paddingBottom",
     GRID_ROW_GAP: "rowGap",
-    GRID_COLUMN_GAP: "columnGap"
+    GRID_COLUMN_GAP: "columnGap",
+    // On the container that holds the scene; GSAP writes a unitless number here as pixels.
+    SCENE_3D_PERSPECTIVE: "perspective"
   };
+  var TRANSFORM_3D_PROPERTY_MAP = {
+    TRANSFORM_3D_TRANSLATION_Z: { property: "--motion-translate-z", unit: "px" },
+    TRANSFORM_3D_ROTATION_X: { property: "--motion-rotate-x", unit: "deg" },
+    TRANSFORM_3D_ROTATION_Y: { property: "--motion-rotate-y", unit: "deg" },
+    TRANSFORM_3D_ROTATION_Z: { property: "--motion-rotate-z", unit: "deg" }
+  };
+  var GSAP_OWN_TRANSFORM_FIELDS = [
+    "TRANSLATION_X",
+    "TRANSLATION_Y",
+    "TRANSLATION_XY",
+    "ROTATION",
+    "SCALE_X",
+    "SCALE_Y",
+    "SCALE_XY"
+  ];
   var VECTOR_PROPERTY_MAP = {
     TRANSLATION_XY: ["x", "y"],
     SCALE_XY: ["scaleX", "scaleY"]
@@ -14394,7 +14636,7 @@ ${frames.map(formatFrame).join("\n")}
       return name;
     }
     sampledSpring(points) {
-      const rounded = points.map((point2) => round7(point2, 4));
+      const rounded = points.map((point2) => round8(point2, 4));
       const key = `spring:${rounded.join(",")}`;
       const existing = this.namesByKey.get(key);
       if (existing) return existing;
@@ -14418,7 +14660,7 @@ ${frames.map(formatFrame).join("\n")}
     if (easing.type === "GENTLE" || easing.type === "QUICK" || easing.type === "BOUNCY" || easing.type === "SLOW" || easing.type === "CUSTOM_SPRING") {
       const bounce = resolveSpringBounce(easing);
       if (bounce <= SPRING_BACK_BOUNCE_THRESHOLD) {
-        return `back.out(${round7(1 + 2.5 * bounce, 3)})`;
+        return `back.out(${round8(1 + 2.5 * bounce, 3)})`;
       }
       return registry.sampledSpring(sampleSpring(bounce, perceptualAngularFrequency(segmentSec)).points);
     }
@@ -14426,29 +14668,31 @@ ${frames.map(formatFrame).join("\n")}
     return registry.bezier(BEZIER_PRESETS[easing.type]);
   }
   function formatPercentLabel(percent) {
-    return `${round7(percent, 3)}%`;
+    return `${round8(percent, 3)}%`;
   }
   function ensureTerminalKeyframe(keyframes, lastPercent, lastVars) {
     if (lastPercent < 100 - 1e-6) {
       keyframes["100%"] = __spreadProps(__spreadValues({}, lastVars), { ease: "none" });
     }
   }
-  function trackValueVars(value2, gsapKeys, context) {
+  function trackValueVars(value2, gsapKeys, context, unit) {
     if (gsapKeys.length === 2) {
       const vector = requireVector(value2, context);
       return { [gsapKeys[0]]: vector.x, [gsapKeys[1]]: vector.y };
     }
-    return { [gsapKeys[0]]: requireFloat(value2, context) };
+    const float = requireFloat(value2, context);
+    return { [gsapKeys[0]]: unit === void 0 ? float : `${round8(float, 4)}${unit}` };
   }
-  function buildPropertyTween(track, gsapKeys, timelineDuration, registry, plugins) {
-    const fromVars = trackValueVars(track.baseValue, gsapKeys, `${track.field} baseValue`);
+  function buildPropertyTween(track, gsapKeys, timelineDuration, registry, plugins, unit) {
+    var _a, _b;
     const sorted = [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition);
+    const fromVars = trackValueVars((_b = (_a = sorted[0]) == null ? void 0 : _a.value) != null ? _b : track.baseValue, gsapKeys, `${track.field} start`, unit);
     const keyframes = {};
     let lastVars = fromVars;
     let lastPercent = 0;
     let lastPositionSec = 0;
     for (const keyframe of sorted) {
-      const vars = trackValueVars(keyframe.value, gsapKeys, `${track.field} keyframe ${keyframe.id}`);
+      const vars = trackValueVars(keyframe.value, gsapKeys, `${track.field} keyframe ${keyframe.id}`, unit);
       lastVars = vars;
       if (keyframe.timelinePosition <= 0) {
         lastPercent = 0;
@@ -14463,11 +14707,16 @@ ${frames.map(formatFrame).join("\n")}
     ensureTerminalKeyframe(keyframes, lastPercent, lastVars);
     return { fromVars, keyframes };
   }
+  function renderTransform3dSetup(selector, tracks, fixed2) {
+    const value2 = formatTransform3dDeclaration(tracks, fixed2).replace(/^transform: /, "");
+    return `      q(${JSON.stringify(selector)}).forEach(function (el) { el.style.transform = ${JSON.stringify(value2)}; });`;
+  }
   function buildTextTween(track, timelineDuration, registry, plugins) {
+    var _a, _b;
     plugins.add("TextPlugin");
-    const baseText = requireTextData(track.baseValue, `${track.field} baseValue`);
-    const fromVars = { text: { value: baseText } };
     const sorted = [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition);
+    const baseText = requireTextData((_b = (_a = sorted[0]) == null ? void 0 : _a.value) != null ? _b : track.baseValue, `${track.field} start`);
+    const fromVars = { text: { value: baseText } };
     const keyframes = {};
     let lastVars = fromVars;
     let lastPercent = 0;
@@ -14490,10 +14739,12 @@ ${frames.map(formatFrame).join("\n")}
     return { fromVars, keyframes };
   }
   function valueAtOrBefore(track, position, fallback) {
+    var _a, _b;
     if (!track) return { value: fallback };
-    let value2 = requireFloat(track.baseValue, `${track.field} baseValue`);
+    const sorted = [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition);
+    let value2 = requireFloat((_b = (_a = sorted[0]) == null ? void 0 : _a.value) != null ? _b : track.baseValue, `${track.field} start`);
     let easing;
-    for (const keyframe of [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition)) {
+    for (const keyframe of sorted) {
       if (keyframe.timelinePosition > position) break;
       value2 = requireFloat(keyframe.value, `${track.field} keyframe ${keyframe.id}`);
       if (keyframe.timelinePosition === position) easing = keyframe.easing;
@@ -14503,9 +14754,9 @@ ${frames.map(formatFrame).join("\n")}
   function buildDrawSvgTween(startTrack, endTrack, timelineDuration, registry, plugins) {
     var _a, _b, _c, _d;
     plugins.add("DrawSVGPlugin");
-    const startBase = startTrack ? requireFloat(startTrack.baseValue, "PATH_TRIM_START baseValue") : 0;
-    const endBase = endTrack ? requireFloat(endTrack.baseValue, "PATH_TRIM_END baseValue") : 1;
-    const drawSvgLabel = (start, end) => `${round7(start * 100, 3)}% ${round7(end * 100, 3)}%`;
+    const startBase = valueAtOrBefore(startTrack, 0, 0).value;
+    const endBase = valueAtOrBefore(endTrack, 0, 1).value;
+    const drawSvgLabel = (start, end) => `${round8(start * 100, 3)}% ${round8(end * 100, 3)}%`;
     const positions = /* @__PURE__ */ new Set();
     for (const keyframe of (_a = startTrack == null ? void 0 : startTrack.keyframes) != null ? _a : []) positions.add(keyframe.timelinePosition);
     for (const keyframe of (_b = endTrack == null ? void 0 : endTrack.keyframes) != null ? _b : []) positions.add(keyframe.timelinePosition);
@@ -14531,7 +14782,7 @@ ${frames.map(formatFrame).join("\n")}
     return { fromVars, keyframes };
   }
   function renderTween(selector, duration, { fromVars, keyframes }) {
-    return `      tl.fromTo(q(${JSON.stringify(selector)}), ${JSON.stringify(fromVars)}, { duration: ${round7(duration, 4)}, keyframes: ${JSON.stringify(keyframes)} }, 0);`;
+    return `      tl.fromTo(q(${JSON.stringify(selector)}), ${JSON.stringify(fromVars)}, { duration: ${round8(duration, 4)}, keyframes: ${JSON.stringify(keyframes)} }, 0);`;
   }
   var LERP_EASE_HELPER = `    function __figmaLerpEase(points) {
       return function (p) {
@@ -14595,8 +14846,26 @@ ${tweenStatements.join("\n")}
       if (pathTrimStart || pathTrimEnd) {
         tweenStatements.push(renderTween(selector, input.duration, buildDrawSvgTween(pathTrimStart, pathTrimEnd, input.duration, registry, plugins)));
       }
+      const tracks3d = node.tracks.filter((track) => TRANSFORM_3D_PROPERTY_MAP[track.field]);
+      const clash = tracks3d.length > 0 && node.tracks.some((track) => GSAP_OWN_TRANSFORM_FIELDS.includes(track.field));
+      if (clash) {
+        console.warn(
+          `[gsap-emitter] node "${node.nodeId}" animates both 2D transform tracks and 3D transform tracks; GSAP cannot hold both in one transform, skipping the 3D tracks:`,
+          tracks3d.map((track) => track.field).join(", ")
+        );
+      } else if (tracks3d.length > 0) {
+        tweenStatements.push(renderTransform3dSetup(selector, tracks3d, node.transform3d));
+      }
       for (const track of node.tracks) {
         if (track.field === "PATH_TRIM_START" || track.field === "PATH_TRIM_END") continue;
+        const custom = TRANSFORM_3D_PROPERTY_MAP[track.field];
+        if (custom) {
+          if (clash) continue;
+          tweenStatements.push(
+            renderTween(selector, input.duration, buildPropertyTween(track, [custom.property], input.duration, registry, plugins, custom.unit))
+          );
+          continue;
+        }
         if (track.baseValue.type === "TEXT_DATA") {
           tweenStatements.push(renderTween(selector, input.duration, buildTextTween(track, input.duration, registry, plugins)));
           continue;
@@ -14651,7 +14920,7 @@ ${tweenStatements.join("\n")}
         };
         if (!groups.has(timeline.id)) groups.set(timeline.id, group2);
         if (group2.duration <= 0 && track.timelineDuration > 0) group2.duration = track.timelineDuration;
-        const nodeTracks = (_b = group2.nodes.get(node.nodeId)) != null ? _b : { nodeId: node.nodeId, tracks: [] };
+        const nodeTracks = (_b = group2.nodes.get(node.nodeId)) != null ? _b : { nodeId: node.nodeId, tracks: [], transform3d: node.snapshot.transform3d };
         nodeTracks.tracks.push(track);
         group2.nodes.set(node.nodeId, nodeTracks);
       }
@@ -14690,7 +14959,10 @@ ${tweenStatements.join("\n")}
         emitNodeAnimationCss({
           selector,
           tracks,
-          nameForTrack: (track) => animationName(node.nodeId, group2.id, track)
+          nameForTrack: (track) => animationName(node.nodeId, group2.id, track),
+          transform3d: node.transform3d,
+          // Written once at the top of the stylesheet, not once per node.
+          registerProperties: false
         })
       );
     }
@@ -14700,7 +14972,8 @@ ${tweenStatements.join("\n")}
     const nodes = [...group2.nodes.values()].map((node) => ({
       nodeId: node.nodeId,
       selector: nodeSelector2(node.nodeId),
-      tracks: node.tracks
+      tracks: node.tracks,
+      transform3d: node.transform3d
     }));
     return emitGsapTimeline({ timelineId: group2.id, duration: group2.duration, nodes });
   }
@@ -14708,6 +14981,7 @@ ${tweenStatements.join("\n")}
     const cssBlocks = [];
     const jsBlocks = [];
     const usedPlugins = /* @__PURE__ */ new Set();
+    let needsTransform3dProperties = false;
     for (const group2 of groupTimelines(nodes)) {
       const nodeTracks = [...group2.nodes.values()];
       const tracks = nodeTracks.flatMap((node) => node.tracks);
@@ -14716,6 +14990,7 @@ ${tweenStatements.join("\n")}
       if (decision.backend === "css") {
         const css = emitCssTimeline(group2);
         if (css) cssBlocks.push(css);
+        if (css && hasTransform3dTrack(tracks)) needsTransform3dProperties = true;
         continue;
       }
       try {
@@ -14727,7 +15002,7 @@ ${tweenStatements.join("\n")}
       }
     }
     const animation = {
-      css: cssBlocks.join("\n\n"),
+      css: [...needsTransform3dProperties ? [emitTransform3dPropertyRules()] : [], ...cssBlocks].join("\n\n"),
       js: jsBlocks.join("\n\n"),
       gsapPlugins: [...usedPlugins]
     };
@@ -19496,7 +19771,7 @@ ${scrollGuards}` : project.css;
     const found = findColorLiterals(text6);
     return found.length === 1 ? found[0] : null;
   }
-  var round8 = (value2, places = 4) => {
+  var round9 = (value2, places = 4) => {
     const factor = Math.pow(10, places);
     return Math.round(value2 * factor) / factor;
   };
@@ -19513,28 +19788,28 @@ ${scrollGuards}` : project.css;
       case "rgb": {
         const channel2 = (value2) => Math.round(clamp012(value2) * 255);
         const parts = [channel2(rgba.r), channel2(rgba.g), channel2(rgba.b)];
-        return opaque ? `rgb(${parts.join(", ")})` : `rgba(${parts.join(", ")}, ${round8(rgba.a)})`;
+        return opaque ? `rgb(${parts.join(", ")})` : `rgba(${parts.join(", ")}, ${round9(rgba.a)})`;
       }
       case "hsl": {
         const { h, s, l } = rgbToHsl(rgba);
-        const parts = [`${round8(h, 2)}`, `${round8(s * 100, 2)}%`, `${round8(l * 100, 2)}%`];
-        return opaque ? `hsl(${parts.join(", ")})` : `hsla(${parts.join(", ")}, ${round8(rgba.a)})`;
+        const parts = [`${round9(h, 2)}`, `${round9(s * 100, 2)}%`, `${round9(l * 100, 2)}%`];
+        return opaque ? `hsl(${parts.join(", ")})` : `hsla(${parts.join(", ")}, ${round9(rgba.a)})`;
       }
       case "hwb": {
         const { h, w, b } = rgbToHwb(rgba);
-        const body = `${round8(h, 2)} ${round8(w * 100, 2)}% ${round8(b * 100, 2)}%`;
-        return opaque ? `hwb(${body})` : `hwb(${body} / ${round8(rgba.a)})`;
+        const body = `${round9(h, 2)} ${round9(w * 100, 2)}% ${round9(b * 100, 2)}%`;
+        return opaque ? `hwb(${body})` : `hwb(${body} / ${round9(rgba.a)})`;
       }
       case "oklch": {
         const { l, c, h } = rgbToOklch(rgba);
-        const body = `${round8(l, 4)} ${round8(c, 4)} ${round8(h, 2)}`;
-        return opaque ? `oklch(${body})` : `oklch(${body} / ${round8(rgba.a)})`;
+        const body = `${round9(l, 4)} ${round9(c, 4)} ${round9(h, 2)}`;
+        return opaque ? `oklch(${body})` : `oklch(${body} / ${round9(rgba.a)})`;
       }
       case "oklab": {
         const { l, c, h } = rgbToOklch(rgba);
         const radians = h * Math.PI / 180;
-        const body = `${round8(l, 4)} ${round8(c * Math.cos(radians), 4)} ${round8(c * Math.sin(radians), 4)}`;
-        return opaque ? `oklab(${body})` : `oklab(${body} / ${round8(rgba.a)})`;
+        const body = `${round9(l, 4)} ${round9(c * Math.cos(radians), 4)} ${round9(c * Math.sin(radians), 4)}`;
+        return opaque ? `oklab(${body})` : `oklab(${body} / ${round9(rgba.a)})`;
       }
       case "named": {
         const name = opaque ? namedColorFor(rgba) : null;
@@ -20308,7 +20583,7 @@ ${scrollGuards}` : project.css;
   // src/tokens/remap/audit.ts
   var TEXT_CONTRAST_MIN = 4.5;
   var NON_TEXT_CONTRAST_MIN = 3;
-  var round9 = (value2) => Math.round(value2 * 100) / 100;
+  var round10 = (value2) => Math.round(value2 * 100) / 100;
   var MEANINGFUL_DROP = 0.1;
   function auditContrast(plan, pairs) {
     var _a;
@@ -20338,8 +20613,8 @@ ${scrollGuards}` : project.css;
         aName: a.site.name,
         bName: b.site.name,
         mode: (_a = a.site.modeName) != null ? _a : b.site.modeName,
-        before: round9(before),
-        after: round9(after),
+        before: round10(before),
+        after: round10(after),
         text: pair2.text,
         verdict: before >= threshold ? "broken" : "weakened"
       });
@@ -20874,7 +21149,7 @@ ${scrollGuards}` : project.css;
   // src/tokens/remap/contract.ts
   var MAPPING_FORMAT = "allcrew-channel-color-remap";
   var MAPPING_VERSION = 1;
-  var round10 = (value2, places = 3) => {
+  var round11 = (value2, places = 3) => {
     const factor = Math.pow(10, places);
     return Math.round(value2 * factor) / factor;
   };
@@ -20902,16 +21177,16 @@ ${scrollGuards}` : project.css;
           newName: (_a2 = renamedById.get(entry.site.id)) != null ? _a2 : null,
           mode: entry.site.modeName,
           from: toHex(entry.from),
-          fromAlpha: round10(entry.from.a),
+          fromAlpha: round11(entry.from.a),
           to: toHex(entry.to),
-          toAlpha: round10(entry.to.a),
+          toAlpha: round11(entry.to.a),
           fromFamily: entry.fromFamily,
           fromStep: entry.fromStep,
           toFamily: entry.toFamily,
           toStep: entry.toStep,
           toVariable: entry.toVariableKey,
           via: entry.via,
-          deltaE: round10(entry.deltaE, 2),
+          deltaE: round11(entry.deltaE, 2),
           flags: entry.flags
         };
       }),
@@ -21369,7 +21644,9 @@ ${scrollGuards}` : project.css;
     "text-without-style": (n) => `**${n} text node(s) have no Figma text style**, so their font declarations are one-off literals in \`project.css\` rather than the type scale. Do not treat them as a typographic decision, and do not imitate them in new components.`,
     "missing-auto-layout": (n) => `**${n} frame(s) have no Auto Layout**, so their children exported with absolute positioning. That is a Figma artifact, not a layout choice \u2014 when you touch such a block, re-express it with flex/grid instead of extending the absolute coordinates.`,
     "excessive-nesting": (n) => `**${n} node(s) exceed the nesting threshold** \u2014 the generated markup carries wrapper \`<div>\`s with no semantic meaning. Flatten them when you edit; do not add more.`,
-    "bootstrap-component-mismatch": (n) => `**${n} component(s) are named like Bootstrap components but exported as custom partials** (no recognizable variant prop). Do not assume \`.btn\`/\`.card\` markup or Bootstrap JS behaviour exists for them \u2014 read the partial before wiring anything to it.`
+    "bootstrap-component-mismatch": (n) => `**${n} component(s) are named like Bootstrap components but exported as custom partials** (no recognizable variant prop). Do not assume \`.btn\`/\`.card\` markup or Bootstrap JS behaviour exists for them \u2014 read the partial before wiring anything to it.`,
+    "preserve3d-dead-property": (n) => `**${n} 3D container(s) carry an opacity, blend mode, effect or clip that Figma does not render** (\`preserve-3d\`). The export left those declarations out to match the canvas \u2014 and in CSS any of them on a \`transform-style: preserve-3d\` element flattens the scene. Do not add them back there; put them on a wrapper.`,
+    "transform3d-freeform": (n) => `**${n} layer(s) have an imported 3D transform with no readable values**, so they exported flat. The markup is not what the design shows for them \u2014 ask for the intended depth and rotation rather than guessing.`
   };
   function lintGuardrails(lint) {
     var _a;
@@ -21875,9 +22152,9 @@ ${renderSections(sections)}
     if (typeof visible === "boolean") next.visible = visible;
     return next;
   }
-  var round11 = (value2) => Math.round(value2 * 100) / 100;
+  var round12 = (value2) => Math.round(value2 * 100) / 100;
   function axisWord(axis) {
-    return axis.unit === "PERCENT" ? `${round11(axis.value)}%` : round11(axis.value);
+    return axis.unit === "PERCENT" ? `${round12(axis.value)}%` : round12(axis.value);
   }
   function describe3d(source) {
     const out = {};
@@ -21886,7 +22163,7 @@ ${renderSections(sections)}
       const read = {};
       if (transform.type === "FREEFORM") read.type = "FREEFORM";
       for (const key of TRANSFORM_NUMBERS) {
-        if (isFiniteNumber(transform[key]) && round11(transform[key]) !== 0) read[key] = round11(transform[key]);
+        if (isFiniteNumber(transform[key]) && round12(transform[key]) !== 0) read[key] = round12(transform[key]);
       }
       if (transform.backfaceVisible === false) read.backfaceVisible = false;
       if (transform.visible === false) read.visible = false;
@@ -21900,7 +22177,7 @@ ${renderSections(sections)}
     const scene = source.scene3d;
     if (scene && typeof scene === "object") {
       const read = {};
-      if (isFiniteNumber(scene.perspective) && scene.perspective >= 0) read.perspective = round11(scene.perspective);
+      if (isFiniteNumber(scene.perspective) && scene.perspective >= 0) read.perspective = round12(scene.perspective);
       if (scene.preserve3d === true) read.preserve3d = true;
       if (scene.visible === false) read.visible = false;
       if (Object.keys(read).length > 0) out.scene3d = read;
@@ -22174,15 +22451,15 @@ ${renderSections(sections)}
     if (Object.keys(values).length === 0) return { problem: "names nothing to change" };
     return { values };
   }
-  var round12 = (value2) => Math.round(value2 * 100) / 100;
+  var round13 = (value2) => Math.round(value2 * 100) / 100;
   function endpointWords(raw, pageId) {
     if (typeof raw !== "object" || raw === null) return null;
     const one = raw;
     if (typeof one.endpointNodeId === "string" && one.endpointNodeId !== "" && one.endpointNodeId !== pageId) {
-      if (one.position) return { node: one.endpointNodeId, at: [round12(one.position.x), round12(one.position.y)] };
+      if (one.position) return { node: one.endpointNodeId, at: [round13(one.position.x), round13(one.position.y)] };
       return !one.magnet || one.magnet === "AUTO" ? one.endpointNodeId : { node: one.endpointNodeId, magnet: one.magnet };
     }
-    return one.position ? [round12(one.position.x), round12(one.position.y)] : null;
+    return one.position ? [round13(one.position.x), round13(one.position.y)] : null;
   }
   function connectorWords(bag, pageId) {
     var _a;
@@ -22256,8 +22533,8 @@ ${renderSections(sections)}
       for (let column2 = 0; column2 < table2.numColumns; column2++) line.push(table2.cellAt(row, column2).text.characters);
       cells.push(line);
     }
-    const columnWidths = Array.from({ length: table2.numColumns }, (_, column2) => round12(table2.cellAt(0, column2).width));
-    const rowHeights = Array.from({ length: table2.numRows }, (_, row) => round12(table2.cellAt(row, 0).height));
+    const columnWidths = Array.from({ length: table2.numColumns }, (_, column2) => round13(table2.cellAt(0, column2).width));
+    const rowHeights = Array.from({ length: table2.numRows }, (_, row) => round13(table2.cellAt(row, 0).height));
     return { rows: table2.numRows, columns: table2.numColumns, cells, columnWidths, rowHeights };
   }
   var TRANSITION_STYLES = [
@@ -22319,7 +22596,7 @@ ${renderSections(sections)}
     if (plain3) return value2.style;
     return __spreadValues(__spreadValues(__spreadValues({
       style: value2.style
-    }, value2.duration !== 0.3 ? { duration: round12(value2.duration) } : {}), value2.curve !== "EASE_OUT" ? { curve: value2.curve } : {}), after !== void 0 ? { after: round12(after) } : {});
+    }, value2.duration !== 0.3 ? { duration: round13(value2.duration) } : {}), value2.curve !== "EASE_OUT" ? { curve: value2.curve } : {}), after !== void 0 ? { after: round13(after) } : {});
   }
   var BUZZ_ASSET_TYPES = [
     "CUSTOM",
@@ -24293,6 +24570,84 @@ ${renderSections(sections)}
     trimEnd: "PATH_TRIM_END"
   }, SPACE_3D_KEYFRAME_FIELDS);
   var VECTOR_FIELDS = ["TRANSLATION_XY", "SCALE_XY"];
+  function planFrames(frames, at, valueOf, problems) {
+    const keyframes = [];
+    for (const [k, frame3] of frames.entries()) {
+      const spot = `${at}.at[${k}]`;
+      const asked = frame3;
+      let time = asked == null ? void 0 : asked.time;
+      if (time === "playhead") {
+        time = playheadPosition();
+        if (time === void 0) {
+          problems.push(`${spot}.time is "playhead", but no Motion timeline is open \u2014 there is no playhead to read`);
+          continue;
+        }
+      }
+      if (typeof time !== "number" || !Number.isFinite(time) || time < 0) {
+        problems.push(`${spot}.time must be a number of seconds from the start, or "playhead"`);
+        continue;
+      }
+      const value2 = valueOf(asked.value, `${spot}.value`);
+      if (value2 === null) continue;
+      const easing = asked.easing === void 0 && asked.bezier === void 0 ? null : buildEasing(asked, (message) => problems.push(`${spot}: ${message}`));
+      keyframes.push(__spreadValues({
+        timelinePosition: time,
+        value: value2
+      }, easing ? { easing } : {}));
+    }
+    return keyframes;
+  }
+  var SHADER_STACKS = { fill: "fills", fills: "fills", stroke: "strokes", strokes: "strokes", effect: "effects", effects: "effects" };
+  function shaderValue(value2, at, problems) {
+    if (typeof value2 === "number" && Number.isFinite(value2)) return { type: "FLOAT", value: value2 };
+    if (typeof value2 === "boolean") return { type: "BOOL", value: value2 };
+    if (typeof value2 === "string") {
+      const colour = keyframeColour(value2, colourFrom);
+      if (colour) return { type: "COLOR", value: colour };
+    }
+    const held = value2;
+    if (held && typeof held === "object") {
+      if (typeof held.x === "number" && typeof held.y === "number") return { type: "VECTOR", value: { x: held.x, y: held.y } };
+      if (typeof held.r === "number" && typeof held.g === "number" && typeof held.b === "number") {
+        return { type: "COLOR", value: { r: held.r, g: held.g, b: held.b, a: typeof held.a === "number" ? held.a : 1 } };
+      }
+    }
+    problems.push(`${at} must be a number, { x, y }, true/false or a colour like "#0063B4" \u2014 what a shader setting can hold`);
+    return null;
+  }
+  function planShaderTrack(one, at, problems) {
+    const spec = one.shader;
+    if (!spec || typeof spec !== "object" || typeof spec.setting !== "string" || spec.setting.trim() === "") {
+      problems.push(`${at}.shader must be { setting, in?, index? } \u2014 setting is the shader setting's name or id`);
+      return null;
+    }
+    for (const key of Object.keys(spec)) {
+      if (!["setting", "in", "index"].includes(key)) {
+        problems.push(`${at}.shader.${key} is not accepted \u2014 the keys are setting, in, index`);
+        return null;
+      }
+    }
+    const stack2 = spec.in === void 0 ? "fills" : SHADER_STACKS[String(spec.in).trim().toLowerCase()];
+    if (!stack2) {
+      problems.push(`${at}.shader.in must be fill, stroke or effect`);
+      return null;
+    }
+    if (spec.index !== void 0 && (typeof spec.index !== "number" || !Number.isInteger(spec.index) || spec.index < 0)) {
+      problems.push(`${at}.shader.index must be the shader's place in its stack, 0 being the bottom`);
+      return null;
+    }
+    const target = __spreadProps(__spreadValues({ collection: stack2 }, spec.index === void 0 ? {} : { index: spec.index }), { setting: spec.setting.trim() });
+    if (one.at === null) return target;
+    if (!Array.isArray(one.at) || one.at.length === 0) {
+      problems.push(`${at}.at must be a non-empty array of { time, value } \u2014 or null to take the track off`);
+      return null;
+    }
+    const valueOf = (value2, where) => shaderValue(value2, where, problems);
+    const keyframes = planFrames(one.at, at, valueOf, problems);
+    if (keyframes.length === 0) return null;
+    const base = one.from === void 0 ? null : valueOf(one.from, `${at}.from`);
+    return __spreadProps(__spreadValues({}, target), { track: __spreadValues({ keyframes }, base ? { baseValue: base } : {}) });
+  }
   function planKeyframes(raw, where, problems) {
     if (raw === null || Array.isArray(raw) && raw.length === 0) return { step: "keyframes", tracks: [], clear: true };
     if (!Array.isArray(raw)) {
@@ -24300,15 +24655,21 @@ ${renderSections(sections)}
       return null;
     }
     const tracks = [];
+    const shaderTracks = [];
     for (const [index2, entry] of raw.entries()) {
       const at = `${where}[${index2}]`;
       const one = entry;
+      if ((one == null ? void 0 : one.shader) !== void 0) {
+        const planned = planShaderTrack(one, at, problems);
+        if (planned) shaderTracks.push(planned);
+        continue;
+      }
       const word = typeof (one == null ? void 0 : one.field) === "string" ? one.field.trim() : "";
       const property = KEYFRAME_FIELDS[word];
       const indexed = property ? null : parseIndexedField(word);
       if (!property && !indexed) {
         problems.push(
-          `${at}.field must be one of: ${Object.keys(KEYFRAME_FIELDS).join(", ")} \u2014 or fill, stroke[n], effect[n].<${EFFECT_KEYFRAME_WORDS.join("|")}>`
+          `${at}.field must be one of: ${Object.keys(KEYFRAME_FIELDS).join(", ")} \u2014 or fill, stroke[n], effect[n].<${EFFECT_KEYFRAME_WORDS.join("|")}> \u2014 or give shader: { setting } to move a shader's setting`
         );
         continue;
       }
@@ -24350,35 +24711,12 @@ ${renderSections(sections)}
         }
         return { type: "FLOAT", value: value2 };
       };
-      const keyframes = [];
-      for (const [k, frame3] of one.at.entries()) {
-        const spot = `${at}.at[${k}]`;
-        const asked = frame3;
-        let time = asked == null ? void 0 : asked.time;
-        if (time === "playhead") {
-          time = playheadPosition();
-          if (time === void 0) {
-            problems.push(`${spot}.time is "playhead", but no Motion timeline is open \u2014 there is no playhead to read`);
-            continue;
-          }
-        }
-        if (typeof time !== "number" || !Number.isFinite(time) || time < 0) {
-          problems.push(`${spot}.time must be a number of seconds from the start, or "playhead"`);
-          continue;
-        }
-        const value2 = valueOf(asked.value, `${spot}.value`);
-        if (value2 === null) continue;
-        const easing = asked.easing === void 0 && asked.bezier === void 0 ? null : buildEasing(asked, (message) => problems.push(`${spot}: ${message}`));
-        keyframes.push(__spreadValues({
-          timelinePosition: time,
-          value: value2
-        }, easing ? { easing } : {}));
-      }
+      const keyframes = planFrames(one.at, at, valueOf, problems);
       if (keyframes.length === 0) continue;
       const base = one.from === void 0 ? null : valueOf(one.from, `${at}.from`);
       tracks.push({ name, field, track: __spreadValues({ keyframes }, base ? { baseValue: base } : {}) });
     }
-    return tracks.length > 0 ? { step: "keyframes", tracks } : null;
+    return tracks.length > 0 || shaderTracks.length > 0 ? __spreadValues({ step: "keyframes", tracks }, shaderTracks.length > 0 ? { shaderTracks } : {}) : null;
   }
   function playheadPosition() {
     var _a;
@@ -24717,9 +25055,9 @@ ${renderSections(sections)}
   var GRID_ALIGN = ["MIN", "MAX", "CENTER", "STRETCH"];
   function gridSpecsOf(value2) {
     if (!Array.isArray(value2)) return [];
-    const round18 = (n) => Math.round(n * 1e3) / 1e3;
+    const round19 = (n) => Math.round(n * 1e3) / 1e3;
     const hex5 = (c) => `#${[c.r, c.g, c.b].map((n) => Math.round(n * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-    const tint2 = (grid) => __spreadValues(__spreadValues(__spreadValues({}, grid.color ? { color: hex5(grid.color) } : {}), grid.color && round18(grid.color.a) !== 0.1 ? { opacity: round18(grid.color.a) } : {}), grid.visible === false ? { visible: false } : {});
+    const tint2 = (grid) => __spreadValues(__spreadValues(__spreadValues({}, grid.color ? { color: hex5(grid.color) } : {}), grid.color && round19(grid.color.a) !== 0.1 ? { opacity: round19(grid.color.a) } : {}), grid.visible === false ? { visible: false } : {});
     return value2.map((grid) => {
       if (grid.pattern === "GRID") return __spreadValues({ square: grid.sectionSize }, tint2(grid));
       const lines = grid;
@@ -24727,9 +25065,9 @@ ${renderSections(sections)}
       const size = lines.alignment !== "STRETCH" && typeof lines.sectionSize === "number" ? lines.sectionSize : void 0;
       const defaultAlign = size === void 0 ? "STRETCH" : "MIN";
       const out = vertical ? { columns: lines.count } : { rows: lines.count };
-      if (lines.gutterSize) out.gutter = round18(lines.gutterSize);
-      if (lines.offset && lines.alignment !== "CENTER") out.margin = round18(lines.offset);
-      if (size !== void 0) out[vertical ? "width" : "height"] = round18(size);
+      if (lines.gutterSize) out.gutter = round19(lines.gutterSize);
+      if (lines.offset && lines.alignment !== "CENTER") out.margin = round19(lines.offset);
+      if (size !== void 0) out[vertical ? "width" : "height"] = round19(size);
       if (lines.alignment !== defaultAlign) out.align = lines.alignment;
       return __spreadValues(__spreadValues({}, out), tint2(lines));
     });
@@ -25647,13 +25985,13 @@ ${renderSections(sections)}
   }
 
   // src/canvas/paint-reader.ts
-  var round13 = (value2) => Math.round(value2 * 1e3) / 1e3;
+  var round14 = (value2) => Math.round(value2 * 1e3) / 1e3;
   function hex3(colour) {
     return `#${[colour.r, colour.g, colour.b].map((channel2) => Math.round(Math.min(1, Math.max(0, channel2)) * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
   }
   async function readOne(paint, nameOf) {
     var _a, _b, _c, _d, _e, _f, _g, _h;
-    const opacity = typeof paint.opacity === "number" && paint.opacity < 1 ? round13(paint.opacity) : void 0;
+    const opacity = typeof paint.opacity === "number" && paint.opacity < 1 ? round14(paint.opacity) : void 0;
     const type = String(paint.type);
     const bound = (_b = (_a = paint.boundVariables) == null ? void 0 : _a.color) == null ? void 0 : _b.id;
     if (type === "SOLID") {
@@ -25678,9 +26016,9 @@ ${renderSections(sections)}
       const stops = [];
       for (const stop of (_d = paint.gradientStops) != null ? _d : []) {
         const id = (_f = (_e = stop.boundVariables) == null ? void 0 : _e.color) == null ? void 0 : _f.id;
-        const alpha = typeof stop.color.a === "number" && stop.color.a < 1 ? round13(stop.color.a) : void 0;
+        const alpha = typeof stop.color.a === "number" && stop.color.a < 1 ? round14(stop.color.a) : void 0;
         stops.push(__spreadValues({
-          at: round13(stop.position),
+          at: round14(stop.position),
           color: id ? { variable: (_g = await nameOf(id)) != null ? _g : id } : hex3(stop.color)
         }, alpha === void 0 || id ? {} : { opacity: alpha }));
       }
@@ -25694,7 +26032,7 @@ ${renderSections(sections)}
       const spacing = paint.spacing;
       return __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
         pattern: String(paint.sourceNodeId)
-      }, paint.tileType && paint.tileType !== "RECTANGULAR" ? { tile: paint.tileType } : {}), typeof paint.scalingFactor === "number" && paint.scalingFactor !== 1 ? { scale: round13(paint.scalingFactor) } : {}), spacing && (spacing.x !== 0 || spacing.y !== 0) ? { spacing: [round13(spacing.x), round13(spacing.y)] } : {}), paint.horizontalAlignment && paint.horizontalAlignment !== "START" ? { align: paint.horizontalAlignment } : {}), opacity === void 0 ? {} : { opacity });
+      }, paint.tileType && paint.tileType !== "RECTANGULAR" ? { tile: paint.tileType } : {}), typeof paint.scalingFactor === "number" && paint.scalingFactor !== 1 ? { scale: round14(paint.scalingFactor) } : {}), spacing && (spacing.x !== 0 || spacing.y !== 0) ? { spacing: [round14(spacing.x), round14(spacing.y)] } : {}), paint.horizontalAlignment && paint.horizontalAlignment !== "START" ? { align: paint.horizontalAlignment } : {}), opacity === void 0 ? {} : { opacity });
     }
     if (type === "SHADER") {
       const settings = Object.keys((_h = paint.properties) != null ? _h : {});
@@ -25813,9 +26151,9 @@ ${renderSections(sections)}
   }
 
   // src/canvas/effect-reader.ts
-  var point = (value2) => value2 ? [round14(value2.x), round14(value2.y)] : void 0;
-  var round14 = (value2) => Math.round(value2 * 100) / 100;
-  var grainWords = (size, vector) => vector && round14(vector.x) !== round14(vector.y) ? [round14(vector.x), round14(vector.y)] : round14(size);
+  var point = (value2) => value2 ? [round15(value2.x), round15(value2.y)] : void 0;
+  var round15 = (value2) => Math.round(value2 * 100) / 100;
+  var grainWords = (size, vector) => vector && round15(vector.x) !== round15(vector.y) ? [round15(vector.x), round15(vector.y)] : round15(size);
   function colourWords(colour) {
     var _a;
     return (_a = authoredColourText(colour)) != null ? _a : formatHex({ r: colour.r, g: colour.g, b: colour.b }).toUpperCase();
@@ -25841,10 +26179,10 @@ ${renderSections(sections)}
           out.push(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
             shadow: effect.type === "DROP_SHADOW" ? "drop" : "inner",
             color: colour
-          }, effect.color.a !== 1 ? { opacity: round14(effect.color.a) } : {}), {
-            offset: [await field("offsetX", round14(effect.offset.x)), await field("offsetY", round14(effect.offset.y))],
-            radius: await field("radius", round14(effect.radius))
-          }), effect.spread ? { spread: await field("spread", round14(effect.spread)) } : {}), hidden));
+          }, effect.color.a !== 1 ? { opacity: round15(effect.color.a) } : {}), {
+            offset: [await field("offsetX", round15(effect.offset.x)), await field("offsetY", round15(effect.offset.y))],
+            radius: await field("radius", round15(effect.radius))
+          }), effect.spread ? { spread: await field("spread", round15(effect.spread)) } : {}), hidden));
           break;
         }
         case "LAYER_BLUR":
@@ -25853,9 +26191,9 @@ ${renderSections(sections)}
           const one = effect;
           out.push(__spreadValues(__spreadValues({
             blur: progressive ? "progressive" : effect.type === "LAYER_BLUR" ? "layer" : "background",
-            radius: await field("radius", round14(effect.radius))
+            radius: await field("radius", round15(effect.radius))
           }, progressive ? {
-            startRadius: round14((_e = one.startRadius) != null ? _e : 0),
+            startRadius: round15((_e = one.startRadius) != null ? _e : 0),
             from: point(one.startOffset),
             to: point(one.endOffset)
           } : {}), hidden));
@@ -25869,24 +26207,24 @@ ${renderSections(sections)}
             color: colourWords(one.color)
           }, one.secondaryColor ? { second: colourWords(one.secondaryColor) } : {}), {
             size: grainWords(one.noiseSize, one.noiseSizeVector),
-            density: round14(one.density)
-          }), one.opacity !== void 0 ? { opacity: round14(one.opacity) } : {}), hidden));
+            density: round15(one.density)
+          }), one.opacity !== void 0 ? { opacity: round15(one.opacity) } : {}), hidden));
           break;
         }
         case "TEXTURE": {
           const one = effect;
-          out.push(__spreadValues(__spreadValues({ texture: round14(one.radius), size: grainWords(one.noiseSize, one.noiseSizeVector) }, one.clipToShape ? {} : { clip: false }), hidden));
+          out.push(__spreadValues(__spreadValues({ texture: round15(one.radius), size: grainWords(one.noiseSize, one.noiseSizeVector) }, one.clipToShape ? {} : { clip: false }), hidden));
           break;
         }
         case "GLASS": {
           const one = effect;
           out.push(__spreadValues({
-            glass: round14(one.radius),
-            depth: round14(one.depth),
-            refraction: round14(one.refraction),
-            dispersion: round14(one.dispersion),
-            lightAngle: round14(one.lightAngle),
-            lightIntensity: round14(one.lightIntensity)
+            glass: round15(one.radius),
+            depth: round15(one.depth),
+            refraction: round15(one.refraction),
+            dispersion: round15(one.dispersion),
+            lightAngle: round15(one.lightAngle),
+            lightIntensity: round15(one.lightIntensity)
           }, hidden));
           break;
         }
@@ -25902,7 +26240,187 @@ ${renderSections(sections)}
     return out;
   }
 
+  // src/canvas/keyframes.ts
+  var OUR_WORDS = {
+    OPACITY: "opacity",
+    TRANSLATION_X: "x",
+    TRANSLATION_Y: "y",
+    TRANSLATION_XY: "move",
+    ROTATION: "rotation",
+    SCALE_X: "scaleX",
+    SCALE_Y: "scaleY",
+    SCALE_XY: "scale",
+    WIDTH: "width",
+    HEIGHT: "height",
+    CORNER_RADIUS: "cornerRadius",
+    RECTANGLE_TOP_LEFT_CORNER_RADIUS: "topLeftRadius",
+    RECTANGLE_TOP_RIGHT_CORNER_RADIUS: "topRightRadius",
+    RECTANGLE_BOTTOM_LEFT_CORNER_RADIUS: "bottomLeftRadius",
+    RECTANGLE_BOTTOM_RIGHT_CORNER_RADIUS: "bottomRightRadius",
+    STROKE_WEIGHT: "strokeWeight",
+    BORDER_TOP_WEIGHT: "strokeTop",
+    BORDER_BOTTOM_WEIGHT: "strokeBottom",
+    BORDER_LEFT_WEIGHT: "strokeLeft",
+    BORDER_RIGHT_WEIGHT: "strokeRight",
+    STACK_SPACING: "gap",
+    STACK_COUNTER_SPACING: "wrapGap",
+    STACK_PADDING_LEFT: "paddingLeft",
+    STACK_PADDING_TOP: "paddingTop",
+    STACK_PADDING_RIGHT: "paddingRight",
+    STACK_PADDING_BOTTOM: "paddingBottom",
+    GRID_ROW_GAP: "rowGap",
+    GRID_COLUMN_GAP: "columnGap",
+    PATH_TRIM_START: "trimStart",
+    PATH_TRIM_END: "trimEnd",
+    TRANSFORM_3D_TRANSLATION_Z: "translateZ",
+    TRANSFORM_3D_ROTATION_X: "rotateX",
+    TRANSFORM_3D_ROTATION_Y: "rotateY",
+    TRANSFORM_3D_ROTATION_Z: "rotateZ",
+    SCENE_3D_PERSPECTIVE: "perspective"
+  };
+  var plainValue = (held) => {
+    const one = held;
+    if (!one || one.value === void 0) return void 0;
+    if (one.type === "COLOR") return formatKeyframeColour(one.value);
+    return one.value;
+  };
+  var SHADER_SETTING_NAMES_KEY = "shaderSettingNames";
+  function shaderSettingNames(node) {
+    var _a;
+    try {
+      const raw = (_a = node.getPluginData) == null ? void 0 : _a.call(node, SHADER_SETTING_NAMES_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+  function readFrames(binding) {
+    var _a;
+    const held = binding;
+    const frames = Array.isArray(held == null ? void 0 : held.keyframes) ? held.keyframes : [];
+    const at = [];
+    for (const frame3 of frames) {
+      const one = frame3;
+      if (typeof (one == null ? void 0 : one.timelinePosition) !== "number") continue;
+      const value2 = plainValue(one.value);
+      if (value2 === void 0) continue;
+      at.push(__spreadValues({
+        time: one.timelinePosition,
+        value: value2
+      }, ((_a = one.easing) == null ? void 0 : _a.type) && one.easing.type !== "CUSTOM_CUBIC_BEZIER" ? { easing: one.easing.type } : {}));
+    }
+    if (at.length === 0) return null;
+    const from = plainValue(held == null ? void 0 : held.baseValue);
+    return __spreadProps(__spreadValues({}, from === void 0 ? {} : { from }), { at });
+  }
+  function readTrack(word, binding) {
+    const frames = readFrames(binding);
+    return frames ? __spreadValues({ field: word }, frames) : null;
+  }
+  function readShaderTracks(collection, index2, slot, out) {
+    const settings = slot == null ? void 0 : slot.properties;
+    if (!settings || typeof settings !== "object") return false;
+    const word = collection === "fills" ? "fill" : collection === "strokes" ? "stroke" : "effect";
+    for (const [setting, binding] of Object.entries(settings)) {
+      const frames = readFrames(binding);
+      if (frames) out.push(__spreadValues({ shader: { setting, in: word, index: Number(index2) } }, frames));
+    }
+    return true;
+  }
+  function readKeyframes(tracks) {
+    if (typeof tracks !== "object" || tracks === null) return {};
+    const out = [];
+    for (const [name, binding] of Object.entries(tracks)) {
+      if (binding === void 0 || binding === null) continue;
+      if (name === "fills" || name === "strokes") {
+        for (const [index2, paint] of Object.entries(binding)) {
+          if (readShaderTracks(name, index2, paint, out)) continue;
+          const word2 = indexedWord(name, Number(index2));
+          const track2 = word2 ? readTrack(word2, paint) : null;
+          if (track2) out.push(track2);
+        }
+        continue;
+      }
+      if (name === "effects") {
+        for (const [index2, fields2] of Object.entries(binding)) {
+          if (readShaderTracks("effects", index2, fields2, out)) continue;
+          for (const [field, effect] of Object.entries(fields2 != null ? fields2 : {})) {
+            const word2 = indexedWord("effects", Number(index2), field);
+            const track2 = word2 ? readTrack(word2, effect) : null;
+            if (track2) out.push(track2);
+          }
+        }
+        continue;
+      }
+      const word = OUR_WORDS[name];
+      if (!word) continue;
+      const track = readTrack(word, binding);
+      if (track) out.push(track);
+    }
+    return out.length > 0 ? { keyframes: out } : {};
+  }
+
   // src/agent/paints.ts
+  var borrowedNames = /* @__PURE__ */ new Map();
+  function borrowedSettingName(paintId, settingId) {
+    const key = `${paintId}|${settingId}`;
+    if (borrowedNames.has(key)) return borrowedNames.get(key);
+    let found;
+    try {
+      let budget = 4e3;
+      const visit = (node) => {
+        var _a, _b;
+        if (budget-- <= 0) return true;
+        const bag = node;
+        for (const stack2 of ["fills", "strokes", "effects"]) {
+          const entries = bag[stack2];
+          if (!Array.isArray(entries)) continue;
+          for (const entry of entries) {
+            const shader = entry;
+            if ((shader == null ? void 0 : shader.type) !== "SHADER" || shader.id !== paintId) continue;
+            const name = (_b = (_a = shader.propertyMetadata) == null ? void 0 : _a[settingId]) == null ? void 0 : _b.name;
+            if (name) {
+              found = name;
+              return true;
+            }
+          }
+        }
+        const children = bag.children;
+        if (Array.isArray(children)) {
+          for (const child of children) if (visit(child)) return true;
+        }
+        return false;
+      };
+      if (typeof figma !== "undefined") {
+        for (const top of figma.currentPage.children) if (visit(top)) break;
+      }
+    } catch (e) {
+    }
+    if (found) borrowedNames.set(key, found);
+    return found;
+  }
+  function animatedShaderProperties(node, collection, index2) {
+    var _a, _b, _c, _d;
+    try {
+      const tracks = node == null ? void 0 : node.manualKeyframeTracks;
+      const slot = (_a = tracks == null ? void 0 : tracks[collection]) == null ? void 0 : _a[index2];
+      const properties = slot == null ? void 0 : slot.properties;
+      if (!properties || typeof properties !== "object") return void 0;
+      const found = properties;
+      if (Object.keys(found).length === 0) return void 0;
+      const kept2 = shaderSettingNames(node);
+      const paintId = (_c = (_b = node[collection]) == null ? void 0 : _b[index2]) == null ? void 0 : _c.id;
+      const out = {};
+      for (const [settingId, track] of Object.entries(found)) {
+        const name = (_d = kept2[settingId]) != null ? _d : typeof paintId === "string" ? borrowedSettingName(paintId, settingId) : void 0;
+        out[settingId] = name ? { baseValue: track == null ? void 0 : track.baseValue, keyframes: track == null ? void 0 : track.keyframes, name } : track;
+      }
+      return out;
+    } catch (e) {
+      return void 0;
+    }
+  }
   var paintChannel = (value2) => Math.round(value2 * 255).toString(16).toUpperCase().padStart(2, "0");
   var paintHex = (color) => `#${paintChannel(color.r)}${paintChannel(color.g)}${paintChannel(color.b)}`;
   var figmaVariableName = async (id) => {
@@ -25936,7 +26454,7 @@ ${renderSections(sections)}
     for (const [key, item] of Object.entries(record3)) out[key] = await nameAliasesWithin(item);
     return out;
   }
-  async function describeShader(shader, definitions) {
+  async function describeShader(shader, definitions, animated) {
     var _a, _b;
     const id = typeof (shader == null ? void 0 : shader.id) === "string" ? shader.id : "";
     const known = definitions == null ? void 0 : definitions.get(id);
@@ -25946,20 +26464,37 @@ ${renderSections(sections)}
       id,
       named: known !== void 0 || Object.keys(metadata).length > 0
     }, known ? { name: known.name, kind: known.type } : {});
-    const properties = shader == null ? void 0 : shader.properties;
-    if (properties && typeof properties === "object") {
-      const described = [];
-      for (const [defId, value2] of Object.entries(properties)) {
-        const definition = (_b = metadata[defId]) != null ? _b : declared[defId];
-        described.push(__spreadProps(__spreadValues(__spreadValues(__spreadValues({
-          id: defId
-        }, definition ? { name: definition.name, type: definition.type } : {}), (definition == null ? void 0 : definition.defaultValue) === void 0 ? {} : { default: definition.defaultValue }), (definition == null ? void 0 : definition.description) ? { description: definition.description } : {}), {
-          value: await nameAliasesWithin(value2)
-        }));
-      }
-      if (described.length > 0) out.properties = described;
+    const properties = (shader == null ? void 0 : shader.properties) && typeof shader.properties === "object" ? shader.properties : {};
+    const described = [];
+    const byIds = sameShaderInCatalogue([...Object.keys(properties), ...Object.keys(animated != null ? animated : {})], definitions);
+    const named = (defId) => {
+      var _a2, _b2, _c;
+      const definition = (_b2 = (_a2 = metadata[defId]) != null ? _a2 : declared[defId]) != null ? _b2 : byIds == null ? void 0 : byIds[defId];
+      const keptName = definition ? void 0 : (_c = animated == null ? void 0 : animated[defId]) == null ? void 0 : _c.name;
+      return __spreadValues(__spreadValues(__spreadValues(__spreadValues({
+        id: defId
+      }, definition ? { name: definition.name, type: definition.type } : {}), keptName ? { name: keptName } : {}), (definition == null ? void 0 : definition.defaultValue) === void 0 ? {} : { default: definition.defaultValue }), (definition == null ? void 0 : definition.description) ? { description: definition.description } : {});
+    };
+    const moving = (track) => track ? { animated: true, keyframes: Array.isArray(track.keyframes) ? track.keyframes.length : 0 } : {};
+    for (const [defId, value2] of Object.entries(properties)) {
+      described.push(__spreadValues(__spreadProps(__spreadValues({}, named(defId)), { value: await nameAliasesWithin(value2) }), moving(animated == null ? void 0 : animated[defId])));
     }
+    for (const [defId, track] of Object.entries(animated != null ? animated : {})) {
+      if (defId in properties) continue;
+      described.push(__spreadValues(__spreadProps(__spreadValues({}, named(defId)), { value: await nameAliasesWithin((_b = track == null ? void 0 : track.baseValue) == null ? void 0 : _b.value) }), moving(track)));
+    }
+    if (described.length > 0) out.properties = described;
     return out;
+  }
+  function sameShaderInCatalogue(settingIds, definitions) {
+    var _a;
+    if (!definitions || settingIds.length === 0) return void 0;
+    const matches2 = [];
+    for (const shader of definitions.values()) {
+      const declared = (_a = shader.propertyDefinitions) != null ? _a : {};
+      if (settingIds.every((id) => declared[id] !== void 0)) matches2.push(declared);
+    }
+    return matches2.length === 1 ? matches2[0] : void 0;
   }
   function imagePlacement(scaleMode, transform, scalingFactor) {
     if (scaleMode === "FILL") return { fit: "cover" };
@@ -25972,14 +26507,14 @@ ${renderSections(sections)}
     if (!Array.isArray(rows) || rows.length < 2 || !Array.isArray(rows[0]) || !Array.isArray(rows[1])) return null;
     const [[a, b, tx], [c, d, ty]] = rows;
     if (b !== 0 || c !== 0 || !a || !d) return { fit: "matrix" };
-    const round18 = (value2) => Math.round(value2 * 1e4) / 1e4;
+    const round19 = (value2) => Math.round(value2 * 1e4) / 1e4;
     return {
       fit: "crop",
-      scale: { x: round18(1 / a), y: round18(1 / d) },
-      offset: { x: round18(-tx / a), y: round18(-ty / d) }
+      scale: { x: round19(1 / a), y: round19(1 / d) },
+      offset: { x: round19(-tx / a), y: round19(-ty / d) }
     };
   }
-  async function describePaint(paint, index2, shaders, resolve2) {
+  async function describePaint(paint, index2, shaders, resolve2, shaderTracks) {
     var _a, _b;
     const out = { type: String((_a = paint == null ? void 0 : paint.type) != null ? _a : "UNKNOWN"), index: index2 };
     if ((paint == null ? void 0 : paint.visible) === false) out.visible = false;
@@ -26036,7 +26571,7 @@ ${renderSections(sections)}
       return out;
     }
     if ((paint == null ? void 0 : paint.type) === "SHADER") {
-      out.shader = await describeShader(paint, shaders);
+      out.shader = await describeShader(paint, shaders, shaderTracks);
       out.bound = null;
       return out;
     }
@@ -27998,7 +28533,7 @@ ${scripts}`, "");
           const shaders2 = paints2.some((paint) => (paint == null ? void 0 : paint.type) === "SHADER") ? await shadersFor(catalogue) : void 0;
           const out = [];
           for (const [index2, paint] of paints2.entries()) {
-            const described = await describePaint(paint, index2, shaders2);
+            const described = await describePaint(paint, index2, shaders2, void 0, animatedShaderProperties(node, field, index2));
             if (described.shader) seen2.set(described.shader.id, described.shader);
             out.push(described);
           }
@@ -28045,11 +28580,13 @@ ${scripts}`, "");
         const effects = root.effects;
         const shaderEffects = [];
         if (Array.isArray(effects)) {
-          for (const effect of effects) {
+          for (const [index2, effect] of effects.entries()) {
             if ((effect == null ? void 0 : effect.type) !== "SHADER") continue;
             const described = await describeShader(
               effect,
-              await shadersFor(catalogue)
+              await shadersFor(catalogue),
+              // An animated setting is not in `properties` any more (typings 1.143.0) — it is here.
+              animatedShaderProperties(root, "effects", index2)
             );
             seen2.set(described.id, described);
             shaderEffects.push({
@@ -28755,9 +29292,9 @@ ${scripts}`, "");
   }
   function value(raw, token2) {
     if (typeof raw !== "number" || !Number.isFinite(raw)) return void 0;
-    return token2 ? { token: token2, value: round15(raw) } : { value: round15(raw) };
+    return token2 ? { token: token2, value: round16(raw) } : { value: round16(raw) };
   }
-  function round15(n) {
+  function round16(n) {
     return Math.round(n * 100) / 100;
   }
   function collapse2(parts) {
@@ -28808,7 +29345,7 @@ ${scripts}`, "");
     return out;
   }
   async function appearanceOf(source, resolve2, text6) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
     const out = {};
     const scalars = await tokensByField(source, SCALAR_TOKEN_FIELDS, resolve2);
     const layout = await tokensByField(source, LAYOUT_TOKEN_FIELDS, resolve2);
@@ -28826,7 +29363,7 @@ ${scripts}`, "");
       if (weight) out.strokeWeight = weight;
       if (typeof source.strokeAlign === "string") out.strokeAlign = source.strokeAlign;
       if (Array.isArray(source.dashPattern) && source.dashPattern.length > 0) {
-        out.dashPattern = source.dashPattern.map(round15);
+        out.dashPattern = source.dashPattern.map(round16);
       }
       if (typeof source.strokeCap === "string" && source.strokeCap !== "NONE") out.strokeCap = source.strokeCap;
       if (typeof source.strokeJoin === "string" && source.strokeJoin !== "MITER") out.strokeJoin = source.strokeJoin;
@@ -28842,7 +29379,7 @@ ${scripts}`, "");
       out.radius = radius;
     }
     const smoothing = plain(source.cornerSmoothing);
-    if (smoothing !== void 0 && smoothing > 0) out.cornerSmoothing = round15(smoothing);
+    if (smoothing !== void 0 && smoothing > 0) out.cornerSmoothing = round16(smoothing);
     const effects = await readEffects(source.effects);
     if (effects && effects.length > 0) out.effects = effects;
     const opacity = plain(source.opacity);
@@ -28854,9 +29391,19 @@ ${scripts}`, "");
       out.blendMode = source.blendMode;
     }
     const rotation = plain(source.rotation);
-    if (rotation !== void 0 && round15(rotation) !== 0) out.rotation = round15(rotation);
+    if (rotation !== void 0 && round16(rotation) !== 0) out.rotation = round16(rotation);
     const space = describe3d(source);
     if (space) Object.assign(out, space);
+    if (((_m = out.scene3d) == null ? void 0 : _m.preserve3d) === true) {
+      const dead = [];
+      for (const key of ["opacity", "blendMode", "effects"]) {
+        if (out[key] === void 0) continue;
+        delete out[key];
+        dead.push(key);
+      }
+      if (source.clipsContent === true) dead.push("clip");
+      if (dead.length > 0) out.notRendered = dead;
+    }
     if (source.isMask === true) out.mask = { type: typeof source.maskType === "string" ? source.maskType : "ALPHA" };
     if (Object.keys(layout).length > 0) out.layoutTokens = layout;
     if (text6) out.typography = typeStyleOf(text6, await typeTokenNames(text6, resolve2));
@@ -30149,7 +30696,7 @@ ${scripts}`, "");
   function pinnableId(id) {
     return typeof id === "string" && !id.includes(";");
   }
-  function round16(value2) {
+  function round17(value2) {
     return Math.round(value2 * 100) / 100;
   }
   function pointsOf(box2) {
@@ -30159,7 +30706,7 @@ ${scripts}`, "");
     const bottom = box2.y + box2.height;
     const midX = box2.x + box2.width / 2;
     const midY = box2.y + box2.height / 2;
-    const at = (x, y) => ({ x: round16(x), y: round16(y) });
+    const at = (x, y) => ({ x: round17(x), y: round17(y) });
     return {
       center: at(midX, midY),
       "top-left": at(left, top),
@@ -30200,7 +30747,7 @@ ${scripts}`, "");
       );
     }
     const enclosing = enclosingFrame(node);
-    const rotated = typeof node.rotation === "number" && Math.abs(round16(node.rotation)) > 0.01;
+    const rotated = typeof node.rotation === "number" && Math.abs(round17(node.rotation)) > 0.01;
     if (!enclosing) {
       return __spreadValues({
         node: { id: node.id, name: node.name, type: node.type },
@@ -30232,7 +30779,7 @@ ${scripts}`, "");
     }, rotated ? { rotated: true } : {});
   }
   function roundBox(box2) {
-    return { x: round16(box2.x), y: round16(box2.y), width: round16(box2.width), height: round16(box2.height) };
+    return { x: round17(box2.x), y: round17(box2.y), width: round17(box2.width), height: round17(box2.height) };
   }
   function pinFor(anchor, point2 = "center") {
     const offset = anchor.offsets[point2];
@@ -33782,7 +34329,7 @@ ${scripts}`, "");
   ];
 
   // src/agent/props-vocabulary.ts
-  var INJECTED = '[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer\'s mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"sizing","type":"{ horizontal?: SizingMode; vertical?: SizingMode }","note":"How each axis is sized inside the parent \u2014 the same thing `layout.sizing` says, and the word a read gives back."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see `layout.sizing`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; `layout.sizing` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent\'s auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. `null` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"repeat","type":"RepeatSpec | RepeatSpec[]","note":"TRANSFORM_GROUP only (Figma Draw\'s repeat): `{ type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }`, applied to every child \u2014 or a list, one per child. `offset` is a distance, also for a radial repeat, which spaces its copies by itself."},{"name":"decoration","type":"DecorationSpec","note":"TEXT only: how the underline or strikethrough is drawn \u2014 `{ style: SOLID|WAVY|DOTTED, offset, thickness, color, skipInk }`. Offset and thickness take pixels, `\\"10%\\"` of the font size or `\\"AUTO\\"`; color takes a colour or `\\"AUTO\\"`. `textDecoration` still says whether there is one."},{"name":"textStart","type":"[number, number]","note":"TEXT_PATH only: where on the outline the text starts \u2014 `[segment, position]`, the position 0 to 1 along that segment. The same pair `NODE_CREATE` takes as `at`."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"GridAlignWord | { horizontal?: GridAlignWord; vertical?: GridAlignWord }","note":"GRID only: how the child sits in its cell \u2014 one word for the vertical axis, or `{ horizontal, vertical }` for both."},{"name":"gridCell","type":"{ row: number; column: number }","note":"GRID only: the cell the child\'s top-left corner sits in, counted from 0. Meaningful when the grid\'s `positioning` is `MANUAL`; an auto-flowing grid places its children itself."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up; \\"none\\" or null clears it."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes `fill` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"\'INSIDE\' | \'OUTSIDE\' | \'CENTER\'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"\'NONE\' | \'ROUND\' | \'SQUARE\' | \'ARROW_LINES\' | \'ARROW_EQUILATERAL\'","note":"How an open end is finished."},{"name":"strokeJoin","type":"\'MITER\' | \'BEVEL\' | \'ROUND\'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. `[]` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw\'s brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. `[]` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. `[]` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Animation styles on this node \u2014 Figma\'s own, or this file\'s custom ones. `null` or `[]` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"FontSpec","note":"Static font name or variable-font family plus OpenType axes."},{"name":"textAlign","type":"\'LEFT\' | \'CENTER\' | \'RIGHT\' | \'JUSTIFIED\'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | \'AUTO\' | `${number}%` | `${number}px`","note":"Pixels (`16` or `\\"16px\\"`), a percentage of the font size like `\\"150%\\"`, or AUTO to follow the font."},{"name":"letterSpacing","type":"number | `${number}%` | `${number}px`","note":"Pixels between characters (`1` or `\\"1px\\"`), or a percentage like `\\"5%\\"`; negative tightens."},{"name":"autoResize","type":"\'NONE\' | \'WIDTH_AND_HEIGHT\' | \'HEIGHT\' | \'TRUNCATE\'","note":"Whether the box follows the text, and in which direction."},{"name":"verticalAlign","type":"\'TOP\' | \'CENTER\' | \'BOTTOM\'","note":"Where the text sits in a box taller than itself."},{"name":"textCase","type":"\'ORIGINAL\' | \'UPPER\' | \'LOWER\' | \'TITLE\' | \'SMALL_CAPS\' | \'SMALL_CAPS_FORCED\'","note":"Capitals, small capitals, or the letters as typed."},{"name":"textDecoration","type":"\'NONE\' | \'UNDERLINE\' | \'STRIKETHROUGH\'","note":"A line under the words, through them, or neither."},{"name":"paragraphSpacing","type":"number","note":"Space between paragraphs, in pixels."},{"name":"paragraphIndent","type":"number","note":"How far the first line of each paragraph is pushed in."},{"name":"truncate","type":"boolean","note":"Cut the text with an ellipsis when it will not fit."},{"name":"maxLines","type":"number | null","note":"Stop after this many lines. `null` lets it run on."},{"name":"link","type":"string | null","note":"A link on the whole layer. `null` removes it."},{"name":"listSpacing","type":"number","note":"Space between list items."},{"name":"hangingPunctuation","type":"boolean","note":"Whether punctuation may hang outside the text box."},{"name":"hangingList","type":"boolean","note":"Whether list markers hang outside the text box."},{"name":"leadingTrim","type":"\'NONE\' | \'CAP_HEIGHT\'","note":"Trim the space a font reserves above and below its letters."},{"name":"autoRename","type":"boolean","note":"Whether the layer renames itself when the text changes."},{"name":"textWrap","type":"\'AUTO\' | \'BALANCE\' | \'PRETTY\'","note":"How lines are broken: `AUTO`, `BALANCE` (even lines) or `PRETTY` (no orphans)."},{"name":"strokeProfile","type":"\'UNIFORM\' | \'WEDGE\' | \'TAPER\' | \'QUARTER_TAPER\' | \'EYE\' | \'MIRRORED_TAPER\' | Array<{ at: number; width: number }> | null","note":"How the stroke\'s width varies along its length \u2014 a named profile, or points of your own."},{"name":"keyframes","type":"KeyframeTrack[] | null","note":"Movement on a timeline: `[{ field: \\"opacity\\", from: 0, at: [{ time: 0, value: 0 }, \u2026] }]`. A `time` of `\\"playhead\\"` is wherever the designer has the Motion timeline parked. `field` is a property (`x`, `gap`\u2026), a paint\'s colour (`fill`, `stroke[1]`) or an effect\'s setting (`effect.radius`, `effect[1].color`). `at: null` takes that track off; `[]` or `null` takes them all off."},{"name":"timeline","type":"number","note":"How long this node\'s timeline runs, in seconds."},{"name":"overrides","type":"Array<{ at: string; props: unknown }>","note":"INSTANCE only: what the designer changed INSIDE it \u2014 `[{ at: \\"<child id within the instance>\\", props }]`."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE: throw away every override first. SLOT: put back the content the component\'s slot ships with."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin\'s own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma\'s parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: \'NONZERO\' | \'EVENODD\' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. `null` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"\'NONE\' | \'HORIZONTAL\' | \'VERTICAL\' | \'BOTH\'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame\'s first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent\'s children it sits; 0 is first."},{"name":"shapeType","type":"(typeof SHAPE_TYPES)[number]","note":"FigJam SHAPE_WITH_TEXT: which shape \u2014 SQUARE, DIAMOND, ENG_DATABASE, SPEECH_BUBBLE\u2026"},{"name":"code","type":"string","note":"FigJam CODE_BLOCK: the code itself."},{"name":"codeLanguage","type":"string","note":"FigJam CODE_BLOCK: which language it is highlighted as \u2014 TYPESCRIPT, PYTHON, SQL\u2026"},{"name":"wide","type":"boolean","note":"FigJam STICKY: the wide rectangle rather than the square."},{"name":"authorVisible","type":"boolean","note":"FigJam STICKY: whether the author\'s name shows on it."},{"name":"connector","type":"ConnectorSpec","note":"FigJam CONNECTOR: what it joins \u2014 `{ start, end, line, startCap, endCap }`; an end is a node id, `{ node, magnet }`, `{ node, at: [x, y] }` or a canvas point `[x, y]`."},{"name":"table","type":"TableSpec","note":"FigJam TABLE: `{ rows, columns, cells, columnWidths, rowHeights }` \u2014 `null` in cells leaves one alone."},{"name":"skipped","type":"boolean","note":"Slides SLIDE: left out of the presentation, still in the deck."},{"name":"transition","type":"TransitionSpec","note":"Slides SLIDE: how it arrives \u2014 a style word, or `{ style, duration, curve, after }`."},{"name":"stuckTo","type":"string | null","note":"FigJam: the node this one is stuck to (a sticky on a frame, a stamp on a sticky); `null` peels it off."},{"name":"assetType","type":"(typeof BUZZ_ASSET_TYPES)[number]","note":"Buzz: what the asset is for \u2014 INSTA_STORY, YOUTUBE_THUMBNAIL, CUSTOM\u2026"}]';
+  var INJECTED = '[{"name":"name","type":"string","note":"What the layer is called in the panel."},{"name":"visible","type":"boolean","note":"Hidden layers still exist, still export, and still hold everything they hold."},{"name":"locked","type":"boolean","note":"Locked against the designer\'s mouse, not against this vocabulary."},{"name":"opacity","type":"number","note":"0 to 1."},{"name":"x","type":"number","note":"Position within the parent. In an auto-layout parent the layout decides instead."},{"name":"y","type":"number","note":"Position within the parent, downwards."},{"name":"sizing","type":"{ horizontal?: SizingMode; vertical?: SizingMode }","note":"How each axis is sized inside the parent \u2014 the same thing `layout.sizing` says, and the word a read gives back."},{"name":"width","type":"number","note":"A size in pixels. On an auto-layout frame this pins that axis; see `layout.sizing`."},{"name":"height","type":"number","note":"A height in pixels. On a hugging frame this pins it; `layout.sizing` gives it back."},{"name":"rotation","type":"number","note":"Degrees, -180 to 180."},{"name":"transform3d","type":"Transform3dProps | null","note":"Depth and tilt, always in Figma\'s order translateZ \u2192 rotateX \u2192 rotateY \u2192 rotateZ: `{ translateZ: 40, rotateY: 30 }`, pixels and degrees. A number left out keeps what the layer has, or 0. `backfaceVisible: false` hides the layer when it faces away; `visible: false` switches the transform off and keeps its numbers. `\\"none\\"` or `null` removes it, and with it the layer\'s 3D keyframe tracks. An imported (FREEFORM) transform can be read and replaced, never written. Beta in Figma\'s API."},{"name":"transformOrigin","type":"{ x?: number | string; y?: number | string }","note":"The point a 3D transform turns around, measured from the layer\'s top-left: `{ x: 0, y: \\"50%\\" }` is a door hinge. A number is pixels, `\\"50%\\"` a share of the width or height; an axis left out is the centre, `\\"50%\\"`."},{"name":"scene3d","type":"Scene3dProps | null","note":"FRAME, COMPONENT and INSTANCE only: the 3D space the children stand in \u2014 `{ perspective: 800, preserve3d: true }`. `perspective` is a distance in pixels and -1 switches it off. `preserve3d` lets children overlap by depth instead of layer order, and stops this container\'s own opacity, blend mode, effects and clipping from rendering. `\\"none\\"` or `null` clears it. Beta in Figma\'s API."},{"name":"clipsContent","type":"boolean","note":"Whether a frame hides what sticks out of it."},{"name":"cornerRadius","type":"number | { topLeft?: number; topRight?: number; bottomRight?: number; bottomLeft?: number }","note":"One number for every corner, or the corners that differ."},{"name":"constraints","type":"{ horizontal?: ConstraintKind; vertical?: ConstraintKind }","note":"How the layer holds on when its parent resizes."},{"name":"absolute","type":"boolean","note":"A child that ignores its parent\'s auto-layout and sits where x and y put it."},{"name":"minWidth","type":"number | null","note":"A width the layout may not go under. `null` removes the bound."},{"name":"maxWidth","type":"number | null","note":"A width the layout may not exceed \u2014 how a card stops growing with its text."},{"name":"minHeight","type":"number | null","note":"A height the layout may not go under."},{"name":"maxHeight","type":"number | null","note":"A height the layout may not exceed; the content then scrolls or clips."},{"name":"repeat","type":"RepeatSpec | RepeatSpec[]","note":"TRANSFORM_GROUP only (Figma Draw\'s repeat): `{ type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }`, applied to every child \u2014 or a list, one per child. `offset` is a distance, also for a radial repeat, which spaces its copies by itself."},{"name":"decoration","type":"DecorationSpec","note":"TEXT only: how the underline or strikethrough is drawn \u2014 `{ style: SOLID|WAVY|DOTTED, offset, thickness, color, skipInk }`. Offset and thickness take pixels, `\\"10%\\"` of the font size or `\\"AUTO\\"`; color takes a colour or `\\"AUTO\\"`. `textDecoration` still says whether there is one."},{"name":"textStart","type":"[number, number]","note":"TEXT_PATH only: where on the outline the text starts \u2014 `[segment, position]`, the position 0 to 1 along that segment. The same pair `NODE_CREATE` takes as `at`."},{"name":"gridSpan","type":"{ rows?: number; columns?: number }","note":"GRID only: how many tracks this child covers."},{"name":"gridAlign","type":"GridAlignWord | { horizontal?: GridAlignWord; vertical?: GridAlignWord }","note":"GRID only: how the child sits in its cell \u2014 one word for the vertical axis, or `{ horizontal, vertical }` for both."},{"name":"gridCell","type":"{ row: number; column: number }","note":"GRID only: the cell the child\'s top-left corner sits in, counted from 0. Meaningful when the grid\'s `positioning` is `MANUAL`; an auto-flowing grid places its children itself."},{"name":"layout","type":"LayoutProps","note":"Auto-layout: direction, spacing, padding, alignment and how each axis is sized."},{"name":"fill","type":"PaintRef","note":"What the layer is painted with. A list is a stack of layers, bottom-up; \\"none\\" or null clears it."},{"name":"stroke","type":"PaintRef","note":"What the outline is painted with \u2014 the same shapes `fill` takes."},{"name":"strokeWeight","type":"number","note":"The line itself: how thick, where it sits, how it ends and turns."},{"name":"strokeAlign","type":"\'INSIDE\' | \'OUTSIDE\' | \'CENTER\'","note":"Which side of the path the line sits on."},{"name":"strokeCap","type":"\'NONE\' | \'ROUND\' | \'SQUARE\' | \'ARROW_LINES\' | \'ARROW_EQUILATERAL\'","note":"How an open end is finished."},{"name":"strokeJoin","type":"\'MITER\' | \'BEVEL\' | \'ROUND\'","note":"How a corner is turned."},{"name":"strokeDashes","type":"number[]","note":"A dash pattern: [dash, gap, \u2026]. `[]` is a solid line."},{"name":"brush","type":"BrushSpec","note":"What the stroke is drawn WITH \u2014 Figma Draw\'s brushes and its variable-width stroke."},{"name":"effects","type":"EffectSpec[]","note":"Shadows and blurs, in order. `[]` removes them."},{"name":"grid","type":"GridSpec[]","note":"Layout grids on a frame. `[]` removes them."},{"name":"animation","type":"AnimationSpec | AnimationSpec[] | null","note":"Animation styles on this node \u2014 Figma\'s own, or this file\'s custom ones. `null` or `[]` removes what it has."},{"name":"blendMode","type":"string","note":"How the layer mixes with what is under it: MULTIPLY, SCREEN, OVERLAY and the rest."},{"name":"text","type":"string","note":"TEXT only: the characters themselves."},{"name":"fontSize","type":"number","note":"Pixels."},{"name":"fontName","type":"FontSpec","note":"Static font name or variable-font family plus OpenType axes."},{"name":"textAlign","type":"\'LEFT\' | \'CENTER\' | \'RIGHT\' | \'JUSTIFIED\'","note":"Horizontal alignment within the text box."},{"name":"lineHeight","type":"number | \'AUTO\' | `${number}%` | `${number}px`","note":"Pixels (`16` or `\\"16px\\"`), a percentage of the font size like `\\"150%\\"`, or AUTO to follow the font."},{"name":"letterSpacing","type":"number | `${number}%` | `${number}px`","note":"Pixels between characters (`1` or `\\"1px\\"`), or a percentage like `\\"5%\\"`; negative tightens."},{"name":"autoResize","type":"\'NONE\' | \'WIDTH_AND_HEIGHT\' | \'HEIGHT\' | \'TRUNCATE\'","note":"Whether the box follows the text, and in which direction."},{"name":"verticalAlign","type":"\'TOP\' | \'CENTER\' | \'BOTTOM\'","note":"Where the text sits in a box taller than itself."},{"name":"textCase","type":"\'ORIGINAL\' | \'UPPER\' | \'LOWER\' | \'TITLE\' | \'SMALL_CAPS\' | \'SMALL_CAPS_FORCED\'","note":"Capitals, small capitals, or the letters as typed."},{"name":"textDecoration","type":"\'NONE\' | \'UNDERLINE\' | \'STRIKETHROUGH\'","note":"A line under the words, through them, or neither."},{"name":"paragraphSpacing","type":"number","note":"Space between paragraphs, in pixels."},{"name":"paragraphIndent","type":"number","note":"How far the first line of each paragraph is pushed in."},{"name":"truncate","type":"boolean","note":"Cut the text with an ellipsis when it will not fit."},{"name":"maxLines","type":"number | null","note":"Stop after this many lines. `null` lets it run on."},{"name":"link","type":"string | null","note":"A link on the whole layer. `null` removes it."},{"name":"listSpacing","type":"number","note":"Space between list items."},{"name":"hangingPunctuation","type":"boolean","note":"Whether punctuation may hang outside the text box."},{"name":"hangingList","type":"boolean","note":"Whether list markers hang outside the text box."},{"name":"leadingTrim","type":"\'NONE\' | \'CAP_HEIGHT\'","note":"Trim the space a font reserves above and below its letters."},{"name":"autoRename","type":"boolean","note":"Whether the layer renames itself when the text changes."},{"name":"textWrap","type":"\'AUTO\' | \'BALANCE\' | \'PRETTY\'","note":"How lines are broken: `AUTO`, `BALANCE` (even lines) or `PRETTY` (no orphans)."},{"name":"strokeProfile","type":"\'UNIFORM\' | \'WEDGE\' | \'TAPER\' | \'QUARTER_TAPER\' | \'EYE\' | \'MIRRORED_TAPER\' | Array<{ at: number; width: number }> | null","note":"How the stroke\'s width varies along its length \u2014 a named profile, or points of your own."},{"name":"keyframes","type":"KeyframeTrack[] | null","note":"Movement on a timeline: `[{ field: \\"opacity\\", from: 0, at: [{ time: 0, value: 0 }, \u2026] }]`. A `time` of `\\"playhead\\"` is wherever the designer has the Motion timeline parked. `field` is a property (`x`, `gap`\u2026), a paint\'s colour (`fill`, `stroke[1]`) or an effect\'s setting (`effect.radius`, `effect[1].color`). A shader\'s setting moves the same way, with `shader: { setting: \\"scale\\" }` in place of `field`. `at: null` takes that track off; `[]` or `null` takes them all off. While the timeline plays, a track starts from its first keyframe, not from `from`."},{"name":"timeline","type":"number","note":"How long this node\'s timeline runs, in seconds."},{"name":"overrides","type":"Array<{ at: string; props: unknown }>","note":"INSTANCE only: what the designer changed INSIDE it \u2014 `[{ at: \\"<child id within the instance>\\", props }]`."},{"name":"properties","type":"Record<string, string | boolean>","note":"INSTANCE only: component properties by their catalogue names \u2014 variants, text, booleans."},{"name":"swap","type":"string","note":"INSTANCE only: the component to become \u2014 an id or a published key."},{"name":"reset","type":"boolean","note":"INSTANCE: throw away every override first. SLOT: put back the content the component\'s slot ships with."},{"name":"links","type":"FlowLink[]","note":"Prototype links out of this node. An empty array removes the ones it has."},{"name":"data","type":"Record<string, string | null>","note":"This plugin\'s own notes on the node, for finding it again. A null value clears a key."},{"name":"bind","type":"Record<string, string | null>","note":"Variables on the fields that are not paints: sizes, spacing, radii, text, visibility."},{"name":"path","type":"string","note":"VECTOR only: the shape itself, as SVG path data \u2014 separated by SPACES, since Figma\'s parser refuses commas (\\"Failed to convert path. Invalid command\\")."},{"name":"paths","type":"Array<{ data: string; windingRule?: \'NONZERO\' | \'EVENODD\' }>","note":"Several outlines at once, each with the rule that decides its inside."},{"name":"network","type":"NetworkSpec","note":"VECTOR only: the shape as points and the lines between them, which is how a vector is edited."},{"name":"fillStyle","type":"string | null","note":"Styles the layer follows, by name, id or published key. `null` detaches from one."},{"name":"strokeStyle","type":"string | null","note":"The paint style the outline follows."},{"name":"textStyle","type":"string | null","note":"The text style: family, size, line height and tracking as one named bundle."},{"name":"effectStyle","type":"string | null","note":"The effect style \u2014 a named set of shadows and blurs."},{"name":"gridStyle","type":"string | null","note":"The grid style \u2014 a named set of layout grids."},{"name":"scroll","type":"\'NONE\' | \'HORIZONTAL\' | \'VERTICAL\' | \'BOTH\'","note":"A frame that scrolls in the prototype, and how many of its children stay put while it does."},{"name":"fixedChildren","type":"number","note":"How many of the frame\'s first children stay put while the rest scrolls."},{"name":"runs","type":"TextRun[]","note":"TEXT only: styling for parts of the text rather than all of it."},{"name":"parent","type":"string","note":"Where the node should live. On a create this is the parent; on a change it moves it."},{"name":"index","type":"number","note":"Where among the parent\'s children it sits; 0 is first."},{"name":"shapeType","type":"(typeof SHAPE_TYPES)[number]","note":"FigJam SHAPE_WITH_TEXT: which shape \u2014 SQUARE, DIAMOND, ENG_DATABASE, SPEECH_BUBBLE\u2026"},{"name":"code","type":"string","note":"FigJam CODE_BLOCK: the code itself."},{"name":"codeLanguage","type":"string","note":"FigJam CODE_BLOCK: which language it is highlighted as \u2014 TYPESCRIPT, PYTHON, SQL\u2026"},{"name":"wide","type":"boolean","note":"FigJam STICKY: the wide rectangle rather than the square."},{"name":"authorVisible","type":"boolean","note":"FigJam STICKY: whether the author\'s name shows on it."},{"name":"connector","type":"ConnectorSpec","note":"FigJam CONNECTOR: what it joins \u2014 `{ start, end, line, startCap, endCap }`; an end is a node id, `{ node, magnet }`, `{ node, at: [x, y] }` or a canvas point `[x, y]`."},{"name":"table","type":"TableSpec","note":"FigJam TABLE: `{ rows, columns, cells, columnWidths, rowHeights }` \u2014 `null` in cells leaves one alone."},{"name":"skipped","type":"boolean","note":"Slides SLIDE: left out of the presentation, still in the deck."},{"name":"transition","type":"TransitionSpec","note":"Slides SLIDE: how it arrives \u2014 a style word, or `{ style, duration, curve, after }`."},{"name":"stuckTo","type":"string | null","note":"FigJam: the node this one is stuck to (a sticky on a frame, a stamp on a sticky); `null` peels it off."},{"name":"assetType","type":"(typeof BUZZ_ASSET_TYPES)[number]","note":"Buzz: what the asset is for \u2014 INSTA_STORY, YOUTUBE_THUMBNAIL, CUSTOM\u2026"}]';
   var PROPS_VOCABULARY = (() => {
     if (!INJECTED.startsWith("[")) return [];
     try {
@@ -33793,7 +34340,7 @@ ${scripts}`, "");
   })();
 
   // src/agent/ui-commands.ts
-  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide"},{"name":"tokens","required":false,"type":"{ includeLibraries?: boolean; emitNative?: boolean }","note":"overrides for this one build \u2014 { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DOCS_TO_CANVAS","access":"write","classified":true,"summary":"lay a package's Markdown (DESIGN.md, COMPONENTS.md, ICONS.md, \u2026) out on the canvas \u2014 one frame per document on the Docs page (FigJam: this board), refreshed in place when it is already there","params":[{"name":"files","required":false,"type":"Record<string, string | Uint8Array | { base64: string }>","note":"the package as \`{ 'DESIGN.md': 'markdown', 'previews/button.png': { base64 } }\` \u2014 the Markdown at its root becomes frames, the images it references are drawn in. Omitted, the design-token package is built from the saved settings (as SCAN_TOKENS would) and its documents are placed"}],"replies":["DOCS_PLACED","DOCS_ERROR"]},{"name":"MAIL_REFRESH","access":"deny","classified":true,"summary":"the designer's mail panel \u2014 agents use inbox.list","params":[],"replies":[]},{"name":"MAIL_SEND","access":"deny","classified":true,"summary":"sends as the designer \u2014 agents use inbox.send","params":[{"name":"to","required":true,"type":"string[]","note":"addresses \u2014 \`*\`, \`user:<id>\`, \`agent:<id>\`"},{"name":"text","required":true,"type":"string","note":"the message, 8 kB at most"},{"name":"kind","required":false,"type":"string","note":"note, request or reply"},{"name":"thread","required":false,"type":"string","note":"the id of the message a reply answers"},{"name":"ttlHours","required":false,"type":"number","note":"how long it lives, 1 hour to a week"},{"name":"attachSelection","required":false,"type":"boolean","note":"link the layers selected now"}],"replies":["MAIL_SENT","MAIL_ERROR"]},{"name":"MAIL_ACK","access":"deny","classified":true,"summary":"marks mail read for the designer \u2014 agents use inbox.ack","params":[{"name":"ids","required":true,"type":"string[]","note":"the messages to mark read"}],"replies":["MAIL_ERROR"]},{"name":"MAIL_DECIDE","access":"deny","classified":true,"summary":"a person approving or declining a request is the one thing an agent must never do for them","params":[{"name":"id","required":true,"type":"string","note":"the request being answered"},{"name":"decision","required":true,"type":"'approved' | 'declined'","note":"approved or declined"},{"name":"note","required":false,"type":"string","note":"a word on why, 500 characters at most"}],"replies":["MAIL_ERROR"]},{"name":"MAIL_FOCUS","access":"deny","classified":true,"summary":"the mail panel's jump to a layer \u2014 agents use SCROLL_INTO_VIEW","params":[{"name":"nodeId","required":true,"type":"string","note":"the layer a message links to"}],"replies":["MAIL_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine; with dryRun the receiver writes nothing and answers with the plan it would have applied","params":[{"name":"files","required":true,"type":"Record<string, string | { base64: string }>","note":"the package as \`{ 'path/file.css': 'text' }\`, or \`{ base64 }\` for bytes"},{"name":"dryRun","required":false,"type":"boolean","note":"change nothing, just report the plan \u2014 omit to use the saved default"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SOURCE_PREVIEW","access":"read","classified":true,"summary":"resolve generator, selection, or library colors so one can be chosen for an exact replacement","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"{ kind: \\"generator\\", settings }, { kind: \\"selection\\" }, or { kind: \\"library\\", key }"}],"replies":["REMAP_SOURCE_COLORS","REMAP_SOURCE_ERROR"]},{"name":"REMAP_DIRECT_PREVIEW","access":"read","classified":true,"summary":"find exact RGB matches for one color without building a palette migration","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB; alpha is ignored while matching"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB; every matched site's alpha is preserved"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""}],"replies":["REMAP_DIRECT_PLAN","REMAP_DIRECT_ERROR"]},{"name":"REMAP_DIRECT_APPLY","access":"write","classified":true,"summary":"replace exact RGB matches in variables, styles, and/or loose canvas paints behind an undo snapshot","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"choose variables, styles, canvas, and document/page scope; names and bindings never change"}],"replies":["REMAP_PROGRESS","REMAP_DIRECT_APPLIED","REMAP_DIRECT_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"LIST_VARIABLE_COLLECTIONS","access":"read","classified":true,"summary":"local variable collections for the settings table, plus whether this file has only single-mode collections","params":[],"replies":["VARIABLE_COLLECTIONS"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"},{"name":"fileUrl","required":false,"type":"string","note":"the design file's Figma URL (or bare key) \u2014 what the Code Connect templates link to when this plugin cannot read figma.fileKey, which is everywhere except a private Organization plugin"},{"name":"codeLayer","required":false,"type":"boolean","note":"true packs the project for a Figma code layer \u2014 the four .figma/make scripts (named in \`executables\`, which must be chmod 755), a dev server on Figma's $PORT, src/App.tsx, no Code Connect files \u2014 ready to archive and import with Figma's MCP send_code_to_figma"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string | Uint8Array>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"},{"name":"budgetMs","required":false,"type":"unknown","note":"how long the bridge will still wait for the answer"}],"replies":["AGENT_RESPONSE"]},{"name":"AGENT_CANCEL","access":"deny","classified":true,"summary":"the bridge withdrawing its own request, not something to call","params":[{"name":"ids","required":false,"type":"unknown","note":"the request ids the bridge stopped waiting for"},{"name":"reason","required":false,"type":"unknown","note":"why it stopped waiting"}],"replies":[]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; dsTool: DsToolId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportD\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_UPDATE_PREFERENCES","access":"deny","classified":true,"summary":"update discovery is the designer's outbound-network preference","params":[{"name":"preferences","required":true,"type":"unknown","note":"normalized update-discovery preference and cached release metadata"}],"replies":[]},{"name":"OPEN_EXTERNAL","access":"deny","classified":true,"summary":"only visible UI controls may open a browser link for the designer","params":[{"name":"url","required":true,"type":"string","note":"the validated https://github.com release or archive URL to open"}],"replies":["UPDATE_LINK_ERROR"]},{"name":"UI_RESIZE","access":"read","classified":true,"summary":"resize the plugin panel chrome; the Figma document is untouched","params":[{"name":"width","required":true,"type":"number","note":"requested panel width in pixels, clamped to 340\u20261240"},{"name":"height","required":true,"type":"number","note":"requested panel height in pixels, clamped to 320\u20261200"},{"name":"persist","required":false,"type":"boolean","note":"schedule the clamped size for storage; false is for live drag frames"}],"replies":["UI_SIZE"]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, at?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon|textPath|slice, on a FigJam board also sticky|shapeWithText|connector|codeBlock|table|linkPreview (of: the URL)|gif (of: the hash), in Slides slide|slideRow (at: [row, column]), in Buzz asset (at: [row, column], of: a component to instance). A kind made in the wrong editor is refused by name \u2014 editor.capabilities says which this is"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on AllCrew Figma Workspace","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)","cost":"one render each. Replies stop before the transport cap and return remaining/nextOffset; lower scale when a node is reported too large. A video costs far more than a picture because it renders every frame.","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"},{"name":"withoutChildren","required":false,"type":"boolean","note":"PNG or JPG only \u2014 renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly."},{"name":"contentsOnly","required":false,"type":"boolean","note":"PNG, JPG or SVG \u2014 false renders what overlaps the node from outside it too (Figma's \\"Ignore overlapping layers\\" switch, inverted); true is Figma's default"},{"name":"useAbsoluteBounds","required":false,"type":"boolean","note":"render the node's full bounds even where a parent clips or a mask crops it \u2014 the way to get a layer whose art spills outside its frame"},{"name":"colorProfile","required":false,"type":"string","note":"DOCUMENT (default), SRGB or DISPLAY_P3_V4 \u2014 the profile the raster is written in"},{"name":"svgIdAttribute","required":false,"type":"boolean","note":"SVG only \u2014 keep Figma's layer ids as \`id=\` attributes, so a build can address a part of the drawing"},{"name":"svgSimplifyStroke","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) collapses a stroke into an outlined path; false keeps it a stroked path"},{"name":"offset","required":false,"type":"number","note":"skip this many node ids; when the answer has nextOffset, call again from there"},{"name":"maxPixels","required":false,"type":"number","note":"raster/video pixel ceiling checked before exportAsync (40 million by default)"},{"name":"budgetBytes","required":false,"type":"number","note":"raw reply-byte budget, clamped below the 3 MiB transport ceiling"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FONT_FAMILY_AXES","access":"read","classified":true,"summary":"list the OpenType variation axis tags a font family accepts; null means the family is static","params":[{"name":"family","required":true,"type":"string","note":"exact font family name, for example \\"Roboto Flex\\""}],"replies":["FONT_FAMILY_AXES","CANVAS_ERROR"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"Figma-provided and local custom animation styles, including every ordered entry a custom style owns","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"MOTION_STYLE_SET","access":"write","classified":true,"summary":"create a local custom animation style or replace one by id, preserving its ordered Figma animation entries","params":[{"name":"id","required":false,"type":"string","note":"local custom animation style id to update; omit to create a new style"},{"name":"name","required":true,"type":"string","note":"final custom style name"},{"name":"description","required":false,"type":"string","note":"final description; omitted preserves it on update"},{"name":"entries","required":true,"type":"Array<{ style: string; props?: Record<string, unknown> }>","note":"ordered [{ style, props? }] using Figma animation styleIds or names from MOTION_STYLES"}],"replies":["MOTION_STYLE_UPDATED","CANVAS_ERROR"]},{"name":"MOTION_STYLE_MOVE","access":"write","classified":true,"summary":"reorder a local custom animation style or one of its folders","params":[{"name":"id","required":false,"type":"string","note":"custom animation style id to move; mutually exclusive with folder"},{"name":"folder","required":false,"type":"string","note":"full slash-delimited folder name to move; mutually exclusive with id"},{"name":"after","required":false,"type":"string | null","note":"style id or folder name to place it after; null/omitted moves it first"}],"replies":["MOTION_STYLE_MOVED","MOTION_STYLE_FOLDER_MOVED","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect, grid and custom animation \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect, grid or animation; omitted means all five"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are made with MOTION_STYLE_SET"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\" or a CSS colour like \\"oklch(70% 0.2 140)\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style?, variationSettings? }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? } \u2014 variationSettings names a variable font's axes, like { wght: 550 }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect, grid or animation \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MOVE","access":"write","classified":true,"summary":"reorder local styles in the panel \u2014 one style after another, or a whole folder after another folder","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are reordered with MOTION_STYLE_MOVE"},{"name":"name","required":false,"type":"string","note":"the style to move \u2014 its name, id or key. Give this, or folder"},{"name":"after","required":false,"type":"string | null","note":"the style it should follow, from the same folder; null or \\"\\" puts it first"},{"name":"folder","required":false,"type":"string","note":"the folder to move instead of a style, by its full path (\\"Brand/Primary\\")"},{"name":"afterFolder","required":false,"type":"string | null","note":"the sibling folder it should follow; null or \\"\\" puts it first in its parent"}],"replies":["STYLE_MOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called; with divider: true, the divider's label (omitted, Figma's own line)"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""},{"name":"divider","required":false,"type":"boolean","note":"true makes a divider \u2014 a heading in the pages list that holds no canvas, how a long file is split into sections"}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"SELECTION_COLORS","access":"read","classified":true,"summary":"the colours the designer's selection uses \u2014 Figma's own \\"Selection colors\\", with the styles and tokens behind them","params":[],"replies":["SELECTION_COLORS"]},{"name":"FILE_THUMBNAIL","access":"read","classified":true,"summary":"which frame is the file's cover in the file browser \u2014 null means Figma picks one itself","params":[],"replies":["FILE_THUMBNAIL"]},{"name":"FILE_THUMBNAIL_SET","access":"write","classified":true,"summary":"make a frame the file's cover in the file browser, or hand the choice back to Figma","params":[{"name":"nodeId","required":true,"type":"string | null","note":"a frame, component, component set or section; null restores Figma's default"}],"replies":["FILE_THUMBNAIL","CANVAS_ERROR"]},{"name":"UNDO","access":"write","classified":true,"summary":"take back the last change \u2014 Cmd+Z, for an agent. Every write here closes its own undo step, so this undoes the most recent one; if the designer has worked since, it undoes theirs instead, so read before you reach for it","params":[],"replies":["UNDONE"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATION_CATEGORIES","access":"read","classified":true,"summary":"the annotation categories this file defines \u2014 what ANNOTATE's category can name, with each one's colour and whether Figma shipped it","params":[],"replies":["ANNOTATION_CATEGORIES"]},{"name":"ANNOTATION_CATEGORY_SET","access":"write","classified":true,"summary":"add, rename, recolour or remove annotation categories \u2014 the vocabulary a team files its Dev Mode notes under","params":[{"name":"add","required":false,"type":"unknown","note":"[{ label, color }] \u2014 color is one of yellow, orange, red, pink, violet, blue, teal, green"},{"name":"edit","required":false,"type":"unknown","note":"[{ category, label?, color? }] \u2014 category by name or id"},{"name":"remove","required":false,"type":"unknown","note":"[category] by name or id. Figma's presets cannot be removed"}],"replies":["ANNOTATION_CATEGORIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_SCHEMA","access":"read","classified":true,"summary":"the canonical user-module JSON Schema, starter file, runtime rules and limits","params":[],"replies":["MODULE_SCHEMA"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the complete declarative module object"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id"},{"name":"allowDowngrade","required":false,"type":"boolean","note":"true explicitly permits replacing a newer SemVer"}],"replies":["MODULE_INSTALLED","MODULE_REJECTED","MODULE_ERROR"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the declared type and numeric bounds"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","DOCS_PLACED","DOCS_ERROR","FILES_READY","EXPORT_ERROR","MAIL_STATE"]}]`;
+  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs) and hand back the files","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide"},{"name":"tokens","required":false,"type":"{ includeLibraries?: boolean; emitNative?: boolean }","note":"overrides for this one build \u2014 { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DOCS_TO_CANVAS","access":"write","classified":true,"summary":"lay a package's Markdown (DESIGN.md, COMPONENTS.md, ICONS.md, \u2026) out on the canvas \u2014 one frame per document on the Docs page (FigJam: this board), refreshed in place when it is already there","params":[{"name":"files","required":false,"type":"Record<string, string | Uint8Array | { base64: string }>","note":"the package as \`{ 'DESIGN.md': 'markdown', 'previews/button.png': { base64 } }\` \u2014 the Markdown at its root becomes frames, the images it references are drawn in. Omitted, the design-token package is built from the saved settings (as SCAN_TOKENS would) and its documents are placed"}],"replies":["DOCS_PLACED","DOCS_ERROR"]},{"name":"MAIL_REFRESH","access":"deny","classified":true,"summary":"the designer's mail panel \u2014 agents use inbox.list","params":[],"replies":[]},{"name":"MAIL_SEND","access":"deny","classified":true,"summary":"sends as the designer \u2014 agents use inbox.send","params":[{"name":"to","required":true,"type":"string[]","note":"addresses \u2014 \`*\`, \`user:<id>\`, \`agent:<id>\`"},{"name":"text","required":true,"type":"string","note":"the message, 8 kB at most"},{"name":"kind","required":false,"type":"string","note":"note, request or reply"},{"name":"thread","required":false,"type":"string","note":"the id of the message a reply answers"},{"name":"ttlHours","required":false,"type":"number","note":"how long it lives, 1 hour to a week"},{"name":"attachSelection","required":false,"type":"boolean","note":"link the layers selected now"}],"replies":["MAIL_SENT","MAIL_ERROR"]},{"name":"MAIL_ACK","access":"deny","classified":true,"summary":"marks mail read for the designer \u2014 agents use inbox.ack","params":[{"name":"ids","required":true,"type":"string[]","note":"the messages to mark read"}],"replies":["MAIL_ERROR"]},{"name":"MAIL_DECIDE","access":"deny","classified":true,"summary":"a person approving or declining a request is the one thing an agent must never do for them","params":[{"name":"id","required":true,"type":"string","note":"the request being answered"},{"name":"decision","required":true,"type":"'approved' | 'declined'","note":"approved or declined"},{"name":"note","required":false,"type":"string","note":"a word on why, 500 characters at most"}],"replies":["MAIL_ERROR"]},{"name":"MAIL_FOCUS","access":"deny","classified":true,"summary":"the mail panel's jump to a layer \u2014 agents use SCROLL_INTO_VIEW","params":[{"name":"nodeId","required":true,"type":"string","note":"the layer a message links to"}],"replies":["MAIL_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine; with dryRun the receiver writes nothing and answers with the plan it would have applied","params":[{"name":"files","required":true,"type":"Record<string, string | { base64: string }>","note":"the package as \`{ 'path/file.css': 'text' }\`, or \`{ base64 }\` for bytes"},{"name":"dryRun","required":false,"type":"boolean","note":"change nothing, just report the plan \u2014 omit to use the saved default"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SOURCE_PREVIEW","access":"read","classified":true,"summary":"resolve generator, selection, or library colors so one can be chosen for an exact replacement","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"{ kind: \\"generator\\", settings }, { kind: \\"selection\\" }, or { kind: \\"library\\", key }"}],"replies":["REMAP_SOURCE_COLORS","REMAP_SOURCE_ERROR"]},{"name":"REMAP_DIRECT_PREVIEW","access":"read","classified":true,"summary":"find exact RGB matches for one color without building a palette migration","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB; alpha is ignored while matching"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB; every matched site's alpha is preserved"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""}],"replies":["REMAP_DIRECT_PLAN","REMAP_DIRECT_ERROR"]},{"name":"REMAP_DIRECT_APPLY","access":"write","classified":true,"summary":"replace exact RGB matches in variables, styles, and/or loose canvas paints behind an undo snapshot","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"choose variables, styles, canvas, and document/page scope; names and bindings never change"}],"replies":["REMAP_PROGRESS","REMAP_DIRECT_APPLIED","REMAP_DIRECT_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"LIST_VARIABLE_COLLECTIONS","access":"read","classified":true,"summary":"local variable collections for the settings table, plus whether this file has only single-mode collections","params":[],"replies":["VARIABLE_COLLECTIONS"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"},{"name":"fileUrl","required":false,"type":"string","note":"the design file's Figma URL (or bare key) \u2014 what the Code Connect templates link to when this plugin cannot read figma.fileKey, which is everywhere except a private Organization plugin"},{"name":"codeLayer","required":false,"type":"boolean","note":"true packs the project for a Figma code layer \u2014 the four .figma/make scripts (named in \`executables\`, which must be chmod 755), a dev server on Figma's $PORT, src/App.tsx, no Code Connect files \u2014 ready to archive and import with Figma's MCP send_code_to_figma"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string | Uint8Array>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"},{"name":"budgetMs","required":false,"type":"unknown","note":"how long the bridge will still wait for the answer"}],"replies":["AGENT_RESPONSE"]},{"name":"AGENT_CANCEL","access":"deny","classified":true,"summary":"the bridge withdrawing its own request, not something to call","params":[{"name":"ids","required":false,"type":"unknown","note":"the request ids the bridge stopped waiting for"},{"name":"reason","required":false,"type":"unknown","note":"why it stopped waiting"}],"replies":[]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; dsTool: DsToolId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportD\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_UPDATE_PREFERENCES","access":"deny","classified":true,"summary":"update discovery is the designer's outbound-network preference","params":[{"name":"preferences","required":true,"type":"unknown","note":"normalized update-discovery preference and cached release metadata"}],"replies":[]},{"name":"OPEN_EXTERNAL","access":"deny","classified":true,"summary":"only visible UI controls may open a browser link for the designer","params":[{"name":"url","required":true,"type":"string","note":"the validated https://github.com release or archive URL to open"}],"replies":["UPDATE_LINK_ERROR"]},{"name":"UI_RESIZE","access":"read","classified":true,"summary":"resize the plugin panel chrome; the Figma document is untouched","params":[{"name":"width","required":true,"type":"number","note":"requested panel width in pixels, clamped to 340\u20261240"},{"name":"height","required":true,"type":"number","note":"requested panel height in pixels, clamped to 320\u20261200"},{"name":"persist","required":false,"type":"boolean","note":"schedule the clamped size for storage; false is for live drag frames"}],"replies":["UI_SIZE"]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, at?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon|textPath|slice, on a FigJam board also sticky|shapeWithText|connector|codeBlock|table|linkPreview (of: the URL)|gif (of: the hash), in Slides slide|slideRow (at: [row, column]), in Buzz asset (at: [row, column], of: a component to instance). A kind made in the wrong editor is refused by name \u2014 editor.capabilities says which this is"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths, 3D (transform3d, transformOrigin, and scene3d on a frame, component or instance). The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 transform3d: { translateZ, rotateX, rotateY, rotateZ } is depth in pixels and tilt in degrees, always applied in that order; \\"none\\" removes it and an imported FREEFORM one is read-only. keyframes take the same four words plus perspective; a flat layer can take a 3D track directly, and removing transform3d removes its 3D tracks. Beta in Figma's API \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on AllCrew Figma Workspace","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)","cost":"one render each. Replies stop before the transport cap and return remaining/nextOffset; lower scale when a node is reported too large. A video costs far more than a picture because it renders every frame.","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"},{"name":"withoutChildren","required":false,"type":"boolean","note":"PNG or JPG only \u2014 renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly."},{"name":"contentsOnly","required":false,"type":"boolean","note":"PNG, JPG or SVG \u2014 false renders what overlaps the node from outside it too (Figma's \\"Ignore overlapping layers\\" switch, inverted); true is Figma's default"},{"name":"useAbsoluteBounds","required":false,"type":"boolean","note":"render the node's full bounds even where a parent clips or a mask crops it \u2014 the way to get a layer whose art spills outside its frame"},{"name":"colorProfile","required":false,"type":"string","note":"DOCUMENT (default), SRGB or DISPLAY_P3_V4 \u2014 the profile the raster is written in"},{"name":"svgIdAttribute","required":false,"type":"boolean","note":"SVG only \u2014 keep Figma's layer ids as \`id=\` attributes, so a build can address a part of the drawing"},{"name":"svgSimplifyStroke","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) collapses a stroke into an outlined path; false keeps it a stroked path"},{"name":"offset","required":false,"type":"number","note":"skip this many node ids; when the answer has nextOffset, call again from there"},{"name":"maxPixels","required":false,"type":"number","note":"raster/video pixel ceiling checked before exportAsync (40 million by default)"},{"name":"budgetBytes","required":false,"type":"number","note":"raw reply-byte budget, clamped below the 3 MiB transport ceiling"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FONT_FAMILY_AXES","access":"read","classified":true,"summary":"list the OpenType variation axis tags a font family accepts; null means the family is static","params":[{"name":"family","required":true,"type":"string","note":"exact font family name, for example \\"Roboto Flex\\""}],"replies":["FONT_FAMILY_AXES","CANVAS_ERROR"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"Figma-provided and local custom animation styles, including every ordered entry a custom style owns","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"MOTION_STYLE_SET","access":"write","classified":true,"summary":"create a local custom animation style or replace one by id, preserving its ordered Figma animation entries","params":[{"name":"id","required":false,"type":"string","note":"local custom animation style id to update; omit to create a new style"},{"name":"name","required":true,"type":"string","note":"final custom style name"},{"name":"description","required":false,"type":"string","note":"final description; omitted preserves it on update"},{"name":"entries","required":true,"type":"Array<{ style: string; props?: Record<string, unknown> }>","note":"ordered [{ style, props? }] using Figma animation styleIds or names from MOTION_STYLES"}],"replies":["MOTION_STYLE_UPDATED","CANVAS_ERROR"]},{"name":"MOTION_STYLE_MOVE","access":"write","classified":true,"summary":"reorder a local custom animation style or one of its folders","params":[{"name":"id","required":false,"type":"string","note":"custom animation style id to move; mutually exclusive with folder"},{"name":"folder","required":false,"type":"string","note":"full slash-delimited folder name to move; mutually exclusive with id"},{"name":"after","required":false,"type":"string | null","note":"style id or folder name to place it after; null/omitted moves it first"}],"replies":["MOTION_STYLE_MOVED","MOTION_STYLE_FOLDER_MOVED","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect, grid and custom animation \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect, grid or animation; omitted means all five"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are made with MOTION_STYLE_SET"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\" or a CSS colour like \\"oklch(70% 0.2 140)\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style?, variationSettings? }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? } \u2014 variationSettings names a variable font's axes, like { wght: 550 }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect, grid or animation \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MOVE","access":"write","classified":true,"summary":"reorder local styles in the panel \u2014 one style after another, or a whole folder after another folder","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are reordered with MOTION_STYLE_MOVE"},{"name":"name","required":false,"type":"string","note":"the style to move \u2014 its name, id or key. Give this, or folder"},{"name":"after","required":false,"type":"string | null","note":"the style it should follow, from the same folder; null or \\"\\" puts it first"},{"name":"folder","required":false,"type":"string","note":"the folder to move instead of a style, by its full path (\\"Brand/Primary\\")"},{"name":"afterFolder","required":false,"type":"string | null","note":"the sibling folder it should follow; null or \\"\\" puts it first in its parent"}],"replies":["STYLE_MOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called; with divider: true, the divider's label (omitted, Figma's own line)"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""},{"name":"divider","required":false,"type":"boolean","note":"true makes a divider \u2014 a heading in the pages list that holds no canvas, how a long file is split into sections"}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"SELECTION_COLORS","access":"read","classified":true,"summary":"the colours the designer's selection uses \u2014 Figma's own \\"Selection colors\\", with the styles and tokens behind them","params":[],"replies":["SELECTION_COLORS"]},{"name":"FILE_THUMBNAIL","access":"read","classified":true,"summary":"which frame is the file's cover in the file browser \u2014 null means Figma picks one itself","params":[],"replies":["FILE_THUMBNAIL"]},{"name":"FILE_THUMBNAIL_SET","access":"write","classified":true,"summary":"make a frame the file's cover in the file browser, or hand the choice back to Figma","params":[{"name":"nodeId","required":true,"type":"string | null","note":"a frame, component, component set or section; null restores Figma's default"}],"replies":["FILE_THUMBNAIL","CANVAS_ERROR"]},{"name":"UNDO","access":"write","classified":true,"summary":"take back the last change \u2014 Cmd+Z, for an agent. Every write here closes its own undo step, so this undoes the most recent one; if the designer has worked since, it undoes theirs instead, so read before you reach for it","params":[],"replies":["UNDONE"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATION_CATEGORIES","access":"read","classified":true,"summary":"the annotation categories this file defines \u2014 what ANNOTATE's category can name, with each one's colour and whether Figma shipped it","params":[],"replies":["ANNOTATION_CATEGORIES"]},{"name":"ANNOTATION_CATEGORY_SET","access":"write","classified":true,"summary":"add, rename, recolour or remove annotation categories \u2014 the vocabulary a team files its Dev Mode notes under","params":[{"name":"add","required":false,"type":"unknown","note":"[{ label, color }] \u2014 color is one of yellow, orange, red, pink, violet, blue, teal, green"},{"name":"edit","required":false,"type":"unknown","note":"[{ category, label?, color? }] \u2014 category by name or id"},{"name":"remove","required":false,"type":"unknown","note":"[category] by name or id. Figma's presets cannot be removed"}],"replies":["ANNOTATION_CATEGORIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_SCHEMA","access":"read","classified":true,"summary":"the canonical user-module JSON Schema, starter file, runtime rules and limits","params":[],"replies":["MODULE_SCHEMA"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the complete declarative module object"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id"},{"name":"allowDowngrade","required":false,"type":"boolean","note":"true explicitly permits replacing a newer SemVer"}],"replies":["MODULE_INSTALLED","MODULE_REJECTED","MODULE_ERROR"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the declared type and numeric bounds"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","DOCS_PLACED","DOCS_ERROR","FILES_READY","EXPORT_ERROR","MAIL_STATE"]}]`;
   var UI_COMMANDS = (() => {
     if (!INJECTED2.startsWith("[")) return [];
     try {
@@ -38993,12 +39540,16 @@ ${scripts}`, "");
     const shaders = hasShader(node.fills) || hasShader(node.strokes) ? await shadersFor(catalogue) : void 0;
     if (Array.isArray(node.fills)) {
       out.fills = [];
-      for (const [index2, paint] of node.fills.entries()) out.fills.push(await describePaint(paint, index2, shaders));
+      for (const [index2, paint] of node.fills.entries()) {
+        out.fills.push(await describePaint(paint, index2, shaders, void 0, animatedShaderProperties(node, "fills", index2)));
+      }
       out.fillStyle = await paintStyleName(node, "fillStyleId");
     }
     if (Array.isArray(node.strokes)) {
       out.strokes = [];
-      for (const [index2, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index2, shaders));
+      for (const [index2, paint] of node.strokes.entries()) {
+        out.strokes.push(await describePaint(paint, index2, shaders, void 0, animatedShaderProperties(node, "strokes", index2)));
+      }
       out.strokeStyle = await paintStyleName(node, "strokeStyleId");
     }
     const regions = regionFills(node);
@@ -41667,7 +42218,7 @@ ${motion.css}`);
       for (const node of walk2(root)) {
         const snapshot = motionByNodeId.get(node.id);
         if (!snapshot || snapshot.tracks.length === 0) continue;
-        parts.push(emitNodeAnimationCss({ selector: `.${toClassName(node.id)}`, tracks: snapshot.tracks }));
+        parts.push(emitNodeAnimationCss({ selector: `.${toClassName(node.id)}`, tracks: snapshot.tracks, transform3d: snapshot.transform3d }));
       }
     }
     for (const root of roots) {
@@ -42336,7 +42887,8 @@ figma make deploy --build-dir dist
       try {
         const result = await applyStep(node, step2, dry);
         if (result.error) failed2++;
-        applied.push(result);
+        const unseen = result.error ? null : notRenderedNote(node, result.property, dry ? step2 : null);
+        applied.push(unseen ? __spreadProps(__spreadValues({}, result), { note: unseen }) : result);
       } catch (error) {
         failed2++;
         applied.push({ property: propertyOf(step2), error: String((error == null ? void 0 : error.message) || error) });
@@ -42344,6 +42896,62 @@ figma make deploy --build-dir dist
     }
     return { applied, failed: failed2 };
   }
+  function rememberShaderSettingName(node, id, name) {
+    try {
+      node.setPluginData(SHADER_SETTING_NAMES_KEY, JSON.stringify(__spreadProps(__spreadValues({}, shaderSettingNames(node)), { [id]: name })));
+    } catch (e) {
+    }
+  }
+  function resolveShaderSetting(node, plan) {
+    var _a, _b;
+    const what = plan.collection === "fills" ? "fill" : plan.collection === "strokes" ? "stroke" : "effect";
+    const stack2 = node[plan.collection];
+    if (!Array.isArray(stack2)) throw new Error(`a ${node.type} has no ${plan.collection}`);
+    const isShader = (entry) => (entry == null ? void 0 : entry.type) === "SHADER";
+    const index2 = (_a = plan.index) != null ? _a : stack2.findIndex(isShader);
+    if (index2 < 0) throw new Error(`this layer has no shader ${what} \u2014 put one on it first (fill: { shader })`);
+    const shader = stack2[index2];
+    if (!isShader(shader)) throw new Error(`${plan.collection}[${index2}] is not a shader \u2014 it is ${shader ? String(shader.type) : "not there"}`);
+    const names = __spreadValues({}, shaderSettingNames(node));
+    for (const [id, definition] of Object.entries((_b = shader == null ? void 0 : shader.propertyMetadata) != null ? _b : {})) if (definition == null ? void 0 : definition.name) names[id] = definition.name;
+    const wanted = plan.setting.trim();
+    if (/^\d+:\d+$/.test(wanted)) return __spreadValues({ collection: plan.collection, index: index2, id: wanted }, names[wanted] ? { name: names[wanted] } : {});
+    const match = Object.entries(names).find(([, name]) => name.toLowerCase() === wanted.toLowerCase());
+    if (!match) {
+      const offered = Object.values(names);
+      throw new Error(
+        `this shader has no setting called "${wanted}" \u2014 ` + (offered.length > 0 ? `it has: ${offered.join(", ")}` : "and it names none of its settings here; give the setting id instead")
+      );
+    }
+    return { collection: plan.collection, index: index2, id: match[0], name: match[1] };
+  }
+  var UNSEEN_UNDER_PRESERVE_3D = ["opacity", "blendMode", "effects", "effectStyle", "clipsContent", "scene3d"];
+  function unseenUnderPreserve3d(node, planned) {
+    var _a, _b;
+    const bag = node != null ? node : {};
+    const preserve = (_b = planned == null ? void 0 : planned.preserve3d) != null ? _b : (_a = bag.scene3d) == null ? void 0 : _a.preserve3d;
+    if (preserve !== true) return [];
+    const unseen = [];
+    if (typeof bag.opacity === "number" && bag.opacity < 1) unseen.push("opacity");
+    if (typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL") unseen.push("blend mode");
+    if (Array.isArray(bag.effects) && bag.effects.some((effect) => (effect == null ? void 0 : effect.visible) !== false)) unseen.push("effects");
+    if (bag.clipsContent === true) unseen.push("clip");
+    return unseen;
+  }
+  function notRenderedNote(node, property, dryStep) {
+    if (!UNSEEN_UNDER_PRESERVE_3D.includes(property)) return null;
+    const planned = (dryStep == null ? void 0 : dryStep.step) === "space3d" && dryStep.property === "scene3d" && dryStep.value.kind === "scene" && dryStep.value.fields.preserve3d !== void 0 ? { preserve3d: dryStep.value.fields.preserve3d } : null;
+    const unseen = unseenUnderPreserve3d(node, planned);
+    if (unseen.length === 0) return null;
+    return `Figma does not draw ${unseen.join(", ")} on a preserve-3D container \u2014 the value is kept, the canvas does not change; put ${unseen.length === 1 ? "it" : "them"} on a parent frame that does not preserve 3D`;
+  }
+  var SCENE_3D_HOLDERS = ["FRAME", "COMPONENT", "INSTANCE"];
+  var TRANSFORM_3D_TRACKS = [
+    "TRANSFORM_3D_TRANSLATION_Z",
+    "TRANSFORM_3D_ROTATION_X",
+    "TRANSFORM_3D_ROTATION_Y",
+    "TRANSFORM_3D_ROTATION_Z"
+  ];
   var propertyOf = (step2) => {
     switch (step2.step) {
       case "assign":
@@ -42378,7 +42986,7 @@ figma make deploy --build-dir dist
     }
   };
   async function applyStep(node, step2, dry) {
-    var _a, _b, _c, _d, _e, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B;
+    var _a, _b, _c, _d, _e, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E;
     const bag = node;
     const sublayer = textSublayerFor(node, step2);
     if (sublayer) return applyStep(sublayer, step2, dry);
@@ -42391,6 +42999,9 @@ figma make deploy --build-dir dist
         return { property: step2.property, before, after: step2.value };
       }
       case "space3d": {
+        if (step2.property === "scene3d" && !SCENE_3D_HOLDERS.includes(node.type)) {
+          throw new Error(`a ${node.type} has no 3D scene \u2014 only a FRAME, COMPONENT or INSTANCE does`);
+        }
         if (!(step2.property in bag)) {
           throw new Error(`a ${node.type} has no ${step2.property} \u2014 3D transforms are beta, on frames, shapes and text; scene3d only on frames, components and instances`);
         }
@@ -42434,7 +43045,7 @@ figma make deploy --build-dir dist
         if (typeof node.resize !== "function") {
           throw new Error(`a ${node.type} cannot be resized`);
         }
-        const before = { width: round17(node.width), height: round17(node.height) };
+        const before = { width: round18(node.width), height: round18(node.height) };
         const width = (_b = step2.width) != null ? _b : node.width;
         const height = (_c = step2.height) != null ? _c : node.height;
         const sized = node;
@@ -42442,7 +43053,7 @@ figma make deploy --build-dir dist
           if (typeof sized.resizeWithoutConstraints === "function") sized.resizeWithoutConstraints(width, height);
           else sized.resize(width, height);
         }
-        const after = dry ? { width: round17(width), height: round17(height) } : { width: round17(node.width), height: round17(node.height) };
+        const after = dry ? { width: round18(width), height: round18(height) } : { width: round18(node.width), height: round18(node.height) };
         return { property: "size", before, after };
       }
       case "radius": {
@@ -43027,11 +43638,38 @@ figma make deploy --build-dir dist
           try {
             if (one.track === null) remove(one.name, one.field);
             else {
+              if (TRANSFORM_3D_TRACKS.includes(one.name)) {
+                if (!("transform3d" in bag)) throw new Error(`a ${node.type} has no 3D transform to animate`);
+                if (((_B = bag.transform3d) == null ? void 0 : _B.type) === "FREEFORM") {
+                  throw new Error("this layer has an imported (FREEFORM) 3D transform, which cannot be animated \u2014 set transform3d to replace it first");
+                }
+              }
+              if (one.name === "SCENE_3D_PERSPECTIVE" && (!SCENE_3D_HOLDERS.includes(node.type) || !("scene3d" in bag))) {
+                throw new Error(`a ${node.type} has no perspective to animate \u2014 only a FRAME, COMPONENT or INSTANCE holds a 3D scene`);
+              }
               if (!dry) motion.applyManualKeyframeTrack(one.field, one.track);
               applied.push(one.name);
             }
           } catch (error) {
             failures.push(`${one.name}: ${String((error == null ? void 0 : error.message) || error)}`);
+          }
+        }
+        for (const one of (_C = step2.shaderTracks) != null ? _C : []) {
+          try {
+            const target = resolveShaderSetting(node, one);
+            const field = { type: "INDEXED_ITEM", collection: target.collection, index: target.index, propertyId: target.id };
+            const label3 = `${target.collection}[${target.index}].${(_D = target.name) != null ? _D : target.id}`;
+            if (one.track === void 0) {
+              remove(label3, field);
+              continue;
+            }
+            if (!dry) {
+              motion.applyManualKeyframeTrack(field, one.track);
+              if (target.name) rememberShaderSettingName(node, target.id, target.name);
+            }
+            applied.push(label3);
+          } catch (error) {
+            failures.push(`shader ${one.setting}: ${String((error == null ? void 0 : error.message) || error)}`);
           }
         }
         return __spreadValues({
@@ -43042,7 +43680,7 @@ figma make deploy --build-dir dist
       }
       case "timeline": {
         const motion = node;
-        const timeline = (_B = motion.timelines) == null ? void 0 : _B[0];
+        const timeline = (_E = motion.timelines) == null ? void 0 : _E[0];
         if (!timeline || timeline.id.startsWith("-1") || typeof motion.setTimelineDuration !== "function") {
           throw new Error(`a ${node.type} has no timeline of its own \u2014 only a top-level frame does`);
         }
@@ -43200,7 +43838,7 @@ figma make deploy --build-dir dist
     if (typeof value2 !== "object" || value2 === null || !("unit" in value2)) return "mixed";
     const { unit, value: amount } = value2;
     if (unit === "AUTO") return "auto";
-    return unit === "PERCENT" ? `${round17(amount != null ? amount : 0)}%` : `${round17(amount != null ? amount : 0)}px`;
+    return unit === "PERCENT" ? `${round18(amount != null ? amount : 0)}%` : `${round18(amount != null ? amount : 0)}px`;
   }
   function describeRun(run) {
     const parts = [];
@@ -43488,7 +44126,7 @@ figma make deploy --build-dir dist
   }
   function hexOf2(color) {
     const hex5 = `#${[color.r, color.g, color.b].map((channel2) => Math.round(channel2 * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-    return color.a !== void 0 && color.a < 1 ? `${hex5} @${round17(color.a)}` : hex5;
+    return color.a !== void 0 && color.a < 1 ? `${hex5} @${round18(color.a)}` : hex5;
   }
   async function describeAnimation(value2) {
     if (!Array.isArray(value2) || value2.length === 0) return "none";
@@ -43540,15 +44178,18 @@ figma make deploy --build-dir dist
     }
     return (_a = styleWords.get(key)) != null ? _a : null;
   }
-  function describeShaderPaints(value2) {
+  function describeShaderPaints(value2, tracks) {
+    var _a;
     if (!Array.isArray(value2)) return [];
     const shaders = [];
-    for (const paint of value2) {
+    for (const [index2, paint] of value2.entries()) {
       if ((paint == null ? void 0 : paint.type) !== "SHADER") continue;
       const shader = paint;
-      shaders.push(__spreadValues({
+      const moving = (_a = tracks == null ? void 0 : tracks[index2]) == null ? void 0 : _a.properties;
+      const animated = moving && typeof moving === "object" ? Object.keys(moving) : [];
+      shaders.push(__spreadValues(__spreadValues({
         id: shader.id
-      }, shader.properties && Object.keys(shader.properties).length > 0 ? { properties: shader.properties } : {}));
+      }, shader.properties && Object.keys(shader.properties).length > 0 ? { properties: shader.properties } : {}), animated.length > 0 ? { animated } : {}));
     }
     return shaders;
   }
@@ -43557,7 +44198,7 @@ figma make deploy --build-dir dist
     const one = value2;
     if (!(one == null ? void 0 : one.widthProfile)) return null;
     if (one.widthProfile !== "CUSTOM") return one.widthProfile;
-    return ((_a = one.variableWidthPoints) != null ? _a : []).map((point2) => ({ at: round17(point2.position), width: round17(point2.width) }));
+    return ((_a = one.variableWidthPoints) != null ? _a : []).map((point2) => ({ at: round18(point2.position), width: round18(point2.width) }));
   }
   function describeBrush(value2) {
     const brush = value2;
@@ -43606,7 +44247,7 @@ figma make deploy --build-dir dist
       if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
         const { r, g, b, a } = effect.color;
         const hex5 = `#${[r, g, b].map((channel2) => Math.round(channel2 * 255).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
-        const colour = await named("color", `${hex5}${a === 1 ? "" : ` @${round17(a)}`}`);
+        const colour = await named("color", `${hex5}${a === 1 ? "" : ` @${round18(a)}`}`);
         const kind = effect.type === "DROP_SHADOW" ? "drop" : "inner";
         const spread = effect.spread || bound.spread ? ` spread ${await named("spread", (_b = effect.spread) != null ? _b : 0)}` : "";
         const x = await named("offsetX", effect.offset.x);
@@ -43624,7 +44265,7 @@ figma make deploy --build-dir dist
     const axes = named.variationSettings ? ` (${Object.entries(named.variationSettings).map(([axis, value2]) => `${axis}=${value2}`).join(", ")})` : "";
     return `${named.family}${named.style ? ` ${named.style}` : ""}${axes}`;
   };
-  var round17 = (value2) => Math.round(value2 * 100) / 100;
+  var round18 = (value2) => Math.round(value2 * 100) / 100;
 
   // src/canvas/create.ts
   var NODE_KINDS = [
@@ -44665,100 +45306,6 @@ figma make deploy --build-dir dist
     return { page: { id: page.id, name: page.name }, docs: placed };
   }
 
-  // src/canvas/keyframes.ts
-  var OUR_WORDS = {
-    OPACITY: "opacity",
-    TRANSLATION_X: "x",
-    TRANSLATION_Y: "y",
-    TRANSLATION_XY: "move",
-    ROTATION: "rotation",
-    SCALE_X: "scaleX",
-    SCALE_Y: "scaleY",
-    SCALE_XY: "scale",
-    WIDTH: "width",
-    HEIGHT: "height",
-    CORNER_RADIUS: "cornerRadius",
-    RECTANGLE_TOP_LEFT_CORNER_RADIUS: "topLeftRadius",
-    RECTANGLE_TOP_RIGHT_CORNER_RADIUS: "topRightRadius",
-    RECTANGLE_BOTTOM_LEFT_CORNER_RADIUS: "bottomLeftRadius",
-    RECTANGLE_BOTTOM_RIGHT_CORNER_RADIUS: "bottomRightRadius",
-    STROKE_WEIGHT: "strokeWeight",
-    BORDER_TOP_WEIGHT: "strokeTop",
-    BORDER_BOTTOM_WEIGHT: "strokeBottom",
-    BORDER_LEFT_WEIGHT: "strokeLeft",
-    BORDER_RIGHT_WEIGHT: "strokeRight",
-    STACK_SPACING: "gap",
-    STACK_COUNTER_SPACING: "wrapGap",
-    STACK_PADDING_LEFT: "paddingLeft",
-    STACK_PADDING_TOP: "paddingTop",
-    STACK_PADDING_RIGHT: "paddingRight",
-    STACK_PADDING_BOTTOM: "paddingBottom",
-    GRID_ROW_GAP: "rowGap",
-    GRID_COLUMN_GAP: "columnGap",
-    PATH_TRIM_START: "trimStart",
-    PATH_TRIM_END: "trimEnd",
-    TRANSFORM_3D_TRANSLATION_Z: "translateZ",
-    TRANSFORM_3D_ROTATION_X: "rotateX",
-    TRANSFORM_3D_ROTATION_Y: "rotateY",
-    TRANSFORM_3D_ROTATION_Z: "rotateZ",
-    SCENE_3D_PERSPECTIVE: "perspective"
-  };
-  var plainValue = (held) => {
-    const one = held;
-    if (!one || one.value === void 0) return void 0;
-    if (one.type === "COLOR") return formatKeyframeColour(one.value);
-    return one.value;
-  };
-  function readTrack(word, binding) {
-    var _a;
-    const held = binding;
-    const frames = Array.isArray(held == null ? void 0 : held.keyframes) ? held.keyframes : [];
-    const at = [];
-    for (const frame3 of frames) {
-      const one = frame3;
-      if (typeof (one == null ? void 0 : one.timelinePosition) !== "number") continue;
-      const value2 = plainValue(one.value);
-      if (value2 === void 0) continue;
-      at.push(__spreadValues({
-        time: one.timelinePosition,
-        value: value2
-      }, ((_a = one.easing) == null ? void 0 : _a.type) && one.easing.type !== "CUSTOM_CUBIC_BEZIER" ? { easing: one.easing.type } : {}));
-    }
-    if (at.length === 0) return null;
-    const from = plainValue(held == null ? void 0 : held.baseValue);
-    return __spreadProps(__spreadValues({ field: word }, from === void 0 ? {} : { from }), { at });
-  }
-  function readKeyframes(tracks) {
-    if (typeof tracks !== "object" || tracks === null) return {};
-    const out = [];
-    for (const [name, binding] of Object.entries(tracks)) {
-      if (binding === void 0 || binding === null) continue;
-      if (name === "fills" || name === "strokes") {
-        for (const [index2, paint] of Object.entries(binding)) {
-          const word2 = indexedWord(name, Number(index2));
-          const track2 = word2 ? readTrack(word2, paint) : null;
-          if (track2) out.push(track2);
-        }
-        continue;
-      }
-      if (name === "effects") {
-        for (const [index2, fields2] of Object.entries(binding)) {
-          for (const [field, effect] of Object.entries(fields2 != null ? fields2 : {})) {
-            const word2 = indexedWord("effects", Number(index2), field);
-            const track2 = word2 ? readTrack(word2, effect) : null;
-            if (track2) out.push(track2);
-          }
-        }
-        continue;
-      }
-      const word = OUR_WORDS[name];
-      if (!word) continue;
-      const track = readTrack(word, binding);
-      if (track) out.push(track);
-    }
-    return out.length > 0 ? { keyframes: out } : {};
-  }
-
   // src/modules/run.ts
   var isFailure = (reply) => {
     if (typeof reply !== "object" || reply === null) return false;
@@ -45098,12 +45645,23 @@ figma make deploy --build-dir dist
   function defaultRoots() {
     return figma.currentPage.selection.length > 0 ? figma.currentPage.selection : figma.currentPage.children;
   }
+  var LIBRARY_VARIABLES_BUDGET_MS = 3e4;
   async function variableNamesForExport() {
+    var _a;
     const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions"));
     const asCss = (snapshot) => emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions, readRenameMap())).css;
     try {
-      const snapshot = await readAllVariables({ collectionMerges: exportOptions.themeMerges.groups });
-      return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), css: asCss(snapshot), gaps: [] };
+      const snapshot = await readAllVariables({
+        collectionMerges: exportOptions.themeMerges.groups,
+        budgetMs: LIBRARY_VARIABLES_BUDGET_MS
+      });
+      return {
+        names: new Map(snapshot.variables.map((one) => [one.id, one.name])),
+        css: asCss(snapshot),
+        gaps: snapshot.stoppedOn === "budgetMs" ? [
+          `the enabled libraries hold more variables than could be read in ${LIBRARY_VARIABLES_BUDGET_MS / 1e3} s (${(_a = snapshot.nextOffset) != null ? _a : 0} were) \u2014 tokens.css lists only those, and the tokens this screen binds; run the token export for the whole table`
+        ] : []
+      };
     } catch (error) {
       const local = foldSplitThemeCollections(
         await readLocalVariables(),
@@ -46117,7 +46675,7 @@ figma make deploy --build-dir dist
     return (_a = variable == null ? void 0 : variable.name) != null ? _a : null;
   };
   async function describeNode2(node, withProps) {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
     const base = __spreadValues(__spreadValues({
       id: node.id,
       name: node.name,
@@ -46125,23 +46683,23 @@ figma make deploy --build-dir dist
     }, node.parent ? { parent: { id: node.parent.id, name: node.parent.name } } : {}), "children" in node ? { childCount: node.children.length } : {});
     if (!withProps) return base;
     const bag = node;
-    const round18 = (value2) => typeof value2 === "number" ? Math.round(value2 * 100) / 100 : value2;
+    const round19 = (value2) => typeof value2 === "number" ? Math.round(value2 * 100) / 100 : value2;
     const props = __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
-      x: round18(bag.x),
-      y: round18(bag.y),
-      width: round18(bag.width),
-      height: round18(bag.height)
-    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round18(bag.opacity) } : {}), (_a = describe3d(bag)) != null ? _a : {}), "fills" in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+      x: round19(bag.x),
+      y: round19(bag.y),
+      width: round19(bag.width),
+      height: round19(bag.height)
+    }, bag.visible === false ? { visible: false } : {}), typeof bag.opacity === "number" && bag.opacity < 1 ? { opacity: round19(bag.opacity) } : {}), (_a = describe3d(bag)) != null ? _a : {}), "fills" in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}), describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills, (_b = bag.manualKeyframeTracks) == null ? void 0 : _b.fills) } : {}), node.type === "INSTANCE" && Array.isArray(bag.strokes) && bag.strokes.length === 0 ? { stroke: "none" } : {}), node.type === "INSTANCE" && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: "none" } : {}), "strokes" in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0 ? __spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
       stroke: await readPaintsForWrite(bag.strokes, variableNameOf, figma.mixed)
-    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round18(bag.strokeWeight) } : {}), typeof bag.strokeAlign === "string" && bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), describeProfile(bag.variableWidthStrokeProperties) ? { strokeProfile: describeProfile(bag.variableWidthStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" && bag.cornerRadius > 0 ? { cornerRadius: round18(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 && !bag.timelines[0].id.startsWith("-1") ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
+    }, typeof bag.strokeWeight === "number" ? { strokeWeight: round19(bag.strokeWeight) } : {}), typeof bag.strokeAlign === "string" && bag.strokeAlign !== "INSIDE" ? { strokeAlign: bag.strokeAlign } : {}), Array.isArray(bag.dashPattern) && bag.dashPattern.length > 0 ? { strokeDashes: bag.dashPattern } : {}), bag.complexStrokeProperties && bag.complexStrokeProperties.type !== "BASIC" ? { brush: describeBrush(bag.complexStrokeProperties) } : {}), describeProfile(bag.variableWidthStrokeProperties) ? { strokeProfile: describeProfile(bag.variableWidthStrokeProperties) } : {}), typeof bag.strokeCap === "string" && bag.strokeCap !== "NONE" ? { strokeCap: bag.strokeCap } : {}), typeof bag.strokeJoin === "string" && bag.strokeJoin !== "MITER" ? { strokeJoin: bag.strokeJoin } : {}) : {}), typeof bag.cornerRadius === "number" && bag.cornerRadius > 0 ? { cornerRadius: round19(bag.cornerRadius) } : {}), Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}), Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}), Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0 ? { animation: await describeAnimation(bag.animationStyles) } : {}), Array.isArray(bag.timelines) && bag.timelines.length > 0 && !bag.timelines[0].id.startsWith("-1") ? { timeline: bag.timelines[0].duration } : {}), readKeyframes(bag.manualKeyframeTracks)), await describeBindings2(bag.boundVariables)), typeof bag.overflowDirection === "string" && bag.overflowDirection !== "NONE" ? { scroll: bag.overflowDirection } : {}), typeof bag.numberOfFixedChildren === "number" && bag.numberOfFixedChildren > 0 ? { fixedChildren: bag.numberOfFixedChildren } : {}), typeof bag.blendMode === "string" && bag.blendMode !== "PASS_THROUGH" && bag.blendMode !== "NORMAL" ? { blendMode: bag.blendMode } : {});
     if ("layoutMode" in bag && bag.layoutMode !== "NONE") {
       props.layout = __spreadValues(__spreadValues({
         mode: bag.layoutMode,
-        gap: round18(bag.itemSpacing),
-        padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round18),
+        gap: round19(bag.itemSpacing),
+        padding: [bag.paddingTop, bag.paddingRight, bag.paddingBottom, bag.paddingLeft].map(round19),
         primaryAxis: bag.primaryAxisAlignItems,
         counterAxis: bag.counterAxisAlignItems
-      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round18(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? readGridLayout(bag) : {});
+      }, bag.layoutWrap === "WRAP" ? { wrap: true, wrapGap: round19(bag.counterAxisSpacing) } : {}), bag.layoutMode === "GRID" ? readGridLayout(bag) : {});
     }
     if (typeof bag.layoutSizingHorizontal === "string") {
       props.sizing = { horizontal: bag.layoutSizingHorizontal, vertical: bag.layoutSizingVertical };
@@ -46188,12 +46746,12 @@ figma make deploy --build-dir dist
     }
     const shape = bag.vectorNetwork;
     if (shape && Array.isArray(shape.vertices) && shape.vertices.length > 0) {
-      props.network = `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${((_b = shape.regions) == null ? void 0 : _b.length) ? `, ${shape.regions.length} region(s)` : ""}`;
+      props.network = `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${((_c = shape.regions) == null ? void 0 : _c.length) ? `, ${shape.regions.length} region(s)` : ""}`;
     }
     if (node.type === "INSTANCE") {
       const main = await node.getMainComponentAsync().catch(() => null);
-      const owner = main && ((_c = main.parent) == null ? void 0 : _c.type) === "COMPONENT_SET" ? main.parent : main;
-      props.component = (_d = owner == null ? void 0 : owner.name) != null ? _d : "(unavailable)";
+      const owner = main && ((_d = main.parent) == null ? void 0 : _d.type) === "COMPONENT_SET" ? main.parent : main;
+      props.component = (_e = owner == null ? void 0 : owner.name) != null ? _e : "(unavailable)";
       const settings = {};
       const slots = [];
       for (const [key, entry] of Object.entries(
@@ -46215,7 +46773,7 @@ figma make deploy --build-dir dist
     const links = devEditor && typeof node.getDevResourcesAsync === "function" ? await node.getDevResourcesAsync().catch(() => []) : [];
     const own = links.filter((link) => link.nodeId === node.id);
     if (own.length > 0) props.devLinks = own.map((link) => ({ name: link.name, url: link.url }));
-    const notes = (_e = node.annotations) != null ? _e : [];
+    const notes = (_f = node.annotations) != null ? _f : [];
     if (notes.length > 0) props.annotations = await describeAnnotations(notes);
     if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
       const owner = node;
@@ -46230,9 +46788,9 @@ figma make deploy --build-dir dist
       if (line) props.properties = line;
       const description = (owner.description || "").trim();
       if (description) props.description = description.length > 200 ? `${description.slice(0, 200)}\u2026` : description;
-      const documentation = ((_f = owner.documentationLinks) != null ? _f : []).map((link) => link.uri);
+      const documentation = ((_g = owner.documentationLinks) != null ? _g : []).map((link) => link.uri);
       if (documentation.length > 0) props.documentation = documentation;
-      if (node.type === "COMPONENT" && ((_g = node.parent) == null ? void 0 : _g.type) === "COMPONENT_SET") props.variantOf = node.parent.name;
+      if (node.type === "COMPONENT" && ((_h = node.parent) == null ? void 0 : _h.type) === "COMPONENT_SET") props.variantOf = node.parent.name;
       props.key = owner.key;
     }
     if ((node.type === "TEXT" || node.type === "TEXT_PATH") && bag.textDecoration !== "NONE") {
@@ -46241,7 +46799,7 @@ figma make deploy --build-dir dist
     }
     if (node.type === "TEXT" || node.type === "TEXT_PATH") {
       props.text = node.characters;
-      props.fontSize = node.fontSize === figma.mixed ? "mixed" : round18(node.fontSize);
+      props.fontSize = node.fontSize === figma.mixed ? "mixed" : round19(node.fontSize);
       props.fontName = node.fontName === figma.mixed ? "mixed" : writableFont(node.fontName);
       props.textAlign = node.textAlignHorizontal;
       if (node.textAlignVertical !== "TOP") props.verticalAlign = node.textAlignVertical;
@@ -46260,7 +46818,7 @@ figma make deploy --build-dir dist
         props.truncate = true;
         if (typeof t.maxLines === "number") props.maxLines = t.maxLines;
       }
-      if (t.hyperlink) props.link = t.hyperlink === figma.mixed ? "mixed" : (_h = t.hyperlink.value) != null ? _h : "";
+      if (t.hyperlink) props.link = t.hyperlink === figma.mixed ? "mixed" : (_i = t.hyperlink.value) != null ? _i : "";
       if (t.hangingPunctuation) props.hangingPunctuation = true;
       if (t.hangingList) props.hangingList = true;
       const trim = plain2(t.leadingTrim);
@@ -47155,7 +47713,7 @@ figma make deploy --build-dir dist
             refuse("EMIT_REACT", "nothing in that scope to render");
             break;
           }
-          const variableNamesById = tokens.names;
+          const variableNamesById = new Map([...await variableNamesForScope(sceneNodesById.values()), ...tokens.names]);
           await annotateVectorLeaves(nodes, sceneNodesById);
           const alongside = Array.isArray(msg.pages) ? msg.pages.map((one) => String(one)) : [];
           let library = { files: {}, names: /* @__PURE__ */ new Map(), gaps: [], props: /* @__PURE__ */ new Map() };
@@ -47223,7 +47781,7 @@ figma make deploy --build-dir dist
             const seen2 = /* @__PURE__ */ new Set();
             const layers = [];
             let frontier = [...roots, ...alongsideRoots];
-            for (let round18 = 0; round18 < 6 && frontier.length > 0; round18++) {
+            for (let round19 = 0; round19 < 6 && frontier.length > 0; round19++) {
               const found = (await readableMasters(frontier)).filter(
                 (one) => !seen2.has(one.owner.id) && !(`src/components/${componentName(one.owner.name)}.tsx` in library.files)
               );
@@ -48660,7 +49218,13 @@ figma make deploy --build-dir dist
                 for (const paint of paints2) {
                   if ((paint == null ? void 0 : paint.type) !== "SHADER") continue;
                   const paintShader = paint;
-                  note(paintShader.id, "fill", node, paintShader.properties, paintShader.propertyMetadata);
+                  note(
+                    paintShader.id,
+                    "fill",
+                    node,
+                    __spreadValues(__spreadValues({}, paintShader.properties), animatedShaderProperties(node, field, paints2.indexOf(paint))),
+                    paintShader.propertyMetadata
+                  );
                 }
               }
               const effects = node.effects;
@@ -48668,7 +49232,13 @@ figma make deploy --build-dir dist
                 for (const effect of effects) {
                   if ((effect == null ? void 0 : effect.type) !== "SHADER") continue;
                   const effectShader = effect;
-                  note(effectShader.id, "effect", node, effectShader.properties, effectShader.propertyMetadata);
+                  note(
+                    effectShader.id,
+                    "effect",
+                    node,
+                    __spreadValues(__spreadValues({}, effectShader.properties), animatedShaderProperties(node, "effects", effects.indexOf(effect))),
+                    effectShader.propertyMetadata
+                  );
                 }
               }
             };
@@ -48691,7 +49261,8 @@ figma make deploy --build-dir dist
               // supplies none, the ids are the whole answer and `named: false` says so —
               // `importShaderById` would fetch the definitions, and that is a write.
               properties: [...entry.keys].map((defId) => {
-                const definition = entry.meta[defId];
+                var _a2, _b2;
+                const definition = (_b2 = entry.meta[defId]) != null ? _b2 : (_a2 = sameShaderInCatalogue([...entry.keys], new Map(offered.map((shader) => [shader.id, shader])))) == null ? void 0 : _a2[defId];
                 if (!definition) return defId;
                 const fallback = definition.defaultValue === void 0 ? "" : ` (=${typeof definition.defaultValue === "object" ? JSON.stringify(definition.defaultValue) : definition.defaultValue})`;
                 return `${defId} ${definition.name}: ${definition.type.toLowerCase()}${fallback}`;
