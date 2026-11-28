@@ -89,6 +89,11 @@ const FILE_DOCS: ReadonlyArray<{ match: (path: string) => boolean; what: string;
     use: 'Visual reference for the contract in COMPONENTS.md.',
   },
   {
+    match: (path) => path.startsWith('guidelines/'),
+    what: "The file's own guidelines — written into the Figma file by its owners (brand rules, a skill, usage notes).",
+    use: 'Read them before designing or building from this package; token values still come from the token files.',
+  },
+  {
     match: (path) => path === 'DESIGN.md',
     what: 'This file — the design contract for coding agents.',
     use: 'Load it into context before writing UI code.',

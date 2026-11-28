@@ -365,6 +365,10 @@
   .set-ctl { flex: none; width: 132px; }
   .mod-row.disabled { opacity: .45; }
   .set-hint { font-size: 10px; color: var(--faint); margin: 8px 0 0; line-height: 1.5; }
+  /* What the FILE decides in Settings → Documentation (docs.configure / docs.write). */
+  .pin-note { font-size: 10.5px; line-height: 1.5; color: var(--faint); margin: 2px 2px 8px; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.045); }
+  .pin-note b { color: var(--text, inherit); font-weight: 600; }
+  .pin-note code { font-size: 10px; }
   /* Bootstrap fidelity ladder: the selected rung and everything below it light up, so it's
      visually obvious what a level "captures" (components implies utilities implies tokens). */
   .fid-step { transition: color .16s, font-weight .16s; }
@@ -2457,6 +2461,8 @@
           <span>Documentation</span>
           <span class="sec-hint">DESIGN.md &middot; COMPONENTS.md</span>
         </div>
+        <p class="pin-note" id="doc-pin-note" hidden></p>
+        <p class="pin-note" id="doc-guidelines-note" hidden></p>
         <label class="set-row" for="set-doc-components">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3l9 4.5-9 4.5-9-4.5L12 3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M3 12l9 4.5 9-4.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
           <span class="set-text"><b>Component contracts</b><i>COMPONENTS.md from each component's Description &amp; doc link</i></span>
@@ -4242,6 +4248,54 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         updatePresetIndicator()
       }
 
+      // What the FILE decides (pinned docs settings, the guidelines it carries) — the same for
+      // everyone who exports it, so the matching switches are locked here instead of silently
+      // losing to the file on the next export.
+      var FILE_PINS = null
+      var DOC_PIN_CONTROLS = { componentDocs: 'set-doc-components', componentPreviews: 'set-doc-previews', previewBudgetMb: 'set-doc-budget' }
+      function renderFilePins() {
+        var note = document.getElementById('doc-pin-note')
+        var gNote = document.getElementById('doc-guidelines-note')
+        var pinned = FILE_PINS && FILE_PINS.docs ? FILE_PINS.docs : null
+        Object.keys(DOC_PIN_CONTROLS).forEach(function (field) {
+          var ctl = document.getElementById(DOC_PIN_CONTROLS[field])
+          if (!ctl) return
+          var row = ctl.closest('.set-row')
+          var locked = !!(pinned && Object.prototype.hasOwnProperty.call(pinned, field))
+          if (locked) {
+            // Show the file's value, not the one this person last saved.
+            if (OPTIONS && OPTIONS.docs) OPTIONS.docs[field] = pinned[field]
+            if (ctl.type === 'checkbox') ctl.checked = pinned[field] === true
+            else ctl.value = pinned[field]
+            ctl.disabled = true
+            if (row) row.classList.add('disabled')
+            ctl.title = 'Pinned by this file'
+          } else {
+            ctl.title = ''
+          }
+        })
+        if (note) {
+          if (pinned) {
+            var names = { componentDocs: 'component contracts', componentPreviews: 'previews', previewBudgetMb: 'preview budget' }
+            note.innerHTML = '<b>Pinned by this file</b> &middot; ' + Object.keys(pinned).map(function (k) { return names[k] || escapeHtml(k) }).join(', ') +
+              ' — everyone who exports it gets the same documentation, so these switches are locked here. An agent changes them in the file with <code>docs.configure</code>.'
+            note.hidden = false
+          } else {
+            note.hidden = true
+          }
+        }
+        if (gNote) {
+          var g = FILE_PINS && FILE_PINS.guidelines
+          if (g) {
+            gNote.innerHTML = '<b>This file carries guidelines</b> &middot; &ldquo;' + escapeHtml(String(g.name)) + '&rdquo;, ' + g.files + ' file' + (g.files === 1 ? '' : 's') +
+              (g.entry ? ' (start with ' + escapeHtml(String(g.entry)) + ')' : '') + ' — they ship under <code>guidelines/</code> in the token package, and agents read them first (<code>docs.read</code>).'
+            gNote.hidden = false
+          } else {
+            gNote.hidden = true
+          }
+        }
+      }
+
       function syncDependentRows() {
         if (!OPTIONS) return
         var bootstrapOn = OPTIONS.targetOptions.framework === 'bootstrap'
@@ -4265,6 +4319,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           row.classList.toggle('disabled', !previewsOn)
           Array.prototype.forEach.call(row.querySelectorAll('input'), function (ctl) { ctl.disabled = !previewsOn })
         })
+        renderFilePins()
         var endpointSet = OPTIONS.delivery.endpoint !== ''
         Array.prototype.forEach.call(document.querySelectorAll('[data-needs-endpoint]'), function (row) {
           row.classList.toggle('disabled', !endpointSet)
@@ -6267,6 +6322,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           '## How to work with it',
           '',
           '- Start at `document.info` or `selection.get`. Never invent a node id.',
+          '- When `document.info` reports `guidelines`, the file carries its owners\' own',
+          '  instructions (a DESIGN.md, a skill, brand rules): read them with `docs.read` before',
+          '  anything else and follow them — everyone who opens the file is told the same.',
           '- Search by name (`node.find`) before fetching by id — names are how designers talk',
           '  about their work, ids are an implementation detail.',
         ]).concat(opNotes(false)).concat([
@@ -6350,6 +6408,25 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           '- One call is one undo step for the designer. Keep batches modest; library imports',
           '  are network-bound.',
         ]).concat(opNotes(true)).concat([
+          '## Figma Specs: only through Figma\'s own MCP',
+          '',
+          'A Figma Spec is GitHub-flavoured Markdown embedded in a Design file as a `SPEC_BLOCK` node.',
+          'Figma\'s official remote MCP runtime exposes `figma.spec`; this plugin\'s runtime does not —',
+          '`sandbox.capabilities` answers `spec.available: false` — and the `figma.mcp` desktop relay',
+          'is read-only. So this channel cannot read or write a Spec; the official MCP can:',
+          '',
+          '1. Get the file key from the file\'s URL (`figma.com/design/<fileKey>/…`) or ask the designer.',
+          '2. Official MCP: `create_session` with that key, then load its `figma-use` and `figma-spec`',
+          '   skills before the first `use_figma`.',
+          '3. In the first script check `figma.spec` exists — undefined means the file\'s plan has no',
+          '   Specs; say so and stop. Find the Spec with `findAllWithCriteria({ types: [\'SPEC_BLOCK\'] })`',
+          '   filtered to `specBlockType === "DOCUMENT"`, one page per call.',
+          '4. Read with `getContent`; change with `editContent`; verify every write with `getContent`.',
+          '',
+          'One source, one copy: the file\'s guidelines (`docs.read` / `docs.write`, in its plugin data)',
+          'are what agents follow; a Spec is the copy people read on the canvas. Change the guidelines',
+          'first, then the Spec. Everything this channel already does stays on this channel.',
+          '',
           '## No Figma API token is involved',
           '',
           'Everything above runs through the plugin the designer already has open. There is no',
@@ -8563,7 +8640,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             elTop.textContent = msg.frames.length + ' top-level frame(s) — press "Scan scope" for linter & i18n'
             elTop.className = ''
           }
+        } else if (msg.type === 'FILE_PINS') {
+          FILE_PINS = msg.filePins || null
+          if (OPTIONS) syncDependentRows()
+          else renderFilePins()
         } else if (msg.type === 'EXPORT_OPTIONS') {
+          FILE_PINS = msg.filePins || null
           PRESETS = msg.presets || []
           USER_PRESETS = msg.userPresets || []
           renderPresetOptions()
@@ -8970,6 +9052,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // button instead of running unasked.
       parent.postMessage({ pluginMessage: { type: 'SCAN_TOP' } }, '*')
 
+  </script>
+  <script>
+    // Tell the sandbox whether Figma's window is visible. Behind, Chromium throttles chained
+    // timers to about one a minute, and the sandbox's "yield to the host" turns cost ~28 s each;
+    // hidden, there is no editor to keep responsive, so it stops yielding (utils/budget.ts).
+    ;(function () {
+      if (window.__ALLCREW_BROWSER_MIRROR__) return
+      var report = function () {
+        try { parent.postMessage({ pluginMessage: { type: 'HOST_VISIBILITY', hidden: document.hidden === true } }, '*') } catch (e) {}
+      }
+      document.addEventListener('visibilitychange', report)
+      report()
+    })()
   </script>
 </body>
 </html>

@@ -28,7 +28,9 @@ export function buildDesignTokens(
   generatedAt?: string,
   componentDocs: readonly ComponentDoc[] = [],
   /** Names a colour remap rewrote, so the export can keep the old keys resolving. */
-  renames?: RenameMap
+  renames?: RenameMap,
+  /** Files the caller adds to the package beside these (the file's guidelines) — listed in DESIGN.md. */
+  extraFiles: readonly string[] = []
 ): TargetArtifacts {
   const opts = normalizeExportOptions(options)
   const engineOptions = {
@@ -65,6 +67,7 @@ export function buildDesignTokens(
         ...(realComponentDocs.length > 0 ? [COMPONENTS_FILE] : []),
         ...(iconDocs.length > 0 ? [ICONS_FILE] : []),
         ...(componentDocs.some((doc) => doc.preview) ? ['previews/<component>.png'] : []),
+        ...extraFiles,
       ],
       options: pkg.options,
       audit: buildTokenAudit(graph),

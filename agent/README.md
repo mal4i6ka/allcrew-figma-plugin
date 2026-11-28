@@ -7,7 +7,7 @@ It is MCP-shaped without being MCP: there is no server to register, no client li
 nothing to keep in sync but the op names. If a tool can run a shell command, it can drive
 Figma.
 
-**Reads and writes, gated separately.** Most ops only look; thirty-five of them change the
+**Reads and writes, gated separately.** Most ops only look; thirty-seven of them change the
 document or plugin-managed module storage and sit behind their own switch, which reads never imply.
 
 ---
@@ -200,6 +200,25 @@ per-request `_meta` that revision requires (`io.modelcontextprotocol/protocolVer
 - `notifications/cancelled` aborts the in-flight bridge request. A write the plugin already
   accepted may still complete — cancelling is not a rollback. No progress is invented: none is
   sent until the bridge reports real progress.
+
+---
+
+## Figma Specs: only through Figma's own MCP
+
+A Figma Spec is GitHub-flavoured Markdown embedded in a Design file as a `SPEC_BLOCK` node (open
+beta since 2026-10-15). Figma's official remote MCP runtime exposes `figma.spec`
+(`createOnCanvasAsync`, `getContent`, `getBlockContent`, `setContent`, `editContent`,
+`comments.*`); this plugin's runtime does not — `sandbox.capabilities` reports
+`spec.available: false` (it will say `true` if Figma ever opens the API to plugins), and the
+`figma.mcp` desktop relay is read-only. So:
+
+- read or write a Spec with the official remote MCP: file key from the URL (this channel cannot
+  supply it), `create_session`, its `figma-use` + `figma-spec` skills, then `use_figma` — check
+  `figma.spec` exists, find the `SPEC_BLOCK` (`specBlockType === "DOCUMENT"`), `getContent`, edit
+  with `editContent`, verify with `getContent`;
+- keep the file's guidelines (`docs.read` / `docs.write`) as the source agents follow and the Spec
+  as the human-readable copy, updated after them;
+- keep everything this channel already does on this channel.
 
 ---
 
@@ -413,7 +432,8 @@ allcrew-channel ops --json       # the same, machine-readable
 
 | Op | Answers |
 |----|---------|
-| `document.info` | file name, editor type, current page, all pages |
+| `document.info` | file name, editor type, current page, all pages — and `guidelines` when the file stores its owners' instructions, plus what it pins for its documentation export (`pinned.docs`) |
+| `docs.read` | the guidelines stored IN the file (DESIGN.md, a skill, brand rules — written with `docs.write`) as files on disk, and the file's pinned documentation settings. The same for everyone who opens the file |
 | `guide.list` / `guide.get` | playbooks: named tasks with the ops they take, in order, and what to check when done — the first call on an unfamiliar file |
 | `design.evidence` | bounded fidelity preflight: annotations, Dev Resources, component documentation, tokens/styles/components, prototype signals, layout grids, inferred auto layout, and explicit evidence gaps |
 | `page.frames` | top-level frames, sections and components on a page |
@@ -482,7 +502,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `library.collections` | variable collections published by libraries enabled in this file |
 | `library.variables` | variables inside one library collection — read another file's palette, with `resolve: true` to follow the alias chains a theme collection is made of |
 | `lint.colors` | layers painted with a raw colour instead of a variable |
-| `sandbox.capabilities` | what this plugin runtime allows |
+| `sandbox.capabilities` | what this plugin runtime allows — eval, `new Function`, and whether `figma.spec` (Figma Specs) is reachable here |
 | `plugin.vocabulary` | every node property `NODE_CREATE`, `NODE_SET` and `NODE_CLONE` accept, extracted from the source at build time so it cannot drift from the code |
 | `plugin.commands` | every command the plugin's own panel can run, and which of them need the write gate |
 | `modules.schema` | the canonical JSON Schema, starter module, runtime rules and limits for authoring declarative plugin screens |
@@ -490,7 +510,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `modules.inspect` | one installed module&rsquo;s declarative file and current state, with secret fields redacted |
 | `modules.export` | a transferable module file, optionally with non-secret state |
 
-Thirty-five **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
+Thirty-seven **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
 table is checked against the registry by a test — an op that ships without a row here fails the
 build rather than going quietly undocumented, which is how the count used to read "five".)
 
@@ -526,6 +546,8 @@ build rather than going quietly undocumented, which is how the count used to rea
 | `modules.remove` | removes a module and its persisted state; export first when it may be needed again |
 | `canvas.arrange` | Slides or Buzz: replaces the grid (rows of ids — how a deck is reordered), moves nodes to `[row, column]`, inserts a row, focuses a slide or asset, switches between grid and single view |
 | `data.set` | one plugin-data entry on a node or the file (`root`); an empty value removes it. Syncs to every collaborator and enters version history — never a secret, at most 100 kB |
+| `docs.write` | stores guideline files in the Figma file's shared plugin data (`allcrewChannel` namespace on the document root, chunked under Figma's 100 kB entry limit, switched in atomically): merge, `replace`, remove a path with null, or `clear`. `dryRun` first; read back and verified after. Settings → Documentation shows the set, and the token package ships it under `guidelines/` |
+| `docs.configure` | reads or pins how THIS FILE exports its documentation — component contracts (COMPONENTS.md) on or off, previews, their budget — so the package is the same on every machine; the panel locks the pinned switches. Without arguments it is a read |
 | `inbox.send` | leaves a message in the file for `*` (everyone), `user:<id>` (a person) or `agent:<id>` (that person's agent): `text` up to 8 kB, `kind` note / request / reply (`thread` names what it answers), `nodeIds` to point at layers, `ttlHours` 1 h–1 week (default a day). Stored in the file — never a secret. A `request` is only acted on after the person it went to presses Approve in their panel; agents cannot approve |
 | `inbox.ack` | marks messages to you read. Once everyone a message was for has read it (and a request has its answer) it is removed ten minutes later; everything else goes at its expiry |
 | `buzz.content.set` | Buzz: fills an asset's text fields and swaps its images or videos by hash, by field index or node id |

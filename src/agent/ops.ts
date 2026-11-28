@@ -48,6 +48,8 @@ import { PLUGIN_OPS } from './plugin-ops.ts'
 import { MODULE_OPS } from './module-ops.ts'
 import { EDITOR_OPS } from './editor-ops.ts'
 import { DATA_OPS } from './data-ops.ts'
+import { DOCS_OPS } from './docs-ops.ts'
+import { guidelinesSummary, readFileDocsConfig, readGuidelinesManifest, type SharedDataHost } from '../docs/file-docs.ts'
 import { INBOX_OPS } from './inbox-ops.ts'
 import { COMPONENT_READ_OPS, COMPONENT_WRITE_OPS } from './component-ops.ts'
 import { ADMIN_OPS } from './admin-ops.ts'
@@ -886,7 +888,7 @@ function readPropertyDefinitions(node: ComponentNode | ComponentSetNode): {
 export const READ_OPS: readonly OpDef[] = [
   {
     name: 'document.info',
-    summary: 'File name, editor type, current page and the list of pages.',
+    summary: 'File name, editor type, current page and the list of pages — and the guidelines the file carries, when it has some.',
     mutates: false,
     params: {},
     async run() {
@@ -903,6 +905,11 @@ export const READ_OPS: readonly OpDef[] = [
          * big file and nothing at all afterwards, so a caller planning a sweep wants to know
          * how much of that bill is already paid - see `loading.ts`. */
         warmPages: warmPages(),
+        /* The file's own instructions, when its owners stored some (docs.write): an agent's first
+         * call is this one, so this is where it learns there is something to read before it acts. */
+        guidelines: guidelinesSummary(readGuidelinesManifest(figma.root as unknown as SharedDataHost)),
+        /* What the file pins for its exports — null means each person's own panel settings. */
+        pinned: { docs: readFileDocsConfig(figma.root as unknown as SharedDataHost) },
       }
     },
   },
@@ -2747,6 +2754,10 @@ export const READ_OPS: readonly OpDef[] = [
         fileKey: figma.fileKey ?? null,
         ...probe('eval', () => (0, eval)('1 + 1')),
         ...probe('newFunction', () => new Function('return 1 + 1')()),
+        // Figma Specs (Markdown documents, embedded as SPEC_BLOCK nodes) exist in the runtime only
+        // when the file's plan has Specs enabled, and are absent from the public typings — ask
+        // the runtime instead of the typings whether this plugin can reach them.
+        spec: specSurface(),
       }
     },
   },
@@ -2826,8 +2837,21 @@ export const ALL_OPS: readonly OpDef[] = [
   ...MODULE_OPS,
   ...EDITOR_OPS,
   ...DATA_OPS,
+  ...DOCS_OPS,
   ...INBOX_OPS,
   ...PLUGIN_OPS,
 ]
 
 export const OPS_BY_NAME: ReadonlyMap<string, OpDef> = new Map(ALL_OPS.map((op) => [op.name, op]))
+
+/** What `figma.spec` offers this sandbox, if anything (see sandbox.capabilities). */
+function specSurface(): { available: boolean; methods?: string[]; comments?: string[] } {
+  const spec = (figma as unknown as { spec?: Record<string, unknown> }).spec
+  if (!spec || typeof spec !== 'object') return { available: false }
+  const names = (o: unknown) => {
+    const out = new Set<string>()
+    for (let p = o; p && p !== Object.prototype; p = Object.getPrototypeOf(p)) for (const k of Object.getOwnPropertyNames(p)) if (k !== 'constructor') out.add(k)
+    return [...out].sort()
+  }
+  return { available: true, methods: names(spec), ...(spec.comments ? { comments: names(spec.comments) } : {}) }
+}

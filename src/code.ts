@@ -31,8 +31,9 @@ import { collectReactionDestinationIds } from './targets/django/interactions'
 import { matchBootstrapComponent } from './targets/django/bootstrap/components'
 import { imageFillUrls, scaleBorderRadius } from './targets/django/css-emitter'
 import type { ThemableSetData, ThemableVariantData } from './targets/django/bootstrap/theme'
-import { findAllWithCriteria, loadAllPagesAsync, topLevelAncestorOrNull, walkSceneNodes } from './utils/tree'
-import { asPanelCommand, checkpoint } from './utils/budget'
+import { findAllByTypes, findAllWithCriteria, topLevelAncestorOrNull, walkSceneNodes } from './utils/tree'
+import { asPanelCommand, checkpoint, setHostHidden, timeLeft } from './utils/budget'
+import { applyFileDocsConfig, filePins, guidelinesSummary, readFileDocsConfig, readGuidelines, type SharedDataHost } from './docs/file-docs.ts'
 import { exportPlate } from './canvas/plate'
 import {
   ExportGuard,
@@ -209,6 +210,7 @@ type PluginMessage =
   | { type: 'SAVE_UPDATE_PREFERENCES'; preferences: unknown }
   | { type: 'OPEN_EXTERNAL'; url: string }
   | { type: 'UI_RESIZE'; width: number; height: number; persist?: boolean }
+  | { type: 'HOST_VISIBILITY'; hidden: boolean }
   | { type: 'LIST_VARIABLE_COLLECTIONS' }
   | { type: 'SYNC_BREAKPOINT_FRAMES' }
   | { type: 'SAVE_USER_PRESET'; label: string; values: unknown }
@@ -1307,6 +1309,24 @@ interface ComponentDocsResult {
   docs: ComponentDoc[]
   /** `previews/*.png` bytes to ship alongside `COMPONENTS.md`. */
   files: Record<string, Uint8Array>
+  /** Said when the walk stopped short: which pages it read, and why the rest are missing. */
+  note?: string
+}
+
+/** How long the token package waits for its component docs. Loading a large file's pages can
+ * take minutes, or never settle — and a cold 32-page design system takes 35-60 s — and the
+ * tokens must not wait on that forever. Pages are read in batches against a deadline 15 s inside
+ * this, so a slow file ships a partial COMPONENTS.md that says what is missing; this outer
+ * ceiling only catches a page that hangs. It stays under the bridge's 180 s call ceiling with
+ * room for the token build. */
+const COMPONENT_DOCS_BUDGET_MS = 100_000
+/** Held back from an agent run's own deadline for building the package after the docs. */
+const COMPONENT_DOCS_RESERVE_MS = 20_000
+
+/** The file's pinned documentation settings (docs.configure) over this person's saved ones:
+ * what the documentation half of a package is, is the file's to say, wherever it is opened. */
+function withFileDocs<T extends { docs: { componentDocs: boolean; componentPreviews: boolean; previewBudgetMb: number } }>(options: T): T {
+  return applyFileDocsConfig(options, readFileDocsConfig(figma.root as unknown as SharedDataHost))
 }
 
 /**
@@ -1320,7 +1340,9 @@ interface ComponentDocsResult {
 async function collectComponentDocs(
   withPreviews: boolean,
   budgetMb: number,
-  nodes?: readonly (ComponentSetNode | ComponentNode)[]
+  nodes?: readonly (ComponentSetNode | ComponentNode)[],
+  /** Stop here and ship what was read — a partial COMPONENTS.md beats none (see the note). */
+  deadline: number = Number.POSITIVE_INFINITY
 ): Promise<ComponentDocsResult> {
   const budgetBytes = Math.max(1, budgetMb) * 1024 * 1024
   const files: Record<string, Uint8Array> = {}
@@ -1328,14 +1350,59 @@ async function collectComponentDocs(
   // documentation budget is the limit, not the transport cap.
   const previewGuard = new ExportGuard({ budgetBytes, transport: false })
   let targets: (ComponentSetNode | ComponentNode)[]
+  let loadMs = 0
+  let findMs = 0
+  const unreadPages: string[] = []
+  const collectStarted = Date.now()
   if (nodes) {
     targets = [...nodes]
   } else {
-    await loadAllPagesAsync()
-    targets = figma.root
-      .findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
-      .filter(isDocumentableComponent)
+    // Page by page, four at a time, and collected as each batch loads — not one document-wide
+    // load and search. A plugin session starts with only the open page loaded (every rebuild or
+    // reopen is a cold start), and an all-or-nothing wait on a big file shipped no COMPONENTS.md
+    // at all. Now the pages read before the deadline are documented, the rest are named, and the
+    // session keeps them loaded — the next export finishes the job. A failing page is named too,
+    // instead of failing the whole package. Per-page search needs no document-wide gate.
+    targets = []
+    const pages = figma.root.children.slice()
+    const BATCH = 4
+    for (let start = 0; start < pages.length; start += BATCH) {
+      const batch = pages.slice(start, start + BATCH)
+      if (Date.now() > deadline) {
+        unreadPages.push(...batch.map((page) => page.name))
+        continue
+      }
+      await checkpoint()
+      const loadStarted = Date.now()
+      const loaded = await Promise.all(
+        batch.map(async (page) => {
+          try {
+            await page.loadAsync()
+            return page
+          } catch {
+            try {
+              await page.loadAsync()
+              return page
+            } catch {
+              unreadPages.push(page.name)
+              return null
+            }
+          }
+        })
+      )
+      const batchLoad = Date.now() - loadStarted
+      loadMs += batchLoad
+      const findStarted = Date.now()
+      for (const page of loaded) {
+        if (!page) continue
+        targets.push(...(await findAllByTypes<ComponentSetNode | ComponentNode>(page, ['COMPONENT_SET', 'COMPONENT'])).filter(isDocumentableComponent))
+      }
+      const batchFind = Date.now() - findStarted
+      findMs += batchFind
+      postToUi({ type: 'COMPONENT_DOCS_PROGRESS', pages: Math.min(start + BATCH, pages.length), of: pages.length, components: targets.length, loadMs: batchLoad, findMs: batchFind, elapsedMs: Date.now() - collectStarted })
+    }
   }
+  const readStarted = Date.now()
 
   const pageNameById = new Map<string, string>()
   const pageOf = (node: BaseNode): string | undefined => {
@@ -1411,6 +1478,20 @@ async function collectComponentDocs(
       postToUi({ type: 'COMPONENT_PREVIEW_PROGRESS', done: docs.length, total: targets.length })
     }
     await checkpoint()
+    if (Date.now() > deadline && docs.length < targets.length) break
+  }
+  const seconds = (ms: number) => `${Math.round(ms / 100) / 10} s`
+  const timing = `pages ${seconds(loadMs)}, search ${seconds(findMs)}, reading ${seconds(Date.now() - readStarted)}`
+  if (docs.length < targets.length || unreadPages.length > 0) {
+    const parts = [
+      docs.length < targets.length ? `${docs.length} of the ${targets.length} components found` : `${docs.length} components`,
+      unreadPages.length > 0 ? `${unreadPages.length} page(s) not read yet: ${unreadPages.slice(0, 8).join(', ')}${unreadPages.length > 8 ? ', …' : ''}` : '',
+    ].filter(Boolean)
+    return {
+      docs,
+      files,
+      note: `COMPONENTS.md is partial — ${parts.join('; ')} (${timing}). The pages read so far stay loaded in this session: export again to complete it${withPreviews ? '; previews are the slow part — lower their budget or turn them off in Settings → Documentation' : ''}`,
+    }
   }
   return { docs, files }
 }
@@ -1672,7 +1753,7 @@ Promise.all([
   // The bridge URL and secret are setup and worth persisting; so is the answer a designer has
   // already given about this file. Re-asking on every open does not strengthen consent — it
   // trains the reflex to click through it — and the switches stay in the panel either way.
-  const options = normalizeExportOptions(storedOptions)
+  const options = withFileDocs(normalizeExportOptions(storedOptions))
   const remembered = await gatesFor()
   // Writes cannot outlive reads, the same rule the panel enforces, applied to what was stored
   // in case the two ever drift apart.
@@ -1682,6 +1763,8 @@ Promise.all([
     options,
     presets: EXPORT_PRESETS,
     userPresets: normalizeUserPresets(storedPresets),
+    // What the FILE decides for everyone (docs settings, its guidelines) — the panel locks those switches.
+    filePins: filePins(figma.root as unknown as SharedDataHost),
   })
   postToUi({ type: 'UPDATE_PREFERENCES', preferences: normalizeUpdatePreferences(storedUpdates) })
   const paletteSettings = normalizePaletteSettings(storedPalette)
@@ -2769,7 +2852,7 @@ async function buildTokenPackage(flags: {
   tokens?: { includeLibraries?: boolean; emitNative?: boolean }
 }) {
   const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)
-  const saved = normalizeExportOptions(stored)
+  const saved = withFileDocs(normalizeExportOptions(stored))
   // The call's own flags win over the saved ones: an agent asking for a native package must
   // not depend on what the designer last toggled in a UI it cannot see.
   const options = {
@@ -2789,14 +2872,39 @@ async function buildTokenPackage(flags: {
   // point at it, then ship COMPONENTS.md and the previews alongside the tokens.
   // The UI sends its live values so a package built right after a toggle reflects it —
   // stored options can still be one save behind.
-  const docsOptions = { ...options.docs, ...(flags.docs ?? {}) }
-  const componentDocs = docsOptions.componentDocs
-    ? await collectComponentDocs(docsOptions.componentPreviews, docsOptions.previewBudgetMb)
+  // What the file pins (docs.configure) wins over both: the same file ships the same docs for
+  // everyone, and a panel one save behind cannot undo a pin set a moment ago.
+  const pinnedDocs = readFileDocsConfig(figma.root as unknown as SharedDataHost)
+  const docsOptions = { ...options.docs, ...(flags.docs ?? {}), ...(pinnedDocs ?? {}) }
+  // Read against a deadline — the budget, or the agent run's own deadline less room to build the
+  // package — and raced against a ceiling for a page load that never settles: past it the tokens
+  // ship complete and the summary says what the docs left out.
+  const docsDeadline = Date.now() + Math.min(COMPONENT_DOCS_BUDGET_MS - 15_000, timeLeft() - COMPONENT_DOCS_RESERVE_MS)
+  const componentDocs: ComponentDocsResult = docsOptions.componentDocs
+    ? await Promise.race([
+        collectComponentDocs(docsOptions.componentPreviews, docsOptions.previewBudgetMb, undefined, docsDeadline),
+        new Promise<ComponentDocsResult>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                docs: [],
+                files: {},
+                note: `Component docs left out: Figma had not loaded this file's pages after ${COMPONENT_DOCS_BUDGET_MS / 1000} s — the tokens are complete; export again in a while for COMPONENTS.md, or turn component docs off in Settings → Documentation`,
+              }),
+            COMPONENT_DOCS_BUDGET_MS
+          )
+        ),
+      ])
     : { docs: [], files: {} }
   // `buildDesignTokens` writes COMPONENTS.md (it owns the token model the descriptions
   // resolve against); the previews are binary and travel separately.
-  const artifacts = buildDesignTokens(graph, options, undefined, componentDocs.docs, readRenameMap())
+  // The file's own guidelines (docs.write) ship with the package under guidelines/, and
+  // DESIGN.md lists them — the instructions travel with the tokens they are about.
+  const guidelines = readGuidelines(figma.root as unknown as SharedDataHost)
+  const guidelinePaths = guidelines.files.map((file) => `guidelines/${file.path}`)
+  const artifacts = buildDesignTokens(graph, options, undefined, componentDocs.docs, readRenameMap(), guidelinePaths)
   for (const path of Object.keys(componentDocs.files)) artifacts.files[path] = componentDocs.files[path]
+  for (const file of guidelines.files) artifacts.files[`guidelines/${file.path}`] = file.text
   artifacts.summary.componentCount = componentDocs.docs.length
   artifacts.summary.previewCount = Object.keys(componentDocs.files).length
   // Previews asked for but none produced is a silent failure otherwise — surface the reason.
@@ -2804,11 +2912,20 @@ async function buildTokenPackage(flags: {
     const reason = componentDocs.docs.find((doc) => doc.previewError)?.previewError
     artifacts.summary.previewError = reason ?? 'no components found to capture'
   }
-  if (libraryNote) {
-    const existing = Array.isArray(artifacts.summary.notes) ? artifacts.summary.notes : []
-    artifacts.summary.notes = [...existing, libraryNote]
+  const notes: string[] = []
+  if (libraryNote) notes.push(libraryNote)
+  if (componentDocs.note) notes.push(componentDocs.note)
+  if (pinnedDocs) notes.push(`Documentation settings come from this file (${Object.keys(pinnedDocs).join(', ')}) — the same for everyone who exports it`)
+  if (guidelines.manifest) {
+    const damaged = guidelines.damaged.length > 0 ? ` — ${guidelines.damaged.length} stored incompletely: ${guidelines.damaged.join(', ')}` : ''
+    notes.push(`Guidelines from this file: "${guidelines.manifest.name}", ${guidelines.files.length} file(s) under guidelines/${damaged}`)
+    artifacts.summary.guidelines = guidelinesSummary(guidelines.manifest)
   }
-  return { artifacts, options }
+  if (notes.length > 0) {
+    const existing = Array.isArray(artifacts.summary.notes) ? artifacts.summary.notes : []
+    artifacts.summary.notes = [...existing, ...notes]
+  }
+  return { artifacts, options: { ...options, docs: { ...options.docs, ...(pinnedDocs ?? {}) } } }
 }
 
 /**
@@ -2912,8 +3029,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
   switch (msg.type) {
     /* ---- design-tokens target ---- */
     case 'SCAN_TOKENS': {
-      // @agent read: build the design-token package (tokens, DESIGN.md, component docs) and hand back the files
-      // @agent param docs: what goes into the documentation half — { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide
+      // @agent read: build the design-token package (tokens, DESIGN.md, component docs, and the file's own guidelines under guidelines/) and hand back the files
+      // @agent cost: tokens in seconds; with component docs on, a freshly opened large file loads its pages first — up to ~90 s, then a partial COMPONENTS.md that names what is missing; the next export completes it. Pass timeoutMs 170000
+      // @agent param docs: what goes into the documentation half — { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide; a field the file pins (docs.configure) always comes from the file
       // @agent param tokens: overrides for this one build — { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide
       try {
         const { artifacts, options } = await buildTokenPackage(msg)
@@ -4118,6 +4236,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         break
       }
       figma.openExternal(msg.url)
+      break
+    }
+    case 'HOST_VISIBILITY': {
+      // @agent deny: panel housekeeping — the panel reports whether Figma's window is visible, so long loops stop paying throttled timers (see utils/budget.ts); an agent has nothing to tell it
+      // @agent param hidden: the panel's document.hidden — true while Figma's window is behind
+      setHostHidden(msg.hidden === true)
       break
     }
     case 'UI_RESIZE': {
@@ -6759,7 +6883,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       let stage = 'scan'
       try {
         postToUi({ type: 'EXPORT_PROGRESS', stage: 'scan', percent: 10 })
-        const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions'))
+        const exportOptions = withFileDocs(normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions')))
         // The full snapshot is what tokens.css is made of, so it is read only when that module is
         // on; the emitters need names, and those come from the ids the scope binds (60-90s of
         // library import saved on every export that ships templates alone).
