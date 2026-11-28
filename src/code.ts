@@ -134,7 +134,7 @@ import {
 } from './modules/registry.ts'
 import { conditionMatches, moduleCapabilities, moduleStateValueError, parseUserModule, type ModuleProblem, type UserModule } from './modules/contract.ts'
 import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TEMPLATE, moduleAgentPrompt } from './modules/schema.ts'
-import { formatGridTrack, NETWORK_READ_LIMIT, planFont, planProps, readArc, readExports, readNetwork, repeatModifier, repeatWords } from './canvas/props.ts'
+import { ANNOTATION_PROPERTIES, formatGridTrack, NETWORK_READ_LIMIT, planFont, planProps, readArc, readExports, readNetwork, repeatModifier, repeatWords } from './canvas/props.ts'
 import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
 import { describe3d } from './canvas/space3d.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
@@ -1968,15 +1968,6 @@ async function describeAnnotations(notes: ReadonlyArray<Annotation>): Promise<Ar
   }))
 }
 
-/** Every property Dev Mode can pin beside a note — the list the API takes, in its own order. */
-const ANNOTATION_PROPERTIES = [
-  'width', 'height', 'maxWidth', 'minWidth', 'maxHeight', 'minHeight',
-  'fills', 'strokes', 'effects', 'strokeWeight', 'cornerRadius',
-  'textStyleId', 'textAlignHorizontal', 'fontFamily', 'fontStyle', 'fontSize', 'fontWeight',
-  'lineHeight', 'letterSpacing', 'itemSpacing', 'padding', 'layoutMode', 'alignItems', 'opacity',
-  'mainComponent', 'gridRowGap', 'gridColumnGap', 'gridRowCount', 'gridColumnCount',
-  'gridRowAnchorIndex', 'gridColumnAnchorIndex', 'gridRowSpan', 'gridColumnSpan',
-]
 
 const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline', 'repeat', 'detach']
 
@@ -2500,9 +2491,16 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // never returned, so the read could not be sent. Each run carries only what DIFFERS from the
     // layer above — the layer's own values are already in this same object — and the shape is the
     // one `runs` takes on the way in.
-    const { runs, paragraphs } = await textRuns(node)
+    const { runs, paragraphs, partlyBound } = await textRuns(node)
     // A list the whole text shares is the layer's — one bulleted block is ONE run, never printed.
     Object.assign(props, paragraphs)
+    // Bound on some characters only: said by the runs, not by the layer.
+    if (props.bind && partlyBound.length > 0) {
+      const bind = { ...(props.bind as Record<string, string>) }
+      for (const field of partlyBound) delete bind[field]
+      if (Object.keys(bind).length > 0) props.bind = bind
+      else delete props.bind
+    }
     if (runs.length > 1) props.runs = runs
   }
   Object.assign(props, await boardProps(node))

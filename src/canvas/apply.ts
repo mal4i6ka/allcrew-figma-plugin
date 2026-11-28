@@ -19,6 +19,7 @@ import {
   describeLinks,
   GRID_TOKEN_FIELDS,
   gridSpecsOf,
+  RANGE_BINDABLE,
   formatGridTrack,
   gradientHandles,
   gradientTransform,
@@ -940,6 +941,58 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: 'relaunch', before, after: step.data }
     }
 
+    case 'annotations': {
+      const holder = node as SceneNode & { annotations?: ReadonlyArray<Annotation> }
+      if (!('annotations' in holder)) throw new Error(`a ${node.type} cannot hold annotations`)
+      const categories = step.notes.some((note) => note.category) ? await figma.annotations.getAnnotationCategoriesAsync() : []
+      const notes: Annotation[] = []
+      for (const note of step.notes) {
+        let categoryId: string | undefined
+        if (note.category) {
+          const wanted = note.category.trim()
+          const found =
+            categories.find((one) => one.id === wanted) ?? categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase())
+          if (!found) throw new Error(`no annotation category "${wanted}" — this file has: ${categories.map((one) => one.label).join(', ') || '(none)'}`)
+          categoryId = found.id
+        }
+        notes.push({
+          ...(note.label ? { labelMarkdown: note.label } : {}),
+          ...(note.properties ? { properties: note.properties.map((type) => ({ type: type as AnnotationPropertyType })) } : {}),
+          ...(categoryId ? { categoryId } : {}),
+        })
+      }
+      const before = `${holder.annotations?.length ?? 0} note(s)`
+      // Replaced whole, the way `links` is: a read sent back must leave what it read, not twice it.
+      if (!dry) (holder as unknown as { annotations: Annotation[] }).annotations = notes
+      return { property: 'annotations', before, after: `${notes.length} note(s)` }
+    }
+
+    case 'devLinks': {
+      const own = (await node.getDevResourcesAsync()).filter((link) => link.nodeId === node.id)
+      const wanted = new Map(step.links.map((link) => [link.url, link]))
+      const done: string[] = []
+      if (!dry) {
+        // The URL is the identity: one not asked for goes, one missing comes, one renamed is edited.
+        for (const link of own) {
+          const keep = wanted.get(link.url)
+          if (!keep) {
+            await node.deleteDevResourceAsync(link.url)
+            done.push(`-${link.url}`)
+          } else if (keep.name && keep.name !== link.name) {
+            await node.editDevResourceAsync(link.url, { name: keep.name })
+            done.push(`~${link.url}`)
+          }
+        }
+        const held = new Set(own.map((link) => link.url))
+        for (const link of step.links) {
+          if (held.has(link.url)) continue
+          await node.addDevResourceAsync(link.url, link.name)
+          done.push(`+${link.url}`)
+        }
+      }
+      return { property: 'devLinks', before: `${own.length} link(s)`, after: done.join(' ') || 'unchanged' }
+    }
+
     case 'replace': {
       if (!isText(node)) throw new Error(`only text has words to replace, not a ${node.type}`)
       await loadNodeFont(node)
@@ -1014,14 +1067,37 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         // The font of a run has to be in memory before the run can be written, exactly as for the
         // whole node — and it is a different font from the one already loaded, or there would be
         // no point setting it.
-        if (run.fontName) await figma.loadFontAsync(run.fontName)
-        const paints = run.fill === undefined ? null : await buildPaints(run.fill)
-        // Styles resolved once per run, before any range: a name that matches nothing is the
-        // run's problem, and the rest of the runs still go on.
-        const textStyle = run.textStyle ? ((await styleFor(run.textStyle, 'text')) as TextStyle) : null
-        const fillStyle = run.fillStyle ? await styleFor(run.fillStyle, 'paint') : null
-        // A text style brings its own font, which has to be loaded before it can be applied.
-        if (textStyle) await figma.loadFontAsync(textStyle.fontName)
+        // Everything the run names is resolved before any range is written, and a run that cannot
+        // resolve — a style name seven styles share, a variable that is not there — fails on its
+        // own: it used to abort the whole step and lose the runs that were fine.
+        let paints: Paint[] | null = null
+        let textStyle: TextStyle | null = null
+        let fillStyle: BaseStyle | null = null
+        const bindings: Array<{ field: string; variable: Variable | null }> = []
+        try {
+          if (run.fontName) await figma.loadFontAsync(run.fontName)
+          paints = run.fill === undefined ? null : await buildPaints(run.fill)
+          textStyle = run.textStyle ? ((await styleFor(run.textStyle, 'text')) as TextStyle) : null
+          fillStyle = run.fillStyle ? await styleFor(run.fillStyle, 'paint') : null
+          // A text style brings its own font, which has to be loaded before it can be applied.
+          if (textStyle) await figma.loadFontAsync(textStyle.fontName)
+          // Variables on these characters only, resolved and type-checked before anything is written.
+          for (const [field, ref] of Object.entries(run.bind ?? {})) {
+            if (ref === null) {
+              bindings.push({ field, variable: null })
+              continue
+            }
+            const variable = await resolveVariableRef(ref)
+            const wants = RANGE_BINDABLE[field]
+            if (variable.resolvedType !== wants) {
+              throw new Error(`bind.${field}: "${variable.name}" is a ${variable.resolvedType}, and ${field} wants a ${wants}`)
+            }
+            bindings.push({ field, variable })
+          }
+        } catch (error) {
+          problems.push(`${describeRun(run)}: ${String((error as Error)?.message || error)}`)
+          continue
+        }
 
         for (const [from, to] of ranges) {
           if (dry) continue
@@ -1056,6 +1132,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           if (run.listSpacing !== undefined) paragraphs.setRangeListSpacing?.(from, to, run.listSpacing)
           if (run.paragraphSpacing !== undefined) paragraphs.setRangeParagraphSpacing?.(from, to, run.paragraphSpacing)
           if (run.paragraphIndent !== undefined) paragraphs.setRangeParagraphIndent?.(from, to, run.paragraphIndent)
+          for (const { field, variable } of bindings) node.setRangeBoundVariable(from, to, field as VariableBindableTextField, variable)
           if (run.decoration !== undefined) {
             const planned = planDecoration(run.decoration)
             if ('values' in planned) {
@@ -1475,6 +1552,7 @@ function describeRun(run: TextRun): string {
   if (run.paragraphSpacing !== undefined) parts.push(`paragraph spacing ${run.paragraphSpacing}`)
   if (run.paragraphIndent !== undefined) parts.push(`first-line indent ${run.paragraphIndent}`)
   if (run.decoration !== undefined) parts.push(`decoration ${JSON.stringify(run.decoration)}`)
+  for (const [field, ref] of Object.entries(run.bind ?? {})) parts.push(ref === null ? `${field} unbound` : `${field}=var:${ref}`)
   return parts.join(' ')
 }
 

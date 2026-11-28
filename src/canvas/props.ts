@@ -747,6 +747,10 @@ export interface NodeProps {
   replace?: Array<{ match?: string; from?: number; to?: number; with: string }>
   /** INSTANCE only: the scale the instance is drawn at against its component, as the K tool leaves it. */
   scaleFactor?: number
+  /** Dev Mode notes, the whole list — `[{ label, properties?, category? }]` as a read gives them; `[]` removes them. */
+  annotations?: Array<{ label?: string; properties?: string[]; category?: string }>
+  /** Dev Mode links to code, the whole list — `[{ url, name? }]`; links not named are removed. */
+  devLinks?: Array<{ url: string; name?: string }>
   /** Relaunch buttons Figma shows on the layer, by manifest command — `{ "reexport": "Re-export this frame" }`. `{}` clears them. */
   relaunch?: Record<string, string>
 }
@@ -835,6 +839,8 @@ export interface TextRun {
   paragraphIndent?: number
   /** How these characters' underline or strikethrough is drawn — the same object as on the node. */
   decoration?: DecorationSpec
+  /** Variables on just these characters — `{ fontSize: "type/size/l" }`; `null` unbinds. */
+  bind?: Record<string, string | null>
 }
 
 /**
@@ -933,6 +939,8 @@ export type PropStep =
   | { step: 'sharedData'; data: Record<string, Record<string, string | null>> }
   | { step: 'relaunch'; data: Record<string, string> }
   | { step: 'replace'; edits: Array<{ match?: string; from?: number; to?: number; with: string }> }
+  | { step: 'annotations'; notes: Array<{ label?: string; properties?: string[]; category?: string }> }
+  | { step: 'devLinks'; links: Array<{ url: string; name?: string }> }
   | { step: 'link'; url: string | null }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
@@ -1291,6 +1299,8 @@ const ORDER = [
   'modes',
   'exports',
   'devStatus',
+  'annotations',
+  'devLinks',
   'guides',
   'description',
   'documentation',
@@ -1886,6 +1896,41 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
           } else fail(`${at} must name a match, or whole numbers from < to`)
         }
         if (edits.length > 0) steps.push({ step: 'replace', edits })
+        break
+      }
+      case 'annotations': {
+        const value = props.annotations
+        const notes: Array<{ label?: string; properties?: string[]; category?: string }> = []
+        if (!Array.isArray(value)) fail('annotations must be a list of { label?, properties?, category? } — [] removes them')
+        else
+          for (const [index, one] of value.entries()) {
+            const note = one as { label?: unknown; properties?: unknown; category?: unknown } | null
+            const at = `annotations[${index}]`
+            const properties = note?.properties === undefined ? [] : note.properties
+            if (typeof note !== 'object' || note === null) fail(`${at} must be { label?, properties?, category? }`)
+            else if (note.label !== undefined && typeof note.label !== 'string') fail(`${at}.label must be text (markdown)`)
+            else if (!Array.isArray(properties) || !properties.every((name) => typeof name === 'string' && ANNOTATION_PROPERTIES.includes(name))) {
+              fail(`${at}.properties must name some of: ${ANNOTATION_PROPERTIES.join(', ')}`)
+            } else if (!note.label && properties.length === 0) fail(`${at} says nothing — give a label or some properties`)
+            else if (note.category !== undefined && typeof note.category !== 'string') fail(`${at}.category must be a category label or id`)
+            else
+              notes.push({
+                ...(note.label ? { label: note.label as string } : {}),
+                ...(properties.length > 0 ? { properties: properties as string[] } : {}),
+                ...(note.category ? { category: note.category as string } : {}),
+              })
+          }
+        if (Array.isArray(value) && notes.length === value.length) steps.push({ step: 'annotations', notes })
+        break
+      }
+      case 'devLinks': {
+        const value = props.devLinks
+        const links = Array.isArray(value)
+          ? value.map((one) => (typeof one === 'string' ? { url: one } : (one as { url?: unknown; name?: unknown })))
+          : null
+        if (!links || !links.every((one) => typeof one?.url === 'string' && one.url.trim() !== '' && (one.name === undefined || typeof one.name === 'string'))) {
+          fail('devLinks must be a list of { url, name? } — [] removes them')
+        } else steps.push({ step: 'devLinks', links: links.map((one) => ({ url: (one.url as string).trim(), ...(one.name ? { name: one.name as string } : {}) })) })
         break
       }
       case 'relaunch': {
@@ -3141,6 +3186,29 @@ const RUN_KEYS = [
   'paragraphSpacing',
   'paragraphIndent',
   'decoration',
+  'bind',
+]
+
+/** The text fields Figma binds per range, and the kind of variable each takes. */
+export const RANGE_BINDABLE: Readonly<Record<string, 'FLOAT' | 'STRING'>> = {
+  fontFamily: 'STRING',
+  fontStyle: 'STRING',
+  fontWeight: 'FLOAT',
+  fontSize: 'FLOAT',
+  letterSpacing: 'FLOAT',
+  lineHeight: 'FLOAT',
+  paragraphSpacing: 'FLOAT',
+  paragraphIndent: 'FLOAT',
+}
+
+/** Every property Dev Mode can pin beside a note — the list the API takes, in its own order. */
+export const ANNOTATION_PROPERTIES = [
+  'width', 'height', 'maxWidth', 'minWidth', 'maxHeight', 'minHeight',
+  'fills', 'strokes', 'effects', 'strokeWeight', 'cornerRadius',
+  'textStyleId', 'textAlignHorizontal', 'fontFamily', 'fontStyle', 'fontSize', 'fontWeight',
+  'lineHeight', 'letterSpacing', 'itemSpacing', 'padding', 'layoutMode', 'alignItems', 'opacity',
+  'mainComponent', 'gridRowGap', 'gridColumnGap', 'gridRowCount', 'gridColumnCount',
+  'gridRowAnchorIndex', 'gridColumnAnchorIndex', 'gridRowSpan', 'gridColumnSpan',
 ]
 
 const LIST_TYPES = ['ORDERED', 'UNORDERED', 'NONE']
@@ -3242,6 +3310,16 @@ function planRuns(raw: unknown, where: string, problems: string[]): PropStep | n
       }
     }
     check('indent', typeof run.indent === 'number' && Number.isInteger(run.indent) && run.indent >= 0, 'indent must be a whole number >= 0')
+    if (run.bind !== undefined) {
+      const bind = run.bind
+      const ok =
+        typeof bind === 'object' &&
+        bind !== null &&
+        !Array.isArray(bind) &&
+        Object.keys(bind).length > 0 &&
+        Object.entries(bind).every(([field, ref]) => field in RANGE_BINDABLE && ((typeof ref === 'string' && ref.trim() !== '') || ref === null))
+      check('bind', ok, `bind must be { field: "variable" | null } with fields from: ${Object.keys(RANGE_BINDABLE).join(', ')}`)
+    }
     for (const key of ['listSpacing', 'paragraphSpacing', 'paragraphIndent'] as const) {
       check(key, typeof run[key] === 'number' && Number.isFinite(run[key]) && (run[key] as number) >= 0, `${key} must be a number of pixels >= 0`)
     }

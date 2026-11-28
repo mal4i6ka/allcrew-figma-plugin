@@ -40,6 +40,7 @@ export const RUN_FIELDS = [
   'textDecorationThickness',
   'textDecorationColor',
   'textDecorationSkipInk',
+  'boundVariables',
 ] as const
 
 type TextLike = TextNode | TextPathNode
@@ -69,8 +70,11 @@ export async function styledRuns(node: TextLike): Promise<StyledRun[]> {
   return (await textRuns(node)).runs
 }
 
+/** Text fields bound on only some of the characters — not the layer's, whatever its read says. */
+export type PartlyBound = string[]
+
 /** The runs, and what the whole text shares that Figma only stores per range. */
-export async function textRuns(node: TextLike): Promise<{ runs: StyledRun[]; paragraphs: Paragraphs }> {
+export async function textRuns(node: TextLike): Promise<{ runs: StyledRun[]; paragraphs: Paragraphs; partlyBound: PartlyBound }> {
   const fields = RUN_FIELDS.filter((field) => node.type === 'TEXT' || !PARAGRAPH_FIELDS.has(field))
   let segments: ReadonlyArray<Record<string, unknown>>
   try {
@@ -80,7 +84,7 @@ export async function textRuns(node: TextLike): Promise<{ runs: StyledRun[]; par
   } catch {
     // A font that will not load makes the call throw. The layer-level read still stands, and an
     // empty list says "nothing to add" rather than inventing a run.
-    return { runs: [], paragraphs: {} }
+    return { runs: [], paragraphs: {}, partlyBound: [] }
   }
 
   // What every segment agrees on is the layer's; a run then reports only where it departs.
@@ -102,6 +106,19 @@ export async function textRuns(node: TextLike): Promise<{ runs: StyledRun[]; par
   }
 
   const bag = node as unknown as Record<string, unknown>
+  // A field is the LAYER's binding only when every run carries the same variable. The layer read
+  // names the first variable of Figma's per-range list, so one token-sized word read as the whole
+  // text being bound — and sent back, bound all of it.
+  const boundIn = (segment: Record<string, unknown>, field: string) =>
+    ((segment.boundVariables ?? {}) as Record<string, { id?: string }>)[field]?.id
+  const boundFields = new Set(segments.flatMap((segment) => Object.keys((segment.boundVariables ?? {}) as object)))
+  const uniform = new Map<string, string | undefined>()
+  const partlyBound: PartlyBound = []
+  for (const field of boundFields) {
+    const ids = new Set(segments.map((segment) => boundIn(segment, field)))
+    if (ids.size === 1) uniform.set(field, [...ids][0])
+    else partlyBound.push(field)
+  }
   const runs: StyledRun[] = []
   for (const segment of segments) {
     const run: StyledRun = { from: segment.start as number, to: segment.end as number }
@@ -141,9 +158,17 @@ export async function textRuns(node: TextLike): Promise<{ runs: StyledRun[]; par
     for (const field of ['listSpacing', 'paragraphSpacing', 'paragraphIndent'] as const) {
       if (typeof segment[field] === 'number' && differs(field, segment[field])) run[field] = segment[field]
     }
+    // Variables on these characters that the layer's own `bind` does not already say.
+    const runBind: Record<string, string> = {}
+    for (const [field, alias] of Object.entries((segment.boundVariables ?? {}) as Record<string, { id?: string }>)) {
+      if (!alias?.id || alias.id === uniform.get(field)) continue
+      const variable = await figma.variables.getVariableByIdAsync(alias.id).catch(() => null)
+      runBind[field] = variable?.name ?? alias.id
+    }
+    if (Object.keys(runBind).length > 0) run.bind = runBind
     runs.push(run)
   }
-  return { runs, paragraphs }
+  return { runs, paragraphs, partlyBound }
 }
 
 /**

@@ -75,8 +75,6 @@ const NOT_PROPERTIES = new Set([
   'key',
   'variantOf',
   'timelines',
-  'devLinks',
-  'annotations',
   // A slot is a fact about the component, not a value this instance can be told.
   'slots',
   // The human names of library styles, beside the keys the write actually takes.
