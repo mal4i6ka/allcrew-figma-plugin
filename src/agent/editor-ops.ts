@@ -261,7 +261,11 @@ export const EDITOR_OPS: readonly OpDef[] = [
             ? ({ type: 'IMAGE', imageHash: hash, scaleMode: 'FILL' } as ImagePaint)
             : ({ type: 'VIDEO', videoHash: hash, scaleMode: 'FILL' } as VideoPaint)
         const before = field.hash
-        await field.setMediaAsync(paint)
+        // Buzz's own setter where this Figma has it; the field's layer painted directly where it
+        // does not — live, `setMediaAsync` was "not a function" on the field Buzz handed back.
+        if (typeof (field as { setMediaAsync?: unknown }).setMediaAsync === 'function') await field.setMediaAsync(paint)
+        else if (field.node && 'fills' in field.node) (field.node as GeometryMixin).fills = [paint]
+        else throw new Error(`media.${key} has no layer to paint`)
         changed.push({ media: key, before, after: hash })
       }
       return { node: brief(node), changed }
@@ -273,7 +277,7 @@ export const EDITOR_OPS: readonly OpDef[] = [
     summary: 'Buzz: resize an asset to a new format the way Buzz does — layout kept, images reframed.',
     agent:
       'Not a plain resize: Buzz re-lays the content for the new proportions. Give `assetType` to resize to a known ' +
-      'format and record it, or `width` and `height` for a custom size.',
+      'format and record it, or `width` and `height` for a custom size (which makes the asset CUSTOM) — not both.',
     mutates: true,
     params: {
       nodeId: { type: 'string', required: true, description: 'The asset.' },
@@ -283,6 +287,11 @@ export const EDITOR_OPS: readonly OpDef[] = [
     },
     async run(params) {
       need('buzz', 'buzz.resize')
+      // Buzz turns an asset back into CUSTOM on a smart resize, and snaps it to the format's preset
+      // size when a format is set (both seen live) — the two cannot both have the last word.
+      if (params.assetType !== undefined && (params.width !== undefined || params.height !== undefined)) {
+        throw new Error('send width and height, or assetType — not both: a smart resize makes the asset CUSTOM, and a format snaps it to its own size')
+      }
       const node = await resolveSceneNode(String(params.nodeId))
       const before = { width: node.width, height: node.height, assetType: figma.buzz.getBuzzAssetTypeForNode(node) }
       if (typeof params.width === 'number' && typeof params.height === 'number') {

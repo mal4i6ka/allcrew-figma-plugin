@@ -334,8 +334,8 @@ export interface LayoutProps {
   gap?: number
   /** Between wrapped lines. Only a wrapping layout has a second gap to set. */
   wrapGap?: number
-  /** One number for all four, or [top, right, bottom, left]. */
-  padding?: number | [number, number, number, number]
+  /** One number for all four, [top, right, bottom, left], or `{ top, right, bottom, left }` with a side left out as 0. */
+  padding?: number | [number, number, number, number] | { top?: number; right?: number; bottom?: number; left?: number }
   /** The three distributing values (`SPACE_BETWEEN`, `SPACE_AROUND`, `SPACE_EVENLY`) space the
    * children out themselves and ignore `gap`. */
   primaryAxis?: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN' | 'SPACE_AROUND' | 'SPACE_EVENLY'
@@ -1038,6 +1038,10 @@ const ORDER = [
   // Before the geometry: an absolutely-positioned child is the only kind whose x and y mean
   // anything inside an auto-layout parent.
   'absolute',
+  // Before the size. Buzz snaps an asset to its format's preset (FACEBOOK_POST is 1200×630,
+  // TWITTER_POST 1200×675…) and a plain resize afterwards keeps the format (both seen live). Set
+  // after the size, the preset overwrote the size the caller asked for and stretched the layers.
+  'assetType',
   'width',
   'height',
   'minWidth',
@@ -1061,8 +1065,6 @@ const ORDER = [
   'skipped',
   'transition',
   'stuckTo',
-  // Before the size: an asset type is a format, and a format comes with dimensions.
-  'assetType',
   'x',
   'y',
   'rotation',
@@ -3720,7 +3722,16 @@ function planLayout(raw: unknown, where: string, problems: string[]): { step: Pr
       value.padding.every((one) => typeof one === 'number' && Number.isFinite(one))
     ) {
       layout.padding = value.padding as [number, number, number, number]
-    } else fail('padding must be a number or [top, right, bottom, left]')
+    } else if (typeof value.padding === 'object' && value.padding !== null && !Array.isArray(value.padding)) {
+      // The CSS-shaped spelling an agent writes first; a side left out is 0, a word that is not a
+      // side is refused rather than dropped.
+      const sides = value.padding as Record<string, unknown>
+      const stray = Object.keys(sides).filter((key) => !['top', 'right', 'bottom', 'left'].includes(key))
+      const numbers = ['top', 'right', 'bottom', 'left'].map((side) => sides[side] ?? 0)
+      if (stray.length > 0 || !numbers.every((one) => typeof one === 'number' && Number.isFinite(one))) {
+        fail(`padding takes top, right, bottom and left as numbers${stray.length > 0 ? ` — not ${stray.join(', ')}` : ''}`)
+      } else layout.padding = numbers as [number, number, number, number]
+    } else fail('padding must be a number, [top, right, bottom, left] or { top, right, bottom, left }')
   }
   if (value.primaryAxis !== undefined) {
     if (typeof value.primaryAxis !== 'string' || !PRIMARY_AXIS.includes(value.primaryAxis)) {

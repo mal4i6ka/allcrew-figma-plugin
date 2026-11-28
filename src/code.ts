@@ -154,7 +154,7 @@ import {
   describePaints,
   variableName,
 } from './canvas/apply.ts'
-import { createNode, planCreate, type CreatePlan, type CreateSpec } from './canvas/create.ts'
+import { createNode, planCreate, syncSlideGrid, type CreatePlan, type CreateSpec } from './canvas/create.ts'
 import { styledRuns, writableFont } from './canvas/text-runs.ts'
 import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
@@ -4231,8 +4231,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             problems.push(`nodes[${index}] must be { node, props }`)
             continue
           }
-          const entry = row as { node?: unknown; props?: unknown }
-          if (typeof entry.node !== 'string' || entry.node === '') {
+          const entry = row as { node?: unknown; id?: unknown; props?: unknown }
+          // `id` too: it is what node.find and NODE_CREATE answer with, and the word an agent
+          // reaches for first. Refusing it whole cost a 22-node batch on a Buzz build.
+          const target = entry.node ?? entry.id
+          if (typeof target !== 'string' || target === '') {
             problems.push(`nodes[${index}].node must be a node id`)
             continue
           }
@@ -4241,7 +4244,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           // Only when nothing else was said: after "unknown property" it is the same news twice,
           // and it doubled the count a caller reads as the size of its mistake.
           if (plan.steps.length === 0 && plan.problems.length === 0) problems.push(`nodes[${index}].props sets nothing`)
-          planned.push({ id: entry.node, steps: plan.steps })
+          planned.push({ id: target, steps: plan.steps })
         }
         if (problems.length > 0) {
           refuse('NODE_SET', `${problems.length} problem(s): ${problems.slice(0, 4).join(' · ')}`)
@@ -4401,14 +4404,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             problems.push(`nodes[${index}] must be { node, props? }`)
             continue
           }
-          const entry = row as { node?: unknown; props?: unknown }
-          if (typeof entry.node !== 'string' || entry.node === '') {
+          const entry = row as { node?: unknown; id?: unknown; props?: unknown }
+          // `id` too: it is what node.find and NODE_CREATE answer with, and the word an agent
+          // reaches for first. Refusing it whole cost a 22-node batch on a Buzz build.
+          const target = entry.node ?? entry.id
+          if (typeof target !== 'string' || target === '') {
             problems.push(`nodes[${index}].node must be a node id`)
             continue
           }
           const plan = planProps(entry.props, `nodes[${index}].props`)
           problems.push(...plan.problems)
-          planned.push({ id: entry.node, steps: plan.steps })
+          planned.push({ id: target, steps: plan.steps })
         }
         if (problems.length > 0) {
           refuse('NODE_CLONE', `${problems.length} problem(s): ${problems.slice(0, 4).join(' · ')}`)
@@ -6433,8 +6439,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           const { same, diverged } = compare(before, after, ignore)
           const failed = copy.failures ?? []
 
-          if (msg.keep !== true) (made as SceneNode).remove()
-          else figma.commitUndo()
+          if (msg.keep !== true) {
+            ;(made as SceneNode).remove()
+            // A slide removed by a plugin lingers in Figma's slide grid; the grid is re-stated.
+            if ((made as SceneNode).type === 'SLIDE') syncSlideGrid()
+          } else figma.commitUndo()
 
           reports.push({
             node: id,
