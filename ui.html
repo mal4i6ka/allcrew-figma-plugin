@@ -236,6 +236,8 @@
     content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--err);
   }
   #lint-report-body li.rule-missing-auto-layout::before { background: var(--warn); }
+  #lint-report-body li.rule-preserve3d-dead-property::before,
+  #lint-report-body li.rule-transform3d-freeform::before { background: var(--warn); }
   #lint-report-body li > span:not(.lint-actions) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #lint-report-body li > span b { color: var(--text); font-weight: 500; }
   /* Clicking a row expands it so the full explanation is readable (rows are ellipsized by default). */
@@ -4724,6 +4726,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         'unbound-stroke': 'Unbound stroke',
         'text-without-style': 'No text style',
         'excessive-nesting': 'Excessive nesting',
+        'preserve3d-dead-property': 'Not rendered in 3D',
+        'transform3d-freeform': 'Imported 3D transform',
       }
 
       // Rules src/lint/fix.ts can repair mechanically -- these findings get a "Fix" button.

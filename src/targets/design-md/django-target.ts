@@ -111,6 +111,15 @@ const LINT_RULE_TEXT: Record<LintRule, (count: number) => string> = {
     `**${n} component(s) are named like Bootstrap components but exported as custom partials** (no ` +
     `recognizable variant prop). Do not assume \`.btn\`/\`.card\` markup or Bootstrap JS behaviour ` +
     `exists for them — read the partial before wiring anything to it.`,
+  'preserve3d-dead-property': (n) =>
+    `**${n} 3D container(s) carry an opacity, blend mode, effect or clip that Figma does not render** ` +
+    `(\`preserve-3d\`). The export left those declarations out to match the canvas — and in CSS any of ` +
+    `them on a \`transform-style: preserve-3d\` element flattens the scene. Do not add them back there; ` +
+    `put them on a wrapper.`,
+  'transform3d-freeform': (n) =>
+    `**${n} layer(s) have an imported 3D transform with no readable values**, so they exported flat. ` +
+    `The markup is not what the design shows for them — ask for the intended depth and rotation rather ` +
+    `than guessing.`,
 }
 
 function lintGuardrails(lint: DjangoDesignMdInput['lint']): string[] {

@@ -1284,6 +1284,12 @@ export async function applyLintFix(node: SceneNode, rule: LintRule, ctx: FixCont
         // Renaming a variant prop is a design decision (docs/DESIGN-CONVENTIONS.md §6) — the UI
         // hides Fix for this rule (not in FIXABLE_RULES); this arm is a type-exhaustiveness guard.
         return { ...base, status: 'skipped', detail: 'rename the variant prop in Figma — not auto-fixable' }
+      case 'preserve3d-dead-property':
+        // Which ancestor the opacity or the clip belongs on is a design decision; Figma itself
+        // refuses to change these on a preserve-3D frame. Type-exhaustiveness guard, as above.
+        return { ...base, status: 'skipped', detail: 'move it to a parent frame that does not preserve 3D — not auto-fixable' }
+      case 'transform3d-freeform':
+        return { ...base, status: 'skipped', detail: 'an imported 3D transform has no values to convert — set them in Figma' }
     }
   } catch (error) {
     return { ...base, status: 'failed', detail: error instanceof Error ? error.message : String(error) }
