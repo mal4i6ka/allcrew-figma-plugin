@@ -7,7 +7,7 @@ It is MCP-shaped without being MCP: there is no server to register, no client li
 nothing to keep in sync but the op names. If a tool can run a shell command, it can drive
 Figma.
 
-**Reads and writes, gated separately.** Most ops only look; thirty-five of them change the
+**Reads and writes, gated separately.** Most ops only look; thirty-seven of them change the
 document or plugin-managed module storage and sit behind their own switch, which reads never imply.
 
 ---
@@ -490,7 +490,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `modules.inspect` | one installed module&rsquo;s declarative file and current state, with secret fields redacted |
 | `modules.export` | a transferable module file, optionally with non-secret state |
 
-Thirty-five **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
+Thirty-seven **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
 table is checked against the registry by a test — an op that ships without a row here fails the
 build rather than going quietly undocumented, which is how the count used to read "five".)
 
@@ -499,6 +499,8 @@ build rather than going quietly undocumented, which is how the count used to rea
 | `variables.set` | sets variable values or aliases in batch; opacity-scoped FLOAT values accept `"40%"`, and composed COLOR values accept `{ color, opacity }` with an alias on either or both channels |
 | `variables.update` | edits a variable's name, description, picker scopes (including `OPACITY` / `COLOR_OPACITY`), publishing visibility and per-platform code syntax |
 | `variables.create` | creates variables in a collection, including opacity-scoped FLOAT variables, creating the collection and its modes when absent |
+| `collections.merge` | builds one collection out of several — product themes as modes of one collection, so every product has the same keys. `sources` maps each collection's modes to target modes, `fill` names where a key one product lacks borrows from (every borrowed cell is listed), `seed` starts a new product as a copy. Aliases stay aliases, inner ones follow into the merge; sources are untouched; returns the `rebind` map for `variables.rebind`. Refused whole on a type conflict or an unfilled cell |
+| `tokens.configure` | reads or pins how THIS FILE ships its tokens — collection roles (incl. `themes`: one collection's modes are the themes), theme attribute, slugged theme names, inlining. Stored in the file, so every panel, Dev Mode, `plugin.call SCAN_TOKENS` and `tokens.emit` build the same package; the answer previews the themes. Read-only files refuse the write |
 | `collections.update` | atomically renames, hides, edits modes or removes local variable collections, with force guards and dry-run loss counts; names match case-insensitively and every mode change is verified against a fresh read |
 | `variables.extend` | creates an Enterprise extended collection — or reads and edits an existing one through `collection` — and sets or clears inherited variable overrides; every row is checked before the first write, so a bad row creates nothing |
 | `pages.update` | atomically renames, removes and reorders pages; non-empty and last-page removal are guarded, and the final order is verified as a whole |

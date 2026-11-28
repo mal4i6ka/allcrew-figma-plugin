@@ -43,6 +43,8 @@ export function buildDesignTokens(
     typoNaming: opts.tokens.typoNaming,
     emitNative: opts.tokens.emitNative,
     collectionRoles: opts.tokens.collectionRoles,
+    slugThemes: opts.tokens.slugThemes,
+    themeAxes: opts.tokens.themeAxes,
   }
   const pkg: TokenPackage = buildPackage(graph, engineOptions, renames)
   const collectionRoles = parseCollectionRoles(opts.tokens.collectionRoles)
@@ -59,6 +61,7 @@ export function buildDesignTokens(
       themes: pkg.emitted.themes,
       defaultTheme: pkg.emitted.defaultTheme,
       themeAttribute: pkg.options.themeAttr,
+      ...(pkg.emitted.grid ? { themeGrid: pkg.emitted.grid } : {}),
       files: [
         ...Object.keys(pkg.files),
         'DESIGN.md',

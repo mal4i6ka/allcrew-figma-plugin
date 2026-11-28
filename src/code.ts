@@ -11,6 +11,8 @@
 
 import {
   readAliasTargets,
+  settleUnreachedAliases,
+  unreachedAliasNote,
   readAllVariables,
   readLibraryVariables,
   readLocalVariables,
@@ -19,7 +21,8 @@ import {
   type VariableSnapshot,
 } from './variables'
 import { emitMotionTokensJs } from './targets/django/tokens'
-import { emitTokenArtifacts, tokenEmitOptionsFrom } from './tokens/index'
+import { emitTokenArtifacts, previewThemeAxes, summarizeExport, tokenEmitOptionsFrom } from './tokens/index'
+import { describeMapping, mappingFileProblems, mappingFromSettings, mappingToSettings, normalizeMapping, suggestMapping, type TokenMapping } from './tokens/mapping.ts'
 import { emitBootstrapArtifacts } from './targets/django/bootstrap/map'
 import { generateDesignKit } from './targets/django/generate/kit'
 import type { BaseHtmlFrameworkLinks } from './targets/django/index'
@@ -58,7 +61,9 @@ import {
   upsertUserPreset,
   parseLanguages,
   type ExportOptions,
+  type ExportTokensOptions,
 } from './settings'
+import { MAPPING_SUPERSEDES, applyFileTokenConfig, pickFileTokenConfig, readFileTokenConfig, withMapping, writeFileTokenConfig, type FileTokenField } from './tokens/file-config.ts'
 import {
   buildExportReport,
   buildFigmaFileReference,
@@ -210,6 +215,9 @@ type PluginMessage =
   | { type: 'OPEN_EXTERNAL'; url: string }
   | { type: 'UI_RESIZE'; width: number; height: number; persist?: boolean }
   | { type: 'LIST_VARIABLE_COLLECTIONS' }
+  | { type: 'THEME_AXES_PREVIEW'; tokens?: Partial<ExportTokensOptions>; detect?: boolean }
+  | { type: 'TOKENS_MAPPING'; collection?: string; mapping?: unknown; suggest?: boolean; file?: string; request?: number }
+  | { type: 'TOKENS_MAPPING_SET'; mapping: unknown; collection?: string; file?: string; request?: number }
   | { type: 'SYNC_BREAKPOINT_FRAMES' }
   | { type: 'SAVE_USER_PRESET'; label: string; values: unknown }
   | { type: 'DELETE_USER_PRESET'; id: string }
@@ -702,7 +710,7 @@ async function variableNamesForExport(): Promise<{
   css: string
   gaps: string[]
 }> {
-  const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions'))
+  const exportOptions = await loadExportOptions()
   const asCss = (snapshot: VariableSnapshot): string =>
     emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions, readRenameMap())).css
   try {
@@ -1093,10 +1101,104 @@ async function probeFontFacts(styles: readonly TextStyle[]): Promise<Map<string,
  * in it at all. `includeLibraries` is how that file gets its own design system; `libraryNote`
  * is how the other one finds out there was something to include.
  */
+/** The person's saved export settings with the FILE's token config over them (see
+ * tokens/file-config.ts): what the tokens are is the file's to say, wherever it is opened. */
+async function loadExportOptions(): Promise<ExportOptions> {
+  return applyFileTokenConfig(normalizeExportOptions(await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)), readFileTokenConfig())
+}
+
+/**
+ * What the Tokens settings screen draws — the mapping in force and what it ships.
+ *
+ * In force means: the one pinned in the file; else the file's older settings (collection roles,
+ * theme axes) read as a mapping, so a file set up before the screen existed opens as it exports;
+ * else one suggested from what the designers set up. Only a pinned mapping is a decision — the
+ * screen says which of the three it is showing, and the first save pins it.
+ */
+/**
+ * The variables the file's aliases reach outside it, for the Tokens screen, kept for the
+ * session. Following them is a lookup per alias — in a file consuming a library, hundreds of
+ * network reads — and the screen asks on every click. Read again only when the set of aliases
+ * changes; a library edited meanwhile shows its new values on the next export, which reads afresh.
+ */
+let aliasTargetsCache: { key: string; targets: VariableSnapshot & { unresolved?: number } } | null = null
+async function screenAliasTargets(local: VariableSnapshot): Promise<VariableSnapshot & { unresolved?: number }> {
+  const known = new Set(local.variables.map((v) => v.id))
+  const outside = new Set<string>()
+  const walk = (value: unknown): void => {
+    if (value && typeof value === 'object') {
+      if ((value as { type?: string }).type === 'VARIABLE_ALIAS' && typeof (value as { id?: unknown }).id === 'string') {
+        if (!known.has((value as { id: string }).id)) outside.add((value as { id: string }).id)
+      } else for (const inner of Object.values(value as Record<string, unknown>)) walk(inner)
+    }
+  }
+  for (const v of local.variables) for (const value of Object.values(v.valuesByMode)) walk(value)
+  const key = [...outside].sort().join('|')
+  if (aliasTargetsCache?.key === key) return aliasTargetsCache.targets
+  // Bounded: the screen answers within seconds even in a file whose library stopped publishing
+  // what it points at. What it could not reach is said, and kept, like the rest, for the session.
+  const targets = await readAliasTargets(local, { lookupMs: 2000, budgetMs: 6000 }).catch(() => ({ collections: [], variables: [] }))
+  aliasTargetsCache = { key, targets }
+  return targets
+}
+
+async function mappingAnswer(collection?: string, draft?: unknown, suggest = false, file?: string) {
+  // The package follows aliases onto variables the file no longer lists (deleted ones keep their
+  // ids) and libraries by id; the screen does too, or its preview would show
+  // `var(--variableid-…)` where the download has the colour.
+  const local = await readLocalVariables()
+  const targets = await screenAliasTargets(local)
+  // Read from the file each time — local reads, unlike the walk — so an edit shows at once.
+  const settled = await settleUnreachedAliases(local.variables, new Set([...local.variables.map((v) => v.id), ...targets.variables.map((v) => v.id)]))
+  const snapshot = { ...local, collections: [...local.collections, ...targets.collections], variables: [...settled.variables, ...targets.variables] }
+  const pinned = readFileTokenConfig()
+  const options = await loadExportOptions()
+  const problems: string[] = []
+  let mapping: TokenMapping
+  let source: 'pinned' | 'settings' | 'suggested' | 'draft'
+  if (suggest) {
+    mapping = suggestMapping(local)
+    source = 'suggested'
+  } else if (draft !== undefined && draft !== null) {
+    const checked = normalizeMapping(draft)
+    problems.push(...checked.problems)
+    mapping = checked.mapping ?? suggestMapping(local)
+    source = 'draft'
+  } else if (pinned?.mapping) {
+    mapping = pinned.mapping
+    source = 'pinned'
+  } else {
+    const fromSettings = mappingFromSettings(options.tokens, local)
+    mapping = fromSettings ?? suggestMapping(local)
+    source = fromSettings ? 'settings' : 'suggested'
+  }
+  problems.push(...mappingFileProblems(local, mapping))
+  const tokens = { ...options.tokens, ...mappingToSettings(mapping) }
+  delete tokens.structure
+  const summary = summarizeExport(snapshot, tokenEmitOptionsFrom({ ...options, tokens }, readRenameMap()), file, tokens.cssModulesGlobal)
+  const aliasNote = unreachedAliasNote(settled.settled, settled.left)
+  if (aliasNote) summary.notes = [...summary.notes, aliasNote]
+  return {
+    mapping,
+    source,
+    problems,
+    view: describeMapping(local, mapping, { collection, resolve: targets }),
+    summary,
+    access: {
+      editable: figma.editorType !== 'dev',
+      // A mapping is saved in the file: a preview's "use" replaces it, and the screen says so.
+      pinned: Boolean(pinned?.mapping),
+      // An export structure an agent pinned is not something the screen can show; saving a
+      // mapping replaces it, and the screen says so before anyone does.
+      agentStructure: Boolean(pinned?.structure),
+    },
+  }
+}
+
 async function readGraph(
   includeLibraries = false,
   collectionMerges: readonly CollectionMerge[] = []
-): Promise<{ graph: TokenGraph; libraryNote?: string }> {
+): Promise<{ graph: TokenGraph; libraryNote?: string; aliasNote?: string }> {
   const [collections, variables, textStyles, effectStyles] = await Promise.all([
     figma.variables.getLocalVariableCollectionsAsync(),
     figma.variables.getLocalVariablesAsync(),
@@ -1139,11 +1241,20 @@ async function readGraph(
       })),
       ...(library?.variables ?? []),
     ],
-  }).catch(() => ({ collections: [], variables: [] }))
+    // Bounded: a library that stopped handing its variables to this file (a consumer file's aliases
+    // onto it) hangs a lookup for minutes and still answers nothing; those are settled below.
+  }, { lookupMs: 3000, budgetMs: 30_000 }).catch(() => ({ collections: [], variables: [] }))
   const outside = {
     collections: [...(library?.collections ?? []), ...aliasTargets.collections],
     variables: [...(library?.variables ?? []), ...aliasTargets.variables],
   }
+  const reached = new Set([...variables.map((v) => v.id), ...outside.variables.map((v) => v.id)])
+  const settledLocal = await settleUnreachedAliases(
+    variables.map((v) => ({ id: v.id, name: v.name, collectionId: v.variableCollectionId, valuesByMode: v.valuesByMode })),
+    reached
+  )
+  const valuesOf = new Map(settledLocal.variables.map((v) => [v.id, v.valuesByMode]))
+  const aliasNote = unreachedAliasNote(settledLocal.settled, settledLocal.left)
   const libraryNote = includeLibraries ? undefined : await libraryCollectionsNote()
   const graph = foldSplitThemeCollections({
     fileName: figma.root.name,
@@ -1172,7 +1283,7 @@ async function readGraph(
         name: v.name,
         collectionId: v.variableCollectionId,
         resolvedType: v.resolvedType,
-        valuesByMode: v.valuesByMode,
+        valuesByMode: valuesOf.get(v.id) ?? v.valuesByMode,
         // Scopes are the designer's own "where may this be applied" — DESIGN.md prefers them over
         // guessing the role from the token name.
         scopes: v.scopes,
@@ -1220,7 +1331,7 @@ async function readGraph(
       }),
     })),
   }, collectionMerges)
-  return { graph, ...(libraryNote ? { libraryNote } : {}) }
+  return { graph, ...(libraryNote ? { libraryNote } : {}), ...(aliasNote ? { aliasNote } : {}) }
 }
 
 /**
@@ -1307,7 +1418,15 @@ interface ComponentDocsResult {
   docs: ComponentDoc[]
   /** `previews/*.png` bytes to ship alongside `COMPONENTS.md`. */
   files: Record<string, Uint8Array>
+  /** Said when the walk stopped short: which pages it read, and why the rest are missing. */
+  note?: string
 }
+
+/** How long the token package waits for its component docs. Loading a large library's pages can
+ * take minutes, or never settle — while a file already open takes under a second — and the tokens
+ * must not wait on that. Figma's page loads block the plugin's timers, so a per-page limit cannot
+ * hold: the whole docs step is raced against this instead. */
+const COMPONENT_DOCS_BUDGET_MS = 40_000
 
 /**
  * Reads every local component's "Component configuration": the markdown description, the
@@ -1672,7 +1791,7 @@ Promise.all([
   // The bridge URL and secret are setup and worth persisting; so is the answer a designer has
   // already given about this file. Re-asking on every open does not strengthen consent — it
   // trains the reflex to click through it — and the switches stay in the panel either way.
-  const options = normalizeExportOptions(storedOptions)
+  const options = applyFileTokenConfig(normalizeExportOptions(storedOptions), readFileTokenConfig())
   const remembered = await gatesFor()
   // Writes cannot outlive reads, the same rule the panel enforces, applied to what was stored
   // in case the two ever drift apart.
@@ -2768,8 +2887,7 @@ async function buildTokenPackage(flags: {
   docs?: { componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }
   tokens?: { includeLibraries?: boolean; emitNative?: boolean }
 }) {
-  const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)
-  const saved = normalizeExportOptions(stored)
+  const saved = await loadExportOptions()
   // The call's own flags win over the saved ones: an agent asking for a native package must
   // not depend on what the designer last toggled in a UI it cannot see.
   const options = {
@@ -2780,7 +2898,7 @@ async function buildTokenPackage(flags: {
       ...(flags.tokens?.emitNative === undefined ? {} : { emitNative: flags.tokens.emitNative }),
     },
   }
-  const { graph, libraryNote } = await readGraph(
+  const { graph, libraryNote, aliasNote } = await readGraph(
     options.tokens.includeLibraries,
     options.themeMerges.groups
   )
@@ -2790,8 +2908,21 @@ async function buildTokenPackage(flags: {
   // The UI sends its live values so a package built right after a toggle reflects it —
   // stored options can still be one save behind.
   const docsOptions = { ...options.docs, ...(flags.docs ?? {}) }
-  const componentDocs = docsOptions.componentDocs
-    ? await collectComponentDocs(docsOptions.componentPreviews, docsOptions.previewBudgetMb)
+  const componentDocs: ComponentDocsResult = docsOptions.componentDocs
+    ? await Promise.race([
+        collectComponentDocs(docsOptions.componentPreviews, docsOptions.previewBudgetMb),
+        new Promise<ComponentDocsResult>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                docs: [],
+                files: {},
+                note: `Component docs left out: Figma had not loaded this file's pages after ${COMPONENT_DOCS_BUDGET_MS / 1000} s — the tokens are complete; export again in a while for COMPONENTS.md, or turn component docs off in Settings → Documentation`,
+              }),
+            COMPONENT_DOCS_BUDGET_MS
+          )
+        ),
+      ])
     : { docs: [], files: {} }
   // `buildDesignTokens` writes COMPONENTS.md (it owns the token model the descriptions
   // resolve against); the previews are binary and travel separately.
@@ -2804,9 +2935,15 @@ async function buildTokenPackage(flags: {
     const reason = componentDocs.docs.find((doc) => doc.previewError)?.previewError
     artifacts.summary.previewError = reason ?? 'no components found to capture'
   }
-  if (libraryNote) {
+  for (const note of [libraryNote, aliasNote, componentDocs.note]) {
+    if (!note) continue
     const existing = Array.isArray(artifacts.summary.notes) ? artifacts.summary.notes : []
-    artifacts.summary.notes = [...existing, libraryNote]
+    artifacts.summary.notes = [...existing, note]
+  }
+  const pinned = readFileTokenConfig()
+  if (pinned) {
+    const existing = Array.isArray(artifacts.summary.notes) ? artifacts.summary.notes : []
+    artifacts.summary.notes = [...existing, `Token settings come from this file (${Object.keys(pinned).join(', ')}) — the same for everyone who exports it`]
   }
   return { artifacts, options }
 }
@@ -3003,8 +3140,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param files: the package as `{ 'path/file.css': 'text' }`, or `{ base64 }` for bytes
       // @agent param dryRun: change nothing, just report the plan — omit to use the saved default
       try {
-        const stored = await figma.clientStorage.getAsync('exportOptions')
-        const options = normalizeExportOptions(stored)
+        const options = await loadExportOptions()
         const result = await deliverPackage(msg.files || {}, {
           endpoint: options.delivery.endpoint,
           secret: options.delivery.secret,
@@ -3023,8 +3159,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'GENERATE_TYPOGRAPHY': {
       // @agent write: create typography variables and bind text styles to them
       try {
-        const stored = await figma.clientStorage.getAsync('exportOptions')
-        const report = await generateTypographyVariables(normalizeExportOptions(stored))
+        const report = await generateTypographyVariables(await loadExportOptions())
         figma.notify(`Created ${report.created} variables · bound ${report.bound} field(s)` + (report.failed ? ` · ${report.failed} failed` : ''))
         postToUi({ type: 'TYPOGRAPHY_GENERATED', report })
       } catch (err) {
@@ -3477,6 +3612,71 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       postToUi({ type: 'VARIABLE_COLLECTIONS', ...state, all })
       break
     }
+    case 'THEME_AXES_PREVIEW': {
+      // @agent read: what a theme axes setting would ship — the file's collections and modes, every cell of the grid and how it was filled, the problems, the html to set and the stylesheet's blocks — without saving anything
+      // @agent param tokens: the token settings to preview with, over the saved ones — { themeAxes: the string or the picker's { axes, cells?, sameAs? } object, collectionRoles, slugThemes, themeAttribute }
+      // @agent param detect: also suggest a starting setup read off the file (product collections, a grid of mode names, or one attribute)
+      try {
+        const saved = await loadExportOptions()
+        const options = { ...saved, tokens: { ...saved.tokens, ...(msg.tokens ?? {}) } }
+        const preview = previewThemeAxes(await readLocalVariables(), { ...tokenEmitOptionsFrom(options, readRenameMap()), detect: msg.detect === true })
+        // Who can change it here: Dev Mode cannot write the document (a Dev seat, or a Full seat in
+        // Dev Mode), and a file that pins its token settings overrides each person's own.
+        const pinned = readFileTokenConfig()
+        const access = { editable: figma.editorType !== 'dev', filePins: Boolean(pinned), pinnedAxes: Boolean(pinned && pinned.themeAxes) }
+        postToUi({ type: 'THEME_AXES_PREVIEW_RESULT', preview, access })
+      } catch (err) {
+        postToUi({ type: 'THEME_AXES_PREVIEW_RESULT', error: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'TOKENS_MAPPING': {
+      // @agent read: the Tokens settings screen — the attributes code switches on (any names: data-product, data-theme, data-brand…) and the file data each value is bound to (collections, columns, or a marker in the token names), the role of every other collection, one collection as Figma shows it with every token's name in code and, for a collection on top of the base one, whether each token overrides, repeats or takes the base's value, and what the export ships — the mapping in force (pinned in the file, else read off its older settings, else suggested), nothing saved
+      // @agent param collection: the collection to show as a table, by name
+      // @agent param mapping: a mapping to preview instead of the one in force — { version: 1, attributes: [{ name, from: collections|columns|names, values: [{ value, collections?, columns?, marker?, base?, sameAs? }], shared?, collections?, nested? }], collections?: { Name: palette|breakpoints|export|skip } }
+      // @agent param suggest: preview the mapping suggested from how the file is set up, instead of the one in force
+      // @agent param file: one of the shipped files the answer lists (tokens.css, base.module.css, dark.module.css…), whose text to include
+      // @agent param request: echoed back, so a panel can drop an answer to a request it has since replaced
+      try {
+        postToUi({ type: 'TOKENS_MAPPING_RESULT', request: msg.request, ...(await mappingAnswer(msg.collection, msg.mapping, msg.suggest === true, typeof msg.file === 'string' ? msg.file : undefined)) })
+      } catch (err) {
+        postToUi({ type: 'TOKENS_MAPPING_RESULT', request: msg.request, error: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'TOKENS_MAPPING_SET': {
+      // @agent write: pin how this file's variables become code — the attributes, the file data each value is bound to, and the role of every other collection — stored in the file, so everyone who exports it, in the panel, Dev Mode or through an agent, gets the same package; replaces the older collection roles, theme axes and structure
+      // @agent param mapping: the mapping to pin, in the shape TOKENS_MAPPING answers with
+      // @agent param collection: the collection to show in the answer
+      // @agent param file: one of the shipped files the answer lists, whose text to include
+      // @agent param request: echoed back, so a panel can drop an answer to a request it has since replaced
+      try {
+        const { mapping, problems } = normalizeMapping(msg.mapping)
+        if (!mapping || problems.length > 0) throw new Error(`nothing was saved: ${problems.join('; ') || 'no mapping'}`)
+        const missing = mappingFileProblems(await readLocalVariables(), mapping)
+        if (missing.length > 0) throw new Error(`nothing was saved: ${missing.join('; ')}`)
+        const next = withMapping(readFileTokenConfig(), mapping)
+        try {
+          writeFileTokenConfig(next)
+        } catch (err) {
+          throw new Error(`the file is read-only here (Dev Mode or view access) — an editor has to save the mapping: ${String((err as Error)?.message || err)}`)
+        }
+        const stored = readFileTokenConfig()
+        const answer = await mappingAnswer(msg.collection, undefined, false, typeof msg.file === 'string' ? msg.file : undefined)
+        postToUi({
+          type: 'TOKENS_MAPPING_RESULT',
+          request: msg.request,
+          saved: true,
+          verified: JSON.stringify(stored?.mapping) === JSON.stringify(mapping),
+          // The panel's other token settings read the file's config too: hand it back in full.
+          tokens: (await loadExportOptions()).tokens,
+          ...answer,
+        })
+      } catch (err) {
+        postToUi({ type: 'TOKENS_MAPPING_RESULT', request: msg.request, error: String((err as Error)?.message || err) })
+      }
+      break
+    }
     case 'READ_VARIABLES': {
       // @agent read: the raw variable snapshot: collections, modes, values, aliases
       // @agent cost: imports every variable of every enabled library one at a time — 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.
@@ -3487,8 +3687,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'EMIT_TOKENS': {
       // @agent read: emit tokens.json / tokens.css / _tokens.scss from the current variables
       // @agent cost: same library import as READ_VARIABLES — 80-90s on a large file
-      const stored = await figma.clientStorage.getAsync('exportOptions')
-      const options = normalizeExportOptions(stored)
+      const options = await loadExportOptions()
       const snapshot = await readAllVariables({ collectionMerges: options.themeMerges.groups })
       const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(options, readRenameMap())).css
       postToUi({ type: 'TOKENS_CSS', css })
@@ -3823,7 +4022,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       await annotateVectorLeaves(pageRoots, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
       await addReactionDestinationsToScene(pageRoots, sceneNodesById)
 
-      const previewOptions = normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions'))
+      const previewOptions = await loadExportOptions()
       const tokensOn = previewOptions.modules.tokens
       const previewThemeSets =
         previewOptions.targetOptions.framework === 'bootstrap' && previewOptions.targetOptions.bootstrapFidelity === 'theme'
@@ -3915,7 +4114,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       const lintMaxDepth =
         typeof msg.lintMaxDepth === 'number'
           ? msg.lintMaxDepth
-          : normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions')).lint.maxNestingDepth
+          : (await loadExportOptions()).lint.maxNestingDepth
       const lint: LintFinding[] = await lintScopeAsync(roots, { maxNestingDepth: lintMaxDepth })
       await annotateUnfixableFindings(lint, index)
 
@@ -4098,7 +4297,32 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent write: store export options in clientStorage
       // @agent param options: the export settings to store, in part or whole — target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs
       const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)
-      await figma.clientStorage.setAsync(EXPORT_OPTIONS_KEY, mergeExportOptions(stored, msg.options))
+      const merged = mergeExportOptions(stored, msg.options)
+      // A file that pins its token settings is edited through the same panel: the pinned fields
+      // go back into the file, so the next person (and agent) builds what was just set — and NOT
+      // into this person's own settings, where they would follow them into every other file.
+      // Read-only (Dev Mode, a viewer) cannot write; the file's config then still wins.
+      const pinned = readFileTokenConfig()
+      const own = pinned ? normalizeExportOptions(stored) : merged
+      const decidedByFile = new Set<FileTokenField>(pinned ? (Object.keys(pinned) as FileTokenField[]) : [])
+      if (pinned?.mapping) for (const field of MAPPING_SUPERSEDES) decidedByFile.add(field)
+      const personal = { ...merged, tokens: { ...merged.tokens } }
+      for (const field of decidedByFile) {
+        if (field === 'mapping') continue
+        ;(personal.tokens as unknown as Record<string, unknown>)[field] = (own.tokens as unknown as Record<string, unknown>)[field]
+      }
+      await figma.clientStorage.setAsync(EXPORT_OPTIONS_KEY, personal)
+      if (pinned) {
+        // The mapping is saved by the Tokens screen itself (TOKENS_MAPPING_SET): a panel save
+        // writes back the switches the file pins beside it, never the mapping or what it decides.
+        const fields = [...decidedByFile].filter((field) => field !== 'mapping' && !(pinned.mapping && MAPPING_SUPERSEDES.includes(field)))
+        try {
+          const kept = pickFileTokenConfig(merged.tokens, fields)
+          writeFileTokenConfig(pinned.mapping ? withMapping(kept, pinned.mapping) : kept)
+        } catch {
+          /* read-only file */
+        }
+      }
       break
     }
     case 'SAVE_UPDATE_PREFERENCES': {
@@ -6759,7 +6983,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       let stage = 'scan'
       try {
         postToUi({ type: 'EXPORT_PROGRESS', stage: 'scan', percent: 10 })
-        const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions'))
+        const exportOptions = await loadExportOptions()
         // The full snapshot is what tokens.css is made of, so it is read only when that module is
         // on; the emitters need names, and those come from the ids the scope binds (60-90s of
         // library import saved on every export that ships templates alone).

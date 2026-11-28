@@ -10,6 +10,9 @@
  * last used.
  */
 import { isRecord } from './utils/type-guards.ts'
+import { normalizeThemeAxesSpec, type ThemeAxesSpec } from './tokens/theme-axes.ts'
+import { normalizeStructure, type ExportStructure } from './tokens/structure.ts'
+import type { TokenMapping } from './tokens/mapping.ts'
 
 export type TargetId = 'design-tokens' | 'django' | 'ds-tools' | 'agent'
 export type DsToolId = 'palette' | 'replace' | 'remap' | 'typography' | 'breakpoints'
@@ -64,6 +67,22 @@ export interface ExportTokensOptions {
    * for files where scoping the variables in Figma isn't practical. Parsed by
    * `parseCollectionRoles` (design-md/model.ts); unknown roles are ignored. */
   collectionRoles: string
+  /** Theme names as selector slugs — `[data-theme-name="one-light"]` for a mode called
+   * `One Light`. Off by default so an existing `[data-theme-name="Dark"]` keeps working. */
+  slugThemes: boolean
+  /** `data-product: One, Business, Platform; data-theme: Light, Dark` — themes whose mode names
+   * are a grid (`One Dark`) ship as two attributes instead of one combined name. The last axis may
+   * be switched again on any subtree. Empty: one attribute (`themeAttribute`). See `toAxesCss`. */
+  themeAxes: string | ThemeAxesSpec
+  /** The export structure (see tokens/structure.ts). Set, it supersedes collectionRoles, the
+   * theme table, themeAttribute and themeAxes. Written by agents only since the mapping replaced
+   * the panel's structure editor. */
+  structure?: ExportStructure | null
+  /** How the file's collections and columns become code (tokens/mapping.ts) — what Settings →
+   * Tokens shows and edits. A file's, never a person's: it arrives through the file's pinned
+   * config, and `normalizeTokens` drops it so it cannot follow someone into another file. Set,
+   * it supersedes collectionRoles, themeAxes, themeAttribute, slugThemes and structure. */
+  mapping?: TokenMapping
 }
 
 export interface ExportI18nOptions {
@@ -213,7 +232,7 @@ const DJANGO_BOOTSTRAP_VALUES: PackageFormingOptions = {
     bootstrapVersion: '5.3',
     djangoScaffold: true,
   },
-  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: '', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', emitNative: false, includeLibraries: false, collectionRoles: '' },
+  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: '', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', emitNative: false, includeLibraries: false, collectionRoles: '', slugThemes: false, themeAxes: '' },
   i18n: { wrapTranslate: true, sourceLanguage: 'en', languages: '' },
 }
 
@@ -228,7 +247,7 @@ const DESIGN_TOKENS_VALUES: PackageFormingOptions = {
     bootstrapVersion: '5.3',
     djangoScaffold: false,
   },
-  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: 'data-theme-name', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', emitNative: false, includeLibraries: false, collectionRoles: '' },
+  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: 'data-theme-name', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', emitNative: false, includeLibraries: false, collectionRoles: '', slugThemes: false, themeAxes: '' },
   i18n: { wrapTranslate: true, sourceLanguage: 'en', languages: '' },
 }
 
@@ -248,7 +267,7 @@ const TAURI_APP_VALUES: PackageFormingOptions = {
     bootstrapVersion: '5.3',
     djangoScaffold: false,
   },
-  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: '', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', emitNative: false, includeLibraries: false, collectionRoles: '' },
+  tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: '', emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: 'tshirt', emitNative: false, includeLibraries: false, collectionRoles: '', slugThemes: false, themeAxes: '' },
   i18n: { wrapTranslate: true, sourceLanguage: 'en', languages: '' },
 }
 
@@ -391,6 +410,14 @@ function normalizeTokens(raw: unknown): ExportTokensOptions {
     emitNative: typeof raw.emitNative === 'boolean' ? raw.emitNative : defaults.emitNative,
     includeLibraries: typeof raw.includeLibraries === 'boolean' ? raw.includeLibraries : defaults.includeLibraries,
     collectionRoles: typeof raw.collectionRoles === 'string' ? raw.collectionRoles.trim() : defaults.collectionRoles,
+    slugThemes: typeof raw.slugThemes === 'boolean' ? raw.slugThemes : defaults.slugThemes,
+    themeAxes:
+      typeof raw.themeAxes === 'string'
+        ? raw.themeAxes.trim()
+        : isRecord(raw.themeAxes) && normalizeThemeAxesSpec(raw.themeAxes).spec
+          ? normalizeThemeAxesSpec(raw.themeAxes).spec!
+          : defaults.themeAxes,
+    ...(normalizeStructure(raw.structure).structure ? { structure: normalizeStructure(raw.structure).structure } : {}),
   }
 }
 

@@ -1,32 +1,37 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { ROLE_INFO } from './model.ts'
+import { ATTRIBUTE_SOURCES, COLLECTION_ROLES, ROLE_LABELS, mappingToSettings } from '../../tokens/mapping.ts'
 import { parseCollectionModes } from '../../tokens/engine.ts'
 
 /**
- * The Collection roles list in Settings is a hand-written menu over two parsers. A role the
- * menu offers but no parser knows is saved, shown as chosen, and silently does nothing — the
- * failure the free-text field had, moved into a dropdown. This keeps the menu honest.
+ * The Tokens screen in Settings is a hand-written menu over the mapping. A role or a source the
+ * menu offers but `normalizeMapping` refuses is shown as chosen and then fails to save; a label
+ * that drifts from ROLE_LABELS tells the person one thing and the agent another. This keeps the
+ * menus honest.
  */
 const ui = readFileSync(new URL('../../../ui.html', import.meta.url), 'utf8')
+const menu = (name: string) => {
+  const block = new RegExp(`var ${name} = \\[([\\s\\S]*?)\\n\\s*\\]`).exec(ui)
+  assert.ok(block, `${name} in ui.html`)
+  return [...block[1].matchAll(/\['([a-z]+)', '([^']+)'\]/g)].map((m) => [m[1], m[2].replace(/\\u2014/g, '—')])
+}
 
-test('every DESIGN.md role the settings menu offers is one parseCollectionRoles accepts', () => {
-  const block = /var ROLE_DOC_CHOICES = \[([\s\S]*?)\n\s*\]/.exec(ui)
-  assert.ok(block, 'ROLE_DOC_CHOICES in ui.html')
-  const offered = [...block[1].matchAll(/\['([a-z-]+)'/g)].map((m) => m[1])
-  assert.ok(offered.length > 10)
-  for (const role of offered) assert.ok(role in ROLE_INFO, `"${role}" is not a ROLE_INFO key`)
+test('the Tokens screen offers exactly the mapping\'s collection roles, under the names the mapping gives them', () => {
+  const offered = menu('MAP_ROLES')
+  assert.deepEqual(offered.map(([role]) => role), [...COLLECTION_ROLES])
+  for (const [role, label] of offered) assert.equal(label, ROLE_LABELS[role as keyof typeof ROLE_LABELS], role)
 })
 
-test('the two export roles the menu writes are the ones the engine reads', () => {
-  assert.match(ui, /value: 'hidden', label: 'Hide from code'/)
-  assert.match(ui, /value: 'breakpoints', label: 'Breakpoints → --bp-\*'/)
-  assert.match(ui, /value: 'product', label: 'Separate file → name\.css'/)
-  // The menu serialises rows as "Name: role, Name: role".
-  assert.deepEqual(parseCollectionModes('Primitives: hidden, Viewports: breakpoints, One: product'), {
-    hidden: ['Primitives'],
-    breakpoints: ['Viewports'],
-    products: ['One'],
+test('the Tokens screen offers exactly the sources an attribute can take its values from', () => {
+  assert.deepEqual(menu('MAP_SOURCES').map(([source]) => source), [...ATTRIBUTE_SOURCES])
+})
+
+test('every collection role reaches the engine as a role it reads, and columns read off one collection make it the themes', () => {
+  const settings = mappingToSettings({
+    version: 1,
+    attributes: [{ name: 'data-theme', from: 'columns', collections: ['Product'], values: [{ value: 'light', columns: ['Light'] }, { value: 'dark', columns: ['Dark'] }] }],
+    collections: { Colors: 'palette', Old: 'skip', Viewports: 'breakpoints' },
   })
+  assert.deepEqual(parseCollectionModes(settings.collectionRoles), { hidden: ['Colors', 'Old'], breakpoints: ['Viewports'], products: [], themes: ['Product'] })
 })

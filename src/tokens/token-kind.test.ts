@@ -116,7 +116,8 @@ test('Compose sizes text in sp and layout in dp', () => {
     },
     space: { md: scoped('number', 16, ['GAP']) },
     corner: { sm: scoped('number', 4, ['CORNER_RADIUS']) },
-    fade: { muted: scoped('number', 0.4, ['OPACITY']) },
+    // Figma stores an OPACITY variable as a percentage: 40 is 40%, and Compose's alpha is 0.4f.
+    fade: { muted: scoped('number', 40, ['OPACITY']) },
   }
   const kotlin = toTokensKotlin(tree, ['Light'])
   assert.match(kotlin, /val typeSize = 14\.sp/)
