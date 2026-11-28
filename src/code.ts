@@ -321,6 +321,8 @@ type PluginMessage =
   | { type: 'UI_POSITION'; x?: number; y?: number }
   | { type: 'CHANGES_WATCH'; on: boolean; document?: boolean }
   | { type: 'CHANGES_READ'; since?: number; limit?: number; origin?: string }
+  | { type: 'SELECTION_SET'; nodes?: unknown; text?: unknown }
+  | { type: 'VARIABLE_SUGGEST'; nodes?: unknown }
   // Dev Mode: the links, notes and measurements a designer leaves for the person writing the code
   | { type: 'DEV_LINK_LIST'; nodes?: unknown; includeChildren?: boolean }
   | { type: 'DEV_LINK_SET'; nodes?: unknown; add?: unknown; edit?: unknown; remove?: unknown }
@@ -2153,6 +2155,16 @@ async function readShape(node: SceneNode, props: Record<string, unknown>): Promi
     props.handleMirroring = bag.handleMirroring
   }
   if (bag.targetAspectRatio) props.aspectLock = true
+  if (node.type === 'INSTANCE') {
+    if (typeof bag.scaleFactor === 'number' && Math.abs(bag.scaleFactor - 1) > 0.0001) props.scaleFactor = Math.round(bag.scaleFactor * 1000) / 1000
+    // The nested instances whose properties this one offers at its own level — what a designer
+    // sees listed under the instance's properties without opening it.
+    const exposed = (bag.exposedInstances as InstanceNode[] | undefined) ?? []
+    if (exposed.length > 0) props.exposedInstances = exposed.map((one) => ({ id: one.id, name: one.name }))
+  }
+  // Figma's own judgement that the layer is an asset — an icon, an illustration — the thing an
+  // export should ship as a file rather than rebuild.
+  if ((node as SceneNode & { isAsset?: boolean }).isAsset === true) props.asset = true
   if (Array.isArray(bag.exportSettings) && bag.exportSettings.length > 0) {
     props.exports = readExports(bag.exportSettings as ExportSettings[])
   }
@@ -6380,6 +6392,99 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         recorded: changeWatch.log.length,
         next: changeWatch.seq,
       })
+      break
+    }
+    case 'SELECTION_SET': {
+      // @agent write: select layers for the designer, or a stretch of characters inside a text — the designer's selection changes, the document does not
+      // @agent param nodes: ids to select, all on one page (Figma's rule); the view moves to that page if needed. [] clears the selection
+      // @agent param text: { node, start, end } selects characters inside a text layer instead
+      try {
+        if (msg.text !== undefined) {
+          const asked = msg.text as { node?: unknown; start?: unknown; end?: unknown }
+          const text = typeof asked?.node === 'string' ? await figma.getNodeByIdAsync(asked.node) : null
+          if (!text || text.type !== 'TEXT') {
+            refuse('SELECTION_SET', 'text.node must be the id of a TEXT layer')
+            break
+          }
+          const start = asked.start
+          const end = asked.end
+          if (typeof start !== 'number' || typeof end !== 'number' || start < 0 || end < start || end > text.characters.length) {
+            refuse('SELECTION_SET', `text.start and text.end must sit within its ${text.characters.length} character(s)`)
+            break
+          }
+          const page = pageOf(text)
+          if (page && page !== figma.currentPage) await figma.setCurrentPageAsync(page)
+          figma.currentPage.selectedTextRange = { node: text, start, end }
+          postToUi({ type: 'SELECTED', text: { node: text.id, start, end, characters: text.characters.slice(start, end) } })
+          break
+        }
+        const targets = Array.isArray(msg.nodes) && msg.nodes.length === 0 ? [] : await nodesFrom(msg.nodes ?? [])
+        const pages = new Set(targets.map((node) => pageOf(node)))
+        if (pages.size > 1) {
+          refuse('SELECTION_SET', 'a selection lives on one page — these nodes are on several')
+          break
+        }
+        const [page] = [...pages]
+        if (page && page !== figma.currentPage) await figma.setCurrentPageAsync(page)
+        figma.currentPage.selection = targets
+        postToUi({ type: 'SELECTED', page: figma.currentPage.name, nodes: targets.map((node) => ({ id: node.id, name: node.name })) })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'SELECTION_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'VARIABLE_SUGGEST': {
+      // @agent read: which variables Figma itself thinks a layer's hard-coded values are — per field, the tokens whose value matches. The shortest way from loose numbers and colours to bound ones
+      // @agent param nodes: ids to ask about; omitted, the current selection
+      // @agent cost: Figma answers this from its servers — about 30 s per node cold, under 100 ms warm, and a 10 s "unable to establish connection" when offline
+      try {
+        const targets = await nodesFrom(msg.nodes)
+        if (targets.length === 0) {
+          refuse('VARIABLE_SUGGEST', 'name some nodes, or select something')
+          break
+        }
+        // A suggestion from a library the file has not imported yet has no variable here to name,
+        // and its id is not its key either: the hex in `VariableID:<hex>/<n>` is the LIBRARY's,
+        // shared by every variable in it (seen live). So it stays an id, said to be one.
+        const names = new Map<string, string>()
+        let unnamed = 0
+        const nameOf = async (alias: VariableAlias) => {
+          if (!names.has(alias.id)) {
+            const variable = await figma.variables.getVariableByIdAsync(alias.id).catch(() => null)
+            if (!variable) unnamed++
+            names.set(alias.id, variable?.name ?? alias.id)
+          }
+          return names.get(alias.id)!
+        }
+        const rows = []
+        for (const node of targets) {
+          const inferred =
+            (node as SceneNode & { inferredVariables?: Record<string, VariableAlias[] | VariableAlias[][]> }).inferredVariables ?? {}
+          const fields: Record<string, unknown> = {}
+          const bag = node as unknown as Record<string, unknown>
+          for (const [field, found] of Object.entries(inferred)) {
+            // Figma answers for every field, a zero padding matched against every zero token among
+            // them; only a value the layer actually has is worth a suggestion.
+            if (field === '' || (field !== 'fills' && field !== 'strokes' && !bag[field])) continue
+            // A stroke weight with no stroke to weigh is the default 1, not a design decision.
+            if (/^stroke.*Weight$/.test(field) && !(Array.isArray(bag.strokes) && bag.strokes.length > 0)) continue
+            // Paints answer per paint — fills[0] has its own candidates — everything else per field.
+            if (field === 'fills' || field === 'strokes') {
+              const perPaint = []
+              for (const one of found as VariableAlias[][]) perPaint.push(await Promise.all(one.map(nameOf)))
+              if (perPaint.some((one) => one.length > 0)) fields[field] = perPaint
+            } else if ((found as VariableAlias[]).length > 0) fields[field] = await Promise.all((found as VariableAlias[]).map(nameOf))
+          }
+          rows.push({ node: node.id, name: node.name, suggestions: fields })
+        }
+        postToUi({
+          type: 'VARIABLE_SUGGESTIONS',
+          nodes: rows,
+          ...(unnamed > 0 ? { unnamed: `${unnamed} suggestion(s) are library variables this file has not imported — shown by id` } : {}),
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'VARIABLE_SUGGEST', message: String((error as Error)?.message || error) })
+      }
       break
     }
     case 'CHANGES_READ': {

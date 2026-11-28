@@ -940,6 +940,46 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: 'relaunch', before, after: step.data }
     }
 
+    case 'replace': {
+      if (!isText(node)) throw new Error(`only text has words to replace, not a ${node.type}`)
+      await loadNodeFont(node)
+      const before = node.characters
+      // Every place to change, found against the text as it stands, then edited from the END so
+      // an earlier edit never shifts a later one's indices.
+      const spots: Array<{ from: number; to: number; with: string }> = []
+      const problems: string[] = []
+      for (const edit of step.edits) {
+        const { ranges, problem } = resolveRanges(
+          before,
+          (edit.match !== undefined ? { match: edit.match } : { from: edit.from, to: edit.to }) as TextRun
+        )
+        if (problem) problems.push(problem)
+        for (const [from, to] of ranges) spots.push({ from, to, with: edit.with })
+      }
+      spots.sort((a, b) => b.from - a.from)
+      for (const [index, spot] of spots.entries()) {
+        if (index > 0 && spot.to > spots[index - 1].from) {
+          problems.push(`"${before.slice(spot.from, spot.to)}" overlaps another replacement — say each place once`)
+          spots.length = index
+          break
+        }
+      }
+      if (!dry) {
+        for (const spot of spots) {
+          // Inserted BEFORE the end of the old words, so the new ones take THEIR style — the bold
+          // price stays bold — and only then are the old ones taken out.
+          if (spot.with !== '') node.insertCharacters(spot.to, spot.with, 'BEFORE')
+          node.deleteCharacters(spot.from, spot.to)
+        }
+      }
+      return {
+        property: 'replace',
+        before,
+        after: dry ? `${spots.length} place(s)` : node.characters,
+        ...(problems.length > 0 ? { error: problems.join(' · ') } : {}),
+      }
+    }
+
     case 'textRange': {
       // A list and its depth are not properties of the layer in Figma — there is no
       // `node.listOptions` — only of ranges. Asked of the whole layer, they are its whole range.

@@ -81,6 +81,9 @@ const NOT_PROPERTIES = new Set([
   'slots',
   // The human names of library styles, beside the keys the write actually takes.
   'styleNames',
+  // Facts Figma works out, not values anyone sets.
+  'asset',
+  'exposedInstances',
   // Which limits a slot's content breaks: a verdict about the children, not a property.
   'slotViolations',
   // What kind of live element a slide holds — a poll, an embed — which no write can change.

@@ -122,6 +122,17 @@ test('scale and the aspect lock come after the size they act on', () => {
   assert.deepEqual(stepsOf({ aspectLock: true, scale: 2, width: 100 }).map((step) => step.step), ['resize', 'rescale', 'aspect'])
 })
 
+/* ------------------------------------------------------------ replaced words */
+
+test('words are replaced after the text is set and before the runs that may style them', () => {
+  const steps = stepsOf({ runs: [{ match: 'Log in', fontSize: 20 }], replace: [{ match: 'Sign in', with: 'Log in' }], text: 'Sign in' })
+  assert.deepEqual(steps.map((step) => step.step), ['text', 'replace', 'runs'])
+  assert.deepEqual(stepsOf({ replace: { from: 0, to: 4, with: '' } }), [{ step: 'replace', edits: [{ from: 0, to: 4, with: '' }] }])
+  assert.match(planProps({ replace: [{ match: 'a', from: 0, to: 1, with: 'b' }] }).problems[0], /either a match or a from\/to range/)
+  assert.match(planProps({ replace: [{ match: 'a' }] }).problems[0], /must be \{ match, with \}/)
+  assert.deepEqual(stepsOf({ scaleFactor: 1.5 }), [{ step: 'assign', property: 'scaleFactor', value: 1.5 }])
+})
+
 /* --------------------------------------------------------------- grid tokens */
 
 test('a grid’s numbers may name variables, bound on the grid once the list is built', () => {

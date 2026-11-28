@@ -35,6 +35,27 @@ test('a flip mirrors the layer across its own centre, so it stays where it stand
   assert.deepEqual(node.relativeTransform, [[-1, 0, 110], [-0, 1, 20]])
 })
 
+test('replaced words are inserted before the old ones go, from the end, so each keeps its place and style', async () => {
+  const calls: string[] = []
+  const text = {
+    type: 'TEXT',
+    fontName: { family: 'Inter', style: 'Regular' },
+    characters: 'Pay 10 now, pay 10 later',
+    insertCharacters(at: number, words: string, side: string) {
+      calls.push(`insert ${at} ${words} ${side}`)
+      this.characters = this.characters.slice(0, at) + words + this.characters.slice(at)
+    },
+    deleteCharacters(from: number, to: number) {
+      calls.push(`delete ${from} ${to}`)
+      this.characters = this.characters.slice(0, from) + this.characters.slice(to)
+    },
+  }
+  const report = await applyProps(text as never, steps({ replace: [{ match: '10', with: '12' }] }))
+  assert.equal(report.failed, 0)
+  assert.equal(text.characters, 'Pay 12 now, pay 12 later')
+  assert.deepEqual(calls, ['insert 18 12 BEFORE', 'delete 16 18', 'insert 6 12 BEFORE', 'delete 4 6'])
+})
+
 test('a grid bound to a token reads back as the variable it follows', async () => {
   const read = await readGrids([
     {

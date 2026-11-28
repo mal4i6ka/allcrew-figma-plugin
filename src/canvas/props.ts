@@ -742,6 +742,11 @@ export interface NodeProps {
   handleMirroring?: 'NONE' | 'ANGLE' | 'ANGLE_AND_LENGTH'
   /** What other plugins keep on the layer, by their namespace — `{ "tokens": { "ref": "x" } }`. A null value clears a key. */
   sharedData?: Record<string, Record<string, string | null>>
+  /** Words changed where they stand — `[{ match: "Sign in", with: "Log in" }]` or `{ from, to, with }` —
+   * so the new words keep the style of the ones they replace, where `text` restyles the whole layer. */
+  replace?: Array<{ match?: string; from?: number; to?: number; with: string }>
+  /** INSTANCE only: the scale the instance is drawn at against its component, as the K tool leaves it. */
+  scaleFactor?: number
   /** Relaunch buttons Figma shows on the layer, by manifest command — `{ "reexport": "Re-export this frame" }`. `{}` clears them. */
   relaunch?: Record<string, string>
 }
@@ -927,6 +932,7 @@ export type PropStep =
   | { step: 'modes'; modes: Record<string, string | null> }
   | { step: 'sharedData'; data: Record<string, Record<string, string | null>> }
   | { step: 'relaunch'; data: Record<string, string> }
+  | { step: 'replace'; edits: Array<{ match?: string; from?: number; to?: number; with: string }> }
   | { step: 'link'; url: string | null }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
@@ -1169,6 +1175,7 @@ const ORDER = [
   'height',
   // After the size it multiplies, and before anything that reads the size it produces.
   'scale',
+  'scaleFactor',
   'aspectLock',
   'minWidth',
   'maxWidth',
@@ -1267,6 +1274,8 @@ const ORDER = [
   // and was gone by the time anyone looked.
   'truncate',
   'maxLines',
+  // After the whole text and before the runs, which may style the words it puts in.
+  'replace',
   // After the characters: a list is a range of them, and there is no range in an empty box. Before
   // the runs, which may make one paragraph of the list something else.
   'list',
@@ -1847,6 +1856,36 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
           )
         if (!ok) fail('sharedData must be { "<namespace: 3+ letters, numbers, _ or .>": { key: "value" | null } }')
         else steps.push({ step: 'sharedData', data: value as Record<string, Record<string, string | null>> })
+        break
+      }
+      case 'scaleFactor': {
+        const value = number('scaleFactor', 0.01)
+        if (value !== null) steps.push({ step: 'assign', property: 'scaleFactor', value })
+        break
+      }
+      case 'replace': {
+        const value = props.replace
+        const edits: Array<{ match?: string; from?: number; to?: number; with: string }> = []
+        for (const [index, one] of (Array.isArray(value) ? value : [value]).entries()) {
+          const edit = one as { match?: unknown; from?: unknown; to?: unknown; with?: unknown } | null
+          const at = `replace[${index}]`
+          if (typeof edit !== 'object' || edit === null || typeof edit.with !== 'string') fail(`${at} must be { match, with } or { from, to, with }`)
+          else if (edit.match !== undefined && (edit.from !== undefined || edit.to !== undefined)) fail(`${at}: name either a match or a from/to range, not both`)
+          else if (edit.match !== undefined) {
+            if (typeof edit.match !== 'string' || edit.match === '') fail(`${at}.match must be the words to replace`)
+            else edits.push({ match: edit.match, with: edit.with })
+          } else if (
+            typeof edit.from === 'number' &&
+            typeof edit.to === 'number' &&
+            Number.isInteger(edit.from) &&
+            Number.isInteger(edit.to) &&
+            edit.from >= 0 &&
+            edit.to > edit.from
+          ) {
+            edits.push({ from: edit.from, to: edit.to, with: edit.with })
+          } else fail(`${at} must name a match, or whole numbers from < to`)
+        }
+        if (edits.length > 0) steps.push({ step: 'replace', edits })
         break
       }
       case 'relaunch': {
