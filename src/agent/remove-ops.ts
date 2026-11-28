@@ -9,6 +9,7 @@
  */
 
 import type { OpDef } from './protocol.ts'
+import { syncSlideGrid } from '../canvas/create.ts'
 
 function asIds(value: unknown, param: string): string[] {
   const list = Array.isArray(value) ? (value as unknown[]) : []
@@ -104,6 +105,9 @@ export const REMOVE_OPS: readonly OpDef[] = [
           results.push({ ...entry.row, ok: false, removed: false, error: String((err as Error)?.message || err) })
         }
       }
+
+      // A slide a plugin removes stays in Figma's slide grid until the grid is set again.
+      if (planned.some((entry) => entry.row.type === 'SLIDE')) syncSlideGrid()
 
       return {
         dryRun,

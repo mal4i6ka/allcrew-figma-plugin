@@ -33,13 +33,14 @@ Frames, text, shapes, sections, instances of library components and SVG can be m
 | Link previews, GIFs | `createLinkPreviewAsync`, `createGif` | | | ✓ | | | `kind: linkPreview` / `gif`; reads `preview` (embed / unfurl data) |
 | Sticking | `stuckTo`, `stuckNodes` | | | ✓ | | | prop `stuckTo`; `figjam.board nodeId` lists `stuckNodes` |
 | Stamps | `StampNode.getAuthorAsync` (`fileusers`) | | | ✓ | | | reads `author` |
-| Board session | `activeUsers` (`activeusers`), `timer` | | | ✓ | | | `figjam.board`, `figjam.timer` |
+| Board session | `activeUsers` (`activeusers`), `timer` | | | ✓ | | | `figjam.board`, `figjam.timer`; timer events in `events.read` |
+| FigJam palette | `constants.colors.figJamBase`, `figJamBaseLight` | | | ✓ | | | `figjam.colors` |
 | Slides | `createSlide`, `createSlideRow`, `isSkippedSlide`, `get/setSlideTransition` | | | | ✓ | | `kind: slide` / `slideRow` (`at: [row, column]`); props `skipped`, `transition` |
 | Slide grid | `getSlideGrid`, `setSlideGrid`, `focusedSlide`, `viewport.slidesView` | | | | ✓ | | `canvas.grid`, `canvas.arrange` |
 | Canvas grid | `getCanvasGrid`, `setCanvasGrid`, `createCanvasRow`, `moveNodesToCoord`, `viewport.canvasView` | | | | ✓ | ✓ | `canvas.grid`, `canvas.arrange` |
 | Focused node | `PageNode.focusedNode` | | ✓ | | ✓ | ✓ | `canvas.arrange focus`, `editor.capabilities` |
 | Interactive slide elements | `interactiveSlideElementType` | | | | ✓ | | read as `interactive` |
-| Buzz assets | `buzz.createFrame`, `buzz.createInstance`, `get/setBuzzAssetTypeForNode` | | | | | ✓ | `kind: asset` (`at`, optional `of` component); prop `assetType` |
+| Buzz assets | `buzz.createFrame`, `buzz.createInstance`, `get/setBuzzAssetTypeForNode` | | | | | ✓ | `kind: asset` (`at`, optional `of` component); a top-level `kind: frame` lands on the grid too; prop `assetType` |
 | Buzz content | `buzz.getTextContent`, `getMediaContent`, `setValueAsync`, `setMediaAsync` | | | | | ✓ | `buzz.content`, `buzz.content.set` |
 | Smart resize | `buzz.smartResize` | | | | | ✓ | `buzz.resize` |
 
@@ -47,9 +48,20 @@ All 45 editor-only members in the typings are reached. You can check this by loo
 
 ## Deliberately not reached
 
-- **Widgets:** `setWidgetSyncedState` and `cloneWidget`. Figma lets a widget's state be written only by the widget's own code (a node whose `widgetId` matches the caller's). AllCrew is not a widget, so the API would refuse every call. Reads report `widget: { id, state }`.
+- **Widgets:** `setWidgetSyncedState` and `cloneWidget`. Figma lets a widget's state be written only by the widget's own code (a node whose `widgetId` matches the caller's). AllCrew is not a widget, so the API would refuse every call. Reads report `widget: { id, state }`, and `widgets.find` lists a page's widgets (`findWidgetNodesByWidgetId`).
 - **`ShapeWithTextNode.rescale`:** `width` / `height` already resize a shape, and scale is not a property that can be read back.
 - **`StickyNode.authorName` as a write:** reads report who wrote a sticky. Setting it would forge authorship.
+
+## Modes, and what the plugin hears
+
+The plugin runs in more than one mode, and `sandbox.capabilities` / `editor.capabilities` say which (`figma.mode`):
+
+- **default** — the panel. It opens on Figma's `run` event rather than at load, because a Tab in Figma's quick actions runs the plugin in query mode first, where it may neither show anything nor change the document. The manifest declares two parameters, `command` (searchable over the panel's commands, denied ones excluded) and `params` (the message as JSON, checked as it is typed), with `parameterOnly: false`, so a menu launch opens the panel as before. A launch that sees neither `run` nor a parameter request within a second opens the panel anyway.
+- **inspect** — Dev Mode's Plugins tab: the panel as usual.
+- **codegen** — Dev Mode's code view. The React codegen answers there, and the panel is loaded hidden (`showUI` is refused only inside the generate callback), so the agent channel reaches a file in the code view too. `sandbox.capabilities` adds the developer's `codegenPreferences`.
+- **textreview** — a second, headless copy Figma consults while someone types (the `textreview` capability). It applies the copy rules `text.review.set` stored and leaves what it flagged for `events.read`. Figma asks the designer before it becomes the reviewer.
+
+From startup the plugin records every cheap event Figma emits: selection, page switches, Slides and Buzz view changes, the FigJam timer, runs and quick actions with their parameters, files and browser items dropped on the canvas (Figma still handles the drop), close, codegen preference changes, a `plugin.notify` toast dismissed or its button pressed. `events.read` reads them; plugin-data changes stay behind `data.watch`.
 
 ## What carries over between editors
 
@@ -106,4 +118,10 @@ These were measured in real FigJam, Slides and Buzz files through the channel. E
 - **Shape size.** FigJam shapes have `resize` but no `resizeWithoutConstraints`.
 - **Dev resources.** `getDevResourcesAsync` exists in FigJam and Slides but takes tens of seconds to return nothing, so it is only called in Design and Dev Mode.
 - **Theme variables in Slides.** Binding a slide's theme variable by name used to search every enabled library and took minutes. Library variables met while reading are now remembered, so writing the same name back is immediate.
+- **Slide names.** Figma Slides numbers slides by position and names rows itself: "Coverage" became "2", "Row two" stayed "Section". A name on a slide or slide row is refused with that reason, a name Figma does not keep is reported as an error, and a round trip sends neither.
+- **Slide grid in step.** Besides reading the tree, the plugin re-states Figma's slide grid from the tree after a slide or row is made and after a slide is removed, so Figma's own order agrees with what `canvas.grid` reports.
+- **Buzz formats and size.** Buzz snaps an asset to its format's preset (FACEBOOK_POST 1200×630, TWITTER_POST 1200×675…), and a plain resize afterwards keeps the format. So `assetType` is applied before `width` / `height`, and a size jump the preset makes on its own is reported as `sideEffect`. A smart resize turns an asset back into CUSTOM, so `buzz.resize` takes a format or a size, not both.
+- **Buzz assets off the grid.** A top-level frame left on the page is not an asset: it is invisible in the grid view and refuses a format ("Can only set asset type on Buzz Asset Node"). `node.create` puts a top-level frame onto the canvas grid at once.
+- **Buzz media fields.** A media field from `getMediaContent` can come back without `setMediaAsync`; `buzz.content.set` then paints the field's own layer.
+- **Table cells.** A FigJam table cell sits in the tree but has none of a layer's methods, so tree walks skip it; its text travels in `table.cells`.
 - **Hot reload.** On a rebuild of `dist/`, Figma reloads the development plugin in Slides and Buzz but not in FigJam or Design files.

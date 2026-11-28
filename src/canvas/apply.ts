@@ -56,6 +56,8 @@ export interface AppliedProp {
   error?: string
   /** Present when the write landed and will not show — an opacity on a preserve-3D container. */
   note?: string
+  /** Present when the write changed something nobody named — a Buzz format resizing its asset. */
+  sideEffect?: string
 }
 
 export interface ApplyReport {
@@ -276,11 +278,21 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
   switch (step.step) {
     case 'assign': {
       if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
+      // Figma Slides numbers slides by position and names rows itself; a name set here is taken
+      // and dropped (seen live: "Coverage" became "2", "Row two" stayed "Section").
+      if (step.property === 'name' && (node.type === 'SLIDE' || node.type === 'SLIDE_ROW')) {
+        throw new Error(`Figma Slides names a ${node.type === 'SLIDE' ? 'slide by its position' : 'slide row itself'} — a name given here does not stay`)
+      }
       const before = bag[step.property]
       // Text properties refuse to move until the font is loaded, whatever they are — a size
       // change on a text node whose font is unavailable throws the same way characters do.
       if (isText(node) && TEXT_PROPERTIES.includes(step.property)) await loadNodeFont(node)
       if (!dry) await withNamedFont(() => (bag[step.property] = step.value))
+      // A name is read back: a node Figma names itself takes the assignment and keeps its own,
+      // and a report of the request would say a rename happened that did not.
+      if (!dry && step.property === 'name' && bag.name !== step.value) {
+        return { property: 'name', before, after: bag.name, error: `Figma kept "${String(bag.name)}"` }
+      }
       return { property: step.property, before, after: step.value }
     }
 
@@ -540,9 +552,38 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       if (figma.editorType !== 'buzz' || !buzz) {
         throw new Error(`assetType is a Figma Buzz property — this file is open in ${figma.editorType}`)
       }
-      const before = buzz.getBuzzAssetTypeForNode(node)
-      if (!dry) buzz.setBuzzAssetTypeForNode(node, step.assetType as BuzzAssetType)
-      return { property: 'assetType', before, after: step.assetType }
+      const sized = node as SceneNode & { width: number; height: number }
+      const size = () => `${round(sized.width)}×${round(sized.height)}`
+      const was = size()
+      let before: unknown = null
+      try {
+        before = buzz.getBuzzAssetTypeForNode(node)
+      } catch {
+        /* not an asset yet — the set below says so in words */
+      }
+      if (!dry) {
+        try {
+          buzz.setBuzzAssetTypeForNode(node, step.assetType as BuzzAssetType)
+        } catch (error) {
+          // Figma's own words are "Can only set asset type on Buzz Asset Node", which names a node
+          // type the Plugin API does not have. What it means: the node is not on the canvas grid.
+          if (/Buzz Asset Node/i.test(String((error as Error)?.message ?? error))) {
+            throw new Error(
+              `${node.name} is not on the Buzz canvas grid, and only an asset there has a format — node.create kind "asset" (or a top-level frame) lands on the grid; anything else goes there with canvas.arrange { move }`
+            )
+          }
+          throw error
+        }
+      }
+      const now = size()
+      return {
+        property: 'assetType',
+        before,
+        after: step.assetType,
+        // Buzz resizes the asset to the format's preset. Within one call a width/height runs after
+        // this and wins; on its own the preset is what the asset now measures, and it says so.
+        ...(now !== was ? { sideEffect: `Buzz resized it to the ${step.assetType} preset: ${was} → ${now}` } : {}),
+      }
     }
 
     case 'textStart': {
@@ -1767,7 +1808,8 @@ export async function describePaints(value: unknown): Promise<string | null> {
       .map((channel) => Math.round(channel * 255).toString(16).padStart(2, '0'))
       .join('')
       .toUpperCase()}`
-    parts.push(flat.opacity !== undefined && flat.opacity < 1 ? `${hex} @${flat.opacity}` : hex)
+    // To three places: paint opacity is a 32-bit float, so 0.1 reads back as 0.10000000149011612.
+    parts.push(flat.opacity !== undefined && flat.opacity < 1 ? `${hex} @${Math.round(flat.opacity * 1000) / 1000}` : hex)
   }
   return parts.join(' + ')
 }

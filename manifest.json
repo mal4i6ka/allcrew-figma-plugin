@@ -4,6 +4,21 @@
   "api": "1.0.0",
   "main": "dist/code.js",
   "ui": "dist/ui.html",
+  "parameters": [
+    {
+      "name": "Command",
+      "key": "command",
+      "description": "A panel command to run — type to search"
+    },
+    {
+      "name": "Parameters",
+      "key": "params",
+      "description": "Its message as JSON, e.g. {\"name\": \"Card\"}",
+      "allowFreeform": true,
+      "optional": true
+    }
+  ],
+  "parameterOnly": false,
   "editorType": [
     "figma",
     "dev",
@@ -13,7 +28,8 @@
   ],
   "capabilities": [
     "inspect",
-    "codegen"
+    "codegen",
+    "textreview"
   ],
   "documentAccess": "dynamic-page",
   "networkAccess": {

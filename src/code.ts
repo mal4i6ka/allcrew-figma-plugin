@@ -119,7 +119,10 @@ import { buildTokenEntries } from './targets/design-md/model'
 import { deliverPackage } from './delivery'
 import { agentManifest, cancelAgentRequest, handleAgentRequest, setGates } from './agent/listener.ts'
 import { storedGatesFor, withStoredGates, type StoredGates } from './agent/gate-storage.ts'
-import { postToUi } from './agent/ui-post.ts'
+import { postToUi, setPanelUp } from './agent/ui-post.ts'
+import { listenEverywhere, recordEvent } from './agent/events.ts'
+import { startTextReview } from './agent/listen-ops.ts'
+import { parseQuickParams, suggestCommands } from './agent/quick-action.ts'
 import { setModuleProvider, setUiMessageRunner } from './agent/plugin-ops.ts'
 import { setModuleAdminProvider } from './agent/module-ops.ts'
 import { UI_COMMANDS } from './agent/ui-commands.ts'
@@ -160,7 +163,7 @@ import {
   describePaints,
   variableName,
 } from './canvas/apply.ts'
-import { createNode, planCreate, type CreatePlan, type CreateSpec } from './canvas/create.ts'
+import { createNode, planCreate, syncSlideGrid, type CreatePlan, type CreateSpec } from './canvas/create.ts'
 import { styledRuns, writableFont } from './canvas/text-runs.ts'
 import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
@@ -1744,7 +1747,36 @@ function clampUiSize(raw: unknown): { width: number; height: number } {
   }
 }
 
-if (figma.mode === 'codegen') {
+/** Whether the panel is up, and a promise that settles when it is — what the startup posts wait
+ * on, since the panel may open a while after load (see `openPanel`). */
+let panelOpen = false
+let panelShown: () => void = () => undefined
+const panelReady = new Promise<void>((resolve) => {
+  panelShown = resolve
+})
+setPanelUp(false)
+
+if (figma.mode === 'textreview') {
+  // The headless reviewer Figma runs beside the open file: no panel, no channel — it answers
+  // "what is wrong with this text" from the rules in storage, and leaves a note of what it
+  // flagged for the panel's event feed.
+  startTextReview()
+} else if (figma.mode === 'codegen') {
+  // The panel stays hidden — Dev Mode has its own — but it is loaded, so the agent channel the
+  // panel hosts reaches the file in Dev Mode's code view too. `showUI` is refused only inside the
+  // generate callback, not here.
+  try {
+    figma.showUI(__html__, { visible: false, themeColors: true })
+    panelOpen = true
+    setPanelUp(true)
+    panelShown()
+    listenEverywhere()
+  } catch (error) {
+    console.warn('[codegen] no hidden panel, so no agent channel here', error)
+  }
+  figma.codegen.on('preferenceschange', async (event) => {
+    recordEvent({ kind: 'CODEGEN_PREFERENCE', data: { propertyName: event.propertyName } })
+  })
   figma.codegen.on('generate', async ({ node }) => {
     try {
       const ir = await serializeNode(node)
@@ -1779,7 +1811,54 @@ if (figma.mode === 'codegen') {
     }
   })
 } else {
+  listenEverywhere()
+  /* The panel opens on `run`, not at load. A Tab in quick actions runs the plugin in query mode
+   * first — reading allowed, nothing visible — and `run` is what ends it; a menu launch fires
+   * `run` at once with no parameters. A launch that sees neither `run` nor a parameter request
+   * within a second opens the panel anyway: a plugin that stays invisible because an event did
+   * not come is the one failure worse than a premature panel. */
+  let queried = false
+  const fallback = setTimeout(() => {
+    if (!queried) openPanel()
+  }, 1_000)
+  figma.parameters.on('input', ({ key, query, result }) => {
+    queried = true
+    if (key === 'command') result.setSuggestions(suggestCommands(UI_COMMANDS, query))
+    else {
+      const parsed = parseQuickParams(query)
+      if ('problem' in parsed) result.setError(parsed.problem)
+      else result.setSuggestions([])
+    }
+  })
+  figma.on('run', ({ parameters }) => {
+    clearTimeout(fallback)
+    openPanel()
+    if (parameters?.command) void runQuickAction(String(parameters.command), parameters.params)
+  })
+}
+
+function openPanel(): void {
+  if (panelOpen) return
+  panelOpen = true
   figma.showUI(__html__, { ...UI_SIZE, themeColors: true })
+  setPanelUp(true)
+  panelShown()
+}
+
+/** A panel command run from quick actions: the same handler a click reaches, then a toast. */
+async function runQuickAction(command: string, raw: unknown): Promise<void> {
+  const known = UI_COMMANDS.find((one) => one.name === command)
+  const parsed = parseQuickParams(raw)
+  if (!known || known.access === 'deny') {
+    figma.notify(`No command ${command}`, { error: true })
+    return
+  }
+  if ('problem' in parsed) {
+    figma.notify(parsed.problem, { error: true })
+    return
+  }
+  recordEvent({ kind: 'QUICK_ACTION', data: { command, params: parsed.params } })
+  await handleUiMessage({ ...parsed.params, type: command } as PluginMessage)
 }
 
 const EXPORT_OPTIONS_KEY = 'allcrewChannel.v1.exportOptions'
@@ -1880,6 +1959,10 @@ Promise.all([
   figma.clientStorage.getAsync(UPDATE_PREFERENCES_KEY),
   figma.clientStorage.getAsync(UI_SIZE_KEY),
 ]).then(async ([storedOptions, storedPresets, storedPalette, storedUpdates, storedUiSize]) => {
+  // The headless text reviewer has no panel to tell anything to.
+  if (figma.mode === 'textreview') return
+  // Before any post: the panel may open on `run`, a moment after load.
+  await panelReady
   if (figma.mode !== 'codegen') {
     const uiSize = clampUiSize(storedUiSize)
     figma.ui.resize(uiSize.width, uiSize.height)
@@ -1902,6 +1985,8 @@ Promise.all([
     userPresets: normalizeUserPresets(storedPresets),
     // What the FILE decides for everyone (docs settings, its guidelines) — the panel locks those switches.
     filePins: filePins(figma.root as unknown as SharedDataHost),
+    // Dev Mode's code view loads the panel hidden, for the agent channel alone.
+    ...(figma.mode === 'codegen' ? { headless: true } : {}),
   })
   postToUi({ type: 'UPDATE_PREFERENCES', preferences: normalizeUpdatePreferences(storedUpdates) })
   const paletteSettings = normalizePaletteSettings(storedPalette)
@@ -1914,6 +1999,8 @@ Promise.all([
 
 
 function postSelectionToUi(): void {
+  // Selection changes during quick-action query mode arrive before there is a panel to tell.
+  if (!panelOpen) return
   /* A selected node can vanish under the selection - swapped, detached or deleted by an op - and
    * Figma then throws from the selection getter itself ("in get_selection: the node ... does not
    * exist"). This runs on every selectionchange, so an uncaught throw here is a crash on a click;
@@ -1937,7 +2024,7 @@ function postSelectionToUi(): void {
   })
 }
 
-figma.on('selectionchange', postSelectionToUi)
+if (figma.mode !== 'textreview') figma.on('selectionchange', postSelectionToUi)
 
 /**
  * Which variables a node's fields follow, as one line.
@@ -4836,8 +4923,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             problems.push(`nodes[${index}] must be { node, props }`)
             continue
           }
-          const entry = row as { node?: unknown; props?: unknown }
-          if (typeof entry.node !== 'string' || entry.node === '') {
+          const entry = row as { node?: unknown; id?: unknown; props?: unknown }
+          // `id` too: it is what node.find and NODE_CREATE answer with, and the word an agent
+          // reaches for first. Refusing it whole cost a 22-node batch on a Buzz build.
+          const target = entry.node ?? entry.id
+          if (typeof target !== 'string' || target === '') {
             problems.push(`nodes[${index}].node must be a node id`)
             continue
           }
@@ -4846,7 +4936,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           // Only when nothing else was said: after "unknown property" it is the same news twice,
           // and it doubled the count a caller reads as the size of its mistake.
           if (plan.steps.length === 0 && plan.problems.length === 0) problems.push(`nodes[${index}].props sets nothing`)
-          planned.push({ id: entry.node, steps: plan.steps })
+          planned.push({ id: target, steps: plan.steps })
         }
         if (problems.length > 0) {
           refuse('NODE_SET', `${problems.length} problem(s): ${problems.slice(0, 4).join(' · ')}`)
@@ -5012,14 +5102,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             problems.push(`nodes[${index}] must be { node, props? }`)
             continue
           }
-          const entry = row as { node?: unknown; props?: unknown }
-          if (typeof entry.node !== 'string' || entry.node === '') {
+          const entry = row as { node?: unknown; id?: unknown; props?: unknown }
+          // `id` too: it is what node.find and NODE_CREATE answer with, and the word an agent
+          // reaches for first. Refusing it whole cost a 22-node batch on a Buzz build.
+          const target = entry.node ?? entry.id
+          if (typeof target !== 'string' || target === '') {
             problems.push(`nodes[${index}].node must be a node id`)
             continue
           }
           const plan = planProps(entry.props, `nodes[${index}].props`)
           problems.push(...plan.problems)
-          planned.push({ id: entry.node, steps: plan.steps })
+          planned.push({ id: target, steps: plan.steps })
         }
         if (problems.length > 0) {
           refuse('NODE_CLONE', `${problems.length} problem(s): ${problems.slice(0, 4).join(' · ')}`)
@@ -7030,8 +7123,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           const { same, diverged } = compare(before, after, ignore)
           const failed = copy.failures ?? []
 
-          if (msg.keep !== true) (made as SceneNode).remove()
-          else figma.commitUndo()
+          if (msg.keep !== true) {
+            ;(made as SceneNode).remove()
+            // A slide removed by a plugin lingers in Figma's slide grid; the grid is re-stated.
+            if ((made as SceneNode).type === 'SLIDE') syncSlideGrid()
+          } else figma.commitUndo()
 
           reports.push({
             node: id,
@@ -7970,7 +8066,7 @@ function postMail(): void {
   postToUi({ type: 'MAIL_STATE', me: { name: me.name, address: me.user, agent: me.agent }, people, items: shown, now: Date.now() })
 }
 
-if (figma.mode !== 'codegen') {
+if (figma.mode !== 'codegen' && figma.mode !== 'textreview') {
   // Mail arriving while the panel is open says so once, in Figma's own toast; the panel shows it.
   const announced = new Set<string>()
   let first = true

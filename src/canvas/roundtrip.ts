@@ -213,7 +213,8 @@ export function specFrom(
   }
   const spec: CreateSpec = {
     kind: kind as CreateSpec['kind'],
-    props: { ...props, name: reading.name },
+    // Figma Slides names slides and rows itself, and refuses a name given to one.
+    props: kind === 'slide' || kind === 'slideRow' ? props : { ...props, name: reading.name },
     // An instance's children come from its component; sending them again would build a second
     // copy of everything inside it.
     ...(kind !== 'instance' && children.length > 0 ? { children } : {}),

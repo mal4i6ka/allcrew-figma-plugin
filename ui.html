@@ -3571,6 +3571,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // current values on every sync — never stored (REFORM §2.4).
       var OPTIONS = null
       var PRESETS = []
+      // True when the sandbox loaded this panel hidden, only to host the agent channel.
+      var HEADLESS = false
       var USER_PRESETS = []
       // The variable collections offered by the theme-collections table, filled in by the
       // VARIABLE_COLLECTIONS reply. The loading flag keeps the request to one in flight while
@@ -3709,6 +3711,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         show(VIEW)
         persistExportOptions()
         if (isAgent) agentRenderView()
+        // A hidden panel — Dev Mode's code view loads one only to host the agent channel — shows
+        // nothing, so it scans nothing.
+        else if (HEADLESS) return
         else if (isDjango) requestScan()
         else if (isTokens || (isDsTools && (OPTIONS.dsTool === 'typography' || OPTIONS.dsTool === 'breakpoints'))) {
           parent.postMessage({ pluginMessage: { type: 'SCAN_TOKENS' } }, '*')
@@ -9079,6 +9084,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           else renderFilePins()
         } else if (msg.type === 'EXPORT_OPTIONS') {
           FILE_PINS = msg.filePins || null
+          HEADLESS = msg.headless === true
           PRESETS = msg.presets || []
           USER_PRESETS = msg.userPresets || []
           renderPresetOptions()

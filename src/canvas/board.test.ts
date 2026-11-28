@@ -133,6 +133,7 @@ test('the board properties are part of the one vocabulary', () => {
   assert.deepEqual(plan.problems, [])
   const steps = plan.steps.map((step) => (step.step === 'assign' ? `${step.property}=${step.value}` : step.step))
   assert.deepEqual(steps, [
+    'assetType',
     'shapeType=DIAMOND',
     'isWideWidth=true',
     'codeLanguage=TYPESCRIPT',
@@ -141,7 +142,6 @@ test('the board properties are part of the one vocabulary', () => {
     'isSkippedSlide=true',
     'transition',
     'stuckTo',
-    'assetType',
   ])
   assert.match(planProps({ shapeType: 'BLOB' }).problems[0], /shapeType must be one of/)
   assert.match(planProps({ assetType: 'MYSPACE' }).problems[0], /assetType must be one of/)
@@ -227,4 +227,29 @@ test('a framed Buzz asset round-trips as an asset, the only thing that can carry
   const made = specFrom({ type: 'FRAME', name: 'Post', props: { assetType: 'INSTA_STORY', fill: '#0A1F44' } }, [])
   assert.equal(made?.spec.kind, 'asset')
   assert.equal(specFrom({ type: 'FRAME', name: 'Card', props: {} }, [])?.spec.kind, 'frame')
+})
+
+test('a Buzz format comes before the size, so the size named alongside wins over the preset', () => {
+  // Buzz snaps an asset to its format's preset (FACEBOOK_POST is 1200×630) and a plain resize
+  // afterwards keeps the format — both seen live. Set after the size, the preset overwrote it.
+  const plan = planProps({ width: 1080, height: 1350, assetType: 'FACEBOOK_POST' })
+  assert.deepEqual(plan.problems, [])
+  assert.deepEqual(
+    plan.steps.map((step) => step.step),
+    ['assetType', 'resize']
+  )
+})
+
+test('slides and slide rows round-trip without a name — Figma Slides names them itself', () => {
+  const slide = specFrom({ type: 'SLIDE', name: '2', props: { skipped: true, width: 1920, height: 1080 } }, [])
+  assert.deepEqual(slide?.spec, { kind: 'slide', props: { skipped: true } })
+  const row = specFrom({ type: 'SLIDE_ROW', name: 'Section', props: {} }, [])
+  assert.deepEqual(row?.spec, { kind: 'slideRow', props: {} })
+})
+
+test('padding also takes the CSS-shaped sides, a side left out as 0, a stray word refused', () => {
+  const sides = planProps({ layout: { padding: { top: 16, left: 24, right: 24 } } })
+  assert.deepEqual(sides.problems, [])
+  assert.deepEqual(sides.steps[0], { step: 'layout', layout: { padding: [16, 24, 0, 24] } })
+  assert.match(planProps({ layout: { padding: { top: 16, x: 24 } } }).problems.join(' '), /not x/)
 })

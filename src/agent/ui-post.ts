@@ -26,9 +26,21 @@
  */
 const recorders: unknown[][] = []
 
+/**
+ * Whether there is a panel to post to. The plugin can start without one — quick actions run it
+ * in query mode first, and the text reviewer never has one — and `figma.ui.postMessage` then
+ * throws. A post made before the panel is up still reaches every recording; the panel itself
+ * asks for its state once it opens.
+ */
+let panelUp = true
+
+export function setPanelUp(up: boolean): void {
+  panelUp = up
+}
+
 export function postToUi(message: unknown, options?: UIPostMessageOptions): void {
   for (const sink of recorders) sink.push(message)
-  figma.ui.postMessage(message, options)
+  if (panelUp) figma.ui.postMessage(message, options)
 }
 
 /** Opens a recording and hands back the array it fills. The array is the token: only the
