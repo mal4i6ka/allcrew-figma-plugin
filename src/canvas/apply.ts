@@ -1753,6 +1753,10 @@ async function buildImage(ref: ImageRef): Promise<ImagePaint> {
     scaleMode: ref.scaleMode ?? 'FILL',
     imageHash,
     ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+    ...(ref.filters ? { filters: ref.filters } : {}),
+    ...(ref.rotation ? { rotation: ref.rotation } : {}),
+    ...(ref.tile === undefined ? {} : { scalingFactor: ref.tile }),
+    ...(ref.crop ? { imageTransform: ref.crop } : {}),
   }
 }
 
@@ -1764,6 +1768,8 @@ async function buildVideo(ref: VideoRef): Promise<VideoPaint> {
     scaleMode: ref.scaleMode ?? 'FILL',
     videoHash,
     ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+    ...(ref.filters ? { filters: ref.filters } : {}),
+    ...(ref.rotation ? { rotation: ref.rotation } : {}),
   } as VideoPaint
 }
 

@@ -47,10 +47,27 @@ async function readOne(paint: Record<string, unknown>, nameOf: NameOf): Promise<
     const key = type === 'IMAGE' ? 'image' : 'video'
     const hash = type === 'IMAGE' ? paint.imageHash : paint.videoHash
     if (typeof hash !== 'string' || hash === '') return type
+    // The image panel's sliders, a quarter turn, a tile size and a crop: a filtered photo read
+    // without them copied as an unfiltered one. Filters are 32-bit floats — exposure 0.3 reads
+    // 0.30000001192092896 — so they are said to three places, as everything else here is.
+    const filters = Object.fromEntries(
+      Object.entries((paint.filters as Record<string, number> | undefined) ?? {})
+        .filter(([, amount]) => typeof amount === 'number' && amount !== 0)
+        .map(([name, amount]) => [name, round(amount)])
+    )
+    const mode = paint.scaleMode
     return {
       [key]: { hash },
-      ...(typeof paint.scaleMode === 'string' && paint.scaleMode !== 'FILL' ? { scaleMode: paint.scaleMode } : {}),
+      ...(typeof mode === 'string' && mode !== 'FILL' ? { scaleMode: mode } : {}),
       ...(opacity === undefined ? {} : { opacity }),
+      ...(Object.keys(filters).length > 0 ? { filters } : {}),
+      ...(typeof paint.rotation === 'number' && paint.rotation !== 0 ? { rotation: paint.rotation } : {}),
+      ...(type === 'IMAGE' && mode === 'TILE' && typeof paint.scalingFactor === 'number' && paint.scalingFactor !== 1
+        ? { tile: round(paint.scalingFactor) }
+        : {}),
+      ...(type === 'IMAGE' && mode === 'CROP' && Array.isArray(paint.imageTransform)
+        ? { crop: (paint.imageTransform as number[][]).map((row) => row.map((value) => Math.round(value * 1e6) / 1e6)) }
+        : {}),
     }
   }
 

@@ -169,6 +169,25 @@ export interface ImageRef {
   image: { hash?: string; url?: string; bytes?: string }
   scaleMode?: 'FILL' | 'FIT' | 'CROP' | 'TILE'
   opacity?: number
+  /** Exposure, contrast, saturation, temperature, tint, highlights, shadows — each -1 to 1. */
+  filters?: ImageFilterSpec
+  /** Quarter turns of the picture inside the layer. */
+  rotation?: 0 | 90 | 180 | 270
+  /** TILE only: the size of each tile against the picture's own. */
+  tile?: number
+  /** CROP only: the crop as the 2×3 matrix Figma keeps, `[[a, b, x], [c, d, y]]` in the layer's 0–1 space. */
+  crop?: [[number, number, number], [number, number, number]]
+}
+
+/** The image panel's sliders, each -1 to 1 with 0 untouched. */
+export interface ImageFilterSpec {
+  exposure?: number
+  contrast?: number
+  saturation?: number
+  temperature?: number
+  tint?: number
+  highlights?: number
+  shadows?: number
 }
 
 /**
@@ -200,6 +219,8 @@ export interface VideoRef {
   video: { hash?: string; bytes?: string }
   scaleMode?: 'FILL' | 'FIT' | 'CROP' | 'TILE'
   opacity?: number
+  filters?: ImageFilterSpec
+  rotation?: 0 | 90 | 180 | 270
 }
 
 /**
@@ -4787,6 +4808,25 @@ function videoProblem(entry: { video?: unknown; scaleMode?: unknown; opacity?: u
   if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
     return 'opacity must be between 0 and 1'
   }
+  return pictureExtrasProblem(entry as Record<string, unknown>)
+}
+
+const FILTERS = ['exposure', 'contrast', 'saturation', 'temperature', 'tint', 'highlights', 'shadows']
+
+/** The picture extras an image and a video share: the sliders and the quarter turns. */
+function pictureExtrasProblem(entry: Record<string, unknown>): string | null {
+  if (entry.filters !== undefined) {
+    if (typeof entry.filters !== 'object' || entry.filters === null || Array.isArray(entry.filters)) {
+      return `filters must be { ${FILTERS.join(', ')} }`
+    }
+    for (const [name, amount] of Object.entries(entry.filters as Record<string, unknown>)) {
+      if (!FILTERS.includes(name)) return `filters: unknown "${name}" — accepted: ${FILTERS.join(', ')}`
+      if (typeof amount !== 'number' || amount < -1 || amount > 1) return `filters.${name} must be between -1 and 1`
+    }
+  }
+  if (entry.rotation !== undefined && ![0, 90, 180, 270].includes(entry.rotation as number)) {
+    return 'rotation must be 0, 90, 180 or 270'
+  }
   return null
 }
 
@@ -4808,5 +4848,17 @@ function imageProblem(entry: { image?: unknown; scaleMode?: unknown; opacity?: u
   if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
     return 'opacity must be between 0 and 1'
   }
-  return null
+  const extras = entry as Record<string, unknown>
+  if (extras.tile !== undefined) {
+    if (typeof extras.tile !== 'number' || extras.tile <= 0) return 'tile must be a number > 0'
+    if (entry.scaleMode !== 'TILE') return 'tile is the size of a tile — it needs scaleMode TILE'
+  }
+  if (extras.crop !== undefined) {
+    const row = (one: unknown) => Array.isArray(one) && one.length === 3 && one.every((n) => typeof n === 'number')
+    if (!Array.isArray(extras.crop) || extras.crop.length !== 2 || !row(extras.crop[0]) || !row(extras.crop[1])) {
+      return 'crop must be [[a, b, x], [c, d, y]]'
+    }
+    if (entry.scaleMode !== 'CROP') return 'crop needs scaleMode CROP'
+  }
+  return pictureExtrasProblem(extras)
 }
