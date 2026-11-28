@@ -7,7 +7,7 @@ It is MCP-shaped without being MCP: there is no server to register, no client li
 nothing to keep in sync but the op names. If a tool can run a shell command, it can drive
 Figma.
 
-**Reads and writes, gated separately.** Most ops only look; thirty-five of them change the
+**Reads and writes, gated separately.** Most ops only look; thirty-seven of them change the
 document or plugin-managed module storage and sit behind their own switch, which reads never imply.
 
 ---
@@ -490,7 +490,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `modules.inspect` | one installed module&rsquo;s declarative file and current state, with secret fields redacted |
 | `modules.export` | a transferable module file, optionally with non-secret state |
 
-Thirty-five **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
+Thirty-seven **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
 table is checked against the registry by a test — an op that ships without a row here fails the
 build rather than going quietly undocumented, which is how the count used to read "five".)
 
@@ -508,6 +508,8 @@ build rather than going quietly undocumented, which is how the count used to rea
 | `node.style` | applies a style to layers, or detaches them, and verifies it took by style id — `null` detaches while keeping the pixels. Library styles apply by the id `node.get` reports or by published key (imported on first use); `like: <layer id>` takes whatever style a neighbour has in the same field |
 | `node.copy` | copies or instantiates nodes onto a page — how an agent builds a side-by-side out of real layers instead of a description |
 | `node.remove` | deletes nodes. Refuses a page or the document outright, and a component or set without `force` |
+| `node.move` | cut and paste: moves nodes into another frame, group, section or page, or reorders them with `index`. Keeps the canvas position across frames; refuses layers inside instances and a node into itself |
+| `node.duplicate` | copy and paste: copies nodes beside themselves or into any frame or page and reports each new id. A component pastes as an instance unless `components: "clone"`; a set needs it |
 | `style.bind` | binds a paint style — a solid paint, or ONE gradient stop by position — or a text style field (`fontFamily`, `fontStyle`, `fontWeight`, `fontSize`, `lineHeight`, `letterSpacing`, `paragraphSpacing`, `paragraphIndent`) to a variable, and re-reads the style to check, because stop binding is undocumented API |
 | `style.remove` | deletes styles nothing uses. Refuses while a consumer exists; reports publish status first |
 | `instance.detach` | detaches instances from their main components. Bindings survive — plan a rebind after |

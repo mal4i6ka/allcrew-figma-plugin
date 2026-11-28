@@ -28,6 +28,7 @@ import {
 import { walkSceneNodes } from '../utils/tree.ts'
 import { checkpoint, enforceDeadline, pauseDue } from '../utils/budget.ts'
 import { REMOVE_OPS } from './remove-ops.ts'
+import { ARRANGE_OPS } from './arrange-ops.ts'
 import { regionFills, writeRegionFills, paintAliasId, type RegionPaints } from '../utils/vector-regions.ts'
 import { resolveWalkRoots } from './scope.ts'
 
@@ -3000,4 +3001,5 @@ export const WRITE_OPS: readonly OpDef[] = [
     },
   },
   ...REMOVE_OPS,
+  ...ARRANGE_OPS,
 ]

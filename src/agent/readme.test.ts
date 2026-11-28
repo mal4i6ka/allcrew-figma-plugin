@@ -101,6 +101,16 @@ test('the stated write count is the real one', () => {
     32: 'thirty-two',
     33: 'thirty-three',
     35: 'thirty-five',
+    36: 'thirty-six',
+    37: 'thirty-seven',
+    38: 'thirty-eight',
+    39: 'thirty-nine',
+    40: 'forty',
+    41: 'forty-one',
+    42: 'forty-two',
+    43: 'forty-three',
+    44: 'forty-four',
+    45: 'forty-five',
   }
   const mutating = ALL_OPS.filter((op) => op.mutates).length
   const word = WORDS[mutating]
