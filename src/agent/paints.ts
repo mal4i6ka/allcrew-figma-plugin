@@ -151,7 +151,8 @@ export interface ShaderPropertySummary {
   /** The value as Figma holds it. Variable aliases inside it — a gradient stop bound to a
    * token, a colour bound to one — are replaced by `{ token, id }`, because an id alone
    * cannot be read and a name alone cannot be written back. For an animated setting this is
-   * the value it holds before its first keyframe. */
+   * the track's base value — what the layer holds outside the timeline; while it plays, the
+   * setting starts from its first keyframe. */
   value: unknown
   /** The setting moves on the timeline. Figma leaves such a setting OUT of `properties` on a read
    * (typings 1.143.0) — its keyframes live in the node's `manualKeyframeTracks` — so without this
@@ -288,8 +289,12 @@ export async function describeShader(
 
   const properties = shader?.properties && typeof shader.properties === 'object' ? (shader.properties as Record<string, unknown>) : {}
   const described: ShaderPropertySummary[] = []
+  // An animated setting is dropped from `propertyMetadata` as well as from `properties` (seen
+  // live), and the paint's id is not the catalogue's — two id spaces. The setting ids ARE shared,
+  // so the catalogue entry that defines every setting this paint has is the same shader.
+  const byIds = sameShaderInCatalogue([...Object.keys(properties), ...Object.keys(animated ?? {})], definitions)
   const named = (defId: string) => {
-    const definition = metadata[defId] ?? declared[defId]
+    const definition = metadata[defId] ?? declared[defId] ?? byIds?.[defId]
     return {
       id: defId,
       ...(definition ? { name: definition.name, type: definition.type } : {}),
@@ -312,6 +317,26 @@ export async function describeShader(
   }
   if (described.length > 0) out.properties = described
   return out
+}
+
+/**
+ * The catalogue's definitions for a shader known only by its setting ids.
+ *
+ * Answers only when exactly one catalogue shader defines every one of the ids: a setting id is a
+ * pair of hashes, so a full match is the same shader, and anything less is not worth a name that
+ * might be another shader's.
+ */
+export function sameShaderInCatalogue(
+  settingIds: readonly string[],
+  definitions?: Map<string, Shader>
+): Record<string, ShaderPropertyDefinition | undefined> | undefined {
+  if (!definitions || settingIds.length === 0) return undefined
+  const matches: Array<Record<string, ShaderPropertyDefinition | undefined>> = []
+  for (const shader of definitions.values()) {
+    const declared = (shader.propertyDefinitions ?? {}) as Record<string, ShaderPropertyDefinition | undefined>
+    if (settingIds.every((id) => declared[id] !== undefined)) matches.push(declared)
+  }
+  return matches.length === 1 ? matches[0] : undefined
 }
 
 /**

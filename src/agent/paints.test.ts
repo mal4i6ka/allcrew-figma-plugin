@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { animatedShaderProperties, describePaint, describeShader } from './paints.ts'
+import { animatedShaderProperties, describePaint, describeShader, sameShaderInCatalogue } from './paints.ts'
 
 /* `figma` is a sandbox global these functions read at CALL time, so a module-scope stub is
  * enough — this used to need `await import()` because the describer lived in `ops.ts`, whose op
@@ -370,4 +370,61 @@ test('a shader whose every setting is animated still has settings', async () => 
 test('a shader paint takes its slot’s tracks through describePaint', async () => {
   const described = await describePaint({ type: 'SHADER', id: 'sh/1', properties: {} }, 0, undefined, undefined, { '9:9': track(1, 2) })
   assert.deepEqual(described.shader?.properties, [{ id: '9:9', value: 1, animated: true, keyframes: 2 }])
+})
+
+/* ------------------------- naming an animated setting from the catalogue (read live) */
+
+// Read live on 19.11.2026 from a Water caustic fill whose `scale` was keyframed: the paint id is
+// `40f03f78…/8370`, the catalogue's is `published:1650660549837923423/8370`, and the animated
+// setting is gone from the paint's `propertyMetadata` as well as from its `properties`.
+const waterCatalogue = new Map([
+  [
+    'published:1650660549837923423/8370',
+    {
+      id: 'published:1650660549837923423/8370',
+      name: '',
+      type: 'fill',
+      propertyDefinitions: {
+        '2793279086:389096460': { name: 'scale', type: 'NUMBER', defaultValue: 1 },
+        '3753036810:3652539474': { name: 'intensity', type: 'NUMBER', defaultValue: 0.5 },
+        '3071380467:4236873122': { name: 'playhead', type: 'NUMBER', defaultValue: 0 },
+      },
+    },
+  ],
+  ['other/1', { id: 'other/1', name: 'Other', type: 'fill', propertyDefinitions: { '9:9': { name: 'unrelated', type: 'NUMBER' } } }],
+])
+
+test('an animated setting the paint no longer names is named from the catalogue shader with the same settings', async () => {
+  const described = await describeShader(
+    {
+      id: '40f03f78407c1c973fc891fbca9ff3d0387485e6/8370',
+      properties: { '3753036810:3652539474': 0.5, '3071380467:4236873122': 0 },
+      propertyMetadata: {
+        '3753036810:3652539474': { name: 'intensity', type: 'NUMBER', defaultValue: 0.5 },
+        '3071380467:4236873122': { name: 'playhead', type: 'NUMBER', defaultValue: 0 },
+      },
+    },
+    waterCatalogue as never,
+    { '2793279086:389096460': track(1, 2) }
+  )
+  assert.deepEqual(described.properties?.at(-1), {
+    id: '2793279086:389096460',
+    name: 'scale',
+    type: 'NUMBER',
+    default: 1,
+    value: 1,
+    animated: true,
+    keyframes: 2,
+  })
+})
+
+test('a catalogue is only believed when exactly one shader defines every setting', () => {
+  assert.equal(sameShaderInCatalogue(['2793279086:389096460', '3753036810:3652539474'], waterCatalogue as never)?.['2793279086:389096460']?.name, 'scale')
+  // One id the candidate does not define: not the same shader.
+  assert.equal(sameShaderInCatalogue(['2793279086:389096460', '1:1'], waterCatalogue as never), undefined)
+  // Two shaders that both define the ids: no way to tell which.
+  const twins = new Map([...waterCatalogue, ['twin/1', { ...waterCatalogue.get('published:1650660549837923423/8370')!, id: 'twin/1' }]])
+  assert.equal(sameShaderInCatalogue(['2793279086:389096460'], twins as never), undefined)
+  assert.equal(sameShaderInCatalogue([], waterCatalogue as never), undefined)
+  assert.equal(sameShaderInCatalogue(['2793279086:389096460']), undefined)
 })

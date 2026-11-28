@@ -161,7 +161,7 @@ import { sendableLinks } from './canvas/link-reader.ts'
 import { docNames, placeDocs, type PlacedDocs } from './canvas/docs.ts'
 import { addressIn, readOverrides } from './canvas/overrides.ts'
 import { readKeyframes } from './canvas/keyframes.ts'
-import { animatedShaderProperties } from './agent/paints.ts'
+import { animatedShaderProperties, sameShaderInCatalogue } from './agent/paints.ts'
 import { readPaintsForWrite } from './canvas/paint-reader.ts'
 import { decorationWords } from './canvas/decoration.ts'
 import { connectorWords, editorProblem, pageIdOf, tableWords, transitionWords } from './canvas/board.ts'
@@ -5555,7 +5555,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             // `importShaderById` would fetch the definitions, and that is a write.
             properties: [...entry.keys]
               .map((defId) => {
-                const definition = entry.meta[defId]
+                // An animated setting is missing from the applied shader's metadata as well as
+                // from its properties (seen live); the catalogue entry that defines every setting
+                // of this shader still names it.
+                const definition =
+                  entry.meta[defId] ??
+                  sameShaderInCatalogue([...entry.keys], new Map(offered.map((shader) => [shader.id, shader])))?.[defId]
                 if (!definition) return defId
                 const fallback =
                   definition.defaultValue === undefined
