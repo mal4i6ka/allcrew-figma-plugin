@@ -59,6 +59,38 @@ let current: Run | null = null
 let lastYield = Date.now()
 let panelCommands = 0
 
+/* ------------------------------------------------------- a window in the background */
+
+/** A `setTimeout(0)` slower than this means the host is throttling us — its window is behind. */
+const THROTTLED_YIELD_MS = 1000
+/** After a throttled yield, how long to assume the window is still behind before probing again. */
+const THROTTLE_HOLD_MS = 30_000
+
+let hostHidden = false
+let throttledUntil = 0
+
+/**
+ * Told by the panel (`HOST_VISIBILITY`): whether Figma's window is hidden right now.
+ *
+ * A yield is a `setTimeout(0)`. In a focused window that costs a few milliseconds and keeps the
+ * editor responsive. With the window behind — the usual case while an agent drives the plugin
+ * from another app — Chromium throttles chained timers to about one wake-up a minute: measured on
+ * a 32-page design system, each yield of the component-docs walk cost ~28 s and the token export
+ * shipped no COMPONENTS.md, on a file whose pages had all loaded in 77 ms. A hidden window has
+ * nobody to keep responsive, so while it is hidden (or a yield was just measured as throttled)
+ * {@link checkpoint} keeps the clock and the stop checks and skips the yield. The price: a cancel
+ * from the bridge is only seen once the loop ends or reaches its deadline.
+ */
+export function setHostHidden(hidden: boolean): void {
+  hostHidden = hidden
+  if (!hidden) throttledUntil = 0
+}
+
+/** Whether yields are skipped right now — the window is hidden or was just measured throttled. */
+export function yieldsHeld(now: number = Date.now()): boolean {
+  return hostHidden || now < throttledUntil
+}
+
 export function currentRun(): Run | null {
   return current
 }
@@ -127,7 +159,7 @@ export function pauseDue(): boolean {
   const now = Date.now()
   const run = current
   if (stoppable(run) && (run.cancelled || now >= run.deadline)) return true
-  return now - lastYield >= SLICE_MS
+  return now - lastYield >= SLICE_MS && !yieldsHeld(now)
 }
 
 /**
@@ -146,9 +178,11 @@ export async function checkpoint(): Promise<void> {
     if (run.cancelled) throw stopped(run, 'cancelled')
     if (now >= run.deadline) throw stopped(run, 'deadline')
   }
-  if (now - lastYield >= SLICE_MS) {
+  if (now - lastYield >= SLICE_MS && !yieldsHeld(now)) {
     await sleep(0)
-    lastYield = Date.now()
+    const after = Date.now()
+    if (after - now > THROTTLED_YIELD_MS) throttledUntil = after + THROTTLE_HOLD_MS
+    lastYield = after
   }
 }
 

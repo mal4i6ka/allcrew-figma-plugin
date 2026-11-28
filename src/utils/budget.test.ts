@@ -9,6 +9,8 @@ import {
   resetSkipInvisible,
   RunStopped,
   setCurrentRun,
+  setHostHidden,
+  yieldsHeld,
   stopReason,
   type Run,
 } from './budget.ts'
@@ -20,6 +22,7 @@ function run(overrides: Partial<Run> = {}): Run {
 test.afterEach(() => {
   setCurrentRun(null)
   resetSkipInvisible()
+  setHostHidden(false)
 })
 
 test('a read past its deadline is stopped at the next checkpoint, with a message that says how to continue', async () => {
@@ -85,4 +88,21 @@ test('the skip flag survives a walk ending inside another walk, and is put back 
   again()
   // A designer's own `true` is restored as `true`, and a double release counts once.
   assert.equal(figma.skipInvisibleInstanceChildren, true)
+})
+
+test('a hidden window skips the yields but still stops a run at its deadline', async () => {
+  setCurrentRun(null)
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(pauseDue(), true, 'a slice has passed: a yield is due in front')
+  setHostHidden(true)
+  assert.equal(yieldsHeld(), true)
+  assert.equal(pauseDue(), false, 'behind, nobody needs the turn — and a throttled timer costs ~28 s')
+  await checkpoint() // resolves without waiting on a timer
+
+  setCurrentRun(run({ deadline: Date.now() - 1 }))
+  assert.equal(pauseDue(), true)
+  await assert.rejects(checkpoint(), (err: unknown) => err instanceof RunStopped && err.reason === 'deadline')
+
+  setHostHidden(false)
+  assert.equal(yieldsHeld(), false)
 })
