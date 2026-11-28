@@ -697,6 +697,9 @@ function defaultRoots(): readonly SceneNode[] {
  * `var(--content-base, #101010)` — and losing them is worth a sentence in the report, not the
  * whole render.
  */
+/** How long the React export waits for library variables before it ships with the ones it has. */
+const LIBRARY_VARIABLES_BUDGET_MS = 30_000
+
 async function variableNamesForExport(): Promise<{
   names: Map<string, string>
   /** The same variables as a stylesheet, so the emitted `var(--token, …)` has a table to read. */
@@ -707,8 +710,26 @@ async function variableNamesForExport(): Promise<{
   const asCss = (snapshot: VariableSnapshot): string =>
     emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions, readRenameMap())).css
   try {
-    const snapshot = await readAllVariables({ collectionMerges: exportOptions.themeMerges.groups })
-    return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), css: asCss(snapshot), gaps: [] }
+    // Bounded: every library variable is its own round trip to Figma's team-library service, and a
+    // file with a large design system enabled (412 variables in five collections, measured
+    // upstream) outran the channel before a single file came back. What is not read in time is
+    // named as a gap; the tokens the scope itself binds are resolved separately by the caller.
+    const snapshot = await readAllVariables({
+      collectionMerges: exportOptions.themeMerges.groups,
+      budgetMs: LIBRARY_VARIABLES_BUDGET_MS,
+    })
+    return {
+      names: new Map(snapshot.variables.map((one) => [one.id, one.name])),
+      css: asCss(snapshot),
+      gaps:
+        snapshot.stoppedOn === 'budgetMs'
+          ? [
+              `the enabled libraries hold more variables than could be read in ${LIBRARY_VARIABLES_BUDGET_MS / 1000} s ` +
+                `(${snapshot.nextOffset ?? 0} were) — tokens.css lists only those, and the tokens this screen binds; ` +
+                'run the token export for the whole table',
+            ]
+          : [],
+    }
   } catch (error) {
     const local = foldSplitThemeCollections(
       await readLocalVariables(),
@@ -3593,7 +3614,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           refuse('EMIT_REACT', 'nothing in that scope to render')
           break
         }
-        const variableNamesById = tokens.names
+        // The names of what this scope binds, resolved by id like the Django emitter does — so a
+        // library read that ran out of time costs the tokens table, never a `var(--token)` on screen.
+        const variableNamesById = new Map([...(await variableNamesForScope(sceneNodesById.values())), ...tokens.names])
         await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
         // The library the screen leans on, emitted first: its components are the real ones, with
         // every variant and every state, and the screen then imports them rather than building a
