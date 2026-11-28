@@ -113,7 +113,7 @@ test('reset: false keeps the overrides and plans nothing', () => {
 
 test('a property value that Figma could never take is refused in the plan', () => {
   const plan = planProps({ properties: { Size: 12 } })
-  assert.match(plan.problems[0], /properties.Size must be a string or a boolean/)
+  assert.match(plan.problems[0], /properties.Size must be a string, a boolean, or \{ variable \}/)
   assert.match(planProps({ properties: {} }).problems[0], /must name at least one property/)
   assert.match(planProps({ properties: [] }).problems[0], /must be an object/)
   assert.match(planProps({ swap: '  ' }).problems[0], /swap must be a component id or a published key/)
@@ -226,4 +226,22 @@ test('a slot needs no binding, because creating one creates its node', () => {
     planComponentProperties({ add: [{ name: 'C', type: 'SLOT', bind: ['1:2'] }] }).problems[0],
     /is not bound to layers/
   )
+})
+
+test('a text or boolean property may follow a variable; a variant may not', () => {
+  const defined = {
+    'Label#1:2': { type: 'TEXT', value: 'Go' },
+    'Show icon#3:4': { type: 'BOOLEAN', value: true },
+    Size: { type: 'VARIANT', value: 'M' },
+  }
+  const { resolved, problems } = resolveProperties(
+    { Label: { variable: 'copy/cta' }, 'Show icon': { variable: 'flag/icon' }, Size: { variable: 'size' } },
+    defined as never
+  )
+  assert.deepEqual(resolved, { 'Label#1:2': { variable: 'copy/cta' }, 'Show icon#3:4': { variable: 'flag/icon' } })
+  assert.match(problems[0], /Size is a variant property — only text and boolean properties follow a variable/)
+  // The plan takes the token's name as given, trimmed.
+  const plan = planProps({ properties: { Label: { variable: ' copy/cta ' } } })
+  assert.deepEqual(plan.problems, [])
+  assert.deepEqual(plan.steps[0], { step: 'properties', properties: { Label: { variable: 'copy/cta' } } })
 })

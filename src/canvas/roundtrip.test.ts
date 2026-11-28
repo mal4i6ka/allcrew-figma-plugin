@@ -48,3 +48,15 @@ test('a node type NODE_CREATE cannot make says so rather than half-trying', () =
   assert.equal(kindOf('SLICE'), 'slice')
   assert.equal(kindOf('BOOLEAN_OPERATION'), null)
 })
+
+test('what a read could not finish is said, not sent and not counted as dropped', () => {
+  // A capped read names the step it gave up on (`unreadable`), and an offline Dev Mode lookup is
+  // marked `unread`: words about the read, never values a copy could be told.
+  const { props, dropped } = sendable({
+    fill: '#FFFFFF',
+    unread: 'Dev Mode links — Figma did not answer, so they are left out of this read',
+    unreadable: 'reading Card did not answer within 30s — stuck on text runs of Card (1:2)',
+  })
+  assert.deepEqual(props, { fill: '#FFFFFF' })
+  assert.deepEqual(dropped, [])
+})

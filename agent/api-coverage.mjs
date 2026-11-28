@@ -53,6 +53,9 @@ export function surfaceOf(source) {
   const stack = []
   let pending = null
   let depth = 0
+  // Inside a parameter list that wraps over lines, `layoutGrid: LayoutGrid,` is a parameter, not
+  // a member — counting it made `VariablesAPI.layoutGrid` and `PluginAPI.targetNode` "gaps".
+  let parens = 0
 
   for (const raw of source.split('\n')) {
     const line = raw.split('//')[0]
@@ -60,10 +63,11 @@ export function surfaceOf(source) {
     if (declared) {
       out.add(declared[2])
       pending = ['interface', 'namespace', 'class'].includes(declared[1]) ? declared[2] : null
-    } else if (stack.length > 0 && depth === stack[stack.length - 1][1] + 1) {
+    } else if (stack.length > 0 && depth === stack[stack.length - 1][1] + 1 && parens === 0) {
       const member = MEMBER.exec(raw)
       if (member && !KEYWORDS.has(member[1])) out.add(`${stack[stack.length - 1][0]}.${member[1]}`)
     }
+    if (!line.trim().startsWith('*')) parens = Math.max(0, parens + (line.match(/\(/g)?.length ?? 0) - (line.match(/\)/g)?.length ?? 0))
 
     for (let index = 0; index < (line.match(/{/g)?.length ?? 0); index++) {
       if (pending !== null) {
@@ -77,6 +81,67 @@ export function surfaceOf(source) {
   }
   return out
 }
+
+/**
+ * What the typings themselves say about a member: which editors it is limited to (`Note: This API
+ * is only available in FigJam`) and whether it is `@deprecated`. A gap in FigJam's sticky notes is
+ * not a gap in a plugin that declares `editorType: ["figma", "dev"]`, and a deprecated synchronous
+ * getter is not one in a `dynamic-page` plugin that is forbidden to call it — so both are counted
+ * apart instead of inflating the "untouched" column. Derived from the same file, never listed.
+ */
+export function notesOf(source) {
+  const notes = new Map()
+  const stack = []
+  let pending = null
+  let depth = 0
+  let parens = 0
+  let doc = ''
+  let inDoc = false
+
+  for (const raw of source.split('\n')) {
+    const trimmed = raw.trim()
+    if (trimmed.startsWith('/**')) {
+      inDoc = true
+      doc = ''
+    }
+    if (inDoc) {
+      doc += ` ${trimmed}`
+      if (trimmed.endsWith('*/')) inDoc = false
+      continue
+    }
+    const line = raw.split('//')[0]
+    const declared = DECL.exec(line.trim())
+    if (declared) {
+      pending = ['interface', 'namespace', 'class'].includes(declared[1]) ? declared[2] : null
+    } else if (stack.length > 0 && depth === stack[stack.length - 1][1] + 1 && parens === 0) {
+      const member = MEMBER.exec(raw)
+      if (member && !KEYWORDS.has(member[1]) && doc) {
+        const only = /only available in ([^.@*]+?)(?:\.|$| \*)/.exec(doc)?.[1]?.trim()
+        const deprecated = /@deprecated/.test(doc)
+        if (only || deprecated) notes.set(`${stack[stack.length - 1][0]}.${member[1]}`, { only, deprecated })
+      }
+    }
+    if (trimmed !== '' && parens === 0 && !/[(,]\s*$/.test(line)) doc = ''
+    parens = Math.max(0, parens + (line.match(/\(/g)?.length ?? 0) - (line.match(/\)/g)?.length ?? 0))
+
+    for (let index = 0; index < (line.match(/{/g)?.length ?? 0); index++) {
+      if (pending !== null) {
+        stack.push([pending, depth])
+        pending = null
+      }
+      depth++
+    }
+    depth -= line.match(/}/g)?.length ?? 0
+    while (stack.length > 0 && depth <= stack[stack.length - 1][1]) stack.pop()
+  }
+  return notes
+}
+
+/** Whether a member is out of reach for this manifest: limited to editors it does not declare. */
+const MANIFEST = JSON.parse(readFileSync(join(ROOT, 'manifest.json'), 'utf8'))
+const EDITOR_WORDS = { figma: 'Figma Design', dev: 'Dev Mode', figjam: 'FigJam', slides: 'Figma Slides', buzz: 'Figma Buzz' }
+const OURS = (MANIFEST.editorType ?? []).map((editor) => EDITOR_WORDS[editor] ?? editor)
+const elsewhere = (only) => typeof only === 'string' && !OURS.some((editor) => only.includes(editor))
 
 /* ------------------------------------------------------------------- our source */
 
@@ -179,14 +244,24 @@ function covered(name, surface) {
 
 /* ------------------------------------------------------------------- the ledger */
 
-function namespaceTable(surface) {
+function namespaceTable(surface, notes) {
   const spaces = [...surface].filter((name) => name.endsWith('API') && !name.includes('.')).sort()
+  // A namespace reached through an accessor limited to other editors (`figma.buzz`) is out of
+  // reach whole, whatever its own members say.
+  const accessorOf = (space) => {
+    const declared = new RegExp(`^\\s*(?:readonly\\s+)?([A-Za-z]+)\\??\\s*:\\s*${escape(space)}\\b`, 'm').exec(readFileSync(TYPINGS, 'utf8'))
+    return declared ? notes.get(`PluginAPI.${declared[1]}`) : undefined
+  }
   const rows = []
   for (const space of spaces) {
     const members = [...surface].filter((name) => name.startsWith(`${space}.`)).map((name) => name.slice(space.length + 1))
     if (members.length === 0) continue
-    const missing = members.filter((member) => !touched(`${space}.${member}`)).sort()
-    rows.push({ space, total: members.length, missing })
+    const untouched = members.filter((member) => !touched(`${space}.${member}`)).sort()
+    const whole = accessorOf(space)
+    const away = untouched.filter((member) => elsewhere(whole?.only) || elsewhere(notes.get(`${space}.${member}`)?.only))
+    const old = untouched.filter((member) => !away.includes(member) && notes.get(`${space}.${member}`)?.deprecated)
+    const missing = untouched.filter((member) => !away.includes(member) && !old.includes(member))
+    rows.push({ space, total: members.length, missing, away, old })
   }
   return rows
 }
@@ -205,7 +280,12 @@ function releaseTable(since) {
     }
     if (previous) {
       const added = [...surface].filter((name) => !previous.has(name)).sort()
-      if (added.length > 0) rows.push({ version, date: date.slice(0, 10), added, missing: added.filter((name) => !covered(name, surface)) })
+      const untouched = added.filter((name) => !covered(name, surface))
+      // The same two exclusions as the namespace table, by the notes of the installed typings.
+      const away = untouched.filter((name) => elsewhere(NOTES.get(name)?.only) || elsewhere(NOTES.get(`PluginAPI.${ACCESSOR_OF.get(name.split('.')[0]) ?? ''}`)?.only))
+      const old = untouched.filter((name) => !away.includes(name) && NOTES.get(name)?.deprecated)
+      const missing = untouched.filter((name) => !away.includes(name) && !old.includes(name))
+      if (added.length > 0) rows.push({ version, date: date.slice(0, 10), added, missing, away, old })
     }
     previous = surface
   }
@@ -213,6 +293,12 @@ function releaseTable(since) {
 }
 
 const surface = surfaceOf(readFileSync(TYPINGS, 'utf8'))
+const notes = notesOf(readFileSync(TYPINGS, 'utf8'))
+const NOTES = notes
+/** Namespace → the PluginAPI accessor that reaches it (`BuzzAPI` → `buzz`). */
+const ACCESSOR_OF = new Map(
+  [...readFileSync(TYPINGS, 'utf8').matchAll(/^\s*(?:readonly\s+)?([A-Za-z]+)\??\s*:\s*([A-Za-z]+API)\b/gm)].map((match) => [match[2], match[1]])
+)
 const installed = JSON.parse(readFileSync(join(ROOT, 'node_modules/@figma/plugin-typings/package.json'), 'utf8')).version
 
 const lines = []
@@ -223,18 +309,21 @@ emit(`Типизации ${installed}, идентификаторов в пов�
 emit(`Сигнал «у нас» — слово встречается в src/ (кроме тестов): грубо, но без вранья в пользу покрытия.\n`)
 
 emit(`## Неймспейсы\n`)
-emit(`| API | членов | не тронуто | что именно |`)
-emit(`| --- | ---: | ---: | --- |`)
-for (const row of namespaceTable(surface)) {
-  const names = row.missing.length > 0 ? row.missing.slice(0, 8).join(', ') + (row.missing.length > 8 ? ' …' : '') : '—'
-  emit(`| ${row.space} | ${row.total} | ${row.missing.length} | ${names} |`)
+emit(`Манифест объявляет ${OURS.join(', ')}. «Другой редактор» — член, который типизации сами ограничивают`)
+emit(`редакторами вне манифеста; «устарело» — помечен \`@deprecated\`. Ни то, ни другое пробелом не считается.\n`)
+emit(`| API | членов | не тронуто | что именно | другой редактор | устарело |`)
+emit(`| --- | ---: | ---: | --- | ---: | ---: |`)
+const list = (names) => (names.length > 0 ? names.slice(0, 8).join(', ') + (names.length > 8 ? ' …' : '') : '—')
+for (const row of namespaceTable(surface, notes)) {
+  emit(`| ${row.space} | ${row.total} | ${row.missing.length} | ${list(row.missing)} | ${row.away.length} | ${row.old.length} |`)
 }
 
 if (process.argv.includes('--releases')) {
   const since = process.argv[process.argv.indexOf('--releases') + 1] ?? '1.107.0'
   emit(`\n## Релизы, от свежего к старому (с ${since})\n`)
   for (const row of releaseTable(since)) {
-    emit(`### ${row.version} — ${row.date}  (+${row.added.length}, не тронуто ${row.missing.length})\n`)
+    const aside = [row.away.length > 0 ? `другой редактор ${row.away.length}` : '', row.old.length > 0 ? `устарело ${row.old.length}` : ''].filter(Boolean)
+    emit(`### ${row.version} — ${row.date}  (+${row.added.length}, не тронуто ${row.missing.length}${aside.length > 0 ? `; ${aside.join(', ')}` : ''})\n`)
     if (row.missing.length > 0) emit(`${row.missing.join(', ')}\n`)
     else emit(`всё тронуто\n`)
   }

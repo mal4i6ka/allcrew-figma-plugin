@@ -330,6 +330,9 @@ type PluginMessage =
   | { type: 'MEASURE_LIST'; nodes?: unknown }
   | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'NODE_ROUNDTRIP'; nodes: unknown; depth?: number; keep?: boolean; ignore?: unknown }
+  | { type: 'TRANSFER_STATUS' }
+  | { type: 'NODE_SPEC'; nodes: unknown; depth?: number; budgetBytes?: number; localComponents?: string }
+  | { type: 'NODE_BUILD'; nodes: unknown; images?: unknown; parent?: string; ignore?: unknown; dryRun?: boolean }
   | {
       type: 'EMIT_REACT'
       scope?: ExportScope
@@ -2319,6 +2322,243 @@ const variableNameOf = async (id: string): Promise<string | null> => {
   return variable?.name ?? null
 }
 
+/** Every image hash a spec's paints name, through its children. A read spells a picture as
+ * `{ image: { hash } }` (paint-reader); the one-line `image:<hash> FILL` is taken too. */
+function imageHashesIn(spec: CreateSpec): string[] {
+  const found: string[] = []
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      const picture = /^image:(\S+)\s/.exec(value)
+      if (picture && picture[1] !== '?') found.push(picture[1])
+    } else if (Array.isArray(value)) value.forEach(visit)
+    else if (value && typeof value === 'object') {
+      const image = (value as { image?: { hash?: unknown } }).image
+      if (image && typeof image.hash === 'string') found.push(image.hash)
+      Object.values(value).forEach(visit)
+    }
+  }
+  visit(spec)
+  return [...new Set(found)]
+}
+
+/** The spec with every picture re-pointed through `resolve` — a hash this file has, or bytes. A
+ * picture `resolve` cannot answer is taken out of its paint list rather than left to fail. */
+function withImages(spec: CreateSpec, resolve: (hash: string) => { hash: string } | { bytes: string } | null): CreateSpec {
+  const paint = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      const picture = /^image:(\S+)\s+(FILL|FIT|CROP|TILE)$/.exec(value.trim())
+      if (!picture) return value
+      const image = resolve(picture[1])
+      return image ? { image, scaleMode: picture[2] } : undefined
+    }
+    if (Array.isArray(value)) {
+      const kept = value.map(paint).filter((one) => one !== undefined)
+      return kept.length === 0 && value.length > 0 ? undefined : kept
+    }
+    if (value && typeof value === 'object') {
+      const entry = value as { image?: { hash?: unknown } }
+      if (!entry.image || typeof entry.image.hash !== 'string') return value
+      const image = resolve(entry.image.hash)
+      return image ? { ...(value as Record<string, unknown>), image } : undefined
+    }
+    return value
+  }
+  const props = { ...(spec.props ?? {}) } as Record<string, unknown>
+  for (const key of ['fill', 'stroke']) if (key in props) props[key] = paint(props[key]) ?? null
+  return {
+    ...spec,
+    props,
+    ...(Array.isArray(spec.children) ? { children: spec.children.map((child) => withImages(child, resolve)) } : {}),
+  } as CreateSpec
+}
+
+/** Library component keys a spec makes instances of, through its children. */
+function instanceKeysIn(spec: CreateSpec): string[] {
+  const keys: string[] = []
+  const visit = (one: CreateSpec) => {
+    if (one.kind === 'instance' && typeof one.of === 'string' && /^[0-9a-f]{40}$/.test(one.of)) keys.push(one.of)
+    for (const child of (Array.isArray(one.children) ? one.children : []) as CreateSpec[]) visit(child)
+  }
+  visit(spec)
+  return [...new Set(keys)]
+}
+
+/** The spec without the instances whose component `why` says is not here — each one named. */
+function withoutInstances(spec: CreateSpec, why: (key: string) => string | null, out: Array<{ name: string; key: string; why: string }>): CreateSpec {
+  const keep = (one: CreateSpec): boolean => {
+    if (one.kind !== 'instance' || typeof one.of !== 'string') return true
+    const reason = why(one.of)
+    if (reason === null) return true
+    out.push({ name: String((one.props as Record<string, unknown> | undefined)?.name ?? one.of), key: one.of, why: reason })
+    return false
+  }
+  const walk = (one: CreateSpec): CreateSpec =>
+    Array.isArray(one.children) ? ({ ...one, children: (one.children as CreateSpec[]).filter(keep).map(walk) } as CreateSpec) : one
+  return walk(spec)
+}
+
+/** A reading with picture hashes blanked: a picture carried as bytes gets a new hash, and that is
+ * not a difference anyone looking at the two would see. */
+function imagesBlind(props: Record<string, unknown>): Record<string, unknown> {
+  const blank = (value: unknown): unknown => {
+    if (typeof value === 'string') return value.replace(/image:\S+/g, 'image:#')
+    if (Array.isArray(value)) return value.map(blank)
+    if (value && typeof value === 'object') {
+      const entry = value as { image?: { hash?: unknown } }
+      if (entry.image && typeof entry.image.hash === 'string') return { ...(value as Record<string, unknown>), image: { hash: '#' } }
+    }
+    return value
+  }
+  return Object.fromEntries(Object.entries(props).map(([key, value]) => [key, blank(value)]))
+}
+
+/**
+ * Where a portable read is right now — the layer and the step. A library call that never answers
+ * wedges every later read of names in the session, and from outside that looks like silence; this
+ * is what TRANSFER_STATUS hands back while the read is stuck, so the stuck step has a name.
+ */
+let specTrace: { command: string; startedAt: number; node?: string; step?: string; at?: number } | null = null
+
+function traceSpec(step: string, node?: string): void {
+  if (specTrace) specTrace = { ...specTrace, step, node, at: Date.now() }
+}
+
+/** An await with a ceiling. The call it guards may never settle — the promise is left behind and
+ * the read moves on, reporting the step as unfinished instead of hanging the whole command. */
+async function withCeiling<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} did not answer within ${Math.round(ms / 1000)}s`)), ms)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/** What becomes of an instance in a spec: made from a component (`of` — an id here, a library
+ * key in another file), rebuilt as a plain frame from what it shows (`detach`), or left out. */
+type InstancePlan = { of: string } | { detach: true; why: string } | null
+
+/**
+ * A node and its children as the spec NODE_CREATE takes — the reading, and nothing but the
+ * reading. Shared by the round trip (same file) and the transfer (another file); they differ only
+ * in what an instance turns into. Anything the planner will not take is recorded in `dropped` /
+ * `notValues` on the way past rather than quietly left out; `detached` names the instances that
+ * came across as frames.
+ */
+async function readSpecTree(
+  original: SceneNode,
+  depth: number,
+  dropped: RoundTripFinding[],
+  notValues: string[],
+  planInstance: (instance: InstanceNode) => Promise<InstancePlan>,
+  detached: string[] = []
+): Promise<{ spec: CreateSpec | null }> {
+  const build = async (one: SceneNode, level: number, placedByParent = true): Promise<CreateSpec | null> => {
+    traceSpec('reading the layer', `${one.name} (${one.id})`)
+    let reading: Record<string, unknown>
+    try {
+      reading = specTrace ? await withCeiling(describeNode(one, true), 30_000, `reading ${one.name}`) : await describeNode(one, true)
+    } catch (error) {
+      dropped.push({ property: `${one.name}`, why: String((error as Error)?.message || error) })
+      return null
+    }
+    let asFrame = false
+    let of: string | null = null
+    if (one.type === 'INSTANCE') {
+      const plan = await planInstance(one as InstanceNode)
+      if (plan && 'of' in plan) of = plan.of
+      else if (plan && 'detach' in plan) {
+        asFrame = true
+        detached.push(`${one.name}: ${plan.why}`)
+      }
+    }
+    const kids: CreateSpec[] = []
+    // Not into an instance that is made from its component: what is inside it belongs to the
+    // component, and sending it again would build everything twice. A detached one IS its children.
+    // Nor into a FigJam table: its cells are not layers, and `table` already carries them.
+    if (level > 0 && 'children' in one && (one.type !== 'INSTANCE' || asFrame) && String(one.type) !== 'TABLE') {
+      const laysOut = 'layoutMode' in one && (one as FrameNode).layoutMode !== 'NONE'
+      for (const child of (one as SceneNode & ChildrenMixin).children) {
+        const absolute = 'layoutPositioning' in child && (child as FrameNode).layoutPositioning === 'ABSOLUTE'
+        const made = await build(child, level - 1, laysOut && !absolute)
+        if (made) kids.push(made)
+      }
+    }
+    const built = specFrom(asFrame ? { ...reading, type: 'FRAME' } : reading, kids, of)
+    if (!built) {
+      dropped.push({
+        property: `${one.name}`,
+        // A code layer is a Figma Make project on the canvas: the Plugin API can see it and
+        // not build one; its source is read, and a new one made, through Figma's own MCP.
+        why: String(one.type) === 'CODE_INSTANCE'
+          ? 'a code layer is made from a project through Figma\'s MCP (send_code_to_figma), not by NODE_CREATE'
+          : `a ${one.type} cannot be made by NODE_CREATE`,
+      })
+      return null
+    }
+    for (const entry of built.dropped) dropped.push({ ...entry, property: `${one.name}.${entry.property}` })
+    for (const key of built.notValues) notValues.push(`${one.name}.${key}`)
+    // Position is the parent's business only when the parent lays its children out. In a free
+    // frame the coordinates ARE the layout: without them every child of a copied card piled up
+    // at its top-left corner.
+    if (!placedByParent) {
+      built.spec.props = { ...(built.spec.props ?? {}), x: Math.round(one.x * 100) / 100, y: Math.round(one.y * 100) / 100 }
+    }
+    return built.spec
+  }
+  return { spec: await build(original, depth) }
+}
+
+/**
+ * The step a node read is on, so a read that never comes back can say where it stopped.
+ *
+ * Some Figma calls never settle in some sessions (a library lookup that wedges, a server-backed
+ * read while the app is offline), and from outside that is only silence — 150 s of it, with the
+ * session's queue held. NODE_QUERY caps each node and names the step it was waiting on.
+ */
+let readTrace: { node: string; step: string; at: number } | null = null
+
+async function traced<T>(node: SceneNode, step: string, work: () => Promise<T>): Promise<T> {
+  readTrace = { node: `${node.name} (${node.id})`, step, at: Date.now() }
+  return work()
+}
+
+/**
+ * A node's Dev Mode links, or null when Figma will not say.
+ *
+ * Links live on Figma's servers, and when the app has lost its connection the call never settles
+ * (seen live upstream: every NODE_QUERY with props hung 150 s on this one step). So it gets five
+ * seconds, and a miss turns it off for a minute — one stalled lookup per read, not one per node
+ * of a hundred-node query.
+ */
+let devLinksDownUntil = 0
+
+async function devLinksOf(node: SceneNode): Promise<DevResourceWithNodeId[] | null> {
+  if (Date.now() < devLinksDownUntil) return null
+  try {
+    return await withCeiling(node.getDevResourcesAsync(), 5_000, 'Dev Mode links')
+  } catch (error) {
+    if (/did not answer/.test(String((error as Error)?.message))) devLinksDownUntil = Date.now() + 60_000
+    return null
+  }
+}
+
+/** A node read with a ceiling: what it could not finish is named, not waited on forever. */
+async function describeNodeCapped(node: SceneNode, withProps: boolean, ms = 30_000): Promise<Record<string, unknown>> {
+  if (!withProps) return describeNode(node, false)
+  try {
+    return await withCeiling(describeNode(node, true), ms, `reading ${node.name}`)
+  } catch (error) {
+    const stuck = readTrace ? `${readTrace.step} of ${readTrace.node}` : 'an unknown step'
+    return { ...(await describeNode(node, false)), unreadable: `${String((error as Error)?.message || error)} — stuck on ${stuck}` }
+  }
+}
+
 async function describeNode(node: SceneNode, withProps: boolean): Promise<Record<string, unknown>> {
   const base: Record<string, unknown> = {
     id: node.id,
@@ -2341,7 +2581,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // 3D (beta): the same shape the transform3d / transformOrigin / scene3d props take, so a tilted
     // card read and sent back stays tilted. Nothing when the layer is flat.
     ...(describe3d(bag) ?? {}),
-    ...('fills' in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}),
+    ...('fills' in bag ? { fill: await traced(node, 'fills', () => readPaintsForWrite(bag.fills, variableNameOf, figma.mixed)) } : {}),
     // Beside the line, the settings themselves: what a read hands over is what a write takes,
     // which is the only way to put the same shader on another layer.
     // `animated` lists the settings that are keyframed: Figma leaves those out of `properties`.
@@ -2356,7 +2596,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(node.type === 'INSTANCE' && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: 'none' } : {}),
     ...('strokes' in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0
       ? {
-          stroke: await readPaintsForWrite(bag.strokes, variableNameOf, figma.mixed),
+          stroke: await traced(node, 'strokes', () => readPaintsForWrite(bag.strokes, variableNameOf, figma.mixed)),
           // Only when it is one: a stroke of mixed weights reads as nothing here, and `null` was
           // being sent back as a weight and refused.
           ...(typeof bag.strokeWeight === 'number' ? { strokeWeight: round(bag.strokeWeight) } : {}),
@@ -2383,10 +2623,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // The array the write takes, not the sentence it used to be: an elevation that reads as
     // `"drop shadow #0A1F44 @0.2 0,4 blur 12"` cannot be sent back, and half a screen's design is
     // its shadows.
-    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}),
+    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await traced(node, 'effects', () => readEffects(bag.effects)) } : {}),
     ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}),
     ...(Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0
-      ? { animation: await describeAnimation(bag.animationStyles) }
+      ? { animation: await traced(node, 'animation styles', () => describeAnimation(bag.animationStyles)) }
       : {}),
     // The length of the timeline, in the word the write takes. The ids beside it were the read
     // naming Figma's own bookkeeping — a caller can neither use them nor send them back.
@@ -2396,7 +2636,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       ? { timeline: (bag.timelines as Timeline[])[0].duration }
       : {}),
     ...(readKeyframes(bag.manualKeyframeTracks)),
-    ...(await describeBindings(bag.boundVariables)),
+    ...(await traced(node, 'variable bindings', () => describeBindings(bag.boundVariables))),
     ...(typeof bag.overflowDirection === 'string' && bag.overflowDirection !== 'NONE'
       ? { scroll: bag.overflowDirection }
       : {}),
@@ -2494,30 +2734,38 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   if (node.type === 'INSTANCE') {
     // What an instance IS, in the words the catalogue uses — the question anyone asks of a screen
     // they are about to build another one like.
-    const main = await node.getMainComponentAsync().catch(() => null)
+    const main = await traced(node, 'the main component', () => node.getMainComponentAsync().catch(() => null))
     // The SET's name when there is one: that is what the catalogue calls it, and a variant's own
     // name is the axis values ("Size=Large, State=Default"), which nobody can instantiate from.
     const owner = main && main.parent?.type === 'COMPONENT_SET' ? main.parent : main
     props.component = owner?.name ?? '(unavailable)'
     // `{ name: value }` — the shape `properties` takes on the way in. It used to read as
     // `"Label=Готово · Show dot=false"`, which is one readable line and could not be sent back.
-    const settings: Record<string, string | boolean> = {}
+    const settings: Record<string, string | boolean | { variable: string }> = {}
     const slots: string[] = []
     for (const [key, entry] of Object.entries(
-      node.componentProperties as unknown as Record<string, { value?: unknown; type?: string }>
+      node.componentProperties as unknown as Record<string, { value?: unknown; type?: string; boundVariables?: { value?: VariableAlias } }>
     )) {
       const name = humanPropertyName(key)
       // A slot holds a node, not a value: there is nothing here for a write to set, so it is
       // reported as the fact it is rather than as a property that failed to travel.
-      if (entry?.type === 'SLOT' || entry?.value === undefined) slots.push(name)
-      else settings[name] = entry.value as string | boolean
+      if (entry?.type === 'SLOT' || entry?.value === undefined) {
+        slots.push(name)
+        continue
+      }
+      // A property that follows a token says so, in the words `properties` takes it back in.
+      const bound = entry.boundVariables?.value?.id
+      const variable = bound ? await figma.variables.getVariableByIdAsync(bound).catch(() => null) : null
+      settings[name] = bound ? { variable: variable?.name ?? bound } : (entry.value as string | boolean)
     }
     if (Object.keys(settings).length > 0) props.properties = settings
     if (slots.length > 0) props.slots = slots
 
     // What the designer changed INSIDE this instance. Without it a copy comes back with every
     // row at its default height — the missing tenth that makes a screen look wrong.
-    const overrides = await readOverrides(node, (child) => describeNode(child, true).then((one) => (one.props ?? {}) as Record<string, unknown>))
+    const overrides = await traced(node, 'instance overrides', () =>
+      readOverrides(node, (child) => describeNode(child, true).then((one) => (one.props ?? {}) as Record<string, unknown>))
+    )
     if (overrides.length > 0) props.overrides = overrides
   }
   // What Dev Mode shows beside the layer: where its code lives, and what the designer wrote for
@@ -2525,11 +2773,13 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   // Dev resources are a Design and Dev Mode notion; elsewhere the method is not there to call.
   // Measured live: in FigJam and Slides the method exists and takes tens of seconds to say nothing.
   const devEditor = figma.editorType === 'figma' || figma.editorType === 'dev'
-  const links = devEditor && typeof node.getDevResourcesAsync === 'function' ? await node.getDevResourcesAsync().catch(() => []) : []
-  const own = links.filter((link) => link.nodeId === node.id)
+  // And they live on Figma's servers: offline, the call never settles, so it is capped (devLinksOf).
+  const links = devEditor && typeof node.getDevResourcesAsync === 'function' ? await traced(node, 'Dev Mode links', () => devLinksOf(node)) : []
+  if (links === null) props.unread = 'Dev Mode links — Figma did not answer, so they are left out of this read'
+  const own = (links ?? []).filter((link) => link.nodeId === node.id)
   if (own.length > 0) props.devLinks = own.map((link) => ({ name: link.name, url: link.url }))
   const notes = (node as unknown as { annotations?: ReadonlyArray<Annotation> }).annotations ?? []
-  if (notes.length > 0) props.annotations = await describeAnnotations(notes)
+  if (notes.length > 0) props.annotations = await traced(node, 'annotations', () => describeAnnotations(notes))
   if (node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') {
     // Read by id, a component was indistinguishable from a frame: what it can be told, what it is
     // for and where its documentation lives were all things only COMPONENT_CATALOG knew. An agent
@@ -2621,10 +2871,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // never returned, so the read could not be sent. Each run carries only what DIFFERS from the
     // layer above — the layer's own values are already in this same object — and the shape is the
     // one `runs` takes on the way in.
-    const runs = await styledRuns(node)
+    const runs = await traced(node, 'text runs', () => styledRuns(node))
     if (runs.length > 1) props.runs = runs
   }
-  Object.assign(props, await boardProps(node))
+  Object.assign(props, await traced(node, 'board properties', () => boardProps(node)))
   // A FigJam shape's and a connector's corner is the shape's own business: read-only, and sending
   // it back is refused with "object is not extensible" (measured live).
   if (node.type === 'SHAPE_WITH_TEXT' || node.type === 'CONNECTOR') delete props.cornerRadius
@@ -4572,7 +4822,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent write: set properties on existing nodes, in batch, with per-property before/after
       // @agent param nodes: an array of { node: "<id>", props: {…} } — the same vocabulary NODE_CREATE takes
       // @agent param props: the node vocabulary — geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths, 3D (transform3d, transformOrigin, and scene3d on a frame, component or instance). The whole list with a sentence on each is `plugin.vocabulary`, read out of the source so it cannot go stale
-      // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names, swap: "<id|key>" changes which component it is, reset: true drops every override first
+      // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names (a text or boolean one may be { variable: "<token>" } to follow a token), swap: "<id|key>" changes which component it is, reset: true drops every override first
       // @agent param props: transform3d: { translateZ, rotateX, rotateY, rotateZ } is depth in pixels and tilt in degrees, always applied in that order; "none" removes it and an imported FREEFORM one is read-only. keyframes take the same four words plus perspective; a flat layer can take a 3D track directly, and removing transform3d removes its 3D tracks. Beta in Figma's API
       // @agent param props: links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: "<id>"|"back"|"close", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|…, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|… or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here.
       // @agent param props: one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url — they run in that order before the navigation, so "remember they agreed and go on" is one interaction
@@ -4664,7 +4914,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             refuse('NODE_QUERY', `no node with id ${msg.nodeId}`)
             break
           }
-          postToUi({ type: 'NODES_FOUND', total: 1, nodes: [await describeNode(node as SceneNode, wantProps)] })
+          postToUi({ type: 'NODES_FOUND', total: 1, nodes: [await describeNodeCapped(node as SceneNode, wantProps)] })
           break
         }
 
@@ -4705,7 +4955,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           type: 'NODES_FOUND',
           total: found.length,
           truncated: found.length >= limit,
-          nodes: await Promise.all(found.map((node) => describeNode(node, wantProps))),
+          // One after another, not all at once: each read is capped on its own, and a hundred
+          // parallel reads of a wedged lookup would share one ceiling and all miss it.
+          nodes: await (async () => {
+            const out = []
+            for (const node of found) out.push(await describeNodeCapped(node, wantProps))
+            return out
+          })(),
         })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_QUERY', message: String((error as Error)?.message || error) })
@@ -6742,43 +6998,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           const dropped: RoundTripFinding[] = []
           const notValues: string[] = []
 
-          // The reading, and the spec it amounts to. Anything the planner will not take is
-          // recorded on the way past rather than quietly left out.
-          const build = async (one: SceneNode, level: number): Promise<CreateSpec | null> => {
-            const reading = await describeNode(one, true)
-            const kids: CreateSpec[] = []
-            // Not into an instance: what is inside it belongs to its component, and copying it
-            // would compare a screen against a screen with everything in it twice.
-            // Nor into a FigJam table: its cells are not layers, and `table` already carries them.
-            if (level > 0 && 'children' in one && one.type !== 'INSTANCE' && String(one.type) !== 'TABLE') {
-              for (const child of (one as SceneNode & ChildrenMixin).children) {
-                const made = await build(child, level - 1)
-                if (made) kids.push(made)
-              }
-            }
-            const of =
-              one.type === 'INSTANCE'
-                ? ((await (one as InstanceNode).getMainComponentAsync().catch(() => null))?.id ?? null)
-                : null
-
-            const built = specFrom(reading, kids, of)
-            if (!built) {
-              dropped.push({
-                property: '(node)',
-                // A code layer is a Figma Make project on the canvas: the Plugin API can see it and
-                // not build one; its source is read, and a new one made, through Figma's own MCP.
-                why: String(one.type) === 'CODE_INSTANCE'
-                  ? 'a code layer is made from a project through Figma\'s MCP (send_code_to_figma), not by NODE_CREATE'
-                  : `a ${one.type} cannot be made by NODE_CREATE`,
-              })
-              return null
-            }
-            for (const entry of built.dropped) dropped.push({ ...entry, property: `${one.name}.${entry.property}` })
-            for (const key of built.notValues) notValues.push(`${one.name}.${key}`)
-            return built.spec
-          }
-
-          const spec = await build(original, depth)
+          const { spec } = await readSpecTree(original, depth, dropped, notValues, async (one) => {
+            const main = await one.getMainComponentAsync().catch(() => null)
+            return main ? { of: main.id } : null
+          })
           if (!spec) {
             reports.push({ node: id, name: original.name, ok: false, error: `a ${original.type} cannot be recreated`, dropped })
             continue
@@ -6829,6 +7052,209 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         postToUi({ type: 'ROUNDTRIP', checked: reports.length, broken, nodes: reports })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_ROUNDTRIP', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+
+    case 'NODE_SPEC': {
+      // @agent read: a node as a portable spec — the reading another file can build from: library components by key, pictures as bytes, and what could not travel
+      // @agent param nodes: the ids to read
+      // @agent param depth: how many levels of children to carry — 0 is the node alone, 6 by default
+      // @agent param budgetBytes: how many bytes of pictures to carry in one answer — 2 MB by default; past it a picture is named, not sent
+      // @agent param localComponents: "frame" (default) brings an instance of a component that lives in this file across as the frame it shows; "key" sends the component's key, for a file that uses this one as a library
+      // @agent cost: reads the subtree and the bytes of every picture in it
+      try {
+        specTrace = { command: 'NODE_SPEC', startedAt: Date.now() }
+        const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
+        const depth = Math.min(Math.max(msg.depth ?? 6, 0), 12)
+        const budget = Math.min(Math.max(msg.budgetBytes ?? 2_000_000, 0), 2_500_000)
+        const out = []
+        const hashes = new Set<string>()
+        for (const id of ids) {
+          const node = await figma.getNodeByIdAsync(id)
+          if (!node || !('type' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+            out.push({ source: id, ok: false, error: 'no such scene node' })
+            continue
+          }
+          const original = node as SceneNode
+          const dropped: RoundTripFinding[] = []
+          const notValues: string[] = []
+          const detached: string[] = []
+          // Another file can only make an instance from a component it can import: a library
+          // one, by key. A main that lives only in this file — or nowhere — comes across as the
+          // frame it shows, and says so.
+          // Never `getPublishStatusAsync` here: it goes out to the team library, and when that call
+          // hangs it wedges every library read in the session — live, it took the plugin with it
+          // until the designer reopened it. A main from a library travels by key; a main local to
+          // this file comes across as the frame it shows unless the caller vouches that the other
+          // file has this one as a library (`localComponents: "key"`).
+          const { spec } = await readSpecTree(original, depth, dropped, notValues, async (one) => {
+            traceSpec('finding the main component', `${one.name} (${one.id})`)
+            let main: ComponentNode | null
+            try {
+              main = await withCeiling(one.getMainComponentAsync(), 20_000, `the main component of ${one.name}`)
+            } catch (error) {
+              return { detach: true, why: String((error as Error)?.message || error) }
+            }
+            if (!main) return { detach: true, why: 'its main component is gone' }
+            if (main.remote || msg.localComponents === 'key') return { of: main.key }
+            return { detach: true, why: `its main "${main.name}" lives in this file — pass localComponents: "key" if the other file uses this one as a library` }
+          }, detached)
+          if (!spec) {
+            out.push({ source: id, name: original.name, ok: false, error: `a ${original.type} cannot be recreated`, dropped })
+            continue
+          }
+          for (const hash of imageHashesIn(spec)) hashes.add(hash)
+          out.push({
+            source: id,
+            name: original.name,
+            type: original.type,
+            ok: true,
+            spec,
+            before: ((await describeNode(original, true)).props ?? {}) as Record<string, unknown>,
+            ...(dropped.length > 0 ? { dropped } : {}),
+            ...(notValues.length > 0 ? { notValues } : {}),
+            ...(detached.length > 0 ? { detached } : {}),
+          })
+        }
+        // Pictures by hash, once each however many layers paint them. The answer has a ceiling
+        // — the sandbox-to-UI hop stalls past about 3 MB — so past the budget a picture is named
+        // rather than sent, and the building side reports it as not carried.
+        const images: Record<string, string> = {}
+        const skipped: Array<{ hash: string; why: string }> = []
+        let spent = 0
+        for (const hash of hashes) {
+          traceSpec('reading picture bytes', hash)
+          const image = figma.getImageByHash(hash)
+          let bytes: Uint8Array | null = null
+          let why = 'the picture could not be read'
+          try {
+            bytes = image ? await withCeiling(image.getBytesAsync(), 30_000, 'the picture bytes') : null
+          } catch (error) {
+            why = String((error as Error)?.message || error)
+          }
+          if (!bytes) {
+            skipped.push({ hash, why })
+            continue
+          }
+          if (spent + bytes.length > budget) {
+            skipped.push({ hash, why: `over the ${Math.round(budget / 1000)} kB budget for one call (${Math.round(bytes.length / 1000)} kB)` })
+            continue
+          }
+          images[hash] = figma.base64Encode(bytes)
+          spent += bytes.length
+        }
+        const took = Date.now() - (specTrace?.startedAt ?? Date.now())
+        specTrace = null
+        postToUi({ type: 'NODE_SPECS', ms: took, nodes: out, images, ...(skipped.length > 0 ? { imagesSkipped: skipped } : {}) })
+      } catch (error) {
+        specTrace = null
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_SPEC', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'TRANSFER_STATUS': {
+      // @agent read: where a portable read (NODE_SPEC) is right now — the layer and the step it is waiting on, and for how long; idle when none is running
+      postToUi({
+        type: 'TRANSFER_STATUS',
+        ...(specTrace
+          ? { running: specTrace.command, step: specTrace.step ?? 'starting', node: specTrace.node ?? null, elapsedMs: Date.now() - specTrace.startedAt, stepMs: specTrace.at ? Date.now() - specTrace.at : null }
+          : { running: null }),
+      })
+      break
+    }
+    case 'NODE_BUILD': {
+      // @agent write: build nodes from portable specs (NODE_SPEC's answer, usually from another file), read them back and say what did not survive
+      // @agent param nodes: an array of { source, spec, before } — NODE_SPEC's nodes, as they came
+      // @agent param images: NODE_SPEC's images — the bytes of each picture, by the hash it had where it came from
+      // @agent param parent: where the copies go — a frame, section or page id; the current page when omitted
+      // @agent param ignore: property names to leave out of the comparison, for the ones a file legitimately changes
+      // @agent param dryRun: true checks every spec plans and changes nothing
+      // @agent cost: one subtree made per node; one call is one undo step
+      try {
+        const rows = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]) as Array<{ source?: unknown; spec?: unknown; before?: unknown }>
+        /** Key → null when it imported, or why it did not — asked once per call, not once per copy. */
+        const componentImports = new Map<string, string | null>()
+        const images = (msg.images && typeof msg.images === 'object' ? msg.images : {}) as Record<string, string>
+        const ignore = new Set((Array.isArray(msg.ignore) ? msg.ignore : []).map((one) => String(one)))
+        const dry = msg.dryRun === true
+        let parent: BaseNode & ChildrenMixin = figma.currentPage
+        if (typeof msg.parent === 'string' && msg.parent !== '') {
+          const found = await figma.getNodeByIdAsync(msg.parent)
+          if (!found || !('appendChild' in found)) {
+            refuse('NODE_BUILD', `${msg.parent} is not a frame, section or page that can hold layers`)
+            break
+          }
+          if (found.type === 'PAGE') await (found as PageNode).loadAsync()
+          parent = found as BaseNode & ChildrenMixin
+        }
+        const reports = []
+        for (const row of rows) {
+          const source = String(row?.source ?? '?')
+          if (!row || typeof row.spec !== 'object' || row.spec === null) {
+            reports.push({ source, ok: false, error: 'no spec to build' })
+            continue
+          }
+          // A picture travels as bytes and gets a new hash here; one already in this file keeps
+          // its own. What did not travel is named rather than painted grey.
+          const missing: string[] = []
+          let spec = withImages(row.spec as CreateSpec, (hash) => (figma.getImageByHash(hash) ? { hash } : images[hash] ? { bytes: images[hash] } : (missing.push(hash), null)))
+          // A component this file cannot import — a library it does not have enabled — would
+          // fail the whole subtree from deep inside it. Each key is tried once, with a ceiling, and
+          // an instance of one that is not here is taken out and named rather than sinking the rest.
+          const unavailable: Array<{ name: string; key: string; why: string }> = []
+          for (const key of instanceKeysIn(spec)) {
+            if (componentImports.has(key)) continue
+            try {
+              await withCeiling(figma.importComponentByKeyAsync(key), 20_000, `importing component ${key.slice(0, 8)}…`)
+              componentImports.set(key, null)
+            } catch (error) {
+              componentImports.set(key, String((error as Error)?.message || error))
+            }
+          }
+          spec = withoutInstances(spec, (key) => componentImports.get(key) ?? null, unavailable)
+          const problems: string[] = []
+          const plan = planCreate(spec, 'spec', problems)
+          if (!plan || problems.length > 0) {
+            reports.push({ source, ok: false, error: problems.slice(0, 6).join(' · ') || 'the spec did not plan' })
+            continue
+          }
+          if (dry) {
+            reports.push({ source, ok: true, dryRun: true, ...(missing.length > 0 ? { imagesMissing: missing } : {}), ...(unavailable.length > 0 ? { unavailable } : {}) })
+            continue
+          }
+          let made: Awaited<ReturnType<typeof createNode>>
+          try {
+            made = await createNode(plan, parent, false)
+          } catch (error) {
+            reports.push({ source, ok: false, error: String((error as Error)?.message || error), ...(unavailable.length > 0 ? { unavailable } : {}) })
+            continue
+          }
+          const copy = await figma.getNodeByIdAsync(made.id)
+          if (!copy || !('type' in copy)) {
+            reports.push({ source, ok: false, error: 'the copy was not made' })
+            continue
+          }
+          const before = imagesBlind((row.before ?? {}) as Record<string, unknown>)
+          const after = imagesBlind(((await describeNode(copy as SceneNode, true)).props ?? {}) as Record<string, unknown>)
+          const { same, diverged } = compare(before, after, ignore)
+          const failed = made.failures ?? []
+          reports.push({
+            source,
+            node: copy.id,
+            name: (copy as SceneNode).name,
+            ok: diverged.length === 0 && failed.length === 0 && missing.length === 0 && unavailable.length === 0,
+            same: same.length,
+            ...(diverged.length > 0 ? { diverged } : {}),
+            ...(failed.length > 0 ? { failed } : {}),
+            ...(missing.length > 0 ? { imagesMissing: missing } : {}),
+            ...(unavailable.length > 0 ? { unavailable } : {}),
+          })
+        }
+        if (!dry && reports.some((one) => 'node' in one)) figma.commitUndo()
+        postToUi({ type: 'NODE_BUILT', dryRun: dry, parent: { id: parent.id, name: (parent as BaseNode).name }, nodes: reports })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_BUILD', message: String((error as Error)?.message || error) })
       }
       break
     }

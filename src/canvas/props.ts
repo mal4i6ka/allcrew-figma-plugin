@@ -613,8 +613,8 @@ export interface NodeProps {
   timeline?: number
   /** INSTANCE only: what the designer changed INSIDE it — `[{ at: "<child id within the instance>", props }]`. */
   overrides?: Array<{ at: string; props: unknown }>
-  /** INSTANCE only: component properties by their catalogue names — variants, text, booleans. */
-  properties?: Record<string, string | boolean>
+  /** INSTANCE only: component properties by their catalogue names — variants, text, booleans; a text or boolean may be `{ variable }`. */
+  properties?: Record<string, string | boolean | { variable: string }>
   /** INSTANCE only: the component to become — an id or a published key. */
   swap?: string
   /** INSTANCE: throw away every override first. SLOT: put back the content the component's slot ships with. */
@@ -870,7 +870,7 @@ export type PropStep =
   | { step: 'network'; network: VectorNetwork; summary: string }
   | { step: 'reset' }
   | { step: 'swap'; component: string }
-  | { step: 'properties'; properties: Record<string, string | boolean> }
+  | { step: 'properties'; properties: Record<string, string | boolean | { variable: string }> }
   | { step: 'overrides'; overrides: Array<{ at: string; steps: PropStep[] }> }
   | { step: 'strokeProfile'; profile: unknown }
   | {
@@ -1907,12 +1907,15 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
           fail('properties must be an object of { propertyName: value }')
           break
         }
-        const wanted: Record<string, string | boolean> = {}
+        const wanted: Record<string, string | boolean | { variable: string }> = {}
         for (const [name, setting] of Object.entries(value as Record<string, unknown>)) {
           // Which names exist depends on the component, so that is checked against the instance
           // at apply time; the plan only insists on a value Figma could accept at all.
           if (typeof setting === 'string' || typeof setting === 'boolean') wanted[name] = setting
-          else fail(`properties.${name} must be a string or a boolean`)
+          // `{ variable }` binds the property to a token instead — a label that follows copy.
+          else if (typeof setting === 'object' && setting !== null && typeof (setting as { variable?: unknown }).variable === 'string' && (setting as { variable: string }).variable.trim() !== '') {
+            wanted[name] = { variable: (setting as { variable: string }).variable.trim() }
+          } else fail(`properties.${name} must be a string, a boolean, or { variable }`)
         }
         if (Object.keys(wanted).length > 0) steps.push({ step: 'properties', properties: wanted })
         else if (Object.keys(value as object).length === 0) fail('properties must name at least one property')

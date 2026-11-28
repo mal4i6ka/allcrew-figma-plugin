@@ -627,14 +627,37 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const before: Record<string, unknown> = {}
       for (const key of Object.keys(resolved)) before[humanPropertyName(key)] = defined[key]?.value
 
-      if (!dry && Object.keys(resolved).length > 0) {
+      // A token in place of a value becomes an alias. A library variable that only an id names —
+      // what a suggestion hands back for one the file has not imported — goes through
+      // `createVariableAliasByIdAsync`, which needs no Variable object in hand.
+      const values: Record<string, string | boolean | VariableAlias> = {}
+      for (const [key, value] of Object.entries(resolved)) {
+        if (typeof value !== 'object') {
+          values[key] = value
+          continue
+        }
         try {
-          instance.setProperties(resolved)
+          const variable = await resolveVariableRef(value.variable).catch(() => null)
+          if (variable) {
+            const wants = defined[key].type === 'BOOLEAN' ? 'BOOLEAN' : 'STRING'
+            if (variable.resolvedType !== wants) throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${humanPropertyName(key)} wants a ${wants}`)
+            values[key] = figma.variables.createVariableAlias(variable)
+          } else if (/^VariableID:/.test(value.variable)) {
+            values[key] = await figma.variables.createVariableAliasByIdAsync(value.variable)
+          } else throw new Error(`no variable "${value.variable}"`)
+        } catch (error) {
+          problems.push(`${humanPropertyName(key)}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+
+      if (!dry && Object.keys(values).length > 0) {
+        try {
+          instance.setProperties(values)
         } catch {
           // One at a time, so the caller learns WHICH property Figma refused instead of losing
           // the four that were fine. A sparse variant set is the usual reason: not every
           // combination of axes exists.
-          for (const [key, value] of Object.entries(resolved)) {
+          for (const [key, value] of Object.entries(values)) {
             try {
               instance.setProperties({ [key]: value })
             } catch (one) {
@@ -652,7 +675,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const after: Record<string, unknown> = {}
       for (const [key, value] of Object.entries(resolved)) {
         const name = humanPropertyName(key)
-        after[name] = now && name in now ? now[name] : value
+        after[name] = now && name in now ? now[name] : typeof value === 'object' ? `var:${value.variable}` : value
       }
 
       return {
