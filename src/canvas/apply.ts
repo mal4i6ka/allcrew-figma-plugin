@@ -139,6 +139,17 @@ export async function applyProps(node: SceneNode, steps: readonly PropStep[], dr
   return { applied, failed }
 }
 
+/** The node types Figma gives a `scene3d` (typings 1.143.0, beta). */
+const SCENE_3D_HOLDERS: readonly string[] = ['FRAME', 'COMPONENT', 'INSTANCE']
+
+/** Figma's names for the four tracks that animate a layer's own 3D transform. */
+const TRANSFORM_3D_TRACKS: readonly string[] = [
+  'TRANSFORM_3D_TRANSLATION_Z',
+  'TRANSFORM_3D_ROTATION_X',
+  'TRANSFORM_3D_ROTATION_Y',
+  'TRANSFORM_3D_ROTATION_Z',
+]
+
 const propertyOf = (step: PropStep): string => {
   switch (step.step) {
     case 'assign':
@@ -194,6 +205,11 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     }
 
     case 'space3d': {
+      // The scene exists on exactly these three; a group or a shape has depth of its own but no
+      // scene to put children in.
+      if (step.property === 'scene3d' && !SCENE_3D_HOLDERS.includes(node.type)) {
+        throw new Error(`a ${node.type} has no 3D scene — only a FRAME, COMPONENT or INSTANCE does`)
+      }
       // Beta in Figma: a build or a node type without it says so by name, not with a TypeError.
       if (!(step.property in bag)) {
         throw new Error(`a ${node.type} has no ${step.property} — 3D transforms are beta, on frames, shapes and text; scene3d only on frames, components and instances`)
@@ -1007,6 +1023,17 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           // take the opacity track down with it.
           if (one.track === null) remove(one.name, one.field)
           else {
+            if (TRANSFORM_3D_TRACKS.includes(one.name)) {
+              // A flat layer is fine: Figma gives it a FIXED_ORDER transform of zeros itself when the
+              // track lands (seen live). Only the two cases Figma cannot animate are refused, by name.
+              if (!('transform3d' in bag)) throw new Error(`a ${node.type} has no 3D transform to animate`)
+              if ((bag.transform3d as { type?: string } | undefined)?.type === 'FREEFORM') {
+                throw new Error('this layer has an imported (FREEFORM) 3D transform, which cannot be animated — set transform3d to replace it first')
+              }
+            }
+            if (one.name === 'SCENE_3D_PERSPECTIVE' && (!SCENE_3D_HOLDERS.includes(node.type) || !('scene3d' in bag))) {
+              throw new Error(`a ${node.type} has no perspective to animate — only a FRAME, COMPONENT or INSTANCE holds a 3D scene`)
+            }
             if (!dry) motion.applyManualKeyframeTrack(one.field, one.track)
             applied.push(one.name)
           }

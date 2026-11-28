@@ -463,6 +463,26 @@ export interface NodeProps {
   height?: number
   /** Degrees, -180 to 180. */
   rotation?: number
+  /**
+   * Depth and tilt, always in Figma's order translateZ → rotateX → rotateY → rotateZ: `{ translateZ: 40, rotateY: 30 }`,
+   * pixels and degrees. A number left out keeps what the layer has, or 0. `backfaceVisible: false` hides the layer
+   * when it faces away; `visible: false` switches the transform off and keeps its numbers. `"none"` or `null` removes
+   * it, and with it the layer's 3D keyframe tracks. An imported (FREEFORM) transform can be read and replaced, never
+   * written. Beta in Figma's API.
+   */
+  transform3d?: Transform3dProps | null
+  /**
+   * The point a 3D transform turns around, measured from the layer's top-left: `{ x: 0, y: "50%" }` is a door hinge.
+   * A number is pixels, `"50%"` a share of the width or height; an axis left out is the centre, `"50%"`.
+   */
+  transformOrigin?: { x?: number | string; y?: number | string }
+  /**
+   * FRAME, COMPONENT and INSTANCE only: the 3D space the children stand in — `{ perspective: 800, preserve3d: true }`.
+   * `perspective` is a distance in pixels and -1 switches it off. `preserve3d` lets children overlap by depth instead
+   * of layer order, and stops this container's own opacity, blend mode, effects and clipping from rendering.
+   * `"none"` or `null` clears it. Beta in Figma's API.
+   */
+  scene3d?: Scene3dProps | null
   /** Whether a frame hides what sticks out of it. */
   clipsContent?: boolean
 
@@ -655,6 +675,23 @@ export interface NodeProps {
 }
 
 export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
+
+/** The writable half of a `FIXED_ORDER` 3D transform; see `NodeProps.transform3d`. */
+export interface Transform3dProps {
+  translateZ?: number
+  rotateX?: number
+  rotateY?: number
+  rotateZ?: number
+  backfaceVisible?: boolean
+  visible?: boolean
+}
+
+/** See `NodeProps.scene3d`. */
+export interface Scene3dProps {
+  perspective?: number
+  preserve3d?: boolean
+  visible?: boolean
+}
 
 /**
  * One styled stretch inside a text layer.
